@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "parse(\"@alias\")"
+---
+NodeRoot@0..6
+  NodeAttr@0..6
+    At@0..1 "@"
+    Identifier@1..6 "alias"

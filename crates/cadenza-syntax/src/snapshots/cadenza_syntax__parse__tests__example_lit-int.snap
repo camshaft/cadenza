@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "1234"
+---
+NodeRoot@0..4
+  NodeLiteral@0..4
+    NodeLiteralValue@0..4
+      Integer@0..4 "1234"

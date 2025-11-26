@@ -1,0 +1,27 @@
+---
+source: crates/cadenza-syntax/src/lexer.rs
+expression: "lex(r#\"\"hello\\\"\"\"#)"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 1,
+        },
+        kind: StringStart,
+    },
+    Token {
+        span: Span {
+            start: 1,
+            end: 8,
+        },
+        kind: StringContentWithEscape,
+    },
+    Token {
+        span: Span {
+            start: 8,
+            end: 9,
+        },
+        kind: StringEnd,
+    },
+]

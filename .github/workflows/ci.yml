@@ -1,0 +1,135 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+name: ci
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: 1
+  # Pin the nightly toolchain to prevent breakage.
+  # This should be occasionally updated.
+  RUST_NIGHTLY_TOOLCHAIN: nightly-2025-11-23
+
+jobs:
+  env:
+    runs-on: ubuntu-latest
+    outputs:
+      rust-versions: ${{ steps.definitions.outputs.versions }}
+      msrv: ${{ steps.definitions.outputs.msrv }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Evaluate definitions
+        id: definitions
+        run: |
+          rustup show active-toolchain
+          export MSRV=$(rustup show active-toolchain | awk -F'-' '{print $1}')
+          echo "msrv=$MSRV"
+          if [ -z "$MSRV" ]; then
+            echo "Error: MSRV did not parse correctly"
+            exit 1
+          fi
+          echo "msrv=$MSRV" >> "$GITHUB_OUTPUT"
+          export RAW_VERSIONS="stable $MSRV"
+          export VERSIONS=$(echo $RAW_VERSIONS | jq -scR 'rtrimstr("\n")|split(" ")|.')
+          echo "$VERSIONS"
+          echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
+
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rust toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install ${{ env.RUST_NIGHTLY_TOOLCHAIN }} --profile minimal --component rustfmt
+          rustup override set ${{ env.RUST_NIGHTLY_TOOLCHAIN }}
+
+      - name: Build project
+        run: |
+          cargo build
+
+      - name: Run cargo fmt
+        run: |
+          cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rust toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup override set stable
+
+      - uses: camshaft/rust-cache@v1
+
+      - name: Build project
+        run: |
+          cargo build
+
+      - name: Run cargo clippy
+        run: |
+          cargo clippy --all-features --all-targets --workspace
+
+  udeps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install ${{ env.RUST_NIGHTLY_TOOLCHAIN }} --profile minimal --component rustfmt
+          rustup override set ${{ env.RUST_NIGHTLY_TOOLCHAIN }}
+
+      - uses: camshaft/rust-cache@v1
+
+      - uses: camshaft/install@v1
+        with:
+          crate: cargo-udeps
+
+      - name: Run cargo udeps
+        run: cargo udeps --workspace --all-targets
+        env:
+          RUSTC_WRAPPER: ""
+
+  test:
+    runs-on: ${{ matrix.os }}
+    needs: env
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ${{ fromJson(needs.env.outputs.rust-versions) }}
+        os: [ubuntu-latest, macOS-latest]
+        features: ["default", ""]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install ${{ matrix.rust }} --component rustfmt
+          rustup override set ${{ matrix.rust }}
+
+      - uses: camshaft/rust-cache@v1
+        with:
+          key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.features }}
+
+      - name: Run tests
+        env:
+          DEFAULT_FEATURES: ${{ contains(matrix.features, 'default') && '' || ' --no-default-features' }}
+          FEATURES_LIST: ${{ matrix.features && format(' --features {0}', matrix.features) || '' }}
+        run: |
+          cargo test $DEFAULT_FEATURES $FEATURES_LIST

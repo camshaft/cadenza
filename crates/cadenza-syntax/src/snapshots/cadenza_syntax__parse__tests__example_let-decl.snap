@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: let x
+---
+NodeRoot@0..5
+  NodeApply@0..5
+    NodeApplyReceiver@0..4
+      Identifier@0..3 "let"
+      Space@3..4 " "
+    NodeApplyArgument@4..5
+      Identifier@4..5 "x"

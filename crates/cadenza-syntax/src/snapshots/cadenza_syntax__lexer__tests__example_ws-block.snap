@@ -1,0 +1,174 @@
+---
+source: crates/cadenza-syntax/src/lexer.rs
+expression: "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 3,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 3,
+            end: 4,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 4,
+            end: 7,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 7,
+            end: 8,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 8,
+            end: 9,
+        },
+        kind: Equal,
+    },
+    Token {
+        span: Span {
+            start: 9,
+            end: 10,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 10,
+            end: 11,
+        },
+        kind: CommentStart,
+    },
+    Token {
+        span: Span {
+            start: 11,
+            end: 24,
+        },
+        kind: CommentContent,
+    },
+    Token {
+        span: Span {
+            start: 24,
+            end: 25,
+        },
+        kind: Newline,
+    },
+    Token {
+        span: Span {
+            start: 25,
+            end: 29,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 29,
+            end: 32,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 32,
+            end: 33,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 33,
+            end: 36,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 36,
+            end: 37,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 37,
+            end: 38,
+        },
+        kind: Equal,
+    },
+    Token {
+        span: Span {
+            start: 38,
+            end: 39,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 39,
+            end: 42,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 42,
+            end: 43,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 43,
+            end: 44,
+        },
+        kind: CommentStart,
+    },
+    Token {
+        span: Span {
+            start: 44,
+            end: 63,
+        },
+        kind: CommentContent,
+    },
+    Token {
+        span: Span {
+            start: 63,
+            end: 64,
+        },
+        kind: Newline,
+    },
+    Token {
+        span: Span {
+            start: 64,
+            end: 68,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 68,
+            end: 71,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 71,
+            end: 72,
+        },
+        kind: Newline,
+    },
+]

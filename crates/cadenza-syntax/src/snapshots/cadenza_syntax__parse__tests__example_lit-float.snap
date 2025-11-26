@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "3.14"
+---
+NodeRoot@0..4
+  NodeLiteral@0..4
+    NodeLiteralValue@0..4
+      Float@0..4 "3.14"

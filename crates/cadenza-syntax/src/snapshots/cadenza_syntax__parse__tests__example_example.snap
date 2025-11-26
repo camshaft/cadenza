@@ -1,0 +1,598 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "# Comment\n\n## Doc comment\n@alias s\n@si nano, micro, milli\n@canonical nanosecond\nmeasure second\n\n@alias m\nmeasure minute = second / 60\n\n@alias h\nmeasure hour = minute / 60\n\n@alias d\nmeasure day = hour / 24\n\n@alias w\nmeasure week = day / 7\n\n@alias b\n@si\nmeasure byte\n\n@alias m\n@si micro, milli, centi, kilo\n@canonical micrometer\nmeasure meter\n\n@alias in\nmeasure inch = mm / 25.4\n\n@alias ft\nmeasure feet = inch / 12\n\n@t u64 mm -> u64 ft # explicit type annotation\nlet mm_to_ft = fn v -> v\n\nlet feet = mm_to_ft 10\n\nlet multi_line_expr =\n    let foo = 12\n    let bar = 24\n    foo / bar\n\nlet if_else = if multi_line_expr == 0 then \"foo\" else \"bar\"\n\n# Capture the syntax tree as a runtime value\nlet var = 'foo\n\n# \nlet ast = '\n    let out = ~var\n\n~ast\n"
+---
+NodeRoot@0..744
+  CommentStart@0..1 "#"
+  CommentContent@1..9 " Comment"
+  Newline@9..10 "\n"
+  Newline@10..11 "\n"
+  DocCommentStart@11..13 "##"
+  DocCommentContent@13..25 " Doc comment"
+  Newline@25..26 "\n"
+  NodeAttr@26..35
+    At@26..27 "@"
+    NodeApply@27..35
+      NodeApplyReceiver@27..32
+        Identifier@27..32 "alias"
+      Space@32..33 " "
+      NodeApplyArgument@33..35
+        Identifier@33..34 "s"
+        Newline@34..35 "\n"
+  NodeAttr@35..58
+    At@35..36 "@"
+    NodeApply@36..58
+      NodeApplyReceiver@36..38
+        Identifier@36..38 "si"
+      Space@38..39 " "
+      NodeApplyArgument@39..43
+        Identifier@39..43 "nano"
+      NodeApplyArgument@43..45
+        Comma@43..44 ","
+        Space@44..45 " "
+      NodeApplyArgument@45..50
+        Identifier@45..50 "micro"
+      NodeApplyArgument@50..52
+        Comma@50..51 ","
+        Space@51..52 " "
+      NodeApplyArgument@52..58
+        Identifier@52..57 "milli"
+        Newline@57..58 "\n"
+  NodeAttr@58..80
+    At@58..59 "@"
+    NodeApply@59..80
+      NodeApplyReceiver@59..68
+        Identifier@59..68 "canonical"
+      Space@68..69 " "
+      NodeApplyArgument@69..80
+        Identifier@69..79 "nanosecond"
+        Newline@79..80 "\n"
+  NodeApply@80..96
+    NodeApplyReceiver@80..87
+      Identifier@80..87 "measure"
+    Space@87..88 " "
+    NodeApplyArgument@88..96
+      Identifier@88..94 "second"
+      Newline@94..95 "\n"
+      Newline@95..96 "\n"
+  NodeAttr@96..105
+    At@96..97 "@"
+    NodeApply@97..105
+      NodeApplyReceiver@97..102
+        Identifier@97..102 "alias"
+      Space@102..103 " "
+      NodeApplyArgument@103..105
+        Identifier@103..104 "m"
+        Newline@104..105 "\n"
+  NodeApply@105..135
+    NodeApplyReceiver@105..112
+      Identifier@105..112 "measure"
+    Space@112..113 " "
+    NodeApplyArgument@113..135
+      NodeApply@113..135
+        NodeApplyArgument@113..120
+          Identifier@113..119 "minute"
+          Space@119..120 " "
+        NodeApplyReceiver@120..121
+          Equal@120..121 "="
+        Space@121..122 " "
+        NodeApplyArgument@122..135
+          NodeApply@122..135
+            NodeApplyArgument@122..129
+              Identifier@122..128 "second"
+              Space@128..129 " "
+            NodeApplyReceiver@129..130
+              Slash@129..130 "/"
+            Space@130..131 " "
+            NodeApplyArgument@131..135
+              NodeLiteral@131..133
+                NodeLiteralValue@131..133
+                  Integer@131..133 "60"
+              Newline@133..134 "\n"
+              Newline@134..135 "\n"
+  NodeAttr@135..144
+    At@135..136 "@"
+    NodeApply@136..144
+      NodeApplyReceiver@136..141
+        Identifier@136..141 "alias"
+      Space@141..142 " "
+      NodeApplyArgument@142..144
+        Identifier@142..143 "h"
+        Newline@143..144 "\n"
+  NodeApply@144..172
+    NodeApplyReceiver@144..151
+      Identifier@144..151 "measure"
+    Space@151..152 " "
+    NodeApplyArgument@152..172
+      NodeApply@152..172
+        NodeApplyArgument@152..157
+          Identifier@152..156 "hour"
+          Space@156..157 " "
+        NodeApplyReceiver@157..158
+          Equal@157..158 "="
+        Space@158..159 " "
+        NodeApplyArgument@159..172
+          NodeApply@159..172
+            NodeApplyArgument@159..166
+              Identifier@159..165 "minute"
+              Space@165..166 " "
+            NodeApplyReceiver@166..167
+              Slash@166..167 "/"
+            Space@167..168 " "
+            NodeApplyArgument@168..172
+              NodeLiteral@168..170
+                NodeLiteralValue@168..170
+                  Integer@168..170 "60"
+              Newline@170..171 "\n"
+              Newline@171..172 "\n"
+  NodeAttr@172..181
+    At@172..173 "@"
+    NodeApply@173..181
+      NodeApplyReceiver@173..178
+        Identifier@173..178 "alias"
+      Space@178..179 " "
+      NodeApplyArgument@179..181
+        Identifier@179..180 "d"
+        Newline@180..181 "\n"
+  NodeApply@181..206
+    NodeApplyReceiver@181..188
+      Identifier@181..188 "measure"
+    Space@188..189 " "
+    NodeApplyArgument@189..206
+      NodeApply@189..206
+        NodeApplyArgument@189..193
+          Identifier@189..192 "day"
+          Space@192..193 " "
+        NodeApplyReceiver@193..194
+          Equal@193..194 "="
+        Space@194..195 " "
+        NodeApplyArgument@195..206
+          NodeApply@195..206
+            NodeApplyArgument@195..200
+              Identifier@195..199 "hour"
+              Space@199..200 " "
+            NodeApplyReceiver@200..201
+              Slash@200..201 "/"
+            Space@201..202 " "
+            NodeApplyArgument@202..206
+              NodeLiteral@202..204
+                NodeLiteralValue@202..204
+                  Integer@202..204 "24"
+              Newline@204..205 "\n"
+              Newline@205..206 "\n"
+  NodeAttr@206..215
+    At@206..207 "@"
+    NodeApply@207..215
+      NodeApplyReceiver@207..212
+        Identifier@207..212 "alias"
+      Space@212..213 " "
+      NodeApplyArgument@213..215
+        Identifier@213..214 "w"
+        Newline@214..215 "\n"
+  NodeApply@215..239
+    NodeApplyReceiver@215..222
+      Identifier@215..222 "measure"
+    Space@222..223 " "
+    NodeApplyArgument@223..239
+      NodeApply@223..239
+        NodeApplyArgument@223..228
+          Identifier@223..227 "week"
+          Space@227..228 " "
+        NodeApplyReceiver@228..229
+          Equal@228..229 "="
+        Space@229..230 " "
+        NodeApplyArgument@230..239
+          NodeApply@230..239
+            NodeApplyArgument@230..234
+              Identifier@230..233 "day"
+              Space@233..234 " "
+            NodeApplyReceiver@234..235
+              Slash@234..235 "/"
+            Space@235..236 " "
+            NodeApplyArgument@236..239
+              NodeLiteral@236..237
+                NodeLiteralValue@236..237
+                  Integer@236..237 "7"
+              Newline@237..238 "\n"
+              Newline@238..239 "\n"
+  NodeAttr@239..248
+    At@239..240 "@"
+    NodeApply@240..248
+      NodeApplyReceiver@240..245
+        Identifier@240..245 "alias"
+      Space@245..246 " "
+      NodeApplyArgument@246..248
+        Identifier@246..247 "b"
+        Newline@247..248 "\n"
+  NodeAttr@248..252
+    At@248..249 "@"
+    NodeApply@249..252
+      NodeApplyReceiver@249..251
+        Identifier@249..251 "si"
+      Newline@251..252 "\n"
+  NodeApply@252..266
+    NodeApplyReceiver@252..259
+      Identifier@252..259 "measure"
+    Space@259..260 " "
+    NodeApplyArgument@260..266
+      Identifier@260..264 "byte"
+      Newline@264..265 "\n"
+      Newline@265..266 "\n"
+  NodeAttr@266..275
+    At@266..267 "@"
+    NodeApply@267..275
+      NodeApplyReceiver@267..272
+        Identifier@267..272 "alias"
+      Space@272..273 " "
+      NodeApplyArgument@273..275
+        Identifier@273..274 "m"
+        Newline@274..275 "\n"
+  NodeAttr@275..305
+    At@275..276 "@"
+    NodeApply@276..305
+      NodeApplyReceiver@276..278
+        Identifier@276..278 "si"
+      Space@278..279 " "
+      NodeApplyArgument@279..284
+        Identifier@279..284 "micro"
+      NodeApplyArgument@284..286
+        Comma@284..285 ","
+        Space@285..286 " "
+      NodeApplyArgument@286..291
+        Identifier@286..291 "milli"
+      NodeApplyArgument@291..293
+        Comma@291..292 ","
+        Space@292..293 " "
+      NodeApplyArgument@293..298
+        Identifier@293..298 "centi"
+      NodeApplyArgument@298..300
+        Comma@298..299 ","
+        Space@299..300 " "
+      NodeApplyArgument@300..305
+        Identifier@300..304 "kilo"
+        Newline@304..305 "\n"
+  NodeAttr@305..327
+    At@305..306 "@"
+    NodeApply@306..327
+      NodeApplyReceiver@306..315
+        Identifier@306..315 "canonical"
+      Space@315..316 " "
+      NodeApplyArgument@316..327
+        Identifier@316..326 "micrometer"
+        Newline@326..327 "\n"
+  NodeApply@327..342
+    NodeApplyReceiver@327..334
+      Identifier@327..334 "measure"
+    Space@334..335 " "
+    NodeApplyArgument@335..342
+      Identifier@335..340 "meter"
+      Newline@340..341 "\n"
+      Newline@341..342 "\n"
+  NodeAttr@342..352
+    At@342..343 "@"
+    NodeApply@343..352
+      NodeApplyReceiver@343..348
+        Identifier@343..348 "alias"
+      Space@348..349 " "
+      NodeApplyArgument@349..352
+        Identifier@349..351 "in"
+        Newline@351..352 "\n"
+  NodeApply@352..378
+    NodeApplyReceiver@352..359
+      Identifier@352..359 "measure"
+    Space@359..360 " "
+    NodeApplyArgument@360..378
+      NodeApply@360..378
+        NodeApplyArgument@360..365
+          Identifier@360..364 "inch"
+          Space@364..365 " "
+        NodeApplyReceiver@365..366
+          Equal@365..366 "="
+        Space@366..367 " "
+        NodeApplyArgument@367..378
+          NodeApply@367..378
+            NodeApplyArgument@367..370
+              Identifier@367..369 "mm"
+              Space@369..370 " "
+            NodeApplyReceiver@370..371
+              Slash@370..371 "/"
+            Space@371..372 " "
+            NodeApplyArgument@372..378
+              NodeLiteral@372..376
+                NodeLiteralValue@372..376
+                  Float@372..376 "25.4"
+              Newline@376..377 "\n"
+              Newline@377..378 "\n"
+  NodeAttr@378..388
+    At@378..379 "@"
+    NodeApply@379..388
+      NodeApplyReceiver@379..384
+        Identifier@379..384 "alias"
+      Space@384..385 " "
+      NodeApplyArgument@385..388
+        Identifier@385..387 "ft"
+        Newline@387..388 "\n"
+  NodeApply@388..414
+    NodeApplyReceiver@388..395
+      Identifier@388..395 "measure"
+    Space@395..396 " "
+    NodeApplyArgument@396..414
+      NodeApply@396..414
+        NodeApplyArgument@396..401
+          Identifier@396..400 "feet"
+          Space@400..401 " "
+        NodeApplyReceiver@401..402
+          Equal@401..402 "="
+        Space@402..403 " "
+        NodeApplyArgument@403..414
+          NodeApply@403..414
+            NodeApplyArgument@403..408
+              Identifier@403..407 "inch"
+              Space@407..408 " "
+            NodeApplyReceiver@408..409
+              Slash@408..409 "/"
+            Space@409..410 " "
+            NodeApplyArgument@410..414
+              NodeLiteral@410..412
+                NodeLiteralValue@410..412
+                  Integer@410..412 "12"
+              Newline@412..413 "\n"
+              Newline@413..414 "\n"
+  NodeAttr@414..461
+    At@414..415 "@"
+    NodeApply@415..461
+      NodeApplyReceiver@415..416
+        Identifier@415..416 "t"
+      Space@416..417 " "
+      NodeApplyArgument@417..421
+        Identifier@417..420 "u64"
+        Space@420..421 " "
+      NodeApplyArgument@421..424
+        Identifier@421..423 "mm"
+        Space@423..424 " "
+      NodeApplyArgument@424..427
+        Arrow@424..426 "->"
+        Space@426..427 " "
+      NodeApplyArgument@427..431
+        Identifier@427..430 "u64"
+        Space@430..431 " "
+      NodeApplyArgument@431..461
+        Identifier@431..433 "ft"
+        Space@433..434 " "
+        CommentStart@434..435 "#"
+        CommentContent@435..460 " explicit type annota ..."
+        Newline@460..461 "\n"
+  NodeApply@461..487
+    NodeApplyReceiver@461..464
+      Identifier@461..464 "let"
+    Space@464..465 " "
+    NodeApplyArgument@465..467
+      Identifier@465..467 "mm"
+    NodeApplyArgument@467..470
+      Identifier@467..470 "_to"
+    NodeApplyArgument@470..479
+      NodeApply@470..479
+        NodeApplyArgument@470..474
+          Identifier@470..473 "_ft"
+          Space@473..474 " "
+        NodeApplyReceiver@474..475
+          Equal@474..475 "="
+        Space@475..476 " "
+        NodeApplyArgument@476..479
+          Identifier@476..478 "fn"
+          Space@478..479 " "
+    NodeApplyArgument@479..481
+      Identifier@479..480 "v"
+      Space@480..481 " "
+    NodeApplyArgument@481..484
+      Arrow@481..483 "->"
+      Space@483..484 " "
+    NodeApplyArgument@484..487
+      Identifier@484..485 "v"
+      Newline@485..486 "\n"
+      Newline@486..487 "\n"
+  NodeApply@487..511
+    NodeApplyReceiver@487..490
+      Identifier@487..490 "let"
+    Space@490..491 " "
+    NodeApplyArgument@491..500
+      NodeApply@491..500
+        NodeApplyArgument@491..496
+          Identifier@491..495 "feet"
+          Space@495..496 " "
+        NodeApplyReceiver@496..497
+          Equal@496..497 "="
+        Space@497..498 " "
+        NodeApplyArgument@498..500
+          Identifier@498..500 "mm"
+    NodeApplyArgument@500..503
+      Identifier@500..503 "_to"
+    NodeApplyArgument@503..507
+      Identifier@503..506 "_ft"
+      Space@506..507 " "
+    NodeApplyArgument@507..511
+      NodeLiteral@507..509
+        NodeLiteralValue@507..509
+          Integer@507..509 "10"
+      Newline@509..510 "\n"
+      Newline@510..511 "\n"
+  NodeApply@511..582
+    NodeApplyReceiver@511..514
+      Identifier@511..514 "let"
+    Space@514..515 " "
+    NodeApplyArgument@515..520
+      Identifier@515..520 "multi"
+    NodeApplyArgument@520..525
+      Identifier@520..525 "_line"
+    NodeApplyArgument@525..541
+      NodeApply@525..541
+        NodeApplyArgument@525..531
+          Identifier@525..530 "_expr"
+          Space@530..531 " "
+        NodeApplyReceiver@531..532
+          Equal@531..532 "="
+        Newline@532..533 "\n"
+        Space@533..537 "    "
+        NodeApplyArgument@537..541
+          Identifier@537..540 "let"
+          Space@540..541 " "
+    NodeApplyArgument@541..554
+      NodeApply@541..554
+        NodeApplyArgument@541..545
+          Identifier@541..544 "foo"
+          Space@544..545 " "
+        NodeApplyReceiver@545..546
+          Equal@545..546 "="
+        Space@546..547 " "
+        NodeApplyArgument@547..554
+          NodeLiteral@547..549
+            NodeLiteralValue@547..549
+              Integer@547..549 "12"
+          Newline@549..550 "\n"
+          Space@550..554 "    "
+    NodeApplyArgument@554..558
+      Identifier@554..557 "let"
+      Space@557..558 " "
+    NodeApplyArgument@558..571
+      NodeApply@558..571
+        NodeApplyArgument@558..562
+          Identifier@558..561 "bar"
+          Space@561..562 " "
+        NodeApplyReceiver@562..563
+          Equal@562..563 "="
+        Space@563..564 " "
+        NodeApplyArgument@564..571
+          NodeLiteral@564..566
+            NodeLiteralValue@564..566
+              Integer@564..566 "24"
+          Newline@566..567 "\n"
+          Space@567..571 "    "
+    NodeApplyArgument@571..582
+      NodeApply@571..582
+        NodeApplyArgument@571..575
+          Identifier@571..574 "foo"
+          Space@574..575 " "
+        NodeApplyReceiver@575..576
+          Slash@575..576 "/"
+        Space@576..577 " "
+        NodeApplyArgument@577..582
+          Identifier@577..580 "bar"
+          Newline@580..581 "\n"
+          Newline@581..582 "\n"
+  NodeApply@582..688
+    NodeApplyReceiver@582..585
+      Identifier@582..585 "let"
+    Space@585..586 " "
+    NodeApplyArgument@586..588
+      Identifier@586..588 "if"
+    NodeApplyArgument@588..599
+      NodeApply@588..599
+        NodeApplyArgument@588..594
+          Identifier@588..593 "_else"
+          Space@593..594 " "
+        NodeApplyReceiver@594..595
+          Equal@594..595 "="
+        Space@595..596 " "
+        NodeApplyArgument@596..599
+          Identifier@596..598 "if"
+          Space@598..599 " "
+    NodeApplyArgument@599..604
+      Identifier@599..604 "multi"
+    NodeApplyArgument@604..609
+      Identifier@604..609 "_line"
+    NodeApplyArgument@609..620
+      NodeApply@609..620
+        NodeApplyArgument@609..615
+          Identifier@609..614 "_expr"
+          Space@614..615 " "
+        NodeApplyReceiver@615..617
+          EqualEqual@615..617 "=="
+        Space@617..618 " "
+        NodeApplyArgument@618..620
+          NodeLiteral@618..619
+            NodeLiteralValue@618..619
+              Integer@618..619 "0"
+          Space@619..620 " "
+    NodeApplyArgument@620..625
+      Identifier@620..624 "then"
+      Space@624..625 " "
+    NodeApplyArgument@625..631
+      NodeLiteral@625..630
+        StringStart@625..626 "\""
+        NodeLiteralValue@626..629
+          StringContent@626..629 "foo"
+        StringEnd@629..630 "\""
+      Space@630..631 " "
+    NodeApplyArgument@631..636
+      Identifier@631..635 "else"
+      Space@635..636 " "
+    NodeApplyArgument@636..688
+      NodeLiteral@636..641
+        StringStart@636..637 "\""
+        NodeLiteralValue@637..640
+          StringContent@637..640 "bar"
+        StringEnd@640..641 "\""
+      Newline@641..642 "\n"
+      Newline@642..643 "\n"
+      CommentStart@643..644 "#"
+      CommentContent@644..687 " Capture the syntax t ..."
+      Newline@687..688 "\n"
+  NodeApply@688..707
+    NodeApplyReceiver@688..691
+      Identifier@688..691 "let"
+    Space@691..692 " "
+    NodeApplyArgument@692..699
+      NodeApply@692..699
+        NodeApplyArgument@692..696
+          Identifier@692..695 "var"
+          Space@695..696 " "
+        NodeApplyReceiver@696..697
+          Equal@696..697 "="
+        Space@697..698 " "
+        NodeApplyArgument@698..699
+          SingleQuote@698..699 "'"
+    NodeApplyArgument@699..707
+      Identifier@699..702 "foo"
+      Newline@702..703 "\n"
+      Newline@703..704 "\n"
+      CommentStart@704..705 "#"
+      CommentContent@705..706 " "
+      Newline@706..707 "\n"
+  NodeApply@707..739
+    NodeApplyReceiver@707..710
+      Identifier@707..710 "let"
+    Space@710..711 " "
+    NodeApplyArgument@711..723
+      NodeApply@711..723
+        NodeApplyArgument@711..715
+          Identifier@711..714 "ast"
+          Space@714..715 " "
+        NodeApplyReceiver@715..716
+          Equal@715..716 "="
+        Space@716..717 " "
+        NodeApplyArgument@717..723
+          SingleQuote@717..718 "'"
+          Newline@718..719 "\n"
+          Space@719..723 "    "
+    NodeApplyArgument@723..727
+      Identifier@723..726 "let"
+      Space@726..727 " "
+    NodeApplyArgument@727..734
+      NodeApply@727..734
+        NodeApplyArgument@727..731
+          Identifier@727..730 "out"
+          Space@730..731 " "
+        NodeApplyReceiver@731..732
+          Equal@731..732 "="
+        Space@732..733 " "
+        NodeApplyArgument@733..734
+          Tilde@733..734 "~"
+    NodeApplyArgument@734..739
+      Identifier@734..737 "var"
+      Newline@737..738 "\n"
+      Newline@738..739 "\n"
+  Tilde@739..740 "~"
+  NodeApply@740..744
+    NodeApplyReceiver@740..743
+      Identifier@740..743 "ast"
+    Newline@743..744 "\n"

@@ -1,0 +1,15 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "a + b\n"
+---
+NodeRoot@0..6
+  NodeApply@0..6
+    NodeApplyArgument@0..2
+      Identifier@0..1 "a"
+      Space@1..2 " "
+    NodeApplyReceiver@2..3
+      Plus@2..3 "+"
+    Space@3..4 " "
+    NodeApplyArgument@4..6
+      Identifier@4..5 "b"
+      Newline@5..6 "\n"

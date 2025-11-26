@@ -1,0 +1,21 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "parse(\"fn x y z\")"
+---
+NodeRoot@0..8
+  NodeApply@0..8
+    NodeApplyReceiver@0..7
+      NodeApply@0..7
+        NodeApplyReceiver@0..5
+          NodeApply@0..5
+            NodeApplyReceiver@0..3
+              Identifier@0..2 "fn"
+              Space@2..3 " "
+            NodeApplyArgument@3..5
+              Identifier@3..4 "x"
+              Space@4..5 " "
+        NodeApplyArgument@5..7
+          Identifier@5..6 "y"
+          Space@6..7 " "
+    NodeApplyArgument@7..8
+      Identifier@7..8 "z"

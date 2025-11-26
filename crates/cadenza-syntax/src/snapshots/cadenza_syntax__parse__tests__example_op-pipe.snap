@@ -1,0 +1,64 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "foo 1 + 2\n|> bar 3\n|> baz 4 * 5\n"
+---
+NodeRoot@0..32
+  NodeApply@0..32
+    NodeApplyArgument@0..19
+      NodeApply@0..19
+        NodeApplyArgument@0..10
+          NodeApply@0..10
+            NodeApplyReceiver@0..4
+              Identifier@0..3 "foo"
+              Space@3..4 " "
+            NodeApplyArgument@4..10
+              NodeApply@4..10
+                NodeApplyArgument@4..6
+                  NodeLiteral@4..5
+                    NodeLiteralValue@4..5
+                      Integer@4..5 "1"
+                  Space@5..6 " "
+                NodeApplyReceiver@6..7
+                  Plus@6..7 "+"
+                Space@7..8 " "
+                NodeApplyArgument@8..10
+                  NodeLiteral@8..9
+                    NodeLiteralValue@8..9
+                      Integer@8..9 "2"
+                  Newline@9..10 "\n"
+        NodeApplyReceiver@10..12
+          PipeGreater@10..12 "|>"
+        Space@12..13 " "
+        NodeApplyArgument@13..19
+          NodeApply@13..19
+            NodeApplyReceiver@13..17
+              Identifier@13..16 "bar"
+              Space@16..17 " "
+            NodeApplyArgument@17..19
+              NodeLiteral@17..18
+                NodeLiteralValue@17..18
+                  Integer@17..18 "3"
+              Newline@18..19 "\n"
+    NodeApplyReceiver@19..21
+      PipeGreater@19..21 "|>"
+    Space@21..22 " "
+    NodeApplyArgument@22..32
+      NodeApply@22..32
+        NodeApplyReceiver@22..26
+          Identifier@22..25 "baz"
+          Space@25..26 " "
+        NodeApplyArgument@26..32
+          NodeApply@26..32
+            NodeApplyArgument@26..28
+              NodeLiteral@26..27
+                NodeLiteralValue@26..27
+                  Integer@26..27 "4"
+              Space@27..28 " "
+            NodeApplyReceiver@28..29
+              Star@28..29 "*"
+            Space@29..30 " "
+            NodeApplyArgument@30..32
+              NodeLiteral@30..31
+                NodeLiteralValue@30..31
+                  Integer@30..31 "5"
+              Newline@31..32 "\n"

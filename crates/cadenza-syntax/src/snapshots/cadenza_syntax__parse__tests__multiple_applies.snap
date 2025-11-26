@@ -1,0 +1,38 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "parse(\"let x = 5\\nlet y = 10\")"
+---
+NodeRoot@0..20
+  NodeApply@0..10
+    NodeApplyArgument@0..6
+      NodeApply@0..6
+        NodeApplyReceiver@0..4
+          Identifier@0..3 "let"
+          Space@3..4 " "
+        NodeApplyArgument@4..6
+          Identifier@4..5 "x"
+          Space@5..6 " "
+    NodeApplyReceiver@6..7
+      Equal@6..7 "="
+    Space@7..8 " "
+    NodeApplyArgument@8..10
+      NodeLiteral@8..9
+        NodeLiteralValue@8..9
+          Integer@8..9 "5"
+      Newline@9..10 "\n"
+  NodeApply@10..20
+    NodeApplyArgument@10..16
+      NodeApply@10..16
+        NodeApplyReceiver@10..14
+          Identifier@10..13 "let"
+          Space@13..14 " "
+        NodeApplyArgument@14..16
+          Identifier@14..15 "y"
+          Space@15..16 " "
+    NodeApplyReceiver@16..17
+      Equal@16..17 "="
+    Space@17..18 " "
+    NodeApplyArgument@18..20
+      NodeLiteral@18..20
+        NodeLiteralValue@18..20
+          Integer@18..20 "10"

@@ -1,0 +1,55 @@
+# Comment
+
+## Doc comment
+@alias s
+@si nano, micro, milli
+@canonical nanosecond
+measure second
+
+@alias m
+measure minute = second / 60
+
+@alias h
+measure hour = minute / 60
+
+@alias d
+measure day = hour / 24
+
+@alias w
+measure week = day / 7
+
+@alias b
+@si
+measure byte
+
+@alias m
+@si micro, milli, centi, kilo
+@canonical micrometer
+measure meter
+
+@alias in
+measure inch = mm / 25.4
+
+@alias ft
+measure feet = inch / 12
+
+@t u64 mm -> u64 ft # explicit type annotation
+let mm_to_ft = fn v -> v
+
+let feet = mm_to_ft 10
+
+let multi_line_expr =
+    let foo = 12
+    let bar = 24
+    foo / bar
+
+let if_else = if multi_line_expr == 0 then "foo" else "bar"
+
+# Capture the syntax tree as a runtime value
+let var = 'foo
+
+# 
+let ast = '
+    let out = ~var
+
+~ast

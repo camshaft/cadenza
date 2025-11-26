@@ -1,0 +1,41 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: foo 1 (bar 2) 3 4
+---
+NodeRoot@0..17
+  NodeApply@0..17
+    NodeApplyReceiver@0..16
+      NodeApply@0..16
+        NodeApplyReceiver@0..14
+          NodeApply@0..14
+            NodeApplyReceiver@0..6
+              NodeApply@0..6
+                NodeApplyReceiver@0..4
+                  Identifier@0..3 "foo"
+                  Space@3..4 " "
+                NodeApplyArgument@4..6
+                  NodeLiteral@4..5
+                    NodeLiteralValue@4..5
+                      Integer@4..5 "1"
+                  Space@5..6 " "
+            NodeApplyArgument@6..14
+              NodeApply@6..12
+                NodeApplyReceiver@6..11
+                  LParen@6..7 "("
+                  Identifier@7..10 "bar"
+                  Space@10..11 " "
+                NodeApplyArgument@11..12
+                  NodeLiteral@11..12
+                    NodeLiteralValue@11..12
+                      Integer@11..12 "2"
+              RParen@12..13 ")"
+              Space@13..14 " "
+        NodeApplyArgument@14..16
+          NodeLiteral@14..15
+            NodeLiteralValue@14..15
+              Integer@14..15 "3"
+          Space@15..16 " "
+    NodeApplyArgument@16..17
+      NodeLiteral@16..17
+        NodeLiteralValue@16..17
+          Integer@16..17 "4"

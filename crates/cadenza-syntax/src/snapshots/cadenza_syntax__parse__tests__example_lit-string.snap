@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "\"hello\""
+---
+NodeRoot@0..7
+  NodeLiteral@0..7
+    StringStart@0..1 "\""
+    NodeLiteralValue@1..6
+      StringContent@1..6 "hello"
+    StringEnd@6..7 "\""

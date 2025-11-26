@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-syntax/src/lexer.rs
+expression: "1234"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 4,
+        },
+        kind: Integer,
+    },
+]

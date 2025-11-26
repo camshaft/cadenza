@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-syntax/src/parse.rs
+expression: "parse(\"\")"
+---
+NodeRoot@0..0

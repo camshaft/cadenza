@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+
+members = ["crates/cadenza-*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/camshaft/cadenza"
+
+[workspace.dependencies]
+anyhow = "1"
+axum = "0.7"
+bach = "0.1.0"
+bindgen = "0.71"
+bolero = "0.13"
+bolero-generator = "0.13"
+bytes = "1.0"
+cc = "1.0"
+criterion = "0.5"
+futures = "0.3"
+heck = "0.4"
+insta = "1.0"
+libc = "0.2"
+linkme = "0.3"
+parking_lot = "0.12"
+proc-macro2 = "1.0"
+quote = "1.0"
+rand = "0.8"
+rowan = "0.16"
+serde = { version = "1.0", features = ["derive"] }
+syn = { version = "2.0", features = ["full"] }
+thiserror = "1.0"
+tokio = { version = "1.0" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
