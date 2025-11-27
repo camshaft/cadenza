@@ -1,6 +1,7 @@
+pub mod ast;
+mod generated;
 mod iter;
 pub mod lexer;
-pub mod node;
 pub mod parse;
 pub mod span;
 pub mod token;
@@ -23,3 +24,9 @@ impl rowan::Language for Lang {
         kind.into()
     }
 }
+
+type SyntaxNode = rowan::SyntaxNode<Lang>;
+type SyntaxToken = rowan::SyntaxToken<Lang>;
+type SyntaxElement = rowan::NodeOrToken<SyntaxNode, Lang>;
+type SyntaxElementChildren = rowan::SyntaxElementChildren<Lang>;
+type SyntaxNodeChildren = rowan::SyntaxNodeChildren<Lang>;

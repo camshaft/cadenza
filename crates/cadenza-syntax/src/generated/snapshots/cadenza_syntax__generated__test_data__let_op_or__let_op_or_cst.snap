@@ -1,0 +1,33 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: let x = a || b
+---
+Root@0..14
+  Apply@0..14
+    ApplyArgument@0..6
+      Apply@0..6
+        ApplyReceiver@0..4
+          Identifier@0..3
+            Identifier@0..3 "let"
+          Space@3..4 " "
+        ApplyArgument@4..6
+          Identifier@4..5
+            Identifier@4..5 "x"
+          Space@5..6 " "
+    ApplyReceiver@6..7
+      Equal@6..7
+        Equal@6..7 "="
+    Space@7..8 " "
+    ApplyArgument@8..14
+      Apply@8..14
+        ApplyArgument@8..10
+          Identifier@8..9
+            Identifier@8..9 "a"
+          Space@9..10 " "
+        ApplyReceiver@10..12
+          PipePipe@10..12
+            PipePipe@10..12 "||"
+        Space@12..13 " "
+        ApplyArgument@13..14
+          Identifier@13..14
+            Identifier@13..14 "b"

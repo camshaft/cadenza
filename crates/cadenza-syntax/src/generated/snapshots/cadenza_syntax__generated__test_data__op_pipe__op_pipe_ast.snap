@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "foo 1 + 2\n|> bar 3\n|> baz 4 * 5\n"
+---
+[
+    [|>, [|>, [foo, [+, 1, 2]], [bar, 3]], [baz, [*, 4, 5]]],
+]

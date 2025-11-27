@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "\"\nhello\nworld!\n\""
+---
+Root@0..16
+  Literal@0..16
+    StringStart@0..1 "\""
+    StringContent@1..15
+      StringContent@1..15 "\nhello\nworld!\n"
+    StringEnd@15..16 "\""

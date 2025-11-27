@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: let x = a || b
+---
+[
+    [=, [let, x], [||, a, b]],
+]

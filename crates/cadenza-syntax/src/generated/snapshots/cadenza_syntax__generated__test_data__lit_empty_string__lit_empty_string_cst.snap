@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "\"\""
+---
+Root@0..2
+  Literal@0..2
+    StringStart@0..1 "\""
+    StringContent@1..1
+      StringContent@1..1 ""
+    StringEnd@1..2 "\""

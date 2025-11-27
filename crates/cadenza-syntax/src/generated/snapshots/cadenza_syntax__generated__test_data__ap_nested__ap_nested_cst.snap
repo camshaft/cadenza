@@ -1,0 +1,43 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: foo 1 (bar 2) 3 4
+---
+Root@0..17
+  Apply@0..17
+    ApplyReceiver@0..16
+      Apply@0..16
+        ApplyReceiver@0..14
+          Apply@0..14
+            ApplyReceiver@0..6
+              Apply@0..6
+                ApplyReceiver@0..4
+                  Identifier@0..3
+                    Identifier@0..3 "foo"
+                  Space@3..4 " "
+                ApplyArgument@4..6
+                  Literal@4..5
+                    Integer@4..5
+                      Integer@4..5 "1"
+                  Space@5..6 " "
+            ApplyArgument@6..14
+              LParen@6..7 "("
+              Apply@7..12
+                ApplyReceiver@7..11
+                  Identifier@7..10
+                    Identifier@7..10 "bar"
+                  Space@10..11 " "
+                ApplyArgument@11..12
+                  Literal@11..12
+                    Integer@11..12
+                      Integer@11..12 "2"
+              RParen@12..13 ")"
+              Space@13..14 " "
+        ApplyArgument@14..16
+          Literal@14..15
+            Integer@14..15
+              Integer@14..15 "3"
+          Space@15..16 " "
+    ApplyArgument@16..17
+      Literal@16..17
+        Integer@16..17
+          Integer@16..17 "4"

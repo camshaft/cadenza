@@ -1,0 +1,71 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "foo 1 + 2\n|> bar 3\n|> baz 4 * 5\n"
+---
+Root@0..32
+  Apply@0..32
+    ApplyArgument@0..19
+      Apply@0..19
+        ApplyArgument@0..10
+          Apply@0..10
+            ApplyReceiver@0..4
+              Identifier@0..3
+                Identifier@0..3 "foo"
+              Space@3..4 " "
+            ApplyArgument@4..10
+              Apply@4..10
+                ApplyArgument@4..6
+                  Literal@4..5
+                    Integer@4..5
+                      Integer@4..5 "1"
+                  Space@5..6 " "
+                ApplyReceiver@6..7
+                  Plus@6..7
+                    Plus@6..7 "+"
+                Space@7..8 " "
+                ApplyArgument@8..10
+                  Literal@8..9
+                    Integer@8..9
+                      Integer@8..9 "2"
+                  Newline@9..10 "\n"
+        ApplyReceiver@10..12
+          PipeGreater@10..12
+            PipeGreater@10..12 "|>"
+        Space@12..13 " "
+        ApplyArgument@13..19
+          Apply@13..19
+            ApplyReceiver@13..17
+              Identifier@13..16
+                Identifier@13..16 "bar"
+              Space@16..17 " "
+            ApplyArgument@17..19
+              Literal@17..18
+                Integer@17..18
+                  Integer@17..18 "3"
+              Newline@18..19 "\n"
+    ApplyReceiver@19..21
+      PipeGreater@19..21
+        PipeGreater@19..21 "|>"
+    Space@21..22 " "
+    ApplyArgument@22..32
+      Apply@22..32
+        ApplyReceiver@22..26
+          Identifier@22..25
+            Identifier@22..25 "baz"
+          Space@25..26 " "
+        ApplyArgument@26..32
+          Apply@26..32
+            ApplyArgument@26..28
+              Literal@26..27
+                Integer@26..27
+                  Integer@26..27 "4"
+              Space@27..28 " "
+            ApplyReceiver@28..29
+              Star@28..29
+                Star@28..29 "*"
+            Space@29..30 " "
+            ApplyArgument@30..32
+              Literal@30..31
+                Integer@30..31
+                  Integer@30..31 "5"
+              Newline@31..32 "\n"

@@ -1,0 +1,17 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: a - b
+---
+Root@0..5
+  Apply@0..5
+    ApplyArgument@0..2
+      Identifier@0..1
+        Identifier@0..1 "a"
+      Space@1..2 " "
+    ApplyReceiver@2..3
+      Minus@2..3
+        Minus@2..3 "-"
+    Space@3..4 " "
+    ApplyArgument@4..5
+      Identifier@4..5
+        Identifier@4..5 "b"

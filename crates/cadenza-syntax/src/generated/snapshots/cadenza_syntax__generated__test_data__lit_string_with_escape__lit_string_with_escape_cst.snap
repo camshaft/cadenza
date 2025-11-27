@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "\"hello\\nworld\\\"\""
+---
+Root@0..16
+  Literal@0..16
+    StringStart@0..1 "\""
+    StringContentWithEscape@1..15
+      StringContentWithEscape@1..15 "hello\\nworld\\\""
+    StringEnd@15..16 "\""

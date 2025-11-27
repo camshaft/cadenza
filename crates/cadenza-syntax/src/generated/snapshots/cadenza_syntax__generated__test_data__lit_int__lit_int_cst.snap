@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "1234"
+---
+Root@0..4
+  Literal@0..4
+    Integer@0..4
+      Integer@0..4 "1234"

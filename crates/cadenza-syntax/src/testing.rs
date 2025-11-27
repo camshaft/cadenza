@@ -1,29 +1,17 @@
-use std::sync::OnceLock;
+use crate::token::Token;
 
-pub fn examples() -> &'static [Example] {
-    pub static EXAMPLES: OnceLock<Box<[Example]>> = OnceLock::new();
-    EXAMPLES.get_or_init(Example::load)
+pub fn lex(s: &str) -> Vec<Token> {
+    crate::lexer::Lexer::new(s).collect()
 }
 
-pub struct Example {
-    pub name: String,
-    pub src: String,
+pub fn cst(s: &str) -> crate::SyntaxNode {
+    let v = crate::parse::parse(s);
+    assert!(v.errors.is_empty(), "{:?}", v.errors);
+    v.syntax()
 }
 
-impl Example {
-    fn load() -> Box<[Example]> {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/");
-        let mut examples = Vec::new();
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.extension().unwrap() != "cdz" {
-                continue;
-            }
-            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
-            let src = std::fs::read_to_string(path).unwrap();
-            examples.push(Example { name, src });
-        }
-        examples.into()
-    }
+pub fn ast(s: &str) -> crate::ast::Root {
+    let v = crate::parse::parse(s);
+    assert!(v.errors.is_empty(), "{:?}", v.errors);
+    v.ast()
 }

@@ -1,5 +1,5 @@
 use crate::{
-    Lang,
+    SyntaxNode,
     iter::Peek2,
     lexer::Lexer,
     span::Span,
@@ -19,8 +19,12 @@ pub struct Parse {
 }
 
 impl Parse {
-    pub fn syntax(&self) -> rowan::SyntaxNode<Lang> {
+    pub fn syntax(&self) -> SyntaxNode {
         rowan::SyntaxNode::new_root(self.green.clone())
+    }
+
+    pub fn ast(&self) -> crate::ast::Root {
+        crate::ast::Root::cast(self.syntax()).unwrap()
     }
 }
 
@@ -48,7 +52,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse(mut self) -> Parse {
-        self.builder.start_node(Kind::NodeRoot.into());
+        self.builder.start_node(Kind::Root.into());
 
         while self.current() != Kind::Eof {
             self.parse_item();
@@ -91,14 +95,18 @@ impl<'src> Parser<'src> {
 
     /// Parse expression with binding power (Pratt parsing)
     fn parse_expression_bp(&mut self, min_bp: u8, marker: impl Marker) {
-        // Take checkpoint BEFORE parsing primary
-        let checkpoint = self.builder.checkpoint();
-
         marker.start(self);
 
         // Parse the left-hand side (prefix)
         self.skip_trivia();
+
+        // Take checkpoint before parsing primary (for the Apply node)
+        let apply_checkpoint = self.builder.checkpoint();
+
+        // Take checkpoint for content only (excludes leading trivia)
+        let content_checkpoint = self.builder.checkpoint();
         self.parse_primary();
+        // Checkpoint now captures just the primary, before trailing trivia
 
         // Loop to handle sequences of operators and function application
         loop {
@@ -123,22 +131,22 @@ impl<'src> Parser<'src> {
 
                 // Create a binary Apply node: operator(left, right)
                 self.builder
-                    .start_node_at(checkpoint, Kind::NodeApply.into());
+                    .start_node_at(apply_checkpoint, Kind::Apply.into());
 
-                // The left side becomes the first argument
+                // The left side becomes the first argument (without trailing trivia)
                 self.builder
-                    .start_node_at(checkpoint, Kind::NodeApplyArgument.into());
+                    .start_node_at(content_checkpoint, Kind::ApplyArgument.into());
                 self.builder.finish_node();
 
                 // The operator is the receiver
-                self.builder.start_node(Kind::NodeApplyReceiver.into());
+                self.builder.start_node(Kind::ApplyReceiver.into());
                 self.bump(); // the operator
                 self.builder.finish_node();
 
                 // Parse the right side with appropriate binding power
                 let child_marker = self.whitespace.marker();
                 self.skip_trivia();
-                self.builder.start_node(Kind::NodeApplyArgument.into());
+                self.builder.start_node(Kind::ApplyArgument.into());
                 self.parse_expression_bp(r_bp, child_marker);
                 self.builder.finish_node();
 
@@ -155,16 +163,16 @@ impl<'src> Parser<'src> {
 
                 // Create a binary Apply node: receiver(argument)
                 self.builder
-                    .start_node_at(checkpoint, Kind::NodeApply.into());
+                    .start_node_at(apply_checkpoint, Kind::Apply.into());
 
-                // The left side becomes the receiver
+                // The left side becomes the receiver (without trailing trivia)
                 self.builder
-                    .start_node_at(checkpoint, Kind::NodeApplyReceiver.into());
+                    .start_node_at(content_checkpoint, Kind::ApplyReceiver.into());
                 self.builder.finish_node();
 
                 // Parse the right side
                 let child_marker = self.whitespace.marker();
-                self.builder.start_node(Kind::NodeApplyArgument.into());
+                self.builder.start_node(Kind::ApplyArgument.into());
                 self.parse_expression_bp(r_bp, child_marker);
                 self.builder.finish_node();
 
@@ -196,7 +204,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_attr(&mut self) {
-        self.builder.start_node(Kind::NodeAttr.into());
+        self.builder.start_node(Kind::Attr.into());
         debug_assert!(self.current() == Kind::At);
         self.bump(); // @
 
@@ -207,22 +215,18 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_literal(&mut self) {
-        self.builder.start_node(Kind::NodeLiteral.into());
-        self.builder.start_node(Kind::NodeLiteralValue.into());
+        self.builder.start_node(Kind::Literal.into());
         self.bump(); // Integer or Float
-        self.builder.finish_node();
         self.builder.finish_node();
     }
 
     fn parse_string(&mut self) {
-        self.builder.start_node(Kind::NodeLiteral.into());
+        self.builder.start_node(Kind::Literal.into());
         self.bump(); // StringStart
         debug_assert!(
             [Kind::StringContent, Kind::StringContentWithEscape].contains(&self.current())
         );
-        self.builder.start_node(Kind::NodeLiteralValue.into());
         self.bump();
-        self.builder.finish_node();
 
         if self.current() == Kind::StringEnd {
             self.bump();
@@ -247,12 +251,22 @@ impl<'src> Parser<'src> {
 
         self.whitespace.on_token(&token);
 
+        let is_implicit_node = token.kind.is_node();
+
+        if is_implicit_node {
+            self.builder.start_node(token.kind.into());
+        }
+
         self.builder.token(token.kind.into(), self.text(token.span));
+
+        if is_implicit_node {
+            self.builder.finish_node();
+        }
     }
 
     /// Skip all of the whitespace
     fn skip_ws(&mut self) {
-        while self.current().is_ws() {
+        while self.current().is_whitespace() {
             self.bump();
         }
     }
@@ -456,108 +470,5 @@ impl Marker for WhitespaceMarker {
         }
 
         parser.whitespace.should_continue(self)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use insta::assert_debug_snapshot;
-    use rowan::SyntaxNode;
-
-    fn parse(src: &str) -> SyntaxNode<crate::Lang> {
-        let tree = super::parse(src);
-        assert!(tree.errors.is_empty());
-        tree.syntax()
-    }
-
-    #[test]
-    fn empty() {
-        assert_debug_snapshot!(parse(""));
-    }
-
-    #[test]
-    fn simple() {
-        assert_debug_snapshot!(parse("let x = 5"));
-    }
-
-    #[test]
-    fn examples() {
-        for example in crate::testing::examples() {
-            let src = &example.src;
-            let name = &example.name;
-            eprintln!("Parsing example {name}");
-            assert_debug_snapshot!(format!("example_{name}"), parse(src), src);
-        }
-    }
-
-    #[test]
-    fn literal_integer() {
-        assert_debug_snapshot!(parse("42"));
-    }
-
-    #[test]
-    fn literal_float() {
-        assert_debug_snapshot!(parse("3.14"));
-    }
-
-    #[test]
-    fn literal_string() {
-        assert_debug_snapshot!(parse(r#""hello world""#));
-    }
-
-    #[test]
-    fn multiple_literals() {
-        assert_debug_snapshot!(parse("42 3.14"));
-    }
-
-    #[test]
-    fn attr_simple() {
-        assert_debug_snapshot!(parse("@alias"));
-    }
-
-    #[test]
-    fn attr_with_identifier() {
-        assert_debug_snapshot!(parse("@alias s"));
-    }
-
-    #[test]
-    fn attr_with_literal() {
-        assert_debug_snapshot!(parse("version 1"));
-    }
-
-    #[test]
-    fn multiple_attrs() {
-        assert_debug_snapshot!(parse("@alias s\n@si"));
-    }
-
-    #[test]
-    fn block() {
-        assert_debug_snapshot!(parse(
-            "let x = # comment here\n  let foo = 2\n  let bar = 3\n  foo + bar"
-        ));
-    }
-
-    #[test]
-    fn precedence_mult_over_add() {
-        // a + b * c should parse as a + (b * c)
-        assert_debug_snapshot!(parse("let x = a + b * c"));
-    }
-
-    #[test]
-    fn precedence_assign_lowest() {
-        // a = b + c should parse as a = (b + c)
-        assert_debug_snapshot!(parse("let x = a = b + c"));
-    }
-
-    #[test]
-    fn precedence_comparison() {
-        // a + b == c * d should parse as (a + b) == (c * d)
-        assert_debug_snapshot!(parse("let x = a + b == c * d"));
-    }
-
-    #[test]
-    fn precedence_logical_and_or() {
-        // a || b && c should parse as a || (b && c)
-        assert_debug_snapshot!(parse("let x = a || b && c"));
     }
 }

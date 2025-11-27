@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
+---
+[
+    [=, [let, foo], [[=, [let, bar], 123], bar]],
+]

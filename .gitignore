@@ -3,12 +3,6 @@ target/
 **/*.rs.bk
 Cargo.lock
 
-# Generated code
-**/src/generated.rs
-**/src/generated/
-docs/**/*.mmd
-docs/**/*.png
-
 # Editor files
 .vscode/
 .idea/

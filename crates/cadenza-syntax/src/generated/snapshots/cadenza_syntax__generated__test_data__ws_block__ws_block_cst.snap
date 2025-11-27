@@ -1,0 +1,55 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
+---
+Root@0..72
+  Apply@0..72
+    ApplyArgument@0..8
+      Apply@0..8
+        ApplyReceiver@0..4
+          Identifier@0..3
+            Identifier@0..3 "let"
+          Space@3..4 " "
+        ApplyArgument@4..8
+          Identifier@4..7
+            Identifier@4..7 "foo"
+          Space@7..8 " "
+    ApplyReceiver@8..9
+      Equal@8..9
+        Equal@8..9 "="
+    Space@9..10 " "
+    CommentStart@10..11 "#"
+    CommentContent@11..24 " comment here"
+    Newline@24..25 "\n"
+    Space@25..29 "    "
+    ApplyArgument@29..72
+      Apply@29..72
+        ApplyReceiver@29..68
+          Apply@29..68
+            ApplyArgument@29..37
+              Apply@29..37
+                ApplyReceiver@29..33
+                  Identifier@29..32
+                    Identifier@29..32 "let"
+                  Space@32..33 " "
+                ApplyArgument@33..37
+                  Identifier@33..36
+                    Identifier@33..36 "bar"
+                  Space@36..37 " "
+            ApplyReceiver@37..38
+              Equal@37..38
+                Equal@37..38 "="
+            Space@38..39 " "
+            ApplyArgument@39..68
+              Literal@39..42
+                Integer@39..42
+                  Integer@39..42 "123"
+              Space@42..43 " "
+              CommentStart@43..44 "#"
+              CommentContent@44..63 " other comment here"
+              Newline@63..64 "\n"
+              Space@64..68 "    "
+        ApplyArgument@68..72
+          Identifier@68..71
+            Identifier@68..71 "bar"
+          Newline@71..72 "\n"

@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: foo bar
+---
+Root@0..7
+  Apply@0..7
+    ApplyReceiver@0..4
+      Identifier@0..3
+        Identifier@0..3 "foo"
+      Space@3..4 " "
+    ApplyArgument@4..7
+      Identifier@4..7
+        Identifier@4..7 "bar"

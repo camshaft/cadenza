@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "3.14"
+---
+Root@0..4
+  Literal@0..4
+    Float@0..4
+      Float@0..4 "3.14"

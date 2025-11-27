@@ -267,12 +267,8 @@ impl<'a> Iterator for Lexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::lex;
     use bolero::check;
-    use insta::assert_debug_snapshot;
-
-    fn lex(s: &str) -> Vec<Token> {
-        Lexer::new(s).collect()
-    }
 
     #[test]
     fn all_tokens_test() {
@@ -290,21 +286,6 @@ mod tests {
             let token = tokens.pop().unwrap();
             assert_eq!(token.kind, *kind);
         }
-    }
-
-    #[test]
-    fn string_test() {
-        assert_debug_snapshot!(lex(r#""hello""#));
-    }
-
-    #[test]
-    fn comment_test() {
-        assert_debug_snapshot!(lex("# hello\n# other"));
-    }
-
-    #[test]
-    fn doc_comment_test() {
-        assert_debug_snapshot!(lex("## hello\n## other"));
     }
 
     /// Shows that any punctuation finishes the identifier
@@ -337,28 +318,5 @@ mod tests {
             let mut tokens = Lexer::new(s);
             while tokens.next().is_some() {}
         });
-    }
-
-    #[test]
-    fn examples() {
-        for example in crate::testing::examples() {
-            let tokens = lex(&example.src);
-            assert_debug_snapshot!(format!("example_{}", example.name), tokens, &example.src);
-        }
-    }
-
-    #[test]
-    fn multiple_floats() {
-        assert_debug_snapshot!(lex("1.2 2.4 5.6"));
-    }
-
-    #[test]
-    fn empty_string() {
-        assert_debug_snapshot!(lex(r#""""#));
-    }
-
-    #[test]
-    fn string_with_escape() {
-        assert_debug_snapshot!(lex(r#""hello\"""#));
     }
 }
