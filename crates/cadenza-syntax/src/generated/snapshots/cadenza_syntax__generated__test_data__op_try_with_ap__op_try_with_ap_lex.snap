@@ -1,0 +1,41 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "foo 1?\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 3,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 3,
+            end: 4,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 4,
+            end: 5,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 5,
+            end: 6,
+        },
+        kind: Question,
+    },
+    Token {
+        span: Span {
+            start: 6,
+            end: 7,
+        },
+        kind: Newline,
+    },
+]

@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let x = (foo 1 + 2)?\n"
+---
+[
+    [=, [let, x], [?, [foo, [+, 1, 2]]]],
+]

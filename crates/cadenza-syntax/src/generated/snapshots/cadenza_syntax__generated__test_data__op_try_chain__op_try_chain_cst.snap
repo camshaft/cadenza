@@ -1,0 +1,41 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "foo x? y? z?\n"
+---
+Root@0..13
+  Apply@0..13
+    ApplyReceiver@0..10
+      Apply@0..10
+        ApplyReceiver@0..7
+          Apply@0..7
+            ApplyReceiver@0..4
+              Identifier@0..3
+                Identifier@0..3 "foo"
+              Space@3..4 " "
+            ApplyArgument@4..7
+              Apply@4..6
+                ApplyArgument@4..5
+                  Identifier@4..5
+                    Identifier@4..5 "x"
+                ApplyReceiver@5..6
+                  Question@5..6
+                    Question@5..6 "?"
+              Space@6..7 " "
+        ApplyArgument@7..10
+          Apply@7..9
+            ApplyArgument@7..8
+              Identifier@7..8
+                Identifier@7..8 "y"
+            ApplyReceiver@8..9
+              Question@8..9
+                Question@8..9 "?"
+          Space@9..10 " "
+    ApplyArgument@10..13
+      Apply@10..12
+        ApplyArgument@10..11
+          Identifier@10..11
+            Identifier@10..11 "z"
+        ApplyReceiver@11..12
+          Question@11..12
+            Question@11..12 "?"
+      Newline@12..13 "\n"

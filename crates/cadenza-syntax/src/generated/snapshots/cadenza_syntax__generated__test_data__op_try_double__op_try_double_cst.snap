@@ -1,0 +1,18 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "x??\n"
+---
+Root@0..4
+  Apply@0..3
+    ApplyArgument@0..2
+      Apply@0..2
+        ApplyArgument@0..1
+          Identifier@0..1
+            Identifier@0..1 "x"
+        ApplyReceiver@1..2
+          Question@1..2
+            Question@1..2 "?"
+    ApplyReceiver@2..3
+      Question@2..3
+        Question@2..3 "?"
+  Newline@3..4 "\n"

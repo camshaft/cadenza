@@ -1,0 +1,125 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let x = (foo 1 + 2)?\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 3,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 3,
+            end: 4,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 4,
+            end: 5,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 5,
+            end: 6,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 6,
+            end: 7,
+        },
+        kind: Equal,
+    },
+    Token {
+        span: Span {
+            start: 7,
+            end: 8,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 8,
+            end: 9,
+        },
+        kind: LParen,
+    },
+    Token {
+        span: Span {
+            start: 9,
+            end: 12,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 12,
+            end: 13,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 13,
+            end: 14,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 14,
+            end: 15,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 15,
+            end: 16,
+        },
+        kind: Plus,
+    },
+    Token {
+        span: Span {
+            start: 16,
+            end: 17,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 17,
+            end: 18,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 18,
+            end: 19,
+        },
+        kind: RParen,
+    },
+    Token {
+        span: Span {
+            start: 19,
+            end: 20,
+        },
+        kind: Question,
+    },
+    Token {
+        span: Span {
+            start: 20,
+            end: 21,
+        },
+        kind: Newline,
+    },
+]

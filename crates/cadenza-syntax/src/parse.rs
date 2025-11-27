@@ -121,8 +121,32 @@ impl<'src> Parser<'src> {
 
             let op = self.current();
 
-            // Check if this is an explicit infix operator
-            if let Some((l_bp, r_bp)) = Self::infix_binding_power(op) {
+            // Check if this is a postfix operator first
+            if let Some(l_bp) = Self::postfix_binding_power(op) {
+                // Stop if binding power is too low
+                if l_bp < min_bp {
+                    marker.finish(self);
+                    return;
+                }
+
+                // Create a unary Apply node: operator(operand)
+                self.builder
+                    .start_node_at(apply_checkpoint, Kind::Apply.into());
+
+                // The left side becomes the argument (without trailing trivia)
+                self.builder
+                    .start_node_at(content_checkpoint, Kind::ApplyArgument.into());
+                self.builder.finish_node();
+
+                // The operator is the receiver
+                self.builder.start_node(Kind::ApplyReceiver.into());
+                self.bump(); // the operator
+                self.builder.finish_node();
+
+                self.builder.finish_node();
+                // Continue the outer loop to check for more operators
+            } else if let Some((l_bp, r_bp)) = Self::infix_binding_power(op) {
+                // Check if this is an explicit infix operator
                 // Stop if binding power is too low
                 if l_bp < min_bp {
                     marker.finish(self);
@@ -299,6 +323,17 @@ impl<'src> Parser<'src> {
         // Between Equal (3, 2) and PipePipe (4, 5)
         // Left-associative
         (3, 4)
+    }
+
+    /// Returns left binding power for postfix operators
+    /// Higher binding power = higher precedence
+    fn postfix_binding_power(op: Kind) -> Option<u8> {
+        use Kind::*;
+        Some(match op {
+            // Postfix ? (try operator) - highest precedence, binds tightly to operand
+            Question => 15,
+            _ => return None,
+        })
     }
 
     /// Returns (left_bp, right_bp) for infix operators

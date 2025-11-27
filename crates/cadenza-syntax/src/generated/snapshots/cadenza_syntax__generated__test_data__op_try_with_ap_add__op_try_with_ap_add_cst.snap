@@ -1,0 +1,47 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let x = foo 1 + 2?\n"
+---
+Root@0..19
+  Apply@0..19
+    ApplyArgument@0..6
+      Apply@0..6
+        ApplyReceiver@0..4
+          Identifier@0..3
+            Identifier@0..3 "let"
+          Space@3..4 " "
+        ApplyArgument@4..6
+          Identifier@4..5
+            Identifier@4..5 "x"
+          Space@5..6 " "
+    ApplyReceiver@6..7
+      Equal@6..7
+        Equal@6..7 "="
+    Space@7..8 " "
+    ApplyArgument@8..19
+      Apply@8..19
+        ApplyReceiver@8..12
+          Identifier@8..11
+            Identifier@8..11 "foo"
+          Space@11..12 " "
+        ApplyArgument@12..19
+          Apply@12..19
+            ApplyArgument@12..14
+              Literal@12..13
+                Integer@12..13
+                  Integer@12..13 "1"
+              Space@13..14 " "
+            ApplyReceiver@14..15
+              Plus@14..15
+                Plus@14..15 "+"
+            Space@15..16 " "
+            ApplyArgument@16..19
+              Apply@16..18
+                ApplyArgument@16..17
+                  Literal@16..17
+                    Integer@16..17
+                      Integer@16..17 "2"
+                ApplyReceiver@17..18
+                  Question@17..18
+                    Question@17..18 "?"
+              Newline@18..19 "\n"
