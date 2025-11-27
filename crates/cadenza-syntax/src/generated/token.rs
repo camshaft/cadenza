@@ -210,12 +210,7 @@ impl Kind {
     pub const WHITESPACE: &'static [Self] = &[Self::Space, Self::Tab, Self::Newline];
 
     pub const fn is_whitespace(self) -> bool {
-        match self {
-            Self::Space => true,
-            Self::Tab => true,
-            Self::Newline => true,
-            _ => false,
-        }
+        matches!(self, Self::Space | Self::Tab | Self::Newline)
     }
 
     pub const TRIVIA: &'static [Self] = &[
@@ -227,14 +222,10 @@ impl Kind {
     ];
 
     pub const fn is_trivia(self) -> bool {
-        match self {
-            Self::CommentStart => true,
-            Self::Space => true,
-            Self::Tab => true,
-            Self::Newline => true,
-            Self::CommentContent => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Self::CommentStart | Self::Space | Self::Tab | Self::Newline | Self::CommentContent
+        )
     }
 
     pub const NODE: &'static [Self] = &[
@@ -301,69 +292,69 @@ impl Kind {
     ];
 
     pub const fn is_node(self) -> bool {
-        match self {
-            Self::At => true,
-            Self::Equal => true,
-            Self::EqualEqual => true,
-            Self::Less => true,
-            Self::LessEqual => true,
-            Self::LessLess => true,
-            Self::Greater => true,
-            Self::GreaterEqual => true,
-            Self::GreaterGreater => true,
-            Self::Plus => true,
-            Self::PlusEqual => true,
-            Self::Minus => true,
-            Self::MinusEqual => true,
-            Self::Arrow => true,
-            Self::Star => true,
-            Self::StarEqual => true,
-            Self::Slash => true,
-            Self::SlashEqual => true,
-            Self::Backslash => true,
-            Self::Percent => true,
-            Self::PercentEqual => true,
-            Self::Bang => true,
-            Self::BangEqual => true,
-            Self::Ampersand => true,
-            Self::AmpersandAmpersand => true,
-            Self::AmpersandEqual => true,
-            Self::Backtick => true,
-            Self::SingleQuote => true,
-            Self::Pipe => true,
-            Self::PipePipe => true,
-            Self::PipeEqual => true,
-            Self::PipeGreater => true,
-            Self::Caret => true,
-            Self::CaretEqual => true,
-            Self::Tilde => true,
-            Self::Dot => true,
-            Self::DotDot => true,
-            Self::DotEqual => true,
-            Self::Dollar => true,
-            Self::Question => true,
-            Self::Comma => true,
-            Self::Colon => true,
-            Self::ColonColon => true,
-            Self::Semicolon => true,
-            Self::LBrace => true,
-            Self::LBracket => true,
-            Self::DocCommentStart => true,
-            Self::StringContent => true,
-            Self::StringContentWithEscape => true,
-            Self::DocCommentContent => true,
-            Self::Integer => true,
-            Self::Float => true,
-            Self::Identifier => true,
-            Self::Root => true,
-            Self::Apply => true,
-            Self::ApplyArgument => true,
-            Self::ApplyReceiver => true,
-            Self::Attr => true,
-            Self::Literal => true,
-            Self::Error => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Self::At
+                | Self::Equal
+                | Self::EqualEqual
+                | Self::Less
+                | Self::LessEqual
+                | Self::LessLess
+                | Self::Greater
+                | Self::GreaterEqual
+                | Self::GreaterGreater
+                | Self::Plus
+                | Self::PlusEqual
+                | Self::Minus
+                | Self::MinusEqual
+                | Self::Arrow
+                | Self::Star
+                | Self::StarEqual
+                | Self::Slash
+                | Self::SlashEqual
+                | Self::Backslash
+                | Self::Percent
+                | Self::PercentEqual
+                | Self::Bang
+                | Self::BangEqual
+                | Self::Ampersand
+                | Self::AmpersandAmpersand
+                | Self::AmpersandEqual
+                | Self::Backtick
+                | Self::SingleQuote
+                | Self::Pipe
+                | Self::PipePipe
+                | Self::PipeEqual
+                | Self::PipeGreater
+                | Self::Caret
+                | Self::CaretEqual
+                | Self::Tilde
+                | Self::Dot
+                | Self::DotDot
+                | Self::DotEqual
+                | Self::Dollar
+                | Self::Question
+                | Self::Comma
+                | Self::Colon
+                | Self::ColonColon
+                | Self::Semicolon
+                | Self::LBrace
+                | Self::LBracket
+                | Self::DocCommentStart
+                | Self::StringContent
+                | Self::StringContentWithEscape
+                | Self::DocCommentContent
+                | Self::Integer
+                | Self::Float
+                | Self::Identifier
+                | Self::Root
+                | Self::Apply
+                | Self::ApplyArgument
+                | Self::ApplyReceiver
+                | Self::Attr
+                | Self::Literal
+                | Self::Error
+        )
     }
 
     pub const fn as_str(self) -> Option<&'static str> {

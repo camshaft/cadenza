@@ -26,25 +26,29 @@ impl Tokens {
         self.whitespace.extend(
             Punctuation::ALL
                 .iter()
-                .filter_map(|p| p.whitespace.then(|| p.name.to_string())),
+                .filter(|p| p.whitespace)
+                .map(|p| p.name.to_string()),
         );
 
         self.trivia.extend(
             Punctuation::ALL
                 .iter()
-                .filter_map(|p| p.trivia.then(|| p.name.to_string())),
+                .filter(|p| p.trivia)
+                .map(|p| p.name.to_string()),
         );
 
         self.with_values.extend(
             Punctuation::ALL
                 .iter()
-                .filter_map(|p| (!p.duplicate).then(|| (p.name.to_string(), p.value))),
+                .filter(|p| !p.duplicate)
+                .map(|p| (p.name.to_string(), p.value)),
         );
 
         self.nodes.extend(
             Punctuation::ALL
                 .iter()
-                .filter_map(|p| p.op.then(|| p.name.to_string())),
+                .filter(|p| p.op)
+                .map(|p| p.name.to_string()),
         );
 
         self
@@ -57,13 +61,15 @@ impl Tokens {
         self.trivia.extend(
             Content::ALL
                 .iter()
-                .filter_map(|c| c.trivia.then(|| c.name.to_string())),
+                .filter(|c| c.trivia)
+                .map(|c| c.name.to_string()),
         );
 
         self.nodes.extend(
             Content::ALL
                 .iter()
-                .filter_map(|c| (!c.trivia).then(|| c.name.to_string())),
+                .filter(|c| !c.trivia)
+                .map(|c| c.name.to_string()),
         );
 
         self
@@ -138,12 +144,12 @@ impl Tokens {
             w!("");
 
             w!("    pub const fn {name}(self) -> bool {{");
-            w!("        match self {{");
-            for variant in variants {
-                w!("            Self::{variant} => true,");
-            }
-            w!("            _ => false, ");
-            w!("        }}");
+            let variant_list = variants
+                .iter()
+                .map(|v| format!("Self::{v}"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            w!("        matches!(self, {variant_list})");
             w!("    }}");
             w!("");
         }

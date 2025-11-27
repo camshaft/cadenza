@@ -79,7 +79,7 @@ jobs:
 
       - name: Run cargo clippy
         run: |
-          cargo clippy --all-features --all-targets --workspace
+          cargo clippy --all-features --all-targets --workspace -- -D warnings
 
   udeps:
     runs-on: ubuntu-latest

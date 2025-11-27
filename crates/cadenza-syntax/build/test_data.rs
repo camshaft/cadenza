@@ -19,7 +19,7 @@ pub fn tests() -> String {
             let name = format!("{name}_{ty}");
             w!("    #[test]");
             w!("    fn {ty}() {{");
-            w!("        s!({name:?}, t::{ty}(&{src:?}), {src:?});");
+            w!("        s!({name:?}, t::{ty}({src:?}), {src:?});");
             w!("    }}");
         }
         w!("}}");

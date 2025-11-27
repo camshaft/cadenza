@@ -34,6 +34,7 @@ impl<I: Iterator> Peek2<I> {
         self.next_if(|x| x.eq(&v))
     }
 
+    #[expect(dead_code)]
     pub fn next_if_in<V>(&mut self, v: &[V]) -> Option<I::Item>
     where
         I::Item: PartialEq<V>,
@@ -48,6 +49,7 @@ impl<I: Iterator> Peek2<I> {
         })
     }
 
+    #[cfg(test)]
     pub fn peek2(&mut self) -> (Option<&I::Item>, Option<&I::Item>) {
         while self.len < 2 {
             self.push();

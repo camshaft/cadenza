@@ -265,6 +265,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Skip all of the whitespace
+    #[expect(dead_code)]
     fn skip_ws(&mut self) {
         while self.current().is_whitespace() {
             self.bump();
@@ -399,14 +400,17 @@ impl Default for Whitespace {
 }
 
 impl Whitespace {
+    #[expect(dead_code)]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    #[expect(dead_code)]
     pub fn line(&self) -> usize {
         self.line
     }
 
+    #[expect(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

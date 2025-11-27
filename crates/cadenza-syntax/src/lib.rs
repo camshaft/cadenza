@@ -26,7 +26,11 @@ impl rowan::Language for Lang {
 }
 
 type SyntaxNode = rowan::SyntaxNode<Lang>;
+#[expect(dead_code)]
 type SyntaxToken = rowan::SyntaxToken<Lang>;
+#[expect(dead_code)]
 type SyntaxElement = rowan::NodeOrToken<SyntaxNode, Lang>;
+#[expect(dead_code)]
 type SyntaxElementChildren = rowan::SyntaxElementChildren<Lang>;
+#[expect(dead_code)]
 type SyntaxNodeChildren = rowan::SyntaxNodeChildren<Lang>;

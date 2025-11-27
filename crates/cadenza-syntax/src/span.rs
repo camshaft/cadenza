@@ -17,6 +17,10 @@ impl Span {
         self.end - self.start
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+
     pub fn contains(&self, byte_index: usize) -> bool {
         byte_index >= self.start && byte_index < self.end
     }

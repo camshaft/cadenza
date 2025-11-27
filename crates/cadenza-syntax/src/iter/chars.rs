@@ -7,15 +7,15 @@ pub struct Char {
     pub value: char,
 }
 
-impl Into<Span> for Char {
-    fn into(self) -> Span {
-        self.span
+impl From<Char> for Span {
+    fn from(val: Char) -> Self {
+        val.span
     }
 }
 
-impl Into<Span> for (Char, Char) {
-    fn into(self) -> Span {
-        let (a, b) = self;
+impl From<(Char, Char)> for Span {
+    fn from(val: (Char, Char)) -> Self {
+        let (a, b) = val;
         a.span.merge(b.span)
     }
 }
@@ -56,7 +56,7 @@ impl<'a> Chars<'a> {
     }
 }
 
-impl<'a> Iterator for Chars<'a> {
+impl Iterator for Chars<'_> {
     type Item = Char;
 
     fn next(&mut self) -> Option<Self::Item> {

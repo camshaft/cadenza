@@ -55,7 +55,7 @@ impl fmt::Debug for Root {
 
 impl Root {
     pub fn items(&self) -> impl Iterator<Item = Expr> {
-        self.0.children().filter_map(|child| Expr::cast(child))
+        self.0.children().filter_map(Expr::cast)
     }
 }
 
