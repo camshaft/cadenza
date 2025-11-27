@@ -47,7 +47,7 @@ impl Tokens {
         self.nodes.extend(
             Punctuation::ALL
                 .iter()
-                .filter(|p| p.op)
+                .filter(|p| p.binding_power.is_some())
                 .map(|p| p.name.to_string()),
         );
 
@@ -170,12 +170,90 @@ impl Tokens {
 
         w!("    pub const fn as_op(self) -> Option<Op> {{");
         w!("        match self {{");
-        for p in Punctuation::ALL.iter().filter(|p| p.op) {
+        for p in Punctuation::ALL
+            .iter()
+            .filter(|p| p.binding_power.is_some())
+        {
             let name = p.name;
             w!("            Self::{name} => Some(Op::{name}), ");
         }
         w!("            _ => None, ");
         w!("        }}");
+        w!("    }}");
+        w!("");
+
+        // Generate prefix_binding_power method
+        w!("    pub const fn prefix_binding_power(self) -> Option<u8> {{");
+        w!("        match self {{");
+        for p in Punctuation::ALL.iter() {
+            if let Some(BindingPower::Prefix(bp)) = p.binding_power {
+                let name = p.name;
+                let bp_value = bp as u8;
+                w!("            Self::{name} => Some({bp_value}),");
+            }
+        }
+        w!("            _ => None,");
+        w!("        }}");
+        w!("    }}");
+        w!("");
+
+        // Generate infix_binding_power method
+        w!("    pub const fn infix_binding_power(self) -> Option<(u8, u8)> {{");
+        w!("        match self {{");
+        for p in Punctuation::ALL.iter() {
+            if let Some(BindingPower::Infix(bp)) = p.binding_power {
+                let name = p.name;
+                let (left_bp, right_bp) = bp.binding_power();
+                w!("            Self::{name} => Some(({left_bp}, {right_bp})),");
+            }
+        }
+        w!("            _ => None,");
+        w!("        }}");
+        w!("    }}");
+        w!("");
+
+        // Generate postfix_binding_power method
+        w!("    pub const fn postfix_binding_power(self) -> Option<u8> {{");
+        w!("        match self {{");
+        for p in Punctuation::ALL.iter() {
+            if let Some(BindingPower::Postfix(bp)) = p.binding_power {
+                let name = p.name;
+                let bp_value = bp as u8;
+                w!("            Self::{name} => Some({bp_value}),");
+            }
+        }
+        w!("            _ => None,");
+        w!("        }}");
+        w!("    }}");
+        w!("");
+
+        // Generate juxtaposition_binding_power method
+        let (jux_left, jux_right) = InfixBindingPower::Juxtaposition.binding_power();
+        w!("    /// Returns the binding power for juxtaposition (function application)");
+        w!("    /// This is calculated from the Juxtaposition infix binding power group");
+        w!("    pub const fn juxtaposition_binding_power() -> (u8, u8) {{");
+        w!("        ({jux_left}, {jux_right})");
+        w!("    }}");
+        w!("");
+
+        // Generate is_infix method
+        w!("    /// Returns true if this token kind has infix binding power");
+        w!("    pub const fn is_infix(self) -> bool {{");
+        w!("        self.infix_binding_power().is_some()");
+        w!("    }}");
+        w!("");
+
+        // Generate is_postfix method
+        w!("    /// Returns true if this token kind has postfix binding power");
+        w!("    pub const fn is_postfix(self) -> bool {{");
+        w!("        self.postfix_binding_power().is_some()");
+        w!("    }}");
+        w!("");
+
+        // Generate is_prefix method
+        w!("    /// Returns true if this token kind has prefix binding power");
+        w!("    pub const fn is_prefix(self) -> bool {{");
+        w!("        self.prefix_binding_power().is_some()");
         w!("    }}");
 
         w!("}}");
@@ -186,7 +264,10 @@ impl Tokens {
         );
         w!("#[repr(u16)]");
         w!("pub enum Op {{");
-        for p in Punctuation::ALL.iter().filter(|p| p.op) {
+        for p in Punctuation::ALL
+            .iter()
+            .filter(|p| p.binding_power.is_some())
+        {
             w!("    /// {:?}", p.value);
             w!("    {}, ", p.name);
         }
@@ -196,16 +277,106 @@ impl Tokens {
     }
 }
 
+#[derive(Clone, Copy)]
+enum BindingPower {
+    Prefix(PrefixBindingPower),
+    Infix(InfixBindingPower),
+    Postfix(PostfixBindingPower),
+}
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum PrefixBindingPower {
+    /// Attribute operator: @expr
+    Attribute = 0,
+    /// Prefix operators: -x, !x, ~x
+    Unary = 26,
+}
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum InfixBindingPower {
+    /// Pipe operators: |>
+    Pipe,
+    /// Range operators: .., ..=
+    Range,
+    /// Assignment operators: =, +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=, ->, <-
+    Assignment,
+    /// Juxtaposition (function application)
+    Juxtaposition,
+    /// Logical OR: ||
+    LogicalOr,
+    /// Logical AND: &&
+    LogicalAnd,
+    /// Equality: ==, !=
+    Equality,
+    /// Comparison: <, <=, >, >=
+    Comparison,
+    /// Bitwise OR: |
+    BitwiseOr,
+    /// Bitwise XOR: ^
+    BitwiseXor,
+    /// Bitwise AND: &
+    BitwiseAnd,
+    /// Shift operators: <<, >>
+    Shift,
+    /// Additive: +, -
+    Additive,
+    /// Multiplicative: *, /, %
+    Multiplicative,
+    /// Exponentiation: **
+    Exponentiation,
+    /// Field access: .
+    FieldAccess,
+}
+
+#[derive(Clone, Copy)]
+enum Associativity {
+    Left,
+    Right,
+}
+
+impl InfixBindingPower {
+    /// Returns the associativity of this operator group
+    const fn associativity(&self) -> Associativity {
+        match self {
+            // Right-associative operators
+            Self::Assignment | Self::Exponentiation => Associativity::Right,
+            // Everything else is left-associative
+            _ => Associativity::Left,
+        }
+    }
+
+    /// Returns (left_bp, right_bp) for this operator
+    /// Calculated from base value and associativity:
+    /// - Left-associative: (base, base + 1)
+    /// - Right-associative: (base, base - 1)
+    const fn binding_power(&self) -> (u8, u8) {
+        let base = *self as u8 * 2;
+        match self.associativity() {
+            Associativity::Left => (base, base + 1),
+            Associativity::Right => (base + 1, base),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum PostfixBindingPower {
+    /// Pipe try operator: |?
+    PipeTry = 0,
+    /// Try operator: ?
+    Try = 32,
+}
+
 struct Punctuation {
     name: &'static str,
     value: &'static str,
     duplicate: bool,
     whitespace: bool,
     trivia: bool,
-    op: bool,
-    // TODO infix binding
-    // TODO prefix binding
-    // TODO suffix binding
+    // Pratt parser binding powers
+    binding_power: Option<BindingPower>,
 }
 
 impl Punctuation {
@@ -217,64 +388,73 @@ impl Punctuation {
                 duplicate: false,
                 whitespace: false,
                 trivia: false,
-                op: true,
+                binding_power: None,
             }
         }
 
         [
-            p("At", "@"),
-            p("Equal", "="),
-            p("EqualEqual", "=="),
-            p("Less", "<"),
-            p("LessEqual", "<="),
-            p("LessLess", "<<"),
-            p("Greater", ">"),
-            p("GreaterEqual", ">="),
-            p("GreaterGreater", ">>"),
-            p("Plus", "+"),
-            p("PlusEqual", "+="),
-            p("Minus", "-"),
-            p("MinusEqual", "-="),
-            p("Arrow", "->"),
-            p("Star", "*"),
-            p("StarEqual", "*="),
-            p("Slash", "/"),
-            p("SlashEqual", "/="),
+            // Prefix operators
+            p("At", "@").prefix(PrefixBindingPower::Attribute),
+            p("Bang", "!").prefix(PrefixBindingPower::Unary),
+            p("Tilde", "~").prefix(PrefixBindingPower::Unary),
+            p("Dollar", "$").prefix(PrefixBindingPower::Unary),
+            // Postfix operators
+            p("Question", "?").postfix(PostfixBindingPower::Try),
+            p("PipeQuestion", "|?").postfix(PostfixBindingPower::PipeTry),
+            // Infix operators
+            p("PipeGreater", "|>").infix(InfixBindingPower::Pipe),
+            p("DotDot", "..").infix(InfixBindingPower::Range),
+            p("DotDotEqual", "..=").infix(InfixBindingPower::Range),
+            p("Equal", "=").infix(InfixBindingPower::Assignment),
+            p("RightArrow", "->").infix(InfixBindingPower::Assignment),
+            p("LeftArrow", "<-").infix(InfixBindingPower::Assignment),
+            p("PlusEqual", "+=").infix(InfixBindingPower::Assignment),
+            p("MinusEqual", "-=").infix(InfixBindingPower::Assignment),
+            p("StarEqual", "*=").infix(InfixBindingPower::Assignment),
+            p("SlashEqual", "/=").infix(InfixBindingPower::Assignment),
+            p("PercentEqual", "%=").infix(InfixBindingPower::Assignment),
+            p("AmpersandEqual", "&=").infix(InfixBindingPower::Assignment),
+            p("PipeEqual", "|=").infix(InfixBindingPower::Assignment),
+            p("CaretEqual", "^=").infix(InfixBindingPower::Assignment),
+            p("LessLessEqual", "<<=").infix(InfixBindingPower::Assignment),
+            p("GreaterGreaterEqual", ">>=").infix(InfixBindingPower::Assignment),
+            p("PipePipe", "||").infix(InfixBindingPower::LogicalOr),
+            p("AmpersandAmpersand", "&&").infix(InfixBindingPower::LogicalAnd),
+            p("EqualEqual", "==").infix(InfixBindingPower::Equality),
+            p("BangEqual", "!=").infix(InfixBindingPower::Equality),
+            p("Less", "<").infix(InfixBindingPower::Comparison),
+            p("LessEqual", "<=").infix(InfixBindingPower::Comparison),
+            p("Greater", ">").infix(InfixBindingPower::Comparison),
+            p("GreaterEqual", ">=").infix(InfixBindingPower::Comparison),
+            p("Pipe", "|").infix(InfixBindingPower::BitwiseOr),
+            p("Caret", "^").infix(InfixBindingPower::BitwiseXor),
+            p("Ampersand", "&").infix(InfixBindingPower::BitwiseAnd),
+            p("LessLess", "<<").infix(InfixBindingPower::Shift),
+            p("GreaterGreater", ">>").infix(InfixBindingPower::Shift),
+            p("Plus", "+").infix(InfixBindingPower::Additive),
+            p("Minus", "-").infix(InfixBindingPower::Additive),
+            p("Star", "*").infix(InfixBindingPower::Multiplicative),
+            p("Slash", "/").infix(InfixBindingPower::Multiplicative),
+            p("Percent", "%").infix(InfixBindingPower::Multiplicative),
+            p("StarStar", "**").infix(InfixBindingPower::Exponentiation),
+            p("Dot", ".").infix(InfixBindingPower::FieldAccess),
+            // Non-operator punctuation
             p("Backslash", "\\"),
-            p("Percent", "%"),
-            p("PercentEqual", "%="),
-            p("Bang", "!"),
-            p("BangEqual", "!="),
-            p("Ampersand", "&"),
-            p("AmpersandAmpersand", "&&"),
-            p("AmpersandEqual", "&="),
             p("Backtick", "`"),
             p("SingleQuote", "'"),
-            p("Pipe", "|"),
-            p("PipePipe", "||"),
-            p("PipeEqual", "|="),
-            p("PipeGreater", "|>"),
-            p("PipeQuestion", "|?"),
-            p("Caret", "^"),
-            p("CaretEqual", "^="),
-            p("Tilde", "~"),
-            p("Dot", "."),
-            p("DotDot", ".."),
-            p("DotEqual", ".="),
-            p("Dollar", "$"),
-            p("Question", "?"),
             p("Comma", ","),
             p("Colon", ":"),
             p("ColonColon", "::"),
             p("Semicolon", ";"),
-            p("LParen", "(").not_op(),
-            p("RParen", ")").not_op(),
+            p("LParen", "("),
+            p("RParen", ")"),
+            p("LDollarBrace", "${"),
             p("LBrace", "{"),
-            p("RBrace", "}").not_op(),
+            p("RBrace", "}"),
             p("LBracket", "["),
-            p("RBracket", "]").not_op(),
-            p("StringStart", "\"").not_op(),
-            p("StringEnd", "\"").not_op().dup(),
+            p("RBracket", "]"),
+            p("StringStart", "\""),
+            p("StringEnd", "\"").dup(),
             p("CommentStart", "#").trivia(),
             p("DocCommentStart", "##"),
             p("Space", " ").ws(),
@@ -294,7 +474,6 @@ impl Punctuation {
         Self {
             whitespace: true,
             trivia: true,
-            op: false,
             ..self
         }
     }
@@ -302,13 +481,29 @@ impl Punctuation {
     const fn trivia(self) -> Self {
         Self {
             trivia: true,
-            op: false,
             ..self
         }
     }
 
-    const fn not_op(self) -> Self {
-        Self { op: false, ..self }
+    const fn prefix(self, binding_power: PrefixBindingPower) -> Self {
+        Self {
+            binding_power: Some(BindingPower::Prefix(binding_power)),
+            ..self
+        }
+    }
+
+    const fn infix(self, binding_power: InfixBindingPower) -> Self {
+        Self {
+            binding_power: Some(BindingPower::Infix(binding_power)),
+            ..self
+        }
+    }
+
+    const fn postfix(self, binding_power: PostfixBindingPower) -> Self {
+        Self {
+            binding_power: Some(BindingPower::Postfix(binding_power)),
+            ..self
+        }
     }
 }
 

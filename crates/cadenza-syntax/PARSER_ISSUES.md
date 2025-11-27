@@ -6,36 +6,73 @@ Based on the design document, all constructs are represented as `Apply` nodes. T
 
 ---
 
-## Issue 1: Complete Operator Support
+## Issue 1: Complete Operator Support ✅ MOSTLY COMPLETE
+
+### Summary
+
+**Status:** Infrastructure complete, most operators implemented. Binding power generation system successfully deployed.
+
+**Completed:**
+
+- ✅ Generated binding power system with automatic precedence calculation
+- ✅ All infix operators (arithmetic, comparison, logical, bitwise, shift, assignment, range)
+- ✅ Postfix operators (`?`, `|?`)
+- ✅ Prefix operators (`@`, `!`, `~`, `$` - but not `-` due to ambiguity)
+- ✅ Missing tokens added to lexer (`**`, `..=`, `<<=`, `>>=`, `->`, `<-`, `${`)
+- ✅ Parser integration with generated methods
+
+**Remaining Work:**
+
+- ⚠️ Prefix negation (`-x`) - removed due to infix/prefix ambiguity, needs context-aware parsing
+- ⚠️ Field access (`.`) and path separator (`::`) - tokens with binding power defined but not yet implemented in parser
+- ⚠️ Array indexing (`[]`) - needs special postfix handling
 
 ### Current State
 
-The parser currently defines binding power for these operators:
+The parser now uses a **generated binding power system** defined in `build/token.rs`. All operator precedence is centrally defined using enums and automatically calculated with proper associativity.
 
-**Postfix operators (in `postfix_binding_power`):**
+**Architecture:**
+
+- Binding power enums: `PrefixBindingPower`, `InfixBindingPower`, `PostfixBindingPower`
+- Each enum variant represents a precedence group
+- Binding powers are calculated: `base = enum_discriminant * 2`
+- Associativity determines left/right BP: Left = `(base, base+1)`, Right = `(base+1, base)`
+- Generated methods on `Kind`: `prefix_binding_power()`, `infix_binding_power()`, `postfix_binding_power()`, `juxtaposition_binding_power()`
+
+**Postfix operators:**
 | Operator | Token | Binding Power | Status |
 |----------|-------|---------------|--------|
-| `?` | Question | 15 | ✅ Implemented |
-| `\|?` | PipeQuestion | 1 | ✅ Implemented |
+| `?` | Question | 32 | ✅ Implemented |
+| `\|?` | PipeQuestion | 0 | ✅ Implemented |
 
-**Infix operators (in `infix_binding_power`):**
-| Operator | Token | Left BP | Right BP | Associativity | Status |
-|----------|-------|---------|----------|---------------|--------|
-| `\|>` | PipeGreater | 1 | 2 | Left | ✅ Implemented |
-| `=` | Equal | 3 | 2 | Right | ✅ Implemented |
-| `\|\|` | PipePipe | 4 | 5 | Left | ✅ Implemented |
-| `&&` | AmpersandAmpersand | 6 | 7 | Left | ✅ Implemented |
-| `==` | EqualEqual | 8 | 9 | Left | ✅ Implemented |
-| `!=` | BangEqual | 8 | 9 | Left | ✅ Implemented |
-| `<` | Less | 8 | 9 | Left | ✅ Implemented |
-| `<=` | LessEqual | 8 | 9 | Left | ✅ Implemented |
-| `>` | Greater | 8 | 9 | Left | ✅ Implemented |
-| `>=` | GreaterEqual | 8 | 9 | Left | ✅ Implemented |
-| `+` | Plus | 10 | 11 | Left | ✅ Implemented |
-| `-` | Minus | 10 | 11 | Left | ✅ Implemented |
-| `*` | Star | 12 | 13 | Left | ✅ Implemented |
-| `/` | Slash | 12 | 13 | Left | ✅ Implemented |
-| `%` | Percent | 12 | 13 | Left | ✅ Implemented |
+**Prefix operators:**
+| Operator | Token | Binding Power | Status |
+|----------|-------|---------------|--------|
+| `@` | At | 0 | ✅ Implemented |
+| `!` | Bang | 26 | ✅ Implemented |
+| `~` | Tilde | 26 | ✅ Implemented |
+| `$` | Dollar | 26 | ✅ Implemented |
+| `-` | Minus | - | ❌ Removed (ambiguity with infix) |
+
+**Infix operators (by precedence group, low to high):**
+| Group | Operators | Left BP | Right BP | Assoc | Status |
+|-------|-----------|---------|----------|-------|--------|
+| Pipe | `\|>` | 0 | 1 | Left | ✅ Implemented |
+| Range | `..`, `..=` | 2 | 3 | Left | ✅ Implemented |
+| Assignment | `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=`, `->`, `<-` | 5 | 4 | Right | ✅ Implemented |
+| Juxtaposition | (function application) | 6 | 7 | Left | ✅ Implemented |
+| Logical OR | `\|\|` | 8 | 9 | Left | ✅ Implemented |
+| Logical AND | `&&` | 10 | 11 | Left | ✅ Implemented |
+| Equality | `==`, `!=` | 12 | 13 | Left | ✅ Implemented |
+| Comparison | `<`, `<=`, `>`, `>=` | 14 | 15 | Left | ✅ Implemented |
+| Bitwise OR | `\|` | 16 | 17 | Left | ✅ Implemented |
+| Bitwise XOR | `^` | 18 | 19 | Left | ✅ Implemented |
+| Bitwise AND | `&` | 20 | 21 | Left | ✅ Implemented |
+| Shift | `<<`, `>>` | 22 | 23 | Left | ✅ Implemented |
+| Additive | `+`, `-` | 24 | 25 | Left | ✅ Implemented |
+| Multiplicative | `*`, `/`, `%` | 26 | 27 | Left | ✅ Implemented |
+| Exponentiation | `**` | 29 | 28 | Right | ✅ Implemented |
+| Field Access | `.` | 30 | 31 | Left | ⚠️ Defined, not parsed |
 
 ### Rust Operators Missing from Cadenza
 
@@ -76,8 +113,9 @@ Comparing against [Rust's operator precedence](https://doc.rust-lang.org/referen
 
 **Tokens Available but No Binding Power:**
 The lexer already recognizes these tokens but they have no binding power assigned:
+
 - `Caret` (`^`) - Bitwise XOR
-- `Pipe` (`|`) - Bitwise OR  
+- `Pipe` (`|`) - Bitwise OR
 - `Ampersand` (`&`) - Bitwise AND / Reference
 - `LessLess` (`<<`) - Left shift
 - `GreaterGreater` (`>>`) - Right shift
@@ -90,6 +128,7 @@ The lexer already recognizes these tokens but they have no binding power assigne
 - All compound assignment operators (`+=`, `-=`, etc.)
 
 **Tokens Missing from Lexer (need to be added):**
+
 - `StarStar` (`**`) - Exponentiation
 - `DotDotEqual` (`..=`) - Inclusive range
 - `LessLessEqual` (`<<=`) - Left shift assign
@@ -98,7 +137,8 @@ The lexer already recognizes these tokens but they have no binding power assigne
 ### What Needs To Be Done
 
 1. **Add missing tokens to lexer** (`lexer.rs` and `build/token.rs`):
-   - `**` → `StarStar` 
+
+   - `**` → `StarStar`
    - `..=` → `DotDotEqual`
    - `<<=` → `LessLessEqual`
    - `>>=` → `GreaterGreaterEqual`
@@ -106,23 +146,25 @@ The lexer already recognizes these tokens but they have no binding power assigne
 2. **Add exponentiation operator** - Using `**` since `^` is reserved for bitwise XOR. Add with right-associativity (highest arithmetic precedence).
 
 3. **Add bitwise operators** to `infix_binding_power` (see complete binding power table below for exact values):
+
    ```rust
    // Bitwise OR (between comparison and logical OR)
    Pipe => (15, 16),
-   
+
    // Bitwise XOR (between bitwise OR and bitwise AND)
    Caret => (17, 18),
-   
+
    // Bitwise AND (between bitwise XOR and shifts)
    Ampersand => (19, 20),
-   
+
    // Shifts (between bitwise AND and additive)
    LessLess | GreaterGreater => (21, 22),
    ```
-   
+
    Note: Exact binding power values will need to be adjusted to fit between existing operators. The complete table below shows the final relative ordering.
 
 4. **Add prefix operators** - implement `prefix_binding_power`:
+
    ```rust
    fn prefix_binding_power(op: Kind) -> Option<u8> {
        Some(match op {
@@ -148,36 +190,39 @@ The lexer already recognizes these tokens but they have no binding power assigne
 
 From lowest to highest precedence:
 
-| Level | Operators | Associativity | Type |
-|-------|-----------|---------------|------|
-| 1 | `\|>`, `\|?` | Left | Pipe/PipeTry |
-| 2 | `..`, `..=` | Left | Range |
-| 3 | `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` | Right | Assignment |
-| 4 | `\|\|` | Left | Logical OR |
-| 5 | `&&` | Left | Logical AND |
-| 6 | `==`, `!=` | Left | Equality |
-| 7 | `<`, `<=`, `>`, `>=` | Left | Comparison |
-| 8 | `\|` | Left | Bitwise OR |
-| 9 | `^` | Left | Bitwise XOR |
-| 10 | `&` | Left | Bitwise AND |
-| 11 | `<<`, `>>` | Left | Shift |
-| 12 | `+`, `-` | Left | Additive |
-| 13 | `*`, `/`, `%` | Left | Multiplicative |
-| 14 | `**` | Right | Exponentiation |
-| 15 | `-`, `!`, `~`, `&`, `*` | Right | Prefix unary |
-| 16 | `?` | Left | Postfix try |
-| 17 | `.` | Left | Field access |
-| 18 | `::` | Left | Path |
-| 19 | `[]` | Left | Indexing |
-| 20 | `()` | Left | Call |
+| Level | Operators                                                          | Associativity | Type           |
+| ----- | ------------------------------------------------------------------ | ------------- | -------------- |
+| 1     | `\|>`, `\|?`                                                       | Left          | Pipe/PipeTry   |
+| 2     | `..`, `..=`                                                        | Left          | Range          |
+| 3     | `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` | Right         | Assignment     |
+| 4     | `\|\|`                                                             | Left          | Logical OR     |
+| 5     | `&&`                                                               | Left          | Logical AND    |
+| 6     | `==`, `!=`                                                         | Left          | Equality       |
+| 7     | `<`, `<=`, `>`, `>=`                                               | Left          | Comparison     |
+| 8     | `\|`                                                               | Left          | Bitwise OR     |
+| 9     | `^`                                                                | Left          | Bitwise XOR    |
+| 10    | `&`                                                                | Left          | Bitwise AND    |
+| 11    | `<<`, `>>`                                                         | Left          | Shift          |
+| 12    | `+`, `-`                                                           | Left          | Additive       |
+| 13    | `*`, `/`, `%`                                                      | Left          | Multiplicative |
+| 14    | `**`                                                               | Right         | Exponentiation |
+| 15    | `-`, `!`, `~`, `&`, `*`                                            | Right         | Prefix unary   |
+| 16    | `?`                                                                | Left          | Postfix try    |
+| 17    | `.`                                                                | Left          | Field access   |
+| 18    | `::`                                                               | Left          | Path           |
+| 19    | `[]`                                                               | Left          | Indexing       |
+| 20    | `()`                                                               | Left          | Call           |
 
 ### Test Cases
 
 #### Test: op-exponent.cdz
+
 ```cadenza
 2 ** 3 ** 2
 ```
+
 **Expected AST (right-associative, so 2^(3^2) = 2^9 = 512):**
+
 ```
 [
     [**, 2, [**, 3, 2]],
@@ -185,10 +230,13 @@ From lowest to highest precedence:
 ```
 
 #### Test: op-exponent-with-mul.cdz
+
 ```cadenza
 2 * 3 ** 2
 ```
-**Expected AST (** binds tighter than *):**
+
+**Expected AST (** binds tighter than \*):\*\*
+
 ```
 [
     [*, 2, [**, 3, 2]],
@@ -196,10 +244,13 @@ From lowest to highest precedence:
 ```
 
 #### Test: op-bitwise-and.cdz
+
 ```cadenza
 a & b
 ```
+
 **Expected AST:**
+
 ```
 [
     [&, a, b],
@@ -207,10 +258,13 @@ a & b
 ```
 
 #### Test: op-bitwise-or.cdz
+
 ```cadenza
 a | b
 ```
+
 **Expected AST:**
+
 ```
 [
     [|, a, b],
@@ -218,10 +272,13 @@ a | b
 ```
 
 #### Test: op-bitwise-xor.cdz
+
 ```cadenza
 a ^ b
 ```
+
 **Expected AST:**
+
 ```
 [
     [^, a, b],
@@ -229,10 +286,13 @@ a ^ b
 ```
 
 #### Test: op-bitwise-precedence.cdz
+
 ```cadenza
 a | b ^ c & d
 ```
+
 **Expected AST (& > ^ > |):**
+
 ```
 [
     [|, a, [^, b, [&, c, d]]],
@@ -240,10 +300,13 @@ a | b ^ c & d
 ```
 
 #### Test: op-shift-left.cdz
+
 ```cadenza
 x << 2
 ```
+
 **Expected AST:**
+
 ```
 [
     [<<, x, 2],
@@ -251,10 +314,13 @@ x << 2
 ```
 
 #### Test: op-shift-right.cdz
+
 ```cadenza
 x >> 2
 ```
+
 **Expected AST:**
+
 ```
 [
     [>>, x, 2],
@@ -262,10 +328,13 @@ x >> 2
 ```
 
 #### Test: op-shift-with-add.cdz
+
 ```cadenza
 a + b << c
 ```
+
 **Expected AST (<< lower than +):**
+
 ```
 [
     [<<, [+, a, b], c],
@@ -273,10 +342,13 @@ a + b << c
 ```
 
 #### Test: op-range.cdz
+
 ```cadenza
 1..10
 ```
+
 **Expected AST:**
+
 ```
 [
     [.., 1, 10],
@@ -284,10 +356,13 @@ a + b << c
 ```
 
 #### Test: op-range-inclusive.cdz
+
 ```cadenza
 1..=10
 ```
+
 **Expected AST:**
+
 ```
 [
     [..=, 1, 10],
@@ -295,10 +370,13 @@ a + b << c
 ```
 
 #### Test: op-negate.cdz
+
 ```cadenza
 -x
 ```
+
 **Expected AST:**
+
 ```
 [
     [-, x],
@@ -306,10 +384,13 @@ a + b << c
 ```
 
 #### Test: op-negate-in-expr.cdz
+
 ```cadenza
 a + -b
 ```
+
 **Expected AST:**
+
 ```
 [
     [+, a, [-, b]],
@@ -317,10 +398,13 @@ a + -b
 ```
 
 #### Test: op-not.cdz
+
 ```cadenza
 !x
 ```
+
 **Expected AST:**
+
 ```
 [
     [!, x],
@@ -328,10 +412,13 @@ a + -b
 ```
 
 #### Test: op-not-in-expr.cdz
+
 ```cadenza
 !a && !b
 ```
+
 **Expected AST:**
+
 ```
 [
     [&&, [!, a], [!, b]],
@@ -339,10 +426,13 @@ a + -b
 ```
 
 #### Test: op-compound-assign.cdz
+
 ```cadenza
 x += 1
 ```
+
 **Expected AST:**
+
 ```
 [
     [+=, x, 1],
@@ -350,6 +440,7 @@ x += 1
 ```
 
 #### Test: op-all-compound-assign.cdz
+
 ```cadenza
 a -= 1
 b *= 2
@@ -361,7 +452,9 @@ g ^= 7
 h <<= 8
 i >>= 9
 ```
+
 **Expected AST:**
+
 ```
 [
     [-=, a, 1],
@@ -377,10 +470,13 @@ i >>= 9
 ```
 
 #### Test: op-path.cdz
+
 ```cadenza
 std::io::Read
 ```
+
 **Expected AST:**
+
 ```
 [
     [::, [::, std, io], Read],
@@ -392,13 +488,16 @@ std::io::Read
 ## Issue 2: Quote/Unquote (Syntax Metaprogramming)
 
 ### Current State
+
 The lexer recognizes `'` (`SingleQuote`) and `~` (`Tilde`) tokens. According to the design doc:
+
 - `'expr` → `Apply(__quote__, [expr])` - capture syntax as a value
 - `~expr` → `Apply(__unquote__, [expr])` - splice syntax back
 
 However, the parser does not currently handle these as prefix operators. Additionally, the single quote character (`'`) may conflict with character literals or other language constructs, so **an alternative syntax needs to be decided**.
 
 ### Syntax Alternatives to Consider
+
 1. **Backtick for quote**: `` `expr `` (backtick is already a token: `Backtick`)
 2. **Dollar for unquote**: `$expr` (dollar is already a token: `Dollar`)
 3. **Keyword-like**: `quote expr` / `unquote expr` (still function application)
@@ -407,6 +506,7 @@ However, the parser does not currently handle these as prefix operators. Additio
 6. **Lisp-style with backtick**: `` `expr `` for quote, `,expr` for unquote
 
 ### What Needs To Be Done
+
 1. **Decide on final syntax** for quote and unquote operators
 2. Add quote operator as a prefix operator in `parse_primary`
 3. Add unquote operator as a prefix operator in `parse_primary`
@@ -416,13 +516,16 @@ However, the parser does not currently handle these as prefix operators. Additio
 
 ### Test Cases
 
-*Note: These examples use `'` and `~` but the actual syntax may change.*
+_Note: These examples use `'` and `~` but the actual syntax may change._
 
 #### Test: quote-simple.cdz
+
 ```cadenza
 'x
 ```
+
 **Expected AST:**
+
 ```
 [
     [__quote__, x],
@@ -430,10 +533,13 @@ However, the parser does not currently handle these as prefix operators. Additio
 ```
 
 #### Test: quote-expr.cdz
+
 ```cadenza
 '(a + b)
 ```
+
 **Expected AST:**
+
 ```
 [
     [__quote__, [+, a, b]],
@@ -441,10 +547,13 @@ However, the parser does not currently handle these as prefix operators. Additio
 ```
 
 #### Test: quote-call.cdz
+
 ```cadenza
 '(foo bar baz)
 ```
+
 **Expected AST:**
+
 ```
 [
     [__quote__, [[foo, bar], baz]],
@@ -452,10 +561,13 @@ However, the parser does not currently handle these as prefix operators. Additio
 ```
 
 #### Test: unquote-simple.cdz
+
 ```cadenza
 ~x
 ```
+
 **Expected AST:**
+
 ```
 [
     [__unquote__, x],
@@ -463,10 +575,13 @@ However, the parser does not currently handle these as prefix operators. Additio
 ```
 
 #### Test: quote-with-unquote.cdz
+
 ```cadenza
 '(let x = ~value)
 ```
+
 **Expected AST:**
+
 ```
 [
     [__quote__, [=, [let, x], [__unquote__, value]]],
@@ -474,26 +589,32 @@ However, the parser does not currently handle these as prefix operators. Additio
 ```
 
 #### Test: quote-block.cdz
+
 ```cadenza
 let ast = '
     let out = ~var
     out + 1
 ```
+
 **Expected AST:**
+
 ```
 [
-    [=, [let, ast], [__quote__, 
-        [__block__, 
+    [=, [let, ast], [__quote__,
+        [__block__,
             [=, [let, out], [__unquote__, var]],
             [+, out, 1]]]],
 ]
 ```
 
 #### Test: unquote-splice.cdz
+
 ```cadenza
 ~ast
 ```
+
 **Expected AST:**
+
 ```
 [
     [__unquote__, ast],
@@ -501,10 +622,13 @@ let ast = '
 ```
 
 #### Test: nested-quote.cdz
+
 ```cadenza
 ''x
 ```
+
 **Expected AST:**
+
 ```
 [
     [__quote__, [__quote__, x]],
@@ -512,14 +636,17 @@ let ast = '
 ```
 
 #### Test: quote-in-function.cdz
+
 ```cadenza
 let make_let = fn name value -> '(let ~name = ~value)
 ```
+
 **Expected AST:**
+
 ```
 [
-    [=, [let, make_let], 
-        [[fn, name, value], 
+    [=, [let, make_let],
+        [[fn, name, value],
             [__quote__, [=, [let, [__unquote__, name]], [__unquote__, value]]]]],
 ]
 ```
@@ -529,9 +656,11 @@ let make_let = fn name value -> '(let ~name = ~value)
 ## Issue 3: Array Literals
 
 ### Current State
+
 The lexer recognizes `[` (`LBracket`) and `]` (`RBracket`) tokens, but the parser does not handle array literal syntax. Currently, `[` is consumed as a standalone token without proper array literal parsing.
 
 ### What Needs To Be Done
+
 1. Add a `parse_array` function that handles `[` as a prefix to start an array literal
 2. Parse comma-separated elements within the brackets
 3. Represent the array as: `Apply(__list__, [element1, element2, ...])`
@@ -542,10 +671,13 @@ The lexer recognizes `[` (`LBracket`) and `]` (`RBracket`) tokens, but the parse
 ### Test Cases
 
 #### Test: array-empty.cdz
+
 ```cadenza
 []
 ```
+
 **Expected AST:**
+
 ```
 [
     [__list__],
@@ -553,10 +685,13 @@ The lexer recognizes `[` (`LBracket`) and `]` (`RBracket`) tokens, but the parse
 ```
 
 #### Test: array-single.cdz
+
 ```cadenza
 [1]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__list__, 1],
@@ -564,10 +699,13 @@ The lexer recognizes `[` (`LBracket`) and `]` (`RBracket`) tokens, but the parse
 ```
 
 #### Test: array-simple.cdz
+
 ```cadenza
 [1, 2, 3]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__list__, 1, 2, 3],
@@ -575,10 +713,13 @@ The lexer recognizes `[` (`LBracket`) and `]` (`RBracket`) tokens, but the parse
 ```
 
 #### Test: array-with-exprs.cdz
+
 ```cadenza
 [a + b, c * d]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__list__, [+, a, b], [*, c, d]],
@@ -586,10 +727,13 @@ The lexer recognizes `[` (`LBracket`) and `]` (`RBracket`) tokens, but the parse
 ```
 
 #### Test: array-nested.cdz
+
 ```cadenza
 [[1, 2], [3, 4]]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__list__, [__list__, 1, 2], [__list__, 3, 4]],
@@ -597,10 +741,13 @@ The lexer recognizes `[` (`LBracket`) and `]` (`RBracket`) tokens, but the parse
 ```
 
 #### Test: array-trailing-comma.cdz
+
 ```cadenza
 [1, 2, 3,]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__list__, 1, 2, 3],
@@ -612,9 +759,11 @@ The lexer recognizes `[` (`LBracket`) and `]` (`RBracket`) tokens, but the parse
 ## Issue 4: Array Indexing
 
 ### Current State
+
 The lexer recognizes `[` and `]` tokens, but there is no postfix indexing support. The parser cannot handle `arr[0]` syntax.
 
 ### What Needs To Be Done
+
 1. Add `LBracket` as a postfix operator in the parser's binding power system
 2. Parse the expression inside the brackets as the index
 3. Represent indexing as: `Apply(__index__, [array, index])`
@@ -624,10 +773,13 @@ The lexer recognizes `[` and `]` tokens, but there is no postfix indexing suppor
 ### Test Cases
 
 #### Test: index-simple.cdz
+
 ```cadenza
 arr[0]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__index__, arr, 0],
@@ -635,10 +787,13 @@ arr[0]
 ```
 
 #### Test: index-variable.cdz
+
 ```cadenza
 arr[i]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__index__, arr, i],
@@ -646,10 +801,13 @@ arr[i]
 ```
 
 #### Test: index-expr.cdz
+
 ```cadenza
 arr[i + 1]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__index__, arr, [+, i, 1]],
@@ -657,10 +815,13 @@ arr[i + 1]
 ```
 
 #### Test: index-chained.cdz
+
 ```cadenza
 matrix[0][1]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__index__, [__index__, matrix, 0], 1],
@@ -668,10 +829,13 @@ matrix[0][1]
 ```
 
 #### Test: index-after-call.cdz
+
 ```cadenza
 get_array()[0]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__index__, [get_array], 0],
@@ -679,10 +843,13 @@ get_array()[0]
 ```
 
 #### Test: index-with-array-literal.cdz
+
 ```cadenza
 [1, 2, 3][0]
 ```
+
 **Expected AST:**
+
 ```
 [
     [__index__, [__list__, 1, 2, 3], 0],
@@ -694,9 +861,11 @@ get_array()[0]
 ## Issue 5: Record Creation
 
 ### Current State
+
 The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser does not handle record/struct literal syntax.
 
 ### What Needs To Be Done
+
 1. Add a `parse_record` function that handles `{` as a prefix to start a record literal
 2. Parse field definitions as `name = value` or `name: value` pairs
 3. Handle shorthand field syntax: `{ x, y }` means `{ x = x, y = y }`
@@ -707,10 +876,13 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ### Test Cases
 
 #### Test: record-empty.cdz
+
 ```cadenza
 {}
 ```
+
 **Expected AST:**
+
 ```
 [
     [__record__],
@@ -718,10 +890,13 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ```
 
 #### Test: record-single-field.cdz
+
 ```cadenza
 { x = 1 }
 ```
+
 **Expected AST:**
+
 ```
 [
     [__record__, [=, x, 1]],
@@ -729,10 +904,13 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ```
 
 #### Test: record-multi-field.cdz
+
 ```cadenza
 { x = 1, y = 2, z = 3 }
 ```
+
 **Expected AST:**
+
 ```
 [
     [__record__, [=, x, 1], [=, y, 2], [=, z, 3]],
@@ -740,10 +918,13 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ```
 
 #### Test: record-shorthand.cdz
+
 ```cadenza
 { x, y }
 ```
+
 **Expected AST:**
+
 ```
 [
     [__record__, [=, x, x], [=, y, y]],
@@ -751,10 +932,13 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ```
 
 #### Test: record-mixed.cdz
+
 ```cadenza
 { x, y = 10 }
 ```
+
 **Expected AST:**
+
 ```
 [
     [__record__, [=, x, x], [=, y, 10]],
@@ -762,10 +946,13 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ```
 
 #### Test: record-nested.cdz
+
 ```cadenza
 { point = { x = 0, y = 0 } }
 ```
+
 **Expected AST:**
+
 ```
 [
     [__record__, [=, point, [__record__, [=, x, 0], [=, y, 0]]]],
@@ -773,10 +960,13 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ```
 
 #### Test: record-with-exprs.cdz
+
 ```cadenza
 { sum = a + b, product = a * b }
 ```
+
 **Expected AST:**
+
 ```
 [
     [__record__, [=, sum, [+, a, b]], [=, product, [*, a, b]]],
@@ -788,9 +978,11 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ## Issue 6: Record Field Access (Dot Notation)
 
 ### Current State
+
 The lexer recognizes `.` (`Dot`) token, but the parser does not handle it as a field access operator.
 
 ### What Needs To Be Done
+
 1. Add `.` as an infix operator with high binding power (between function application and postfix operators)
 2. Parse the right-hand side as an identifier (field name)
 3. Represent field access as: `Apply(., [record, field])`
@@ -800,10 +992,13 @@ The lexer recognizes `.` (`Dot`) token, but the parser does not handle it as a f
 ### Test Cases
 
 #### Test: field-simple.cdz
+
 ```cadenza
 point.x
 ```
+
 **Expected AST:**
+
 ```
 [
     [., point, x],
@@ -811,10 +1006,13 @@ point.x
 ```
 
 #### Test: field-chained.cdz
+
 ```cadenza
 obj.field.subfield
 ```
+
 **Expected AST:**
+
 ```
 [
     [., [., obj, field], subfield],
@@ -822,10 +1020,13 @@ obj.field.subfield
 ```
 
 #### Test: field-after-call.cdz
+
 ```cadenza
 get_point().x
 ```
+
 **Expected AST:**
+
 ```
 [
     [., [get_point], x],
@@ -833,10 +1034,13 @@ get_point().x
 ```
 
 #### Test: field-with-index.cdz
+
 ```cadenza
 arr[0].name
 ```
+
 **Expected AST:**
+
 ```
 [
     [., [__index__, arr, 0], name],
@@ -844,10 +1048,13 @@ arr[0].name
 ```
 
 #### Test: field-method-call.cdz
+
 ```cadenza
 list.map fn x -> x * 2
 ```
+
 **Expected AST:**
+
 ```
 [
     [[., list, map], [fn, x, [*, x, 2]]],
@@ -855,10 +1062,13 @@ list.map fn x -> x * 2
 ```
 
 #### Test: field-in-expr.cdz
+
 ```cadenza
 point.x + point.y
 ```
+
 **Expected AST:**
+
 ```
 [
     [+, [., point, x], [., point, y]],
@@ -870,9 +1080,11 @@ point.x + point.y
 ## Issue 7: Tuples
 
 ### Current State
+
 Parentheses are currently used for grouping expressions. The parser handles `(expr)` but does not distinguish between grouping and tuple creation. According to the design doc, `(foo, bar)` should parse as a list.
 
 ### What Needs To Be Done
+
 1. Modify `parse_expression` within parentheses to check for commas
 2. Single element without comma: `(x)` remains grouping
 3. Multiple elements or trailing comma: `(x, y)` or `(x,)` creates a tuple
@@ -883,10 +1095,13 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 ### Test Cases
 
 #### Test: tuple-empty.cdz
+
 ```cadenza
 ()
 ```
+
 **Expected AST:**
+
 ```
 [
     [__tuple__],
@@ -894,10 +1109,13 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 ```
 
 #### Test: tuple-single.cdz
+
 ```cadenza
 (1,)
 ```
+
 **Expected AST:**
+
 ```
 [
     [__tuple__, 1],
@@ -905,10 +1123,13 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 ```
 
 #### Test: tuple-pair.cdz
+
 ```cadenza
 (1, 2)
 ```
+
 **Expected AST:**
+
 ```
 [
     [__tuple__, 1, 2],
@@ -916,10 +1137,13 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 ```
 
 #### Test: tuple-triple.cdz
+
 ```cadenza
 (a, b, c)
 ```
+
 **Expected AST:**
+
 ```
 [
     [__tuple__, a, b, c],
@@ -927,10 +1151,13 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 ```
 
 #### Test: tuple-nested.cdz
+
 ```cadenza
 ((1, 2), (3, 4))
 ```
+
 **Expected AST:**
+
 ```
 [
     [__tuple__, [__tuple__, 1, 2], [__tuple__, 3, 4]],
@@ -938,10 +1165,13 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 ```
 
 #### Test: tuple-with-exprs.cdz
+
 ```cadenza
 (a + b, c * d)
 ```
+
 **Expected AST:**
+
 ```
 [
     [__tuple__, [+, a, b], [*, c, d]],
@@ -949,10 +1179,13 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 ```
 
 #### Test: grouping-vs-tuple.cdz
+
 ```cadenza
 (a + b)
 ```
+
 **Expected AST (grouping, not tuple):**
+
 ```
 [
     [+, a, b],
@@ -964,9 +1197,11 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 ## Issue 8: Match Expressions
 
 ### Current State
+
 There is no special handling for `match` expressions. Since Cadenza has no keywords, `match` would be parsed as an identifier and its arguments as function application, but the pattern-matching arms syntax is not supported.
 
 ### What Needs To Be Done
+
 1. Support `|` as a pattern arm separator or use indentation-based syntax
 2. Parse match arms with patterns and bodies
 3. Represent match as: `Apply(match, [scrutinee, Apply(__arm__, [pattern, body]), ...])`
@@ -977,16 +1212,19 @@ There is no special handling for `match` expressions. Since Cadenza has no keywo
 ### Test Cases
 
 #### Test: match-simple.cdz
+
 ```cadenza
 match x
     0 -> "zero"
     1 -> "one"
     _ -> "other"
 ```
+
 **Expected AST:**
+
 ```
 [
-    [match, x, 
+    [match, x,
         [__arm__, 0, "zero"],
         [__arm__, 1, "one"],
         [__arm__, _, "other"]],
@@ -994,13 +1232,16 @@ match x
 ```
 
 #### Test: match-inline.cdz
+
 ```cadenza
 match x | 0 -> "zero" | 1 -> "one" | _ -> "other"
 ```
+
 **Expected AST:**
+
 ```
 [
-    [match, x, 
+    [match, x,
         [__arm__, 0, "zero"],
         [__arm__, 1, "one"],
         [__arm__, _, "other"]],
@@ -1008,12 +1249,15 @@ match x | 0 -> "zero" | 1 -> "one" | _ -> "other"
 ```
 
 #### Test: match-with-binding.cdz
+
 ```cadenza
 match opt
     Some x -> x
     None -> 0
 ```
+
 **Expected AST:**
+
 ```
 [
     [match, opt,
@@ -1023,13 +1267,16 @@ match opt
 ```
 
 #### Test: match-tuple-pattern.cdz
+
 ```cadenza
 match pair
     (0, y) -> y
     (x, 0) -> x
     (x, y) -> x + y
 ```
+
 **Expected AST:**
+
 ```
 [
     [match, pair,
@@ -1040,13 +1287,16 @@ match pair
 ```
 
 #### Test: match-with-guard.cdz
+
 ```cadenza
 match n
     x if x > 0 -> "positive"
     x if x < 0 -> "negative"
     _ -> "zero"
 ```
+
 **Expected AST:**
+
 ```
 [
     [match, n,
@@ -1057,19 +1307,22 @@ match n
 ```
 
 #### Test: match-nested.cdz
+
 ```cadenza
 match result
-    Ok value -> 
+    Ok value ->
         match value
             Some x -> x
             None -> default
     Err e -> handle_error e
 ```
+
 **Expected AST:**
+
 ```
 [
     [match, result,
-        [__arm__, [Ok, value], 
+        [__arm__, [Ok, value],
             [match, value,
                 [__arm__, [Some, x], x],
                 [__arm__, None, default]]],
@@ -1082,9 +1335,11 @@ match result
 ## Issue 9: If/Else Expressions
 
 ### Current State
+
 There is no special handling for `if`/`then`/`else` expressions. Since Cadenza has no keywords, these would be parsed as identifiers with function application, but the ternary conditional structure is not recognized.
 
 ### What Needs To Be Done
+
 1. Recognize `if condition then consequent else alternative` as a ternary pattern
 2. Support indented bodies after `then` and `else`
 3. Represent if/else as: `Apply(if, [condition, consequent, alternative])`
@@ -1094,10 +1349,13 @@ There is no special handling for `if`/`then`/`else` expressions. Since Cadenza h
 ### Test Cases
 
 #### Test: if-simple.cdz
+
 ```cadenza
 if x > 0 then "positive" else "non-positive"
 ```
+
 **Expected AST:**
+
 ```
 [
     [if, [>, x, 0], "positive", "non-positive"],
@@ -1105,6 +1363,7 @@ if x > 0 then "positive" else "non-positive"
 ```
 
 #### Test: if-with-blocks.cdz
+
 ```cadenza
 if condition then
     do_something
@@ -1113,20 +1372,25 @@ else
     do_other
     other_result
 ```
+
 **Expected AST:**
+
 ```
 [
-    [if, condition, 
+    [if, condition,
         [__block__, do_something, result],
         [__block__, do_other, other_result]],
 ]
 ```
 
 #### Test: if-nested.cdz
+
 ```cadenza
 if a then if b then 1 else 2 else 3
 ```
+
 **Expected AST:**
+
 ```
 [
     [if, a, [if, b, 1, 2], 3],
@@ -1134,22 +1398,28 @@ if a then if b then 1 else 2 else 3
 ```
 
 #### Test: if-elif-else.cdz
+
 ```cadenza
 if x > 0 then "positive" elif x < 0 then "negative" else "zero"
 ```
+
 **Expected AST:**
+
 ```
 [
-    [if, [>, x, 0], "positive", 
+    [if, [>, x, 0], "positive",
         [if, [<, x, 0], "negative", "zero"]],
 ]
 ```
 
 #### Test: if-in-expr.cdz
+
 ```cadenza
 let result = if x > 0 then x else 0 - x
 ```
+
 **Expected AST:**
+
 ```
 [
     [=, [let, result], [if, [>, x, 0], x, [-, 0, x]]],
@@ -1157,10 +1427,13 @@ let result = if x > 0 then x else 0 - x
 ```
 
 #### Test: if-with-complex-condition.cdz
+
 ```cadenza
 if a && b || c then x else y
 ```
+
 **Expected AST:**
+
 ```
 [
     [if, [||, [&&, a, b], c], x, y],
@@ -1168,12 +1441,15 @@ if a && b || c then x else y
 ```
 
 #### Test: if-multiline.cdz
+
 ```cadenza
 if condition
     then result1
     else result2
 ```
+
 **Expected AST:**
+
 ```
 [
     [if, condition, result1, result2],
@@ -1185,6 +1461,7 @@ if condition
 ## Issue 10: Closures and Functions
 
 ### Current State
+
 The lexer recognizes `->` (`Arrow`) and `fn` would be parsed as an identifier. The parser does not currently handle closure or function syntax.
 
 ### Design Considerations
@@ -1192,6 +1469,7 @@ The lexer recognizes `->` (`Arrow`) and `fn` would be parsed as an identifier. T
 **Key distinction: Functions vs Closures**
 
 1. **Functions** (`fn`) - Named, hoisted like Rust
+
    - Can be called before they are defined in the source
    - No need for pre-declaration
    - Top-level or nested definitions
@@ -1204,6 +1482,7 @@ The lexer recognizes `->` (`Arrow`) and `fn` would be parsed as an identifier. T
 This distinction allows Rust-like ergonomics where you can organize code freely (functions), while maintaining clear data flow for closures.
 
 ### What Needs To Be Done
+
 1. Add `fn` as the prefix for function definitions (hoisted)
 2. Design closure syntax (not hoisted, follows `let` rules)
 3. Use `->` to separate parameters from body in both cases
@@ -1215,6 +1494,7 @@ This distinction allows Rust-like ergonomics where you can organize code freely 
 ### Syntax Design (Pending)
 
 **Functions (hoisted):**
+
 ```cadenza
 # Named function - can be called anywhere in scope
 fn double x -> x * 2
@@ -1237,6 +1517,7 @@ fn is_odd n -> if n == 0 then false else is_even (n - 1)
 ```
 
 **Closures (not hoisted, anonymous):**
+
 ```cadenza
 # Option A: No prefix, just arrow (like Haskell/ML lambdas)
 let double = x -> x * 2
@@ -1258,12 +1539,14 @@ filter (x -> x > 0) numbers
 ### Open Questions
 
 1. **Closure syntax**: Should closures use:
+
    - Bare arrow: `x -> x + 1` (clean but may be ambiguous)
    - Backslash: `\x -> x + 1` (Haskell-like, `\` looks odd)
    - Pipes: `|x| x + 1` (Rust-like)
    - `fn` keyword: `fn x -> x + 1` (consistent with functions)
 
 2. **Function name position**: Should the name come before or after `fn`?
+
    - `fn double x -> ...` (name first, like current examples)
    - `double = fn x -> ...` (assignment style, but then hoisting is weird)
 
@@ -1273,13 +1556,16 @@ filter (x -> x > 0) numbers
 
 ### Test Cases
 
-*Note: Syntax is pending design decisions. Examples use current best guess.*
+_Note: Syntax is pending design decisions. Examples use current best guess._
 
 #### Test: fn-simple.cdz
+
 ```cadenza
 fn double x -> x * 2
 ```
+
 **Expected AST:**
+
 ```
 [
     [fn, double, x, [*, x, 2]],
@@ -1287,10 +1573,13 @@ fn double x -> x * 2
 ```
 
 #### Test: fn-multi-param.cdz
+
 ```cadenza
 fn add x y -> x + y
 ```
+
 **Expected AST:**
+
 ```
 [
     [fn, add, x, y, [+, x, y]],
@@ -1298,10 +1587,13 @@ fn add x y -> x + y
 ```
 
 #### Test: fn-tuple-param.cdz
+
 ```cadenza
 fn swap (x, y) -> (y, x)
 ```
+
 **Expected AST:**
+
 ```
 [
     [fn, swap, [__tuple__, x, y], [__tuple__, y, x]],
@@ -1309,16 +1601,19 @@ fn swap (x, y) -> (y, x)
 ```
 
 #### Test: fn-block.cdz
+
 ```cadenza
 fn complex x y ->
     let sum = x + y
     let product = x * y
     (sum, product)
 ```
+
 **Expected AST:**
+
 ```
 [
-    [fn, complex, x, y, [__block__, 
+    [fn, complex, x, y, [__block__,
         [=, [let, sum], [+, x, y]],
         [=, [let, product], [*, x, y]],
         [__tuple__, sum, product]]],
@@ -1326,12 +1621,15 @@ fn complex x y ->
 ```
 
 #### Test: fn-mutual-recursion.cdz
+
 ```cadenza
 # These can call each other because fn is hoisted
 fn is_even n -> if n == 0 then true else is_odd (n - 1)
 fn is_odd n -> if n == 0 then false else is_even (n - 1)
 ```
+
 **Expected AST:**
+
 ```
 [
     [fn, is_even, n, [if, [==, n, 0], true, [is_odd, [-, n, 1]]]],
@@ -1340,10 +1638,13 @@ fn is_odd n -> if n == 0 then false else is_even (n - 1)
 ```
 
 #### Test: closure-simple.cdz
+
 ```cadenza
 let double = x -> x * 2
 ```
+
 **Expected AST:**
+
 ```
 [
     [=, [let, double], [->, x, [*, x, 2]]],
@@ -1351,10 +1652,13 @@ let double = x -> x * 2
 ```
 
 #### Test: closure-in-call.cdz
+
 ```cadenza
 map (x -> x * 2) list
 ```
+
 **Expected AST:**
+
 ```
 [
     [[map, [->, x, [*, x, 2]]], list],
@@ -1362,11 +1666,14 @@ map (x -> x * 2) list
 ```
 
 #### Test: closure-capturing.cdz
+
 ```cadenza
 let multiplier = 3
 let triple = x -> x * multiplier
 ```
+
 **Expected AST:**
+
 ```
 [
     [=, [let, multiplier], 3],
@@ -1375,10 +1682,13 @@ let triple = x -> x * multiplier
 ```
 
 #### Test: fn-curried.cdz
+
 ```cadenza
 fn add x -> y -> x + y
 ```
+
 **Expected AST:**
+
 ```
 [
     [fn, add, x, [->, y, [+, x, y]]],
@@ -1390,6 +1700,7 @@ fn add x -> y -> x + y
 ## Issue 11: Loops (while, for, loop)
 
 ### Current State
+
 The parser does not handle any loop constructs. Since Cadenza has no keywords, `while`, `for`, and `loop` would be parsed as identifiers.
 
 ### Design Considerations
@@ -1398,11 +1709,13 @@ The parser does not handle any loop constructs. Since Cadenza has no keywords, `
 Supporting loops implies supporting mutability, as pure functional loops via recursion can be cumbersome for practical use. The decision is to support mutability for ergonomics.
 
 **Rust-style loop constructs:**
+
 1. `loop` - Infinite loop, exits via `break`
 2. `while condition` - Loop while condition is true
 3. `for pattern in iterable` - Iterator-based loop
 
 ### What Needs To Be Done
+
 1. Parse `loop` with a block body
 2. Parse `while` with condition and block body
 3. Parse `for` with pattern, `in` keyword, iterable expression, and block body
@@ -1444,14 +1757,17 @@ let result = loop
 
 ### Test Cases
 
-*Note: Syntax follows Rust conventions but without explicit keywords.*
+_Note: Syntax follows Rust conventions but without explicit keywords._
 
 #### Test: loop-simple.cdz
+
 ```cadenza
 loop
     do_something
 ```
+
 **Expected AST:**
+
 ```
 [
     [loop, [__block__, do_something]],
@@ -1459,26 +1775,32 @@ loop
 ```
 
 #### Test: loop-break.cdz
+
 ```cadenza
 loop
     if done then break
     do_something
 ```
+
 **Expected AST:**
+
 ```
 [
-    [loop, [__block__, 
+    [loop, [__block__,
         [if, done, break],
         do_something]],
 ]
 ```
 
 #### Test: while-simple.cdz
+
 ```cadenza
 while x > 0
     x = x - 1
 ```
+
 **Expected AST:**
+
 ```
 [
     [while, [>, x, 0], [__block__,
@@ -1487,11 +1809,14 @@ while x > 0
 ```
 
 #### Test: for-simple.cdz
+
 ```cadenza
 for x in items
     process x
 ```
+
 **Expected AST:**
+
 ```
 [
     [for, x, in, items, [__block__,
@@ -1500,11 +1825,14 @@ for x in items
 ```
 
 #### Test: for-pattern.cdz
+
 ```cadenza
 for (i, x) in enumerate items
     print i x
 ```
+
 **Expected AST:**
+
 ```
 [
     [for, [__tuple__, i, x], in, [enumerate, items], [__block__,
@@ -1513,12 +1841,15 @@ for (i, x) in enumerate items
 ```
 
 #### Test: loop-break-value.cdz
+
 ```cadenza
 let result = loop
     let x = try_get
     if x.is_some then break x.value
 ```
+
 **Expected AST:**
+
 ```
 [
     [=, [let, result], [loop, [__block__,
@@ -1528,13 +1859,16 @@ let result = loop
 ```
 
 #### Test: while-with-continue.cdz
+
 ```cadenza
 while has_more
     let item = get_next
     if skip item then continue
     process item
 ```
+
 **Expected AST:**
+
 ```
 [
     [while, has_more, [__block__,
@@ -1559,6 +1893,7 @@ while has_more
 ## Issue 12: Partial Function Application (`&`)
 
 ### Current State
+
 The lexer recognizes `&` (`Ampersand`) token, but it's currently designated for bitwise AND and reference operations. This feature proposes using `&` as a prefix operator for partial function application.
 
 ### Design Overview
@@ -1566,15 +1901,17 @@ The lexer recognizes `&` (`Ampersand`) token, but it's currently designated for 
 Partial function application allows capturing a function with some arguments pre-applied, creating a new function that takes the remaining arguments.
 
 **Syntax forms:**
+
 1. `&foo` - Capture function `foo` as a value
 2. `&foo arg1 arg2` - Partially apply `arg1` and `arg2` to `foo`
 3. `&foo arg1 $0 arg3 $1` - Partial application with positional holes for remaining arguments
 
 ### What Needs To Be Done
+
 1. Add `&` as a prefix operator for partial application (distinct from bitwise AND which is infix)
 2. Parse the function name and any following arguments
 3. Handle `$0`, `$1`, `$2`, etc. as positional placeholders for argument holes (allows reordering)
-4. Represent as: `Apply(__partial__, [fn, arg1, arg2, ...])`  or `Apply(&, [fn, arg1, arg2, ...])`
+4. Represent as: `Apply(__partial__, [fn, arg1, arg2, ...])` or `Apply(&, [fn, arg1, arg2, ...])`
 5. Handle holes: `Apply(__partial__, [fn, arg1, $0, arg3, $1])`
 
 ### Syntax Design
@@ -1616,10 +1953,13 @@ filter (&greater_than $0 0) numbers
 ### Test Cases
 
 #### Test: partial-simple.cdz
+
 ```cadenza
 &foo
 ```
+
 **Expected AST:**
+
 ```
 [
     [&, foo],
@@ -1627,10 +1967,13 @@ filter (&greater_than $0 0) numbers
 ```
 
 #### Test: partial-with-arg.cdz
+
 ```cadenza
 &add 5
 ```
+
 **Expected AST:**
+
 ```
 [
     [&, add, 5],
@@ -1638,10 +1981,13 @@ filter (&greater_than $0 0) numbers
 ```
 
 #### Test: partial-multi-args.cdz
+
 ```cadenza
 &foo 1 2 3
 ```
+
 **Expected AST:**
+
 ```
 [
     [&, foo, 1, 2, 3],
@@ -1649,10 +1995,13 @@ filter (&greater_than $0 0) numbers
 ```
 
 #### Test: partial-with-hole.cdz
+
 ```cadenza
 &foo 1 $0 3
 ```
+
 **Expected AST:**
+
 ```
 [
     [&, foo, 1, $0, 3],
@@ -1660,10 +2009,13 @@ filter (&greater_than $0 0) numbers
 ```
 
 #### Test: partial-multi-holes.cdz
+
 ```cadenza
 &clamp $0 0 100 $1
 ```
+
 **Expected AST:**
+
 ```
 [
     [&, clamp, $0, 0, 100, $1],
@@ -1671,10 +2023,13 @@ filter (&greater_than $0 0) numbers
 ```
 
 #### Test: partial-reorder.cdz
+
 ```cadenza
 &foo $1 $0
 ```
+
 **Expected AST:**
+
 ```
 [
     [&, foo, $1, $0],
@@ -1682,10 +2037,13 @@ filter (&greater_than $0 0) numbers
 ```
 
 #### Test: partial-in-call.cdz
+
 ```cadenza
 map (&add 1) list
 ```
+
 **Expected AST:**
+
 ```
 [
     [[map, [&, add, 1]], list],
@@ -1693,10 +2051,13 @@ map (&add 1) list
 ```
 
 #### Test: partial-in-pipeline.cdz
+
 ```cadenza
 numbers |> filter (&gt $0 0) |> map (&mul 2)
 ```
+
 **Expected AST:**
+
 ```
 [
     [|>, [|>, numbers, [filter, [&, gt, $0, 0]]], [map, [&, mul, 2]]],
@@ -1704,10 +2065,13 @@ numbers |> filter (&gt $0 0) |> map (&mul 2)
 ```
 
 #### Test: partial-with-expr.cdz
+
 ```cadenza
 &foo (a + b) bar (c * d)
 ```
+
 **Expected AST:**
+
 ```
 [
     [&, foo, [+, a, b], bar, [*, c, d]],
@@ -1743,6 +2107,7 @@ The parser currently has weak error handling:
 ### What Needs To Be Done
 
 1. **Restrict valid primary tokens**: Only accept tokens that can start an expression:
+
    - Identifiers
    - Literals (Integer, Float, StringStart)
    - Opening delimiters (`(`, `[`, `{`)
@@ -1811,11 +2176,14 @@ fn error_unexpected_token(&mut self, expected: &str) {
 These tests verify that invalid syntax produces appropriate errors.
 
 #### Test: error-unexpected-rparen.cdz
+
 ```cadenza
 )
 ```
+
 **Expected:** Parse error "expected expression, found RParen"
 **Expected AST:**
+
 ```
 [
     Error(")"),
@@ -1823,11 +2191,14 @@ These tests verify that invalid syntax produces appropriate errors.
 ```
 
 #### Test: error-unexpected-rbracket.cdz
+
 ```cadenza
 ]
 ```
+
 **Expected:** Parse error "expected expression, found RBracket"
 **Expected AST:**
+
 ```
 [
     Error("]"),
@@ -1835,11 +2206,14 @@ These tests verify that invalid syntax produces appropriate errors.
 ```
 
 #### Test: error-unexpected-rbrace.cdz
+
 ```cadenza
 }
 ```
+
 **Expected:** Parse error "expected expression, found RBrace"
 **Expected AST:**
+
 ```
 [
     Error("}"),
@@ -1847,11 +2221,14 @@ These tests verify that invalid syntax produces appropriate errors.
 ```
 
 #### Test: error-unexpected-comma.cdz
+
 ```cadenza
 ,
 ```
+
 **Expected:** Parse error "expected expression, found Comma"
 **Expected AST:**
+
 ```
 [
     Error(","),
@@ -1859,11 +2236,14 @@ These tests verify that invalid syntax produces appropriate errors.
 ```
 
 #### Test: error-unclosed-paren.cdz
+
 ```cadenza
 (a + b
 ```
+
 **Expected:** Parse error "expected closing parenthesis"
 **Expected AST:**
+
 ```
 [
     [+, a, b],
@@ -1871,11 +2251,14 @@ These tests verify that invalid syntax produces appropriate errors.
 ```
 
 #### Test: error-unclosed-bracket.cdz
+
 ```cadenza
 [1, 2, 3
 ```
+
 **Expected:** Parse error "expected closing bracket"
 **Expected AST:**
+
 ```
 [
     [__list__, 1, 2, 3],
@@ -1883,11 +2266,14 @@ These tests verify that invalid syntax produces appropriate errors.
 ```
 
 #### Test: error-extra-rparen.cdz
+
 ```cadenza
 (a + b))
 ```
+
 **Expected:** Parse error on second `)`
 **Expected AST:**
+
 ```
 [
     [+, a, b],
@@ -1896,11 +2282,14 @@ These tests verify that invalid syntax produces appropriate errors.
 ```
 
 #### Test: error-mismatched-delimiters.cdz
+
 ```cadenza
 (a + b]
 ```
+
 **Expected:** Parse error "expected ), found ]"
 **Expected AST:**
+
 ```
 [
     [+, a, b],
@@ -1908,12 +2297,15 @@ These tests verify that invalid syntax produces appropriate errors.
 ```
 
 #### Test: error-recovery-next-line.cdz
+
 ```cadenza
 let x = )
 let y = 5
 ```
+
 **Expected:** Error on first line, successful parse of second line
 **Expected AST:**
+
 ```
 [
     [=, [let, x], Error(")")],
@@ -1922,6 +2314,7 @@ let y = 5
 ```
 
 #### Test: error-recovery-multiple.cdz
+
 ```cadenza
 let a = 1
 )
@@ -1929,8 +2322,10 @@ let b = 2
 ]
 let c = 3
 ```
+
 **Expected:** Errors on lines 2 and 4, successful parse of other lines
 **Expected AST:**
+
 ```
 [
     [=, [let, a], 1],
@@ -1942,18 +2337,23 @@ let c = 3
 ```
 
 #### Test: error-empty-parens-call.cdz
+
 ```cadenza
 foo()
 ```
+
 **Expected:** Either valid (if empty args allowed) or error
 **Note:** This depends on design decision about empty argument lists
 
 #### Test: error-double-operator.cdz
+
 ```cadenza
 a + + b
 ```
+
 **Expected:** Parse error "expected expression, found +"
 **Expected AST:**
+
 ```
 [
     [+, a, Error("+"), b],
@@ -1961,11 +2361,14 @@ a + + b
 ```
 
 #### Test: error-trailing-operator.cdz
+
 ```cadenza
 a +
 ```
+
 **Expected:** Parse error "expected expression after operator"
 **Expected AST:**
+
 ```
 [
     [+, a, Error],
@@ -1973,9 +2376,11 @@ a +
 ```
 
 #### Test: error-leading-binary-operator.cdz
+
 ```cadenza
 * a
 ```
+
 **Expected:** Error if `*` is not a valid prefix operator in this context
 **Note:** Depends on whether `*` is used for dereference
 
@@ -1984,6 +2389,7 @@ a +
 1. **Error recovery strategy**: Should we use panic mode (skip until sync point) or phrase-level recovery (insert/delete tokens)?
 
 2. **Sync points**: What tokens should be synchronization points? Options:
+
    - Newline at base indentation level
    - Keywords like `let`, `fn`, `if`
    - Closing delimiters
@@ -2001,6 +2407,7 @@ a +
 ### Current State
 
 The lexer handles basic strings with `StringStart`, `StringContent`/`StringContentWithEscape`, and `StringEnd` tokens. However, there is no support for:
+
 1. String interpolation (embedding expressions in strings)
 2. Heredoc-style multi-line strings with automatic indentation stripping
 
@@ -2008,12 +2415,14 @@ The lexer handles basic strings with `StringStart`, `StringContent`/`StringConte
 
 **String Interpolation:**
 Use `:` prefix before a string to enable interpolation with `${expr}` syntax:
+
 ```cadenza
 :"hello ${name}"
 ```
 
 **Multi-line Strings:**
 When a string contains a newline after the opening quote, treat it as a heredoc:
+
 - Remove the initial newline
 - Strip common leading indentation from all lines
 - The lexer emits a token per line, parser handles indentation stripping
@@ -2027,7 +2436,7 @@ When a string contains a newline after the opening quote, treat it as a heredoc:
    - Emit `StringLine` tokens instead of `StringContent`
    - Parser strips leading indentation based on its indentation tracking
 4. **New token types**:
-   - `InterpolatedStringStart` (`:"`  )
+   - `InterpolatedStringStart` (`:"` )
    - `InterpolationStart` (`${`)
    - `InterpolationEnd` (`}`)
    - `StringLine` (for multi-line content)
@@ -2035,6 +2444,7 @@ When a string contains a newline after the opening quote, treat it as a heredoc:
 ### Syntax Design
 
 **String Interpolation:**
+
 ```cadenza
 # Basic interpolation
 let greeting = :"hello ${name}"
@@ -2053,6 +2463,7 @@ let info = :"user: ${user.name}, age: ${user.age}"
 ```
 
 **Multi-line Strings (Heredoc style):**
+
 ```cadenza
 # Multi-line string - initial newline is removed
 let text = "
@@ -2083,10 +2494,13 @@ let code = "
 ### Test Cases
 
 #### Test: interp-simple.cdz
+
 ```cadenza
 :"hello ${name}"
 ```
+
 **Expected AST:**
+
 ```
 [
     [__interp__, "hello ", name],
@@ -2094,10 +2508,13 @@ let code = "
 ```
 
 #### Test: interp-expr.cdz
+
 ```cadenza
 :"result: ${a + b}"
 ```
+
 **Expected AST:**
+
 ```
 [
     [__interp__, "result: ", [+, a, b]],
@@ -2105,10 +2522,13 @@ let code = "
 ```
 
 #### Test: interp-multiple.cdz
+
 ```cadenza
 :"${x} and ${y}"
 ```
+
 **Expected AST:**
+
 ```
 [
     [__interp__, "", x, " and ", y],
@@ -2116,10 +2536,13 @@ let code = "
 ```
 
 #### Test: interp-nested.cdz
+
 ```cadenza
 :"value: ${if cond then a else b}"
 ```
+
 **Expected AST:**
+
 ```
 [
     [__interp__, "value: ", [if, cond, a, b]],
@@ -2127,13 +2550,16 @@ let code = "
 ```
 
 #### Test: multiline-simple.cdz
+
 ```cadenza
 "
     line 1
     line 2
 "
 ```
+
 **Expected AST:**
+
 ```
 [
     "line 1\nline 2\n",
@@ -2141,6 +2567,7 @@ let code = "
 ```
 
 #### Test: multiline-indent-preserved.cdz
+
 ```cadenza
 "
     outer
@@ -2148,7 +2575,9 @@ let code = "
     outer again
 "
 ```
+
 **Expected AST:**
+
 ```
 [
     "outer\n    inner\nouter again\n",
@@ -2156,13 +2585,16 @@ let code = "
 ```
 
 #### Test: multiline-interp.cdz
+
 ```cadenza
 :"
     Hello ${name}
     Welcome to ${place}
 "
 ```
+
 **Expected AST:**
+
 ```
 [
     [__interp__, "Hello ", name, "\nWelcome to ", place, "\n"],
@@ -2170,10 +2602,13 @@ let code = "
 ```
 
 #### Test: interp-escape.cdz
+
 ```cadenza
 :"use \${literal} for literal"
 ```
+
 **Expected AST:**
+
 ```
 [
     [__interp__, "use ${literal} for literal"],
@@ -2183,6 +2618,7 @@ let code = "
 ### Implementation Details
 
 **Lexer changes:**
+
 ```rust
 // In lexer, when we see `:` followed by `"`
 fn lex_string(&mut self) {
@@ -2194,10 +2630,10 @@ fn lex_string(&mut self) {
         self.emit(Kind::StringStart);
     }
     self.advance(); // skip '"'
-    
+
     // Check for multi-line (newline immediately after opening quote)
     let is_multiline = self.current == '\n';
-    
+
     if is_multiline {
         self.lex_multiline_string(is_interpolated);
     } else {
@@ -2231,6 +2667,7 @@ fn lex_inline_string(&mut self, interpolated: bool) {
 ```
 
 **Parser changes:**
+
 - When parsing `InterpolatedStringStart`, collect alternating string parts and expressions
 - For multi-line strings, track indentation and strip common prefix
 - Represent as `Apply(__interp__, [part1, expr1, part2, expr2, ...])`
@@ -2238,6 +2675,7 @@ fn lex_inline_string(&mut self, interpolated: bool) {
 ### Open Questions
 
 1. **Interpolation syntax**: Is `:"..."` the right prefix? Alternatives:
+
    - `$"..."` (C#-style)
    - `f"..."` (Python-style)
    - `\`...\`` (JavaScript template literals)
@@ -2247,6 +2685,7 @@ fn lex_inline_string(&mut self, interpolated: bool) {
 3. **Expression restrictions**: Should any expression be allowed in `${}`, or only simple ones?
 
 4. **Multi-line indentation**: Should indentation be stripped based on:
+
    - First content line's indentation
    - Minimum indentation of all lines
    - Closing quote's indentation
@@ -2267,7 +2706,7 @@ Based on dependencies and common usage patterns, the suggested implementation or
 6. **String Interpolation** - `:"hello ${name}"` syntax with multi-line heredoc support
 7. **Tuples** - Foundation for destructuring and multiple returns
 8. **Array Literals** - Basic data structure
-9. **Array Indexing** - Access array elements  
+9. **Array Indexing** - Access array elements
 10. **Record Field Access** - Dot notation is fundamental
 11. **Record Creation** - Struct literals
 12. **If/Else Expressions** - Control flow
@@ -2281,7 +2720,7 @@ Per the design document, all constructs use the `Apply` node type:
 - `__quote__` - Quote operator receiver (syntax capture)
 - `__unquote__` - Unquote operator receiver (syntax splice)
 - `__list__` - Array literal receiver
-- `__tuple__` - Tuple literal receiver  
+- `__tuple__` - Tuple literal receiver
 - `__record__` - Record literal receiver
 - `__index__` - Array indexing receiver
 - `__arm__` - Match arm receiver
@@ -2295,14 +2734,14 @@ The parser tracks indentation through the `Whitespace` struct and uses the `Mark
 ## Open Questions
 
 1. **Quote/Unquote Syntax**: The single quote (`'`) for quoting may conflict with other uses. Need to decide between:
+
    - Backtick (`` ` ``) for quote, tilde (`~`) for unquote
-   - Backtick for quote, dollar (`$`) for unquote  
+   - Backtick for quote, dollar (`$`) for unquote
    - Some other combination
 
 2. **Exponentiation Operator**: Cadenza uses `**` for exponentiation since `^` is reserved for bitwise XOR. This follows the convention of doubling the operator for "super" versions (like `||` for logical OR vs `|` for bitwise OR).
 
 3. **Bitwise vs Logical Operators**: Should Cadenza follow the C/Rust convention of `|` for bitwise OR and `||` for logical OR, `&` for bitwise AND and `&&` for logical AND? This is consistent with most languages but could cause confusion.
-   
 4. **Empty Tuple vs Unit**: Should `()` be an empty tuple or a unit type? Most languages treat them the same.
 
 5. **Record vs Struct**: Are records structural or nominal? This affects pattern matching.

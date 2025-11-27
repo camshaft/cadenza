@@ -1,18 +1,18 @@
 use crate::testing as t;
 use insta::assert_debug_snapshot as s;
-mod ap_op_add {
+mod lit_float {
     use super::*;
     #[test]
     fn lex() {
-        s!("ap_op_add_lex", t::lex("foo 1 + 2"), "foo 1 + 2");
+        s!("lit_float_lex", t::lex("3.14"), "3.14");
     }
     #[test]
     fn cst() {
-        s!("ap_op_add_cst", t::cst("foo 1 + 2"), "foo 1 + 2");
+        s!("lit_float_cst", t::cst("3.14"), "3.14");
     }
     #[test]
     fn ast() {
-        s!("ap_op_add_ast", t::ast("foo 1 + 2"), "foo 1 + 2");
+        s!("lit_float_ast", t::ast("3.14"), "3.14");
     }
 }
 mod ap_simple {
@@ -39,204 +39,6 @@ mod ap_simple {
             "ap_simple_ast",
             t::ast("foo 1 2 3 baz bar"),
             "foo 1 2 3 baz bar"
-        );
-    }
-}
-mod op_try_chain {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!(
-            "op_try_chain_lex",
-            t::lex("foo x? y? z?\n"),
-            "foo x? y? z?\n"
-        );
-    }
-    #[test]
-    fn cst() {
-        s!(
-            "op_try_chain_cst",
-            t::cst("foo x? y? z?\n"),
-            "foo x? y? z?\n"
-        );
-    }
-    #[test]
-    fn ast() {
-        s!(
-            "op_try_chain_ast",
-            t::ast("foo x? y? z?\n"),
-            "foo x? y? z?\n"
-        );
-    }
-}
-mod lit_empty_string {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("lit_empty_string_lex", t::lex("\"\""), "\"\"");
-    }
-    #[test]
-    fn cst() {
-        s!("lit_empty_string_cst", t::cst("\"\""), "\"\"");
-    }
-    #[test]
-    fn ast() {
-        s!("lit_empty_string_ast", t::ast("\"\""), "\"\"");
-    }
-}
-mod lit_int {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("lit_int_lex", t::lex("1234"), "1234");
-    }
-    #[test]
-    fn cst() {
-        s!("lit_int_cst", t::cst("1234"), "1234");
-    }
-    #[test]
-    fn ast() {
-        s!("lit_int_ast", t::ast("1234"), "1234");
-    }
-}
-mod op_sub {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("op_sub_lex", t::lex("a - b"), "a - b");
-    }
-    #[test]
-    fn cst() {
-        s!("op_sub_cst", t::cst("a - b"), "a - b");
-    }
-    #[test]
-    fn ast() {
-        s!("op_sub_ast", t::ast("a - b"), "a - b");
-    }
-}
-mod lit_multiline_string {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!(
-            "lit_multiline_string_lex",
-            t::lex("\"\nhello\nworld!\n\""),
-            "\"\nhello\nworld!\n\""
-        );
-    }
-    #[test]
-    fn cst() {
-        s!(
-            "lit_multiline_string_cst",
-            t::cst("\"\nhello\nworld!\n\""),
-            "\"\nhello\nworld!\n\""
-        );
-    }
-    #[test]
-    fn ast() {
-        s!(
-            "lit_multiline_string_ast",
-            t::ast("\"\nhello\nworld!\n\""),
-            "\"\nhello\nworld!\n\""
-        );
-    }
-}
-mod let_decl {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("let_decl_lex", t::lex("let x"), "let x");
-    }
-    #[test]
-    fn cst() {
-        s!("let_decl_cst", t::cst("let x"), "let x");
-    }
-    #[test]
-    fn ast() {
-        s!("let_decl_ast", t::ast("let x"), "let x");
-    }
-}
-mod let_eq_lit {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("let_eq_lit_lex", t::lex("let x = 42"), "let x = 42");
-    }
-    #[test]
-    fn cst() {
-        s!("let_eq_lit_cst", t::cst("let x = 42"), "let x = 42");
-    }
-    #[test]
-    fn ast() {
-        s!("let_eq_lit_ast", t::ast("let x = 42"), "let x = 42");
-    }
-}
-mod lit_float {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("lit_float_lex", t::lex("3.14"), "3.14");
-    }
-    #[test]
-    fn cst() {
-        s!("lit_float_cst", t::cst("3.14"), "3.14");
-    }
-    #[test]
-    fn ast() {
-        s!("lit_float_ast", t::ast("3.14"), "3.14");
-    }
-}
-mod ap_nested {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!(
-            "ap_nested_lex",
-            t::lex("foo 1 (bar 2) 3 4"),
-            "foo 1 (bar 2) 3 4"
-        );
-    }
-    #[test]
-    fn cst() {
-        s!(
-            "ap_nested_cst",
-            t::cst("foo 1 (bar 2) 3 4"),
-            "foo 1 (bar 2) 3 4"
-        );
-    }
-    #[test]
-    fn ast() {
-        s!(
-            "ap_nested_ast",
-            t::ast("foo 1 (bar 2) 3 4"),
-            "foo 1 (bar 2) 3 4"
-        );
-    }
-}
-mod lit_string_with_escape {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!(
-            "lit_string_with_escape_lex",
-            t::lex("\"hello\\nworld\\\"\""),
-            "\"hello\\nworld\\\"\""
-        );
-    }
-    #[test]
-    fn cst() {
-        s!(
-            "lit_string_with_escape_cst",
-            t::cst("\"hello\\nworld\\\"\""),
-            "\"hello\\nworld\\\"\""
-        );
-    }
-    #[test]
-    fn ast() {
-        s!(
-            "lit_string_with_escape_ast",
-            t::ast("\"hello\\nworld\\\"\""),
-            "\"hello\\nworld\\\"\""
         );
     }
 }
@@ -267,6 +69,63 @@ mod op_try_then_pipe {
         );
     }
 }
+mod op_pipe_try_with_add {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_pipe_try_with_add_lex",
+            t::lex("a + b |?\n"),
+            "a + b |?\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_pipe_try_with_add_cst",
+            t::cst("a + b |?\n"),
+            "a + b |?\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_pipe_try_with_add_ast",
+            t::ast("a + b |?\n"),
+            "a + b |?\n"
+        );
+    }
+}
+mod op_pipe_try_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_pipe_try_simple_lex", t::lex("x |?\n"), "x |?\n");
+    }
+    #[test]
+    fn cst() {
+        s!("op_pipe_try_simple_cst", t::cst("x |?\n"), "x |?\n");
+    }
+    #[test]
+    fn ast() {
+        s!("op_pipe_try_simple_ast", t::ast("x |?\n"), "x |?\n");
+    }
+}
+mod op_add {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_add_lex", t::lex("a + b\n"), "a + b\n");
+    }
+    #[test]
+    fn cst() {
+        s!("op_add_cst", t::cst("a + b\n"), "a + b\n");
+    }
+    #[test]
+    fn ast() {
+        s!("op_add_ast", t::ast("a + b\n"), "a + b\n");
+    }
+}
 mod let_op_or {
     use super::*;
     #[test]
@@ -282,19 +141,133 @@ mod let_op_or {
         s!("let_op_or_ast", t::ast("let x = a || b"), "let x = a || b");
     }
 }
-mod op_add_sub {
+mod op_pipe_try_chain {
     use super::*;
     #[test]
     fn lex() {
-        s!("op_add_sub_lex", t::lex("a + b - c"), "a + b - c");
+        s!("op_pipe_try_chain_lex", t::lex("x |? |?\n"), "x |? |?\n");
     }
     #[test]
     fn cst() {
-        s!("op_add_sub_cst", t::cst("a + b - c"), "a + b - c");
+        s!("op_pipe_try_chain_cst", t::cst("x |? |?\n"), "x |? |?\n");
     }
     #[test]
     fn ast() {
-        s!("op_add_sub_ast", t::ast("a + b - c"), "a + b - c");
+        s!("op_pipe_try_chain_ast", t::ast("x |? |?\n"), "x |? |?\n");
+    }
+}
+mod let_decl {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("let_decl_lex", t::lex("let x"), "let x");
+    }
+    #[test]
+    fn cst() {
+        s!("let_decl_cst", t::cst("let x"), "let x");
+    }
+    #[test]
+    fn ast() {
+        s!("let_decl_ast", t::ast("let x"), "let x");
+    }
+}
+mod ws_paren {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ws_paren_lex",
+            t::lex("foo (\n    a + b\n) c d e + f\n"),
+            "foo (\n    a + b\n) c d e + f\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ws_paren_cst",
+            t::cst("foo (\n    a + b\n) c d e + f\n"),
+            "foo (\n    a + b\n) c d e + f\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ws_paren_ast",
+            t::ast("foo (\n    a + b\n) c d e + f\n"),
+            "foo (\n    a + b\n) c d e + f\n"
+        );
+    }
+}
+mod op_try_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_try_simple_lex", t::lex("x?\n"), "x?\n");
+    }
+    #[test]
+    fn cst() {
+        s!("op_try_simple_cst", t::cst("x?\n"), "x?\n");
+    }
+    #[test]
+    fn ast() {
+        s!("op_try_simple_ast", t::ast("x?\n"), "x?\n");
+    }
+}
+mod op_sub {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_sub_lex", t::lex("a - b"), "a - b");
+    }
+    #[test]
+    fn cst() {
+        s!("op_sub_cst", t::cst("a - b"), "a - b");
+    }
+    #[test]
+    fn ast() {
+        s!("op_sub_ast", t::ast("a - b"), "a - b");
+    }
+}
+mod op_pipe_try_with_ap {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_pipe_try_with_ap_lex",
+            t::lex("foo 1 2 |?\n"),
+            "foo 1 2 |?\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_pipe_try_with_ap_cst",
+            t::cst("foo 1 2 |?\n"),
+            "foo 1 2 |?\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_pipe_try_with_ap_ast",
+            t::ast("foo 1 2 |?\n"),
+            "foo 1 2 |?\n"
+        );
+    }
+}
+mod op_add_mul {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_add_mul_lex", t::lex("a + b * c"), "a + b * c");
+    }
+    #[test]
+    fn cst() {
+        s!("op_add_mul_cst", t::cst("a + b * c"), "a + b * c");
+    }
+    #[test]
+    fn ast() {
+        s!("op_add_mul_ast", t::ast("a + b * c"), "a + b * c");
     }
 }
 mod lit_multi_line {
@@ -324,79 +297,76 @@ mod lit_multi_line {
         );
     }
 }
-mod op_pipe_try_chain {
+mod lit_empty_string {
     use super::*;
     #[test]
     fn lex() {
-        s!("op_pipe_try_chain_lex", t::lex("x |? |?\n"), "x |? |?\n");
+        s!("lit_empty_string_lex", t::lex("\"\""), "\"\"");
     }
     #[test]
     fn cst() {
-        s!("op_pipe_try_chain_cst", t::cst("x |? |?\n"), "x |? |?\n");
+        s!("lit_empty_string_cst", t::cst("\"\""), "\"\"");
     }
     #[test]
     fn ast() {
-        s!("op_pipe_try_chain_ast", t::ast("x |? |?\n"), "x |? |?\n");
+        s!("lit_empty_string_ast", t::ast("\"\""), "\"\"");
     }
 }
-mod ap_op_or {
+mod ap_single {
     use super::*;
     #[test]
     fn lex() {
-        s!("ap_op_or_lex", t::lex("foo a || b"), "foo a || b");
+        s!("ap_single_lex", t::lex("foo bar"), "foo bar");
     }
     #[test]
     fn cst() {
-        s!("ap_op_or_cst", t::cst("foo a || b"), "foo a || b");
+        s!("ap_single_cst", t::cst("foo bar"), "foo bar");
     }
     #[test]
     fn ast() {
-        s!("ap_op_or_ast", t::ast("foo a || b"), "foo a || b");
+        s!("ap_single_ast", t::ast("foo bar"), "foo bar");
     }
 }
-mod op_mul_add {
+mod lit_multiline_string {
     use super::*;
     #[test]
     fn lex() {
-        s!("op_mul_add_lex", t::lex("a * b + c"), "a * b + c");
+        s!(
+            "lit_multiline_string_lex",
+            t::lex("\"\nhello\nworld!\n\""),
+            "\"\nhello\nworld!\n\""
+        );
     }
     #[test]
     fn cst() {
-        s!("op_mul_add_cst", t::cst("a * b + c"), "a * b + c");
+        s!(
+            "lit_multiline_string_cst",
+            t::cst("\"\nhello\nworld!\n\""),
+            "\"\nhello\nworld!\n\""
+        );
     }
     #[test]
     fn ast() {
-        s!("op_mul_add_ast", t::ast("a * b + c"), "a * b + c");
+        s!(
+            "lit_multiline_string_ast",
+            t::ast("\"\nhello\nworld!\n\""),
+            "\"\nhello\nworld!\n\""
+        );
     }
 }
-mod op_try_simple {
+mod let_eq_lit {
     use super::*;
     #[test]
     fn lex() {
-        s!("op_try_simple_lex", t::lex("x?\n"), "x?\n");
+        s!("let_eq_lit_lex", t::lex("let x = 42"), "let x = 42");
     }
     #[test]
     fn cst() {
-        s!("op_try_simple_cst", t::cst("x?\n"), "x?\n");
+        s!("let_eq_lit_cst", t::cst("let x = 42"), "let x = 42");
     }
     #[test]
     fn ast() {
-        s!("op_try_simple_ast", t::ast("x?\n"), "x?\n");
-    }
-}
-mod op_try_double {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("op_try_double_lex", t::lex("x??\n"), "x??\n");
-    }
-    #[test]
-    fn cst() {
-        s!("op_try_double_cst", t::cst("x??\n"), "x??\n");
-    }
-    #[test]
-    fn ast() {
-        s!("op_try_double_ast", t::ast("x??\n"), "x??\n");
+        s!("let_eq_lit_ast", t::ast("let x = 42"), "let x = 42");
     }
 }
 mod ws_block {
@@ -423,6 +393,63 @@ mod ws_block {
             "ws_block_ast",
             t::ast("let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"),
             "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
+        );
+    }
+}
+mod op_mul_add {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_mul_add_lex", t::lex("a * b + c"), "a * b + c");
+    }
+    #[test]
+    fn cst() {
+        s!("op_mul_add_cst", t::cst("a * b + c"), "a * b + c");
+    }
+    #[test]
+    fn ast() {
+        s!("op_mul_add_ast", t::ast("a * b + c"), "a * b + c");
+    }
+}
+mod ap_op_add {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("ap_op_add_lex", t::lex("foo 1 + 2"), "foo 1 + 2");
+    }
+    #[test]
+    fn cst() {
+        s!("ap_op_add_cst", t::cst("foo 1 + 2"), "foo 1 + 2");
+    }
+    #[test]
+    fn ast() {
+        s!("ap_op_add_ast", t::ast("foo 1 + 2"), "foo 1 + 2");
+    }
+}
+mod op_pipe_then_try {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_pipe_then_try_lex",
+            t::lex("foo 1 |> bar |?\n"),
+            "foo 1 |> bar |?\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_pipe_then_try_cst",
+            t::cst("foo 1 |> bar |?\n"),
+            "foo 1 |> bar |?\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_pipe_then_try_ast",
+            t::ast("foo 1 |> bar |?\n"),
+            "foo 1 |> bar |?\n"
         );
     }
 }
@@ -456,73 +483,19 @@ mod lit_string {
         s!("lit_string_ast", t::ast("\"hello\""), "\"hello\"");
     }
 }
-mod op_pipe_try_with_add {
+mod op_try_double {
     use super::*;
     #[test]
     fn lex() {
-        s!(
-            "op_pipe_try_with_add_lex",
-            t::lex("a + b |?\n"),
-            "a + b |?\n"
-        );
+        s!("op_try_double_lex", t::lex("x??\n"), "x??\n");
     }
     #[test]
     fn cst() {
-        s!(
-            "op_pipe_try_with_add_cst",
-            t::cst("a + b |?\n"),
-            "a + b |?\n"
-        );
+        s!("op_try_double_cst", t::cst("x??\n"), "x??\n");
     }
     #[test]
     fn ast() {
-        s!(
-            "op_pipe_try_with_add_ast",
-            t::ast("a + b |?\n"),
-            "a + b |?\n"
-        );
-    }
-}
-mod op_pipe_then_try {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!(
-            "op_pipe_then_try_lex",
-            t::lex("foo 1 |> bar |?\n"),
-            "foo 1 |> bar |?\n"
-        );
-    }
-    #[test]
-    fn cst() {
-        s!(
-            "op_pipe_then_try_cst",
-            t::cst("foo 1 |> bar |?\n"),
-            "foo 1 |> bar |?\n"
-        );
-    }
-    #[test]
-    fn ast() {
-        s!(
-            "op_pipe_then_try_ast",
-            t::ast("foo 1 |> bar |?\n"),
-            "foo 1 |> bar |?\n"
-        );
-    }
-}
-mod op_pipe_try_simple {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("op_pipe_try_simple_lex", t::lex("x |?\n"), "x |?\n");
-    }
-    #[test]
-    fn cst() {
-        s!("op_pipe_try_simple_cst", t::cst("x |?\n"), "x |?\n");
-    }
-    #[test]
-    fn ast() {
-        s!("op_pipe_try_simple_ast", t::ast("x |?\n"), "x |?\n");
+        s!("op_try_double_ast", t::ast("x??\n"), "x??\n");
     }
 }
 mod op_pipe {
@@ -552,30 +525,84 @@ mod op_pipe {
         );
     }
 }
-mod op_pipe_try_with_ap {
+mod op_try_with_paren {
     use super::*;
     #[test]
     fn lex() {
         s!(
-            "op_pipe_try_with_ap_lex",
-            t::lex("foo 1 2 |?\n"),
-            "foo 1 2 |?\n"
+            "op_try_with_paren_lex",
+            t::lex("let x = (foo 1 + 2)?\n"),
+            "let x = (foo 1 + 2)?\n"
         );
     }
     #[test]
     fn cst() {
         s!(
-            "op_pipe_try_with_ap_cst",
-            t::cst("foo 1 2 |?\n"),
-            "foo 1 2 |?\n"
+            "op_try_with_paren_cst",
+            t::cst("let x = (foo 1 + 2)?\n"),
+            "let x = (foo 1 + 2)?\n"
         );
     }
     #[test]
     fn ast() {
         s!(
-            "op_pipe_try_with_ap_ast",
-            t::ast("foo 1 2 |?\n"),
-            "foo 1 2 |?\n"
+            "op_try_with_paren_ast",
+            t::ast("let x = (foo 1 + 2)?\n"),
+            "let x = (foo 1 + 2)?\n"
+        );
+    }
+}
+mod op_try_chain {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_try_chain_lex",
+            t::lex("foo x? y? z?\n"),
+            "foo x? y? z?\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_try_chain_cst",
+            t::cst("foo x? y? z?\n"),
+            "foo x? y? z?\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_try_chain_ast",
+            t::ast("foo x? y? z?\n"),
+            "foo x? y? z?\n"
+        );
+    }
+}
+mod ap_nested {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ap_nested_lex",
+            t::lex("foo 1 (bar 2) 3 4"),
+            "foo 1 (bar 2) 3 4"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ap_nested_cst",
+            t::cst("foo 1 (bar 2) 3 4"),
+            "foo 1 (bar 2) 3 4"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ap_nested_ast",
+            t::ast("foo 1 (bar 2) 3 4"),
+            "foo 1 (bar 2) 3 4"
         );
     }
 }
@@ -603,6 +630,33 @@ mod op_pipe_try_pipe {
             "op_pipe_try_pipe_ast",
             t::ast("foo 1 |> bar 2 |? |> baz 3\n"),
             "foo 1 |> bar 2 |? |> baz 3\n"
+        );
+    }
+}
+mod lit_string_with_escape {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "lit_string_with_escape_lex",
+            t::lex("\"hello\\nworld\\\"\""),
+            "\"hello\\nworld\\\"\""
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "lit_string_with_escape_cst",
+            t::cst("\"hello\\nworld\\\"\""),
+            "\"hello\\nworld\\\"\""
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "lit_string_with_escape_ast",
+            t::ast("\"hello\\nworld\\\"\""),
+            "\"hello\\nworld\\\"\""
         );
     }
 }
@@ -648,61 +702,19 @@ mod op_try_with_ap_add {
         );
     }
 }
-mod ap_single {
+mod op_add_sub {
     use super::*;
     #[test]
     fn lex() {
-        s!("ap_single_lex", t::lex("foo bar"), "foo bar");
+        s!("op_add_sub_lex", t::lex("a + b - c"), "a + b - c");
     }
     #[test]
     fn cst() {
-        s!("ap_single_cst", t::cst("foo bar"), "foo bar");
+        s!("op_add_sub_cst", t::cst("a + b - c"), "a + b - c");
     }
     #[test]
     fn ast() {
-        s!("ap_single_ast", t::ast("foo bar"), "foo bar");
-    }
-}
-mod op_add_mul {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!("op_add_mul_lex", t::lex("a + b * c"), "a + b * c");
-    }
-    #[test]
-    fn cst() {
-        s!("op_add_mul_cst", t::cst("a + b * c"), "a + b * c");
-    }
-    #[test]
-    fn ast() {
-        s!("op_add_mul_ast", t::ast("a + b * c"), "a + b * c");
-    }
-}
-mod op_try_with_paren {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!(
-            "op_try_with_paren_lex",
-            t::lex("let x = (foo 1 + 2)?\n"),
-            "let x = (foo 1 + 2)?\n"
-        );
-    }
-    #[test]
-    fn cst() {
-        s!(
-            "op_try_with_paren_cst",
-            t::cst("let x = (foo 1 + 2)?\n"),
-            "let x = (foo 1 + 2)?\n"
-        );
-    }
-    #[test]
-    fn ast() {
-        s!(
-            "op_try_with_paren_ast",
-            t::ast("let x = (foo 1 + 2)?\n"),
-            "let x = (foo 1 + 2)?\n"
-        );
+        s!("op_add_sub_ast", t::ast("a + b - c"), "a + b - c");
     }
 }
 mod op_multi_add {
@@ -720,45 +732,33 @@ mod op_multi_add {
         s!("op_multi_add_ast", t::ast("a + b + c"), "a + b + c");
     }
 }
-mod ws_paren {
+mod lit_int {
     use super::*;
     #[test]
     fn lex() {
-        s!(
-            "ws_paren_lex",
-            t::lex("foo (\n    a + b\n) c d e + f\n"),
-            "foo (\n    a + b\n) c d e + f\n"
-        );
+        s!("lit_int_lex", t::lex("1234"), "1234");
     }
     #[test]
     fn cst() {
-        s!(
-            "ws_paren_cst",
-            t::cst("foo (\n    a + b\n) c d e + f\n"),
-            "foo (\n    a + b\n) c d e + f\n"
-        );
+        s!("lit_int_cst", t::cst("1234"), "1234");
     }
     #[test]
     fn ast() {
-        s!(
-            "ws_paren_ast",
-            t::ast("foo (\n    a + b\n) c d e + f\n"),
-            "foo (\n    a + b\n) c d e + f\n"
-        );
+        s!("lit_int_ast", t::ast("1234"), "1234");
     }
 }
-mod op_add {
+mod ap_op_or {
     use super::*;
     #[test]
     fn lex() {
-        s!("op_add_lex", t::lex("a + b\n"), "a + b\n");
+        s!("ap_op_or_lex", t::lex("foo a || b"), "foo a || b");
     }
     #[test]
     fn cst() {
-        s!("op_add_cst", t::cst("a + b\n"), "a + b\n");
+        s!("ap_op_or_cst", t::cst("foo a || b"), "foo a || b");
     }
     #[test]
     fn ast() {
-        s!("op_add_ast", t::ast("a + b\n"), "a + b\n");
+        s!("ap_op_or_ast", t::ast("foo a || b"), "foo a || b");
     }
 }

@@ -4,86 +4,94 @@ use serde::{Deserialize, Serialize};
 pub enum Kind {
     /// "@"
     At,
-    /// "="
-    Equal,
-    /// "=="
-    EqualEqual,
-    /// "<"
-    Less,
-    /// "<="
-    LessEqual,
-    /// "<<"
-    LessLess,
-    /// ">"
-    Greater,
-    /// ">="
-    GreaterEqual,
-    /// ">>"
-    GreaterGreater,
-    /// "+"
-    Plus,
-    /// "+="
-    PlusEqual,
-    /// "-"
-    Minus,
-    /// "-="
-    MinusEqual,
-    /// "->"
-    Arrow,
-    /// "*"
-    Star,
-    /// "*="
-    StarEqual,
-    /// "/"
-    Slash,
-    /// "/="
-    SlashEqual,
-    /// "\\"
-    Backslash,
-    /// "%"
-    Percent,
-    /// "%="
-    PercentEqual,
     /// "!"
     Bang,
-    /// "!="
-    BangEqual,
-    /// "&"
-    Ampersand,
-    /// "&&"
-    AmpersandAmpersand,
-    /// "&="
-    AmpersandEqual,
-    /// "`"
-    Backtick,
-    /// "'"
-    SingleQuote,
-    /// "|"
-    Pipe,
-    /// "||"
-    PipePipe,
-    /// "|="
-    PipeEqual,
-    /// "|>"
-    PipeGreater,
-    /// "|?"
-    PipeQuestion,
-    /// "^"
-    Caret,
-    /// "^="
-    CaretEqual,
     /// "~"
     Tilde,
-    /// "."
-    Dot,
-    /// ".."
-    DotDot,
-    /// ".="
-    DotEqual,
     /// "$"
     Dollar,
     /// "?"
     Question,
+    /// "|?"
+    PipeQuestion,
+    /// "|>"
+    PipeGreater,
+    /// ".."
+    DotDot,
+    /// "..="
+    DotDotEqual,
+    /// "="
+    Equal,
+    /// "->"
+    RightArrow,
+    /// "<-"
+    LeftArrow,
+    /// "+="
+    PlusEqual,
+    /// "-="
+    MinusEqual,
+    /// "*="
+    StarEqual,
+    /// "/="
+    SlashEqual,
+    /// "%="
+    PercentEqual,
+    /// "&="
+    AmpersandEqual,
+    /// "|="
+    PipeEqual,
+    /// "^="
+    CaretEqual,
+    /// "<<="
+    LessLessEqual,
+    /// ">>="
+    GreaterGreaterEqual,
+    /// "||"
+    PipePipe,
+    /// "&&"
+    AmpersandAmpersand,
+    /// "=="
+    EqualEqual,
+    /// "!="
+    BangEqual,
+    /// "<"
+    Less,
+    /// "<="
+    LessEqual,
+    /// ">"
+    Greater,
+    /// ">="
+    GreaterEqual,
+    /// "|"
+    Pipe,
+    /// "^"
+    Caret,
+    /// "&"
+    Ampersand,
+    /// "<<"
+    LessLess,
+    /// ">>"
+    GreaterGreater,
+    /// "+"
+    Plus,
+    /// "-"
+    Minus,
+    /// "*"
+    Star,
+    /// "/"
+    Slash,
+    /// "%"
+    Percent,
+    /// "**"
+    StarStar,
+    /// "."
+    Dot,
+    /// "\\"
+    Backslash,
+    /// "`"
+    Backtick,
+    /// "'"
+    SingleQuote,
     /// ","
     Comma,
     /// ":"
@@ -96,6 +104,8 @@ pub enum Kind {
     LParen,
     /// ")"
     RParen,
+    /// "${"
+    LDollarBrace,
     /// "{"
     LBrace,
     /// "}"
@@ -136,52 +146,57 @@ pub enum Kind {
 impl Kind {
     pub const ALL: &'static [Self] = &[
         Self::At,
-        Self::Equal,
-        Self::EqualEqual,
-        Self::Less,
-        Self::LessEqual,
-        Self::LessLess,
-        Self::Greater,
-        Self::GreaterEqual,
-        Self::GreaterGreater,
-        Self::Plus,
-        Self::PlusEqual,
-        Self::Minus,
-        Self::MinusEqual,
-        Self::Arrow,
-        Self::Star,
-        Self::StarEqual,
-        Self::Slash,
-        Self::SlashEqual,
-        Self::Backslash,
-        Self::Percent,
-        Self::PercentEqual,
         Self::Bang,
-        Self::BangEqual,
-        Self::Ampersand,
-        Self::AmpersandAmpersand,
-        Self::AmpersandEqual,
-        Self::Backtick,
-        Self::SingleQuote,
-        Self::Pipe,
-        Self::PipePipe,
-        Self::PipeEqual,
-        Self::PipeGreater,
-        Self::PipeQuestion,
-        Self::Caret,
-        Self::CaretEqual,
         Self::Tilde,
-        Self::Dot,
-        Self::DotDot,
-        Self::DotEqual,
         Self::Dollar,
         Self::Question,
+        Self::PipeQuestion,
+        Self::PipeGreater,
+        Self::DotDot,
+        Self::DotDotEqual,
+        Self::Equal,
+        Self::RightArrow,
+        Self::LeftArrow,
+        Self::PlusEqual,
+        Self::MinusEqual,
+        Self::StarEqual,
+        Self::SlashEqual,
+        Self::PercentEqual,
+        Self::AmpersandEqual,
+        Self::PipeEqual,
+        Self::CaretEqual,
+        Self::LessLessEqual,
+        Self::GreaterGreaterEqual,
+        Self::PipePipe,
+        Self::AmpersandAmpersand,
+        Self::EqualEqual,
+        Self::BangEqual,
+        Self::Less,
+        Self::LessEqual,
+        Self::Greater,
+        Self::GreaterEqual,
+        Self::Pipe,
+        Self::Caret,
+        Self::Ampersand,
+        Self::LessLess,
+        Self::GreaterGreater,
+        Self::Plus,
+        Self::Minus,
+        Self::Star,
+        Self::Slash,
+        Self::Percent,
+        Self::StarStar,
+        Self::Dot,
+        Self::Backslash,
+        Self::Backtick,
+        Self::SingleQuote,
         Self::Comma,
         Self::Colon,
         Self::ColonColon,
         Self::Semicolon,
         Self::LParen,
         Self::RParen,
+        Self::LDollarBrace,
         Self::LBrace,
         Self::RBrace,
         Self::LBracket,
@@ -233,53 +248,47 @@ impl Kind {
 
     pub const NODE: &'static [Self] = &[
         Self::At,
-        Self::Equal,
-        Self::EqualEqual,
-        Self::Less,
-        Self::LessEqual,
-        Self::LessLess,
-        Self::Greater,
-        Self::GreaterEqual,
-        Self::GreaterGreater,
-        Self::Plus,
-        Self::PlusEqual,
-        Self::Minus,
-        Self::MinusEqual,
-        Self::Arrow,
-        Self::Star,
-        Self::StarEqual,
-        Self::Slash,
-        Self::SlashEqual,
-        Self::Backslash,
-        Self::Percent,
-        Self::PercentEqual,
         Self::Bang,
-        Self::BangEqual,
-        Self::Ampersand,
-        Self::AmpersandAmpersand,
-        Self::AmpersandEqual,
-        Self::Backtick,
-        Self::SingleQuote,
-        Self::Pipe,
-        Self::PipePipe,
-        Self::PipeEqual,
-        Self::PipeGreater,
-        Self::PipeQuestion,
-        Self::Caret,
-        Self::CaretEqual,
         Self::Tilde,
-        Self::Dot,
-        Self::DotDot,
-        Self::DotEqual,
         Self::Dollar,
         Self::Question,
-        Self::Comma,
-        Self::Colon,
-        Self::ColonColon,
-        Self::Semicolon,
-        Self::LBrace,
-        Self::LBracket,
-        Self::DocCommentStart,
+        Self::PipeQuestion,
+        Self::PipeGreater,
+        Self::DotDot,
+        Self::DotDotEqual,
+        Self::Equal,
+        Self::RightArrow,
+        Self::LeftArrow,
+        Self::PlusEqual,
+        Self::MinusEqual,
+        Self::StarEqual,
+        Self::SlashEqual,
+        Self::PercentEqual,
+        Self::AmpersandEqual,
+        Self::PipeEqual,
+        Self::CaretEqual,
+        Self::LessLessEqual,
+        Self::GreaterGreaterEqual,
+        Self::PipePipe,
+        Self::AmpersandAmpersand,
+        Self::EqualEqual,
+        Self::BangEqual,
+        Self::Less,
+        Self::LessEqual,
+        Self::Greater,
+        Self::GreaterEqual,
+        Self::Pipe,
+        Self::Caret,
+        Self::Ampersand,
+        Self::LessLess,
+        Self::GreaterGreater,
+        Self::Plus,
+        Self::Minus,
+        Self::Star,
+        Self::Slash,
+        Self::Percent,
+        Self::StarStar,
+        Self::Dot,
         Self::StringContent,
         Self::StringContentWithEscape,
         Self::DocCommentContent,
@@ -299,53 +308,47 @@ impl Kind {
         matches!(
             self,
             Self::At
-                | Self::Equal
-                | Self::EqualEqual
-                | Self::Less
-                | Self::LessEqual
-                | Self::LessLess
-                | Self::Greater
-                | Self::GreaterEqual
-                | Self::GreaterGreater
-                | Self::Plus
-                | Self::PlusEqual
-                | Self::Minus
-                | Self::MinusEqual
-                | Self::Arrow
-                | Self::Star
-                | Self::StarEqual
-                | Self::Slash
-                | Self::SlashEqual
-                | Self::Backslash
-                | Self::Percent
-                | Self::PercentEqual
                 | Self::Bang
-                | Self::BangEqual
-                | Self::Ampersand
-                | Self::AmpersandAmpersand
-                | Self::AmpersandEqual
-                | Self::Backtick
-                | Self::SingleQuote
-                | Self::Pipe
-                | Self::PipePipe
-                | Self::PipeEqual
-                | Self::PipeGreater
-                | Self::PipeQuestion
-                | Self::Caret
-                | Self::CaretEqual
                 | Self::Tilde
-                | Self::Dot
-                | Self::DotDot
-                | Self::DotEqual
                 | Self::Dollar
                 | Self::Question
-                | Self::Comma
-                | Self::Colon
-                | Self::ColonColon
-                | Self::Semicolon
-                | Self::LBrace
-                | Self::LBracket
-                | Self::DocCommentStart
+                | Self::PipeQuestion
+                | Self::PipeGreater
+                | Self::DotDot
+                | Self::DotDotEqual
+                | Self::Equal
+                | Self::RightArrow
+                | Self::LeftArrow
+                | Self::PlusEqual
+                | Self::MinusEqual
+                | Self::StarEqual
+                | Self::SlashEqual
+                | Self::PercentEqual
+                | Self::AmpersandEqual
+                | Self::PipeEqual
+                | Self::CaretEqual
+                | Self::LessLessEqual
+                | Self::GreaterGreaterEqual
+                | Self::PipePipe
+                | Self::AmpersandAmpersand
+                | Self::EqualEqual
+                | Self::BangEqual
+                | Self::Less
+                | Self::LessEqual
+                | Self::Greater
+                | Self::GreaterEqual
+                | Self::Pipe
+                | Self::Caret
+                | Self::Ampersand
+                | Self::LessLess
+                | Self::GreaterGreater
+                | Self::Plus
+                | Self::Minus
+                | Self::Star
+                | Self::Slash
+                | Self::Percent
+                | Self::StarStar
+                | Self::Dot
                 | Self::StringContent
                 | Self::StringContentWithEscape
                 | Self::DocCommentContent
@@ -365,52 +368,57 @@ impl Kind {
     pub const fn as_str(self) -> Option<&'static str> {
         match self {
             Self::At => Some("@"),
-            Self::Equal => Some("="),
-            Self::EqualEqual => Some("=="),
-            Self::Less => Some("<"),
-            Self::LessEqual => Some("<="),
-            Self::LessLess => Some("<<"),
-            Self::Greater => Some(">"),
-            Self::GreaterEqual => Some(">="),
-            Self::GreaterGreater => Some(">>"),
-            Self::Plus => Some("+"),
-            Self::PlusEqual => Some("+="),
-            Self::Minus => Some("-"),
-            Self::MinusEqual => Some("-="),
-            Self::Arrow => Some("->"),
-            Self::Star => Some("*"),
-            Self::StarEqual => Some("*="),
-            Self::Slash => Some("/"),
-            Self::SlashEqual => Some("/="),
-            Self::Backslash => Some("\\"),
-            Self::Percent => Some("%"),
-            Self::PercentEqual => Some("%="),
             Self::Bang => Some("!"),
-            Self::BangEqual => Some("!="),
-            Self::Ampersand => Some("&"),
-            Self::AmpersandAmpersand => Some("&&"),
-            Self::AmpersandEqual => Some("&="),
-            Self::Backtick => Some("`"),
-            Self::SingleQuote => Some("'"),
-            Self::Pipe => Some("|"),
-            Self::PipePipe => Some("||"),
-            Self::PipeEqual => Some("|="),
-            Self::PipeGreater => Some("|>"),
-            Self::PipeQuestion => Some("|?"),
-            Self::Caret => Some("^"),
-            Self::CaretEqual => Some("^="),
             Self::Tilde => Some("~"),
-            Self::Dot => Some("."),
-            Self::DotDot => Some(".."),
-            Self::DotEqual => Some(".="),
             Self::Dollar => Some("$"),
             Self::Question => Some("?"),
+            Self::PipeQuestion => Some("|?"),
+            Self::PipeGreater => Some("|>"),
+            Self::DotDot => Some(".."),
+            Self::DotDotEqual => Some("..="),
+            Self::Equal => Some("="),
+            Self::RightArrow => Some("->"),
+            Self::LeftArrow => Some("<-"),
+            Self::PlusEqual => Some("+="),
+            Self::MinusEqual => Some("-="),
+            Self::StarEqual => Some("*="),
+            Self::SlashEqual => Some("/="),
+            Self::PercentEqual => Some("%="),
+            Self::AmpersandEqual => Some("&="),
+            Self::PipeEqual => Some("|="),
+            Self::CaretEqual => Some("^="),
+            Self::LessLessEqual => Some("<<="),
+            Self::GreaterGreaterEqual => Some(">>="),
+            Self::PipePipe => Some("||"),
+            Self::AmpersandAmpersand => Some("&&"),
+            Self::EqualEqual => Some("=="),
+            Self::BangEqual => Some("!="),
+            Self::Less => Some("<"),
+            Self::LessEqual => Some("<="),
+            Self::Greater => Some(">"),
+            Self::GreaterEqual => Some(">="),
+            Self::Pipe => Some("|"),
+            Self::Caret => Some("^"),
+            Self::Ampersand => Some("&"),
+            Self::LessLess => Some("<<"),
+            Self::GreaterGreater => Some(">>"),
+            Self::Plus => Some("+"),
+            Self::Minus => Some("-"),
+            Self::Star => Some("*"),
+            Self::Slash => Some("/"),
+            Self::Percent => Some("%"),
+            Self::StarStar => Some("**"),
+            Self::Dot => Some("."),
+            Self::Backslash => Some("\\"),
+            Self::Backtick => Some("`"),
+            Self::SingleQuote => Some("'"),
             Self::Comma => Some(","),
             Self::Colon => Some(":"),
             Self::ColonColon => Some("::"),
             Self::Semicolon => Some(";"),
             Self::LParen => Some("("),
             Self::RParen => Some(")"),
+            Self::LDollarBrace => Some("${"),
             Self::LBrace => Some("{"),
             Self::RBrace => Some("}"),
             Self::LBracket => Some("["),
@@ -428,55 +436,130 @@ impl Kind {
     pub const fn as_op(self) -> Option<Op> {
         match self {
             Self::At => Some(Op::At),
-            Self::Equal => Some(Op::Equal),
-            Self::EqualEqual => Some(Op::EqualEqual),
-            Self::Less => Some(Op::Less),
-            Self::LessEqual => Some(Op::LessEqual),
-            Self::LessLess => Some(Op::LessLess),
-            Self::Greater => Some(Op::Greater),
-            Self::GreaterEqual => Some(Op::GreaterEqual),
-            Self::GreaterGreater => Some(Op::GreaterGreater),
-            Self::Plus => Some(Op::Plus),
-            Self::PlusEqual => Some(Op::PlusEqual),
-            Self::Minus => Some(Op::Minus),
-            Self::MinusEqual => Some(Op::MinusEqual),
-            Self::Arrow => Some(Op::Arrow),
-            Self::Star => Some(Op::Star),
-            Self::StarEqual => Some(Op::StarEqual),
-            Self::Slash => Some(Op::Slash),
-            Self::SlashEqual => Some(Op::SlashEqual),
-            Self::Backslash => Some(Op::Backslash),
-            Self::Percent => Some(Op::Percent),
-            Self::PercentEqual => Some(Op::PercentEqual),
             Self::Bang => Some(Op::Bang),
-            Self::BangEqual => Some(Op::BangEqual),
-            Self::Ampersand => Some(Op::Ampersand),
-            Self::AmpersandAmpersand => Some(Op::AmpersandAmpersand),
-            Self::AmpersandEqual => Some(Op::AmpersandEqual),
-            Self::Backtick => Some(Op::Backtick),
-            Self::SingleQuote => Some(Op::SingleQuote),
-            Self::Pipe => Some(Op::Pipe),
-            Self::PipePipe => Some(Op::PipePipe),
-            Self::PipeEqual => Some(Op::PipeEqual),
-            Self::PipeGreater => Some(Op::PipeGreater),
-            Self::PipeQuestion => Some(Op::PipeQuestion),
-            Self::Caret => Some(Op::Caret),
-            Self::CaretEqual => Some(Op::CaretEqual),
             Self::Tilde => Some(Op::Tilde),
-            Self::Dot => Some(Op::Dot),
-            Self::DotDot => Some(Op::DotDot),
-            Self::DotEqual => Some(Op::DotEqual),
             Self::Dollar => Some(Op::Dollar),
             Self::Question => Some(Op::Question),
-            Self::Comma => Some(Op::Comma),
-            Self::Colon => Some(Op::Colon),
-            Self::ColonColon => Some(Op::ColonColon),
-            Self::Semicolon => Some(Op::Semicolon),
-            Self::LBrace => Some(Op::LBrace),
-            Self::LBracket => Some(Op::LBracket),
-            Self::DocCommentStart => Some(Op::DocCommentStart),
+            Self::PipeQuestion => Some(Op::PipeQuestion),
+            Self::PipeGreater => Some(Op::PipeGreater),
+            Self::DotDot => Some(Op::DotDot),
+            Self::DotDotEqual => Some(Op::DotDotEqual),
+            Self::Equal => Some(Op::Equal),
+            Self::RightArrow => Some(Op::RightArrow),
+            Self::LeftArrow => Some(Op::LeftArrow),
+            Self::PlusEqual => Some(Op::PlusEqual),
+            Self::MinusEqual => Some(Op::MinusEqual),
+            Self::StarEqual => Some(Op::StarEqual),
+            Self::SlashEqual => Some(Op::SlashEqual),
+            Self::PercentEqual => Some(Op::PercentEqual),
+            Self::AmpersandEqual => Some(Op::AmpersandEqual),
+            Self::PipeEqual => Some(Op::PipeEqual),
+            Self::CaretEqual => Some(Op::CaretEqual),
+            Self::LessLessEqual => Some(Op::LessLessEqual),
+            Self::GreaterGreaterEqual => Some(Op::GreaterGreaterEqual),
+            Self::PipePipe => Some(Op::PipePipe),
+            Self::AmpersandAmpersand => Some(Op::AmpersandAmpersand),
+            Self::EqualEqual => Some(Op::EqualEqual),
+            Self::BangEqual => Some(Op::BangEqual),
+            Self::Less => Some(Op::Less),
+            Self::LessEqual => Some(Op::LessEqual),
+            Self::Greater => Some(Op::Greater),
+            Self::GreaterEqual => Some(Op::GreaterEqual),
+            Self::Pipe => Some(Op::Pipe),
+            Self::Caret => Some(Op::Caret),
+            Self::Ampersand => Some(Op::Ampersand),
+            Self::LessLess => Some(Op::LessLess),
+            Self::GreaterGreater => Some(Op::GreaterGreater),
+            Self::Plus => Some(Op::Plus),
+            Self::Minus => Some(Op::Minus),
+            Self::Star => Some(Op::Star),
+            Self::Slash => Some(Op::Slash),
+            Self::Percent => Some(Op::Percent),
+            Self::StarStar => Some(Op::StarStar),
+            Self::Dot => Some(Op::Dot),
             _ => None,
         }
+    }
+
+    pub const fn prefix_binding_power(self) -> Option<u8> {
+        match self {
+            Self::At => Some(0),
+            Self::Bang => Some(26),
+            Self::Tilde => Some(26),
+            Self::Dollar => Some(26),
+            _ => None,
+        }
+    }
+
+    pub const fn infix_binding_power(self) -> Option<(u8, u8)> {
+        match self {
+            Self::PipeGreater => Some((0, 1)),
+            Self::DotDot => Some((2, 3)),
+            Self::DotDotEqual => Some((2, 3)),
+            Self::Equal => Some((5, 4)),
+            Self::RightArrow => Some((5, 4)),
+            Self::LeftArrow => Some((5, 4)),
+            Self::PlusEqual => Some((5, 4)),
+            Self::MinusEqual => Some((5, 4)),
+            Self::StarEqual => Some((5, 4)),
+            Self::SlashEqual => Some((5, 4)),
+            Self::PercentEqual => Some((5, 4)),
+            Self::AmpersandEqual => Some((5, 4)),
+            Self::PipeEqual => Some((5, 4)),
+            Self::CaretEqual => Some((5, 4)),
+            Self::LessLessEqual => Some((5, 4)),
+            Self::GreaterGreaterEqual => Some((5, 4)),
+            Self::PipePipe => Some((8, 9)),
+            Self::AmpersandAmpersand => Some((10, 11)),
+            Self::EqualEqual => Some((12, 13)),
+            Self::BangEqual => Some((12, 13)),
+            Self::Less => Some((14, 15)),
+            Self::LessEqual => Some((14, 15)),
+            Self::Greater => Some((14, 15)),
+            Self::GreaterEqual => Some((14, 15)),
+            Self::Pipe => Some((16, 17)),
+            Self::Caret => Some((18, 19)),
+            Self::Ampersand => Some((20, 21)),
+            Self::LessLess => Some((22, 23)),
+            Self::GreaterGreater => Some((22, 23)),
+            Self::Plus => Some((24, 25)),
+            Self::Minus => Some((24, 25)),
+            Self::Star => Some((26, 27)),
+            Self::Slash => Some((26, 27)),
+            Self::Percent => Some((26, 27)),
+            Self::StarStar => Some((29, 28)),
+            Self::Dot => Some((30, 31)),
+            _ => None,
+        }
+    }
+
+    pub const fn postfix_binding_power(self) -> Option<u8> {
+        match self {
+            Self::Question => Some(32),
+            Self::PipeQuestion => Some(0),
+            _ => None,
+        }
+    }
+
+    /// Returns the binding power for juxtaposition (function application)
+    /// This is calculated from the Juxtaposition infix binding power group
+    pub const fn juxtaposition_binding_power() -> (u8, u8) {
+        (6, 7)
+    }
+
+    /// Returns true if this token kind has infix binding power
+    pub const fn is_infix(self) -> bool {
+        self.infix_binding_power().is_some()
+    }
+
+    /// Returns true if this token kind has postfix binding power
+    pub const fn is_postfix(self) -> bool {
+        self.postfix_binding_power().is_some()
+    }
+
+    /// Returns true if this token kind has prefix binding power
+    pub const fn is_prefix(self) -> bool {
+        self.prefix_binding_power().is_some()
     }
 }
 
@@ -485,98 +568,86 @@ impl Kind {
 pub enum Op {
     /// "@"
     At,
-    /// "="
-    Equal,
-    /// "=="
-    EqualEqual,
-    /// "<"
-    Less,
-    /// "<="
-    LessEqual,
-    /// "<<"
-    LessLess,
-    /// ">"
-    Greater,
-    /// ">="
-    GreaterEqual,
-    /// ">>"
-    GreaterGreater,
-    /// "+"
-    Plus,
-    /// "+="
-    PlusEqual,
-    /// "-"
-    Minus,
-    /// "-="
-    MinusEqual,
-    /// "->"
-    Arrow,
-    /// "*"
-    Star,
-    /// "*="
-    StarEqual,
-    /// "/"
-    Slash,
-    /// "/="
-    SlashEqual,
-    /// "\\"
-    Backslash,
-    /// "%"
-    Percent,
-    /// "%="
-    PercentEqual,
     /// "!"
     Bang,
-    /// "!="
-    BangEqual,
-    /// "&"
-    Ampersand,
-    /// "&&"
-    AmpersandAmpersand,
-    /// "&="
-    AmpersandEqual,
-    /// "`"
-    Backtick,
-    /// "'"
-    SingleQuote,
-    /// "|"
-    Pipe,
-    /// "||"
-    PipePipe,
-    /// "|="
-    PipeEqual,
-    /// "|>"
-    PipeGreater,
-    /// "|?"
-    PipeQuestion,
-    /// "^"
-    Caret,
-    /// "^="
-    CaretEqual,
     /// "~"
     Tilde,
-    /// "."
-    Dot,
-    /// ".."
-    DotDot,
-    /// ".="
-    DotEqual,
     /// "$"
     Dollar,
     /// "?"
     Question,
-    /// ","
-    Comma,
-    /// ":"
-    Colon,
-    /// "::"
-    ColonColon,
-    /// ";"
-    Semicolon,
-    /// "{"
-    LBrace,
-    /// "["
-    LBracket,
-    /// "##"
-    DocCommentStart,
+    /// "|?"
+    PipeQuestion,
+    /// "|>"
+    PipeGreater,
+    /// ".."
+    DotDot,
+    /// "..="
+    DotDotEqual,
+    /// "="
+    Equal,
+    /// "->"
+    RightArrow,
+    /// "<-"
+    LeftArrow,
+    /// "+="
+    PlusEqual,
+    /// "-="
+    MinusEqual,
+    /// "*="
+    StarEqual,
+    /// "/="
+    SlashEqual,
+    /// "%="
+    PercentEqual,
+    /// "&="
+    AmpersandEqual,
+    /// "|="
+    PipeEqual,
+    /// "^="
+    CaretEqual,
+    /// "<<="
+    LessLessEqual,
+    /// ">>="
+    GreaterGreaterEqual,
+    /// "||"
+    PipePipe,
+    /// "&&"
+    AmpersandAmpersand,
+    /// "=="
+    EqualEqual,
+    /// "!="
+    BangEqual,
+    /// "<"
+    Less,
+    /// "<="
+    LessEqual,
+    /// ">"
+    Greater,
+    /// ">="
+    GreaterEqual,
+    /// "|"
+    Pipe,
+    /// "^"
+    Caret,
+    /// "&"
+    Ampersand,
+    /// "<<"
+    LessLess,
+    /// ">>"
+    GreaterGreater,
+    /// "+"
+    Plus,
+    /// "-"
+    Minus,
+    /// "*"
+    Star,
+    /// "/"
+    Slash,
+    /// "%"
+    Percent,
+    /// "**"
+    StarStar,
+    /// "."
+    Dot,
 }

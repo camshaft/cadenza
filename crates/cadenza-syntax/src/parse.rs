@@ -55,7 +55,8 @@ impl<'src> Parser<'src> {
         self.builder.start_node(Kind::Root.into());
 
         while self.current() != Kind::Eof {
-            self.parse_item();
+            let marker = self.whitespace.marker();
+            self.parse_expression(marker);
         }
 
         self.builder.finish_node();
@@ -63,29 +64,6 @@ impl<'src> Parser<'src> {
         Parse {
             green: self.builder.finish(),
             errors: self.errors,
-        }
-    }
-
-    fn parse_item(&mut self) {
-        match self.current() {
-            Kind::At => {
-                self.parse_attr();
-            }
-            Kind::Identifier => {
-                let marker = self.whitespace.marker();
-                self.parse_expression(marker);
-            }
-            Kind::Integer | Kind::Float => {
-                self.parse_literal();
-            }
-            Kind::StringStart => {
-                self.parse_string();
-            }
-            Kind::Eof => {}
-            _ => {
-                // For now, just consume other tokens
-                self.bump();
-            }
         }
     }
 
@@ -97,7 +75,7 @@ impl<'src> Parser<'src> {
     fn parse_expression_bp(&mut self, min_bp: u8, marker: impl Marker) {
         marker.start(self);
 
-        // Parse the left-hand side (prefix)
+        // Parse the left-hand side (check for prefix operators first)
         self.skip_trivia();
 
         // Take checkpoint before parsing primary (for the Apply node)
@@ -105,8 +83,30 @@ impl<'src> Parser<'src> {
 
         // Take checkpoint for content only (excludes leading trivia)
         let content_checkpoint = self.builder.checkpoint();
-        self.parse_primary();
-        // Checkpoint now captures just the primary, before trailing trivia
+
+        // Check for prefix operators
+        if let Some(prefix_bp) = self.current().prefix_binding_power() {
+            // Create a unary Apply node: operator(operand)
+            self.builder
+                .start_node_at(apply_checkpoint, Kind::Apply.into());
+
+            // The operator is the receiver
+            self.builder.start_node(Kind::ApplyReceiver.into());
+            self.bump(); // the prefix operator
+            self.builder.finish_node();
+
+            // Parse the operand with appropriate binding power
+            let child_marker = self.whitespace.marker();
+            self.skip_trivia();
+            self.builder.start_node(Kind::ApplyArgument.into());
+            self.parse_expression_bp(prefix_bp, child_marker);
+            self.builder.finish_node();
+
+            self.builder.finish_node();
+        } else {
+            self.parse_primary();
+        }
+        // Checkpoint now captures just the primary (or prefix expression), before trailing trivia
 
         // Loop to handle sequences of operators and function application
         loop {
@@ -122,7 +122,7 @@ impl<'src> Parser<'src> {
             let op = self.current();
 
             // Check if this is a postfix operator first
-            if let Some(l_bp) = Self::postfix_binding_power(op) {
+            if let Some(l_bp) = op.postfix_binding_power() {
                 // Stop if binding power is too low
                 if l_bp < min_bp {
                     marker.finish(self);
@@ -145,7 +145,7 @@ impl<'src> Parser<'src> {
 
                 self.builder.finish_node();
                 // Continue the outer loop to check for more operators
-            } else if let Some((l_bp, r_bp)) = Self::infix_binding_power(op) {
+            } else if let Some((l_bp, r_bp)) = op.infix_binding_power() {
                 // Check if this is an explicit infix operator
                 // Stop if binding power is too low
                 if l_bp < min_bp {
@@ -178,7 +178,7 @@ impl<'src> Parser<'src> {
                 // Continue the outer loop to check for more operators
             } else {
                 // Function application (implicit operator via juxtaposition)
-                let (l_bp, r_bp) = Self::juxtaposition_binding_power();
+                let (l_bp, r_bp) = Kind::juxtaposition_binding_power();
 
                 if l_bp < min_bp {
                     marker.finish(self);
@@ -225,17 +225,6 @@ impl<'src> Parser<'src> {
                 self.bump();
             }
         }
-    }
-
-    fn parse_attr(&mut self) {
-        self.builder.start_node(Kind::Attr.into());
-        debug_assert!(self.current() == Kind::At);
-        self.bump(); // @
-
-        let marker = self.whitespace.marker();
-        self.parse_expression(marker);
-
-        self.builder.finish_node();
     }
 
     fn parse_literal(&mut self) {
@@ -317,57 +306,6 @@ impl<'src> Parser<'src> {
             span,
             message: message.to_string(),
         });
-    }
-
-    fn juxtaposition_binding_power() -> (u8, u8) {
-        // Between Equal (3, 2) and PipePipe (4, 5)
-        // Left-associative
-        (3, 4)
-    }
-
-    /// Returns left binding power for postfix operators
-    /// Higher binding power = higher precedence
-    fn postfix_binding_power(op: Kind) -> Option<u8> {
-        use Kind::*;
-        Some(match op {
-            // Postfix ? (try operator) - highest precedence, binds tightly to operand
-            Question => 15,
-            // Postfix |? (pipe-try operator) - lowest precedence, captures entire expression
-            PipeQuestion => 1,
-            _ => return None,
-        })
-    }
-
-    /// Returns (left_bp, right_bp) for infix operators
-    /// Higher binding power = higher precedence
-    fn infix_binding_power(op: Kind) -> Option<(u8, u8)> {
-        use Kind::*;
-        Some(match op {
-            // Pipe operator (lowest precedence, left-associative)
-            // Should capture complete expressions: a + b |> f means (a + b) |> f
-            PipeGreater => (1, 2),
-
-            // Assignment-like (right-associative)
-            Equal => (3, 2),
-
-            // Logical OR
-            PipePipe => (4, 5),
-
-            // Logical AND
-            AmpersandAmpersand => (6, 7),
-
-            // Equality/Comparison
-            EqualEqual | BangEqual => (8, 9),
-            Less | LessEqual | Greater | GreaterEqual => (8, 9),
-
-            // Additive
-            Plus | Minus => (10, 11),
-
-            // Multiplicative
-            Star | Slash | Percent => (12, 13),
-
-            _ => return None,
-        })
     }
 }
 
@@ -460,10 +398,6 @@ impl Whitespace {
         }
     }
 
-    pub fn should_continue(&self, marker: &WhitespaceMarker) -> bool {
-        self.line == marker.line || self.len > marker.len
-    }
-
     pub fn on_token(&mut self, token: &Token) {
         let span = token.span;
 
@@ -504,12 +438,17 @@ impl Marker for WhitespaceMarker {
             return false;
         }
 
-        // If the current token is an operator, continue even if we're on a new line
-        // This allows operators to start continuation lines
-        if Parser::infix_binding_power(parser.current()).is_some() {
+        if self.line == parser.whitespace.line {
             return true;
         }
 
-        parser.whitespace.should_continue(self)
+        let current = parser.current();
+        if current.is_infix() || current.is_postfix() {
+            // Infix and postfix operators are allowed to start continuation lines
+            return parser.whitespace.len >= self.len;
+        }
+
+        // We should continue as long as the indentation is greater than the marker line
+        parser.whitespace.len > self.len
     }
 }

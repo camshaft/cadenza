@@ -107,7 +107,14 @@ impl<'a> Lexer<'a> {
                 if let Some(b) = self.chars.next_if_eq('=') {
                     Kind::LessEqual.spanned((a, b))
                 } else if let Some(b) = self.chars.next_if_eq('<') {
-                    Kind::LessLess.spanned((a, b))
+                    // Check for <<=
+                    if let Some(c) = self.chars.next_if_eq('=') {
+                        Kind::LessLessEqual.spanned((a, c))
+                    } else {
+                        Kind::LessLess.spanned((a, b))
+                    }
+                } else if let Some(b) = self.chars.next_if_eq('-') {
+                    Kind::LeftArrow.spanned((a, b))
                 } else {
                     Kind::Less.spanned(a)
                 }
@@ -116,7 +123,12 @@ impl<'a> Lexer<'a> {
                 if let Some(b) = self.chars.next_if_eq('=') {
                     Kind::GreaterEqual.spanned((a, b))
                 } else if let Some(b) = self.chars.next_if_eq('>') {
-                    Kind::GreaterGreater.spanned((a, b))
+                    // Check for >>=
+                    if let Some(c) = self.chars.next_if_eq('=') {
+                        Kind::GreaterGreaterEqual.spanned((a, c))
+                    } else {
+                        Kind::GreaterGreater.spanned((a, b))
+                    }
                 } else {
                     Kind::Greater.spanned(a)
                 }
@@ -129,15 +141,20 @@ impl<'a> Lexer<'a> {
                 if let Some(b) = self.chars.next_if_eq('=') {
                     Kind::MinusEqual.spanned((a, b))
                 } else if let Some(b) = self.chars.next_if_eq('>') {
-                    Kind::Arrow.spanned((a, b))
+                    Kind::RightArrow.spanned((a, b))
                 } else {
                     Kind::Minus.spanned(a)
                 }
             }
-            '*' => match self.chars.next_if_eq('=') {
-                Some(b) => Kind::StarEqual.spanned((a, b)),
-                None => Kind::Star.spanned(a),
-            },
+            '*' => {
+                if let Some(b) = self.chars.next_if_eq('=') {
+                    Kind::StarEqual.spanned((a, b))
+                } else if let Some(b) = self.chars.next_if_eq('*') {
+                    Kind::StarStar.spanned((a, b))
+                } else {
+                    Kind::Star.spanned(a)
+                }
+            }
             '/' => {
                 if let Some(b) = self.chars.next_if_eq('=') {
                     Kind::SlashEqual.spanned((a, b))
@@ -166,7 +183,13 @@ impl<'a> Lexer<'a> {
                 Some(b) => Kind::CaretEqual.spanned((a, b)),
                 None => Kind::Caret.spanned(a),
             },
-            '$' => Kind::Dollar.spanned(a),
+            '$' => {
+                if let Some(b) = self.chars.next_if_eq('{') {
+                    Kind::LDollarBrace.spanned((a, b))
+                } else {
+                    Kind::Dollar.spanned(a)
+                }
+            }
             '?' => Kind::Question.spanned(a),
             '\\' => Kind::Backslash.spanned(a),
             '(' => Kind::LParen.spanned(a),
@@ -179,9 +202,12 @@ impl<'a> Lexer<'a> {
             ',' => Kind::Comma.spanned(a),
             '.' => {
                 if let Some(b) = self.chars.next_if_eq('.') {
-                    Kind::DotDot.spanned((a, b))
-                } else if let Some(b) = self.chars.next_if_eq('=') {
-                    Kind::DotEqual.spanned((a, b))
+                    // Check for ..=
+                    if let Some(c) = self.chars.next_if_eq('=') {
+                        Kind::DotDotEqual.spanned((a, c))
+                    } else {
+                        Kind::DotDot.spanned((a, b))
+                    }
                 } else {
                     Kind::Dot.spanned(a)
                 }
