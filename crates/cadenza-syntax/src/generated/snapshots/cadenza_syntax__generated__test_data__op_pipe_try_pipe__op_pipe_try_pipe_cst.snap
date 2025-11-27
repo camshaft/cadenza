@@ -1,0 +1,55 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "foo 1 |> bar 2 |? |> baz 3\n"
+---
+Root@0..27
+  Apply@0..27
+    ApplyArgument@0..18
+      Apply@0..17
+        ApplyArgument@0..15
+          Apply@0..15
+            ApplyArgument@0..6
+              Apply@0..6
+                ApplyReceiver@0..4
+                  Identifier@0..3
+                    Identifier@0..3 "foo"
+                  Space@3..4 " "
+                ApplyArgument@4..6
+                  Literal@4..5
+                    Integer@4..5
+                      Integer@4..5 "1"
+                  Space@5..6 " "
+            ApplyReceiver@6..8
+              PipeGreater@6..8
+                PipeGreater@6..8 "|>"
+            Space@8..9 " "
+            ApplyArgument@9..15
+              Apply@9..15
+                ApplyReceiver@9..13
+                  Identifier@9..12
+                    Identifier@9..12 "bar"
+                  Space@12..13 " "
+                ApplyArgument@13..15
+                  Literal@13..14
+                    Integer@13..14
+                      Integer@13..14 "2"
+                  Space@14..15 " "
+        ApplyReceiver@15..17
+          PipeQuestion@15..17
+            PipeQuestion@15..17 "|?"
+      Space@17..18 " "
+    ApplyReceiver@18..20
+      PipeGreater@18..20
+        PipeGreater@18..20 "|>"
+    Space@20..21 " "
+    ApplyArgument@21..27
+      Apply@21..27
+        ApplyReceiver@21..25
+          Identifier@21..24
+            Identifier@21..24 "baz"
+          Space@24..25 " "
+        ApplyArgument@25..27
+          Literal@25..26
+            Integer@25..26
+              Integer@25..26 "3"
+          Newline@26..27 "\n"

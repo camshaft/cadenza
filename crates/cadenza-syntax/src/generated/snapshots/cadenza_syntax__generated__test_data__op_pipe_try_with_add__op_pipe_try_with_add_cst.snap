@@ -1,0 +1,24 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "a + b |?\n"
+---
+Root@0..9
+  Apply@0..8
+    ApplyArgument@0..6
+      Apply@0..6
+        ApplyArgument@0..2
+          Identifier@0..1
+            Identifier@0..1 "a"
+          Space@1..2 " "
+        ApplyReceiver@2..3
+          Plus@2..3
+            Plus@2..3 "+"
+        Space@3..4 " "
+        ApplyArgument@4..6
+          Identifier@4..5
+            Identifier@4..5 "b"
+          Space@5..6 " "
+    ApplyReceiver@6..8
+      PipeQuestion@6..8
+        PipeQuestion@6..8 "|?"
+  Newline@8..9 "\n"

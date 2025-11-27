@@ -254,6 +254,7 @@ impl Punctuation {
             p("PipePipe", "||"),
             p("PipeEqual", "|="),
             p("PipeGreater", "|>"),
+            p("PipeQuestion", "|?"),
             p("Caret", "^"),
             p("CaretEqual", "^="),
             p("Tilde", "~"),

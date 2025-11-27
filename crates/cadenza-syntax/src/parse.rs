@@ -332,6 +332,8 @@ impl<'src> Parser<'src> {
         Some(match op {
             // Postfix ? (try operator) - highest precedence, binds tightly to operand
             Question => 15,
+            // Postfix |? (pipe-try operator) - lowest precedence, captures entire expression
+            PipeQuestion => 1,
             _ => return None,
         })
     }

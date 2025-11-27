@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "foo 1 |> bar |?\n"
+---
+[
+    [|?, [|>, [foo, 1], bar]],
+]

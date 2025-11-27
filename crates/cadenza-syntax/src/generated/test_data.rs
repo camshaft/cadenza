@@ -240,6 +240,33 @@ mod lit_string_with_escape {
         );
     }
 }
+mod op_try_then_pipe {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_try_then_pipe_lex",
+            t::lex("foo 1 |? |> bar\n"),
+            "foo 1 |? |> bar\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_try_then_pipe_cst",
+            t::cst("foo 1 |? |> bar\n"),
+            "foo 1 |? |> bar\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_try_then_pipe_ast",
+            t::ast("foo 1 |? |> bar\n"),
+            "foo 1 |? |> bar\n"
+        );
+    }
+}
 mod let_op_or {
     use super::*;
     #[test]
@@ -295,6 +322,21 @@ mod lit_multi_line {
             t::ast("let a = 1\nlet b = 2"),
             "let a = 1\nlet b = 2"
         );
+    }
+}
+mod op_pipe_try_chain {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_pipe_try_chain_lex", t::lex("x |? |?\n"), "x |? |?\n");
+    }
+    #[test]
+    fn cst() {
+        s!("op_pipe_try_chain_cst", t::cst("x |? |?\n"), "x |? |?\n");
+    }
+    #[test]
+    fn ast() {
+        s!("op_pipe_try_chain_ast", t::ast("x |? |?\n"), "x |? |?\n");
     }
 }
 mod ap_op_or {
@@ -414,6 +456,75 @@ mod lit_string {
         s!("lit_string_ast", t::ast("\"hello\""), "\"hello\"");
     }
 }
+mod op_pipe_try_with_add {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_pipe_try_with_add_lex",
+            t::lex("a + b |?\n"),
+            "a + b |?\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_pipe_try_with_add_cst",
+            t::cst("a + b |?\n"),
+            "a + b |?\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_pipe_try_with_add_ast",
+            t::ast("a + b |?\n"),
+            "a + b |?\n"
+        );
+    }
+}
+mod op_pipe_then_try {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_pipe_then_try_lex",
+            t::lex("foo 1 |> bar |?\n"),
+            "foo 1 |> bar |?\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_pipe_then_try_cst",
+            t::cst("foo 1 |> bar |?\n"),
+            "foo 1 |> bar |?\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_pipe_then_try_ast",
+            t::ast("foo 1 |> bar |?\n"),
+            "foo 1 |> bar |?\n"
+        );
+    }
+}
+mod op_pipe_try_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_pipe_try_simple_lex", t::lex("x |?\n"), "x |?\n");
+    }
+    #[test]
+    fn cst() {
+        s!("op_pipe_try_simple_cst", t::cst("x |?\n"), "x |?\n");
+    }
+    #[test]
+    fn ast() {
+        s!("op_pipe_try_simple_ast", t::ast("x |?\n"), "x |?\n");
+    }
+}
 mod op_pipe {
     use super::*;
     #[test]
@@ -438,6 +549,60 @@ mod op_pipe {
             "op_pipe_ast",
             t::ast("foo 1 + 2\n|> bar 3\n|> baz 4 * 5\n"),
             "foo 1 + 2\n|> bar 3\n|> baz 4 * 5\n"
+        );
+    }
+}
+mod op_pipe_try_with_ap {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_pipe_try_with_ap_lex",
+            t::lex("foo 1 2 |?\n"),
+            "foo 1 2 |?\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_pipe_try_with_ap_cst",
+            t::cst("foo 1 2 |?\n"),
+            "foo 1 2 |?\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_pipe_try_with_ap_ast",
+            t::ast("foo 1 2 |?\n"),
+            "foo 1 2 |?\n"
+        );
+    }
+}
+mod op_pipe_try_pipe {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_pipe_try_pipe_lex",
+            t::lex("foo 1 |> bar 2 |? |> baz 3\n"),
+            "foo 1 |> bar 2 |? |> baz 3\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_pipe_try_pipe_cst",
+            t::cst("foo 1 |> bar 2 |? |> baz 3\n"),
+            "foo 1 |> bar 2 |? |> baz 3\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_pipe_try_pipe_ast",
+            t::ast("foo 1 |> bar 2 |? |> baz 3\n"),
+            "foo 1 |> bar 2 |? |> baz 3\n"
         );
     }
 }

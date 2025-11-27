@@ -66,6 +66,8 @@ pub enum Kind {
     PipeEqual,
     /// "|>"
     PipeGreater,
+    /// "|?"
+    PipeQuestion,
     /// "^"
     Caret,
     /// "^="
@@ -165,6 +167,7 @@ impl Kind {
         Self::PipePipe,
         Self::PipeEqual,
         Self::PipeGreater,
+        Self::PipeQuestion,
         Self::Caret,
         Self::CaretEqual,
         Self::Tilde,
@@ -261,6 +264,7 @@ impl Kind {
         Self::PipePipe,
         Self::PipeEqual,
         Self::PipeGreater,
+        Self::PipeQuestion,
         Self::Caret,
         Self::CaretEqual,
         Self::Tilde,
@@ -326,6 +330,7 @@ impl Kind {
                 | Self::PipePipe
                 | Self::PipeEqual
                 | Self::PipeGreater
+                | Self::PipeQuestion
                 | Self::Caret
                 | Self::CaretEqual
                 | Self::Tilde
@@ -391,6 +396,7 @@ impl Kind {
             Self::PipePipe => Some("||"),
             Self::PipeEqual => Some("|="),
             Self::PipeGreater => Some("|>"),
+            Self::PipeQuestion => Some("|?"),
             Self::Caret => Some("^"),
             Self::CaretEqual => Some("^="),
             Self::Tilde => Some("~"),
@@ -453,6 +459,7 @@ impl Kind {
             Self::PipePipe => Some(Op::PipePipe),
             Self::PipeEqual => Some(Op::PipeEqual),
             Self::PipeGreater => Some(Op::PipeGreater),
+            Self::PipeQuestion => Some(Op::PipeQuestion),
             Self::Caret => Some(Op::Caret),
             Self::CaretEqual => Some(Op::CaretEqual),
             Self::Tilde => Some(Op::Tilde),
@@ -540,6 +547,8 @@ pub enum Op {
     PipeEqual,
     /// "|>"
     PipeGreater,
+    /// "|?"
+    PipeQuestion,
     /// "^"
     Caret,
     /// "^="

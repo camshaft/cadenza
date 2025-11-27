@@ -211,6 +211,8 @@ impl<'a> Lexer<'a> {
                     Kind::PipePipe.spanned((a, b))
                 } else if let Some(b) = self.chars.next_if_eq('>') {
                     Kind::PipeGreater.spanned((a, b))
+                } else if let Some(b) = self.chars.next_if_eq('?') {
+                    Kind::PipeQuestion.spanned((a, b))
                 } else {
                     Kind::Pipe.spanned(a)
                 }
