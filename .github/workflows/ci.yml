@@ -129,7 +129,8 @@ jobs:
 
       - name: Run tests
         env:
-          DEFAULT_FEATURES: ${{ contains(matrix.features, 'default') && '' || ' --no-default-features' }}
-          FEATURES_LIST: ${{ matrix.features && format(' --features {0}', matrix.features) || '' }}
+          # When features is "default", run with default features (no flags needed)
+          # When features is empty, run with --no-default-features
+          TEST_FLAGS: ${{ matrix.features == 'default' && '' || '--no-default-features' }}
         run: |
-          cargo test $DEFAULT_FEATURES $FEATURES_LIST
+          cargo test $TEST_FLAGS
