@@ -656,6 +656,9 @@ impl Synthetic {
             Synthetic { name, identifier }
         }
 
-        [s("SyntheticList", "__list__")]
+        [
+            s("SyntheticList", "__list__"),
+            s("SyntheticRecord", "__record__"),
+        ]
     };
 }

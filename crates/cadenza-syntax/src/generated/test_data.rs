@@ -600,6 +600,21 @@ mod op_pipe_try_chain {
         s!("op_pipe_try_chain_ast", t::ast("x |? |?\n"), "x |? |?\n");
     }
 }
+mod record_shorthand {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("record_shorthand_lex", t::lex("{ x, y }\n"), "{ x, y }\n");
+    }
+    #[test]
+    fn cst() {
+        s!("record_shorthand_cst", t::cst("{ x, y }\n"), "{ x, y }\n");
+    }
+    #[test]
+    fn ast() {
+        s!("record_shorthand_ast", t::ast("{ x, y }\n"), "{ x, y }\n");
+    }
+}
 mod array_with_ap {
     use super::*;
     #[test]
@@ -739,6 +754,21 @@ mod ident_utf8_greek {
     #[test]
     fn ast() {
         s!("ident_utf8_greek_ast", t::ast("αβγ\n"), "αβγ\n");
+    }
+}
+mod record_empty {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("record_empty_lex", t::lex("{}\n"), "{}\n");
+    }
+    #[test]
+    fn cst() {
+        s!("record_empty_cst", t::cst("{}\n"), "{}\n");
+    }
+    #[test]
+    fn ast() {
+        s!("record_empty_ast", t::ast("{}\n"), "{}\n");
     }
 }
 mod ident_underscore_leading {

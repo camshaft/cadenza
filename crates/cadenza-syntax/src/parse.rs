@@ -223,6 +223,9 @@ impl<'src> Parser<'src> {
             Kind::LBracket => {
                 self.parse_array();
             }
+            Kind::LBrace => {
+                self.parse_record();
+            }
             _ => {
                 // Other tokens
                 self.bump();
@@ -279,6 +282,59 @@ impl<'src> Parser<'src> {
 
         // Use marker's finish to consume closing bracket and handle errors
         bracket_marker.finish(self);
+
+        self.builder.finish_node();
+    }
+
+    /// Parse a record literal: { elem1, elem2, ... }
+    /// Represented as Apply(SyntheticRecord, [elem1, elem2, ...])
+    fn parse_record(&mut self) {
+        self.builder.start_node(Kind::Apply.into());
+
+        // Create marker before consuming opening brace
+        let brace_marker = BraceMarker::new(self);
+
+        // Use marker's start to consume opening brace and skip trivia
+        brace_marker.start(self);
+
+        // Create a synthetic receiver node - the AST layer will provide the identifier
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        self.builder.start_node(Kind::SyntheticRecord.into());
+        self.builder.finish_node();
+        self.builder.finish_node();
+
+        // Parse comma-separated elements - delegate continue logic to marker
+        while brace_marker.should_continue(self) {
+            // Check for empty element (comma without content)
+            if self.current() == Kind::Comma {
+                // Emit an error node in the CST
+                self.builder.start_node(Kind::Error.into());
+                self.error("expected expression before comma");
+                self.builder.finish_node();
+                self.bump();
+                self.skip_trivia();
+                continue;
+            }
+
+            self.builder.start_node(Kind::ApplyArgument.into());
+            let child_marker = CommaMarker::new(brace_marker, self);
+            self.parse_expression_bp(0, child_marker);
+            self.builder.finish_node();
+
+            self.skip_trivia();
+
+            // Handle comma separator
+            if self.current() == Kind::Comma {
+                self.bump();
+                self.skip_trivia();
+            } else {
+                // No comma - we should be at the closing brace or an error
+                break;
+            }
+        }
+
+        // Use marker's finish to consume closing brace and handle errors
+        brace_marker.finish(self);
 
         self.builder.finish_node();
     }
@@ -407,6 +463,8 @@ impl<const CLOSE: u16> DelimiterMarker<CLOSE> {
 type ParenMarker = DelimiterMarker<{ Kind::RParen as u16 }>;
 /// Type alias for bracket marker
 type BracketMarker = DelimiterMarker<{ Kind::RBracket as u16 }>;
+/// Type alias for brace marker
+type BraceMarker = DelimiterMarker<{ Kind::RBrace as u16 }>;
 
 impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
     fn start(&self, parser: &mut Parser) {

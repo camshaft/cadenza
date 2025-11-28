@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "{}\n"
+---
+Root@0..3
+  Apply@0..2
+    LBrace@0..1 "{"
+    ApplyReceiver@1..1
+      SyntheticRecord@1..1
+    RBrace@1..2 "}"
+  Newline@2..3 "\n"

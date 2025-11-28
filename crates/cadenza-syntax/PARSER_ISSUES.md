@@ -860,24 +860,70 @@ get_array()[0]
 
 ---
 
-## Issue 5: Record Creation
+## Issue 5: Record Creation ⚠️ PARTIAL
 
-### Current State
+### Summary
 
-The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser does not handle record/struct literal syntax.
+**Status:** Basic record syntax implemented, but field assignments don't work.
+
+**Completed:**
+- ✅ `SyntheticRecord` token with `__record__` identifier added
+- ✅ `parse_record` function implemented (modeled on `parse_array`)
+- ✅ `BraceMarker` type alias for brace-delimited expressions
+- ✅ Empty records: `{}` → `[__record__]`
+- ✅ Shorthand fields: `{ x, y }` → `[__record__, x, y]`
+
+**Not Working:**
+- ❌ Field assignments: `{ x = 1 }` - fails due to parser limitation
+- ❌ Nested records with assignments
+- ❌ Records with expressions in field values
+
+**Note:** Shorthand expansion (`{ x }` → `{ x = x }`) is deferred to macro expansion time. The parser only captures the identifiers; the expansion is done later.
+
+### Implementation Complexity: Assignment Operator Issue
+
+Records with `=` assignments (like `{ x = 1 }`) don't work due to a fundamental limitation in how the parser handles low binding power operators inside delimiters. This same issue affects arrays with assignments (e.g., `[x = 1]` also fails).
+
+**Root Cause:** When parsing the RHS of an infix operator, the parser creates a new `WhitespaceMarker` that doesn't know about the outer delimiter context (`}`, `]`, etc.). For operators with low binding power like `=` (binding power 5,4), the parser continues past the closing delimiter and tries to treat it as a juxtaposition argument.
+
+**Example trace for `{ x = 1 }`:**
+1. Parser enters `parse_record` with `BraceMarker`
+2. `parse_expression_bp(0, CommaMarker(BraceMarker))` called for field
+3. Parses `x` as primary
+4. Sees `=` infix operator, binding power (5, 4), continues
+5. Parse RHS with `self.whitespace.marker()` (loses delimiter context!)
+6. Parses `1` as primary
+7. Sees `}` - whitespace marker says "continue" (same line)
+8. `}` has no binding power, falls to juxtaposition (binding power 6, 7)
+9. 6 >= 4 (RHS min_bp), so parser tries to apply `1` to `}`
+10. Error: closing brace consumed as argument
+
+**Why arrays with `+` work but not `=`:** The `+` operator has high binding power (24, 25), so when parsing its RHS with min_bp=25, juxtaposition (6) < 25 and the parser stops correctly. With `=` (min_bp=4), juxtaposition (6) >= 4 continues incorrectly.
+
+### Proposed Solution
+
+The recommended fix is to have markers passed from the top-most call through all recursive parsing, allowing parent delimiters to influence child parsing. This would require:
+
+1. Refactoring `parse_expression_bp` to accept an optional parent delimiter marker
+2. When creating child markers for RHS parsing, compose them with the parent marker
+3. The child marker's `should_continue` would check both whitespace rules AND parent delimiter boundaries
+
+This is a significant architectural change that would benefit both record and array parsing for any low binding power operators.
 
 ### What Needs To Be Done
 
-1. Add a `parse_record` function that handles `{` as a prefix to start a record literal
-2. Parse field definitions as `name = value` or `name: value` pairs
-3. Handle shorthand field syntax: `{ x, y }` means `{ x = x, y = y }`
-4. Represent records as: `Apply(__record__, [Apply(=, [field1, value1]), ...])`
-5. Handle empty records: `{}`
-6. Handle trailing commas in field lists
+1. ~~Add a `parse_record` function that handles `{` as a prefix to start a record literal~~ ✅
+2. ❌ Parse field definitions as `name = value` pairs (blocked by marker issue)
+3. ❌ Handle shorthand field syntax expansion (deferred to macro expansion time)
+4. Represent records as: `Apply(__record__, [field1, field2, ...])`
+   - Currently: shorthand only captures identifiers
+   - Goal: full form with `Apply(=, [field, value])` for each field
+5. ~~Handle empty records: `{}`~~ ✅
+6. ❌ Handle trailing commas in field lists (blocked by marker issue)
 
 ### Test Cases
 
-#### Test: record-empty.cdz
+#### Test: record-empty.cdz ✅ WORKING
 
 ```cadenza
 {}
@@ -891,7 +937,29 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ]
 ```
 
-#### Test: record-single-field.cdz
+#### Test: record-shorthand.cdz ✅ WORKING (without expansion)
+
+```cadenza
+{ x, y }
+```
+
+**Current AST (shorthand not expanded - expansion deferred to macro time):**
+
+```
+[
+    [__record__, x, y],
+]
+```
+
+**Future AST (after macro expansion):**
+
+```
+[
+    [__record__, [=, x, x], [=, y, y]],
+]
+```
+
+#### Test: record-single-field.cdz ❌ NOT WORKING
 
 ```cadenza
 { x = 1 }
@@ -905,7 +973,9 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ]
 ```
 
-#### Test: record-multi-field.cdz
+**Current Status:** Fails with "expected }" error due to marker propagation issue.
+
+#### Test: record-multi-field.cdz ❌ NOT WORKING
 
 ```cadenza
 { x = 1, y = 2, z = 3 }
@@ -919,21 +989,9 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ]
 ```
 
-#### Test: record-shorthand.cdz
+**Current Status:** Fails due to marker propagation issue.
 
-```cadenza
-{ x, y }
-```
-
-**Expected AST:**
-
-```
-[
-    [__record__, [=, x, x], [=, y, y]],
-]
-```
-
-#### Test: record-mixed.cdz
+#### Test: record-mixed.cdz ❌ NOT WORKING
 
 ```cadenza
 { x, y = 10 }
@@ -947,7 +1005,9 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ]
 ```
 
-#### Test: record-nested.cdz
+**Current Status:** Fails due to marker propagation issue.
+
+#### Test: record-nested.cdz ❌ NOT WORKING
 
 ```cadenza
 { point = { x = 0, y = 0 } }
@@ -961,7 +1021,9 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
 ]
 ```
 
-#### Test: record-with-exprs.cdz
+**Current Status:** Fails due to marker propagation issue.
+
+#### Test: record-with-exprs.cdz ❌ NOT WORKING
 
 ```cadenza
 { sum = a + b, product = a * b }
@@ -974,6 +1036,8 @@ The lexer recognizes `{` (`LBrace`) and `}` (`RBrace`) tokens, but the parser do
     [__record__, [=, sum, [+, a, b]], [=, product, [*, a, b]]],
 ]
 ```
+
+**Current Status:** Fails due to marker propagation issue.
 
 ---
 
