@@ -1,0 +1,40 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "a.b.c.d.e\n"
+---
+Root@0..10
+  Apply@0..10
+    ApplyArgument@0..7
+      Apply@0..7
+        ApplyArgument@0..5
+          Apply@0..5
+            ApplyArgument@0..3
+              Apply@0..3
+                ApplyArgument@0..1
+                  Identifier@0..1
+                    Identifier@0..1 "a"
+                ApplyReceiver@1..2
+                  Dot@1..2
+                    Dot@1..2 "."
+                ApplyArgument@2..3
+                  Identifier@2..3
+                    Identifier@2..3 "b"
+            ApplyReceiver@3..4
+              Dot@3..4
+                Dot@3..4 "."
+            ApplyArgument@4..5
+              Identifier@4..5
+                Identifier@4..5 "c"
+        ApplyReceiver@5..6
+          Dot@5..6
+            Dot@5..6 "."
+        ApplyArgument@6..7
+          Identifier@6..7
+            Identifier@6..7 "d"
+    ApplyReceiver@7..8
+      Dot@7..8
+        Dot@7..8 "."
+    ApplyArgument@8..10
+      Identifier@8..9
+        Identifier@8..9 "e"
+      Newline@9..10 "\n"

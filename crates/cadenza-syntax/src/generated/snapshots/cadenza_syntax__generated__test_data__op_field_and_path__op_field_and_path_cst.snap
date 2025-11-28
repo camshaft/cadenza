@@ -1,0 +1,24 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "mod::Type.field\n"
+---
+Root@0..16
+  Apply@0..16
+    ApplyArgument@0..9
+      Apply@0..9
+        ApplyArgument@0..3
+          Identifier@0..3
+            Identifier@0..3 "mod"
+        ApplyReceiver@3..5
+          ColonColon@3..5
+            ColonColon@3..5 "::"
+        ApplyArgument@5..9
+          Identifier@5..9
+            Identifier@5..9 "Type"
+    ApplyReceiver@9..10
+      Dot@9..10
+        Dot@9..10 "."
+    ApplyArgument@10..16
+      Identifier@10..15
+        Identifier@10..15 "field"
+      Newline@15..16 "\n"

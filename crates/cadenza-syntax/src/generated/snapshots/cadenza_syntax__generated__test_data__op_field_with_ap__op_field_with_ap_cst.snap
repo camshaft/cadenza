@@ -1,0 +1,22 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "list.map fn\n"
+---
+Root@0..12
+  Apply@0..12
+    ApplyReceiver@0..9
+      Apply@0..9
+        ApplyArgument@0..4
+          Identifier@0..4
+            Identifier@0..4 "list"
+        ApplyReceiver@4..5
+          Dot@4..5
+            Dot@4..5 "."
+        ApplyArgument@5..9
+          Identifier@5..8
+            Identifier@5..8 "map"
+          Space@8..9 " "
+    ApplyArgument@9..12
+      Identifier@9..11
+        Identifier@9..11 "fn"
+      Newline@11..12 "\n"

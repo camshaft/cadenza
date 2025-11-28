@@ -1,0 +1,50 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "std::ops::Add + std::ops::Mul\n"
+---
+Root@0..30
+  Apply@0..30
+    ApplyArgument@0..14
+      Apply@0..14
+        ApplyArgument@0..8
+          Apply@0..8
+            ApplyArgument@0..3
+              Identifier@0..3
+                Identifier@0..3 "std"
+            ApplyReceiver@3..5
+              ColonColon@3..5
+                ColonColon@3..5 "::"
+            ApplyArgument@5..8
+              Identifier@5..8
+                Identifier@5..8 "ops"
+        ApplyReceiver@8..10
+          ColonColon@8..10
+            ColonColon@8..10 "::"
+        ApplyArgument@10..14
+          Identifier@10..13
+            Identifier@10..13 "Add"
+          Space@13..14 " "
+    ApplyReceiver@14..15
+      Plus@14..15
+        Plus@14..15 "+"
+    Space@15..16 " "
+    ApplyArgument@16..30
+      Apply@16..30
+        ApplyArgument@16..24
+          Apply@16..24
+            ApplyArgument@16..19
+              Identifier@16..19
+                Identifier@16..19 "std"
+            ApplyReceiver@19..21
+              ColonColon@19..21
+                ColonColon@19..21 "::"
+            ApplyArgument@21..24
+              Identifier@21..24
+                Identifier@21..24 "ops"
+        ApplyReceiver@24..26
+          ColonColon@24..26
+            ColonColon@24..26 "::"
+        ApplyArgument@26..30
+          Identifier@26..29
+            Identifier@26..29 "Mul"
+          Newline@29..30 "\n"

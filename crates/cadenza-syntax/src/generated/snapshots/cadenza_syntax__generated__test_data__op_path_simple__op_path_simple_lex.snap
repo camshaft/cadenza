@@ -1,0 +1,34 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "std::io\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 3,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 3,
+            end: 5,
+        },
+        kind: ColonColon,
+    },
+    Token {
+        span: Span {
+            start: 5,
+            end: 7,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 7,
+            end: 8,
+        },
+        kind: Newline,
+    },
+]

@@ -1,0 +1,24 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "std::io::Read\n"
+---
+Root@0..14
+  Apply@0..14
+    ApplyArgument@0..7
+      Apply@0..7
+        ApplyArgument@0..3
+          Identifier@0..3
+            Identifier@0..3 "std"
+        ApplyReceiver@3..5
+          ColonColon@3..5
+            ColonColon@3..5 "::"
+        ApplyArgument@5..7
+          Identifier@5..7
+            Identifier@5..7 "io"
+    ApplyReceiver@7..9
+      ColonColon@7..9
+        ColonColon@7..9 "::"
+    ApplyArgument@9..14
+      Identifier@9..13
+        Identifier@9..13 "Read"
+      Newline@13..14 "\n"

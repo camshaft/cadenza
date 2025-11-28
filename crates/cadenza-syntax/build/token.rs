@@ -328,6 +328,8 @@ enum InfixBindingPower {
     Exponentiation,
     /// Field access: .
     FieldAccess,
+    /// Path separator: ::
+    PathAccess,
 }
 
 #[derive(Clone, Copy)]
@@ -365,8 +367,8 @@ impl InfixBindingPower {
 enum PostfixBindingPower {
     /// Pipe try operator: |?
     PipeTry = 0,
-    /// Try operator: ?
-    Try = 32,
+    /// Try operator: ? (lower than FieldAccess=30 so field resolves first)
+    Try = 29,
 }
 
 struct Punctuation {
@@ -438,13 +440,13 @@ impl Punctuation {
             p("Percent", "%").infix(InfixBindingPower::Multiplicative),
             p("StarStar", "**").infix(InfixBindingPower::Exponentiation),
             p("Dot", ".").infix(InfixBindingPower::FieldAccess),
+            p("ColonColon", "::").infix(InfixBindingPower::PathAccess),
             // Non-operator punctuation
             p("Backslash", "\\"),
             p("Backtick", "`"),
             p("SingleQuote", "'"),
             p("Comma", ","),
             p("Colon", ":"),
-            p("ColonColon", "::"),
             p("Semicolon", ";"),
             p("LParen", "("),
             p("RParen", ")"),

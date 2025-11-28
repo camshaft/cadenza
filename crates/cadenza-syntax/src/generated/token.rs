@@ -86,6 +86,8 @@ pub enum Kind {
     StarStar,
     /// "."
     Dot,
+    /// "::"
+    ColonColon,
     /// "\\"
     Backslash,
     /// "`"
@@ -96,8 +98,6 @@ pub enum Kind {
     Comma,
     /// ":"
     Colon,
-    /// "::"
-    ColonColon,
     /// ";"
     Semicolon,
     /// "("
@@ -187,12 +187,12 @@ impl Kind {
         Self::Percent,
         Self::StarStar,
         Self::Dot,
+        Self::ColonColon,
         Self::Backslash,
         Self::Backtick,
         Self::SingleQuote,
         Self::Comma,
         Self::Colon,
-        Self::ColonColon,
         Self::Semicolon,
         Self::LParen,
         Self::RParen,
@@ -289,6 +289,7 @@ impl Kind {
         Self::Percent,
         Self::StarStar,
         Self::Dot,
+        Self::ColonColon,
         Self::StringContent,
         Self::StringContentWithEscape,
         Self::DocCommentContent,
@@ -349,6 +350,7 @@ impl Kind {
                 | Self::Percent
                 | Self::StarStar
                 | Self::Dot
+                | Self::ColonColon
                 | Self::StringContent
                 | Self::StringContentWithEscape
                 | Self::DocCommentContent
@@ -409,12 +411,12 @@ impl Kind {
             Self::Percent => Some("%"),
             Self::StarStar => Some("**"),
             Self::Dot => Some("."),
+            Self::ColonColon => Some("::"),
             Self::Backslash => Some("\\"),
             Self::Backtick => Some("`"),
             Self::SingleQuote => Some("'"),
             Self::Comma => Some(","),
             Self::Colon => Some(":"),
-            Self::ColonColon => Some("::"),
             Self::Semicolon => Some(";"),
             Self::LParen => Some("("),
             Self::RParen => Some(")"),
@@ -477,6 +479,7 @@ impl Kind {
             Self::Percent => Some(Op::Percent),
             Self::StarStar => Some(Op::StarStar),
             Self::Dot => Some(Op::Dot),
+            Self::ColonColon => Some(Op::ColonColon),
             _ => None,
         }
     }
@@ -529,13 +532,14 @@ impl Kind {
             Self::Percent => Some((26, 27)),
             Self::StarStar => Some((29, 28)),
             Self::Dot => Some((30, 31)),
+            Self::ColonColon => Some((32, 33)),
             _ => None,
         }
     }
 
     pub const fn postfix_binding_power(self) -> Option<u8> {
         match self {
-            Self::Question => Some(32),
+            Self::Question => Some(29),
             Self::PipeQuestion => Some(0),
             _ => None,
         }
@@ -650,4 +654,6 @@ pub enum Op {
     StarStar,
     /// "."
     Dot,
+    /// "::"
+    ColonColon,
 }

@@ -1,0 +1,34 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "point.x + point.y\n"
+---
+Root@0..18
+  Apply@0..18
+    ApplyArgument@0..8
+      Apply@0..8
+        ApplyArgument@0..5
+          Identifier@0..5
+            Identifier@0..5 "point"
+        ApplyReceiver@5..6
+          Dot@5..6
+            Dot@5..6 "."
+        ApplyArgument@6..8
+          Identifier@6..7
+            Identifier@6..7 "x"
+          Space@7..8 " "
+    ApplyReceiver@8..9
+      Plus@8..9
+        Plus@8..9 "+"
+    Space@9..10 " "
+    ApplyArgument@10..18
+      Apply@10..18
+        ApplyArgument@10..15
+          Identifier@10..15
+            Identifier@10..15 "point"
+        ApplyReceiver@15..16
+          Dot@15..16
+            Dot@15..16 "."
+        ApplyArgument@16..18
+          Identifier@16..17
+            Identifier@16..17 "y"
+          Newline@17..18 "\n"

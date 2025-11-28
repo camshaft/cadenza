@@ -1,0 +1,69 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "(get_point x).field\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 1,
+        },
+        kind: LParen,
+    },
+    Token {
+        span: Span {
+            start: 1,
+            end: 4,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 4,
+            end: 10,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 10,
+            end: 11,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 11,
+            end: 12,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 12,
+            end: 13,
+        },
+        kind: RParen,
+    },
+    Token {
+        span: Span {
+            start: 13,
+            end: 14,
+        },
+        kind: Dot,
+    },
+    Token {
+        span: Span {
+            start: 14,
+            end: 19,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 19,
+            end: 20,
+        },
+        kind: Newline,
+    },
+]

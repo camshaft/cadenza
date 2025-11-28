@@ -1,0 +1,29 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "(get_point x).field\n"
+---
+Root@0..20
+  Apply@0..20
+    ApplyArgument@0..13
+      LParen@0..1 "("
+      Apply@1..12
+        ApplyReceiver@1..11
+          Apply@1..11
+            ApplyReceiver@1..4
+              Identifier@1..4
+                Identifier@1..4 "get"
+            ApplyArgument@4..11
+              Identifier@4..10
+                Identifier@4..10 "_point"
+              Space@10..11 " "
+        ApplyArgument@11..12
+          Identifier@11..12
+            Identifier@11..12 "x"
+      RParen@12..13 ")"
+    ApplyReceiver@13..14
+      Dot@13..14
+        Dot@13..14 "."
+    ApplyArgument@14..20
+      Identifier@14..19
+        Identifier@14..19 "field"
+      Newline@19..20 "\n"

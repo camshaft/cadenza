@@ -1,0 +1,48 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "module::Type.field\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 6,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 6,
+            end: 8,
+        },
+        kind: ColonColon,
+    },
+    Token {
+        span: Span {
+            start: 8,
+            end: 12,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 12,
+            end: 13,
+        },
+        kind: Dot,
+    },
+    Token {
+        span: Span {
+            start: 13,
+            end: 18,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 18,
+            end: 19,
+        },
+        kind: Newline,
+    },
+]

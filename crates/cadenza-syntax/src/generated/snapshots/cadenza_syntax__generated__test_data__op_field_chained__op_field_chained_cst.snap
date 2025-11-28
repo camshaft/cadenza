@@ -1,0 +1,24 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "obj.field.subfield\n"
+---
+Root@0..19
+  Apply@0..19
+    ApplyArgument@0..9
+      Apply@0..9
+        ApplyArgument@0..3
+          Identifier@0..3
+            Identifier@0..3 "obj"
+        ApplyReceiver@3..4
+          Dot@3..4
+            Dot@3..4 "."
+        ApplyArgument@4..9
+          Identifier@4..9
+            Identifier@4..9 "field"
+    ApplyReceiver@9..10
+      Dot@9..10
+        Dot@9..10 "."
+    ApplyArgument@10..19
+      Identifier@10..18
+        Identifier@10..18 "subfield"
+      Newline@18..19 "\n"

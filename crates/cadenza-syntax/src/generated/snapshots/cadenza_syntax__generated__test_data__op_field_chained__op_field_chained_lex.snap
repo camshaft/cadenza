@@ -1,0 +1,48 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "obj.field.subfield\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 3,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 3,
+            end: 4,
+        },
+        kind: Dot,
+    },
+    Token {
+        span: Span {
+            start: 4,
+            end: 9,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 9,
+            end: 10,
+        },
+        kind: Dot,
+    },
+    Token {
+        span: Span {
+            start: 10,
+            end: 18,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 18,
+            end: 19,
+        },
+        kind: Newline,
+    },
+]

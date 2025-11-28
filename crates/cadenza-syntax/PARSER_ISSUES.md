@@ -24,7 +24,8 @@ Based on the design document, all constructs are represented as `Apply` nodes. T
 **Remaining Work:**
 
 - ⚠️ Prefix negation (`-x`) - removed due to infix/prefix ambiguity, needs context-aware parsing
-- ⚠️ Field access (`.`) and path separator (`::`) - tokens with binding power defined but not yet implemented in parser
+- ✅ Field access (`.`) - implemented with binding power (30, 31)
+- ✅ Path separator (`::`) - implemented with binding power (32, 33)
 - ⚠️ Array indexing (`[]`) - needs special postfix handling
 
 ### Current State
@@ -72,7 +73,8 @@ The parser now uses a **generated binding power system** defined in `build/token
 | Additive | `+`, `-` | 24 | 25 | Left | ✅ Implemented |
 | Multiplicative | `*`, `/`, `%` | 26 | 27 | Left | ✅ Implemented |
 | Exponentiation | `**` | 29 | 28 | Right | ✅ Implemented |
-| Field Access | `.` | 30 | 31 | Left | ⚠️ Defined, not parsed |
+| Field Access | `.` | 30 | 31 | Left | ✅ Implemented |
+| Path Access | `::` | 32 | 33 | Left | ✅ Implemented |
 
 ### Rust Operators Missing from Cadenza
 

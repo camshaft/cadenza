@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "module::Type.field\n"
+---
+[
+    [., [::, module, Type], field],
+]

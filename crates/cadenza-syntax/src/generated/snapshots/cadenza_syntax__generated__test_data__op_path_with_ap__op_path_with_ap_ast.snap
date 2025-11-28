@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "std::io::println x\n"
+---
+[
+    [[::, [::, std, io], println], x],
+]
