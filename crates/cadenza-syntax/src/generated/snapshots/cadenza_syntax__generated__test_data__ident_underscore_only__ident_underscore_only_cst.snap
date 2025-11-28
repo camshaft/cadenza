@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "_\n"
+---
+Root@0..2
+  Identifier@0..1
+    Identifier@0..1 "_"
+  Newline@1..2 "\n"

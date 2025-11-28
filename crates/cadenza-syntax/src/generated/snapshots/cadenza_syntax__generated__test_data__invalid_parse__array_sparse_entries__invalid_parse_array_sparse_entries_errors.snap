@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "[\n a\n,,c]\n"
+---
+[
+    ParseError {
+        span: Span {
+            start: 6,
+            end: 7,
+        },
+        message: "expected expression before comma",
+    },
+]

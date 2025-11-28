@@ -1,0 +1,15 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "[1]\n"
+---
+Root@0..4
+  Apply@0..3
+    LBracket@0..1 "["
+    ApplyReceiver@1..1
+      SyntheticList@1..1
+    ApplyArgument@1..2
+      Literal@1..2
+        Integer@1..2
+          Integer@1..2 "1"
+    RBracket@2..3 "]"
+  Newline@3..4 "\n"

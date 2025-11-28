@@ -6,6 +6,7 @@ pub fn tokens() -> String {
         .with_content()
         .with_literal()
         .with_node()
+        .with_synthetic()
         .finish()
 }
 
@@ -95,6 +96,16 @@ impl Tokens {
         self
     }
 
+    fn with_synthetic(mut self) -> Self {
+        self.variants
+            .extend(Synthetic::ALL.iter().map(|s| s.name.to_string()));
+
+        self.nodes
+            .extend(Synthetic::ALL.iter().map(|s| s.name.to_string()));
+
+        self
+    }
+
     fn finish(mut self) -> String {
         self.variants.push("Eof".to_string());
 
@@ -164,6 +175,48 @@ impl Tokens {
             w!("            Self::{variant} => Some({value:?}),");
         }
         w!("            _ => None, ");
+        w!("        }}");
+        w!("    }}");
+        w!("");
+
+        // Generate try_from_u16 method
+        w!("    /// Try to convert a u16 discriminant to a Kind");
+        w!("    pub const fn try_from_u16(value: u16) -> Option<Self> {{");
+        w!("        if value < {} {{", self.variants.len());
+        w!("            // SAFETY: value is within valid discriminant range");
+        w!("            Some(unsafe {{ core::mem::transmute::<u16, Kind>(value) }})");
+        w!("        }} else {{");
+        w!("            None");
+        w!("        }}");
+        w!("    }}");
+        w!("");
+
+        // Generate human-readable display_name method
+        w!("    /// Returns a human-readable name for this token kind");
+        w!("    pub const fn display_name(self) -> &'static str {{");
+        w!("        match self {{");
+        for variant in &self.variants {
+            // Use the value if it exists (for punctuation), otherwise use the variant name
+            if let Some(value) = self.with_values.get(variant.as_str()) {
+                w!("            Self::{variant} => {value:?},");
+            } else {
+                // Convert PascalCase to readable form
+                let readable = variant
+                    .chars()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        if c.is_uppercase() && i > 0 {
+                            format!(" {}", c.to_lowercase())
+                        } else if i == 0 {
+                            c.to_lowercase().to_string()
+                        } else {
+                            c.to_string()
+                        }
+                    })
+                    .collect::<String>();
+                w!("            Self::{variant} => {readable:?},");
+            }
+        }
         w!("        }}");
         w!("    }}");
         w!("");
@@ -254,6 +307,20 @@ impl Tokens {
         w!("    /// Returns true if this token kind has prefix binding power");
         w!("    pub const fn is_prefix(self) -> bool {{");
         w!("        self.prefix_binding_power().is_some()");
+        w!("    }}");
+        w!("");
+
+        // Generate synthetic_identifier method
+        w!("    /// Returns the identifier for synthetic nodes");
+        w!("    pub const fn synthetic_identifier(self) -> Option<&'static str> {{");
+        w!("        match self {{");
+        for s in Synthetic::ALL.iter() {
+            let name = s.name;
+            let identifier = s.identifier;
+            w!("            Self::{name} => Some({identifier:?}),");
+        }
+        w!("            _ => None,");
+        w!("        }}");
         w!("    }}");
 
         w!("}}");
@@ -572,5 +639,23 @@ impl Node {
             n("Literal"),
             n("Error"),
         ]
+    };
+}
+
+/// Synthetic nodes that don't correspond to source text but provide
+/// semantic meaning for the AST layer. Each has an associated identifier.
+struct Synthetic {
+    name: &'static str,
+    /// The identifier that this synthetic node represents in the AST
+    identifier: &'static str,
+}
+
+impl Synthetic {
+    const ALL: &[Self] = &const {
+        const fn s(name: &'static str, identifier: &'static str) -> Synthetic {
+            Synthetic { name, identifier }
+        }
+
+        [s("SyntheticList", "__list__")]
     };
 }

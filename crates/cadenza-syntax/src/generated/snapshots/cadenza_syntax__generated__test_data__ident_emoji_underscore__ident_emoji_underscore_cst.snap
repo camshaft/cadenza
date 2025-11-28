@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "hello_🎉_world\n"
+---
+Root@0..17
+  Identifier@0..16
+    Identifier@0..16 "hello_🎉_world"
+  Newline@16..17 "\n"

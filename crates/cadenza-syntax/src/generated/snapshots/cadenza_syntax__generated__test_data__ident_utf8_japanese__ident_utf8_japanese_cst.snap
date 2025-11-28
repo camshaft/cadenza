@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "こんにちは\n"
+---
+Root@0..16
+  Identifier@0..15
+    Identifier@0..15 "こんにちは"
+  Newline@15..16 "\n"

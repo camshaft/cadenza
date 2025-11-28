@@ -2106,6 +2106,8 @@ The parser currently has weak error handling:
 
 4. **Limited negative tests**: There are no tests verifying that invalid syntax is properly rejected and reported.
 
+5. **Missing error propagation in delimited contexts**: When a dedented expression is encountered inside an array/bracket (e.g., `foo [\nbar` where `bar` is at root indentation), the parser correctly bails out of the array but `bar` ends up as an ApplyArgument of `foo` instead of being a separate top-level expression. The error should propagate up through the expression tree to properly recover. See `test-data/invalid-parse/array-dedent-recovery.cdz` for the test case.
+
 ### What Needs To Be Done
 
 1. **Restrict valid primary tokens**: Only accept tokens that can start an expression:

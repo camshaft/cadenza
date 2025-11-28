@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "hello_世界\n"
+---
+[
+    hello_世界,
+]

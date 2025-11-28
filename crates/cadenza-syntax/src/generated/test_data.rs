@@ -1,5 +1,32 @@
 use crate::testing as t;
 use insta::assert_debug_snapshot as s;
+mod array_trailing_comma {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "array_trailing_comma_lex",
+            t::lex("[1, 2, 3,]\n"),
+            "[1, 2, 3,]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "array_trailing_comma_cst",
+            t::cst("[1, 2, 3,]\n"),
+            "[1, 2, 3,]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "array_trailing_comma_ast",
+            t::ast("[1, 2, 3,]\n"),
+            "[1, 2, 3,]\n"
+        );
+    }
+}
 mod ap_op_add {
     use super::*;
     #[test]
@@ -13,6 +40,21 @@ mod ap_op_add {
     #[test]
     fn ast() {
         s!("ap_op_add_ast", t::ast("foo 1 + 2"), "foo 1 + 2");
+    }
+}
+mod ident_underscore_only {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("ident_underscore_only_lex", t::lex("_\n"), "_\n");
+    }
+    #[test]
+    fn cst() {
+        s!("ident_underscore_only_cst", t::cst("_\n"), "_\n");
+    }
+    #[test]
+    fn ast() {
+        s!("ident_underscore_only_ast", t::ast("_\n"), "_\n");
     }
 }
 mod ap_simple {
@@ -111,6 +153,33 @@ mod op_path {
         s!("op_path_ast", t::ast("std::io::Read\n"), "std::io::Read\n");
     }
 }
+mod ident_leading_underscore_numbers {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_leading_underscore_numbers_lex",
+            t::lex("_123\n"),
+            "_123\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_leading_underscore_numbers_cst",
+            t::cst("_123\n"),
+            "_123\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_leading_underscore_numbers_ast",
+            t::ast("_123\n"),
+            "_123\n"
+        );
+    }
+}
 mod lit_empty_string {
     use super::*;
     #[test]
@@ -139,6 +208,33 @@ mod lit_int {
     #[test]
     fn ast() {
         s!("lit_int_ast", t::ast("1234"), "1234");
+    }
+}
+mod ident_emoji_mixed {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_emoji_mixed_lex",
+            t::lex("hello🎉world\n"),
+            "hello🎉world\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_emoji_mixed_cst",
+            t::cst("hello🎉world\n"),
+            "hello🎉world\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_emoji_mixed_ast",
+            t::ast("hello🎉world\n"),
+            "hello🎉world\n"
+        );
     }
 }
 mod op_sub {
@@ -213,6 +309,60 @@ mod let_eq_lit {
         s!("let_eq_lit_ast", t::ast("let x = 42"), "let x = 42");
     }
 }
+mod ident_underscore_trailing {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_underscore_trailing_lex",
+            t::lex("hello_\n"),
+            "hello_\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_underscore_trailing_cst",
+            t::cst("hello_\n"),
+            "hello_\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_underscore_trailing_ast",
+            t::ast("hello_\n"),
+            "hello_\n"
+        );
+    }
+}
+mod array_multiline {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "array_multiline_lex",
+            t::lex("[\n    1,\n    2,\n    3\n]\n"),
+            "[\n    1,\n    2,\n    3\n]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "array_multiline_cst",
+            t::cst("[\n    1,\n    2,\n    3\n]\n"),
+            "[\n    1,\n    2,\n    3\n]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "array_multiline_ast",
+            t::ast("[\n    1,\n    2,\n    3\n]\n"),
+            "[\n    1,\n    2,\n    3\n]\n"
+        );
+    }
+}
 mod lit_float {
     use super::*;
     #[test]
@@ -279,6 +429,33 @@ mod lit_string_with_escape {
             "lit_string_with_escape_ast",
             t::ast("\"hello\\nworld\\\"\""),
             "\"hello\\nworld\\\"\""
+        );
+    }
+}
+mod array_comma_first {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "array_comma_first_lex",
+            t::lex("[ 1\n, 2\n, 3]\n"),
+            "[ 1\n, 2\n, 3]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "array_comma_first_cst",
+            t::cst("[ 1\n, 2\n, 3]\n"),
+            "[ 1\n, 2\n, 3]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "array_comma_first_ast",
+            t::ast("[ 1\n, 2\n, 3]\n"),
+            "[ 1\n, 2\n, 3]\n"
         );
     }
 }
@@ -366,6 +543,21 @@ mod lit_multi_line {
         );
     }
 }
+mod array_empty {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("array_empty_lex", t::lex("[]\n"), "[]\n");
+    }
+    #[test]
+    fn cst() {
+        s!("array_empty_cst", t::cst("[]\n"), "[]\n");
+    }
+    #[test]
+    fn ast() {
+        s!("array_empty_ast", t::ast("[]\n"), "[]\n");
+    }
+}
 mod op_field_and_path {
     use super::*;
     #[test]
@@ -408,6 +600,48 @@ mod op_pipe_try_chain {
         s!("op_pipe_try_chain_ast", t::ast("x |? |?\n"), "x |? |?\n");
     }
 }
+mod array_with_ap {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "array_with_ap_lex",
+            t::lex("foo [\n    a + b\n] c d e + f\n"),
+            "foo [\n    a + b\n] c d e + f\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "array_with_ap_cst",
+            t::cst("foo [\n    a + b\n] c d e + f\n"),
+            "foo [\n    a + b\n] c d e + f\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "array_with_ap_ast",
+            t::ast("foo [\n    a + b\n] c d e + f\n"),
+            "foo [\n    a + b\n] c d e + f\n"
+        );
+    }
+}
+mod ident_emoji_multiple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("ident_emoji_multiple_lex", t::lex("🎉🎊🎁\n"), "🎉🎊🎁\n");
+    }
+    #[test]
+    fn cst() {
+        s!("ident_emoji_multiple_cst", t::cst("🎉🎊🎁\n"), "🎉🎊🎁\n");
+    }
+    #[test]
+    fn ast() {
+        s!("ident_emoji_multiple_ast", t::ast("🎉🎊🎁\n"), "🎉🎊🎁\n");
+    }
+}
 mod ap_op_or {
     use super::*;
     #[test]
@@ -423,6 +657,33 @@ mod ap_op_or {
         s!("ap_op_or_ast", t::ast("foo a || b"), "foo a || b");
     }
 }
+mod array_mixed_lines {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "array_mixed_lines_lex",
+            t::lex("[1, 2,\n    3, 4,\n    5]\n"),
+            "[1, 2,\n    3, 4,\n    5]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "array_mixed_lines_cst",
+            t::cst("[1, 2,\n    3, 4,\n    5]\n"),
+            "[1, 2,\n    3, 4,\n    5]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "array_mixed_lines_ast",
+            t::ast("[1, 2,\n    3, 4,\n    5]\n"),
+            "[1, 2,\n    3, 4,\n    5]\n"
+        );
+    }
+}
 mod op_mul_add {
     use super::*;
     #[test]
@@ -436,6 +697,75 @@ mod op_mul_add {
     #[test]
     fn ast() {
         s!("op_mul_add_ast", t::ast("a * b + c"), "a * b + c");
+    }
+}
+mod ident_utf8_japanese {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_utf8_japanese_lex",
+            t::lex("こんにちは\n"),
+            "こんにちは\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_utf8_japanese_cst",
+            t::cst("こんにちは\n"),
+            "こんにちは\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_utf8_japanese_ast",
+            t::ast("こんにちは\n"),
+            "こんにちは\n"
+        );
+    }
+}
+mod ident_utf8_greek {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("ident_utf8_greek_lex", t::lex("αβγ\n"), "αβγ\n");
+    }
+    #[test]
+    fn cst() {
+        s!("ident_utf8_greek_cst", t::cst("αβγ\n"), "αβγ\n");
+    }
+    #[test]
+    fn ast() {
+        s!("ident_utf8_greek_ast", t::ast("αβγ\n"), "αβγ\n");
+    }
+}
+mod ident_underscore_leading {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_underscore_leading_lex",
+            t::lex("_hello\n"),
+            "_hello\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_underscore_leading_cst",
+            t::cst("_hello\n"),
+            "_hello\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_underscore_leading_ast",
+            t::ast("_hello\n"),
+            "_hello\n"
+        );
     }
 }
 mod op_field_after_call {
@@ -462,6 +792,63 @@ mod op_field_after_call {
             "op_field_after_call_ast",
             t::ast("(get_point x).field\n"),
             "(get_point x).field\n"
+        );
+    }
+}
+mod ident_utf8_chinese {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("ident_utf8_chinese_lex", t::lex("你好\n"), "你好\n");
+    }
+    #[test]
+    fn cst() {
+        s!("ident_utf8_chinese_cst", t::cst("你好\n"), "你好\n");
+    }
+    #[test]
+    fn ast() {
+        s!("ident_utf8_chinese_ast", t::ast("你好\n"), "你好\n");
+    }
+}
+mod array_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("array_simple_lex", t::lex("[1, 2, 3]\n"), "[1, 2, 3]\n");
+    }
+    #[test]
+    fn cst() {
+        s!("array_simple_cst", t::cst("[1, 2, 3]\n"), "[1, 2, 3]\n");
+    }
+    #[test]
+    fn ast() {
+        s!("array_simple_ast", t::ast("[1, 2, 3]\n"), "[1, 2, 3]\n");
+    }
+}
+mod ident_utf8_underscore {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_utf8_underscore_lex",
+            t::lex("hello_世界\n"),
+            "hello_世界\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_utf8_underscore_cst",
+            t::cst("hello_世界\n"),
+            "hello_世界\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_utf8_underscore_ast",
+            t::ast("hello_世界\n"),
+            "hello_世界\n"
         );
     }
 }
@@ -522,6 +909,33 @@ mod ws_block {
         );
     }
 }
+mod ident_underscore_double {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_underscore_double_lex",
+            t::lex("hello__world\n"),
+            "hello__world\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_underscore_double_cst",
+            t::cst("hello__world\n"),
+            "hello__world\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_underscore_double_ast",
+            t::ast("hello__world\n"),
+            "hello__world\n"
+        );
+    }
+}
 mod op_field_chained {
     use super::*;
     #[test]
@@ -546,6 +960,75 @@ mod op_field_chained {
             "op_field_chained_ast",
             t::ast("obj.field.subfield\n"),
             "obj.field.subfield\n"
+        );
+    }
+}
+mod ident_underscore_with_numbers {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_underscore_with_numbers_lex",
+            t::lex("hello_world_123\n"),
+            "hello_world_123\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_underscore_with_numbers_cst",
+            t::cst("hello_world_123\n"),
+            "hello_world_123\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_underscore_with_numbers_ast",
+            t::ast("hello_world_123\n"),
+            "hello_world_123\n"
+        );
+    }
+}
+mod ident_underscore_multiple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("ident_underscore_multiple_lex", t::lex("___\n"), "___\n");
+    }
+    #[test]
+    fn cst() {
+        s!("ident_underscore_multiple_cst", t::cst("___\n"), "___\n");
+    }
+    #[test]
+    fn ast() {
+        s!("ident_underscore_multiple_ast", t::ast("___\n"), "___\n");
+    }
+}
+mod array_with_exprs {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "array_with_exprs_lex",
+            t::lex("[a + b, c * d]\n"),
+            "[a + b, c * d]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "array_with_exprs_cst",
+            t::cst("[a + b, c * d]\n"),
+            "[a + b, c * d]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "array_with_exprs_ast",
+            t::ast("[a + b, c * d]\n"),
+            "[a + b, c * d]\n"
         );
     }
 }
@@ -657,6 +1140,33 @@ mod op_pipe_then_try {
             "op_pipe_then_try_ast",
             t::ast("foo 1 |> bar |?\n"),
             "foo 1 |> bar |?\n"
+        );
+    }
+}
+mod ident_utf8_mixed_greek {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_utf8_mixed_greek_lex",
+            t::lex("helloαworld\n"),
+            "helloαworld\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_utf8_mixed_greek_cst",
+            t::cst("helloαworld\n"),
+            "helloαworld\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_utf8_mixed_greek_ast",
+            t::ast("helloαworld\n"),
+            "helloαworld\n"
         );
     }
 }
@@ -810,6 +1320,33 @@ mod op_pipe_try_pipe {
         );
     }
 }
+mod ident_underscore_middle {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_underscore_middle_lex",
+            t::lex("hello_world\n"),
+            "hello_world\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_underscore_middle_cst",
+            t::cst("hello_world\n"),
+            "hello_world\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_underscore_middle_ast",
+            t::ast("hello_world\n"),
+            "hello_world\n"
+        );
+    }
+}
 mod op_try_after_add {
     use super::*;
     #[test]
@@ -895,6 +1432,48 @@ mod op_path_simple {
     #[test]
     fn ast() {
         s!("op_path_simple_ast", t::ast("std::io\n"), "std::io\n");
+    }
+}
+mod ident_emoji_underscore {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ident_emoji_underscore_lex",
+            t::lex("hello_🎉_world\n"),
+            "hello_🎉_world\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ident_emoji_underscore_cst",
+            t::cst("hello_🎉_world\n"),
+            "hello_🎉_world\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ident_emoji_underscore_ast",
+            t::ast("hello_🎉_world\n"),
+            "hello_🎉_world\n"
+        );
+    }
+}
+mod ident_emoji_single {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("ident_emoji_single_lex", t::lex("🎉\n"), "🎉\n");
+    }
+    #[test]
+    fn cst() {
+        s!("ident_emoji_single_cst", t::cst("🎉\n"), "🎉\n");
+    }
+    #[test]
+    fn ast() {
+        s!("ident_emoji_single_ast", t::ast("🎉\n"), "🎉\n");
     }
 }
 mod ap_single {
@@ -1050,6 +1629,33 @@ mod op_path_long {
         );
     }
 }
+mod array_nested {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "array_nested_lex",
+            t::lex("[[1, 2], [3, 4]]\n"),
+            "[[1, 2], [3, 4]]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "array_nested_cst",
+            t::cst("[[1, 2], [3, 4]]\n"),
+            "[[1, 2], [3, 4]]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "array_nested_ast",
+            t::ast("[[1, 2], [3, 4]]\n"),
+            "[[1, 2], [3, 4]]\n"
+        );
+    }
+}
 mod ws_paren {
     use super::*;
     #[test]
@@ -1077,6 +1683,21 @@ mod ws_paren {
         );
     }
 }
+mod array_single {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("array_single_lex", t::lex("[1]\n"), "[1]\n");
+    }
+    #[test]
+    fn cst() {
+        s!("array_single_cst", t::cst("[1]\n"), "[1]\n");
+    }
+    #[test]
+    fn ast() {
+        s!("array_single_ast", t::ast("[1]\n"), "[1]\n");
+    }
+}
 mod op_add {
     use super::*;
     #[test]
@@ -1090,5 +1711,168 @@ mod op_add {
     #[test]
     fn ast() {
         s!("op_add_ast", t::ast("a + b\n"), "a + b\n");
+    }
+}
+mod invalid_parse {
+    use super::*;
+    mod array_sparse_entries {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_array_sparse_entries_cst",
+                t::cst_no_assert("[\n a\n,,c]\n"),
+                "[\n a\n,,c]\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_array_sparse_entries_ast",
+                t::ast_no_assert("[\n a\n,,c]\n"),
+                "[\n a\n,,c]\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_array_sparse_entries_lex",
+                t::lex("[\n a\n,,c]\n"),
+                "[\n a\n,,c]\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("[\n a\n,,c]\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_array_sparse_entries_errors",
+                errors,
+                "[\n a\n,,c]\n"
+            );
+        }
+    }
+    mod array_multiple_commas {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_array_multiple_commas_cst",
+                t::cst_no_assert("[,,,]\n"),
+                "[,,,]\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_array_multiple_commas_ast",
+                t::ast_no_assert("[,,,]\n"),
+                "[,,,]\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_array_multiple_commas_lex",
+                t::lex("[,,,]\n"),
+                "[,,,]\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("[,,,]\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_array_multiple_commas_errors",
+                errors,
+                "[,,,]\n"
+            );
+        }
+    }
+    mod array_dedent_recovery {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_array_dedent_recovery_cst",
+                t::cst_no_assert("foo [\nbar\n"),
+                "foo [\nbar\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_array_dedent_recovery_ast",
+                t::ast_no_assert("foo [\nbar\n"),
+                "foo [\nbar\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_array_dedent_recovery_lex",
+                t::lex("foo [\nbar\n"),
+                "foo [\nbar\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("foo [\nbar\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_array_dedent_recovery_errors",
+                errors,
+                "foo [\nbar\n"
+            );
+        }
+    }
+    mod array_leading_comma {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_array_leading_comma_cst",
+                t::cst_no_assert("[, a, b]\n"),
+                "[, a, b]\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_array_leading_comma_ast",
+                t::ast_no_assert("[, a, b]\n"),
+                "[, a, b]\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_array_leading_comma_lex",
+                t::lex("[, a, b]\n"),
+                "[, a, b]\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("[, a, b]\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_array_leading_comma_errors",
+                errors,
+                "[, a, b]\n"
+            );
+        }
     }
 }

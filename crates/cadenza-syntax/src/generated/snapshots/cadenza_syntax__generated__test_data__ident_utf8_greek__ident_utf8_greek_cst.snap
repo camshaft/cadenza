@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "αβγ\n"
+---
+Root@0..7
+  Identifier@0..6
+    Identifier@0..6 "αβγ"
+  Newline@6..7 "\n"

@@ -1,0 +1,20 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "hello_world\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 11,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 11,
+            end: 12,
+        },
+        kind: Newline,
+    },
+]

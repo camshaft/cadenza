@@ -1,0 +1,20 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "___\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 3,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 3,
+            end: 4,
+        },
+        kind: Newline,
+    },
+]

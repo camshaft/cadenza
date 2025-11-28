@@ -141,6 +141,7 @@ pub enum Kind {
     Attr,
     Literal,
     Error,
+    SyntheticList,
     Eof,
 }
 impl Kind {
@@ -222,6 +223,7 @@ impl Kind {
         Self::Attr,
         Self::Literal,
         Self::Error,
+        Self::SyntheticList,
         Self::Eof,
     ];
 
@@ -303,6 +305,7 @@ impl Kind {
         Self::Attr,
         Self::Literal,
         Self::Error,
+        Self::SyntheticList,
     ];
 
     pub const fn is_node(self) -> bool {
@@ -364,6 +367,7 @@ impl Kind {
                 | Self::Attr
                 | Self::Literal
                 | Self::Error
+                | Self::SyntheticList
         )
     }
 
@@ -432,6 +436,101 @@ impl Kind {
             Self::Tab => Some("\t"),
             Self::Newline => Some("\n"),
             _ => None,
+        }
+    }
+
+    /// Try to convert a u16 discriminant to a Kind
+    pub const fn try_from_u16(value: u16) -> Option<Self> {
+        if value < 79 {
+            // SAFETY: value is within valid discriminant range
+            Some(unsafe { core::mem::transmute::<u16, Kind>(value) })
+        } else {
+            None
+        }
+    }
+
+    /// Returns a human-readable name for this token kind
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::At => "@",
+            Self::Bang => "!",
+            Self::Tilde => "~",
+            Self::Dollar => "$",
+            Self::Question => "?",
+            Self::PipeQuestion => "|?",
+            Self::PipeGreater => "|>",
+            Self::DotDot => "..",
+            Self::DotDotEqual => "..=",
+            Self::Equal => "=",
+            Self::RightArrow => "->",
+            Self::LeftArrow => "<-",
+            Self::PlusEqual => "+=",
+            Self::MinusEqual => "-=",
+            Self::StarEqual => "*=",
+            Self::SlashEqual => "/=",
+            Self::PercentEqual => "%=",
+            Self::AmpersandEqual => "&=",
+            Self::PipeEqual => "|=",
+            Self::CaretEqual => "^=",
+            Self::LessLessEqual => "<<=",
+            Self::GreaterGreaterEqual => ">>=",
+            Self::PipePipe => "||",
+            Self::AmpersandAmpersand => "&&",
+            Self::EqualEqual => "==",
+            Self::BangEqual => "!=",
+            Self::Less => "<",
+            Self::LessEqual => "<=",
+            Self::Greater => ">",
+            Self::GreaterEqual => ">=",
+            Self::Pipe => "|",
+            Self::Caret => "^",
+            Self::Ampersand => "&",
+            Self::LessLess => "<<",
+            Self::GreaterGreater => ">>",
+            Self::Plus => "+",
+            Self::Minus => "-",
+            Self::Star => "*",
+            Self::Slash => "/",
+            Self::Percent => "%",
+            Self::StarStar => "**",
+            Self::Dot => ".",
+            Self::ColonColon => "::",
+            Self::Backslash => "\\",
+            Self::Backtick => "`",
+            Self::SingleQuote => "'",
+            Self::Comma => ",",
+            Self::Colon => ":",
+            Self::Semicolon => ";",
+            Self::LParen => "(",
+            Self::RParen => ")",
+            Self::LDollarBrace => "${",
+            Self::LBrace => "{",
+            Self::RBrace => "}",
+            Self::LBracket => "[",
+            Self::RBracket => "]",
+            Self::StringStart => "\"",
+            Self::StringEnd => "string end",
+            Self::CommentStart => "#",
+            Self::DocCommentStart => "##",
+            Self::Space => " ",
+            Self::Tab => "\t",
+            Self::Newline => "\n",
+            Self::StringContent => "string content",
+            Self::StringContentWithEscape => "string content with escape",
+            Self::CommentContent => "comment content",
+            Self::DocCommentContent => "doc comment content",
+            Self::Integer => "integer",
+            Self::Float => "float",
+            Self::Identifier => "identifier",
+            Self::Root => "root",
+            Self::Apply => "apply",
+            Self::ApplyArgument => "apply argument",
+            Self::ApplyReceiver => "apply receiver",
+            Self::Attr => "attr",
+            Self::Literal => "literal",
+            Self::Error => "error",
+            Self::SyntheticList => "synthetic list",
+            Self::Eof => "eof",
         }
     }
 
@@ -564,6 +663,14 @@ impl Kind {
     /// Returns true if this token kind has prefix binding power
     pub const fn is_prefix(self) -> bool {
         self.prefix_binding_power().is_some()
+    }
+
+    /// Returns the identifier for synthetic nodes
+    pub const fn synthetic_identifier(self) -> Option<&'static str> {
+        match self {
+            Self::SyntheticList => Some("__list__"),
+            _ => None,
+        }
     }
 }
 

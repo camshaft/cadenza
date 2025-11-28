@@ -276,6 +276,40 @@ impl fmt::Debug for Op {
     }
 }
 
+/// A synthetic node that represents a semantic concept not directly in source.
+/// The identifier is provided by the Kind's synthetic_identifier method.
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Synthetic(SyntaxNode);
+
+impl Synthetic {
+    /// Cast a SyntaxNode to a Synthetic if the node kind has a synthetic identifier.
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind().synthetic_identifier().is_some() {
+            Some(Self(node))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the identifier for this synthetic node.
+    ///
+    /// This method is guaranteed to succeed because `cast` only succeeds
+    /// for nodes with a synthetic identifier.
+    pub fn identifier(&self) -> &'static str {
+        self.0
+            .kind()
+            .synthetic_identifier()
+            .expect("Synthetic node must have a synthetic_identifier")
+    }
+}
+
+impl fmt::Debug for Synthetic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.identifier())
+    }
+}
+
 pub enum Expr {
     Apply(Apply),
     Attr(Attr),
@@ -283,6 +317,7 @@ pub enum Expr {
     Error(Error),
     Literal(Literal),
     Op(Op),
+    Synthetic(Synthetic),
 }
 
 impl fmt::Debug for Expr {
@@ -294,6 +329,7 @@ impl fmt::Debug for Expr {
             Self::Error(expr) => write!(f, "{expr:?}"),
             Self::Literal(expr) => write!(f, "{expr:?}"),
             Self::Op(expr) => write!(f, "{expr:?}"),
+            Self::Synthetic(expr) => write!(f, "{expr:?}"),
         }
     }
 }
@@ -306,6 +342,9 @@ impl Expr {
             Kind::Identifier => Some(Self::Ident(Ident::cast(node)?)),
             Kind::Error => Some(Self::Error(Error::cast(node)?)),
             Kind::Literal => Some(Self::Literal(Literal::cast(node)?)),
+            kind if kind.synthetic_identifier().is_some() => {
+                Some(Self::Synthetic(Synthetic::cast(node)?))
+            }
             _ => Some(Self::Op(Op::cast(node)?)),
         }
     }

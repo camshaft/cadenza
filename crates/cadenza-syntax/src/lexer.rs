@@ -13,6 +13,22 @@ enum Mode {
     DocComment,
 }
 
+/// Returns true if the character can be part of an identifier.
+///
+/// Identifiers include:
+/// - Alphanumeric characters (letters and digits in any script)
+/// - Underscores (`_`)
+/// - Any non-ASCII, non-whitespace character (including emoji, symbols, etc.)
+///
+/// This permissive approach allows for expressive identifiers like:
+/// - `hello_world` (snake_case)
+/// - `αβγ` (Greek letters)
+/// - `hello🎉world` (emoji mixed with text)
+/// - `你好` (Chinese characters)
+fn is_ident_continue(c: char) -> bool {
+    c == '_' || c.is_alphanumeric() || (!c.is_ascii() && !c.is_whitespace())
+}
+
 pub struct Lexer<'a> {
     chars: Peek2<Chars<'a>>,
     mode: Mode,
@@ -276,7 +292,7 @@ impl<'a> Lexer<'a> {
                 token.spanned((a, end))
             }
             _ => {
-                let end = self.read_while(a, |v| v.value.is_alphanumeric());
+                let end = self.read_while(a, |v| is_ident_continue(v.value));
                 let span = a.span.merge(end.span);
                 Kind::Identifier.spanned(span)
             }

@@ -8,14 +8,9 @@ Root@0..20
       LParen@0..1 "("
       Apply@1..12
         ApplyReceiver@1..11
-          Apply@1..11
-            ApplyReceiver@1..4
-              Identifier@1..4
-                Identifier@1..4 "get"
-            ApplyArgument@4..11
-              Identifier@4..10
-                Identifier@4..10 "_point"
-              Space@10..11 " "
+          Identifier@1..10
+            Identifier@1..10 "get_point"
+          Space@10..11 " "
         ApplyArgument@11..12
           Identifier@11..12
             Identifier@11..12 "x"

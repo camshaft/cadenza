@@ -218,13 +218,69 @@ impl<'src> Parser<'src> {
                 self.parse_string();
             }
             Kind::LParen => {
-                self.parse_expression(LParenMarker::new(self));
+                self.parse_expression(ParenMarker::new(self));
+            }
+            Kind::LBracket => {
+                self.parse_array();
             }
             _ => {
                 // Other tokens
                 self.bump();
             }
         }
+    }
+
+    /// Parse an array literal: [elem1, elem2, ...]
+    /// Represented as Apply(SyntheticList, [elem1, elem2, ...])
+    fn parse_array(&mut self) {
+        self.builder.start_node(Kind::Apply.into());
+
+        // Create marker before consuming opening bracket
+        let bracket_marker = BracketMarker::new(self);
+
+        // Use marker's start to consume opening bracket and skip trivia
+        bracket_marker.start(self);
+
+        // Create a synthetic receiver node - the AST layer will provide the identifier
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        self.builder.start_node(Kind::SyntheticList.into());
+        self.builder.finish_node();
+        self.builder.finish_node();
+
+        // Parse comma-separated elements - delegate continue logic to marker
+        while bracket_marker.should_continue(self) {
+            // Check for empty element (comma without content)
+            if self.current() == Kind::Comma {
+                // Emit an error node in the CST
+                self.builder.start_node(Kind::Error.into());
+                self.error("expected expression before comma");
+                self.builder.finish_node();
+                self.bump();
+                self.skip_trivia();
+                continue;
+            }
+
+            self.builder.start_node(Kind::ApplyArgument.into());
+            let child_marker = CommaMarker::new(bracket_marker, self);
+            self.parse_expression_bp(0, child_marker);
+            self.builder.finish_node();
+
+            self.skip_trivia();
+
+            // Handle comma separator
+            if self.current() == Kind::Comma {
+                self.bump();
+                self.skip_trivia();
+            } else {
+                // No comma - we should be at the closing bracket or an error
+                break;
+            }
+        }
+
+        // Use marker's finish to consume closing bracket and handle errors
+        bracket_marker.finish(self);
+
+        self.builder.finish_node();
     }
 
     fn parse_literal(&mut self) {
@@ -321,36 +377,103 @@ trait Marker: Copy {
     }
 }
 
+/// Generic marker for delimited expressions (parens, brackets, etc.)
+/// Uses const generics for the closing delimiter Kind discriminant for optimization.
 #[derive(Clone, Copy, Debug)]
-struct LParenMarker {
+struct DelimiterMarker<const CLOSE: u16> {
     saved_whitespace: WhitespaceMarker,
 }
 
-impl LParenMarker {
+impl<const CLOSE: u16> DelimiterMarker<CLOSE> {
     fn new(parser: &Parser) -> Self {
         Self {
             saved_whitespace: parser.whitespace.marker(),
         }
     }
+
+    const fn close_kind() -> Kind {
+        // Use the generated try_from_u16 and panic at compile time if invalid
+        // Wrap in const block to ensure compile-time evaluation
+        const {
+            match Kind::try_from_u16(CLOSE) {
+                Some(kind) => kind,
+                None => panic!("Invalid Kind discriminant"),
+            }
+        }
+    }
 }
 
-impl Marker for LParenMarker {
+/// Type alias for parenthesis marker
+type ParenMarker = DelimiterMarker<{ Kind::RParen as u16 }>;
+/// Type alias for bracket marker
+type BracketMarker = DelimiterMarker<{ Kind::RBracket as u16 }>;
+
+impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
     fn start(&self, parser: &mut Parser) {
-        parser.bump(); // LParen
+        parser.bump(); // Opening delimiter
         parser.skip_trivia();
     }
 
     fn should_continue(&self, parser: &mut Parser) -> bool {
-        ![Kind::RParen, Kind::Eof].contains(&parser.current())
+        let current = parser.current();
+        if current == Self::close_kind() || current == Kind::Eof {
+            return false;
+        }
+        // Delegate to saved whitespace marker for indentation checking
+        // It already handles commas specially (as it handles infix operators)
+        self.saved_whitespace.should_continue(parser)
     }
 
     fn finish(&self, parser: &mut Parser) {
-        if parser.current() == Kind::RParen {
-            parser.bump(); // RParen
+        if parser.current() == Self::close_kind() {
+            parser.bump();
         } else {
-            parser.error("expected closing parenthesis");
+            // Use the generated display_name for human-readable error message
+            let msg = Self::close_kind().display_name();
+            parser.error(&format!("expected {}", msg));
         }
-        // Restore whitespace state from before the paren block
+        // Restore whitespace state from before the delimiter block
+        parser.whitespace.span = self.saved_whitespace.span;
+        parser.whitespace.len = self.saved_whitespace.len;
+        parser.whitespace.line = self.saved_whitespace.line;
+    }
+}
+
+/// A marker that wraps an inner marker and also stops at commas.
+/// This is used for parsing comma-separated elements within delimiters.
+/// Note: This marker does NOT call inner.finish() - it only uses the inner
+/// marker's should_continue logic and restores whitespace state directly.
+#[derive(Clone, Copy, Debug)]
+struct CommaMarker<M: Marker> {
+    inner: M,
+    saved_whitespace: WhitespaceMarker,
+}
+
+impl<M: Marker> CommaMarker<M> {
+    fn new(inner: M, parser: &Parser) -> Self {
+        Self {
+            inner,
+            saved_whitespace: parser.whitespace.marker(),
+        }
+    }
+}
+
+impl<M: Marker> Marker for CommaMarker<M> {
+    fn start(&self, parser: &mut Parser) {
+        // Don't call inner.start() - we handle our own start behavior
+        let _ = parser;
+    }
+
+    fn should_continue(&self, parser: &mut Parser) -> bool {
+        // Stop at comma in addition to whatever the inner marker stops at
+        if parser.current() == Kind::Comma {
+            return false;
+        }
+        self.inner.should_continue(parser)
+    }
+
+    fn finish(&self, parser: &mut Parser) {
+        // Don't call inner.finish() - we just restore whitespace state
         parser.whitespace.span = self.saved_whitespace.span;
         parser.whitespace.len = self.saved_whitespace.len;
         parser.whitespace.line = self.saved_whitespace.line;
@@ -443,8 +566,9 @@ impl Marker for WhitespaceMarker {
         }
 
         let current = parser.current();
-        if current.is_infix() || current.is_postfix() {
-            // Infix and postfix operators are allowed to start continuation lines
+        // Infix, postfix operators and comma are allowed to start continuation lines
+        // at same indentation level (for comma-first style like: [ 1\n, 2\n, 3])
+        if current.is_infix() || current.is_postfix() || current == Kind::Comma {
             return parser.whitespace.len >= self.len;
         }
 
