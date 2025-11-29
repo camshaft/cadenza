@@ -37,6 +37,34 @@ pub fn eval(
     Ok(results)
 }
 
+/// Evaluates a complete source file, collecting all errors instead of bailing.
+///
+/// This function continues evaluation even when expressions fail, recording
+/// errors in the compiler. On error, `Value::Nil` is used as the result for
+/// that expression. This is useful for CLI/LSP scenarios where you want to
+/// report all errors at once.
+///
+/// Returns the collected results. Check `compiler.has_errors()` after calling
+/// to see if any errors occurred.
+pub fn eval_collecting(
+    root: &Root,
+    interner: &mut Interner,
+    env: &mut Env,
+    compiler: &mut Compiler,
+) -> Vec<Value> {
+    let mut results = Vec::new();
+    for expr in root.items() {
+        match eval_expr(&expr, interner, env, compiler) {
+            Ok(value) => results.push(value),
+            Err(diagnostic) => {
+                compiler.record_diagnostic(diagnostic);
+                results.push(Value::Nil);
+            }
+        }
+    }
+    results
+}
+
 /// Evaluates a single expression.
 pub fn eval_expr(
     expr: &Expr,
@@ -486,5 +514,82 @@ mod tests {
 
         let result = eval(&root, &mut interner, &mut env, &mut compiler).unwrap();
         assert_eq!(result[0], Value::Integer(100));
+    }
+
+    #[test]
+    fn eval_collecting_continues_on_error() {
+        // This source has multiple expressions, some of which will fail
+        let src = "1\nundefined_var\n3";
+        let parsed = parse(src);
+        let root = parsed.ast();
+        let mut interner = Interner::new();
+        let mut env = Env::new();
+        let mut compiler = Compiler::new();
+
+        let results = eval_collecting(&root, &mut interner, &mut env, &mut compiler);
+
+        // Should have 3 results (1, Nil for error, 3)
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], Value::Integer(1));
+        assert_eq!(results[1], Value::Nil); // error becomes Nil
+        assert_eq!(results[2], Value::Integer(3));
+
+        // Compiler should have recorded 1 error
+        assert_eq!(compiler.num_diagnostics(), 1);
+        assert!(compiler.has_errors());
+    }
+
+    #[test]
+    fn eval_collecting_collects_multiple_errors() {
+        // Multiple undefined variables
+        let src = "undefined_a\n1\nundefined_b\n2\nundefined_c";
+        let parsed = parse(src);
+        let root = parsed.ast();
+        let mut interner = Interner::new();
+        let mut env = Env::new();
+        let mut compiler = Compiler::new();
+
+        let results = eval_collecting(&root, &mut interner, &mut env, &mut compiler);
+
+        // Should have 5 results
+        assert_eq!(results.len(), 5);
+        assert_eq!(results[0], Value::Nil); // undefined_a error
+        assert_eq!(results[1], Value::Integer(1));
+        assert_eq!(results[2], Value::Nil); // undefined_b error
+        assert_eq!(results[3], Value::Integer(2));
+        assert_eq!(results[4], Value::Nil); // undefined_c error
+
+        // Compiler should have recorded 3 errors
+        assert_eq!(compiler.num_diagnostics(), 3);
+        assert!(compiler.has_errors());
+
+        // All should be UndefinedVariable errors
+        for diag in compiler.diagnostics() {
+            assert!(matches!(
+                &diag.kind,
+                crate::diagnostic::DiagnosticKind::UndefinedVariable(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn eval_collecting_no_errors() {
+        let src = "1\n2\n3";
+        let parsed = parse(src);
+        let root = parsed.ast();
+        let mut interner = Interner::new();
+        let mut env = Env::new();
+        let mut compiler = Compiler::new();
+
+        let results = eval_collecting(&root, &mut interner, &mut env, &mut compiler);
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], Value::Integer(1));
+        assert_eq!(results[1], Value::Integer(2));
+        assert_eq!(results[2], Value::Integer(3));
+
+        // No errors recorded
+        assert_eq!(compiler.num_diagnostics(), 0);
+        assert!(!compiler.has_errors());
     }
 }

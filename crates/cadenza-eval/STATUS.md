@@ -44,9 +44,11 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Updated all call sites in eval.rs
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079460)
 
-3. **Store errors in compiler instead of bailing**
-   - Current: Evaluation bails on first error with `?` operator
-   - Needed: Collect errors in compiler for multi-error reporting (CLI/LSP)
+3. ~~**Store errors in compiler instead of bailing**~~
+   - [x] COMPLETED: Added `diagnostics` field to `Compiler` struct
+   - [x] Added methods: `record_diagnostic`, `diagnostics`, `take_diagnostics`, `num_diagnostics`, `has_errors`, `clear_diagnostics`
+   - [x] Added `eval_collecting` function that continues evaluation on error, recording diagnostics in compiler
+   - [x] Original `eval` function preserved for backwards compatibility (bails on first error)
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573090111)
 
 4. **Return actual parse error messages**

@@ -208,3 +208,57 @@ fn test_compiler_definitions() {
     assert_eq!(compiler.get_var(y_id), Some(&Value::Integer(100)));
     assert_eq!(compiler.num_defs(), 2);
 }
+
+#[test]
+fn test_eval_collecting_integration() {
+    // Test that eval_collecting properly collects errors during evaluation
+    // while still producing results for valid expressions
+    let src = "x + 1\n2 + 3\ny + 4";
+    let parsed = parse(src);
+    let root = parsed.ast();
+    let mut interner = Interner::new();
+    let mut env = Env::new();
+    let mut compiler = Compiler::new();
+
+    let results = crate::eval_collecting(&root, &mut interner, &mut env, &mut compiler);
+
+    // Should get 3 results
+    assert_eq!(results.len(), 3);
+    // First and third are errors (undefined x, y) -> Nil
+    assert_eq!(results[0], Value::Nil);
+    assert_eq!(results[1], Value::Integer(5)); // 2 + 3 = 5
+    assert_eq!(results[2], Value::Nil);
+
+    // Check diagnostics
+    assert_eq!(compiler.num_diagnostics(), 2);
+    assert!(compiler.has_errors());
+}
+
+#[test]
+fn test_eval_collecting_with_defined_variables() {
+    // Test that defined variables work in eval_collecting mode
+    let src = "x\ny + 1\nz";
+    let parsed = parse(src);
+    let root = parsed.ast();
+    let mut interner = Interner::new();
+    let mut env = Env::new();
+    let mut compiler = Compiler::new();
+
+    // Define x in env
+    let x_id = interner.intern("x");
+    env.define(x_id, Value::Integer(42));
+
+    // Define z in compiler
+    let z_id = interner.intern("z");
+    compiler.define_var(z_id, Value::Integer(100));
+
+    let results = crate::eval_collecting(&root, &mut interner, &mut env, &mut compiler);
+
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0], Value::Integer(42)); // x from env
+    assert_eq!(results[1], Value::Nil); // y + 1 fails (undefined y)
+    assert_eq!(results[2], Value::Integer(100)); // z from compiler
+
+    // Only one error (undefined y)
+    assert_eq!(compiler.num_diagnostics(), 1);
+}
