@@ -268,6 +268,11 @@ impl Op {
             None
         }
     }
+
+    /// Returns a reference to the underlying syntax node.
+    pub fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
 }
 
 impl fmt::Debug for Op {
@@ -290,6 +295,11 @@ impl Synthetic {
         } else {
             None
         }
+    }
+
+    /// Returns a reference to the underlying syntax node.
+    pub fn syntax(&self) -> &SyntaxNode {
+        &self.0
     }
 
     /// Returns the identifier for this synthetic node.
@@ -347,5 +357,10 @@ impl Expr {
             }
             _ => Some(Self::Op(Op::cast(node)?)),
         }
+    }
+
+    /// Cast a SyntaxNode to an Expr (public API).
+    pub fn cast_syntax_node(node: &SyntaxNode) -> Option<Self> {
+        Self::cast(node.clone())
     }
 }

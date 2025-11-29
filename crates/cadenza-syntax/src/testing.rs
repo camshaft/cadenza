@@ -1,5 +1,4 @@
-use crate::parse::ParseError;
-use crate::token::Token;
+use crate::{parse::ParseError, token::Token};
 
 pub fn lex(s: &str) -> Vec<Token> {
     crate::lexer::Lexer::new(s).collect()

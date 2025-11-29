@@ -1,0 +1,12 @@
+[package]
+name = "cadenza-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cadenza-syntax = { path = "../cadenza-syntax" }
+rowan.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
