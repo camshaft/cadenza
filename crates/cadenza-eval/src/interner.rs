@@ -3,7 +3,7 @@
 //! All identifiers in the AST and environment are interned once during parsing.
 //! This provides O(1) comparison and hashing for identifier lookups.
 
-use std::collections::HashMap;
+use crate::map::StringMap;
 use std::fmt;
 
 /// An interned identifier, represented as a u32 index.
@@ -39,8 +39,8 @@ impl fmt::Display for InternedId {
 /// If the hasher ever needs to change, only this struct needs to be modified.
 #[derive(Debug, Default)]
 pub struct Interner {
-    /// Maps strings to their interned IDs
-    map: HashMap<String, InternedId>,
+    /// Maps strings to their interned IDs (using FxHash for performance)
+    map: StringMap<InternedId>,
     /// Reverse lookup: maps IDs back to strings
     strings: Vec<String>,
 }

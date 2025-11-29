@@ -5,19 +5,19 @@
 //! API to register definitions, emit IR, etc.
 
 use crate::interner::InternedId;
+use crate::map::Map;
 use crate::value::Value;
-use std::collections::HashMap;
 
 /// The compiler state that accumulates definitions during evaluation.
 ///
 /// This is the explicit API the language uses to build the module.
-/// All internal compiler tables use `HashMap` with `InternedId` keys.
+/// All internal compiler tables use `Map` with `InternedId` keys and FxHash.
 #[derive(Debug, Default)]
 pub struct Compiler {
     /// Variable and function definitions.
-    defs: HashMap<InternedId, Value>,
+    defs: Map<Value>,
     /// Macro definitions.
-    macros: HashMap<InternedId, Value>,
+    macros: Map<Value>,
 }
 
 impl Compiler {
@@ -49,12 +49,12 @@ impl Compiler {
     }
 
     /// Returns all variable/function definitions.
-    pub fn defs(&self) -> &HashMap<InternedId, Value> {
+    pub fn defs(&self) -> &Map<Value> {
         &self.defs
     }
 
     /// Returns all macro definitions.
-    pub fn macros(&self) -> &HashMap<InternedId, Value> {
+    pub fn macros(&self) -> &Map<Value> {
         &self.macros
     }
 

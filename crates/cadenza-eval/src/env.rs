@@ -4,13 +4,13 @@
 //! identifiers to values. Closures capture the environment by reference.
 
 use crate::interner::InternedId;
+use crate::map::Map;
 use crate::value::Value;
-use std::collections::HashMap;
 
 /// A single scope in the environment.
 #[derive(Debug, Clone, Default)]
 pub struct Scope {
-    bindings: HashMap<InternedId, Value>,
+    bindings: Map<Value>,
 }
 
 impl Scope {
@@ -27,6 +27,11 @@ impl Scope {
     /// Looks up a binding in this scope.
     pub fn get(&self, name: InternedId) -> Option<&Value> {
         self.bindings.get(&name)
+    }
+
+    /// Looks up a mutable binding in this scope.
+    pub fn get_mut(&mut self, name: InternedId) -> Option<&mut Value> {
+        self.bindings.get_mut(&name)
     }
 
     /// Returns true if this scope contains a binding for the given name.
@@ -81,6 +86,17 @@ impl Env {
     pub fn get(&self, name: InternedId) -> Option<&Value> {
         for scope in self.scopes.iter().rev() {
             if let Some(value) = scope.get(name) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Looks up a mutable binding, searching from the top scope to the bottom.
+    /// Used by the `=` operator to update values.
+    pub fn get_mut(&mut self, name: InternedId) -> Option<&mut Value> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(value) = scope.get_mut(name) {
                 return Some(value);
             }
         }

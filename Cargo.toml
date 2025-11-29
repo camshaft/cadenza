@@ -11,6 +11,7 @@ repository = "https://github.com/camshaft/cadenza"
 
 [workspace.dependencies]
 anyhow = "1"
+rustc-hash = "1.1"
 axum = "0.7"
 bach = "0.1.0"
 bindgen = "0.71"

@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 cadenza-syntax = { path = "../cadenza-syntax" }
 rowan.workspace = true
+rustc-hash.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

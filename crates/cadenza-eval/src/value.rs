@@ -61,11 +61,6 @@ impl Value {
         matches!(self, Value::Nil)
     }
 
-    /// Returns true if this value is truthy (not nil and not false).
-    pub fn is_truthy(&self) -> bool {
-        !matches!(self, Value::Nil | Value::Bool(false))
-    }
-
     /// Tries to convert this value to a boolean.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -168,27 +163,6 @@ impl Eq for Value {}
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn nil_is_falsy() {
-        assert!(!Value::Nil.is_truthy());
-    }
-
-    #[test]
-    fn false_is_falsy() {
-        assert!(!Value::Bool(false).is_truthy());
-    }
-
-    #[test]
-    fn true_is_truthy() {
-        assert!(Value::Bool(true).is_truthy());
-    }
-
-    #[test]
-    fn integers_are_truthy() {
-        assert!(Value::Integer(0).is_truthy());
-        assert!(Value::Integer(42).is_truthy());
-    }
 
     #[test]
     fn type_names_are_correct() {

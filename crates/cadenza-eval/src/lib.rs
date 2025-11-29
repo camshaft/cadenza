@@ -17,6 +17,7 @@ mod env;
 mod error;
 mod eval;
 mod interner;
+mod map;
 mod value;
 
 pub use compiler::Compiler;
@@ -24,6 +25,7 @@ pub use env::Env;
 pub use error::{Error, Result};
 pub use eval::eval;
 pub use interner::{InternedId, Interner};
+pub use map::Map;
 pub use value::Value;
 
 #[cfg(test)]
