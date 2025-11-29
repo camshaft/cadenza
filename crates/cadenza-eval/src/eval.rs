@@ -238,6 +238,7 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
             [a, b] => Err(Error::type_error("number", format!("{} and {}", a.type_name(), b.type_name()))),
+            [] => Err(Error::arity(1, 0)),
             _ => Err(Error::arity(2, args.len())),
         },
         "*" => match args.as_slice() {

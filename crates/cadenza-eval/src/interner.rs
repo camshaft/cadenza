@@ -61,8 +61,9 @@ impl Interner {
         }
 
         let id = InternedId(self.strings.len() as u32);
-        self.strings.push(s.to_string());
-        self.map.insert(s.to_string(), id);
+        let owned = s.to_string();
+        self.strings.push(owned.clone());
+        self.map.insert(owned, id);
         id
     }
 
