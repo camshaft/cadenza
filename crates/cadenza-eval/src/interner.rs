@@ -357,8 +357,8 @@ impl<T> fmt::Display for InternId<T> {
 
 /// A generic interner that can intern values with optional transformation.
 ///
-/// `Intern<T, S>` interns values of type `T` into storage `S`.
-/// It supports deduplication based on a key type `K`.
+/// `Intern<T, K, S>` interns values of type `T` with key type `K` into storage `S`.
+/// It supports deduplication based on the key type.
 #[derive(Debug)]
 pub struct Intern<T, K = T, S = LocalStorage<T>>
 where
@@ -400,7 +400,8 @@ where
     /// Interns a value with a transformation function.
     ///
     /// The transformation function converts the key to a value.
-    /// Returns the interned ID and whether the transformation was new.
+    /// If the key has already been interned, returns the existing ID without
+    /// calling the transformation function.
     pub fn intern_with<F>(&self, key: K, f: F) -> InternId<T>
     where
         F: FnOnce(&K) -> T,
