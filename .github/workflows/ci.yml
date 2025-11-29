@@ -52,13 +52,9 @@ jobs:
           rustup toolchain install ${{ env.RUST_NIGHTLY_TOOLCHAIN }} --profile minimal --component rustfmt
           rustup override set ${{ env.RUST_NIGHTLY_TOOLCHAIN }}
 
-      - name: Build project
-        run: |
-          cargo build
-
       - name: Run cargo fmt
         run: |
-          cargo fmt --all -- --check
+          cargo xtask ci fmt
 
   clippy:
     runs-on: ubuntu-latest
@@ -73,13 +69,9 @@ jobs:
 
       - uses: camshaft/rust-cache@v1
 
-      - name: Build project
-        run: |
-          cargo build
-
       - name: Run cargo clippy
         run: |
-          cargo clippy --all-features --all-targets --workspace -- -D warnings
+          cargo xtask ci clippy
 
   udeps:
     runs-on: ubuntu-latest
@@ -99,7 +91,7 @@ jobs:
           crate: cargo-udeps
 
       - name: Run cargo udeps
-        run: cargo udeps --workspace --all-targets
+        run: cargo xtask ci udeps
         env:
           RUSTC_WRAPPER: ""
 
@@ -133,4 +125,4 @@ jobs:
           # When features is empty, run with --no-default-features
           TEST_FLAGS: ${{ matrix.features == 'default' && '' || '--no-default-features' }}
         run: |
-          cargo test $TEST_FLAGS
+          cargo xtask ci test $TEST_FLAGS
