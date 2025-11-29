@@ -32,6 +32,9 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 1. ~~**Error should include syntax nodes and stack traces**~~
    - [x] COMPLETED: Restructured Error into ErrorKind with a wrapper carrying span and stack trace
+   - [x] Migrated to miette for standardized diagnostics
+   - [x] Renamed Error to Diagnostic with DiagnosticLevel for warnings/hints
+   - [x] Added source file name (interned) to StackFrame
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079075)
 
 2. **Use InternedId instead of String in errors**

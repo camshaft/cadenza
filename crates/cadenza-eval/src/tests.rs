@@ -2,18 +2,18 @@
 
 use crate::{
     compiler::Compiler,
+    diagnostic::Diagnostic,
     env::Env,
-    error::Error,
     interner::Interner,
     value::{BuiltinFn, Value},
 };
 use cadenza_syntax::parse::parse;
 
 /// Helper to evaluate a source string and return all values.
-fn eval_all(src: &str) -> Result<Vec<Value>, Error> {
+fn eval_all(src: &str) -> Result<Vec<Value>, Diagnostic> {
     let parsed = parse(src);
     if !parsed.errors.is_empty() {
-        return Err(Error::syntax(format!("parse errors: {:?}", parsed.errors)));
+        return Err(Diagnostic::syntax(format!("parse errors: {:?}", parsed.errors)));
     }
     let root = parsed.ast();
     let mut interner = Interner::new();
@@ -23,11 +23,11 @@ fn eval_all(src: &str) -> Result<Vec<Value>, Error> {
 }
 
 /// Helper to evaluate a single expression.
-fn eval_one(src: &str) -> Result<Value, Error> {
+fn eval_one(src: &str) -> Result<Value, Diagnostic> {
     eval_all(src)?
         .into_iter()
         .next()
-        .ok_or_else(|| Error::syntax("no expressions"))
+        .ok_or_else(|| Diagnostic::syntax("no expressions"))
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn test_undefined_variable_error() {
     let result = eval_one("undefined_variable");
     assert!(result.is_err());
     match result.unwrap_err().kind {
-        crate::error::ErrorKind::UndefinedVariable(name) => {
+        crate::diagnostic::DiagnosticKind::UndefinedVariable(name) => {
             assert_eq!(name, "undefined_variable")
         }
         e => panic!("unexpected error: {e}"),
@@ -117,11 +117,11 @@ fn test_builtin_function() {
             name: "inc",
             func: |args| {
                 if args.len() != 1 {
-                    return Err(Error::arity(1, args.len()));
+                    return Err(Diagnostic::arity(1, args.len()));
                 }
                 match &args[0] {
                     Value::Integer(a) => Ok(Value::Integer(a + 1)),
-                    _ => Err(Error::type_error("integer", "other")),
+                    _ => Err(Diagnostic::type_error("integer", "other")),
                 }
             },
         }),
