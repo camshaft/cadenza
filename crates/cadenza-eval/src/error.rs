@@ -15,10 +15,7 @@ pub enum Error {
 
     /// A value was used in an invalid way for its type.
     #[error("type error: expected {expected}, got {actual}")]
-    TypeError {
-        expected: String,
-        actual: String,
-    },
+    TypeError { expected: String, actual: String },
 
     /// Wrong number of arguments to a function or macro.
     #[error("arity error: expected {expected} arguments, got {actual}")]

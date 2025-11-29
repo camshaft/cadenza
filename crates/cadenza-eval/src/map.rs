@@ -5,8 +5,7 @@
 
 use crate::interner::InternedId;
 use rustc_hash::FxHasher;
-use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
+use std::{collections::HashMap, hash::BuildHasherDefault};
 
 /// A hash map using FxHash for interned ID keys.
 pub type Map<V> = HashMap<InternedId, V, BuildHasherDefault<FxHasher>>;

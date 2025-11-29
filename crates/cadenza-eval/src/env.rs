@@ -3,9 +3,7 @@
 //! The environment is a stack of scopes, where each scope maps interned
 //! identifiers to values. Closures capture the environment by reference.
 
-use crate::interner::InternedId;
-use crate::map::Map;
-use crate::value::Value;
+use crate::{interner::InternedId, map::Map, value::Value};
 
 /// A single scope in the environment.
 #[derive(Debug, Clone, Default)]
@@ -68,10 +66,7 @@ impl Env {
     ///
     /// Panics if there is only one scope (the global scope).
     pub fn pop_scope(&mut self) {
-        assert!(
-            self.scopes.len() > 1,
-            "Cannot pop the global scope"
-        );
+        assert!(self.scopes.len() > 1, "Cannot pop the global scope");
         self.scopes.pop();
     }
 

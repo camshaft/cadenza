@@ -1,10 +1,12 @@
 //! Integration tests for the Cadenza evaluator.
 
-use crate::compiler::Compiler;
-use crate::env::Env;
-use crate::error::Error;
-use crate::interner::Interner;
-use crate::value::{BuiltinFn, Value};
+use crate::{
+    compiler::Compiler,
+    env::Env,
+    error::Error,
+    interner::Interner,
+    value::{BuiltinFn, Value},
+};
 use cadenza_syntax::parse::parse;
 
 /// Helper to evaluate a source string and return all values.

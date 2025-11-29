@@ -8,11 +8,13 @@
 //! - Function application
 //! - Macro expansion
 
-use crate::compiler::Compiler;
-use crate::env::Env;
-use crate::error::{Error, Result};
-use crate::interner::{InternedId, Interner};
-use crate::value::Value;
+use crate::{
+    compiler::Compiler,
+    env::Env,
+    error::{Error, Result},
+    interner::{InternedId, Interner},
+    value::Value,
+};
 use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
 
 /// Evaluates a complete source file (Root node).
@@ -21,7 +23,12 @@ use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root,
 /// collected into a vector, though most top-level expressions will
 /// return `Value::Nil` as side effects on the `Compiler` are the
 /// primary purpose.
-pub fn eval(root: &Root, interner: &mut Interner, env: &mut Env, compiler: &mut Compiler) -> Result<Vec<Value>> {
+pub fn eval(
+    root: &Root,
+    interner: &mut Interner,
+    env: &mut Env,
+    compiler: &mut Compiler,
+) -> Result<Vec<Value>> {
     let mut results = Vec::new();
     for expr in root.items() {
         let value = eval_expr(&expr, interner, env, compiler)?;
@@ -55,7 +62,9 @@ pub fn eval_expr(
 
 /// Evaluates a literal value.
 fn eval_literal(lit: &Literal) -> Result<Value> {
-    let value = lit.value().ok_or_else(|| Error::syntax("missing literal value"))?;
+    let value = lit
+        .value()
+        .ok_or_else(|| Error::syntax("missing literal value"))?;
 
     match value {
         LiteralValue::Integer(int_val) => {
@@ -171,16 +180,14 @@ fn expand_and_eval_macro(
             let arg_nodes: Vec<rowan::GreenNode> = apply
                 .arguments()
                 .filter_map(|arg| arg.value())
-                .filter_map(|expr| {
-                    match expr {
-                        Expr::Apply(a) => Some(a.syntax().green().into_owned()),
-                        Expr::Ident(i) => Some(i.syntax().green().into_owned()),
-                        Expr::Literal(l) => Some(l.syntax().green().into_owned()),
-                        Expr::Op(o) => Some(o.syntax().green().into_owned()),
-                        Expr::Attr(a) => Some(a.syntax().green().into_owned()),
-                        Expr::Synthetic(s) => Some(s.syntax().green().into_owned()),
-                        Expr::Error(_) => None,
-                    }
+                .filter_map(|expr| match expr {
+                    Expr::Apply(a) => Some(a.syntax().green().into_owned()),
+                    Expr::Ident(i) => Some(i.syntax().green().into_owned()),
+                    Expr::Literal(l) => Some(l.syntax().green().into_owned()),
+                    Expr::Op(o) => Some(o.syntax().green().into_owned()),
+                    Expr::Attr(a) => Some(a.syntax().green().into_owned()),
+                    Expr::Synthetic(s) => Some(s.syntax().green().into_owned()),
+                    Expr::Error(_) => None,
                 })
                 .collect();
 
@@ -227,7 +234,10 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a + b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
-            [a, b] => Err(Error::type_error("number", format!("{} and {}", a.type_name(), b.type_name()))),
+            [a, b] => Err(Error::type_error(
+                "number",
+                format!("{} and {}", a.type_name(), b.type_name()),
+            )),
             _ => Err(Error::arity(2, args.len())),
         },
         "-" => match args.as_slice() {
@@ -237,7 +247,10 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a - b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
-            [a, b] => Err(Error::type_error("number", format!("{} and {}", a.type_name(), b.type_name()))),
+            [a, b] => Err(Error::type_error(
+                "number",
+                format!("{} and {}", a.type_name(), b.type_name()),
+            )),
             [] => Err(Error::arity(1, 0)),
             _ => Err(Error::arity(2, args.len())),
         },
@@ -246,7 +259,10 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a * b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 * b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a * *b as f64)),
-            [a, b] => Err(Error::type_error("number", format!("{} and {}", a.type_name(), b.type_name()))),
+            [a, b] => Err(Error::type_error(
+                "number",
+                format!("{} and {}", a.type_name(), b.type_name()),
+            )),
             _ => Err(Error::arity(2, args.len())),
         },
         "/" => match args.as_slice() {
@@ -260,7 +276,10 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a / b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 / b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a / *b as f64)),
-            [a, b] => Err(Error::type_error("number", format!("{} and {}", a.type_name(), b.type_name()))),
+            [a, b] => Err(Error::type_error(
+                "number",
+                format!("{} and {}", a.type_name(), b.type_name()),
+            )),
             _ => Err(Error::arity(2, args.len())),
         },
         "==" => match args.as_slice() {
@@ -298,7 +317,7 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
                 [_, value] => Ok(value.clone()),
                 _ => Err(Error::arity(2, args.len())),
             }
-        },
+        }
         _ => Err(Error::undefined_variable(op_name)),
     }
 }
@@ -357,7 +376,10 @@ mod tests {
 
     fn eval_single(src: &str) -> Result<Value> {
         let values = eval_str(src)?;
-        values.into_iter().next().ok_or_else(|| Error::syntax("no expressions"))
+        values
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::syntax("no expressions"))
     }
 
     #[test]
@@ -367,7 +389,7 @@ mod tests {
 
     #[test]
     fn eval_float() {
-        assert_eq!(eval_single("3.14").unwrap(), Value::Float(3.14));
+        assert_eq!(eval_single("2.5").unwrap(), Value::Float(2.5));
     }
 
     #[test]

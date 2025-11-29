@@ -4,9 +4,7 @@
 //! definitions during evaluation. Macros call back into the compiler
 //! API to register definitions, emit IR, etc.
 
-use crate::interner::InternedId;
-use crate::map::Map;
-use crate::value::Value;
+use crate::{interner::InternedId, map::Map, value::Value};
 
 /// The compiler state that accumulates definitions during evaluation.
 ///
