@@ -149,6 +149,123 @@ impl<T> Storage<T> for LocalStorage<T> {
 }
 
 // =============================================================================
+// Static Storage
+// =============================================================================
+
+/// A marker trait for ZST types that define static storage locations.
+///
+/// Implementing this trait on a zero-sized type allows you to create
+/// static interning locations that can be accessed from anywhere in the program.
+///
+/// # Example
+///
+/// ```
+/// use cadenza_eval::interner::{StaticStorage, InternData, Storage};
+/// use std::cell::RefCell;
+///
+/// // Define a ZST marker for string interning
+/// pub struct StringStore;
+///
+/// // Thread-local storage for the strings
+/// thread_local! {
+///     static STRING_DATA: RefCell<InternData<String>> = RefCell::new(InternData::new());
+/// }
+///
+/// impl StaticStorage<String> for StringStore {
+///     fn with<R>(f: impl FnOnce(&InternData<String>) -> R) -> R {
+///         STRING_DATA.with(|data| f(&data.borrow()))
+///     }
+///
+///     fn with_mut<R>(f: impl FnOnce(&mut InternData<String>) -> R) -> R {
+///         STRING_DATA.with(|data| f(&mut data.borrow_mut()))
+///     }
+/// }
+/// ```
+pub trait StaticStorage<T>: Sized {
+    /// Access the storage data immutably.
+    fn with<R>(f: impl FnOnce(&InternData<T>) -> R) -> R;
+
+    /// Access the storage data mutably.
+    fn with_mut<R>(f: impl FnOnce(&mut InternData<T>) -> R) -> R;
+}
+
+/// A wrapper that adapts a `StaticStorage` ZST to implement `Storage`.
+///
+/// This allows using static storage with the `Intern` type.
+#[derive(Debug, Default)]
+pub struct StaticStorageAdapter<S, T> {
+    _marker: PhantomData<(S, T)>,
+}
+
+impl<S, T> StaticStorageAdapter<S, T> {
+    /// Creates a new static storage adapter.
+    pub const fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, T> Clone for StaticStorageAdapter<S, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S, T> Copy for StaticStorageAdapter<S, T> {}
+
+impl<S: StaticStorage<T>, T> Storage<T> for StaticStorageAdapter<S, T> {
+    fn with<R>(&self, f: impl FnOnce(&InternData<T>) -> R) -> R {
+        S::with(f)
+    }
+
+    fn with_mut<R>(&self, f: impl FnOnce(&mut InternData<T>) -> R) -> R {
+        S::with_mut(f)
+    }
+}
+
+/// A macro to define static storage for a given type.
+///
+/// This creates a ZST marker type and implements `StaticStorage` for it
+/// using thread-local storage.
+///
+/// # Example
+///
+/// ```
+/// use cadenza_eval::define_static_storage;
+///
+/// // Define static storage for interned integers
+/// define_static_storage!(IntegerStore, i64);
+///
+/// // Now you can use IntegerStore as a static storage marker
+/// ```
+#[macro_export]
+macro_rules! define_static_storage {
+    ($name:ident, $value_type:ty) => {
+        /// A ZST marker for static storage.
+        #[derive(Debug, Clone, Copy, Default)]
+        pub struct $name;
+
+        ::std::thread_local! {
+            static STORAGE: ::std::cell::RefCell<$crate::interner::InternData<$value_type>> =
+                ::std::cell::RefCell::new($crate::interner::InternData::new());
+        }
+
+        impl $crate::interner::StaticStorage<$value_type> for $name {
+            fn with<R>(f: impl FnOnce(&$crate::interner::InternData<$value_type>) -> R) -> R {
+                STORAGE.with(|data| f(&data.borrow()))
+            }
+
+            fn with_mut<R>(
+                f: impl FnOnce(&mut $crate::interner::InternData<$value_type>) -> R,
+            ) -> R {
+                STORAGE.with(|data| f(&mut data.borrow_mut()))
+            }
+        }
+    };
+}
+
+// =============================================================================
 // Generic InternId with Type Parameter
 // =============================================================================
 
@@ -207,6 +324,18 @@ impl<T> InternId<T> {
         T: Clone,
     {
         storage.with(|data| data.get(self).cloned())
+    }
+
+    /// Resolves this ID using static storage.
+    ///
+    /// This allows resolving the ID anywhere in the program where the
+    /// static storage type `S` is accessible.
+    #[inline]
+    pub fn resolve_static<S: StaticStorage<T>>(self) -> Option<T>
+    where
+        T: Clone,
+    {
+        S::with(|data| data.get(self).cloned())
     }
 }
 
@@ -331,6 +460,22 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A type alias for an interner using static storage.
+///
+/// This is useful when you want to use a ZST marker type for static storage.
+pub type StaticIntern<T, K, S> = Intern<T, K, StaticStorageAdapter<S, T>>;
+
+impl<T, K, S> Intern<T, K, StaticStorageAdapter<S, T>>
+where
+    S: StaticStorage<T>,
+    K: Eq + Hash + Clone,
+{
+    /// Creates a new interner using the specified static storage.
+    pub fn with_static_storage() -> Self {
+        Self::with_storage(StaticStorageAdapter::new())
     }
 }
 
@@ -616,6 +761,57 @@ mod tests {
             let storage = LocalStorage::<i32>::new();
             let id = storage.with_mut(|data| data.push(123));
             assert_eq!(id.resolve(&storage), Some(123));
+        }
+    }
+
+    // Tests for static storage
+    mod static_storage {
+        use super::*;
+
+        // Define static storage for testing
+        define_static_storage!(TestIntStore, i32);
+
+        #[test]
+        fn static_storage_intern_and_resolve() {
+            let interner: StaticIntern<i32, i32, TestIntStore> = Intern::with_static_storage();
+
+            let id = interner.intern(42, 42);
+            assert_eq!(interner.resolve(id), Some(42));
+        }
+
+        #[test]
+        fn static_storage_deduplicates() {
+            let interner: StaticIntern<i32, i32, TestIntStore> = Intern::with_static_storage();
+
+            let id1 = interner.intern(100, 100);
+            let id2 = interner.intern(100, 100);
+            assert_eq!(id1, id2);
+        }
+
+        #[test]
+        fn intern_id_can_resolve_with_static_storage() {
+            // Use a separate static storage for this test to avoid interference
+            define_static_storage!(TestResolveStore, String);
+
+            let interner: StaticIntern<String, String, TestResolveStore> =
+                Intern::with_static_storage();
+
+            let id = interner.intern("hello".to_string(), "world".to_string());
+
+            // Resolve using static storage directly (without the interner)
+            let resolved = id.resolve_static::<TestResolveStore>();
+            assert_eq!(resolved, Some("world".to_string()));
+        }
+
+        #[test]
+        fn static_storage_with_transformation() {
+            define_static_storage!(TestTransformStore, Option<i64>);
+
+            let interner: StaticIntern<Option<i64>, String, TestTransformStore> =
+                Intern::with_static_storage();
+
+            let id = interner.intern_with("42".to_string(), |s| s.parse::<i64>().ok());
+            assert_eq!(interner.resolve(id), Some(Some(42)));
         }
     }
 }
