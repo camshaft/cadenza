@@ -2,7 +2,7 @@
 //!
 //! Values can be symbols, lists, functions, macros, or built-in operations.
 
-use crate::{error::Result, interner::InternedId};
+use crate::{diagnostic::Result, interner::InternedId};
 use std::fmt;
 
 /// A runtime value in the Cadenza evaluator.

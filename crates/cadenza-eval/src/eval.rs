@@ -10,8 +10,8 @@
 
 use crate::{
     compiler::Compiler,
+    diagnostic::{Diagnostic, Result},
     env::Env,
-    error::{Error, Result},
     interner::{InternedId, Interner},
     value::Value,
 };
@@ -56,7 +56,7 @@ pub fn eval_expr(
             Ok(Value::Symbol(id))
         }
         Expr::Synthetic(syn) => eval_synthetic(syn, interner, env, compiler),
-        Expr::Error(_) => Err(Error::syntax("encountered error node in AST")),
+        Expr::Error(_) => Err(Diagnostic::syntax("encountered error node in AST")),
     }
 }
 
@@ -64,7 +64,7 @@ pub fn eval_expr(
 fn eval_literal(lit: &Literal) -> Result<Value> {
     let value = lit
         .value()
-        .ok_or_else(|| Error::syntax("missing literal value"))?;
+        .ok_or_else(|| Diagnostic::syntax("missing literal value"))?;
 
     match value {
         LiteralValue::Integer(int_val) => {
@@ -73,7 +73,7 @@ fn eval_literal(lit: &Literal) -> Result<Value> {
             let clean = text.replace('_', "");
             let n: i64 = clean
                 .parse()
-                .map_err(|_| Error::syntax(format!("invalid integer: {text}")))?;
+                .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text}")))?;
             Ok(Value::Integer(n))
         }
         LiteralValue::Float(float_val) => {
@@ -81,7 +81,7 @@ fn eval_literal(lit: &Literal) -> Result<Value> {
             let clean = text.replace('_', "");
             let n: f64 = clean
                 .parse()
-                .map_err(|_| Error::syntax(format!("invalid float: {text}")))?;
+                .map_err(|_| Diagnostic::syntax(format!("invalid float: {text}")))?;
             Ok(Value::Float(n))
         }
         LiteralValue::String(str_val) => {
@@ -116,7 +116,7 @@ fn eval_ident(
         return Ok(value.clone());
     }
 
-    Err(Error::undefined_variable(&text))
+    Err(Diagnostic::undefined_variable(&text))
 }
 
 /// Evaluates a function/macro application.
@@ -128,11 +128,11 @@ fn eval_apply(
 ) -> Result<Value> {
     let receiver = apply
         .receiver()
-        .ok_or_else(|| Error::syntax("missing receiver in application"))?;
+        .ok_or_else(|| Diagnostic::syntax("missing receiver in application"))?;
 
     let receiver_expr = receiver
         .value()
-        .ok_or_else(|| Error::syntax("missing receiver expression"))?;
+        .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
 
     // Check if the receiver is an identifier that names a macro
     if let Expr::Ident(ref ident) = receiver_expr {
@@ -199,10 +199,12 @@ fn expand_and_eval_macro(
             if let Some(expr) = Expr::cast_syntax_node(&syntax_node) {
                 eval_expr(&expr, interner, env, compiler)
             } else {
-                Err(Error::internal("macro expansion produced invalid syntax"))
+                Err(Diagnostic::internal(
+                    "macro expansion produced invalid syntax",
+                ))
             }
         }
-        _ => Err(Error::internal("expected macro value")),
+        _ => Err(Diagnostic::internal("expected macro value")),
     }
 }
 
@@ -220,7 +222,7 @@ fn apply_value(
             // Operator application
             apply_operator(id, args, interner)
         }
-        _ => Err(Error::not_callable(callee.type_name())),
+        _ => Err(Diagnostic::not_callable(callee.type_name())),
     }
 }
 
@@ -234,11 +236,11 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a + b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
-            [a, b] => Err(Error::type_error(
+            [a, b] => Err(Diagnostic::type_error(
                 "number",
                 format!("{} and {}", a.type_name(), b.type_name()),
             )),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "-" => match args.as_slice() {
             [Value::Integer(a)] => Ok(Value::Integer(-a)),
@@ -247,28 +249,28 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a - b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
-            [a, b] => Err(Error::type_error(
+            [a, b] => Err(Diagnostic::type_error(
                 "number",
                 format!("{} and {}", a.type_name(), b.type_name()),
             )),
-            [] => Err(Error::arity(1, 0)),
-            _ => Err(Error::arity(2, args.len())),
+            [] => Err(Diagnostic::arity(1, 0)),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "*" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a * b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a * b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 * b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a * *b as f64)),
-            [a, b] => Err(Error::type_error(
+            [a, b] => Err(Diagnostic::type_error(
                 "number",
                 format!("{} and {}", a.type_name(), b.type_name()),
             )),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "/" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => {
                 if *b == 0 {
-                    Err(Error::syntax("division by zero"))
+                    Err(Diagnostic::syntax("division by zero"))
                 } else {
                     Ok(Value::Integer(a / b))
                 }
@@ -276,49 +278,49 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a / b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 / b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a / *b as f64)),
-            [a, b] => Err(Error::type_error(
+            [a, b] => Err(Diagnostic::type_error(
                 "number",
                 format!("{} and {}", a.type_name(), b.type_name()),
             )),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "==" => match args.as_slice() {
             [a, b] => Ok(Value::Bool(a == b)),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "!=" => match args.as_slice() {
             [a, b] => Ok(Value::Bool(a != b)),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a < b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a < b)),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<=" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a <= b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a <= b)),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a > b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a > b)),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">=" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a >= b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a >= b)),
-            _ => Err(Error::arity(2, args.len())),
+            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "=" => {
             // Assignment operator - for now just return the right-hand side
             // In a full implementation, this would modify the environment
             match args.as_slice() {
                 [_, value] => Ok(value.clone()),
-                _ => Err(Error::arity(2, args.len())),
+                _ => Err(Diagnostic::arity(2, args.len())),
             }
         }
-        _ => Err(Error::undefined_variable(op_name)),
+        _ => Err(Diagnostic::undefined_variable(op_name)),
     }
 }
 
@@ -353,7 +355,9 @@ fn eval_synthetic(
             // They're always wrapped in Apply nodes
             Ok(Value::Nil)
         }
-        _ => Err(Error::syntax(format!("unknown synthetic node: {ident}"))),
+        _ => Err(Diagnostic::syntax(format!(
+            "unknown synthetic node: {ident}"
+        ))),
     }
 }
 
@@ -365,7 +369,10 @@ mod tests {
     fn eval_str(src: &str) -> Result<Vec<Value>> {
         let parsed = parse(src);
         if !parsed.errors.is_empty() {
-            return Err(Error::syntax(format!("parse errors: {:?}", parsed.errors)));
+            return Err(Diagnostic::syntax(format!(
+                "parse errors: {:?}",
+                parsed.errors
+            )));
         }
         let root = parsed.ast();
         let mut interner = Interner::new();
@@ -379,7 +386,7 @@ mod tests {
         values
             .into_iter()
             .next()
-            .ok_or_else(|| Error::syntax("no expressions"))
+            .ok_or_else(|| Diagnostic::syntax("no expressions"))
     }
 
     #[test]
@@ -443,7 +450,10 @@ mod tests {
     fn eval_undefined_variable() {
         let result = eval_single("undefined_var");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::UndefinedVariable(_)));
+        assert!(matches!(
+            result.unwrap_err().kind,
+            crate::diagnostic::DiagnosticKind::UndefinedVariable(_)
+        ));
     }
 
     #[test]

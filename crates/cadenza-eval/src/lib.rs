@@ -13,16 +13,20 @@
 //! - [`eval`]: The main evaluation function
 
 mod compiler;
+mod diagnostic;
 mod env;
-mod error;
 mod eval;
 mod interner;
 mod map;
 mod value;
 
 pub use compiler::Compiler;
+pub use diagnostic::{
+    Diagnostic, DiagnosticKind, DiagnosticLevel, DisplayWithInterner, Result, StackFrame,
+};
+// Backwards compatibility aliases
+pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;
-pub use error::{Error, Result};
 pub use eval::eval;
 pub use interner::{InternedId, Interner};
 pub use map::Map;
