@@ -25,7 +25,16 @@ impl rowan::Language for Lang {
     }
 }
 
-type SyntaxNode = rowan::SyntaxNode<Lang>;
+impl Lang {
+    /// Creates a SyntaxNode from a GreenNode.
+    pub fn parse_node(green: rowan::GreenNode) -> SyntaxNode {
+        rowan::SyntaxNode::new_root(green)
+    }
+}
+
+/// Re-export SyntaxNode for external use.
+pub type SyntaxNode = rowan::SyntaxNode<Lang>;
+
 #[expect(dead_code)]
 type SyntaxToken = rowan::SyntaxToken<Lang>;
 #[expect(dead_code)]
