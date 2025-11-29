@@ -7,7 +7,7 @@
 //! # Core Components
 //!
 //! - [`Interner`]: String interning for efficient identifier comparison
-//! - [`interner::Intern`]: Generic interning with ZST-parameterized storage
+//! - [`interner::Interned`]: Generic interned value with ZST-parameterized storage
 //! - [`Value`]: Runtime values including functions and macros
 //! - [`Env`]: Scoped environment for variable bindings
 //! - [`Compiler`]: The compiler state that accumulates definitions

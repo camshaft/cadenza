@@ -91,13 +91,12 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 ### Interner Improvements
 
 11. ~~**Refactor interning to use ZST-parameterized storage**~~
-    - [x] COMPLETED: Added `Storage` trait parameterized by value type
-    - [x] Added `LocalStorage` for local interning (default)
-    - [x] Added `StaticStorage` trait for ZST marker types
-    - [x] Added `StaticStorageAdapter` to adapt static storage to the `Storage` trait
-    - [x] Added `define_static_storage!` macro for easy static storage definition
-    - [x] `InternId<T>` can resolve anywhere via `resolve_static::<S>()`
-    - [x] Added `IntegerIntern` and `FloatIntern` for literal interning with transformation
+    - [x] COMPLETED: Simplified design with single `Interned<S>` type
+    - [x] `Interned<S>` implements `Deref` for direct value access
+    - [x] `Storage` trait with `insert(&str) -> Index` and `resolve(Index) -> &'static Value`
+    - [x] `define_string_storage!` macro for easy thread-local storage definition
+    - [x] Storage markers don't implement `Sync`/`Send` to prevent cross-thread usage
+    - [x] `Interned::from(v: &str)` for easy creation
     - Original: https://github.com/camshaft/cadenza/pull/4#discussion_r2573082852
 
 12. **Use smol_str for reference-counted strings**
@@ -110,11 +109,9 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
     - Needed: Use hashbrown directly to get bucket for borrowed key
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573081759)
 
-14. ~~**Intern integers and floats**~~
-    - [x] COMPLETED: Added `IntegerIntern` type alias for integer literal interning
-    - [x] Added `FloatIntern` type alias for float literal interning
-    - [x] Transformations happen during interning (e.g., parse string → i64)
-    - [x] Invalid literals are interned as `None`
+14. **Intern integers and floats**
+    - Current: Literals parsed on every evaluation
+    - Needed: Extend `Storage` trait to support transformed value types
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573090782)
 
 ### Testing & Ergonomics
