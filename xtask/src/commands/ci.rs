@@ -47,12 +47,19 @@ impl CiCommand {
     pub fn run(&self, sh: &Shell) -> Result<()> {
         match self {
             CiCommand::Fmt => {
-                eprintln!("Installing nightly rustfmt...");
-                cmd!(
-                    sh,
-                    "rustup toolchain install nightly --profile minimal --component rustfmt"
-                )
-                .run()?;
+                // Check if nightly rustfmt is available, install if not
+                if cmd!(sh, "cargo +nightly fmt --version")
+                    .quiet()
+                    .run()
+                    .is_err()
+                {
+                    eprintln!("Installing nightly rustfmt...");
+                    cmd!(
+                        sh,
+                        "rustup toolchain install nightly --profile minimal --component rustfmt"
+                    )
+                    .run()?;
+                }
                 eprintln!("Running cargo fmt check...");
                 cmd!(sh, "cargo +nightly fmt --all -- --check").run()?;
                 Ok(())
@@ -67,8 +74,22 @@ impl CiCommand {
                 Ok(())
             }
             CiCommand::Udeps => {
+                // Check if nightly is available, install if not
+                if cmd!(sh, "cargo +nightly --version").quiet().run().is_err() {
+                    eprintln!("Installing nightly toolchain...");
+                    cmd!(sh, "rustup toolchain install nightly --profile minimal").run()?;
+                }
+                // Check if cargo-udeps is available, install if not
+                if cmd!(sh, "cargo +nightly udeps --version")
+                    .quiet()
+                    .run()
+                    .is_err()
+                {
+                    eprintln!("Installing cargo-udeps...");
+                    cmd!(sh, "cargo install cargo-udeps --locked").run()?;
+                }
                 eprintln!("Running cargo udeps...");
-                cmd!(sh, "cargo udeps --workspace --all-targets").run()?;
+                cmd!(sh, "cargo +nightly udeps --workspace --all-targets").run()?;
                 Ok(())
             }
             CiCommand::Test(test_args) => {
