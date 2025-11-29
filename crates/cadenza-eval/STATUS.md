@@ -37,9 +37,11 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Added source file name (interned) to StackFrame
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079075)
 
-2. **Use InternedId instead of String in errors**
-   - Current: `UndefinedVariable(String)` uses heap-allocated strings
-   - Needed: Use `InternedId` to avoid allocations
+2. ~~**Use InternedId instead of String in errors**~~
+   - [x] COMPLETED: Changed `UndefinedVariable(String)` to `UndefinedVariable(InternedId)`
+   - [x] Updated `Diagnostic::undefined_variable` to take `InternedId`
+   - [x] Updated `display_with_interner` to resolve `InternedId` for display
+   - [x] Updated all call sites in eval.rs
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079460)
 
 3. **Store errors in compiler instead of bailing**

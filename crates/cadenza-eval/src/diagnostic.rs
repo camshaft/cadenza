@@ -76,7 +76,7 @@ impl StackFrame {
 pub enum DiagnosticKind {
     /// An undefined variable was referenced.
     #[error("undefined variable: {0}")]
-    UndefinedVariable(String),
+    UndefinedVariable(InternedId),
 
     /// A value was used in an invalid way for its type.
     #[error("type error: expected {expected}, got {actual}")]
@@ -168,7 +168,14 @@ impl fmt::Display for DisplayWithInterner<'_> {
             DiagnosticLevel::Hint => write!(f, "hint: ")?,
         }
 
-        write!(f, "{}", self.diagnostic.kind)?;
+        // Write the diagnostic kind with resolved names
+        match &self.diagnostic.kind {
+            DiagnosticKind::UndefinedVariable(id) => {
+                write!(f, "undefined variable: {}", self.interner.resolve(*id))?;
+            }
+            // For other kinds, use default Display
+            kind => write!(f, "{}", kind)?,
+        }
 
         // Write location info
         if let Some(file) = self.diagnostic.file {
@@ -284,9 +291,9 @@ impl Diagnostic {
         self.level == DiagnosticLevel::Hint
     }
 
-    /// Creates an undefined variable error.
-    pub fn undefined_variable(name: &str) -> Self {
-        Self::new(DiagnosticKind::UndefinedVariable(name.to_string()), None)
+    /// Creates an undefined variable error from an interned ID.
+    pub fn undefined_variable(id: InternedId) -> Self {
+        Self::new(DiagnosticKind::UndefinedVariable(id), None)
     }
 
     /// Creates a type error.
@@ -319,11 +326,6 @@ impl Diagnostic {
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::new(DiagnosticKind::InternalError(msg.into()), None)
     }
-
-    /// Creates an undefined variable error from an interned ID.
-    pub fn undefined_variable_id(id: InternedId, interner: &crate::Interner) -> Self {
-        Self::undefined_variable(interner.resolve(id))
-    }
 }
 
 impl From<DiagnosticKind> for Diagnostic {
@@ -344,10 +346,17 @@ mod tests {
 
     #[test]
     fn diagnostic_kind_display() {
-        assert_eq!(
-            DiagnosticKind::UndefinedVariable("foo".to_string()).to_string(),
-            "undefined variable: foo"
-        );
+        use crate::Interner;
+
+        let mut interner = Interner::new();
+        let foo_id = interner.intern("foo");
+
+        // Note: Without the interner, the display shows the raw ID
+        // The display_with_interner method is used to get the resolved name
+        let kind = DiagnosticKind::UndefinedVariable(foo_id);
+        let display = format!("{}", kind);
+        assert!(display.starts_with("undefined variable:"));
+
         assert_eq!(
             DiagnosticKind::TypeError {
                 expected: "number".to_string(),
@@ -368,8 +377,12 @@ mod tests {
 
     #[test]
     fn diagnostic_with_span() {
+        use crate::Interner;
+
+        let mut interner = Interner::new();
+        let x_id = interner.intern("x");
         let span = Span::new(10, 20);
-        let diag = Diagnostic::undefined_variable("x").with_span(span);
+        let diag = Diagnostic::undefined_variable(x_id).with_span(span);
         assert_eq!(diag.span, Some(span));
     }
 
@@ -378,18 +391,23 @@ mod tests {
         use crate::Interner;
 
         let mut interner = Interner::new();
+        let x_id = interner.intern("x");
         let file_id = interner.intern("test.cadenza");
 
-        let diag = Diagnostic::undefined_variable("x").with_file(file_id);
+        let diag = Diagnostic::undefined_variable(x_id).with_file(file_id);
         assert_eq!(diag.file, Some(file_id));
     }
 
     #[test]
     fn diagnostic_with_stack_trace() {
+        use crate::Interner;
+
+        let mut interner = Interner::new();
+        let x_id = interner.intern("x");
         let span1 = Span::new(0, 5);
         let span2 = Span::new(10, 15);
 
-        let mut diag = Diagnostic::undefined_variable("x");
+        let mut diag = Diagnostic::undefined_variable(x_id);
         diag.push_frame(StackFrame::anonymous(Some(span1)));
         diag.push_frame(StackFrame::anonymous(Some(span2)));
 
@@ -437,15 +455,20 @@ mod tests {
 
     #[test]
     fn diagnostic_levels() {
-        let error = Diagnostic::undefined_variable("x");
+        use crate::Interner;
+
+        let mut interner = Interner::new();
+        let x_id = interner.intern("x");
+
+        let error = Diagnostic::undefined_variable(x_id);
         assert!(error.is_error());
         assert!(!error.is_warning());
 
-        let warning = Diagnostic::undefined_variable("x").set_level(DiagnosticLevel::Warning);
+        let warning = Diagnostic::undefined_variable(x_id).set_level(DiagnosticLevel::Warning);
         assert!(warning.is_warning());
         assert!(!warning.is_error());
 
-        let hint = Diagnostic::undefined_variable("x").set_level(DiagnosticLevel::Hint);
+        let hint = Diagnostic::undefined_variable(x_id).set_level(DiagnosticLevel::Hint);
         assert!(hint.is_hint());
     }
 
@@ -454,11 +477,12 @@ mod tests {
         use crate::Interner;
 
         let mut interner = Interner::new();
+        let x_id = interner.intern("x");
         let func_name = interner.intern("my_function");
         let file_name = interner.intern("test.cadenza");
 
         let span = Span::new(10, 20);
-        let mut diag = Diagnostic::undefined_variable("x")
+        let mut diag = Diagnostic::undefined_variable(x_id)
             .with_span(span)
             .with_file(file_name);
         diag.push_frame(StackFrame::new(
@@ -469,6 +493,7 @@ mod tests {
         diag.push_frame(StackFrame::anonymous(Some(Span::new(0, 5))));
 
         let display = diag.display_with_interner(&interner).to_string();
+        assert!(display.contains("undefined variable: x"));
         assert!(display.contains("my_function"));
         assert!(display.contains("test.cadenza"));
         assert!(display.contains("<anonymous>"));
@@ -477,13 +502,17 @@ mod tests {
 
     #[test]
     fn miette_diagnostic_impl() {
+        use crate::Interner;
         use miette::Diagnostic as _;
 
-        let diag = Diagnostic::undefined_variable("x");
+        let mut interner = Interner::new();
+        let x_id = interner.intern("x");
+
+        let diag = Diagnostic::undefined_variable(x_id);
         assert_eq!(diag.severity(), Some(Severity::Error));
         assert!(diag.code().is_some());
 
-        let warning = Diagnostic::undefined_variable("x").set_level(DiagnosticLevel::Warning);
+        let warning = Diagnostic::undefined_variable(x_id).set_level(DiagnosticLevel::Warning);
         assert_eq!(warning.severity(), Some(Severity::Warning));
     }
 }
