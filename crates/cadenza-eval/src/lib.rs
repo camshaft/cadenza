@@ -7,6 +7,7 @@
 //! # Core Components
 //!
 //! - [`Interner`]: String interning for efficient identifier comparison
+//! - [`interner::Intern`]: Generic interning with ZST-parameterized storage
 //! - [`Value`]: Runtime values including functions and macros
 //! - [`Env`]: Scoped environment for variable bindings
 //! - [`Compiler`]: The compiler state that accumulates definitions
@@ -16,7 +17,7 @@ mod compiler;
 mod diagnostic;
 mod env;
 mod eval;
-mod interner;
+pub mod interner;
 mod map;
 mod value;
 
