@@ -116,7 +116,7 @@ fn eval_ident(
         return Ok(value.clone());
     }
 
-    Err(Diagnostic::undefined_variable(&text))
+    Err(Diagnostic::undefined_variable(id))
 }
 
 /// Evaluates a function/macro application.
@@ -320,7 +320,7 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
                 _ => Err(Diagnostic::arity(2, args.len())),
             }
         }
-        _ => Err(Diagnostic::undefined_variable(op_name)),
+        _ => Err(Diagnostic::undefined_variable(op_id)),
     }
 }
 

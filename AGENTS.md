@@ -29,3 +29,7 @@ The test command supports passing additional arguments to cargo test:
 ```bash
 cargo xtask ci test --no-default-features
 ```
+
+## After Completing Work
+
+After completing work on a task from a crate's status document (e.g., `crates/cadenza-eval/STATUS.md`), update the status document to mark the task as complete. Use strikethrough (`~~`) to mark the task title and add checkmarks (`[x]`) to indicate completed sub-items.
