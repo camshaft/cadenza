@@ -74,10 +74,19 @@ impl CiCommand {
                 Ok(())
             }
             CiCommand::Udeps => {
-                // Check if nightly is available, install if not
-                if cmd!(sh, "cargo +nightly --version").quiet().run().is_err() {
-                    eprintln!("Installing nightly toolchain...");
-                    cmd!(sh, "rustup toolchain install nightly --profile minimal").run()?;
+                // Check if nightly with rustfmt is available, install if not
+                // (rustfmt is needed for codegen to format output)
+                if cmd!(sh, "cargo +nightly fmt --version")
+                    .quiet()
+                    .run()
+                    .is_err()
+                {
+                    eprintln!("Installing nightly toolchain with rustfmt...");
+                    cmd!(
+                        sh,
+                        "rustup toolchain install nightly --profile minimal --component rustfmt"
+                    )
+                    .run()?;
                 }
                 // Check if cargo-udeps is available, install if not
                 if cmd!(sh, "cargo +nightly udeps --version")
