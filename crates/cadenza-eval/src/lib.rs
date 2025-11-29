@@ -27,7 +27,7 @@ pub use diagnostic::{
 // Backwards compatibility aliases
 pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;
-pub use eval::{eval, eval_collecting};
+pub use eval::eval;
 pub use interner::{InternedId, Interner};
 pub use map::Map;
 pub use value::Value;

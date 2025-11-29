@@ -23,30 +23,12 @@ use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root,
 /// collected into a vector, though most top-level expressions will
 /// return `Value::Nil` as side effects on the `Compiler` are the
 /// primary purpose.
-pub fn eval(
-    root: &Root,
-    interner: &mut Interner,
-    env: &mut Env,
-    compiler: &mut Compiler,
-) -> Result<Vec<Value>> {
-    let mut results = Vec::new();
-    for expr in root.items() {
-        let value = eval_expr(&expr, interner, env, compiler)?;
-        results.push(value);
-    }
-    Ok(results)
-}
-
-/// Evaluates a complete source file, collecting all errors instead of bailing.
 ///
 /// This function continues evaluation even when expressions fail, recording
 /// errors in the compiler. On error, `Value::Nil` is used as the result for
-/// that expression. This is useful for CLI/LSP scenarios where you want to
-/// report all errors at once.
-///
-/// Returns the collected results. Check `compiler.has_errors()` after calling
-/// to see if any errors occurred.
-pub fn eval_collecting(
+/// that expression. Check `compiler.has_errors()` after calling to see if
+/// any errors occurred.
+pub fn eval(
     root: &Root,
     interner: &mut Interner,
     env: &mut Env,
@@ -406,7 +388,11 @@ mod tests {
         let mut interner = Interner::new();
         let mut env = Env::new();
         let mut compiler = Compiler::new();
-        eval(&root, &mut interner, &mut env, &mut compiler)
+        let results = eval(&root, &mut interner, &mut env, &mut compiler);
+        if compiler.has_errors() {
+            return Err(compiler.take_diagnostics().remove(0));
+        }
+        Ok(results)
     }
 
     fn eval_single(src: &str) -> Result<Value> {
@@ -496,7 +482,8 @@ mod tests {
         let x_id = interner.intern("x");
         env.define(x_id, Value::Integer(42));
 
-        let result = eval(&root, &mut interner, &mut env, &mut compiler).unwrap();
+        let result = eval(&root, &mut interner, &mut env, &mut compiler);
+        assert!(!compiler.has_errors());
         assert_eq!(result[0], Value::Integer(42));
     }
 
@@ -512,12 +499,13 @@ mod tests {
         let y_id = interner.intern("y");
         compiler.define_var(y_id, Value::Integer(100));
 
-        let result = eval(&root, &mut interner, &mut env, &mut compiler).unwrap();
+        let result = eval(&root, &mut interner, &mut env, &mut compiler);
+        assert!(!compiler.has_errors());
         assert_eq!(result[0], Value::Integer(100));
     }
 
     #[test]
-    fn eval_collecting_continues_on_error() {
+    fn eval_continues_on_error() {
         // This source has multiple expressions, some of which will fail
         let src = "1\nundefined_var\n3";
         let parsed = parse(src);
@@ -526,7 +514,7 @@ mod tests {
         let mut env = Env::new();
         let mut compiler = Compiler::new();
 
-        let results = eval_collecting(&root, &mut interner, &mut env, &mut compiler);
+        let results = eval(&root, &mut interner, &mut env, &mut compiler);
 
         // Should have 3 results (1, Nil for error, 3)
         assert_eq!(results.len(), 3);
@@ -540,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_collecting_collects_multiple_errors() {
+    fn eval_collects_multiple_errors() {
         // Multiple undefined variables
         let src = "undefined_a\n1\nundefined_b\n2\nundefined_c";
         let parsed = parse(src);
@@ -549,7 +537,7 @@ mod tests {
         let mut env = Env::new();
         let mut compiler = Compiler::new();
 
-        let results = eval_collecting(&root, &mut interner, &mut env, &mut compiler);
+        let results = eval(&root, &mut interner, &mut env, &mut compiler);
 
         // Should have 5 results
         assert_eq!(results.len(), 5);
@@ -573,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_collecting_no_errors() {
+    fn eval_no_errors() {
         let src = "1\n2\n3";
         let parsed = parse(src);
         let root = parsed.ast();
@@ -581,7 +569,7 @@ mod tests {
         let mut env = Env::new();
         let mut compiler = Compiler::new();
 
-        let results = eval_collecting(&root, &mut interner, &mut env, &mut compiler);
+        let results = eval(&root, &mut interner, &mut env, &mut compiler);
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], Value::Integer(1));
