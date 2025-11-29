@@ -25,7 +25,11 @@ fn eval_all(src: &str) -> Result<Vec<Value>, Diagnostic> {
     let results = crate::eval(&root, &mut interner, &mut env, &mut compiler);
     if compiler.has_errors() {
         // Return the first error for backwards compatibility in tests
-        return Err(compiler.take_diagnostics().remove(0));
+        return Err(compiler
+            .take_diagnostics()
+            .into_iter()
+            .next()
+            .expect("has_errors() returned true but no diagnostics found"));
     }
     Ok(results)
 }

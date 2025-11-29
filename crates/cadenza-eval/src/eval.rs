@@ -390,7 +390,11 @@ mod tests {
         let mut compiler = Compiler::new();
         let results = eval(&root, &mut interner, &mut env, &mut compiler);
         if compiler.has_errors() {
-            return Err(compiler.take_diagnostics().remove(0));
+            return Err(compiler
+                .take_diagnostics()
+                .into_iter()
+                .next()
+                .expect("has_errors() returned true but no diagnostics found"));
         }
         Ok(results)
     }
