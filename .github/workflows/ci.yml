@@ -46,12 +46,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install rust toolchain
-        id: toolchain
-        run: |
-          rustup toolchain install ${{ env.RUST_NIGHTLY_TOOLCHAIN }} --profile minimal --component rustfmt
-          rustup override set ${{ env.RUST_NIGHTLY_TOOLCHAIN }}
-
       - name: Run cargo fmt
         run: |
           cargo xtask ci fmt

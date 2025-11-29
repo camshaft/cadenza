@@ -20,7 +20,7 @@ pub enum CiCommand {
     Test(TestArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct TestArgs {
     /// Additional arguments to pass to cargo test
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -36,7 +36,7 @@ impl Ci {
                 CiCommand::Fmt.run(sh)?;
                 CiCommand::Clippy.run(sh)?;
                 CiCommand::Udeps.run(sh)?;
-                CiCommand::Test(TestArgs { args: vec![] }).run(sh)?;
+                CiCommand::Test(TestArgs::default()).run(sh)?;
                 Ok(())
             }
         }
@@ -47,8 +47,14 @@ impl CiCommand {
     pub fn run(&self, sh: &Shell) -> Result<()> {
         match self {
             CiCommand::Fmt => {
+                eprintln!("Installing nightly rustfmt...");
+                cmd!(
+                    sh,
+                    "rustup toolchain install nightly --profile minimal --component rustfmt"
+                )
+                .run()?;
                 eprintln!("Running cargo fmt check...");
-                cmd!(sh, "cargo fmt --all -- --check").run()?;
+                cmd!(sh, "cargo +nightly fmt --all -- --check").run()?;
                 Ok(())
             }
             CiCommand::Clippy => {

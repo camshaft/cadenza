@@ -12,7 +12,7 @@ cargo xtask ci
 
 This command will run all CI checks including:
 
-- `cargo xtask ci fmt` - Check code formatting
+- `cargo xtask ci fmt` - Check code formatting (automatically installs nightly rustfmt for import sorting)
 - `cargo xtask ci clippy` - Run clippy lints
 - `cargo xtask ci udeps` - Check for unused dependencies (requires nightly and cargo-udeps)
 - `cargo xtask ci test` - Run the test suite
