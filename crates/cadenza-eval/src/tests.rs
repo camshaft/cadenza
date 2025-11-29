@@ -91,8 +91,10 @@ fn test_multiple_expressions() {
 fn test_undefined_variable_error() {
     let result = eval_one("undefined_variable");
     assert!(result.is_err());
-    match result.unwrap_err() {
-        Error::UndefinedVariable(name) => assert_eq!(name, "undefined_variable"),
+    match result.unwrap_err().kind {
+        crate::error::ErrorKind::UndefinedVariable(name) => {
+            assert_eq!(name, "undefined_variable")
+        }
         e => panic!("unexpected error: {e}"),
     }
 }

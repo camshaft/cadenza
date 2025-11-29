@@ -443,7 +443,10 @@ mod tests {
     fn eval_undefined_variable() {
         let result = eval_single("undefined_var");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::UndefinedVariable(_)));
+        assert!(matches!(
+            result.unwrap_err().kind,
+            crate::error::ErrorKind::UndefinedVariable(_)
+        ));
     }
 
     #[test]
