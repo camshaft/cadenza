@@ -199,7 +199,9 @@ fn expand_and_eval_macro(
             if let Some(expr) = Expr::cast_syntax_node(&syntax_node) {
                 eval_expr(&expr, interner, env, compiler)
             } else {
-                Err(Diagnostic::internal("macro expansion produced invalid syntax"))
+                Err(Diagnostic::internal(
+                    "macro expansion produced invalid syntax",
+                ))
             }
         }
         _ => Err(Diagnostic::internal("expected macro value")),
@@ -353,7 +355,9 @@ fn eval_synthetic(
             // They're always wrapped in Apply nodes
             Ok(Value::Nil)
         }
-        _ => Err(Diagnostic::syntax(format!("unknown synthetic node: {ident}"))),
+        _ => Err(Diagnostic::syntax(format!(
+            "unknown synthetic node: {ident}"
+        ))),
     }
 }
 
@@ -365,7 +369,10 @@ mod tests {
     fn eval_str(src: &str) -> Result<Vec<Value>> {
         let parsed = parse(src);
         if !parsed.errors.is_empty() {
-            return Err(Diagnostic::syntax(format!("parse errors: {:?}", parsed.errors)));
+            return Err(Diagnostic::syntax(format!(
+                "parse errors: {:?}",
+                parsed.errors
+            )));
         }
         let root = parsed.ast();
         let mut interner = Interner::new();

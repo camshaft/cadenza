@@ -461,7 +461,11 @@ mod tests {
         let mut diag = Diagnostic::undefined_variable("x")
             .with_span(span)
             .with_file(file_name);
-        diag.push_frame(StackFrame::new(Some(func_name), Some(file_name), Some(span)));
+        diag.push_frame(StackFrame::new(
+            Some(func_name),
+            Some(file_name),
+            Some(span),
+        ));
         diag.push_frame(StackFrame::anonymous(Some(Span::new(0, 5))));
 
         let display = diag.display_with_interner(&interner).to_string();

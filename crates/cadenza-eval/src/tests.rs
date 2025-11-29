@@ -13,7 +13,10 @@ use cadenza_syntax::parse::parse;
 fn eval_all(src: &str) -> Result<Vec<Value>, Diagnostic> {
     let parsed = parse(src);
     if !parsed.errors.is_empty() {
-        return Err(Diagnostic::syntax(format!("parse errors: {:?}", parsed.errors)));
+        return Err(Diagnostic::syntax(format!(
+            "parse errors: {:?}",
+            parsed.errors
+        )));
     }
     let root = parsed.ast();
     let mut interner = Interner::new();
