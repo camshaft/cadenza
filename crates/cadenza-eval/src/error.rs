@@ -84,9 +84,60 @@ impl fmt::Display for Error {
             writeln!(f, "Stack trace:")?;
             for (i, frame) in self.stack_trace.iter().enumerate() {
                 write!(f, "  {}: ", i)?;
-                if let Some(_name) = frame.name {
-                    // Note: Would need interner to resolve name
-                    write!(f, "<function>")?;
+                if let Some(name) = frame.name {
+                    // Display the interned ID - full name resolution requires an interner
+                    write!(f, "<function #{}>", name)?;
+                } else {
+                    write!(f, "<anonymous>")?;
+                }
+                if let Some(span) = frame.span {
+                    write!(f, " at {}..{}", span.start, span.end)?;
+                }
+                writeln!(f)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Error {
+    /// Formats the error with resolved function names.
+    ///
+    /// This is more informative than the default Display implementation
+    /// because it can resolve interned IDs to their actual names.
+    pub fn display_with_interner<'a>(
+        &'a self,
+        interner: &'a crate::Interner,
+    ) -> DisplayWithInterner<'a> {
+        DisplayWithInterner {
+            error: self,
+            interner,
+        }
+    }
+}
+
+/// Helper struct for displaying errors with resolved function names.
+pub struct DisplayWithInterner<'a> {
+    error: &'a Error,
+    interner: &'a crate::Interner,
+}
+
+impl fmt::Display for DisplayWithInterner<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.error.kind)?;
+
+        if let Some(span) = self.error.span {
+            write!(f, " at {}..{}", span.start, span.end)?;
+        }
+
+        if !self.error.stack_trace.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Stack trace:")?;
+            for (i, frame) in self.error.stack_trace.iter().enumerate() {
+                write!(f, "  {}: ", i)?;
+                if let Some(name) = frame.name {
+                    write!(f, "{}", self.interner.resolve(name))?;
                 } else {
                     write!(f, "<anonymous>")?;
                 }
@@ -264,5 +315,23 @@ mod tests {
         let frame = StackFrame::anonymous(Some(span));
         assert!(frame.name.is_none());
         assert_eq!(frame.span, Some(span));
+    }
+
+    #[test]
+    fn display_with_interner() {
+        use crate::Interner;
+
+        let mut interner = Interner::new();
+        let func_name = interner.intern("my_function");
+
+        let span = Span::new(10, 20);
+        let mut err = Error::undefined_variable("x").with_span(span);
+        err.push_frame(StackFrame::new(Some(func_name), Some(span)));
+        err.push_frame(StackFrame::anonymous(Some(Span::new(0, 5))));
+
+        let display = err.display_with_interner(&interner).to_string();
+        assert!(display.contains("my_function"));
+        assert!(display.contains("<anonymous>"));
+        assert!(display.contains("Stack trace:"));
     }
 }

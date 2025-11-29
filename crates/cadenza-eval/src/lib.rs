@@ -22,7 +22,7 @@ mod value;
 
 pub use compiler::Compiler;
 pub use env::Env;
-pub use error::{Error, ErrorKind, Result, StackFrame};
+pub use error::{DisplayWithInterner, Error, ErrorKind, Result, StackFrame};
 pub use eval::eval;
 pub use interner::{InternedId, Interner};
 pub use map::Map;
