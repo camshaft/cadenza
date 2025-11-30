@@ -12,7 +12,4 @@
 
 set -e
 
-echo "Running pre-commit checks..."
-cargo xtask precommit
-
-echo "Pre-commit checks passed!"
+exec cargo xtask precommit

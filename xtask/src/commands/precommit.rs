@@ -9,8 +9,8 @@ pub struct Precommit;
 
 impl Precommit {
     pub fn run(&self, sh: &Shell) -> Result<()> {
-        // Apply rustfmt
-        common::run_fmt(sh)?;
+        // Check rustfmt (does not modify files)
+        common::run_fmt_check(sh)?;
 
         // Run clippy
         common::run_clippy(sh)?;
