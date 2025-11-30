@@ -351,11 +351,8 @@ mod tests {
 
     fn eval_str(src: &str) -> Result<Vec<Value>> {
         let parsed = parse(src);
-        if !parsed.errors.is_empty() {
-            return Err(Diagnostic::syntax(format!(
-                "parse errors: {:?}",
-                parsed.errors
-            )));
+        if let Some(err) = parsed.errors.first() {
+            return Err(Diagnostic::parse_error(&err.message, err.span));
         }
         let root = parsed.ast();
         let mut env = Env::new();

@@ -56,9 +56,11 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Returns `Vec<Value>` instead of `Result<Vec<Value>>`, callers check `compiler.has_errors()`
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573090111)
 
-4. **Return actual parse error messages**
-   - Current: Generic "syntax error" message
-   - Needed: Include actual parse error details
+4. ~~**Return actual parse error messages**~~
+   - [x] COMPLETED: Added `ParseError` variant to `DiagnosticKind`
+   - [x] Added `Diagnostic::parse_error` constructor with span
+   - [x] Added `From<cadenza_syntax::parse::ParseError>` impl for `Diagnostic`
+   - [x] Updated test helpers to return actual parse error messages instead of generic format
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573090448)
 
 ### Types & Values
