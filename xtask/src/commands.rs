@@ -4,6 +4,7 @@ use xshell::Shell;
 
 pub mod build;
 pub mod ci;
+pub mod common;
 pub mod hooks;
 pub mod precommit;
 pub mod test;

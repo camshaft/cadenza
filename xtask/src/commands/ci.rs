@@ -2,6 +2,8 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use xshell::{Shell, cmd};
 
+use super::common;
+
 #[derive(Args)]
 pub struct Ci {
     #[command(subcommand)]
@@ -46,48 +48,12 @@ impl Ci {
 impl CiCommand {
     pub fn run(&self, sh: &Shell) -> Result<()> {
         match self {
-            CiCommand::Fmt => {
-                // Check if nightly rustfmt is available, install if not
-                if cmd!(sh, "cargo +nightly fmt --version")
-                    .quiet()
-                    .run()
-                    .is_err()
-                {
-                    eprintln!("Installing nightly rustfmt...");
-                    cmd!(
-                        sh,
-                        "rustup toolchain install nightly --profile minimal --component rustfmt"
-                    )
-                    .run()?;
-                }
-                eprintln!("Running cargo fmt check...");
-                cmd!(sh, "cargo +nightly fmt --all -- --check").run()?;
-                Ok(())
-            }
-            CiCommand::Clippy => {
-                eprintln!("Running cargo clippy...");
-                cmd!(
-                    sh,
-                    "cargo clippy --all-features --all-targets --workspace -- -D warnings"
-                )
-                .run()?;
-                Ok(())
-            }
+            CiCommand::Fmt => common::run_fmt_check(sh),
+            CiCommand::Clippy => common::run_clippy(sh),
             CiCommand::Udeps => {
-                // Check if nightly with rustfmt is available, install if not
+                // Ensure nightly with rustfmt is available
                 // (rustfmt is needed for codegen to format output)
-                if cmd!(sh, "cargo +nightly fmt --version")
-                    .quiet()
-                    .run()
-                    .is_err()
-                {
-                    eprintln!("Installing nightly toolchain with rustfmt...");
-                    cmd!(
-                        sh,
-                        "rustup toolchain install nightly --profile minimal --component rustfmt"
-                    )
-                    .run()?;
-                }
+                common::ensure_nightly_rustfmt(sh)?;
                 // Check if cargo-udeps is available, install if not
                 if cmd!(sh, "cargo +nightly udeps --version")
                     .quiet()
