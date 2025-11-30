@@ -157,7 +157,7 @@ pub fn lex(source: &str) -> JsValue {
         success: true,
     };
 
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    serde_wasm_bindgen::to_value(&result).expect("Failed to serialize LexResult")
 }
 
 /// Converts a rowan SyntaxNode to our CstNode format.
@@ -233,7 +233,7 @@ pub fn parse_source(source: &str) -> JsValue {
         success,
     };
 
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    serde_wasm_bindgen::to_value(&result).expect("Failed to serialize ParseResult")
 }
 
 /// Converts an AST expression to our AstNode format.
@@ -376,7 +376,7 @@ pub fn ast(source: &str) -> JsValue {
         success,
     };
 
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    serde_wasm_bindgen::to_value(&result).expect("Failed to serialize AstResult")
 }
 
 /// Converts a Value to an EvalValue for serialization.
@@ -440,14 +440,14 @@ pub fn eval_source(source: &str) -> JsValue {
         success,
     };
 
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    serde_wasm_bindgen::to_value(&result).expect("Failed to serialize EvalResult")
 }
 
 /// Returns the list of all token kinds for syntax highlighting.
 #[wasm_bindgen]
 pub fn get_token_kinds() -> JsValue {
     let kinds: Vec<String> = Kind::ALL.iter().map(|k| format!("{:?}", k)).collect();
-    serde_wasm_bindgen::to_value(&kinds).unwrap_or(JsValue::NULL)
+    serde_wasm_bindgen::to_value(&kinds).expect("Failed to serialize token kinds")
 }
 
 #[cfg(test)]
