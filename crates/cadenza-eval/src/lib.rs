@@ -24,9 +24,7 @@ mod map;
 mod value;
 
 pub use compiler::Compiler;
-pub use diagnostic::{
-    Diagnostic, DiagnosticKind, DiagnosticLevel, Result, StackFrame, TypeExpectation,
-};
+pub use diagnostic::{Diagnostic, DiagnosticKind, DiagnosticLevel, Result, StackFrame};
 // Backwards compatibility aliases
 pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;

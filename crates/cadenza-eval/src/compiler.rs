@@ -128,6 +128,7 @@ mod tests {
         // Using a builtin macro as a placeholder
         let macro_value = Value::BuiltinMacro(crate::value::BuiltinMacro {
             name: "my_macro",
+            signature: crate::value::Type::function(vec![], crate::value::Type::Nil),
             func: |_| {
                 // Return the green node for a simple identifier "x"
                 let parsed = cadenza_syntax::parse::parse("x");
@@ -193,7 +194,9 @@ mod tests {
         let mut compiler = Compiler::new();
 
         compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
-        compiler.record_diagnostic(Diagnostic::type_error("number", Type::String));
+        // Use union type to express "number" (integer | float)
+        let number_type = Type::union(vec![Type::Integer, Type::Float]);
+        compiler.record_diagnostic(Diagnostic::type_error(number_type, Type::String));
         assert_eq!(compiler.num_diagnostics(), 2);
 
         compiler.clear_diagnostics();

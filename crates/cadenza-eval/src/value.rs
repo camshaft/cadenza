@@ -9,7 +9,7 @@ use std::fmt;
 ///
 /// Types are first-class values that can be inspected and operated on at runtime.
 /// This allows for type-level programming and better error messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     /// The type of nil/unit values.
     Nil,
@@ -23,17 +23,41 @@ pub enum Type {
     Float,
     /// The type of string values.
     String,
-    /// The type of list values.
-    List,
+    /// The type of list values with element type.
+    List(Box<Type>),
     /// The type of type values.
     Type,
-    /// The type of built-in function values.
-    BuiltinFn,
-    /// The type of built-in macro values.
-    BuiltinMacro,
+    /// A function type with argument types and return type (last element).
+    /// For example, `Fn(vec![Integer, Integer, Integer])` represents `(Integer, Integer) -> Integer`.
+    Fn(Vec<Type>),
+    /// A record type with field names and types.
+    Record(Vec<(InternedString, Type)>),
+    /// A tuple type with a list of element types.
+    Tuple(Vec<Type>),
+    /// An enum type with variant names and their associated types.
+    Enum(Vec<(InternedString, Type)>),
+    /// A union type representing one of several possible types.
+    Union(Vec<Type>),
 }
 
 impl Type {
+    /// Creates a function type from argument types and a return type.
+    pub fn function(args: Vec<Type>, ret: Type) -> Self {
+        let mut types = args;
+        types.push(ret);
+        Type::Fn(types)
+    }
+
+    /// Creates a union type from a list of types.
+    pub fn union(types: Vec<Type>) -> Self {
+        Type::Union(types)
+    }
+
+    /// Creates a list type with the given element type.
+    pub fn list(element: Type) -> Self {
+        Type::List(Box::new(element))
+    }
+
     /// Returns the string representation of this type.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -43,17 +67,83 @@ impl Type {
             Type::Integer => "integer",
             Type::Float => "float",
             Type::String => "string",
-            Type::List => "list",
+            Type::List(_) => "list",
             Type::Type => "type",
-            Type::BuiltinFn => "builtin-fn",
-            Type::BuiltinMacro => "builtin-macro",
+            Type::Fn(_) => "fn",
+            Type::Record(_) => "record",
+            Type::Tuple(_) => "tuple",
+            Type::Enum(_) => "enum",
+            Type::Union(_) => "union",
         }
     }
 }
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
+        match self {
+            Type::Nil => write!(f, "nil"),
+            Type::Bool => write!(f, "bool"),
+            Type::Symbol => write!(f, "symbol"),
+            Type::Integer => write!(f, "integer"),
+            Type::Float => write!(f, "float"),
+            Type::String => write!(f, "string"),
+            Type::List(elem) => write!(f, "list[{elem}]"),
+            Type::Type => write!(f, "type"),
+            Type::Fn(types) => {
+                if types.is_empty() {
+                    write!(f, "fn() -> nil")
+                } else {
+                    write!(f, "fn(")?;
+                    let (args, ret) = types.split_at(types.len() - 1);
+                    for (i, t) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{t}")?;
+                    }
+                    write!(f, ") -> {}", ret[0])
+                }
+            }
+            Type::Record(fields) => {
+                write!(f, "{{")?;
+                for (i, (name, t)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", &**name, t)?;
+                }
+                write!(f, "}}")
+            }
+            Type::Tuple(types) => {
+                write!(f, "(")?;
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{t}")?;
+                }
+                write!(f, ")")
+            }
+            Type::Enum(variants) => {
+                write!(f, "enum[")?;
+                for (i, (name, t)) in variants.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{}({})", &**name, t)?;
+                }
+                write!(f, "]")
+            }
+            Type::Union(types) => {
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{t}")?;
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -91,11 +181,13 @@ pub enum Value {
     BuiltinMacro(BuiltinMacro),
 }
 
-/// A built-in function type.
+/// A built-in function type with type signature.
 #[derive(Clone)]
 pub struct BuiltinFn {
     /// The function name for display/debugging.
     pub name: &'static str,
+    /// The type signature of this function (argument types + return type).
+    pub signature: Type,
     /// The function implementation.
     pub func: fn(&[Value]) -> Result<Value>,
 }
@@ -105,6 +197,8 @@ pub struct BuiltinFn {
 pub struct BuiltinMacro {
     /// The macro name for display/debugging.
     pub name: &'static str,
+    /// The type signature of this macro (argument types + return type).
+    pub signature: Type,
     /// The macro implementation (receives unevaluated syntax nodes).
     pub func: fn(&[rowan::GreenNode]) -> Result<rowan::GreenNode>,
 }
@@ -148,10 +242,11 @@ impl Value {
             Value::Integer(_) => Type::Integer,
             Value::Float(_) => Type::Float,
             Value::String(_) => Type::String,
-            Value::List(_) => Type::List,
+            // For lists, we use a dynamic type since we don't track element types at runtime yet
+            Value::List(_) => Type::list(Type::Nil), // TODO: infer element type
             Value::Type(_) => Type::Type,
-            Value::BuiltinFn(_) => Type::BuiltinFn,
-            Value::BuiltinMacro(_) => Type::BuiltinMacro,
+            Value::BuiltinFn(bf) => bf.signature.clone(),
+            Value::BuiltinMacro(bm) => bm.signature.clone(),
         }
     }
 
@@ -245,7 +340,7 @@ mod tests {
         assert_eq!(Value::Integer(42).type_of(), Type::Integer);
         assert_eq!(Value::Float(2.5).type_of(), Type::Float);
         assert_eq!(Value::String("hello".to_string()).type_of(), Type::String);
-        assert_eq!(Value::List(vec![]).type_of(), Type::List);
+        assert_eq!(Value::List(vec![]).type_of(), Type::list(Type::Nil));
         assert_eq!(Value::Type(Type::Integer).type_of(), Type::Type);
     }
 
@@ -256,10 +351,39 @@ mod tests {
         assert_eq!(Type::Integer.to_string(), "integer");
         assert_eq!(Type::Float.to_string(), "float");
         assert_eq!(Type::String.to_string(), "string");
-        assert_eq!(Type::List.to_string(), "list");
+        assert_eq!(Type::list(Type::Integer).to_string(), "list[integer]");
         assert_eq!(Type::Type.to_string(), "type");
-        assert_eq!(Type::BuiltinFn.to_string(), "builtin-fn");
-        assert_eq!(Type::BuiltinMacro.to_string(), "builtin-macro");
+    }
+
+    #[test]
+    fn fn_type_display() {
+        // (Integer, Integer) -> Integer
+        let fn_type = Type::function(vec![Type::Integer, Type::Integer], Type::Integer);
+        assert_eq!(fn_type.to_string(), "fn(integer, integer) -> integer");
+
+        // () -> Bool
+        let thunk_type = Type::function(vec![], Type::Bool);
+        assert_eq!(thunk_type.to_string(), "fn() -> bool");
+    }
+
+    #[test]
+    fn union_type_display() {
+        let union_type = Type::union(vec![Type::Integer, Type::Float]);
+        assert_eq!(union_type.to_string(), "integer | float");
+    }
+
+    #[test]
+    fn record_type_display() {
+        let name: InternedString = "name".into();
+        let age: InternedString = "age".into();
+        let record_type = Type::Record(vec![(name, Type::String), (age, Type::Integer)]);
+        assert_eq!(record_type.to_string(), "{name: string, age: integer}");
+    }
+
+    #[test]
+    fn tuple_type_display() {
+        let tuple_type = Type::Tuple(vec![Type::Integer, Type::String, Type::Bool]);
+        assert_eq!(tuple_type.to_string(), "(integer, string, bool)");
     }
 
     #[test]

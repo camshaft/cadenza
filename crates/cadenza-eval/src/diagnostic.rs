@@ -84,10 +84,7 @@ pub enum DiagnosticKind {
 
     /// A value was used in an invalid way for its type.
     #[error("type error: expected {expected}, got {actual}")]
-    TypeError {
-        expected: TypeExpectation,
-        actual: Type,
-    },
+    TypeError { expected: Type, actual: Type },
 
     /// Wrong number of arguments to a function or macro.
     #[error("arity error: expected {expected} arguments, got {actual}")]
@@ -108,81 +105,6 @@ pub enum DiagnosticKind {
     /// An internal error in the evaluator.
     #[error("internal error: {0}")]
     InternalError(String),
-}
-
-/// Represents what type(s) were expected in a type error.
-///
-/// This can be a single type, multiple types, or a custom description
-/// for more complex type expectations (like "number" meaning integer or float).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TypeExpectation {
-    /// A single specific type was expected.
-    Single(Type),
-    /// One of several types was expected.
-    OneOf(Vec<Type>),
-    /// A custom description of expected types.
-    Description(String),
-}
-
-impl TypeExpectation {
-    /// Creates a type expectation for a single type.
-    pub fn single(t: Type) -> Self {
-        TypeExpectation::Single(t)
-    }
-
-    /// Creates a type expectation for one of several types.
-    pub fn one_of(types: Vec<Type>) -> Self {
-        TypeExpectation::OneOf(types)
-    }
-
-    /// Creates a type expectation with a custom description.
-    pub fn description(desc: impl Into<String>) -> Self {
-        TypeExpectation::Description(desc.into())
-    }
-}
-
-impl fmt::Display for TypeExpectation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TypeExpectation::Single(t) => write!(f, "{t}"),
-            TypeExpectation::OneOf(types) => {
-                if types.len() == 2 {
-                    write!(f, "{} or {}", types[0], types[1])
-                } else {
-                    for (i, t) in types.iter().enumerate() {
-                        if i > 0 {
-                            if i == types.len() - 1 {
-                                write!(f, ", or ")?;
-                            } else {
-                                write!(f, ", ")?;
-                            }
-                        }
-                        write!(f, "{t}")?;
-                    }
-                    Ok(())
-                }
-            }
-            TypeExpectation::Description(desc) => write!(f, "{desc}"),
-        }
-    }
-}
-
-impl From<Type> for TypeExpectation {
-    fn from(t: Type) -> Self {
-        TypeExpectation::Single(t)
-    }
-}
-
-impl From<&str> for TypeExpectation {
-    fn from(s: &str) -> Self {
-        TypeExpectation::Description(s.to_string())
-    }
-}
-
-impl From<String> for TypeExpectation {
-    fn from(s: String) -> Self {
-        TypeExpectation::Description(s)
-    }
 }
 
 /// A diagnostic message with source location and stack trace.
@@ -366,15 +288,9 @@ impl Diagnostic {
         Self::new(DiagnosticKind::UndefinedVariable(id), None)
     }
 
-    /// Creates a type error with a type expectation and actual type.
-    pub fn type_error(expected: impl Into<TypeExpectation>, actual: Type) -> Self {
-        Self::new(
-            DiagnosticKind::TypeError {
-                expected: expected.into(),
-                actual,
-            },
-            None,
-        )
+    /// Creates a type error with an expected type and actual type.
+    pub fn type_error(expected: Type, actual: Type) -> Self {
+        Self::new(DiagnosticKind::TypeError { expected, actual }, None)
     }
 
     /// Creates an arity error.
@@ -435,17 +351,18 @@ mod tests {
         let display = format!("{}", kind);
         assert!(display.starts_with("undefined variable:"));
 
+        // Test with union type for "number" (integer | float)
         assert_eq!(
             DiagnosticKind::TypeError {
-                expected: TypeExpectation::description("number"),
+                expected: Type::union(vec![Type::Integer, Type::Float]),
                 actual: Type::String
             }
             .to_string(),
-            "type error: expected number, got string"
+            "type error: expected integer | float, got string"
         );
         assert_eq!(
             DiagnosticKind::TypeError {
-                expected: TypeExpectation::Single(Type::Integer),
+                expected: Type::Integer,
                 actual: Type::String
             }
             .to_string(),
@@ -458,26 +375,6 @@ mod tests {
             }
             .to_string(),
             "arity error: expected 2 arguments, got 3"
-        );
-    }
-
-    #[test]
-    fn type_expectation_display() {
-        assert_eq!(
-            TypeExpectation::Single(Type::Integer).to_string(),
-            "integer"
-        );
-        assert_eq!(
-            TypeExpectation::OneOf(vec![Type::Integer, Type::Float]).to_string(),
-            "integer or float"
-        );
-        assert_eq!(
-            TypeExpectation::OneOf(vec![Type::Integer, Type::Float, Type::String]).to_string(),
-            "integer, float, or string"
-        );
-        assert_eq!(
-            TypeExpectation::Description("number".to_string()).to_string(),
-            "number"
         );
     }
 
@@ -525,7 +422,9 @@ mod tests {
 
     #[test]
     fn diagnostic_kind_accessor() {
-        let diag = Diagnostic::type_error("number", Type::String);
+        // Use union type to express "number" (integer | float)
+        let number_type = Type::union(vec![Type::Integer, Type::Float]);
+        let diag = Diagnostic::type_error(number_type, Type::String);
         assert!(matches!(diag.kind(), DiagnosticKind::TypeError { .. }));
     }
 

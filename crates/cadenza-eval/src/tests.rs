@@ -120,6 +120,7 @@ fn test_builtin_function() {
         inc_id,
         Value::BuiltinFn(BuiltinFn {
             name: "inc",
+            signature: Type::function(vec![Type::Integer], Type::Integer),
             func: |args| {
                 if args.len() != 1 {
                     return Err(Diagnostic::arity(1, args.len()));

@@ -10,10 +10,10 @@
 
 use crate::{
     compiler::Compiler,
-    diagnostic::{Diagnostic, Result, TypeExpectation},
+    diagnostic::{Diagnostic, Result},
     env::Env,
     interner::InternedString,
-    value::Value,
+    value::{Type, Value},
 };
 use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
 
@@ -223,6 +223,9 @@ fn apply_value(
 fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
     let op_name: &str = &op_id;
 
+    // The "number" type is a union of integer and float
+    let number_type = Type::union(vec![Type::Integer, Type::Float]);
+
     match op_name {
         "+" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a + b)),
@@ -230,14 +233,10 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
             // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => Err(Diagnostic::type_error(
-                TypeExpectation::description("number"),
-                b.type_of(),
-            )),
-            [a, _] => Err(Diagnostic::type_error(
-                TypeExpectation::description("number"),
-                a.type_of(),
-            )),
+            [Value::Integer(_), b] | [Value::Float(_), b] => {
+                Err(Diagnostic::type_error(number_type, b.type_of()))
+            }
+            [a, _] => Err(Diagnostic::type_error(number_type, a.type_of())),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "-" => match args.as_slice() {
@@ -248,14 +247,10 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
             // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => Err(Diagnostic::type_error(
-                TypeExpectation::description("number"),
-                b.type_of(),
-            )),
-            [a, _] => Err(Diagnostic::type_error(
-                TypeExpectation::description("number"),
-                a.type_of(),
-            )),
+            [Value::Integer(_), b] | [Value::Float(_), b] => {
+                Err(Diagnostic::type_error(number_type, b.type_of()))
+            }
+            [a, _] => Err(Diagnostic::type_error(number_type, a.type_of())),
             [] => Err(Diagnostic::arity(1, 0)),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
@@ -265,14 +260,10 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 * b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a * *b as f64)),
             // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => Err(Diagnostic::type_error(
-                TypeExpectation::description("number"),
-                b.type_of(),
-            )),
-            [a, _] => Err(Diagnostic::type_error(
-                TypeExpectation::description("number"),
-                a.type_of(),
-            )),
+            [Value::Integer(_), b] | [Value::Float(_), b] => {
+                Err(Diagnostic::type_error(number_type, b.type_of()))
+            }
+            [a, _] => Err(Diagnostic::type_error(number_type, a.type_of())),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "/" => match args.as_slice() {
@@ -287,14 +278,10 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 / b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a / *b as f64)),
             // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => Err(Diagnostic::type_error(
-                TypeExpectation::description("number"),
-                b.type_of(),
-            )),
-            [a, _] => Err(Diagnostic::type_error(
-                TypeExpectation::description("number"),
-                a.type_of(),
-            )),
+            [Value::Integer(_), b] | [Value::Float(_), b] => {
+                Err(Diagnostic::type_error(number_type, b.type_of()))
+            }
+            [a, _] => Err(Diagnostic::type_error(number_type, a.type_of())),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "==" => match args.as_slice() {
