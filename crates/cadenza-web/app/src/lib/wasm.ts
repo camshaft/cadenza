@@ -1,9 +1,52 @@
-// Mock implementations for cadenza-web WASM functions
-// These will be replaced with actual WASM calls once the module is built
+// WASM bindings for cadenza-web
+// This module loads the actual WASM module built by wasm-pack
 
 import type { LexResult, ParseResult, AstResult, EvalResult, CadenzaWasm } from '../types/cadenza';
 
-// Simple tokenizer mock
+// The WASM module will be loaded from the pkg directory
+let wasmModule: typeof import('../../pkg/cadenza_web') | null = null;
+
+// Load the WASM module
+export async function loadWasm(): Promise<CadenzaWasm> {
+  if (wasmModule) {
+    return createWasmBindings(wasmModule);
+  }
+
+  try {
+    // Dynamic import of the WASM module
+    const module = await import('../../pkg/cadenza_web');
+    await module.default();
+    wasmModule = module;
+    return createWasmBindings(module);
+  } catch (error) {
+    console.error('Failed to load WASM module:', error);
+    console.warn('Falling back to mock implementations');
+    return mockWasm;
+  }
+}
+
+// Create bindings from the loaded WASM module
+function createWasmBindings(module: typeof import('../../pkg/cadenza_web')): CadenzaWasm {
+  return {
+    lex: (source: string): LexResult => {
+      return module.lex(source) as LexResult;
+    },
+    parse_source: (source: string): ParseResult => {
+      return module.parse_source(source) as ParseResult;
+    },
+    ast: (source: string): AstResult => {
+      return module.ast(source) as AstResult;
+    },
+    eval_source: (source: string): EvalResult => {
+      return module.eval_source(source) as EvalResult;
+    },
+    get_token_kinds: (): string[] => {
+      return module.get_token_kinds() as string[];
+    },
+  };
+}
+
+// Fallback mock implementations (used when WASM module is not available)
 function mockLex(source: string): LexResult {
   const tokens: LexResult['tokens'] = [];
   let pos = 0;
@@ -11,7 +54,6 @@ function mockLex(source: string): LexResult {
   while (pos < source.length) {
     const char = source[pos];
     
-    // Skip whitespace but record it
     if (/\s/.test(char)) {
       const start = pos;
       while (pos < source.length && /\s/.test(source[pos])) {
@@ -26,7 +68,6 @@ function mockLex(source: string): LexResult {
       continue;
     }
     
-    // Numbers
     if (/\d/.test(char)) {
       const start = pos;
       while (pos < source.length && /[\d._]/.test(source[pos])) {
@@ -42,7 +83,6 @@ function mockLex(source: string): LexResult {
       continue;
     }
     
-    // Identifiers
     if (/[a-zA-Z_]/.test(char)) {
       const start = pos;
       while (pos < source.length && /\w/.test(source[pos])) {
@@ -57,189 +97,77 @@ function mockLex(source: string): LexResult {
       continue;
     }
     
-    // Operators
     const operators: Record<string, string> = {
-      '+': 'Plus',
-      '-': 'Minus',
-      '*': 'Star',
-      '/': 'Slash',
-      '=': 'Equal',
-      '<': 'Less',
-      '>': 'Greater',
-      '(': 'LParen',
-      ')': 'RParen',
-      '[': 'LBracket',
-      ']': 'RBracket',
-      '{': 'LBrace',
-      '}': 'RBrace',
-      ',': 'Comma',
-      '.': 'Dot',
-      ':': 'Colon',
-      ';': 'Semicolon',
+      '+': 'Plus', '-': 'Minus', '*': 'Star', '/': 'Slash',
+      '=': 'Equal', '<': 'Less', '>': 'Greater',
+      '(': 'LParen', ')': 'RParen', '[': 'LBracket', ']': 'RBracket',
+      '{': 'LBrace', '}': 'RBrace', ',': 'Comma', '.': 'Dot',
+      ':': 'Colon', ';': 'Semicolon',
     };
     
     if (operators[char]) {
-      tokens.push({
-        kind: operators[char],
-        start: pos,
-        end: pos + 1,
-        text: char,
-      });
+      tokens.push({ kind: operators[char], start: pos, end: pos + 1, text: char });
       pos++;
       continue;
     }
     
-    // String literals
-    if (char === '"') {
-      const start = pos;
-      pos++; // skip opening quote
-      tokens.push({
-        kind: 'StringStart',
-        start,
-        end: start + 1,
-        text: '"',
-      });
-      
-      const contentStart = pos;
-      while (pos < source.length && source[pos] !== '"') {
-        pos++;
-      }
-      tokens.push({
-        kind: 'StringContent',
-        start: contentStart,
-        end: pos,
-        text: source.slice(contentStart, pos),
-      });
-      
-      if (pos < source.length) {
-        tokens.push({
-          kind: 'StringEnd',
-          start: pos,
-          end: pos + 1,
-          text: '"',
-        });
-        pos++;
-      }
-      continue;
-    }
-    
-    // Unknown character
-    tokens.push({
-      kind: 'Unknown',
-      start: pos,
-      end: pos + 1,
-      text: char,
-    });
+    tokens.push({ kind: 'Unknown', start: pos, end: pos + 1, text: char });
     pos++;
   }
   
   return { tokens, success: true };
 }
 
-// Simple parser mock
 function mockParse(source: string): ParseResult {
   const lexResult = mockLex(source);
-  
-  // Build a simple CST
-  const tree: ParseResult['tree'] = {
-    kind: 'Root',
-    start: 0,
-    end: source.length,
-    text: null,
-    children: lexResult.tokens.map((tok) => ({
-      kind: tok.kind,
-      start: tok.start,
-      end: tok.end,
-      text: tok.text,
-      children: [],
-    })),
+  return {
+    tree: {
+      kind: 'Root',
+      start: 0,
+      end: source.length,
+      text: null,
+      children: lexResult.tokens.map((tok) => ({
+        kind: tok.kind, start: tok.start, end: tok.end, text: tok.text, children: [],
+      })),
+    },
+    errors: [],
+    success: true,
   };
-  
-  return { tree, errors: [], success: true };
 }
 
-// Simple AST mock
 function mockAst(source: string): AstResult {
   const parseResult = mockParse(source);
-  
-  // Convert tokens to simple AST nodes, filtering whitespace
-  const nodes: AstResult['nodes'] = parseResult.tree.children
-    .filter((child) => !['Space', 'Newline'].includes(child.kind))
-    .map((child) => ({
-      type: child.kind === 'Integer' || child.kind === 'Float' ? 'Literal' : 
-            child.kind === 'Identifier' ? 'Ident' : child.kind,
-      start: child.start,
-      end: child.end,
-      value: child.text,
-      children: [],
-    }));
-  
-  return { nodes, errors: [], success: true };
+  return {
+    nodes: parseResult.tree.children
+      .filter((c) => !['Space', 'Newline'].includes(c.kind))
+      .map((c) => ({
+        type: c.kind === 'Integer' || c.kind === 'Float' ? 'Literal' :
+              c.kind === 'Identifier' ? 'Ident' : c.kind,
+        start: c.start, end: c.end, value: c.text, children: [],
+      })),
+    errors: [],
+    success: true,
+  };
 }
 
-// Simple eval mock
 function mockEval(source: string): EvalResult {
   const values: EvalResult['values'] = [];
   const diagnostics: EvalResult['diagnostics'] = [];
   
-  // Try to evaluate simple expressions
-  const lines = source.split('\n').filter((line) => line.trim());
-  
-  for (const line of lines) {
+  for (const line of source.split('\n').filter((l) => l.trim())) {
     const trimmed = line.trim();
-    
-    // Try to evaluate as a number
     const num = parseFloat(trimmed.replace(/_/g, ''));
     if (!isNaN(num)) {
-      values.push({
-        type: trimmed.includes('.') ? 'float' : 'integer',
-        display: String(num),
-      });
+      values.push({ type: trimmed.includes('.') ? 'float' : 'integer', display: String(num) });
       continue;
     }
-    
-    // Try to evaluate simple arithmetic
-    const match = trimmed.match(/^(\d+)\s*([+\-*/])\s*(\d+)$/);
-    if (match) {
-      const [, a, op, b] = match;
-      const na = parseFloat(a);
-      const nb = parseFloat(b);
-      let result: number;
-      switch (op) {
-        case '+': result = na + nb; break;
-        case '-': result = na - nb; break;
-        case '*': result = na * nb; break;
-        case '/': result = na / nb; break;
-        default: result = NaN;
-      }
-      values.push({
-        type: 'integer',
-        display: String(result),
-      });
-      continue;
-    }
-    
-    // Unknown expression
-    diagnostics.push({
-      level: 'error',
-      message: `Cannot evaluate: ${trimmed}`,
-      start: null,
-      end: null,
-    });
-    values.push({
-      type: 'nil',
-      display: 'nil',
-    });
+    diagnostics.push({ level: 'error', message: `Cannot evaluate: ${trimmed}`, start: null, end: null });
+    values.push({ type: 'nil', display: 'nil' });
   }
   
-  return {
-    values,
-    diagnostics,
-    success: diagnostics.filter((d) => d.level === 'error').length === 0,
-  };
+  return { values, diagnostics, success: diagnostics.every((d) => d.level !== 'error') };
 }
 
-// Mock WASM module
 export const mockWasm: CadenzaWasm = {
   lex: mockLex,
   parse_source: mockParse,
@@ -252,10 +180,3 @@ export const mockWasm: CadenzaWasm = {
     'Comma', 'Dot', 'Colon', 'Semicolon', 'Space', 'Newline',
   ],
 };
-
-// Will be replaced with actual WASM module loading
-export async function loadWasm(): Promise<CadenzaWasm> {
-  // For now, return mock implementations
-  // TODO: Load actual WASM module when built with wasm-pack
-  return mockWasm;
-}

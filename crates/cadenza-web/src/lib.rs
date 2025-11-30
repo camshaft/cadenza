@@ -248,10 +248,8 @@ fn expr_to_ast(expr: &cadenza_syntax::ast::Expr) -> AstNode {
             let mut children = Vec::new();
 
             // Add receiver as first child
-            if let Some(receiver) = apply.receiver() {
-                if let Some(expr) = receiver.value() {
-                    children.push(expr_to_ast(&expr));
-                }
+            if let Some(expr) = apply.receiver().and_then(|r| r.value()) {
+                children.push(expr_to_ast(&expr));
             }
 
             // Add arguments
@@ -382,7 +380,7 @@ pub fn ast(source: &str) -> JsValue {
 /// Converts a Value to an EvalValue for serialization.
 fn value_to_eval_value(value: &Value) -> EvalValue {
     EvalValue {
-        value_type: value.type_name().to_string(),
+        value_type: value.type_of().to_string(),
         display: format!("{}", value),
     }
 }

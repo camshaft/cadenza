@@ -17,15 +17,19 @@ The crate provides WebAssembly bindings for the Cadenza compiler and a companion
 - [x] Create DESIGN.md document
 - [x] Create STATUS.md document (this file)
 - [x] Implement WASM bindings for lexer (`lex`)
-- [x] Implement WASM bindings for parser (`parse`)
+- [x] Implement WASM bindings for parser (`parse_source`)
 - [x] Implement WASM bindings for AST (`ast`)
-- [x] Implement WASM bindings for evaluator (`eval`)
+- [x] Implement WASM bindings for evaluator (`eval_source`)
 - [x] Scaffold React+Vite+TypeScript application
 - [x] Configure Tailwind CSS
 - [x] Integrate Monaco Editor
 - [x] Create compilation stage panels (Tokens, CST, AST, Eval)
 - [x] Wire WASM bindings to UI
 - [x] Build and verify WASM compilation
+- [x] Add `xtask explorer dev` command for development
+- [x] Add `xtask explorer build` command for production builds
+- [x] Remove boilerplate files (SVGs, README)
+- [x] Integrate actual WASM module with the app (with fallback to mocks)
 
 ## Remaining Work Items
 
