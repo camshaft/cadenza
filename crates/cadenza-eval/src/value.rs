@@ -38,6 +38,8 @@ pub enum Type {
     Enum(Vec<(InternedString, Type)>),
     /// A union type representing one of several possible types.
     Union(Vec<Type>),
+    /// An unknown or unresolved type (used when type inference is incomplete).
+    Unknown,
 }
 
 impl Type {
@@ -49,7 +51,11 @@ impl Type {
     }
 
     /// Creates a union type from a list of types.
+    ///
+    /// # Panics
+    /// Panics if the types vector is empty (unions must have at least one type).
     pub fn union(types: Vec<Type>) -> Self {
+        assert!(!types.is_empty(), "union type must have at least one type");
         Type::Union(types)
     }
 
@@ -74,6 +80,7 @@ impl Type {
             Type::Tuple(_) => "tuple",
             Type::Enum(_) => "enum",
             Type::Union(_) => "union",
+            Type::Unknown => "unknown",
         }
     }
 }
@@ -135,6 +142,7 @@ impl fmt::Display for Type {
                 write!(f, "]")
             }
             Type::Union(types) => {
+                // Union types should never be empty per the constructor assertion
                 for (i, t) in types.iter().enumerate() {
                     if i > 0 {
                         write!(f, " | ")?;
@@ -143,6 +151,7 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            Type::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -242,8 +251,8 @@ impl Value {
             Value::Integer(_) => Type::Integer,
             Value::Float(_) => Type::Float,
             Value::String(_) => Type::String,
-            // For lists, we use a dynamic type since we don't track element types at runtime yet
-            Value::List(_) => Type::list(Type::Nil), // TODO: infer element type
+            // For lists, we use Unknown since we don't track element types at runtime yet
+            Value::List(_) => Type::list(Type::Unknown),
             Value::Type(_) => Type::Type,
             Value::BuiltinFn(bf) => bf.signature.clone(),
             Value::BuiltinMacro(bm) => bm.signature.clone(),
@@ -340,7 +349,7 @@ mod tests {
         assert_eq!(Value::Integer(42).type_of(), Type::Integer);
         assert_eq!(Value::Float(2.5).type_of(), Type::Float);
         assert_eq!(Value::String("hello".to_string()).type_of(), Type::String);
-        assert_eq!(Value::List(vec![]).type_of(), Type::list(Type::Nil));
+        assert_eq!(Value::List(vec![]).type_of(), Type::list(Type::Unknown));
         assert_eq!(Value::Type(Type::Integer).type_of(), Type::Type);
     }
 
@@ -353,6 +362,7 @@ mod tests {
         assert_eq!(Type::String.to_string(), "string");
         assert_eq!(Type::list(Type::Integer).to_string(), "list[integer]");
         assert_eq!(Type::Type.to_string(), "type");
+        assert_eq!(Type::Unknown.to_string(), "unknown");
     }
 
     #[test]
