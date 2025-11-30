@@ -4,7 +4,7 @@
 //! wrapped in a `Diagnostic` that carries severity, source location, and stack trace.
 //! Uses miette for standardized diagnostic reporting.
 
-use crate::interner::InternedString;
+use crate::{interner::InternedString, value::Type};
 use cadenza_syntax::span::Span;
 use miette::{Diagnostic as MietteDiagnostic, Severity};
 use std::fmt;
@@ -84,7 +84,10 @@ pub enum DiagnosticKind {
 
     /// A value was used in an invalid way for its type.
     #[error("type error: expected {expected}, got {actual}")]
-    TypeError { expected: String, actual: String },
+    TypeError {
+        expected: TypeExpectation,
+        actual: Type,
+    },
 
     /// Wrong number of arguments to a function or macro.
     #[error("arity error: expected {expected} arguments, got {actual}")]
@@ -92,7 +95,7 @@ pub enum DiagnosticKind {
 
     /// A value is not callable (not a function or macro).
     #[error("not callable: {0}")]
-    NotCallable(String),
+    NotCallable(Type),
 
     /// Invalid syntax in AST.
     #[error("syntax error: {0}")]
@@ -105,6 +108,81 @@ pub enum DiagnosticKind {
     /// An internal error in the evaluator.
     #[error("internal error: {0}")]
     InternalError(String),
+}
+
+/// Represents what type(s) were expected in a type error.
+///
+/// This can be a single type, multiple types, or a custom description
+/// for more complex type expectations (like "number" meaning integer or float).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeExpectation {
+    /// A single specific type was expected.
+    Single(Type),
+    /// One of several types was expected.
+    OneOf(Vec<Type>),
+    /// A custom description of expected types.
+    Description(String),
+}
+
+impl TypeExpectation {
+    /// Creates a type expectation for a single type.
+    pub fn single(t: Type) -> Self {
+        TypeExpectation::Single(t)
+    }
+
+    /// Creates a type expectation for one of several types.
+    pub fn one_of(types: Vec<Type>) -> Self {
+        TypeExpectation::OneOf(types)
+    }
+
+    /// Creates a type expectation with a custom description.
+    pub fn description(desc: impl Into<String>) -> Self {
+        TypeExpectation::Description(desc.into())
+    }
+}
+
+impl fmt::Display for TypeExpectation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypeExpectation::Single(t) => write!(f, "{t}"),
+            TypeExpectation::OneOf(types) => {
+                if types.len() == 2 {
+                    write!(f, "{} or {}", types[0], types[1])
+                } else {
+                    for (i, t) in types.iter().enumerate() {
+                        if i > 0 {
+                            if i == types.len() - 1 {
+                                write!(f, ", or ")?;
+                            } else {
+                                write!(f, ", ")?;
+                            }
+                        }
+                        write!(f, "{t}")?;
+                    }
+                    Ok(())
+                }
+            }
+            TypeExpectation::Description(desc) => write!(f, "{desc}"),
+        }
+    }
+}
+
+impl From<Type> for TypeExpectation {
+    fn from(t: Type) -> Self {
+        TypeExpectation::Single(t)
+    }
+}
+
+impl From<&str> for TypeExpectation {
+    fn from(s: &str) -> Self {
+        TypeExpectation::Description(s.to_string())
+    }
+}
+
+impl From<String> for TypeExpectation {
+    fn from(s: String) -> Self {
+        TypeExpectation::Description(s)
+    }
 }
 
 /// A diagnostic message with source location and stack trace.
@@ -288,12 +366,12 @@ impl Diagnostic {
         Self::new(DiagnosticKind::UndefinedVariable(id), None)
     }
 
-    /// Creates a type error.
-    pub fn type_error(expected: impl Into<String>, actual: impl Into<String>) -> Self {
+    /// Creates a type error with a type expectation and actual type.
+    pub fn type_error(expected: impl Into<TypeExpectation>, actual: Type) -> Self {
         Self::new(
             DiagnosticKind::TypeError {
                 expected: expected.into(),
-                actual: actual.into(),
+                actual,
             },
             None,
         )
@@ -304,9 +382,9 @@ impl Diagnostic {
         Self::new(DiagnosticKind::ArityError { expected, actual }, None)
     }
 
-    /// Creates a not-callable error.
-    pub fn not_callable(value_type: &str) -> Self {
-        Self::new(DiagnosticKind::NotCallable(value_type.to_string()), None)
+    /// Creates a not-callable error from a type.
+    pub fn not_callable(value_type: Type) -> Self {
+        Self::new(DiagnosticKind::NotCallable(value_type), None)
     }
 
     /// Creates a syntax error.
@@ -359,11 +437,19 @@ mod tests {
 
         assert_eq!(
             DiagnosticKind::TypeError {
-                expected: "number".to_string(),
-                actual: "string".to_string()
+                expected: TypeExpectation::description("number"),
+                actual: Type::String
             }
             .to_string(),
             "type error: expected number, got string"
+        );
+        assert_eq!(
+            DiagnosticKind::TypeError {
+                expected: TypeExpectation::Single(Type::Integer),
+                actual: Type::String
+            }
+            .to_string(),
+            "type error: expected integer, got string"
         );
         assert_eq!(
             DiagnosticKind::ArityError {
@@ -372,6 +458,26 @@ mod tests {
             }
             .to_string(),
             "arity error: expected 2 arguments, got 3"
+        );
+    }
+
+    #[test]
+    fn type_expectation_display() {
+        assert_eq!(
+            TypeExpectation::Single(Type::Integer).to_string(),
+            "integer"
+        );
+        assert_eq!(
+            TypeExpectation::OneOf(vec![Type::Integer, Type::Float]).to_string(),
+            "integer or float"
+        );
+        assert_eq!(
+            TypeExpectation::OneOf(vec![Type::Integer, Type::Float, Type::String]).to_string(),
+            "integer, float, or string"
+        );
+        assert_eq!(
+            TypeExpectation::Description("number".to_string()).to_string(),
+            "number"
         );
     }
 
@@ -419,7 +525,7 @@ mod tests {
 
     #[test]
     fn diagnostic_kind_accessor() {
-        let diag = Diagnostic::type_error("number", "string");
+        let diag = Diagnostic::type_error("number", Type::String);
         assert!(matches!(diag.kind(), DiagnosticKind::TypeError { .. }));
     }
 

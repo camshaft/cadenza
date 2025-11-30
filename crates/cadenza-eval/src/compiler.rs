@@ -109,7 +109,7 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::DiagnosticLevel;
+    use crate::{diagnostic::DiagnosticLevel, value::Type};
 
     #[test]
     fn define_and_get_var() {
@@ -193,7 +193,7 @@ mod tests {
         let mut compiler = Compiler::new();
 
         compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
-        compiler.record_diagnostic(Diagnostic::type_error("number", "string"));
+        compiler.record_diagnostic(Diagnostic::type_error("number", Type::String));
         assert_eq!(compiler.num_diagnostics(), 2);
 
         compiler.clear_diagnostics();

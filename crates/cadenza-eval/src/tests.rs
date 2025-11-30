@@ -5,7 +5,7 @@ use crate::{
     diagnostic::Diagnostic,
     env::Env,
     interner::InternedString,
-    value::{BuiltinFn, Value},
+    value::{BuiltinFn, Type, Value},
 };
 use cadenza_syntax::parse::parse;
 
@@ -126,7 +126,7 @@ fn test_builtin_function() {
                 }
                 match &args[0] {
                     Value::Integer(a) => Ok(Value::Integer(a + 1)),
-                    _ => Err(Diagnostic::type_error("integer", "other")),
+                    _ => Err(Diagnostic::type_error(Type::Integer, args[0].type_of())),
                 }
             },
         }),

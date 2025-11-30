@@ -5,6 +5,58 @@
 use crate::{diagnostic::Result, interner::InternedString};
 use std::fmt;
 
+/// A runtime type in the Cadenza evaluator.
+///
+/// Types are first-class values that can be inspected and operated on at runtime.
+/// This allows for type-level programming and better error messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Type {
+    /// The type of nil/unit values.
+    Nil,
+    /// The type of boolean values.
+    Bool,
+    /// The type of symbol values.
+    Symbol,
+    /// The type of integer values.
+    Integer,
+    /// The type of floating-point values.
+    Float,
+    /// The type of string values.
+    String,
+    /// The type of list values.
+    List,
+    /// The type of type values.
+    Type,
+    /// The type of built-in function values.
+    BuiltinFn,
+    /// The type of built-in macro values.
+    BuiltinMacro,
+}
+
+impl Type {
+    /// Returns the string representation of this type.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Type::Nil => "nil",
+            Type::Bool => "bool",
+            Type::Symbol => "symbol",
+            Type::Integer => "integer",
+            Type::Float => "float",
+            Type::String => "string",
+            Type::List => "list",
+            Type::Type => "type",
+            Type::BuiltinFn => "builtin-fn",
+            Type::BuiltinMacro => "builtin-macro",
+        }
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// A runtime value in the Cadenza evaluator.
 #[derive(Clone)]
 pub enum Value {
@@ -28,6 +80,9 @@ pub enum Value {
 
     /// A list of values.
     List(Vec<Value>),
+
+    /// A type value (types are first-class values).
+    Type(Type),
 
     /// A built-in function implemented in Rust.
     BuiltinFn(BuiltinFn),
@@ -84,19 +139,27 @@ impl Value {
         }
     }
 
-    /// Returns the type name of this value.
-    pub fn type_name(&self) -> &'static str {
+    /// Returns the runtime type of this value.
+    pub fn type_of(&self) -> Type {
         match self {
-            Value::Nil => "nil",
-            Value::Bool(_) => "bool",
-            Value::Symbol(_) => "symbol",
-            Value::Integer(_) => "integer",
-            Value::Float(_) => "float",
-            Value::String(_) => "string",
-            Value::List(_) => "list",
-            Value::BuiltinFn(_) => "builtin-fn",
-            Value::BuiltinMacro(_) => "builtin-macro",
+            Value::Nil => Type::Nil,
+            Value::Bool(_) => Type::Bool,
+            Value::Symbol(_) => Type::Symbol,
+            Value::Integer(_) => Type::Integer,
+            Value::Float(_) => Type::Float,
+            Value::String(_) => Type::String,
+            Value::List(_) => Type::List,
+            Value::Type(_) => Type::Type,
+            Value::BuiltinFn(_) => Type::BuiltinFn,
+            Value::BuiltinMacro(_) => Type::BuiltinMacro,
         }
+    }
+
+    /// Returns the type name of this value as a string.
+    ///
+    /// This is a convenience method that returns `self.type_of().as_str()`.
+    pub fn type_name(&self) -> &'static str {
+        self.type_of().as_str()
     }
 }
 
@@ -110,6 +173,7 @@ impl fmt::Debug for Value {
             Value::Float(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "{s:?}"),
             Value::List(items) => f.debug_list().entries(items).finish(),
+            Value::Type(t) => write!(f, "Type({t})"),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
         }
@@ -135,6 +199,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::Type(t) => write!(f, "{t}"),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
         }
@@ -151,6 +216,7 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
+            (Value::Type(a), Value::Type(b)) => a == b,
             // Functions and macros are compared by identity (they never compare equal)
             _ => false,
         }
@@ -169,5 +235,43 @@ mod tests {
         assert_eq!(Value::Bool(true).type_name(), "bool");
         assert_eq!(Value::Integer(1).type_name(), "integer");
         assert_eq!(Value::List(vec![]).type_name(), "list");
+        assert_eq!(Value::Type(Type::Integer).type_name(), "type");
+    }
+
+    #[test]
+    fn type_of_returns_correct_types() {
+        assert_eq!(Value::Nil.type_of(), Type::Nil);
+        assert_eq!(Value::Bool(true).type_of(), Type::Bool);
+        assert_eq!(Value::Integer(42).type_of(), Type::Integer);
+        assert_eq!(Value::Float(2.5).type_of(), Type::Float);
+        assert_eq!(Value::String("hello".to_string()).type_of(), Type::String);
+        assert_eq!(Value::List(vec![]).type_of(), Type::List);
+        assert_eq!(Value::Type(Type::Integer).type_of(), Type::Type);
+    }
+
+    #[test]
+    fn type_display() {
+        assert_eq!(Type::Nil.to_string(), "nil");
+        assert_eq!(Type::Bool.to_string(), "bool");
+        assert_eq!(Type::Integer.to_string(), "integer");
+        assert_eq!(Type::Float.to_string(), "float");
+        assert_eq!(Type::String.to_string(), "string");
+        assert_eq!(Type::List.to_string(), "list");
+        assert_eq!(Type::Type.to_string(), "type");
+        assert_eq!(Type::BuiltinFn.to_string(), "builtin-fn");
+        assert_eq!(Type::BuiltinMacro.to_string(), "builtin-macro");
+    }
+
+    #[test]
+    fn type_value_display_and_debug() {
+        let type_val = Value::Type(Type::Integer);
+        assert_eq!(format!("{type_val}"), "integer");
+        assert_eq!(format!("{type_val:?}"), "Type(integer)");
+    }
+
+    #[test]
+    fn type_values_are_equal() {
+        assert_eq!(Value::Type(Type::Integer), Value::Type(Type::Integer));
+        assert_ne!(Value::Type(Type::Integer), Value::Type(Type::Float));
     }
 }

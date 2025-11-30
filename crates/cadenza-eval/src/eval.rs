@@ -10,7 +10,7 @@
 
 use crate::{
     compiler::Compiler,
-    diagnostic::{Diagnostic, Result},
+    diagnostic::{Diagnostic, Result, TypeExpectation},
     env::Env,
     interner::InternedString,
     value::Value,
@@ -215,7 +215,7 @@ fn apply_value(
             // Operator application
             apply_operator(id, args)
         }
-        _ => Err(Diagnostic::not_callable(callee.type_name())),
+        _ => Err(Diagnostic::not_callable(callee.type_of())),
     }
 }
 
@@ -230,8 +230,12 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
             [a, b] => Err(Diagnostic::type_error(
-                "number",
-                format!("{} and {}", a.type_name(), b.type_name()),
+                TypeExpectation::description(format!(
+                    "number and number, got {} and {}",
+                    a.type_of(),
+                    b.type_of()
+                )),
+                a.type_of(),
             )),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
@@ -243,8 +247,12 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
             [a, b] => Err(Diagnostic::type_error(
-                "number",
-                format!("{} and {}", a.type_name(), b.type_name()),
+                TypeExpectation::description(format!(
+                    "number and number, got {} and {}",
+                    a.type_of(),
+                    b.type_of()
+                )),
+                a.type_of(),
             )),
             [] => Err(Diagnostic::arity(1, 0)),
             _ => Err(Diagnostic::arity(2, args.len())),
@@ -255,8 +263,12 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 * b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a * *b as f64)),
             [a, b] => Err(Diagnostic::type_error(
-                "number",
-                format!("{} and {}", a.type_name(), b.type_name()),
+                TypeExpectation::description(format!(
+                    "number and number, got {} and {}",
+                    a.type_of(),
+                    b.type_of()
+                )),
+                a.type_of(),
             )),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
@@ -272,8 +284,12 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 / b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a / *b as f64)),
             [a, b] => Err(Diagnostic::type_error(
-                "number",
-                format!("{} and {}", a.type_name(), b.type_name()),
+                TypeExpectation::description(format!(
+                    "number and number, got {} and {}",
+                    a.type_of(),
+                    b.type_of()
+                )),
+                a.type_of(),
             )),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
