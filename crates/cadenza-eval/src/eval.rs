@@ -102,6 +102,8 @@ fn eval_literal(lit: &Literal) -> Result<Value> {
 /// Evaluates an identifier by looking it up in the environment.
 fn eval_ident(ident: &Ident, env: &Env, compiler: &Compiler) -> Result<Value> {
     let text = ident.syntax().text();
+    // TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
+    // AsRef<str> directly. See STATUS.md for tracking.
     let id: InternedString = text.to_string().as_str().into();
 
     // First check the local environment

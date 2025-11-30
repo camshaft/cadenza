@@ -142,12 +142,10 @@ where
 
 /// Storage for interned strings.
 ///
-/// This type does not implement `Sync` or `Send` to ensure
-/// interned values cannot be sent to a different thread.
+/// This type is `Send + Sync` since the underlying storage is a static `OnceLock`
+/// protected by a `Mutex`, making it safe to share across threads.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Strings {
-    _not_send_sync: PhantomData<*const ()>,
-}
+pub struct Strings;
 
 /// Internal storage data for strings.
 struct StringData {
@@ -214,10 +212,11 @@ pub type InternedString = Interned<Strings>;
 /// Integer literals are stored as `Result<i64, ParseIntError>` where `Err` contains
 /// the parse error. This allows us to intern the literal string and cache the
 /// parse result with meaningful error messages.
+///
+/// This type is `Send + Sync` since the underlying storage is a static `OnceLock`
+/// protected by a `Mutex`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Integers {
-    _not_send_sync: PhantomData<*const ()>,
-}
+pub struct Integers;
 
 /// Internal storage data for integers.
 struct IntegerData {
@@ -287,10 +286,11 @@ pub type InternedInteger = Interned<Integers>;
 ///
 /// Float literals are stored as `Result<f64, ParseFloatError>` where `Err` contains
 /// the parse error with meaningful error messages.
+///
+/// This type is `Send + Sync` since the underlying storage is a static `OnceLock`
+/// protected by a `Mutex`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Floats {
-    _not_send_sync: PhantomData<*const ()>,
-}
+pub struct Floats;
 
 /// Internal storage data for floats.
 struct FloatData {
