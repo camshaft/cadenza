@@ -5,12 +5,12 @@ use crate::{
     diagnostic::Diagnostic,
     env::Env,
     interner::InternedString,
-    value::{BuiltinFn, Value},
+    value::{BuiltinFn, Type, Value},
 };
 use cadenza_syntax::parse::parse;
 
 /// Helper to evaluate a source string and return all values.
-fn eval_all(src: &str) -> Result<Vec<Value>, Diagnostic> {
+fn eval_all(src: &str) -> Result<Vec<Value>, Box<Diagnostic>> {
     let parsed = parse(src);
     if let Some(err) = parsed.errors.first() {
         return Err(Diagnostic::parse_error(&err.message, err.span));
@@ -21,17 +21,19 @@ fn eval_all(src: &str) -> Result<Vec<Value>, Diagnostic> {
     let results = crate::eval(&root, &mut env, &mut compiler);
     if compiler.has_errors() {
         // Return the first error for backwards compatibility in tests
-        return Err(compiler
-            .take_diagnostics()
-            .into_iter()
-            .next()
-            .expect("has_errors() returned true but no diagnostics found"));
+        return Err(Box::new(
+            compiler
+                .take_diagnostics()
+                .into_iter()
+                .next()
+                .expect("has_errors() returned true but no diagnostics found"),
+        ));
     }
     Ok(results)
 }
 
 /// Helper to evaluate a single expression.
-fn eval_one(src: &str) -> Result<Value, Diagnostic> {
+fn eval_one(src: &str) -> Result<Value, Box<Diagnostic>> {
     eval_all(src)?
         .into_iter()
         .next()
@@ -120,13 +122,14 @@ fn test_builtin_function() {
         inc_id,
         Value::BuiltinFn(BuiltinFn {
             name: "inc",
+            signature: Type::function(vec![Type::Integer], Type::Integer),
             func: |args| {
                 if args.len() != 1 {
                     return Err(Diagnostic::arity(1, args.len()));
                 }
                 match &args[0] {
                     Value::Integer(a) => Ok(Value::Integer(a + 1)),
-                    _ => Err(Diagnostic::type_error("integer", "other")),
+                    _ => Err(Diagnostic::type_error(Type::Integer, args[0].type_of())),
                 }
             },
         }),

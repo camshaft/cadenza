@@ -65,9 +65,22 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ### Types & Values
 
-5. **Types as eval-time values**
-   - Current: Types are static strings in errors
-   - Needed: Types should be eval-time values for inspection/operation
+5. ~~**Types as eval-time values**~~
+   - [x] COMPLETED: Created `Type` enum with full type system support
+   - [x] Added `Value::Type(Type)` variant for types as first-class values
+   - [x] Added `type_of() -> Type` method to Value for getting runtime type
+   - [x] Updated `type_name()` to use `type_of().as_str()`
+   - [x] Replaced `BuiltinFn` and `BuiltinMacro` type markers with `Fn(Vec<Type>)` - unified function type
+   - [x] Added `List(Box<Type>)` - list type with element type parameter
+   - [x] Added `Record(Vec<(InternedString, Type)>)` - record type with field names and types
+   - [x] Added `Tuple(Vec<Type>)` - tuple type with element types
+   - [x] Added `Enum(Vec<(InternedString, Type)>)` - enum type with variant names and types
+   - [x] Added `Union(Vec<Type>)` - union type for expressing "one of" (replaces TypeExpectation::OneOf)
+   - [x] Added type signatures to `BuiltinFn` and `BuiltinMacro` structs
+   - [x] Updated `TypeError` to use `Type` for both expected and actual
+   - [x] Removed `TypeExpectation` enum - union types now express type alternatives
+   - [x] Updated `NotCallable` in `DiagnosticKind` to use `Type`
+   - [x] Exported `Type` from crate root
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079828)
 
 6. **Values need syntax nodes for source tracking**
