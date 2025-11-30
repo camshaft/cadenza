@@ -10,6 +10,7 @@
 //! - [`interner::InternedInteger`]: Interned integer literals with parsed values
 //! - [`interner::InternedFloat`]: Interned float literals with parsed values
 //! - [`Value`]: Runtime values including functions and macros
+//! - [`Type`]: Runtime types as first-class values
 //! - [`Env`]: Scoped environment for variable bindings
 //! - [`Compiler`]: The compiler state that accumulates definitions
 //! - [`eval`]: The main evaluation function
@@ -23,14 +24,16 @@ mod map;
 mod value;
 
 pub use compiler::Compiler;
-pub use diagnostic::{Diagnostic, DiagnosticKind, DiagnosticLevel, Result, StackFrame};
+pub use diagnostic::{
+    BoxedDiagnosticExt, Diagnostic, DiagnosticKind, DiagnosticLevel, Result, StackFrame,
+};
 // Backwards compatibility aliases
 pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;
 pub use eval::eval;
 pub use interner::InternedString;
 pub use map::Map;
-pub use value::Value;
+pub use value::{Type, Value};
 
 #[cfg(test)]
 mod tests;

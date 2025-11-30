@@ -13,7 +13,7 @@ use crate::{
     diagnostic::{Diagnostic, Result},
     env::Env,
     interner::InternedString,
-    value::Value,
+    value::{Type, Value},
 };
 use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
 
@@ -34,7 +34,7 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
         match eval_expr(&expr, env, compiler) {
             Ok(value) => results.push(value),
             Err(diagnostic) => {
-                compiler.record_diagnostic(diagnostic);
+                compiler.record_diagnostic(*diagnostic);
                 results.push(Value::Nil);
             }
         }
@@ -215,7 +215,7 @@ fn apply_value(
             // Operator application
             apply_operator(id, args)
         }
-        _ => Err(Diagnostic::not_callable(callee.type_name())),
+        _ => Err(Diagnostic::not_callable(callee.type_of())),
     }
 }
 
@@ -223,16 +223,22 @@ fn apply_value(
 fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
     let op_name: &str = &op_id;
 
+    /// Creates the "number" type (integer | float) lazily only when needed for errors.
+    fn number_type() -> Type {
+        Type::union(vec![Type::Integer, Type::Float])
+    }
+
     match op_name {
         "+" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a + b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a + b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
-            [a, b] => Err(Diagnostic::type_error(
-                "number",
-                format!("{} and {}", a.type_name(), b.type_name()),
-            )),
+            // For binary operators, report the first non-number type as the actual type
+            [Value::Integer(_), b] | [Value::Float(_), b] => {
+                Err(Diagnostic::type_error(number_type(), b.type_of()))
+            }
+            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "-" => match args.as_slice() {
@@ -242,10 +248,11 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a - b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
-            [a, b] => Err(Diagnostic::type_error(
-                "number",
-                format!("{} and {}", a.type_name(), b.type_name()),
-            )),
+            // For binary operators, report the first non-number type as the actual type
+            [Value::Integer(_), b] | [Value::Float(_), b] => {
+                Err(Diagnostic::type_error(number_type(), b.type_of()))
+            }
+            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
             [] => Err(Diagnostic::arity(1, 0)),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
@@ -254,10 +261,11 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a * b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 * b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a * *b as f64)),
-            [a, b] => Err(Diagnostic::type_error(
-                "number",
-                format!("{} and {}", a.type_name(), b.type_name()),
-            )),
+            // For binary operators, report the first non-number type as the actual type
+            [Value::Integer(_), b] | [Value::Float(_), b] => {
+                Err(Diagnostic::type_error(number_type(), b.type_of()))
+            }
+            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "/" => match args.as_slice() {
@@ -271,10 +279,11 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a / b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 / b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a / *b as f64)),
-            [a, b] => Err(Diagnostic::type_error(
-                "number",
-                format!("{} and {}", a.type_name(), b.type_name()),
-            )),
+            // For binary operators, report the first non-number type as the actual type
+            [Value::Integer(_), b] | [Value::Float(_), b] => {
+                Err(Diagnostic::type_error(number_type(), b.type_of()))
+            }
+            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "==" => match args.as_slice() {
@@ -359,11 +368,13 @@ mod tests {
         let mut compiler = Compiler::new();
         let results = eval(&root, &mut env, &mut compiler);
         if compiler.has_errors() {
-            return Err(compiler
-                .take_diagnostics()
-                .into_iter()
-                .next()
-                .expect("has_errors() returned true but no diagnostics found"));
+            return Err(Box::new(
+                compiler
+                    .take_diagnostics()
+                    .into_iter()
+                    .next()
+                    .expect("has_errors() returned true but no diagnostics found"),
+            ));
         }
         Ok(results)
     }
