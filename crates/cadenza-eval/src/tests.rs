@@ -12,11 +12,8 @@ use cadenza_syntax::parse::parse;
 /// Helper to evaluate a source string and return all values.
 fn eval_all(src: &str) -> Result<Vec<Value>, Diagnostic> {
     let parsed = parse(src);
-    if !parsed.errors.is_empty() {
-        return Err(Diagnostic::syntax(format!(
-            "parse errors: {:?}",
-            parsed.errors
-        )));
+    if let Some(err) = parsed.errors.first() {
+        return Err(Diagnostic::parse_error(&err.message, err.span));
     }
     let root = parsed.ast();
     let mut env = Env::new();
@@ -264,4 +261,25 @@ fn test_eval_collecting_with_defined_variables() {
 
     // Only one error (undefined y)
     assert_eq!(compiler.num_diagnostics(), 1);
+}
+
+#[test]
+fn test_parse_error_message() {
+    // Test that parse errors return actual error messages instead of generic "parse errors: [...]"
+    let result = eval_one("[1, , 2]"); // Array with missing element
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(
+        &err.kind,
+        crate::diagnostic::DiagnosticKind::ParseError(_)
+    ));
+    // The error message should contain the actual parse error, not "parse errors: [...]"
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("expected expression before comma"),
+        "Expected actual parse error message, got: {}",
+        msg
+    );
+    // The error should have a span
+    assert!(err.span.is_some());
 }

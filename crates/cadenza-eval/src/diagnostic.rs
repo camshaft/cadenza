@@ -98,6 +98,10 @@ pub enum DiagnosticKind {
     #[error("syntax error: {0}")]
     SyntaxError(String),
 
+    /// A parse error from the parser.
+    #[error("parse error: {0}")]
+    ParseError(String),
+
     /// An internal error in the evaluator.
     #[error("internal error: {0}")]
     InternalError(String),
@@ -191,6 +195,7 @@ impl MietteDiagnostic for Diagnostic {
             DiagnosticKind::ArityError { .. } => "E0003",
             DiagnosticKind::NotCallable(_) => "E0004",
             DiagnosticKind::SyntaxError(_) => "E0005",
+            DiagnosticKind::ParseError(_) => "E0007",
             DiagnosticKind::InternalError(_) => "E0006",
         };
         Some(Box::new(code))
@@ -309,6 +314,11 @@ impl Diagnostic {
         Self::new(DiagnosticKind::SyntaxError(msg.into()), None)
     }
 
+    /// Creates a parse error from the parser.
+    pub fn parse_error(msg: impl Into<String>, span: Span) -> Self {
+        Self::new(DiagnosticKind::ParseError(msg.into()), Some(span))
+    }
+
     /// Creates an internal error.
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::new(DiagnosticKind::InternalError(msg.into()), None)
@@ -318,6 +328,12 @@ impl Diagnostic {
 impl From<DiagnosticKind> for Diagnostic {
     fn from(kind: DiagnosticKind) -> Self {
         Self::new(kind, None)
+    }
+}
+
+impl From<cadenza_syntax::parse::ParseError> for Diagnostic {
+    fn from(err: cadenza_syntax::parse::ParseError) -> Self {
+        Self::parse_error(err.message, err.span)
     }
 }
 
