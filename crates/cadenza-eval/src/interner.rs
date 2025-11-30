@@ -1,60 +1,15 @@
 //! Interning infrastructure for efficient value comparison and storage.
 //!
-//! This module provides a flexible interning system that is parameterized over
-//! a zero-sized type (ZST) that determines where the storage is located.
-//! This allows for both static/global interning and local interning.
+//! This module provides interned types for strings, integers, and floats.
+//! Each type uses static storage with `OnceLock` for thread-safe initialization.
 //!
 //! # Design
 //!
 //! The interning system is built around the `Interned<S>` type, where `S` is a
 //! storage marker (ZST) that determines where values are stored. The `Interned`
 //! type implements `Deref`, allowing direct access to the interned value.
-//!
-//! # Example
-//!
-//! ```
-//! use cadenza_eval::interner::{Interner, InternedId};
-//!
-//! let mut interner = Interner::new();
-//! let id1 = interner.intern("hello");
-//! let id2 = interner.intern("hello");
-//! assert_eq!(id1, id2); // Same string → same ID
-//! assert_eq!(interner.resolve(id1), "hello");
-//! ```
 
-use crate::map::StringMap;
-use std::{fmt, marker::PhantomData, ops::Deref};
-
-// =============================================================================
-// Core Types (backwards compatible)
-// =============================================================================
-
-/// An interned identifier, represented as a u32 index.
-///
-/// `InternedId` implements `Copy`, `Eq`, `Hash` with zero-cost comparison.
-/// The actual string is stored in the [`Interner`] and can be looked up when needed.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InternedId(u32);
-
-impl InternedId {
-    /// Returns the raw index of this interned ID.
-    #[inline]
-    pub fn as_u32(self) -> u32 {
-        self.0
-    }
-}
-
-impl fmt::Debug for InternedId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "InternedId({})", self.0)
-    }
-}
-
-impl fmt::Display for InternedId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+use std::{fmt, marker::PhantomData, ops::Deref, sync::OnceLock};
 
 // =============================================================================
 // Storage Trait
@@ -64,11 +19,6 @@ impl fmt::Display for InternedId {
 ///
 /// Storage implementations determine where interned values are stored.
 /// The storage must provide static lifetime references for `Deref` to work.
-///
-/// # Type Parameters
-///
-/// - `Index`: The index type used to reference stored values (typically `u32`).
-/// - `Value`: The type of values stored (can be unsized, e.g., `str`).
 pub trait Storage: Sized + 'static {
     /// The index type for referencing stored values.
     type Index: Copy;
@@ -95,15 +45,6 @@ pub trait Storage: Sized + 'static {
 /// # Type Parameters
 ///
 /// - `S`: The storage type (a ZST marker) that determines where values are stored.
-///
-/// # Example
-///
-/// ```ignore
-/// define_string_storage!(MyStrings);
-///
-/// let s: Interned<MyStrings> = Interned::from("hello");
-/// assert_eq!(&*s, "hello");
-/// ```
 pub struct Interned<S: Storage> {
     index: S::Index,
     _marker: PhantomData<S>,
@@ -142,7 +83,8 @@ impl<S: Storage> Interned<S> {
     /// Creates a new `Interned` value from a string.
     ///
     /// The string is inserted into the storage if not already present.
-    pub fn from(value: &str) -> Self {
+    #[inline]
+    pub fn new(value: &str) -> Self {
         Self {
             index: S::insert(value),
             _marker: PhantomData,
@@ -154,18 +96,11 @@ impl<S: Storage> Interned<S> {
     pub fn index(self) -> S::Index {
         self.index
     }
+}
 
-    /// Creates an `Interned` from a raw index.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the index is valid for this storage.
-    #[inline]
-    pub fn from_index(index: S::Index) -> Self {
-        Self {
-            index,
-            _marker: PhantomData,
-        }
+impl<S: Storage> From<&str> for Interned<S> {
+    fn from(value: &str) -> Self {
+        Self::new(value)
     }
 }
 
@@ -196,101 +131,36 @@ where
 }
 
 // =============================================================================
-// Macro to define string storage
+// String Storage
 // =============================================================================
 
-/// A macro to define string storage for interning.
+/// Storage for interned strings.
 ///
-/// This creates a ZST marker type and implements `Storage` for it
-/// using thread-local storage. The generated type does not implement
-/// `Sync` or `Send` to prevent the interned values from being sent
-/// to a different thread.
-///
-/// # Example
-///
-/// ```
-/// use cadenza_eval::define_string_storage;
-/// use cadenza_eval::interner::Interned;
-///
-/// define_string_storage!(MyStrings);
-///
-/// let s: Interned<MyStrings> = Interned::from("hello");
-/// assert_eq!(&*s, "hello");
-/// ```
-#[macro_export]
-macro_rules! define_string_storage {
-    ($name:ident) => {
-        /// A ZST marker for string storage.
-        ///
-        /// This type does not implement `Sync` or `Send` to ensure
-        /// interned values cannot be sent to a different thread.
-        #[derive(Debug, Clone, Copy, Default)]
-        pub struct $name {
-            // PhantomData to prevent Sync/Send
-            _not_send_sync: ::std::marker::PhantomData<*const ()>,
-        }
-
-        #[allow(dead_code)]
-        impl $name {
-            /// Creates a new storage marker.
-            pub const fn new() -> Self {
-                Self {
-                    _not_send_sync: ::std::marker::PhantomData,
-                }
-            }
-        }
-
-        ::std::thread_local! {
-            static STORAGE: ::std::cell::RefCell<$crate::interner::StringStorageData> =
-                ::std::cell::RefCell::new($crate::interner::StringStorageData::new());
-        }
-
-        impl $crate::interner::Storage for $name {
-            type Index = u32;
-            type Value = str;
-
-            fn insert(value: &str) -> Self::Index {
-                STORAGE.with(|data| data.borrow_mut().insert(value))
-            }
-
-            fn resolve(index: Self::Index) -> &'static Self::Value {
-                STORAGE.with(|data| {
-                    // SAFETY: The string lives in thread-local storage for the lifetime
-                    // of the thread. We return a 'static reference because the storage
-                    // outlives any single call. The PhantomData in the storage marker
-                    // prevents Send/Sync, ensuring the reference isn't used across threads.
-                    let borrowed = data.borrow();
-                    let s = borrowed.get(index);
-                    unsafe { ::std::mem::transmute::<&str, &'static str>(s) }
-                })
-            }
-        }
-    };
+/// This type does not implement `Sync` or `Send` to ensure
+/// interned values cannot be sent to a different thread.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Strings {
+    _not_send_sync: PhantomData<*const ()>,
 }
 
-/// Internal data structure for string storage.
-///
-/// This is used by the `define_string_storage!` macro.
-#[derive(Debug, Default)]
-pub struct StringStorageData {
-    /// Maps strings to their indices for deduplication.
+/// Internal storage data for strings.
+struct StringData {
     map: rustc_hash::FxHashMap<String, u32>,
-    /// The stored strings, indexed by their ID.
     strings: Vec<String>,
 }
 
-impl StringStorageData {
-    /// Creates a new empty string storage.
-    pub fn new() -> Self {
-        Self::default()
+impl StringData {
+    fn new() -> Self {
+        Self {
+            map: rustc_hash::FxHashMap::default(),
+            strings: Vec::new(),
+        }
     }
 
-    /// Inserts a string and returns its index.
-    pub fn insert(&mut self, s: &str) -> u32 {
+    fn insert(&mut self, s: &str) -> u32 {
         if let Some(&index) = self.map.get(s) {
             return index;
         }
-
         let index = self.strings.len() as u32;
         let owned = s.to_string();
         self.strings.push(owned.clone());
@@ -298,78 +168,175 @@ impl StringStorageData {
         index
     }
 
-    /// Gets a string by index.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the index is out of bounds.
-    pub fn get(&self, index: u32) -> &str {
+    fn get(&self, index: u32) -> &str {
         &self.strings[index as usize]
     }
 }
 
+static STRING_STORAGE: OnceLock<std::sync::Mutex<StringData>> = OnceLock::new();
+
+fn string_storage() -> &'static std::sync::Mutex<StringData> {
+    STRING_STORAGE.get_or_init(|| std::sync::Mutex::new(StringData::new()))
+}
+
+impl Storage for Strings {
+    type Index = u32;
+    type Value = str;
+
+    fn insert(value: &str) -> Self::Index {
+        string_storage().lock().unwrap().insert(value)
+    }
+
+    fn resolve(index: Self::Index) -> &'static Self::Value {
+        // SAFETY: Strings are never removed from storage, so the reference is valid
+        // for the lifetime of the program.
+        let storage = string_storage().lock().unwrap();
+        let s = storage.get(index);
+        unsafe { std::mem::transmute::<&str, &'static str>(s) }
+    }
+}
+
+/// Type alias for interned strings.
+pub type InternedString = Interned<Strings>;
+
 // =============================================================================
-// String Interner (backwards compatible)
+// Integer Storage
 // =============================================================================
 
-/// A string interner that maps strings to unique `InternedId`s.
+/// Storage for interned integer literals.
 ///
-/// The interner is the single source of truth for identifier hashing.
-/// If the hasher ever needs to change, only this struct needs to be modified.
-#[derive(Debug, Default)]
-pub struct Interner {
-    /// Maps strings to their interned IDs (using FxHash for performance)
-    map: StringMap<InternedId>,
-    /// Reverse lookup: maps IDs back to strings
-    strings: Vec<String>,
+/// Integer literals are stored as `Result<i64, ()>` where `Err(())` indicates
+/// a parse error. This allows us to intern the literal string and cache the
+/// parse result.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Integers {
+    _not_send_sync: PhantomData<*const ()>,
 }
 
-impl Interner {
-    /// Creates a new empty interner.
-    pub fn new() -> Self {
-        Self::default()
-    }
+/// Internal storage data for integers.
+struct IntegerData {
+    map: rustc_hash::FxHashMap<String, u32>,
+    values: Vec<Result<i64, ()>>,
+}
 
-    /// Interns a string, returning its unique ID.
-    ///
-    /// If the string has already been interned, returns the existing ID.
-    /// Otherwise, assigns a new ID and stores the string.
-    pub fn intern(&mut self, s: &str) -> InternedId {
-        if let Some(&id) = self.map.get(s) {
-            return id;
+impl IntegerData {
+    fn new() -> Self {
+        Self {
+            map: rustc_hash::FxHashMap::default(),
+            values: Vec::new(),
         }
-
-        let id = InternedId(self.strings.len() as u32);
-        let owned = s.to_string();
-        self.strings.push(owned.clone());
-        self.map.insert(owned, id);
-        id
     }
 
-    /// Looks up the string for an interned ID.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the ID was not created by this interner.
-    pub fn resolve(&self, id: InternedId) -> &str {
-        &self.strings[id.0 as usize]
+    fn insert(&mut self, s: &str) -> u32 {
+        if let Some(&index) = self.map.get(s) {
+            return index;
+        }
+        let index = self.values.len() as u32;
+        // Parse the integer, removing underscores
+        let clean = s.replace('_', "");
+        let value = clean.parse::<i64>().map_err(|_| ());
+        self.values.push(value);
+        self.map.insert(s.to_string(), index);
+        index
     }
 
-    /// Tries to look up an existing interned ID without creating a new one.
-    pub fn get(&self, s: &str) -> Option<InternedId> {
-        self.map.get(s).copied()
-    }
-
-    /// Returns the number of interned strings.
-    pub fn len(&self) -> usize {
-        self.strings.len()
-    }
-
-    /// Returns true if no strings have been interned.
-    pub fn is_empty(&self) -> bool {
-        self.strings.is_empty()
+    fn get(&self, index: u32) -> &Result<i64, ()> {
+        &self.values[index as usize]
     }
 }
+
+static INTEGER_STORAGE: OnceLock<std::sync::Mutex<IntegerData>> = OnceLock::new();
+
+fn integer_storage() -> &'static std::sync::Mutex<IntegerData> {
+    INTEGER_STORAGE.get_or_init(|| std::sync::Mutex::new(IntegerData::new()))
+}
+
+impl Storage for Integers {
+    type Index = u32;
+    type Value = Result<i64, ()>;
+
+    fn insert(value: &str) -> Self::Index {
+        integer_storage().lock().unwrap().insert(value)
+    }
+
+    fn resolve(index: Self::Index) -> &'static Self::Value {
+        let storage = integer_storage().lock().unwrap();
+        let v = storage.get(index);
+        unsafe { std::mem::transmute::<&Result<i64, ()>, &'static Result<i64, ()>>(v) }
+    }
+}
+
+/// Type alias for interned integer literals.
+pub type InternedInteger = Interned<Integers>;
+
+// =============================================================================
+// Float Storage
+// =============================================================================
+
+/// Storage for interned float literals.
+///
+/// Float literals are stored as `Result<f64, ()>` where `Err(())` indicates
+/// a parse error.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Floats {
+    _not_send_sync: PhantomData<*const ()>,
+}
+
+/// Internal storage data for floats.
+struct FloatData {
+    map: rustc_hash::FxHashMap<String, u32>,
+    values: Vec<Result<f64, ()>>,
+}
+
+impl FloatData {
+    fn new() -> Self {
+        Self {
+            map: rustc_hash::FxHashMap::default(),
+            values: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, s: &str) -> u32 {
+        if let Some(&index) = self.map.get(s) {
+            return index;
+        }
+        let index = self.values.len() as u32;
+        // Parse the float, removing underscores
+        let clean = s.replace('_', "");
+        let value = clean.parse::<f64>().map_err(|_| ());
+        self.values.push(value);
+        self.map.insert(s.to_string(), index);
+        index
+    }
+
+    fn get(&self, index: u32) -> &Result<f64, ()> {
+        &self.values[index as usize]
+    }
+}
+
+static FLOAT_STORAGE: OnceLock<std::sync::Mutex<FloatData>> = OnceLock::new();
+
+fn float_storage() -> &'static std::sync::Mutex<FloatData> {
+    FLOAT_STORAGE.get_or_init(|| std::sync::Mutex::new(FloatData::new()))
+}
+
+impl Storage for Floats {
+    type Index = u32;
+    type Value = Result<f64, ()>;
+
+    fn insert(value: &str) -> Self::Index {
+        float_storage().lock().unwrap().insert(value)
+    }
+
+    fn resolve(index: Self::Index) -> &'static Self::Value {
+        let storage = float_storage().lock().unwrap();
+        let v = storage.get(index);
+        unsafe { std::mem::transmute::<&Result<f64, ()>, &'static Result<f64, ()>>(v) }
+    }
+}
+
+/// Type alias for interned float literals.
+pub type InternedFloat = Interned<Floats>;
 
 // =============================================================================
 // Tests
@@ -379,127 +346,118 @@ impl Interner {
 mod tests {
     use super::*;
 
-    // Tests for the original Interner (backwards compatibility)
-    mod interner {
+    mod interned_string {
         use super::*;
 
         #[test]
-        fn intern_same_string_returns_same_id() {
-            let mut interner = Interner::new();
-            let id1 = interner.intern("hello");
-            let id2 = interner.intern("hello");
-            assert_eq!(id1, id2);
-        }
-
-        #[test]
-        fn intern_different_strings_returns_different_ids() {
-            let mut interner = Interner::new();
-            let id1 = interner.intern("hello");
-            let id2 = interner.intern("world");
-            assert_ne!(id1, id2);
-        }
-
-        #[test]
-        fn resolve_returns_original_string() {
-            let mut interner = Interner::new();
-            let id = interner.intern("test_string");
-            assert_eq!(interner.resolve(id), "test_string");
-        }
-
-        #[test]
-        fn get_returns_existing_id() {
-            let mut interner = Interner::new();
-            let id = interner.intern("existing");
-            assert_eq!(interner.get("existing"), Some(id));
-            assert_eq!(interner.get("nonexistent"), None);
-        }
-
-        #[test]
-        fn len_tracks_unique_strings() {
-            let mut interner = Interner::new();
-            assert_eq!(interner.len(), 0);
-            interner.intern("a");
-            assert_eq!(interner.len(), 1);
-            interner.intern("b");
-            assert_eq!(interner.len(), 2);
-            interner.intern("a"); // duplicate
-            assert_eq!(interner.len(), 2);
-        }
-    }
-
-    // Tests for the new Interned type with static storage
-    mod interned {
-        use super::*;
-
-        define_string_storage!(TestStrings);
-
-        #[test]
-        fn interned_from_creates_value() {
-            let s: Interned<TestStrings> = Interned::from("hello");
+        fn from_creates_value() {
+            let s: InternedString = "hello".into();
             assert_eq!(&*s, "hello");
         }
 
         #[test]
-        fn interned_deduplicates() {
-            let s1: Interned<TestStrings> = Interned::from("world");
-            let s2: Interned<TestStrings> = Interned::from("world");
+        fn new_creates_value() {
+            let s = InternedString::new("world");
+            assert_eq!(&*s, "world");
+        }
+
+        #[test]
+        fn deduplicates() {
+            let s1: InternedString = "dedup_test".into();
+            let s2: InternedString = "dedup_test".into();
             assert_eq!(s1.index(), s2.index());
         }
 
         #[test]
-        fn interned_is_copy() {
-            let s1: Interned<TestStrings> = Interned::from("copy_test");
+        fn is_copy() {
+            let s1: InternedString = "copy_test".into();
             let s2 = s1;
             assert_eq!(&*s1, &*s2);
         }
 
         #[test]
-        fn interned_equality() {
-            let s1: Interned<TestStrings> = Interned::from("eq_test");
-            let s2: Interned<TestStrings> = Interned::from("eq_test");
-            let s3: Interned<TestStrings> = Interned::from("different");
+        fn equality() {
+            let s1: InternedString = "eq_test".into();
+            let s2: InternedString = "eq_test".into();
+            let s3: InternedString = "different".into();
             assert_eq!(s1, s2);
             assert_ne!(s1, s3);
         }
 
         #[test]
-        fn interned_display() {
-            let s: Interned<TestStrings> = Interned::from("display_test");
+        fn display() {
+            let s: InternedString = "display_test".into();
             assert_eq!(format!("{}", s), "display_test");
         }
 
         #[test]
-        fn interned_debug() {
-            let s: Interned<TestStrings> = Interned::from("debug_test");
+        fn debug() {
+            let s: InternedString = "debug_test".into();
             assert_eq!(format!("{:?}", s), "\"debug_test\"");
         }
     }
 
-    // Tests for string storage data
-    mod string_storage_data {
+    mod interned_integer {
         use super::*;
 
         #[test]
-        fn insert_and_get() {
-            let mut data = StringStorageData::new();
-            let idx = data.insert("hello");
-            assert_eq!(data.get(idx), "hello");
+        fn parses_valid_integer() {
+            let i: InternedInteger = "42".into();
+            assert_eq!(*i, Ok(42));
         }
 
         #[test]
-        fn insert_deduplicates() {
-            let mut data = StringStorageData::new();
-            let idx1 = data.insert("same");
-            let idx2 = data.insert("same");
-            assert_eq!(idx1, idx2);
+        fn handles_underscores() {
+            let i: InternedInteger = "1_000_000".into();
+            assert_eq!(*i, Ok(1_000_000));
         }
 
         #[test]
-        fn different_strings_different_indices() {
-            let mut data = StringStorageData::new();
-            let idx1 = data.insert("one");
-            let idx2 = data.insert("two");
-            assert_ne!(idx1, idx2);
+        fn returns_err_for_invalid() {
+            let i: InternedInteger = "not_a_number".into();
+            assert_eq!(*i, Err(()));
+        }
+
+        #[test]
+        fn deduplicates() {
+            let i1: InternedInteger = "123".into();
+            let i2: InternedInteger = "123".into();
+            assert_eq!(i1.index(), i2.index());
+        }
+
+        #[test]
+        fn handles_negative() {
+            let i: InternedInteger = "-42".into();
+            assert_eq!(*i, Ok(-42));
+        }
+    }
+
+    mod interned_float {
+        use super::*;
+
+        #[test]
+        fn parses_valid_float() {
+            let f: InternedFloat = "3.5".into();
+            assert_eq!(*f, Ok(3.5));
+        }
+
+        #[test]
+        fn handles_underscores() {
+            let f: InternedFloat = "1_000.5".into();
+            assert_eq!(*f, Ok(1000.5));
+        }
+
+        #[test]
+        fn returns_err_for_invalid() {
+            let f: InternedFloat = "not_a_float".into();
+            assert_eq!(*f, Err(()));
+        }
+
+        #[test]
+        fn deduplicates() {
+            let f1: InternedFloat = "2.5".into();
+            let f2: InternedFloat = "2.5".into();
+            assert_eq!(f1.index(), f2.index());
         }
     }
 }

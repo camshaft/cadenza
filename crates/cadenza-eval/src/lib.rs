@@ -6,8 +6,9 @@
 //!
 //! # Core Components
 //!
-//! - [`Interner`]: String interning for efficient identifier comparison
-//! - [`interner::Interned`]: Generic interned value with ZST-parameterized storage
+//! - [`interner::InternedString`]: Interned strings for efficient comparison
+//! - [`interner::InternedInteger`]: Interned integer literals with parsed values
+//! - [`interner::InternedFloat`]: Interned float literals with parsed values
 //! - [`Value`]: Runtime values including functions and macros
 //! - [`Env`]: Scoped environment for variable bindings
 //! - [`Compiler`]: The compiler state that accumulates definitions
@@ -23,13 +24,13 @@ mod value;
 
 pub use compiler::Compiler;
 pub use diagnostic::{
-    Diagnostic, DiagnosticKind, DiagnosticLevel, DisplayWithInterner, Result, StackFrame,
+    Diagnostic, DiagnosticKind, DiagnosticLevel, DisplayWithInternedString, Result, StackFrame,
 };
 // Backwards compatibility aliases
 pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;
 pub use eval::eval;
-pub use interner::{InternedId, Interner};
+pub use interner::InternedString;
 pub use map::Map;
 pub use value::Value;
 

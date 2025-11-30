@@ -12,7 +12,7 @@ use crate::{
     compiler::Compiler,
     diagnostic::{Diagnostic, Result},
     env::Env,
-    interner::{InternedId, Interner},
+    interner::InternedString,
     value::Value,
 };
 use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
@@ -23,39 +23,29 @@ use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root,
 /// collected into a vector, though most top-level expressions will
 /// return `Value::Nil` as side effects on the `Compiler` are the
 /// primary purpose.
-pub fn eval(
-    root: &Root,
-    interner: &mut Interner,
-    env: &mut Env,
-    compiler: &mut Compiler,
-) -> Result<Vec<Value>> {
+pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Result<Vec<Value>> {
     let mut results = Vec::new();
     for expr in root.items() {
-        let value = eval_expr(&expr, interner, env, compiler)?;
+        let value = eval_expr(&expr, env, compiler)?;
         results.push(value);
     }
     Ok(results)
 }
 
 /// Evaluates a single expression.
-pub fn eval_expr(
-    expr: &Expr,
-    interner: &mut Interner,
-    env: &mut Env,
-    compiler: &mut Compiler,
-) -> Result<Value> {
+pub fn eval_expr(expr: &Expr, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
     match expr {
         Expr::Literal(lit) => eval_literal(lit),
-        Expr::Ident(ident) => eval_ident(ident, interner, env, compiler),
-        Expr::Apply(apply) => eval_apply(apply, interner, env, compiler),
-        Expr::Attr(attr) => eval_attr(attr, interner, env, compiler),
+        Expr::Ident(ident) => eval_ident(ident, env, compiler),
+        Expr::Apply(apply) => eval_apply(apply, env, compiler),
+        Expr::Attr(attr) => eval_attr(attr, env, compiler),
         Expr::Op(op) => {
             // Operators as values (for higher-order usage)
             let text = op.syntax().text().to_string();
-            let id = interner.intern(&text);
+            let id: InternedString = text.as_str().into();
             Ok(Value::Symbol(id))
         }
-        Expr::Synthetic(syn) => eval_synthetic(syn, interner, env, compiler),
+        Expr::Synthetic(syn) => eval_synthetic(syn, env, compiler),
         Expr::Error(_) => Err(Diagnostic::syntax("encountered error node in AST")),
     }
 }
@@ -97,14 +87,9 @@ fn eval_literal(lit: &Literal) -> Result<Value> {
 }
 
 /// Evaluates an identifier by looking it up in the environment.
-fn eval_ident(
-    ident: &Ident,
-    interner: &mut Interner,
-    env: &Env,
-    compiler: &Compiler,
-) -> Result<Value> {
+fn eval_ident(ident: &Ident, env: &Env, compiler: &Compiler) -> Result<Value> {
     let text = ident.syntax().text().to_string();
-    let id = interner.intern(&text);
+    let id: InternedString = text.as_str().into();
 
     // First check the local environment
     if let Some(value) = env.get(id) {
@@ -120,12 +105,7 @@ fn eval_ident(
 }
 
 /// Evaluates a function/macro application.
-fn eval_apply(
-    apply: &Apply,
-    interner: &mut Interner,
-    env: &mut Env,
-    compiler: &mut Compiler,
-) -> Result<Value> {
+fn eval_apply(apply: &Apply, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
     let receiver = apply
         .receiver()
         .ok_or_else(|| Diagnostic::syntax("missing receiver in application"))?;
@@ -137,40 +117,39 @@ fn eval_apply(
     // Check if the receiver is an identifier that names a macro
     if let Expr::Ident(ref ident) = receiver_expr {
         let text = ident.syntax().text().to_string();
-        let id = interner.intern(&text);
+        let id: InternedString = text.as_str().into();
 
         // Check for macro in compiler
         if let Some(macro_value) = compiler.get_macro(id) {
-            return expand_and_eval_macro(macro_value.clone(), apply, interner, env, compiler);
+            return expand_and_eval_macro(macro_value.clone(), apply, env, compiler);
         }
 
         // Check for macro in environment
         if let Some(Value::BuiltinMacro(_)) = env.get(id) {
             let macro_value = env.get(id).unwrap().clone();
-            return expand_and_eval_macro(macro_value, apply, interner, env, compiler);
+            return expand_and_eval_macro(macro_value, apply, env, compiler);
         }
     }
 
     // Not a macro call - evaluate normally
-    let callee = eval_expr(&receiver_expr, interner, env, compiler)?;
+    let callee = eval_expr(&receiver_expr, env, compiler)?;
 
     // Collect and evaluate arguments
     let mut args = Vec::new();
     for arg in apply.arguments() {
         if let Some(arg_expr) = arg.value() {
-            let value = eval_expr(&arg_expr, interner, env, compiler)?;
+            let value = eval_expr(&arg_expr, env, compiler)?;
             args.push(value);
         }
     }
 
-    apply_value(callee, args, interner, env, compiler)
+    apply_value(callee, args, env, compiler)
 }
 
 /// Expands a macro and evaluates the result.
 fn expand_and_eval_macro(
     macro_value: Value,
     apply: &Apply,
-    interner: &mut Interner,
     env: &mut Env,
     compiler: &mut Compiler,
 ) -> Result<Value> {
@@ -197,7 +176,7 @@ fn expand_and_eval_macro(
             // Create a SyntaxNode from the GreenNode and evaluate it
             let syntax_node = cadenza_syntax::Lang::parse_node(expanded_node);
             if let Some(expr) = Expr::cast_syntax_node(&syntax_node) {
-                eval_expr(&expr, interner, env, compiler)
+                eval_expr(&expr, env, compiler)
             } else {
                 Err(Diagnostic::internal(
                     "macro expansion produced invalid syntax",
@@ -212,7 +191,6 @@ fn expand_and_eval_macro(
 fn apply_value(
     callee: Value,
     args: Vec<Value>,
-    interner: &Interner,
     _env: &mut Env,
     _compiler: &mut Compiler,
 ) -> Result<Value> {
@@ -220,15 +198,15 @@ fn apply_value(
         Value::BuiltinFn(builtin) => (builtin.func)(&args),
         Value::Symbol(id) => {
             // Operator application
-            apply_operator(id, args, interner)
+            apply_operator(id, args)
         }
         _ => Err(Diagnostic::not_callable(callee.type_name())),
     }
 }
 
 /// Applies a built-in operator.
-fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> Result<Value> {
-    let op_name = interner.resolve(op_id);
+fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
+    let op_name: &str = &op_id;
 
     match op_name {
         "+" => match args.as_slice() {
@@ -325,28 +303,18 @@ fn apply_operator(op_id: InternedId, args: Vec<Value>, interner: &Interner) -> R
 }
 
 /// Evaluates an attribute (@decorator).
-fn eval_attr(
-    attr: &Attr,
-    interner: &mut Interner,
-    env: &mut Env,
-    compiler: &mut Compiler,
-) -> Result<Value> {
+fn eval_attr(attr: &Attr, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
     // For now, attributes are evaluated and returned as-is
     // In the future, they might have special semantics
     if let Some(value_expr) = attr.value() {
-        eval_expr(&value_expr, interner, env, compiler)
+        eval_expr(&value_expr, env, compiler)
     } else {
         Ok(Value::Nil)
     }
 }
 
 /// Evaluates a synthetic node (list, record, etc.).
-fn eval_synthetic(
-    syn: &Synthetic,
-    _interner: &mut Interner,
-    _env: &mut Env,
-    _compiler: &mut Compiler,
-) -> Result<Value> {
+fn eval_synthetic(syn: &Synthetic, _env: &mut Env, _compiler: &mut Compiler) -> Result<Value> {
     let ident = syn.identifier();
 
     match ident {
@@ -375,10 +343,9 @@ mod tests {
             )));
         }
         let root = parsed.ast();
-        let mut interner = Interner::new();
         let mut env = Env::new();
         let mut compiler = Compiler::new();
-        eval(&root, &mut interner, &mut env, &mut compiler)
+        eval(&root, &mut env, &mut compiler)
     }
 
     fn eval_single(src: &str) -> Result<Value> {
@@ -460,15 +427,14 @@ mod tests {
     fn eval_with_environment() {
         let parsed = parse("x");
         let root = parsed.ast();
-        let mut interner = Interner::new();
         let mut env = Env::new();
         let mut compiler = Compiler::new();
 
         // Define x in environment
-        let x_id = interner.intern("x");
+        let x_id: InternedString = "x".into();
         env.define(x_id, Value::Integer(42));
 
-        let result = eval(&root, &mut interner, &mut env, &mut compiler).unwrap();
+        let result = eval(&root, &mut env, &mut compiler).unwrap();
         assert_eq!(result[0], Value::Integer(42));
     }
 
@@ -476,15 +442,14 @@ mod tests {
     fn eval_with_compiler_var() {
         let parsed = parse("y");
         let root = parsed.ast();
-        let mut interner = Interner::new();
         let mut env = Env::new();
         let mut compiler = Compiler::new();
 
         // Define y in compiler
-        let y_id = interner.intern("y");
+        let y_id: InternedString = "y".into();
         compiler.define_var(y_id, Value::Integer(100));
 
-        let result = eval(&root, &mut interner, &mut env, &mut compiler).unwrap();
+        let result = eval(&root, &mut env, &mut compiler).unwrap();
         assert_eq!(result[0], Value::Integer(100));
     }
 }

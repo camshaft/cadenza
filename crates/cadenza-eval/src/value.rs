@@ -2,7 +2,7 @@
 //!
 //! Values can be symbols, lists, functions, macros, or built-in operations.
 
-use crate::{diagnostic::Result, interner::InternedId};
+use crate::{diagnostic::Result, interner::InternedString};
 use std::fmt;
 
 /// A runtime value in the Cadenza evaluator.
@@ -15,7 +15,7 @@ pub enum Value {
     Bool(bool),
 
     /// A symbol (interned identifier).
-    Symbol(InternedId),
+    Symbol(InternedString),
 
     /// An integer value (for now using i64, will be rational later).
     Integer(i64),
@@ -77,7 +77,7 @@ impl Value {
     }
 
     /// Tries to convert this value to a symbol ID.
-    pub fn as_symbol(&self) -> Option<InternedId> {
+    pub fn as_symbol(&self) -> Option<InternedString> {
         match self {
             Value::Symbol(id) => Some(*id),
             _ => None,
@@ -121,7 +121,7 @@ impl fmt::Display for Value {
         match self {
             Value::Nil => write!(f, "nil"),
             Value::Bool(b) => write!(f, "{b}"),
-            Value::Symbol(id) => write!(f, "#{id}"),
+            Value::Symbol(id) => write!(f, "#{}", &**id),
             Value::Integer(n) => write!(f, "{n}"),
             Value::Float(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "{s}"),

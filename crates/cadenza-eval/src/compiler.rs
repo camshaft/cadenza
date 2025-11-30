@@ -4,12 +4,12 @@
 //! definitions during evaluation. Macros call back into the compiler
 //! API to register definitions, emit IR, etc.
 
-use crate::{interner::InternedId, map::Map, value::Value};
+use crate::{interner::InternedString, map::Map, value::Value};
 
 /// The compiler state that accumulates definitions during evaluation.
 ///
 /// This is the explicit API the language uses to build the module.
-/// All internal compiler tables use `Map` with `InternedId` keys and FxHash.
+/// All internal compiler tables use `Map` with `InternedString` keys and FxHash.
 #[derive(Debug, Default)]
 pub struct Compiler {
     /// Variable and function definitions.
@@ -25,24 +25,24 @@ impl Compiler {
     }
 
     /// Defines a variable or function.
-    pub fn define_var(&mut self, name: InternedId, value: Value) {
+    pub fn define_var(&mut self, name: InternedString, value: Value) {
         self.defs.insert(name, value);
     }
 
     /// Defines a macro.
     ///
     /// The value must be a `Value::Macro` or `Value::BuiltinMacro`.
-    pub fn define_macro(&mut self, name: InternedId, expander: Value) {
+    pub fn define_macro(&mut self, name: InternedString, expander: Value) {
         self.macros.insert(name, expander);
     }
 
     /// Looks up a variable or function definition.
-    pub fn get_var(&self, name: InternedId) -> Option<&Value> {
+    pub fn get_var(&self, name: InternedString) -> Option<&Value> {
         self.defs.get(&name)
     }
 
     /// Looks up a macro definition.
-    pub fn get_macro(&self, name: InternedId) -> Option<&Value> {
+    pub fn get_macro(&self, name: InternedString) -> Option<&Value> {
         self.macros.get(&name)
     }
 
@@ -70,12 +70,10 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interner::Interner;
 
     #[test]
     fn define_and_get_var() {
-        let mut interner = Interner::new();
-        let name = interner.intern("x");
+        let name: InternedString = "x".into();
         let mut compiler = Compiler::new();
 
         compiler.define_var(name, Value::Integer(42));
@@ -84,8 +82,7 @@ mod tests {
 
     #[test]
     fn define_and_get_macro() {
-        let mut interner = Interner::new();
-        let name = interner.intern("my_macro");
+        let name: InternedString = "my_macro".into();
         let mut compiler = Compiler::new();
 
         // Using a builtin macro as a placeholder
@@ -104,15 +101,16 @@ mod tests {
 
     #[test]
     fn num_defs_is_tracked() {
-        let mut interner = Interner::new();
         let mut compiler = Compiler::new();
 
         assert_eq!(compiler.num_defs(), 0);
 
-        compiler.define_var(interner.intern("a"), Value::Integer(1));
+        let a: InternedString = "a".into();
+        let b: InternedString = "b".into();
+        compiler.define_var(a, Value::Integer(1));
         assert_eq!(compiler.num_defs(), 1);
 
-        compiler.define_var(interner.intern("b"), Value::Integer(2));
+        compiler.define_var(b, Value::Integer(2));
         assert_eq!(compiler.num_defs(), 2);
     }
 }
