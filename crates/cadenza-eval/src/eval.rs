@@ -229,12 +229,13 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a + b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
-            [a, b] => Err(Diagnostic::type_error(
-                TypeExpectation::description(format!(
-                    "number and number, got {} and {}",
-                    a.type_of(),
-                    b.type_of()
-                )),
+            // For binary operators, report the first non-number type as the actual type
+            [Value::Integer(_), b] | [Value::Float(_), b] => Err(Diagnostic::type_error(
+                TypeExpectation::description("number"),
+                b.type_of(),
+            )),
+            [a, _] => Err(Diagnostic::type_error(
+                TypeExpectation::description("number"),
                 a.type_of(),
             )),
             _ => Err(Diagnostic::arity(2, args.len())),
@@ -246,12 +247,13 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a - b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
-            [a, b] => Err(Diagnostic::type_error(
-                TypeExpectation::description(format!(
-                    "number and number, got {} and {}",
-                    a.type_of(),
-                    b.type_of()
-                )),
+            // For binary operators, report the first non-number type as the actual type
+            [Value::Integer(_), b] | [Value::Float(_), b] => Err(Diagnostic::type_error(
+                TypeExpectation::description("number"),
+                b.type_of(),
+            )),
+            [a, _] => Err(Diagnostic::type_error(
+                TypeExpectation::description("number"),
                 a.type_of(),
             )),
             [] => Err(Diagnostic::arity(1, 0)),
@@ -262,12 +264,13 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a * b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 * b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a * *b as f64)),
-            [a, b] => Err(Diagnostic::type_error(
-                TypeExpectation::description(format!(
-                    "number and number, got {} and {}",
-                    a.type_of(),
-                    b.type_of()
-                )),
+            // For binary operators, report the first non-number type as the actual type
+            [Value::Integer(_), b] | [Value::Float(_), b] => Err(Diagnostic::type_error(
+                TypeExpectation::description("number"),
+                b.type_of(),
+            )),
+            [a, _] => Err(Diagnostic::type_error(
+                TypeExpectation::description("number"),
                 a.type_of(),
             )),
             _ => Err(Diagnostic::arity(2, args.len())),
@@ -283,12 +286,13 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a / b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 / b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a / *b as f64)),
-            [a, b] => Err(Diagnostic::type_error(
-                TypeExpectation::description(format!(
-                    "number and number, got {} and {}",
-                    a.type_of(),
-                    b.type_of()
-                )),
+            // For binary operators, report the first non-number type as the actual type
+            [Value::Integer(_), b] | [Value::Float(_), b] => Err(Diagnostic::type_error(
+                TypeExpectation::description("number"),
+                b.type_of(),
+            )),
+            [a, _] => Err(Diagnostic::type_error(
+                TypeExpectation::description("number"),
                 a.type_of(),
             )),
             _ => Err(Diagnostic::arity(2, args.len())),
