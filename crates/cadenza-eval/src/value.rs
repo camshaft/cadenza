@@ -142,14 +142,17 @@ impl fmt::Display for Type {
                 write!(f, "]")
             }
             Type::Union(types) => {
-                // Union types should never be empty per the constructor assertion
-                for (i, t) in types.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " | ")?;
+                if types.is_empty() {
+                    write!(f, "never")
+                } else {
+                    for (i, t) in types.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " | ")?;
+                        }
+                        write!(f, "{t}")?;
                     }
-                    write!(f, "{t}")?;
+                    Ok(())
                 }
-                Ok(())
             }
             Type::Unknown => write!(f, "unknown"),
         }
@@ -258,13 +261,6 @@ impl Value {
             Value::BuiltinMacro(bm) => bm.signature.clone(),
         }
     }
-
-    /// Returns the type name of this value as a string.
-    ///
-    /// This is a convenience method that returns `self.type_of().as_str()`.
-    pub fn type_name(&self) -> &'static str {
-        self.type_of().as_str()
-    }
 }
 
 impl fmt::Debug for Value {
@@ -334,15 +330,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn type_names_are_correct() {
-        assert_eq!(Value::Nil.type_name(), "nil");
-        assert_eq!(Value::Bool(true).type_name(), "bool");
-        assert_eq!(Value::Integer(1).type_name(), "integer");
-        assert_eq!(Value::List(vec![]).type_name(), "list");
-        assert_eq!(Value::Type(Type::Integer).type_name(), "type");
-    }
-
-    #[test]
     fn type_of_returns_correct_types() {
         assert_eq!(Value::Nil.type_of(), Type::Nil);
         assert_eq!(Value::Bool(true).type_of(), Type::Bool);
@@ -363,6 +350,23 @@ mod tests {
         assert_eq!(Type::list(Type::Integer).to_string(), "list[integer]");
         assert_eq!(Type::Type.to_string(), "type");
         assert_eq!(Type::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn type_display_uses_display_impl() {
+        // Use Display impl (via to_string) instead of type_name()
+        assert_eq!(Value::Nil.type_of().to_string(), "nil");
+        assert_eq!(Value::Bool(true).type_of().to_string(), "bool");
+        assert_eq!(Value::Integer(1).type_of().to_string(), "integer");
+        assert_eq!(Value::List(vec![]).type_of().to_string(), "list[unknown]");
+        assert_eq!(Value::Type(Type::Integer).type_of().to_string(), "type");
+    }
+
+    #[test]
+    fn empty_union_displays_as_never() {
+        // Empty union represents an impossible/never type
+        let empty_union = Type::Union(vec![]);
+        assert_eq!(empty_union.to_string(), "never");
     }
 
     #[test]
