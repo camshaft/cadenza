@@ -9,7 +9,13 @@
 //! storage marker (ZST) that determines where values are stored. The `Interned`
 //! type implements `Deref`, allowing direct access to the interned value.
 
-use std::{fmt, marker::PhantomData, ops::Deref, sync::OnceLock};
+use std::{
+    fmt,
+    marker::PhantomData,
+    num::{ParseFloatError, ParseIntError},
+    ops::Deref,
+    sync::OnceLock,
+};
 
 // =============================================================================
 // Storage Trait
@@ -205,9 +211,9 @@ pub type InternedString = Interned<Strings>;
 
 /// Storage for interned integer literals.
 ///
-/// Integer literals are stored as `Result<i64, ()>` where `Err(())` indicates
-/// a parse error. This allows us to intern the literal string and cache the
-/// parse result.
+/// Integer literals are stored as `Result<i64, ParseIntError>` where `Err` contains
+/// the parse error. This allows us to intern the literal string and cache the
+/// parse result with meaningful error messages.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Integers {
     _not_send_sync: PhantomData<*const ()>,
@@ -216,7 +222,7 @@ pub struct Integers {
 /// Internal storage data for integers.
 struct IntegerData {
     map: rustc_hash::FxHashMap<String, u32>,
-    values: Vec<Result<i64, ()>>,
+    values: Vec<Result<i64, ParseIntError>>,
 }
 
 impl IntegerData {
@@ -234,13 +240,13 @@ impl IntegerData {
         let index = self.values.len() as u32;
         // Parse the integer, removing underscores
         let clean = s.replace('_', "");
-        let value = clean.parse::<i64>().map_err(|_| ());
+        let value = clean.parse::<i64>();
         self.values.push(value);
         self.map.insert(s.to_string(), index);
         index
     }
 
-    fn get(&self, index: u32) -> &Result<i64, ()> {
+    fn get(&self, index: u32) -> &Result<i64, ParseIntError> {
         &self.values[index as usize]
     }
 }
@@ -253,7 +259,7 @@ fn integer_storage() -> &'static std::sync::Mutex<IntegerData> {
 
 impl Storage for Integers {
     type Index = u32;
-    type Value = Result<i64, ()>;
+    type Value = Result<i64, ParseIntError>;
 
     fn insert(value: &str) -> Self::Index {
         integer_storage().lock().unwrap().insert(value)
@@ -262,7 +268,11 @@ impl Storage for Integers {
     fn resolve(index: Self::Index) -> &'static Self::Value {
         let storage = integer_storage().lock().unwrap();
         let v = storage.get(index);
-        unsafe { std::mem::transmute::<&Result<i64, ()>, &'static Result<i64, ()>>(v) }
+        unsafe {
+            std::mem::transmute::<&Result<i64, ParseIntError>, &'static Result<i64, ParseIntError>>(
+                v,
+            )
+        }
     }
 }
 
@@ -275,8 +285,8 @@ pub type InternedInteger = Interned<Integers>;
 
 /// Storage for interned float literals.
 ///
-/// Float literals are stored as `Result<f64, ()>` where `Err(())` indicates
-/// a parse error.
+/// Float literals are stored as `Result<f64, ParseFloatError>` where `Err` contains
+/// the parse error with meaningful error messages.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Floats {
     _not_send_sync: PhantomData<*const ()>,
@@ -285,7 +295,7 @@ pub struct Floats {
 /// Internal storage data for floats.
 struct FloatData {
     map: rustc_hash::FxHashMap<String, u32>,
-    values: Vec<Result<f64, ()>>,
+    values: Vec<Result<f64, ParseFloatError>>,
 }
 
 impl FloatData {
@@ -303,13 +313,13 @@ impl FloatData {
         let index = self.values.len() as u32;
         // Parse the float, removing underscores
         let clean = s.replace('_', "");
-        let value = clean.parse::<f64>().map_err(|_| ());
+        let value = clean.parse::<f64>();
         self.values.push(value);
         self.map.insert(s.to_string(), index);
         index
     }
 
-    fn get(&self, index: u32) -> &Result<f64, ()> {
+    fn get(&self, index: u32) -> &Result<f64, ParseFloatError> {
         &self.values[index as usize]
     }
 }
@@ -322,7 +332,7 @@ fn float_storage() -> &'static std::sync::Mutex<FloatData> {
 
 impl Storage for Floats {
     type Index = u32;
-    type Value = Result<f64, ()>;
+    type Value = Result<f64, ParseFloatError>;
 
     fn insert(value: &str) -> Self::Index {
         float_storage().lock().unwrap().insert(value)
@@ -331,7 +341,12 @@ impl Storage for Floats {
     fn resolve(index: Self::Index) -> &'static Self::Value {
         let storage = float_storage().lock().unwrap();
         let v = storage.get(index);
-        unsafe { std::mem::transmute::<&Result<f64, ()>, &'static Result<f64, ()>>(v) }
+        unsafe {
+            std::mem::transmute::<
+                &Result<f64, ParseFloatError>,
+                &'static Result<f64, ParseFloatError>,
+            >(v)
+        }
     }
 }
 
@@ -415,7 +430,10 @@ mod tests {
         #[test]
         fn returns_err_for_invalid() {
             let i: InternedInteger = "not_a_number".into();
-            assert_eq!(*i, Err(()));
+            assert!(i.is_err());
+            // Check that we can get a meaningful error message
+            let err = i.as_ref().unwrap_err();
+            assert!(!err.to_string().is_empty());
         }
 
         #[test]
@@ -450,7 +468,10 @@ mod tests {
         #[test]
         fn returns_err_for_invalid() {
             let f: InternedFloat = "not_a_float".into();
-            assert_eq!(*f, Err(()));
+            assert!(f.is_err());
+            // Check that we can get a meaningful error message
+            let err = f.as_ref().unwrap_err();
+            assert!(!err.to_string().is_empty());
         }
 
         #[test]

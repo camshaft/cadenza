@@ -4,18 +4,23 @@
 //! definitions during evaluation. Macros call back into the compiler
 //! API to register definitions, emit IR, etc.
 
-use crate::{interner::InternedString, map::Map, value::Value};
+use crate::{diagnostic::Diagnostic, interner::InternedString, map::Map, value::Value};
 
 /// The compiler state that accumulates definitions during evaluation.
 ///
 /// This is the explicit API the language uses to build the module.
 /// All internal compiler tables use `Map` with `InternedString` keys and FxHash.
+///
+/// The compiler also collects diagnostics during evaluation, allowing for
+/// multi-error reporting instead of bailing on the first error.
 #[derive(Debug, Default)]
 pub struct Compiler {
     /// Variable and function definitions.
     defs: Map<Value>,
     /// Macro definitions.
     macros: Map<Value>,
+    /// Accumulated diagnostics (errors, warnings, hints).
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Compiler {
@@ -65,11 +70,46 @@ impl Compiler {
     pub fn num_macros(&self) -> usize {
         self.macros.len()
     }
+
+    /// Records a diagnostic (error, warning, or hint).
+    ///
+    /// This allows the evaluator to collect multiple diagnostics instead of
+    /// bailing on the first error.
+    pub fn record_diagnostic(&mut self, diagnostic: Diagnostic) {
+        self.diagnostics.push(diagnostic);
+    }
+
+    /// Returns all accumulated diagnostics.
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    /// Takes ownership of all accumulated diagnostics, leaving the compiler's
+    /// diagnostic list empty.
+    pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    /// Returns the number of accumulated diagnostics.
+    pub fn num_diagnostics(&self) -> usize {
+        self.diagnostics.len()
+    }
+
+    /// Returns true if any error-level diagnostics have been recorded.
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics.iter().any(|d| d.is_error())
+    }
+
+    /// Clears all accumulated diagnostics.
+    pub fn clear_diagnostics(&mut self) {
+        self.diagnostics.clear();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::DiagnosticLevel;
 
     #[test]
     fn define_and_get_var() {
@@ -112,5 +152,67 @@ mod tests {
 
         compiler.define_var(b, Value::Integer(2));
         assert_eq!(compiler.num_defs(), 2);
+    }
+
+    #[test]
+    fn record_and_get_diagnostics() {
+        let x_id: InternedString = "x".into();
+        let mut compiler = Compiler::new();
+
+        assert_eq!(compiler.num_diagnostics(), 0);
+        assert!(!compiler.has_errors());
+
+        compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
+        assert_eq!(compiler.num_diagnostics(), 1);
+        assert!(compiler.has_errors());
+
+        let diagnostics = compiler.diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(
+            &diagnostics[0].kind,
+            crate::diagnostic::DiagnosticKind::UndefinedVariable(_)
+        ));
+    }
+
+    #[test]
+    fn take_diagnostics_empties_list() {
+        let x_id: InternedString = "x".into();
+        let mut compiler = Compiler::new();
+
+        compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
+        assert_eq!(compiler.num_diagnostics(), 1);
+
+        let taken = compiler.take_diagnostics();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(compiler.num_diagnostics(), 0);
+    }
+
+    #[test]
+    fn clear_diagnostics() {
+        let x_id: InternedString = "x".into();
+        let mut compiler = Compiler::new();
+
+        compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
+        compiler.record_diagnostic(Diagnostic::type_error("number", "string"));
+        assert_eq!(compiler.num_diagnostics(), 2);
+
+        compiler.clear_diagnostics();
+        assert_eq!(compiler.num_diagnostics(), 0);
+        assert!(!compiler.has_errors());
+    }
+
+    #[test]
+    fn has_errors_distinguishes_levels() {
+        let x_id: InternedString = "x".into();
+        let mut compiler = Compiler::new();
+
+        // Add a warning - should not count as error
+        let warning = Diagnostic::undefined_variable(x_id).set_level(DiagnosticLevel::Warning);
+        compiler.record_diagnostic(warning);
+        assert!(!compiler.has_errors());
+
+        // Add an error
+        compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
+        assert!(compiler.has_errors());
     }
 }

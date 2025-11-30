@@ -108,8 +108,7 @@ pub enum DiagnosticKind {
 /// This is the primary type for reporting issues during evaluation.
 /// It supports multiple severity levels (error, warning, hint) and
 /// integrates with miette for rich diagnostic output.
-#[derive(Debug, Clone, Error)]
-#[error("{kind}")]
+#[derive(Debug, Clone)]
 pub struct Diagnostic {
     /// The kind of diagnostic.
     pub kind: DiagnosticKind,
@@ -123,50 +122,23 @@ pub struct Diagnostic {
     pub stack_trace: Vec<StackFrame>,
 }
 
-impl MietteDiagnostic for Diagnostic {
-    fn severity(&self) -> Option<Severity> {
-        Some(self.level.into())
-    }
-
-    fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
-        let code = match &self.kind {
-            DiagnosticKind::UndefinedVariable(_) => "E0001",
-            DiagnosticKind::TypeError { .. } => "E0002",
-            DiagnosticKind::ArityError { .. } => "E0003",
-            DiagnosticKind::NotCallable(_) => "E0004",
-            DiagnosticKind::SyntaxError(_) => "E0005",
-            DiagnosticKind::InternalError(_) => "E0006",
-        };
-        Some(Box::new(code))
+impl std::error::Error for Diagnostic {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.kind)
     }
 }
 
-impl Diagnostic {
-    /// Formats the diagnostic with resolved names.
-    ///
-    /// This is more informative than the default Display implementation
-    /// because it can resolve interned IDs to their actual names.
-    pub fn display_with_interned_string(&self) -> DisplayWithInternedString<'_> {
-        DisplayWithInternedString { diagnostic: self }
-    }
-}
-
-/// Helper struct for displaying diagnostics with resolved names.
-pub struct DisplayWithInternedString<'a> {
-    diagnostic: &'a Diagnostic,
-}
-
-impl fmt::Display for DisplayWithInternedString<'_> {
+impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Write severity prefix
-        match self.diagnostic.level {
+        match self.level {
             DiagnosticLevel::Error => write!(f, "error: ")?,
             DiagnosticLevel::Warning => write!(f, "warning: ")?,
             DiagnosticLevel::Hint => write!(f, "hint: ")?,
         }
 
         // Write the diagnostic kind with resolved names
-        match &self.diagnostic.kind {
+        match &self.kind {
             DiagnosticKind::UndefinedVariable(id) => {
                 write!(f, "undefined variable: {}", &**id)?;
             }
@@ -175,18 +147,18 @@ impl fmt::Display for DisplayWithInternedString<'_> {
         }
 
         // Write location info
-        if let Some(file) = &self.diagnostic.file {
+        if let Some(file) = &self.file {
             write!(f, " in {}", &**file)?;
         }
-        if let Some(span) = self.diagnostic.span {
+        if let Some(span) = self.span {
             write!(f, " at {}..{}", span.start, span.end)?;
         }
 
         // Write stack trace
-        if !self.diagnostic.stack_trace.is_empty() {
+        if !self.stack_trace.is_empty() {
             writeln!(f)?;
             writeln!(f, "Stack trace:")?;
-            for (i, frame) in self.diagnostic.stack_trace.iter().enumerate() {
+            for (i, frame) in self.stack_trace.iter().enumerate() {
                 write!(f, "  {}: ", i)?;
                 if let Some(name) = &frame.name {
                     write!(f, "{}", &**name)?;
@@ -204,6 +176,24 @@ impl fmt::Display for DisplayWithInternedString<'_> {
         }
 
         Ok(())
+    }
+}
+
+impl MietteDiagnostic for Diagnostic {
+    fn severity(&self) -> Option<Severity> {
+        Some(self.level.into())
+    }
+
+    fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        let code = match &self.kind {
+            DiagnosticKind::UndefinedVariable(_) => "E0001",
+            DiagnosticKind::TypeError { .. } => "E0002",
+            DiagnosticKind::ArityError { .. } => "E0003",
+            DiagnosticKind::NotCallable(_) => "E0004",
+            DiagnosticKind::SyntaxError(_) => "E0005",
+            DiagnosticKind::InternalError(_) => "E0006",
+        };
+        Some(Box::new(code))
     }
 }
 
@@ -452,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn display_with_interned_string() {
+    fn diagnostic_display() {
         let x_id: InternedString = "x".into();
         let func_name: InternedString = "my_function".into();
         let file_name: InternedString = "test.cadenza".into();
@@ -468,7 +458,7 @@ mod tests {
         ));
         diag.push_frame(StackFrame::anonymous(Some(Span::new(0, 5))));
 
-        let display = diag.display_with_interned_string().to_string();
+        let display = diag.to_string();
         assert!(display.contains("undefined variable: x"));
         assert!(display.contains("my_function"));
         assert!(display.contains("test.cadenza"));

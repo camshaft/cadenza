@@ -23,13 +23,23 @@ use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root,
 /// collected into a vector, though most top-level expressions will
 /// return `Value::Nil` as side effects on the `Compiler` are the
 /// primary purpose.
-pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Result<Vec<Value>> {
+///
+/// This function continues evaluation even when expressions fail, recording
+/// errors in the compiler. On error, `Value::Nil` is used as the result for
+/// that expression. Check `compiler.has_errors()` after calling to see if
+/// any errors occurred.
+pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
     let mut results = Vec::new();
     for expr in root.items() {
-        let value = eval_expr(&expr, env, compiler)?;
-        results.push(value);
+        match eval_expr(&expr, env, compiler) {
+            Ok(value) => results.push(value),
+            Err(diagnostic) => {
+                compiler.record_diagnostic(diagnostic);
+                results.push(Value::Nil);
+            }
+        }
     }
-    Ok(results)
+    results
 }
 
 /// Evaluates a single expression.
@@ -41,8 +51,9 @@ pub fn eval_expr(expr: &Expr, env: &mut Env, compiler: &mut Compiler) -> Result<
         Expr::Attr(attr) => eval_attr(attr, env, compiler),
         Expr::Op(op) => {
             // Operators as values (for higher-order usage)
-            let text = op.syntax().text().to_string();
-            let id: InternedString = text.as_str().into();
+            // Use SyntaxText directly without allocating a String
+            let text = op.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
             Ok(Value::Symbol(id))
         }
         Expr::Synthetic(syn) => eval_synthetic(syn, env, compiler),
@@ -58,20 +69,22 @@ fn eval_literal(lit: &Literal) -> Result<Value> {
 
     match value {
         LiteralValue::Integer(int_val) => {
-            let text = int_val.syntax().text().to_string();
+            let text = int_val.syntax().text();
+            let text_str = text.to_string();
             // Remove underscores for parsing
-            let clean = text.replace('_', "");
+            let clean = text_str.replace('_', "");
             let n: i64 = clean
                 .parse()
-                .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text}")))?;
+                .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text_str}")))?;
             Ok(Value::Integer(n))
         }
         LiteralValue::Float(float_val) => {
-            let text = float_val.syntax().text().to_string();
-            let clean = text.replace('_', "");
+            let text = float_val.syntax().text();
+            let text_str = text.to_string();
+            let clean = text_str.replace('_', "");
             let n: f64 = clean
                 .parse()
-                .map_err(|_| Diagnostic::syntax(format!("invalid float: {text}")))?;
+                .map_err(|_| Diagnostic::syntax(format!("invalid float: {text_str}")))?;
             Ok(Value::Float(n))
         }
         LiteralValue::String(str_val) => {
@@ -88,8 +101,8 @@ fn eval_literal(lit: &Literal) -> Result<Value> {
 
 /// Evaluates an identifier by looking it up in the environment.
 fn eval_ident(ident: &Ident, env: &Env, compiler: &Compiler) -> Result<Value> {
-    let text = ident.syntax().text().to_string();
-    let id: InternedString = text.as_str().into();
+    let text = ident.syntax().text();
+    let id: InternedString = text.to_string().as_str().into();
 
     // First check the local environment
     if let Some(value) = env.get(id) {
@@ -116,8 +129,8 @@ fn eval_apply(apply: &Apply, env: &mut Env, compiler: &mut Compiler) -> Result<V
 
     // Check if the receiver is an identifier that names a macro
     if let Expr::Ident(ref ident) = receiver_expr {
-        let text = ident.syntax().text().to_string();
-        let id: InternedString = text.as_str().into();
+        let text = ident.syntax().text();
+        let id: InternedString = text.to_string().as_str().into();
 
         // Check for macro in compiler
         if let Some(macro_value) = compiler.get_macro(id) {
@@ -345,7 +358,15 @@ mod tests {
         let root = parsed.ast();
         let mut env = Env::new();
         let mut compiler = Compiler::new();
-        eval(&root, &mut env, &mut compiler)
+        let results = eval(&root, &mut env, &mut compiler);
+        if compiler.has_errors() {
+            return Err(compiler
+                .take_diagnostics()
+                .into_iter()
+                .next()
+                .expect("has_errors() returned true but no diagnostics found"));
+        }
+        Ok(results)
     }
 
     fn eval_single(src: &str) -> Result<Value> {
@@ -434,7 +455,8 @@ mod tests {
         let x_id: InternedString = "x".into();
         env.define(x_id, Value::Integer(42));
 
-        let result = eval(&root, &mut env, &mut compiler).unwrap();
+        let result = eval(&root, &mut env, &mut compiler);
+        assert!(!compiler.has_errors());
         assert_eq!(result[0], Value::Integer(42));
     }
 
@@ -449,7 +471,82 @@ mod tests {
         let y_id: InternedString = "y".into();
         compiler.define_var(y_id, Value::Integer(100));
 
-        let result = eval(&root, &mut env, &mut compiler).unwrap();
+        let result = eval(&root, &mut env, &mut compiler);
+        assert!(!compiler.has_errors());
         assert_eq!(result[0], Value::Integer(100));
+    }
+
+    #[test]
+    fn eval_continues_on_error() {
+        // This source has multiple expressions, some of which will fail
+        let src = "1\nundefined_var\n3";
+        let parsed = parse(src);
+        let root = parsed.ast();
+        let mut env = Env::new();
+        let mut compiler = Compiler::new();
+
+        let results = eval(&root, &mut env, &mut compiler);
+
+        // Should have 3 results (1, Nil for error, 3)
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], Value::Integer(1));
+        assert_eq!(results[1], Value::Nil); // error becomes Nil
+        assert_eq!(results[2], Value::Integer(3));
+
+        // Compiler should have recorded 1 error
+        assert_eq!(compiler.num_diagnostics(), 1);
+        assert!(compiler.has_errors());
+    }
+
+    #[test]
+    fn eval_collects_multiple_errors() {
+        // Multiple undefined variables
+        let src = "undefined_a\n1\nundefined_b\n2\nundefined_c";
+        let parsed = parse(src);
+        let root = parsed.ast();
+        let mut env = Env::new();
+        let mut compiler = Compiler::new();
+
+        let results = eval(&root, &mut env, &mut compiler);
+
+        // Should have 5 results
+        assert_eq!(results.len(), 5);
+        assert_eq!(results[0], Value::Nil); // undefined_a error
+        assert_eq!(results[1], Value::Integer(1));
+        assert_eq!(results[2], Value::Nil); // undefined_b error
+        assert_eq!(results[3], Value::Integer(2));
+        assert_eq!(results[4], Value::Nil); // undefined_c error
+
+        // Compiler should have recorded 3 errors
+        assert_eq!(compiler.num_diagnostics(), 3);
+        assert!(compiler.has_errors());
+
+        // All should be UndefinedVariable errors
+        for diag in compiler.diagnostics() {
+            assert!(matches!(
+                &diag.kind,
+                crate::diagnostic::DiagnosticKind::UndefinedVariable(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn eval_no_errors() {
+        let src = "1\n2\n3";
+        let parsed = parse(src);
+        let root = parsed.ast();
+        let mut env = Env::new();
+        let mut compiler = Compiler::new();
+
+        let results = eval(&root, &mut env, &mut compiler);
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], Value::Integer(1));
+        assert_eq!(results[1], Value::Integer(2));
+        assert_eq!(results[2], Value::Integer(3));
+
+        // No errors recorded
+        assert_eq!(compiler.num_diagnostics(), 0);
+        assert!(!compiler.has_errors());
     }
 }
