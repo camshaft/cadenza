@@ -11,7 +11,10 @@ use std::fmt;
 use thiserror::Error;
 
 /// Result type for evaluator operations.
-pub type Result<T> = std::result::Result<T, Diagnostic>;
+///
+/// Uses `Box<Diagnostic>` to avoid the `result_large_err` clippy lint,
+/// since `Diagnostic` is a large type (128+ bytes).
+pub type Result<T> = std::result::Result<T, Box<Diagnostic>>;
 
 /// The severity level of a diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -284,38 +287,74 @@ impl Diagnostic {
     }
 
     /// Creates an undefined variable error from an interned ID.
-    pub fn undefined_variable(id: InternedString) -> Self {
-        Self::new(DiagnosticKind::UndefinedVariable(id), None)
+    pub fn undefined_variable(id: InternedString) -> Box<Self> {
+        Box::new(Self::new(DiagnosticKind::UndefinedVariable(id), None))
     }
 
     /// Creates a type error with an expected type and actual type.
-    pub fn type_error(expected: Type, actual: Type) -> Self {
-        Self::new(DiagnosticKind::TypeError { expected, actual }, None)
+    pub fn type_error(expected: Type, actual: Type) -> Box<Self> {
+        Box::new(Self::new(
+            DiagnosticKind::TypeError { expected, actual },
+            None,
+        ))
     }
 
     /// Creates an arity error.
-    pub fn arity(expected: usize, actual: usize) -> Self {
-        Self::new(DiagnosticKind::ArityError { expected, actual }, None)
+    pub fn arity(expected: usize, actual: usize) -> Box<Self> {
+        Box::new(Self::new(
+            DiagnosticKind::ArityError { expected, actual },
+            None,
+        ))
     }
 
     /// Creates a not-callable error from a type.
-    pub fn not_callable(value_type: Type) -> Self {
-        Self::new(DiagnosticKind::NotCallable(value_type), None)
+    pub fn not_callable(value_type: Type) -> Box<Self> {
+        Box::new(Self::new(DiagnosticKind::NotCallable(value_type), None))
     }
 
     /// Creates a syntax error.
-    pub fn syntax(msg: impl Into<String>) -> Self {
-        Self::new(DiagnosticKind::SyntaxError(msg.into()), None)
+    pub fn syntax(msg: impl Into<String>) -> Box<Self> {
+        Box::new(Self::new(DiagnosticKind::SyntaxError(msg.into()), None))
     }
 
     /// Creates a parse error from the parser.
-    pub fn parse_error(msg: impl Into<String>, span: Span) -> Self {
-        Self::new(DiagnosticKind::ParseError(msg.into()), Some(span))
+    pub fn parse_error(msg: impl Into<String>, span: Span) -> Box<Self> {
+        Box::new(Self::new(
+            DiagnosticKind::ParseError(msg.into()),
+            Some(span),
+        ))
     }
 
     /// Creates an internal error.
-    pub fn internal(msg: impl Into<String>) -> Self {
-        Self::new(DiagnosticKind::InternalError(msg.into()), None)
+    pub fn internal(msg: impl Into<String>) -> Box<Self> {
+        Box::new(Self::new(DiagnosticKind::InternalError(msg.into()), None))
+    }
+}
+
+/// Extension trait for boxed diagnostics to support chaining.
+pub trait BoxedDiagnosticExt {
+    /// Sets the span for this diagnostic.
+    fn with_span(self, span: Span) -> Box<Diagnostic>;
+    /// Sets the source file for this diagnostic.
+    fn with_file(self, file: InternedString) -> Box<Diagnostic>;
+    /// Sets the severity level for this diagnostic.
+    fn set_level(self, level: DiagnosticLevel) -> Box<Diagnostic>;
+}
+
+impl BoxedDiagnosticExt for Box<Diagnostic> {
+    fn with_span(mut self, span: Span) -> Box<Diagnostic> {
+        self.span = Some(span);
+        self
+    }
+
+    fn with_file(mut self, file: InternedString) -> Box<Diagnostic> {
+        self.file = Some(file);
+        self
+    }
+
+    fn set_level(mut self, level: DiagnosticLevel) -> Box<Diagnostic> {
+        self.level = level;
+        self
     }
 }
 
@@ -325,9 +364,15 @@ impl From<DiagnosticKind> for Diagnostic {
     }
 }
 
-impl From<cadenza_syntax::parse::ParseError> for Diagnostic {
+impl From<DiagnosticKind> for Box<Diagnostic> {
+    fn from(kind: DiagnosticKind) -> Self {
+        Box::new(Diagnostic::new(kind, None))
+    }
+}
+
+impl From<cadenza_syntax::parse::ParseError> for Box<Diagnostic> {
     fn from(err: cadenza_syntax::parse::ParseError) -> Self {
-        Self::parse_error(err.message, err.span)
+        Diagnostic::parse_error(err.message, err.span)
     }
 }
 

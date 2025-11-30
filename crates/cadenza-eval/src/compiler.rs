@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(compiler.num_diagnostics(), 0);
         assert!(!compiler.has_errors());
 
-        compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
+        compiler.record_diagnostic(*Diagnostic::undefined_variable(x_id));
         assert_eq!(compiler.num_diagnostics(), 1);
         assert!(compiler.has_errors());
 
@@ -180,7 +180,7 @@ mod tests {
         let x_id: InternedString = "x".into();
         let mut compiler = Compiler::new();
 
-        compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
+        compiler.record_diagnostic(*Diagnostic::undefined_variable(x_id));
         assert_eq!(compiler.num_diagnostics(), 1);
 
         let taken = compiler.take_diagnostics();
@@ -193,10 +193,10 @@ mod tests {
         let x_id: InternedString = "x".into();
         let mut compiler = Compiler::new();
 
-        compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
+        compiler.record_diagnostic(*Diagnostic::undefined_variable(x_id));
         // Use union type to express "number" (integer | float)
         let number_type = Type::union(vec![Type::Integer, Type::Float]);
-        compiler.record_diagnostic(Diagnostic::type_error(number_type, Type::String));
+        compiler.record_diagnostic(*Diagnostic::type_error(number_type, Type::String));
         assert_eq!(compiler.num_diagnostics(), 2);
 
         compiler.clear_diagnostics();
@@ -206,16 +206,18 @@ mod tests {
 
     #[test]
     fn has_errors_distinguishes_levels() {
+        use crate::diagnostic::BoxedDiagnosticExt;
+
         let x_id: InternedString = "x".into();
         let mut compiler = Compiler::new();
 
         // Add a warning - should not count as error
         let warning = Diagnostic::undefined_variable(x_id).set_level(DiagnosticLevel::Warning);
-        compiler.record_diagnostic(warning);
+        compiler.record_diagnostic(*warning);
         assert!(!compiler.has_errors());
 
         // Add an error
-        compiler.record_diagnostic(Diagnostic::undefined_variable(x_id));
+        compiler.record_diagnostic(*Diagnostic::undefined_variable(x_id));
         assert!(compiler.has_errors());
     }
 }

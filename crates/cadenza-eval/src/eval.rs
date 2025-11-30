@@ -34,7 +34,7 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
         match eval_expr(&expr, env, compiler) {
             Ok(value) => results.push(value),
             Err(diagnostic) => {
-                compiler.record_diagnostic(diagnostic);
+                compiler.record_diagnostic(*diagnostic);
                 results.push(Value::Nil);
             }
         }
@@ -368,11 +368,13 @@ mod tests {
         let mut compiler = Compiler::new();
         let results = eval(&root, &mut env, &mut compiler);
         if compiler.has_errors() {
-            return Err(compiler
-                .take_diagnostics()
-                .into_iter()
-                .next()
-                .expect("has_errors() returned true but no diagnostics found"));
+            return Err(Box::new(
+                compiler
+                    .take_diagnostics()
+                    .into_iter()
+                    .next()
+                    .expect("has_errors() returned true but no diagnostics found"),
+            ));
         }
         Ok(results)
     }

@@ -68,7 +68,7 @@ impl CiCommand {
                 eprintln!("Running cargo clippy...");
                 cmd!(
                     sh,
-                    "cargo clippy --all-features --all-targets --workspace -- -D warnings"
+                    "cargo +stable clippy --all-features --all-targets --workspace -- -D warnings"
                 )
                 .run()?;
                 Ok(())
