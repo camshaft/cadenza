@@ -4,7 +4,7 @@ use crate::{
     compiler::Compiler,
     diagnostic::Diagnostic,
     env::Env,
-    interner::Interner,
+    interner::InternedString,
     value::{BuiltinFn, Value},
 };
 use cadenza_syntax::parse::parse;
@@ -19,10 +19,9 @@ fn eval_all(src: &str) -> Result<Vec<Value>, Diagnostic> {
         )));
     }
     let root = parsed.ast();
-    let mut interner = Interner::new();
     let mut env = Env::new();
     let mut compiler = Compiler::new();
-    let results = crate::eval(&root, &mut interner, &mut env, &mut compiler);
+    let results = crate::eval(&root, &mut env, &mut compiler);
     if compiler.has_errors() {
         // Return the first error for backwards compatibility in tests
         return Err(compiler
@@ -115,12 +114,11 @@ fn test_builtin_function() {
     // For simple testing, we use a single-argument function.
     let parsed = parse("inc 5");
     let root = parsed.ast();
-    let mut interner = Interner::new();
     let mut env = Env::new();
     let mut compiler = Compiler::new();
 
     // Define a builtin inc function (increment by 1)
-    let inc_id = interner.intern("inc");
+    let inc_id: InternedString = "inc".into();
     env.define(
         inc_id,
         Value::BuiltinFn(BuiltinFn {
@@ -137,7 +135,7 @@ fn test_builtin_function() {
         }),
     );
 
-    let results = crate::eval(&root, &mut interner, &mut env, &mut compiler);
+    let results = crate::eval(&root, &mut env, &mut compiler);
     assert!(!compiler.has_errors());
     assert_eq!(results[0], Value::Integer(6));
 }
@@ -146,16 +144,15 @@ fn test_builtin_function() {
 fn test_variable_from_environment() {
     let parsed = parse("x + y");
     let root = parsed.ast();
-    let mut interner = Interner::new();
     let mut env = Env::new();
     let mut compiler = Compiler::new();
 
-    let x_id = interner.intern("x");
-    let y_id = interner.intern("y");
+    let x_id: InternedString = "x".into();
+    let y_id: InternedString = "y".into();
     env.define(x_id, Value::Integer(10));
     env.define(y_id, Value::Integer(20));
 
-    let results = crate::eval(&root, &mut interner, &mut env, &mut compiler);
+    let results = crate::eval(&root, &mut env, &mut compiler);
     assert!(!compiler.has_errors());
     assert_eq!(results[0], Value::Integer(30));
 }
@@ -164,14 +161,13 @@ fn test_variable_from_environment() {
 fn test_variable_from_compiler() {
     let parsed = parse("global_var");
     let root = parsed.ast();
-    let mut interner = Interner::new();
     let mut env = Env::new();
     let mut compiler = Compiler::new();
 
-    let id = interner.intern("global_var");
+    let id: InternedString = "global_var".into();
     compiler.define_var(id, Value::Integer(42));
 
-    let results = crate::eval(&root, &mut interner, &mut env, &mut compiler);
+    let results = crate::eval(&root, &mut env, &mut compiler);
     assert!(!compiler.has_errors());
     assert_eq!(results[0], Value::Integer(42));
 }
@@ -184,17 +180,15 @@ fn test_division_by_zero() {
 
 #[test]
 fn test_interner_consistency() {
-    let mut interner = Interner::new();
-    let id1 = interner.intern("test");
-    let id2 = interner.intern("test");
-    assert_eq!(id1, id2);
-    assert_eq!(interner.resolve(id1), "test");
+    let s1: InternedString = "test".into();
+    let s2: InternedString = "test".into();
+    assert_eq!(s1, s2);
+    assert_eq!(&*s1, "test");
 }
 
 #[test]
 fn test_env_scoping() {
-    let mut interner = Interner::new();
-    let x_id = interner.intern("x");
+    let x_id: InternedString = "x".into();
     let mut env = Env::new();
 
     env.define(x_id, Value::Integer(1));
@@ -208,9 +202,8 @@ fn test_env_scoping() {
 
 #[test]
 fn test_compiler_definitions() {
-    let mut interner = Interner::new();
-    let x_id = interner.intern("x");
-    let y_id = interner.intern("y");
+    let x_id: InternedString = "x".into();
+    let y_id: InternedString = "y".into();
     let mut compiler = Compiler::new();
 
     compiler.define_var(x_id, Value::Integer(42));
@@ -228,11 +221,10 @@ fn test_eval_collecting_integration() {
     let src = "x + 1\n2 + 3\ny + 4";
     let parsed = parse(src);
     let root = parsed.ast();
-    let mut interner = Interner::new();
     let mut env = Env::new();
     let mut compiler = Compiler::new();
 
-    let results = crate::eval(&root, &mut interner, &mut env, &mut compiler);
+    let results = crate::eval(&root, &mut env, &mut compiler);
 
     // Should get 3 results
     assert_eq!(results.len(), 3);
@@ -252,19 +244,18 @@ fn test_eval_collecting_with_defined_variables() {
     let src = "x\ny + 1\nz";
     let parsed = parse(src);
     let root = parsed.ast();
-    let mut interner = Interner::new();
     let mut env = Env::new();
     let mut compiler = Compiler::new();
 
     // Define x in env
-    let x_id = interner.intern("x");
+    let x_id: InternedString = "x".into();
     env.define(x_id, Value::Integer(42));
 
     // Define z in compiler
-    let z_id = interner.intern("z");
+    let z_id: InternedString = "z".into();
     compiler.define_var(z_id, Value::Integer(100));
 
-    let results = crate::eval(&root, &mut interner, &mut env, &mut compiler);
+    let results = crate::eval(&root, &mut env, &mut compiler);
 
     assert_eq!(results.len(), 3);
     assert_eq!(results[0], Value::Integer(42)); // x from env

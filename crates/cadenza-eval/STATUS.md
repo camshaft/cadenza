@@ -2,6 +2,10 @@
 
 This document tracks the current state of the `cadenza-eval` crate and remaining work items based on code review feedback.
 
+## Non-Goals
+
+**Backwards Compatibility**: The API is in-flight and may change at any time. Focus is on getting the design right rather than maintaining API stability.
+
 ## Current State
 
 The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
@@ -15,9 +19,10 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 ### Completed Tasks
 
 - [x] Create new crate `cadenza-eval` with proper Cargo.toml
-- [x] Implement `Interner` with FxHash and `InternedId` wrapper
+- [x] Implement `InternedString` with static `OnceLock` storage and `Deref`
+- [x] Implement `InternedInteger` and `InternedFloat` for literal interning
 - [x] Implement `Value` enum with Display/Debug
-- [x] Implement `Env` with scoped `Map<InternedId, Value>`
+- [x] Implement `Env` with scoped `Map<InternedString, Value>`
 - [x] Write tree-walk `eval` function handling literals, lists, applications
 - [x] Add macro expansion handling for BuiltinMacro
 - [x] Implement `Compiler` struct with `define_var` and `define_macro`
@@ -37,10 +42,10 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Added source file name (interned) to StackFrame
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079075)
 
-2. ~~**Use InternedId instead of String in errors**~~
-   - [x] COMPLETED: Changed `UndefinedVariable(String)` to `UndefinedVariable(InternedId)`
-   - [x] Updated `Diagnostic::undefined_variable` to take `InternedId`
-   - [x] Updated `display_with_interner` to resolve `InternedId` for display
+2. ~~**Use InternedString instead of String in errors**~~
+   - [x] COMPLETED: Changed `UndefinedVariable(String)` to `UndefinedVariable(InternedString)`
+   - [x] Updated `Diagnostic::undefined_variable` to take `InternedString`
+   - [x] Updated `display_with_interned_string` to resolve via `Deref`
    - [x] Updated all call sites in eval.rs
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079460)
 
@@ -92,35 +97,45 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ### Interner Improvements
 
-11. **Use rust-analyzer style intern with dashmap**
-    - Current: Single-threaded HashMap-based interner
-    - Needed: Thread-safe dashmap, single-hash lookup on miss
-    - Reference: https://github.com/rust-lang/rust-analyzer/tree/master/crates/intern
-    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573082852)
+11. ~~**Refactor interning to use ZST-parameterized storage**~~
+    - [x] COMPLETED: Single `Interned<S>` type with `Storage` trait
+    - [x] `Interned<S>` implements `Deref` for direct value access
+    - [x] `Storage` trait with `insert(&str) -> Index` and `resolve(Index) -> &'static Value`
+    - [x] Static `OnceLock` storage instead of thread-local
+    - [x] Storage types are `Send + Sync` for thread-safe usage
+    - [x] `Interned::new(v: &str)` and `From<&str>` trait for easy creation
+    - Original: https://github.com/camshaft/cadenza/pull/4#discussion_r2573082852
 
-12. **Use smol_str for reference-counted strings**
+12. **Investigate rowan API for zero-allocation interning**
+    - Current: `SyntaxText.to_string().as_str()` allocates a String just to intern
+    - Needed: Find rowan API to get `&str` directly from `SyntaxText`
+    - This defeats some of the purpose of interning (avoiding allocations)
+    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573285289)
+
+13. **Use smol_str for reference-counted strings**
     - Current: `Vec<String>` for reverse lookup
     - Needed: Use `smol_str` crate for reference-counted strings
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573083069)
 
-13. **Avoid allocation on intern lookup miss**
+14. **Avoid allocation on intern lookup miss**
     - Current: Allocates string even when checking if key exists
     - Needed: Use hashbrown directly to get bucket for borrowed key
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573081759)
 
-14. **Intern integers and floats**
-    - Current: Literals parsed on every evaluation
-    - Needed: Intern map for integers/floats to avoid re-parsing
+15. ~~**Intern integers and floats**~~
+    - [x] COMPLETED: `InternedInteger` and `InternedFloat` types
+    - [x] Parse literal strings during interning, store `Result<T, ParseError>`
+    - [x] Handles underscores in numeric literals (e.g., `1_000_000`)
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573090782)
 
 ### Testing & Ergonomics
 
-15. **Move tests to snapshot-based test-data directory**
+16. **Move tests to snapshot-based test-data directory**
     - Current: Inline unit tests
     - Needed: test-data directory with snapshot tests like parser
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573084407)
 
-16. **Add builtin! macro helper**
+17. **Add builtin! macro helper**
     - Current: Verbose `BuiltinFn` struct construction
     - Needed: Ergonomic macro like `builtin!(fn inc(a: Integer) { a + 1 })`
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573089374)
@@ -132,7 +147,7 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 - Items 9, 10: BuiltinFn signature and std environment
 
 ### Medium Priority (Performance/Correctness)
-- Items 11, 12, 13, 14: Interner improvements
+- Items 11, 12, 13, 14, 15: Interner improvements
 - Items 2, 3, 4: Error handling improvements
 - Item 7: Value comparison semantics
 

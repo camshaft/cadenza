@@ -4,7 +4,7 @@
 //! wrapped in a `Diagnostic` that carries severity, source location, and stack trace.
 //! Uses miette for standardized diagnostic reporting.
 
-use crate::interner::InternedId;
+use crate::interner::InternedString;
 use cadenza_syntax::span::Span;
 use miette::{Diagnostic as MietteDiagnostic, Severity};
 use std::fmt;
@@ -39,16 +39,20 @@ impl From<DiagnosticLevel> for Severity {
 #[derive(Debug, Clone)]
 pub struct StackFrame {
     /// The name of the function or macro being called, if known.
-    pub name: Option<InternedId>,
+    pub name: Option<InternedString>,
     /// The source file where this call occurred, if known.
-    pub file: Option<InternedId>,
+    pub file: Option<InternedString>,
     /// The source span where this call occurred.
     pub span: Option<Span>,
 }
 
 impl StackFrame {
     /// Creates a new stack frame with a name, file, and span.
-    pub fn new(name: Option<InternedId>, file: Option<InternedId>, span: Option<Span>) -> Self {
+    pub fn new(
+        name: Option<InternedString>,
+        file: Option<InternedString>,
+        span: Option<Span>,
+    ) -> Self {
         Self { name, file, span }
     }
 
@@ -62,7 +66,7 @@ impl StackFrame {
     }
 
     /// Creates a stack frame with a file but no function name.
-    pub fn in_file(file: InternedId, span: Option<Span>) -> Self {
+    pub fn in_file(file: InternedString, span: Option<Span>) -> Self {
         Self {
             name: None,
             file: Some(file),
@@ -76,7 +80,7 @@ impl StackFrame {
 pub enum DiagnosticKind {
     /// An undefined variable was referenced.
     #[error("undefined variable: {0}")]
-    UndefinedVariable(InternedId),
+    UndefinedVariable(InternedString),
 
     /// A value was used in an invalid way for its type.
     #[error("type error: expected {expected}, got {actual}")]
@@ -104,19 +108,75 @@ pub enum DiagnosticKind {
 /// This is the primary type for reporting issues during evaluation.
 /// It supports multiple severity levels (error, warning, hint) and
 /// integrates with miette for rich diagnostic output.
-#[derive(Debug, Clone, Error)]
-#[error("{kind}")]
+#[derive(Debug, Clone)]
 pub struct Diagnostic {
     /// The kind of diagnostic.
     pub kind: DiagnosticKind,
     /// The severity level of this diagnostic.
     pub level: DiagnosticLevel,
     /// The source file where the diagnostic occurred, if known.
-    pub file: Option<InternedId>,
+    pub file: Option<InternedString>,
     /// The source span where the diagnostic occurred, if known.
     pub span: Option<Span>,
     /// The evaluation stack trace at the time of the diagnostic.
     pub stack_trace: Vec<StackFrame>,
+}
+
+impl std::error::Error for Diagnostic {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.kind)
+    }
+}
+
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Write severity prefix
+        match self.level {
+            DiagnosticLevel::Error => write!(f, "error: ")?,
+            DiagnosticLevel::Warning => write!(f, "warning: ")?,
+            DiagnosticLevel::Hint => write!(f, "hint: ")?,
+        }
+
+        // Write the diagnostic kind with resolved names
+        match &self.kind {
+            DiagnosticKind::UndefinedVariable(id) => {
+                write!(f, "undefined variable: {}", &**id)?;
+            }
+            // For other kinds, use default Display
+            kind => write!(f, "{}", kind)?,
+        }
+
+        // Write location info
+        if let Some(file) = &self.file {
+            write!(f, " in {}", &**file)?;
+        }
+        if let Some(span) = self.span {
+            write!(f, " at {}..{}", span.start, span.end)?;
+        }
+
+        // Write stack trace
+        if !self.stack_trace.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Stack trace:")?;
+            for (i, frame) in self.stack_trace.iter().enumerate() {
+                write!(f, "  {}: ", i)?;
+                if let Some(name) = &frame.name {
+                    write!(f, "{}", &**name)?;
+                } else {
+                    write!(f, "<anonymous>")?;
+                }
+                if let Some(file) = &frame.file {
+                    write!(f, " in {}", &**file)?;
+                }
+                if let Some(span) = frame.span {
+                    write!(f, " at {}..{}", span.start, span.end)?;
+                }
+                writeln!(f)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl MietteDiagnostic for Diagnostic {
@@ -134,79 +194,6 @@ impl MietteDiagnostic for Diagnostic {
             DiagnosticKind::InternalError(_) => "E0006",
         };
         Some(Box::new(code))
-    }
-}
-
-impl Diagnostic {
-    /// Formats the diagnostic with resolved names.
-    ///
-    /// This is more informative than the default Display implementation
-    /// because it can resolve interned IDs to their actual names.
-    pub fn display_with_interner<'a>(
-        &'a self,
-        interner: &'a crate::Interner,
-    ) -> DisplayWithInterner<'a> {
-        DisplayWithInterner {
-            diagnostic: self,
-            interner,
-        }
-    }
-}
-
-/// Helper struct for displaying diagnostics with resolved names.
-pub struct DisplayWithInterner<'a> {
-    diagnostic: &'a Diagnostic,
-    interner: &'a crate::Interner,
-}
-
-impl fmt::Display for DisplayWithInterner<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Write severity prefix
-        match self.diagnostic.level {
-            DiagnosticLevel::Error => write!(f, "error: ")?,
-            DiagnosticLevel::Warning => write!(f, "warning: ")?,
-            DiagnosticLevel::Hint => write!(f, "hint: ")?,
-        }
-
-        // Write the diagnostic kind with resolved names
-        match &self.diagnostic.kind {
-            DiagnosticKind::UndefinedVariable(id) => {
-                write!(f, "undefined variable: {}", self.interner.resolve(*id))?;
-            }
-            // For other kinds, use default Display
-            kind => write!(f, "{}", kind)?,
-        }
-
-        // Write location info
-        if let Some(file) = self.diagnostic.file {
-            write!(f, " in {}", self.interner.resolve(file))?;
-        }
-        if let Some(span) = self.diagnostic.span {
-            write!(f, " at {}..{}", span.start, span.end)?;
-        }
-
-        // Write stack trace
-        if !self.diagnostic.stack_trace.is_empty() {
-            writeln!(f)?;
-            writeln!(f, "Stack trace:")?;
-            for (i, frame) in self.diagnostic.stack_trace.iter().enumerate() {
-                write!(f, "  {}: ", i)?;
-                if let Some(name) = frame.name {
-                    write!(f, "{}", self.interner.resolve(name))?;
-                } else {
-                    write!(f, "<anonymous>")?;
-                }
-                if let Some(file) = frame.file {
-                    write!(f, " in {}", self.interner.resolve(file))?;
-                }
-                if let Some(span) = frame.span {
-                    write!(f, " at {}..{}", span.start, span.end)?;
-                }
-                writeln!(f)?;
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -260,7 +247,7 @@ impl Diagnostic {
     }
 
     /// Sets the source file for this diagnostic.
-    pub fn with_file(mut self, file: InternedId) -> Self {
+    pub fn with_file(mut self, file: InternedString) -> Self {
         self.file = Some(file);
         self
     }
@@ -292,7 +279,7 @@ impl Diagnostic {
     }
 
     /// Creates an undefined variable error from an interned ID.
-    pub fn undefined_variable(id: InternedId) -> Self {
+    pub fn undefined_variable(id: InternedString) -> Self {
         Self::new(DiagnosticKind::UndefinedVariable(id), None)
     }
 
@@ -346,13 +333,10 @@ mod tests {
 
     #[test]
     fn diagnostic_kind_display() {
-        use crate::Interner;
-
-        let mut interner = Interner::new();
-        let foo_id = interner.intern("foo");
+        let foo_id: InternedString = "foo".into();
 
         // Note: Without the interner, the display shows the raw ID
-        // The display_with_interner method is used to get the resolved name
+        // The display_with_interned_string method is used to get the resolved name
         let kind = DiagnosticKind::UndefinedVariable(foo_id);
         let display = format!("{}", kind);
         assert!(display.starts_with("undefined variable:"));
@@ -377,10 +361,7 @@ mod tests {
 
     #[test]
     fn diagnostic_with_span() {
-        use crate::Interner;
-
-        let mut interner = Interner::new();
-        let x_id = interner.intern("x");
+        let x_id: InternedString = "x".into();
         let span = Span::new(10, 20);
         let diag = Diagnostic::undefined_variable(x_id).with_span(span);
         assert_eq!(diag.span, Some(span));
@@ -388,11 +369,8 @@ mod tests {
 
     #[test]
     fn diagnostic_with_file() {
-        use crate::Interner;
-
-        let mut interner = Interner::new();
-        let x_id = interner.intern("x");
-        let file_id = interner.intern("test.cadenza");
+        let x_id: InternedString = "x".into();
+        let file_id: InternedString = "test.cadenza".into();
 
         let diag = Diagnostic::undefined_variable(x_id).with_file(file_id);
         assert_eq!(diag.file, Some(file_id));
@@ -400,10 +378,7 @@ mod tests {
 
     #[test]
     fn diagnostic_with_stack_trace() {
-        use crate::Interner;
-
-        let mut interner = Interner::new();
-        let x_id = interner.intern("x");
+        let x_id: InternedString = "x".into();
         let span1 = Span::new(0, 5);
         let span2 = Span::new(10, 15);
 
@@ -416,11 +391,8 @@ mod tests {
 
     #[test]
     fn stack_frame_with_file() {
-        use crate::Interner;
-
-        let mut interner = Interner::new();
-        let file_id = interner.intern("test.cadenza");
-        let func_id = interner.intern("my_function");
+        let file_id: InternedString = "test.cadenza".into();
+        let func_id: InternedString = "my_function".into();
         let span = Span::new(10, 20);
 
         let frame = StackFrame::new(Some(func_id), Some(file_id), Some(span));
@@ -455,10 +427,7 @@ mod tests {
 
     #[test]
     fn diagnostic_levels() {
-        use crate::Interner;
-
-        let mut interner = Interner::new();
-        let x_id = interner.intern("x");
+        let x_id: InternedString = "x".into();
 
         let error = Diagnostic::undefined_variable(x_id);
         assert!(error.is_error());
@@ -473,13 +442,10 @@ mod tests {
     }
 
     #[test]
-    fn display_with_interner() {
-        use crate::Interner;
-
-        let mut interner = Interner::new();
-        let x_id = interner.intern("x");
-        let func_name = interner.intern("my_function");
-        let file_name = interner.intern("test.cadenza");
+    fn diagnostic_display() {
+        let x_id: InternedString = "x".into();
+        let func_name: InternedString = "my_function".into();
+        let file_name: InternedString = "test.cadenza".into();
 
         let span = Span::new(10, 20);
         let mut diag = Diagnostic::undefined_variable(x_id)
@@ -492,7 +458,7 @@ mod tests {
         ));
         diag.push_frame(StackFrame::anonymous(Some(Span::new(0, 5))));
 
-        let display = diag.display_with_interner(&interner).to_string();
+        let display = diag.to_string();
         assert!(display.contains("undefined variable: x"));
         assert!(display.contains("my_function"));
         assert!(display.contains("test.cadenza"));
@@ -502,11 +468,9 @@ mod tests {
 
     #[test]
     fn miette_diagnostic_impl() {
-        use crate::Interner;
         use miette::Diagnostic as _;
 
-        let mut interner = Interner::new();
-        let x_id = interner.intern("x");
+        let x_id: InternedString = "x".into();
 
         let diag = Diagnostic::undefined_variable(x_id);
         assert_eq!(diag.severity(), Some(Severity::Error));

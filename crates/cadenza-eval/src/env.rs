@@ -3,7 +3,7 @@
 //! The environment is a stack of scopes, where each scope maps interned
 //! identifiers to values. Closures capture the environment by reference.
 
-use crate::{interner::InternedId, map::Map, value::Value};
+use crate::{interner::InternedString, map::Map, value::Value};
 
 /// A single scope in the environment.
 #[derive(Debug, Clone, Default)]
@@ -18,22 +18,22 @@ impl Scope {
     }
 
     /// Defines a binding in this scope.
-    pub fn define(&mut self, name: InternedId, value: Value) {
+    pub fn define(&mut self, name: InternedString, value: Value) {
         self.bindings.insert(name, value);
     }
 
     /// Looks up a binding in this scope.
-    pub fn get(&self, name: InternedId) -> Option<&Value> {
+    pub fn get(&self, name: InternedString) -> Option<&Value> {
         self.bindings.get(&name)
     }
 
     /// Looks up a mutable binding in this scope.
-    pub fn get_mut(&mut self, name: InternedId) -> Option<&mut Value> {
+    pub fn get_mut(&mut self, name: InternedString) -> Option<&mut Value> {
         self.bindings.get_mut(&name)
     }
 
     /// Returns true if this scope contains a binding for the given name.
-    pub fn contains(&self, name: InternedId) -> bool {
+    pub fn contains(&self, name: InternedString) -> bool {
         self.bindings.contains_key(&name)
     }
 }
@@ -71,14 +71,14 @@ impl Env {
     }
 
     /// Defines a binding in the current (top) scope.
-    pub fn define(&mut self, name: InternedId, value: Value) {
+    pub fn define(&mut self, name: InternedString, value: Value) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.define(name, value);
         }
     }
 
     /// Looks up a binding, searching from the top scope to the bottom.
-    pub fn get(&self, name: InternedId) -> Option<&Value> {
+    pub fn get(&self, name: InternedString) -> Option<&Value> {
         for scope in self.scopes.iter().rev() {
             if let Some(value) = scope.get(name) {
                 return Some(value);
@@ -89,7 +89,7 @@ impl Env {
 
     /// Looks up a mutable binding, searching from the top scope to the bottom.
     /// Used by the `=` operator to update values.
-    pub fn get_mut(&mut self, name: InternedId) -> Option<&mut Value> {
+    pub fn get_mut(&mut self, name: InternedString) -> Option<&mut Value> {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(value) = scope.get_mut(name) {
                 return Some(value);
@@ -99,7 +99,7 @@ impl Env {
     }
 
     /// Returns true if any scope contains a binding for the given name.
-    pub fn contains(&self, name: InternedId) -> bool {
+    pub fn contains(&self, name: InternedString) -> bool {
         self.scopes.iter().any(|scope| scope.contains(name))
     }
 
@@ -109,7 +109,7 @@ impl Env {
     }
 
     /// Defines a binding in the global (bottom) scope.
-    pub fn define_global(&mut self, name: InternedId, value: Value) {
+    pub fn define_global(&mut self, name: InternedString, value: Value) {
         if let Some(scope) = self.scopes.first_mut() {
             scope.define(name, value);
         }
@@ -119,12 +119,10 @@ impl Env {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interner::Interner;
 
     #[test]
     fn define_and_get() {
-        let mut interner = Interner::new();
-        let name = interner.intern("x");
+        let name: InternedString = "x".into();
         let mut env = Env::new();
 
         env.define(name, Value::Integer(42));
@@ -133,8 +131,7 @@ mod tests {
 
     #[test]
     fn shadowing_in_nested_scope() {
-        let mut interner = Interner::new();
-        let name = interner.intern("x");
+        let name: InternedString = "x".into();
         let mut env = Env::new();
 
         env.define(name, Value::Integer(1));
@@ -149,8 +146,7 @@ mod tests {
 
     #[test]
     fn lookup_in_parent_scope() {
-        let mut interner = Interner::new();
-        let name = interner.intern("x");
+        let name: InternedString = "x".into();
         let mut env = Env::new();
 
         env.define(name, Value::Integer(42));
@@ -162,8 +158,7 @@ mod tests {
 
     #[test]
     fn undefined_variable_returns_none() {
-        let mut interner = Interner::new();
-        let name = interner.intern("undefined");
+        let name: InternedString = "undefined".into();
         let env = Env::new();
 
         assert_eq!(env.get(name), None);
@@ -171,8 +166,7 @@ mod tests {
 
     #[test]
     fn define_global() {
-        let mut interner = Interner::new();
-        let name = interner.intern("x");
+        let name: InternedString = "x".into();
         let mut env = Env::new();
 
         env.push_scope();
