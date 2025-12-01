@@ -2,6 +2,30 @@
 
 This file provides guidance for AI agents and contributors working on this repository.
 
+## Git Pre-commit Hook
+
+To automatically run rustfmt and clippy before each commit, install the pre-commit hook:
+
+```bash
+cargo xtask hooks install
+```
+
+This will install the pre-commit hook that runs `cargo xtask precommit` before each commit, ensuring:
+- Code is formatted with rustfmt (checks only - use `cargo xtask fmt` to apply formatting)
+- Clippy lints pass
+
+You can also run the precommit checks manually:
+
+```bash
+cargo xtask precommit
+```
+
+To apply rustfmt formatting to all files:
+
+```bash
+cargo xtask fmt
+```
+
 ## Before Submitting a Commit
 
 Before submitting a commit, ensure that the CI checks pass by running:
