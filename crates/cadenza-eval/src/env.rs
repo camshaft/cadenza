@@ -63,8 +63,8 @@ impl Env {
     /// Creates a new environment with standard built-in forms and functions.
     ///
     /// This registers all standard built-ins including:
-    /// - `let` - Variable declaration special form
-    /// - `=` - Assignment special form
+    /// - `let` - Variable declaration macro
+    /// - `=` - Assignment macro
     ///
     /// Use this when you want an environment ready for typical evaluation.
     pub fn with_standard_builtins() -> Self {
@@ -76,16 +76,16 @@ impl Env {
     /// Registers all standard built-in forms and functions in the current environment.
     ///
     /// This registers:
-    /// - `let` - Variable declaration special form
-    /// - `=` - Assignment special form
+    /// - `let` - Variable declaration macro
+    /// - `=` - Assignment macro
     ///
     /// This can be called on an existing environment to add the standard built-ins.
     pub fn register_standard_builtins(&mut self) {
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
 
-        self.define(let_id, Value::BuiltinSpecialForm(builtin_let()));
-        self.define(assign_id, Value::BuiltinSpecialForm(builtin_assign()));
+        self.define(let_id, Value::BuiltinMacro(builtin_let()));
+        self.define(assign_id, Value::BuiltinMacro(builtin_assign()));
     }
 
     /// Pushes a new empty scope onto the stack.
@@ -214,17 +214,17 @@ mod tests {
     fn with_standard_builtins() {
         let env = Env::with_standard_builtins();
 
-        // Should have `let` and `=` special forms registered
+        // Should have `let` and `=` macros registered
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
 
         assert!(
-            matches!(env.get(let_id), Some(Value::BuiltinSpecialForm(_))),
-            "Expected `let` to be registered as a BuiltinSpecialForm"
+            matches!(env.get(let_id), Some(Value::BuiltinMacro(_))),
+            "Expected `let` to be registered as a BuiltinMacro"
         );
         assert!(
-            matches!(env.get(assign_id), Some(Value::BuiltinSpecialForm(_))),
-            "Expected `=` to be registered as a BuiltinSpecialForm"
+            matches!(env.get(assign_id), Some(Value::BuiltinMacro(_))),
+            "Expected `=` to be registered as a BuiltinMacro"
         );
     }
 
@@ -245,12 +245,12 @@ mod tests {
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
         assert!(
-            matches!(env.get(let_id), Some(Value::BuiltinSpecialForm(_))),
-            "Expected `let` to be registered as a BuiltinSpecialForm"
+            matches!(env.get(let_id), Some(Value::BuiltinMacro(_))),
+            "Expected `let` to be registered as a BuiltinMacro"
         );
         assert!(
-            matches!(env.get(assign_id), Some(Value::BuiltinSpecialForm(_))),
-            "Expected `=` to be registered as a BuiltinSpecialForm"
+            matches!(env.get(assign_id), Some(Value::BuiltinMacro(_))),
+            "Expected `=` to be registered as a BuiltinMacro"
         );
     }
 }
