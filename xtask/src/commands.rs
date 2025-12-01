@@ -5,9 +5,10 @@ use xshell::Shell;
 pub mod build;
 pub mod ci;
 pub mod common;
+pub mod explorer;
+pub mod fmt;
 pub mod hooks;
 pub mod precommit;
-pub mod explorer;
 pub mod test;
 
 #[derive(Subcommand)]
@@ -16,6 +17,8 @@ pub enum Command {
     Build(build::Build),
     /// Run CI checks (fmt, clippy, udeps, test). Runs all if no subcommand specified.
     Ci(ci::Ci),
+    /// Apply rustfmt to all files
+    Fmt(fmt::Fmt),
     /// Manage git hooks
     Hooks(hooks::Hooks),
     /// Run precommit checks (applies rustfmt and runs clippy)
@@ -31,6 +34,7 @@ impl Command {
         match self {
             Command::Build(cmd) => cmd.run(sh),
             Command::Ci(cmd) => cmd.run(sh),
+            Command::Fmt(cmd) => cmd.run(sh),
             Command::Hooks(cmd) => cmd.run(sh),
             Command::Precommit(cmd) => cmd.run(sh),
             Command::Explorer(cmd) => cmd.run(sh),

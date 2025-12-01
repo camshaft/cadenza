@@ -61,7 +61,7 @@ impl CiCommand {
                     .is_err()
                 {
                     eprintln!("Installing cargo-udeps...");
-                    cmd!(sh, "cargo install cargo-udeps --locked").run()?;
+                    cmd!(sh, "cargo +nightly install cargo-udeps --locked").run()?;
                 }
                 eprintln!("Running cargo udeps...");
                 cmd!(sh, "cargo +nightly udeps --workspace --all-targets").run()?;
