@@ -1323,6 +1323,33 @@ mod op_field_in_expr {
         );
     }
 }
+mod ws_leading_newline {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "ws_leading_newline_lex",
+            t::lex("\nfoo 123 456\n"),
+            "\nfoo 123 456\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "ws_leading_newline_cst",
+            t::cst("\nfoo 123 456\n"),
+            "\nfoo 123 456\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "ws_leading_newline_ast",
+            t::ast("\nfoo 123 456\n"),
+            "\nfoo 123 456\n"
+        );
+    }
+}
 mod op_pipe_try_pipe {
     use super::*;
     #[test]

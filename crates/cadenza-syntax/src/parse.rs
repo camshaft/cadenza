@@ -55,6 +55,11 @@ impl<'src> Parser<'src> {
         self.builder.start_node(Kind::Root.into());
 
         while self.current() != Kind::Eof {
+            // Skip leading trivia before creating the marker, so the marker
+            // reflects the actual starting position of the expression.
+            // This fixes the bug where `\nfoo 123 456` was parsed as two
+            // separate expressions instead of one.
+            self.skip_trivia();
             let marker = self.whitespace.marker();
             self.parse_expression(marker);
         }

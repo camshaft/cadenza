@@ -1,0 +1,23 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "\nfoo 123 456\n"
+---
+Root@0..13
+  Newline@0..1 "\n"
+  Apply@1..13
+    ApplyReceiver@1..9
+      Apply@1..9
+        ApplyReceiver@1..5
+          Identifier@1..4
+            Identifier@1..4 "foo"
+          Space@4..5 " "
+        ApplyArgument@5..9
+          Literal@5..8
+            Integer@5..8
+              Integer@5..8 "123"
+          Space@8..9 " "
+    ApplyArgument@9..13
+      Literal@9..12
+        Integer@9..12
+          Integer@9..12 "456"
+      Newline@12..13 "\n"
