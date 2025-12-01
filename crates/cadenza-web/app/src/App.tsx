@@ -97,21 +97,21 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col">
       {/* Header */}
-      <header className="bg-gray-800 border-b border-gray-700 px-4 py-3">
+      <header className="bg-gray-800 border-b border-gray-700 px-4 py-2 md:py-3">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold text-purple-400">
+          <h1 className="text-lg md:text-xl font-bold text-purple-400">
             Cadenza Compiler Explorer
           </h1>
-          <div className="text-sm text-gray-400">
+          <div className="hidden md:block text-sm text-gray-400">
             Interactive compiler development tool
           </div>
         </div>
       </header>
 
-      {/* Main content */}
-      <main className="flex-1 flex min-h-0">
-        {/* Left panel: Editor */}
-        <div className="w-1/2 border-r border-gray-700 flex flex-col">
+      {/* Main content - stacks vertically on mobile, side by side on desktop */}
+      <main className="flex-1 flex flex-col md:flex-row min-h-0">
+        {/* Editor panel */}
+        <div className="h-[40vh] md:h-auto md:w-1/2 border-b md:border-b-0 md:border-r border-gray-700 flex flex-col">
           <div className="bg-gray-800 px-4 py-2 border-b border-gray-700">
             <span className="text-sm text-gray-400">Source Code</span>
           </div>
@@ -120,15 +120,15 @@ function App() {
           </div>
         </div>
 
-        {/* Right panel: Output tabs */}
-        <div className="w-1/2 flex flex-col">
-          {/* Tab bar */}
-          <div className="bg-gray-800 border-b border-gray-700 flex">
+        {/* Output panel */}
+        <div className="flex-1 md:w-1/2 flex flex-col min-h-0">
+          {/* Tab bar - horizontally scrollable on mobile */}
+          <div className="bg-gray-800 border-b border-gray-700 flex overflow-x-auto">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                className={`px-3 md:px-4 py-2 text-sm font-medium transition-colors whitespace-nowrap flex-shrink-0 ${
                   activeTab === tab.id
                     ? 'text-purple-400 border-b-2 border-purple-400 bg-gray-900'
                     : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700/50'
@@ -160,7 +160,7 @@ function App() {
           <span>
             {source.length} chars • {source.split('\n').length} lines
           </span>
-          <span>
+          <span className="hidden sm:inline">
             Powered by Rust + WebAssembly
           </span>
         </div>
