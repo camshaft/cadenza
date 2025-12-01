@@ -42,6 +42,17 @@ mod arith_mul {
         s!("arith_mul", t::eval_all("4 * 5\n"), "4 * 5\n");
     }
 }
+mod error_let_invalid {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "error_let_invalid",
+            t::eval_all("let 42 = 1\n"),
+            "let 42 = 1\n"
+        );
+    }
+}
 mod arith_float_mul {
     use super::*;
     #[test]
