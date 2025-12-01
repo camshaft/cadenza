@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "\"hello world\"\n"
+---
+EvalResult {
+    values: [
+        "hello world",
+    ],
+    diagnostics: [],
+}

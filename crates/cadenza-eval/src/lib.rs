@@ -22,6 +22,7 @@ mod context;
 mod diagnostic;
 mod env;
 mod eval;
+mod generated;
 pub mod interner;
 mod map;
 mod value;
@@ -38,6 +39,9 @@ pub use eval::{builtin_assign, builtin_let, eval};
 pub use interner::InternedString;
 pub use map::Map;
 pub use value::{BuiltinFn, BuiltinMacro, BuiltinSpecialForm, Type, Value};
+
+#[cfg(test)]
+mod testing;
 
 #[cfg(test)]
 mod tests;

@@ -1,0 +1,20 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "1 / 0\n"
+---
+EvalResult {
+    values: [
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: SyntaxError(
+                "division by zero",
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}
