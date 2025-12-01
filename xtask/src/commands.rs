@@ -21,7 +21,7 @@ pub enum Command {
     Fmt(fmt::Fmt),
     /// Manage git hooks
     Hooks(hooks::Hooks),
-    /// Run precommit checks (applies rustfmt and runs clippy)
+    /// Run precommit checks (checks rustfmt and runs clippy)
     Precommit(precommit::Precommit),
     /// Run the Compiler Explorer development server or build for production
     Explorer(explorer::Explorer),

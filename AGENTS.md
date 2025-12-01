@@ -11,13 +11,19 @@ cargo xtask hooks install
 ```
 
 This will install the pre-commit hook that runs `cargo xtask precommit` before each commit, ensuring:
-- Code is formatted with rustfmt
+- Code is formatted with rustfmt (checks only - use `cargo xtask fmt` to apply formatting)
 - Clippy lints pass
 
 You can also run the precommit checks manually:
 
 ```bash
 cargo xtask precommit
+```
+
+To apply rustfmt formatting to all files:
+
+```bash
+cargo xtask fmt
 ```
 
 ## Before Submitting a Commit
