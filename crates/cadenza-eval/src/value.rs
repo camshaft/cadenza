@@ -216,9 +216,9 @@ pub struct BuiltinFn {
 /// A built-in macro type that receives unevaluated AST expressions.
 ///
 /// Macros receive unevaluated AST nodes and return values directly.
-/// This unified type replaces both the old BuiltinMacro (which returned GreenNode)
-/// and BuiltinSpecialForm (which returned Value) - now both use Expr arguments
-/// and return Value, enabling a simpler and more consistent API.
+/// This unified type now takes `&[Expr]` arguments (previously used `&[GreenNode]`)
+/// and returns `Value` directly, replacing the old separation between BuiltinMacro
+/// (which returned GreenNode) and BuiltinSpecialForm (which returned Value).
 #[derive(Clone)]
 pub struct BuiltinMacro {
     /// The macro name for display/debugging.

@@ -149,12 +149,9 @@ impl Eval for Apply {
             }
 
             // Check for macro in environment
-            #[allow(clippy::collapsible_if)]
-            if let Some(value) = ctx.env.get(id) {
-                if matches!(value, Value::BuiltinMacro(_)) {
-                    let macro_value = value.clone();
-                    return apply_macro(macro_value, self, ctx);
-                }
+            if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
+                let macro_value = ctx.env.get(id).unwrap().clone();
+                return apply_macro(macro_value, self, ctx);
             }
         }
 
