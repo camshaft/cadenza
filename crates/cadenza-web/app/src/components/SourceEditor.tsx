@@ -40,9 +40,16 @@ export function SourceEditor({ value, onChange }: SourceEditorProps) {
 
     // Try to initialize Monaco and catch any errors
     loader.init().then(() => {
-      // Monaco loaded successfully
+      // Monaco loader initialized successfully - clear timeout
+      // Note: The actual editor mounting is handled by onMount callback
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
     }).catch((error) => {
       console.error('Monaco Editor failed to load:', error);
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
       setLoadState('error');
     });
 
