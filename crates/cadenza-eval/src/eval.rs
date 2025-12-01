@@ -432,10 +432,24 @@ pub fn builtin_let() -> BuiltinSpecialForm {
                 return Err(Diagnostic::arity(1, args.len()));
             }
 
-            // Parse the argument to get the identifier name
+            // Parse the argument and validate it's an identifier
             let syntax_node = cadenza_syntax::Lang::parse_node(args[0].clone());
-            let text = syntax_node.text().to_string();
-            let name: InternedString = text.as_str().into();
+            let expr = Expr::cast_syntax_node(&syntax_node)
+                .ok_or_else(|| Diagnostic::syntax("let requires a valid expression"))?;
+
+            // Validate that the expression is an identifier
+            let ident = match expr {
+                Expr::Ident(i) => i,
+                _ => {
+                    return Err(Diagnostic::syntax(
+                        "let requires an identifier, not an expression",
+                    ));
+                }
+            };
+
+            // Get the identifier name
+            let text = ident.syntax().text();
+            let name: InternedString = text.to_string().as_str().into();
 
             // Define the variable in the environment with initial value Nil
             ctx.env.define(name, Value::Nil);

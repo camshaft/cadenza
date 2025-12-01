@@ -178,9 +178,11 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
     - Enables quote/splice functionality
     - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575592663)
 
-20. **Validate identifier nodes in special forms**
-    - Current: `builtin_let` extracts text without validating it's an identifier
-    - Needed: Proper validation with `match expr { Expr::Ident(i) => ..., _ => Err(...) }`
+20. ~~**Validate identifier nodes in special forms**~~
+    - [x] COMPLETED: Updated `builtin_let` to validate that argument is an identifier
+    - [x] Cast GreenNode to SyntaxNode, then to Expr
+    - [x] Match on `Expr::Ident` and return syntax error for non-identifier expressions
+    - [x] Added test case `error-let-invalid.cdz` to verify error message
     - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575594998)
 
 21. **Simplify Apply evaluation logic**
@@ -200,7 +202,7 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 - Items 11, 12, 13, 14, 15: Interner improvements
 - Items 2, 3, 4: Error handling improvements
 - Item 7: Value comparison semantics
-- Item 20: Identifier validation in special forms
+- ~~Item 20~~: Identifier validation in special forms (COMPLETED)
 
 ### Lower Priority (Ergonomics)
 - Items 5, 15, 17: Types as values, builtin! macro

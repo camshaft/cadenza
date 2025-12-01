@@ -1,0 +1,21 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+assertion_line: 49
+expression: "let 42 = 1\n"
+---
+EvalResult {
+    values: [
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: SyntaxError(
+                "let requires an identifier, not an expression",
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}
