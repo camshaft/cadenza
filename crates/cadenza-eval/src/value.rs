@@ -191,6 +191,9 @@ pub enum Value {
 
     /// A built-in macro implemented in Rust.
     BuiltinMacro(BuiltinMacro),
+
+    /// A built-in special form that receives unevaluated syntax.
+    BuiltinSpecialForm(BuiltinSpecialForm),
 }
 
 /// A built-in function type with type signature.
@@ -226,6 +229,24 @@ pub struct BuiltinMacro {
     /// access to the environment and compiler.
     pub func:
         fn(&[rowan::GreenNode], &mut crate::context::EvalContext<'_>) -> Result<rowan::GreenNode>,
+}
+
+/// A built-in special form that receives unevaluated syntax nodes and returns a Value.
+///
+/// Unlike macros which transform syntax to syntax, special forms directly produce values.
+/// This allows implementing forms like `let` that have side effects (defining variables)
+/// and return values directly.
+#[derive(Clone)]
+pub struct BuiltinSpecialForm {
+    /// The special form name for display/debugging.
+    pub name: &'static str,
+    /// The type signature of this special form (argument types + return type).
+    pub signature: Type,
+    /// The special form implementation (receives unevaluated syntax nodes).
+    ///
+    /// Takes the unevaluated syntax nodes and an evaluation context that provides
+    /// access to the environment and compiler.
+    pub func: fn(&[rowan::GreenNode], &mut crate::context::EvalContext<'_>) -> Result<Value>,
 }
 
 impl Value {
@@ -272,6 +293,7 @@ impl Value {
             Value::Type(_) => Type::Type,
             Value::BuiltinFn(bf) => bf.signature.clone(),
             Value::BuiltinMacro(bm) => bm.signature.clone(),
+            Value::BuiltinSpecialForm(sf) => sf.signature.clone(),
         }
     }
 }
@@ -289,6 +311,7 @@ impl fmt::Debug for Value {
             Value::Type(t) => write!(f, "Type({t})"),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
+            Value::BuiltinSpecialForm(sf) => write!(f, "<builtin-special-form {}>", sf.name),
         }
     }
 }
@@ -315,6 +338,7 @@ impl fmt::Display for Value {
             Value::Type(t) => write!(f, "{t}"),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
+            Value::BuiltinSpecialForm(sf) => write!(f, "<builtin-special-form {}>", sf.name),
         }
     }
 }
