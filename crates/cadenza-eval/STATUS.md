@@ -95,14 +95,17 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ### Eval Architecture
 
-8. **Make eval a trait with stack trace support**
-   - Current: `eval_expr` is a standalone function
-   - Needed: Trait implementation with stack trace maintenance
+8. ~~**Make eval a trait with stack trace support**~~
+   - [x] COMPLETED: Created `Eval` trait with `eval(&self, ctx: &mut EvalContext) -> Result<Value>` method
+   - [x] Implemented `Eval` trait for `Expr`, `Literal`, `Ident`, `Apply`, `Attr`, and `Synthetic`
+   - [x] Created `EvalContext` struct that consolidates env and compiler into a single struct
+   - [ ] Stack trace maintenance (future work - tracked separately)
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573081207)
 
-9. **BuiltinFn needs scope info**
-   - Current: `fn(&[Value]) -> Result<Value>`
-   - Needed: Access to env, compiler, interner; return `Result` with Expr as possible type
+9. ~~**BuiltinFn needs scope info**~~
+   - [x] COMPLETED: Updated `BuiltinFn` signature from `fn(&[Value]) -> Result<Value>` to `fn(&[Value], &mut EvalContext<'_>) -> Result<Value>`
+   - [x] Updated `BuiltinMacro` signature from `fn(&[rowan::GreenNode]) -> Result<rowan::GreenNode>` to `fn(&[rowan::GreenNode], &mut EvalContext<'_>) -> Result<rowan::GreenNode>`
+   - [x] Native functions now have access to env and compiler via `EvalContext`
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573086109)
 
 10. **Move operators to std environment**

@@ -13,9 +13,12 @@
 //! - [`Type`]: Runtime types as first-class values
 //! - [`Env`]: Scoped environment for variable bindings
 //! - [`Compiler`]: The compiler state that accumulates definitions
+//! - [`EvalContext`]: Consolidated evaluation context for all eval arguments
+//! - [`Eval`]: Trait for evaluatable expressions
 //! - [`eval`]: The main evaluation function
 
 mod compiler;
+mod context;
 mod diagnostic;
 mod env;
 mod eval;
@@ -24,6 +27,7 @@ mod map;
 mod value;
 
 pub use compiler::Compiler;
+pub use context::{Eval, EvalContext};
 pub use diagnostic::{
     BoxedDiagnosticExt, Diagnostic, DiagnosticKind, DiagnosticLevel, Result, StackFrame,
 };

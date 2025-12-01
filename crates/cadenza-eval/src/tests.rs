@@ -123,7 +123,7 @@ fn test_builtin_function() {
         Value::BuiltinFn(BuiltinFn {
             name: "inc",
             signature: Type::function(vec![Type::Integer], Type::Integer),
-            func: |args| {
+            func: |args, _ctx| {
                 if args.len() != 1 {
                     return Err(Diagnostic::arity(1, args.len()));
                 }

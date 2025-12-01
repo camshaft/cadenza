@@ -194,6 +194,9 @@ pub enum Value {
 }
 
 /// A built-in function type with type signature.
+///
+/// The function receives both the evaluated arguments and an [`EvalContext`]
+/// providing access to the environment and compiler.
 #[derive(Clone)]
 pub struct BuiltinFn {
     /// The function name for display/debugging.
@@ -201,10 +204,16 @@ pub struct BuiltinFn {
     /// The type signature of this function (argument types + return type).
     pub signature: Type,
     /// The function implementation.
-    pub func: fn(&[Value]) -> Result<Value>,
+    ///
+    /// Takes the evaluated arguments and an evaluation context that provides
+    /// access to the environment and compiler.
+    pub func: fn(&[Value], &mut crate::context::EvalContext<'_>) -> Result<Value>,
 }
 
 /// A built-in macro type that receives unevaluated syntax nodes.
+///
+/// The macro receives both the unevaluated syntax nodes and an [`EvalContext`]
+/// providing access to the environment and compiler.
 #[derive(Clone)]
 pub struct BuiltinMacro {
     /// The macro name for display/debugging.
@@ -212,7 +221,11 @@ pub struct BuiltinMacro {
     /// The type signature of this macro (argument types + return type).
     pub signature: Type,
     /// The macro implementation (receives unevaluated syntax nodes).
-    pub func: fn(&[rowan::GreenNode]) -> Result<rowan::GreenNode>,
+    ///
+    /// Takes the unevaluated syntax nodes and an evaluation context that provides
+    /// access to the environment and compiler.
+    pub func:
+        fn(&[rowan::GreenNode], &mut crate::context::EvalContext<'_>) -> Result<rowan::GreenNode>,
 }
 
 impl Value {
