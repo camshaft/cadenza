@@ -166,16 +166,19 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ### Macros & Special Forms
 
-18. **Use Expr AST nodes instead of GreenNodes**
-    - Current: `BuiltinMacro` and `BuiltinSpecialForm` receive `&[rowan::GreenNode]`
-    - Needed: Pass `Expr` AST nodes which have better typing
+18. ~~**Use Expr AST nodes instead of GreenNodes**~~
+    - [x] COMPLETED: Changed `BuiltinMacro` signature from `&[rowan::GreenNode]` to `&[Expr]`
+    - [x] Updated `builtin_let` and `builtin_assign` to work directly with Expr arguments
+    - [x] Removed intermediate GreenNode parsing and conversion steps
+    - [x] Improved type safety and code clarity
     - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575592663)
 
-19. **Unify macros and special forms into a single type**
-    - Current: Separate `BuiltinMacro` (returns GreenNode) and `BuiltinSpecialForm` (returns Value)
-    - Needed: Single macro type that can return either AST or Value
-    - Add `Value::Expr(Expr)` variant - macros return AST that gets evaluated in a loop until not AST
-    - Enables quote/splice functionality
+19. ~~**Unify macros and special forms into a single type**~~
+    - [x] COMPLETED: Merged `BuiltinMacro` and `BuiltinSpecialForm` into a unified `BuiltinMacro` type
+    - [x] Both now use `&[Expr]` arguments and return `Value` directly
+    - [x] Simplified `Apply::eval` to handle macros uniformly
+    - [x] Removed duplicate code paths for macro expansion and special form application
+    - Note: Decided against `Value::Expr(Expr)` variant as `Expr` doesn't implement `Clone`. The unified type returning `Value` directly is simpler and achieves the same goal.
     - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575592663)
 
 20. ~~**Validate identifier nodes in special forms**~~
@@ -196,7 +199,8 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 ### High Priority (Architectural)
 - Items 1, 6, 8: Error/value source tracking and stack traces
 - Items 9, 10: BuiltinFn signature and std environment
-- Items 18, 19, 21: Macro/special form unification and Apply simplification
+- ~~Items 18, 19~~: Macro/special form unification and Apply simplification (COMPLETED)
+- Item 21: Apply simplification
 
 ### Medium Priority (Performance/Correctness)
 - Items 11, 12, 13, 14, 15: Interner improvements
