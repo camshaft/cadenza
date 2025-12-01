@@ -3,7 +3,12 @@
 //! The environment is a stack of scopes, where each scope maps interned
 //! identifiers to values. Closures capture the environment by reference.
 
-use crate::{interner::InternedString, map::Map, value::Value};
+use crate::{
+    eval::{builtin_assign, builtin_let},
+    interner::InternedString,
+    map::Map,
+    value::Value,
+};
 
 /// A single scope in the environment.
 #[derive(Debug, Clone, Default)]
@@ -53,6 +58,34 @@ impl Env {
         Self {
             scopes: vec![Scope::new()],
         }
+    }
+
+    /// Creates a new environment with standard built-in forms and functions.
+    ///
+    /// This registers all standard built-ins including:
+    /// - `let` - Variable declaration special form
+    /// - `=` - Assignment special form
+    ///
+    /// Use this when you want an environment ready for typical evaluation.
+    pub fn with_standard_builtins() -> Self {
+        let mut env = Self::new();
+        env.register_standard_builtins();
+        env
+    }
+
+    /// Registers all standard built-in forms and functions in the current environment.
+    ///
+    /// This registers:
+    /// - `let` - Variable declaration special form
+    /// - `=` - Assignment special form
+    ///
+    /// This can be called on an existing environment to add the standard built-ins.
+    pub fn register_standard_builtins(&mut self) {
+        let let_id: InternedString = "let".into();
+        let assign_id: InternedString = "=".into();
+
+        self.define(let_id, Value::BuiltinSpecialForm(builtin_let()));
+        self.define(assign_id, Value::BuiltinSpecialForm(builtin_assign()));
     }
 
     /// Pushes a new empty scope onto the stack.
@@ -175,5 +208,49 @@ mod tests {
 
         // Should be accessible in global scope
         assert_eq!(env.get(name), Some(&Value::Integer(42)));
+    }
+
+    #[test]
+    fn with_standard_builtins() {
+        let env = Env::with_standard_builtins();
+
+        // Should have `let` and `=` special forms registered
+        let let_id: InternedString = "let".into();
+        let assign_id: InternedString = "=".into();
+
+        assert!(
+            matches!(env.get(let_id), Some(Value::BuiltinSpecialForm(_))),
+            "Expected `let` to be registered as a BuiltinSpecialForm"
+        );
+        assert!(
+            matches!(env.get(assign_id), Some(Value::BuiltinSpecialForm(_))),
+            "Expected `=` to be registered as a BuiltinSpecialForm"
+        );
+    }
+
+    #[test]
+    fn register_standard_builtins_on_existing_env() {
+        let mut env = Env::new();
+
+        // Define a custom variable first
+        let custom_id: InternedString = "custom".into();
+        env.define(custom_id, Value::Integer(42));
+
+        // Register standard builtins
+        env.register_standard_builtins();
+
+        // Should have both the custom variable and the standard builtins
+        assert_eq!(env.get(custom_id), Some(&Value::Integer(42)));
+
+        let let_id: InternedString = "let".into();
+        let assign_id: InternedString = "=".into();
+        assert!(
+            matches!(env.get(let_id), Some(Value::BuiltinSpecialForm(_))),
+            "Expected `let` to be registered as a BuiltinSpecialForm"
+        );
+        assert!(
+            matches!(env.get(assign_id), Some(Value::BuiltinSpecialForm(_))),
+            "Expected `=` to be registered as a BuiltinSpecialForm"
+        );
     }
 }
