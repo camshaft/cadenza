@@ -3,9 +3,7 @@
 //! This module provides helper functions for testing evaluation, including
 //! evaluating source strings and collecting results and diagnostics.
 
-use crate::{
-    compiler::Compiler, diagnostic::Diagnostic, env::Env, interner::InternedString, value::Value,
-};
+use crate::{compiler::Compiler, diagnostic::Diagnostic, env::Env, value::Value};
 use cadenza_syntax::parse::parse;
 
 /// The result of evaluating a source string, including both values and diagnostics.
@@ -39,20 +37,8 @@ pub fn eval_all(src: &str) -> EvalResult {
     }
 
     let root = parsed.ast();
-    let mut env = Env::new();
+    let mut env = Env::with_standard_builtins();
     let mut compiler = Compiler::new();
-
-    // Register the let and = special forms for variable declaration and assignment
-    let let_id: InternedString = "let".into();
-    let assign_id: InternedString = "=".into();
-    env.define(
-        let_id,
-        Value::BuiltinSpecialForm(crate::eval::builtin_let()),
-    );
-    env.define(
-        assign_id,
-        Value::BuiltinSpecialForm(crate::eval::builtin_assign()),
-    );
 
     let values = crate::eval(&root, &mut env, &mut compiler);
     let diagnostics = compiler.take_diagnostics();

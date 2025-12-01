@@ -1,5 +1,12 @@
 use crate::testing as t;
 use insta::assert_debug_snapshot as s;
+mod cmp_gt {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!("cmp_gt", t::eval_all("2 > 1\n"), "2 > 1\n");
+    }
+}
 mod lit_int {
     use super::*;
     #[test]
@@ -35,6 +42,13 @@ mod arith_mul {
         s!("arith_mul", t::eval_all("4 * 5\n"), "4 * 5\n");
     }
 }
+mod arith_float_mul {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!("arith_float_mul", t::eval_all("3.0 * 2.0\n"), "3.0 * 2.0\n");
+    }
+}
 mod arith_precedence {
     use super::*;
     #[test]
@@ -46,6 +60,13 @@ mod arith_precedence {
         );
     }
 }
+mod cmp_le {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!("cmp_le", t::eval_all("1 <= 1\n"), "1 <= 1\n");
+    }
+}
 mod arith_add {
     use super::*;
     #[test]
@@ -53,11 +74,43 @@ mod arith_add {
         s!("arith_add", t::eval_all("1 + 2\n"), "1 + 2\n");
     }
 }
+mod cmp_ge {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!("cmp_ge", t::eval_all("1 >= 1\n"), "1 >= 1\n");
+    }
+}
+mod arith_left_assoc {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "arith_left_assoc",
+            t::eval_all("10 - 5 - 2\n"),
+            "10 - 5 - 2\n"
+        );
+    }
+}
 mod cmp_lt {
     use super::*;
     #[test]
     fn eval() {
         s!("cmp_lt", t::eval_all("1 < 2\n"), "1 < 2\n");
+    }
+}
+mod arith_mixed_rev {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!("arith_mixed_rev", t::eval_all("2.5 + 1\n"), "2.5 + 1\n");
+    }
+}
+mod cmp_ne {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!("cmp_ne", t::eval_all("1 != 2\n"), "1 != 2\n");
     }
 }
 mod let_simple {
@@ -107,6 +160,17 @@ mod arith_mixed {
         s!("arith_mixed", t::eval_all("1 + 2.5\n"), "1 + 2.5\n");
     }
 }
+mod let_reassign {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "let_reassign",
+            t::eval_all("let x = 1\nx = 2\nx\n"),
+            "let x = 1\nx = 2\nx\n"
+        );
+    }
+}
 mod let_multi {
     use super::*;
     #[test]
@@ -115,6 +179,17 @@ mod let_multi {
             "let_multi",
             t::eval_all("let x = 1\nlet y = 2\nx + y\n"),
             "let x = 1\nlet y = 2\nx + y\n"
+        );
+    }
+}
+mod let_expr {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "let_expr",
+            t::eval_all("let x = 1 + 2\nx\n"),
+            "let x = 1 + 2\nx\n"
         );
     }
 }
