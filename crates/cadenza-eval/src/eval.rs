@@ -369,14 +369,9 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a >= b)),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
-        "=" => {
-            // Assignment operator - for now just return the right-hand side
-            // In a full implementation, this would modify the environment
-            match args.as_slice() {
-                [_, value] => Ok(value.clone()),
-                _ => Err(Diagnostic::arity(2, args.len())),
-            }
-        }
+        // Note: The `=` operator is handled as a special form (builtin_assign) for proper
+        // variable assignment semantics. If `=` appears here, it means it wasn't registered
+        // as a special form in the environment.
         _ => Err(Diagnostic::undefined_variable(op_id)),
     }
 }
@@ -420,7 +415,13 @@ impl Eval for Synthetic {
 /// with an initial value of `Nil`. It returns the symbol so it can be used in
 /// assignment expressions.
 ///
-/// Example: `let x = 42` is parsed as `= (let x) 42`
+/// # Parsing
+///
+/// The expression `let x = 42` is parsed as `[[=, [let, x], 42]]`, which is:
+/// - An `=` operator applied to `[let, x]` (the `let` special form applied to `x`) and `42`
+///
+/// This allows `let` to declare the variable and return a symbol, which `=` then uses
+/// to assign the value.
 pub fn builtin_let() -> BuiltinSpecialForm {
     BuiltinSpecialForm {
         name: "let",
