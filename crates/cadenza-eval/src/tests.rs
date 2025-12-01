@@ -286,3 +286,4 @@ fn test_parse_error_message() {
     // The error should have a span
     assert!(err.span.is_some());
 }
+
