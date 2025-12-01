@@ -129,7 +129,7 @@ mod tests {
         let macro_value = Value::BuiltinMacro(crate::value::BuiltinMacro {
             name: "my_macro",
             signature: crate::value::Type::function(vec![], crate::value::Type::Nil),
-            func: |_| {
+            func: |_, _ctx| {
                 // Return the green node for a simple identifier "x"
                 let parsed = cadenza_syntax::parse::parse("x");
                 Ok(parsed.green)

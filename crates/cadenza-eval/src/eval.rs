@@ -10,6 +10,7 @@
 
 use crate::{
     compiler::Compiler,
+    context::{Eval, EvalContext},
     diagnostic::{Diagnostic, Result},
     env::Env,
     interner::InternedString,
@@ -29,12 +30,13 @@ use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root,
 /// that expression. Check `compiler.has_errors()` after calling to see if
 /// any errors occurred.
 pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
+    let mut ctx = EvalContext::new(env, compiler);
     let mut results = Vec::new();
     for expr in root.items() {
-        match eval_expr(&expr, env, compiler) {
+        match expr.eval(&mut ctx) {
             Ok(value) => results.push(value),
             Err(diagnostic) => {
-                compiler.record_diagnostic(*diagnostic);
+                ctx.compiler.record_diagnostic(*diagnostic);
                 results.push(Value::Nil);
             }
         }
@@ -42,131 +44,138 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
     results
 }
 
-/// Evaluates a single expression.
-pub fn eval_expr(expr: &Expr, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
-    match expr {
-        Expr::Literal(lit) => eval_literal(lit),
-        Expr::Ident(ident) => eval_ident(ident, env, compiler),
-        Expr::Apply(apply) => eval_apply(apply, env, compiler),
-        Expr::Attr(attr) => eval_attr(attr, env, compiler),
-        Expr::Op(op) => {
-            // Operators as values (for higher-order usage)
-            // Use SyntaxText directly without allocating a String
-            let text = op.syntax().text();
-            let id: InternedString = text.to_string().as_str().into();
-            Ok(Value::Symbol(id))
-        }
-        Expr::Synthetic(syn) => eval_synthetic(syn, env, compiler),
-        Expr::Error(_) => Err(Diagnostic::syntax("encountered error node in AST")),
-    }
-}
+// =============================================================================
+// Eval trait implementations
+// =============================================================================
 
-/// Evaluates a literal value.
-fn eval_literal(lit: &Literal) -> Result<Value> {
-    let value = lit
-        .value()
-        .ok_or_else(|| Diagnostic::syntax("missing literal value"))?;
-
-    match value {
-        LiteralValue::Integer(int_val) => {
-            let text = int_val.syntax().text();
-            let text_str = text.to_string();
-            // Remove underscores for parsing
-            let clean = text_str.replace('_', "");
-            let n: i64 = clean
-                .parse()
-                .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text_str}")))?;
-            Ok(Value::Integer(n))
-        }
-        LiteralValue::Float(float_val) => {
-            let text = float_val.syntax().text();
-            let text_str = text.to_string();
-            let clean = text_str.replace('_', "");
-            let n: f64 = clean
-                .parse()
-                .map_err(|_| Diagnostic::syntax(format!("invalid float: {text_str}")))?;
-            Ok(Value::Float(n))
-        }
-        LiteralValue::String(str_val) => {
-            let text = str_val.syntax().text().to_string();
-            Ok(Value::String(text))
-        }
-        LiteralValue::StringWithEscape(str_val) => {
-            let text = str_val.syntax().text().to_string();
-            // TODO: Process escape sequences
-            Ok(Value::String(text))
+impl Eval for Expr {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        match self {
+            Expr::Literal(lit) => lit.eval(ctx),
+            Expr::Ident(ident) => ident.eval(ctx),
+            Expr::Apply(apply) => apply.eval(ctx),
+            Expr::Attr(attr) => attr.eval(ctx),
+            Expr::Op(op) => {
+                // Operators as values (for higher-order usage)
+                // Use SyntaxText directly without allocating a String
+                let text = op.syntax().text();
+                let id: InternedString = text.to_string().as_str().into();
+                Ok(Value::Symbol(id))
+            }
+            Expr::Synthetic(syn) => syn.eval(ctx),
+            Expr::Error(_) => Err(Diagnostic::syntax("encountered error node in AST")),
         }
     }
 }
 
-/// Evaluates an identifier by looking it up in the environment.
-fn eval_ident(ident: &Ident, env: &Env, compiler: &Compiler) -> Result<Value> {
-    let text = ident.syntax().text();
-    // TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
-    // AsRef<str> directly. See STATUS.md for tracking.
-    let id: InternedString = text.to_string().as_str().into();
+impl Eval for Literal {
+    fn eval(&self, _ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let value = self
+            .value()
+            .ok_or_else(|| Diagnostic::syntax("missing literal value"))?;
 
-    // First check the local environment
-    if let Some(value) = env.get(id) {
-        return Ok(value.clone());
+        match value {
+            LiteralValue::Integer(int_val) => {
+                let text = int_val.syntax().text();
+                let text_str = text.to_string();
+                // Remove underscores for parsing
+                let clean = text_str.replace('_', "");
+                let n: i64 = clean
+                    .parse()
+                    .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text_str}")))?;
+                Ok(Value::Integer(n))
+            }
+            LiteralValue::Float(float_val) => {
+                let text = float_val.syntax().text();
+                let text_str = text.to_string();
+                let clean = text_str.replace('_', "");
+                let n: f64 = clean
+                    .parse()
+                    .map_err(|_| Diagnostic::syntax(format!("invalid float: {text_str}")))?;
+                Ok(Value::Float(n))
+            }
+            LiteralValue::String(str_val) => {
+                let text = str_val.syntax().text().to_string();
+                Ok(Value::String(text))
+            }
+            LiteralValue::StringWithEscape(str_val) => {
+                let text = str_val.syntax().text().to_string();
+                // TODO: Process escape sequences
+                Ok(Value::String(text))
+            }
+        }
     }
-
-    // Then check compiler definitions
-    if let Some(value) = compiler.get_var(id) {
-        return Ok(value.clone());
-    }
-
-    Err(Diagnostic::undefined_variable(id))
 }
 
-/// Evaluates a function/macro application.
-fn eval_apply(apply: &Apply, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
-    let receiver = apply
-        .receiver()
-        .ok_or_else(|| Diagnostic::syntax("missing receiver in application"))?;
-
-    let receiver_expr = receiver
-        .value()
-        .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
-
-    // Check if the receiver is an identifier that names a macro
-    if let Expr::Ident(ref ident) = receiver_expr {
-        let text = ident.syntax().text();
+impl Eval for Ident {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let text = self.syntax().text();
+        // TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
+        // AsRef<str> directly. See STATUS.md for tracking.
         let id: InternedString = text.to_string().as_str().into();
 
-        // Check for macro in compiler
-        if let Some(macro_value) = compiler.get_macro(id) {
-            return expand_and_eval_macro(macro_value.clone(), apply, env, compiler);
+        // First check the local environment
+        if let Some(value) = ctx.env.get(id) {
+            return Ok(value.clone());
         }
 
-        // Check for macro in environment
-        if let Some(Value::BuiltinMacro(_)) = env.get(id) {
-            let macro_value = env.get(id).unwrap().clone();
-            return expand_and_eval_macro(macro_value, apply, env, compiler);
+        // Then check compiler definitions
+        if let Some(value) = ctx.compiler.get_var(id) {
+            return Ok(value.clone());
         }
+
+        Err(Diagnostic::undefined_variable(id))
     }
+}
 
-    // Not a macro call - evaluate normally
-    let callee = eval_expr(&receiver_expr, env, compiler)?;
+impl Eval for Apply {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let receiver = self
+            .receiver()
+            .ok_or_else(|| Diagnostic::syntax("missing receiver in application"))?;
 
-    // Collect and evaluate arguments
-    let mut args = Vec::new();
-    for arg in apply.arguments() {
-        if let Some(arg_expr) = arg.value() {
-            let value = eval_expr(&arg_expr, env, compiler)?;
-            args.push(value);
+        let receiver_expr = receiver
+            .value()
+            .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
+
+        // Check if the receiver is an identifier that names a macro
+        if let Expr::Ident(ref ident) = receiver_expr {
+            let text = ident.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
+
+            // Check for macro in compiler
+            if let Some(macro_value) = ctx.compiler.get_macro(id) {
+                return expand_and_eval_macro(macro_value.clone(), self, ctx);
+            }
+
+            // Check for macro in environment
+            if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
+                let macro_value = ctx.env.get(id).unwrap().clone();
+                return expand_and_eval_macro(macro_value, self, ctx);
+            }
         }
-    }
 
-    apply_value(callee, args, env, compiler)
+        // Not a macro call - evaluate normally
+        let callee = receiver_expr.eval(ctx)?;
+
+        // Collect and evaluate arguments
+        let mut args = Vec::new();
+        for arg in self.arguments() {
+            if let Some(arg_expr) = arg.value() {
+                let value = arg_expr.eval(ctx)?;
+                args.push(value);
+            }
+        }
+
+        apply_value(callee, args, ctx)
+    }
 }
 
 /// Expands a macro and evaluates the result.
 fn expand_and_eval_macro(
     macro_value: Value,
     apply: &Apply,
-    env: &mut Env,
-    compiler: &mut Compiler,
+    ctx: &mut EvalContext<'_>,
 ) -> Result<Value> {
     match macro_value {
         Value::BuiltinMacro(builtin) => {
@@ -185,13 +194,13 @@ fn expand_and_eval_macro(
                 })
                 .collect();
 
-            // Call the builtin macro with unevaluated syntax nodes
-            let expanded_node = (builtin.func)(&arg_nodes)?;
+            // Call the builtin macro with unevaluated syntax nodes and context
+            let expanded_node = (builtin.func)(&arg_nodes, ctx)?;
 
             // Create a SyntaxNode from the GreenNode and evaluate it
             let syntax_node = cadenza_syntax::Lang::parse_node(expanded_node);
             if let Some(expr) = Expr::cast_syntax_node(&syntax_node) {
-                eval_expr(&expr, env, compiler)
+                expr.eval(ctx)
             } else {
                 Err(Diagnostic::internal(
                     "macro expansion produced invalid syntax",
@@ -203,14 +212,9 @@ fn expand_and_eval_macro(
 }
 
 /// Applies a callable value to arguments.
-fn apply_value(
-    callee: Value,
-    args: Vec<Value>,
-    _env: &mut Env,
-    _compiler: &mut Compiler,
-) -> Result<Value> {
+fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
-        Value::BuiltinFn(builtin) => (builtin.func)(&args),
+        Value::BuiltinFn(builtin) => (builtin.func)(&args, ctx),
         Value::Symbol(id) => {
             // Operator application
             apply_operator(id, args)
@@ -326,30 +330,32 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
     }
 }
 
-/// Evaluates an attribute (@decorator).
-fn eval_attr(attr: &Attr, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
-    // For now, attributes are evaluated and returned as-is
-    // In the future, they might have special semantics
-    if let Some(value_expr) = attr.value() {
-        eval_expr(&value_expr, env, compiler)
-    } else {
-        Ok(Value::Nil)
+impl Eval for Attr {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        // For now, attributes are evaluated and returned as-is
+        // In the future, they might have special semantics
+        if let Some(value_expr) = self.value() {
+            value_expr.eval(ctx)
+        } else {
+            Ok(Value::Nil)
+        }
     }
 }
 
-/// Evaluates a synthetic node (list, record, etc.).
-fn eval_synthetic(syn: &Synthetic, _env: &mut Env, _compiler: &mut Compiler) -> Result<Value> {
-    let ident = syn.identifier();
+impl Eval for Synthetic {
+    fn eval(&self, _ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let ident = self.identifier();
 
-    match ident {
-        "__list__" | "__record__" => {
-            // These should not appear as standalone expressions
-            // They're always wrapped in Apply nodes
-            Ok(Value::Nil)
+        match ident {
+            "__list__" | "__record__" => {
+                // These should not appear as standalone expressions
+                // They're always wrapped in Apply nodes
+                Ok(Value::Nil)
+            }
+            _ => Err(Diagnostic::syntax(format!(
+                "unknown synthetic node: {ident}"
+            ))),
         }
-        _ => Err(Diagnostic::syntax(format!(
-            "unknown synthetic node: {ident}"
-        ))),
     }
 }
 
