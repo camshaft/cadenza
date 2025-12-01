@@ -14,7 +14,7 @@ use crate::{
     diagnostic::{Diagnostic, Result},
     env::Env,
     interner::InternedString,
-    value::{BuiltinSpecialForm, Type, Value},
+    value::{BuiltinMacro, Type, Value},
 };
 use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
 
@@ -138,45 +138,36 @@ impl Eval for Apply {
             .value()
             .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
 
-        // Check if the receiver is an identifier that names a macro or special form
+        // Check if the receiver is an identifier that names a macro
         if let Expr::Ident(ref ident) = receiver_expr {
             let text = ident.syntax().text();
             let id: InternedString = text.to_string().as_str().into();
 
             // Check for macro in compiler
             if let Some(macro_value) = ctx.compiler.get_macro(id) {
-                return expand_and_eval_macro(macro_value.clone(), self, ctx);
+                return apply_macro(macro_value.clone(), self, ctx);
             }
 
-            // Check for macro or special form in environment
-            if let Some(value) = ctx.env.get(id) {
-                match value {
-                    Value::BuiltinMacro(_) => {
-                        let macro_value = value.clone();
-                        return expand_and_eval_macro(macro_value, self, ctx);
-                    }
-                    Value::BuiltinSpecialForm(_) => {
-                        let special_form = value.clone();
-                        return apply_special_form(special_form, self, ctx);
-                    }
-                    _ => {}
-                }
+            // Check for macro in environment
+            if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
+                let macro_value = ctx.env.get(id).unwrap().clone();
+                return apply_macro(macro_value, self, ctx);
             }
         }
 
-        // Check if the receiver is an operator that's a special form
+        // Check if the receiver is an operator that's a macro
         if let Expr::Op(ref op) = receiver_expr {
             let text = op.syntax().text();
             let id: InternedString = text.to_string().as_str().into();
 
-            // Check for special form in environment
-            if let Some(Value::BuiltinSpecialForm(_)) = ctx.env.get(id) {
-                let special_form = ctx.env.get(id).unwrap().clone();
-                return apply_special_form(special_form, self, ctx);
+            // Check for macro in environment
+            if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
+                let macro_value = ctx.env.get(id).unwrap().clone();
+                return apply_macro(macro_value, self, ctx);
             }
         }
 
-        // Not a macro or special form call - evaluate normally
+        // Not a macro call - evaluate normally
         let callee = receiver_expr.eval(ctx)?;
 
         // Collect and evaluate arguments
@@ -192,73 +183,21 @@ impl Eval for Apply {
     }
 }
 
-/// Expands a macro and evaluates the result.
-fn expand_and_eval_macro(
-    macro_value: Value,
-    apply: &Apply,
-    ctx: &mut EvalContext<'_>,
-) -> Result<Value> {
+/// Applies a macro to unevaluated arguments.
+///
+/// Macros receive unevaluated AST expressions and return values directly.
+/// This unified approach replaces the separate handling of macros (which returned GreenNode)
+/// and special forms (which returned Value).
+fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match macro_value {
         Value::BuiltinMacro(builtin) => {
-            // Collect unevaluated argument syntax nodes
-            let arg_nodes: Vec<rowan::GreenNode> = apply
-                .arguments()
-                .filter_map(|arg| arg.value())
-                .filter_map(|expr| match expr {
-                    Expr::Apply(a) => Some(a.syntax().green().into_owned()),
-                    Expr::Ident(i) => Some(i.syntax().green().into_owned()),
-                    Expr::Literal(l) => Some(l.syntax().green().into_owned()),
-                    Expr::Op(o) => Some(o.syntax().green().into_owned()),
-                    Expr::Attr(a) => Some(a.syntax().green().into_owned()),
-                    Expr::Synthetic(s) => Some(s.syntax().green().into_owned()),
-                    Expr::Error(_) => None,
-                })
-                .collect();
+            // Collect unevaluated argument expressions
+            let arg_exprs: Vec<Expr> = apply.arguments().filter_map(|arg| arg.value()).collect();
 
-            // Call the builtin macro with unevaluated syntax nodes and context
-            let expanded_node = (builtin.func)(&arg_nodes, ctx)?;
-
-            // Create a SyntaxNode from the GreenNode and evaluate it
-            let syntax_node = cadenza_syntax::Lang::parse_node(expanded_node);
-            if let Some(expr) = Expr::cast_syntax_node(&syntax_node) {
-                expr.eval(ctx)
-            } else {
-                Err(Diagnostic::internal(
-                    "macro expansion produced invalid syntax",
-                ))
-            }
+            // Call the builtin macro with unevaluated expressions
+            (builtin.func)(&arg_exprs, ctx)
         }
         _ => Err(Diagnostic::internal("expected macro value")),
-    }
-}
-
-/// Applies a special form to unevaluated arguments.
-fn apply_special_form(
-    special_form: Value,
-    apply: &Apply,
-    ctx: &mut EvalContext<'_>,
-) -> Result<Value> {
-    match special_form {
-        Value::BuiltinSpecialForm(builtin) => {
-            // Collect unevaluated argument syntax nodes
-            let arg_nodes: Vec<rowan::GreenNode> = apply
-                .arguments()
-                .filter_map(|arg| arg.value())
-                .filter_map(|expr| match expr {
-                    Expr::Apply(a) => Some(a.syntax().green().into_owned()),
-                    Expr::Ident(i) => Some(i.syntax().green().into_owned()),
-                    Expr::Literal(l) => Some(l.syntax().green().into_owned()),
-                    Expr::Op(o) => Some(o.syntax().green().into_owned()),
-                    Expr::Attr(a) => Some(a.syntax().green().into_owned()),
-                    Expr::Synthetic(s) => Some(s.syntax().green().into_owned()),
-                    Expr::Error(_) => None,
-                })
-                .collect();
-
-            // Call the builtin special form with unevaluated syntax nodes and context
-            (builtin.func)(&arg_nodes, ctx)
-        }
-        _ => Err(Diagnostic::internal("expected special form value")),
     }
 }
 
@@ -422,8 +361,8 @@ impl Eval for Synthetic {
 ///
 /// This allows `let` to declare the variable and return a symbol, which `=` then uses
 /// to assign the value.
-pub fn builtin_let() -> BuiltinSpecialForm {
-    BuiltinSpecialForm {
+pub fn builtin_let() -> BuiltinMacro {
+    BuiltinMacro {
         name: "let",
         signature: Type::function(vec![Type::Symbol], Type::Symbol),
         func: |args, ctx| {
@@ -432,13 +371,8 @@ pub fn builtin_let() -> BuiltinSpecialForm {
                 return Err(Diagnostic::arity(1, args.len()));
             }
 
-            // Parse the argument and validate it's an identifier
-            let syntax_node = cadenza_syntax::Lang::parse_node(args[0].clone());
-            let expr = Expr::cast_syntax_node(&syntax_node)
-                .ok_or_else(|| Diagnostic::syntax("let requires a valid expression"))?;
-
             // Validate that the expression is an identifier
-            let ident = match expr {
+            let ident = match &args[0] {
                 Expr::Ident(i) => i,
                 _ => {
                     return Err(Diagnostic::syntax(
@@ -467,8 +401,8 @@ pub fn builtin_let() -> BuiltinSpecialForm {
 /// 2. The right-hand side (which is evaluated)
 ///
 /// Example: `let x = 42` - The `let x` returns a symbol, then `=` assigns 42 to it.
-pub fn builtin_assign() -> BuiltinSpecialForm {
-    BuiltinSpecialForm {
+pub fn builtin_assign() -> BuiltinMacro {
+    BuiltinMacro {
         name: "=",
         signature: Type::function(vec![Type::Symbol, Type::Unknown], Type::Unknown),
         func: |args, ctx| {
@@ -477,23 +411,16 @@ pub fn builtin_assign() -> BuiltinSpecialForm {
                 return Err(Diagnostic::arity(2, args.len()));
             }
 
-            // Parse the LHS to determine how to handle it
-            let lhs_node = cadenza_syntax::Lang::parse_node(args[0].clone());
-            let lhs_expr = Expr::cast_syntax_node(&lhs_node)
-                .ok_or_else(|| Diagnostic::syntax("assignment LHS must be an expression"))?;
+            // Get the LHS expression
+            let lhs_expr = &args[0];
 
             // Evaluate the RHS to get the value
-            let rhs_node = cadenza_syntax::Lang::parse_node(args[1].clone());
-            let rhs_value = if let Some(expr) = Expr::cast_syntax_node(&rhs_node) {
-                expr.eval(ctx)?
-            } else {
-                return Err(Diagnostic::syntax("assignment RHS must be an expression"));
-            };
+            let rhs_value = args[1].eval(ctx)?;
 
             // Determine the variable name based on LHS
             match lhs_expr {
                 // If LHS is a plain identifier, get the name directly (for reassignment)
-                Expr::Ident(ref ident) => {
+                Expr::Ident(ident) => {
                     let text = ident.syntax().text();
                     let name: InternedString = text.to_string().as_str().into();
 

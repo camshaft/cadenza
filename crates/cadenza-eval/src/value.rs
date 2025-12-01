@@ -3,6 +3,7 @@
 //! Values can be symbols, lists, functions, macros, or built-in operations.
 
 use crate::{diagnostic::Result, interner::InternedString};
+use cadenza_syntax::ast::Expr;
 use std::fmt;
 
 /// A runtime type in the Cadenza evaluator.
@@ -190,10 +191,9 @@ pub enum Value {
     BuiltinFn(BuiltinFn),
 
     /// A built-in macro implemented in Rust.
+    /// Macros receive unevaluated AST expressions and return values directly.
+    /// This unified type replaces both the old BuiltinMacro and BuiltinSpecialForm.
     BuiltinMacro(BuiltinMacro),
-
-    /// A built-in special form that receives unevaluated syntax.
-    BuiltinSpecialForm(BuiltinSpecialForm),
 }
 
 /// A built-in function type with type signature.
@@ -213,40 +213,23 @@ pub struct BuiltinFn {
     pub func: fn(&[Value], &mut crate::context::EvalContext<'_>) -> Result<Value>,
 }
 
-/// A built-in macro type that receives unevaluated syntax nodes.
+/// A built-in macro type that receives unevaluated AST expressions.
 ///
-/// The macro receives both the unevaluated syntax nodes and an [`EvalContext`]
-/// providing access to the environment and compiler.
+/// Macros receive unevaluated AST nodes and return values directly.
+/// This unified type now takes `&[Expr]` arguments (previously used `&[GreenNode]`)
+/// and returns `Value` directly, replacing the old separation between BuiltinMacro
+/// (which returned GreenNode) and BuiltinSpecialForm (which returned Value).
 #[derive(Clone)]
 pub struct BuiltinMacro {
     /// The macro name for display/debugging.
     pub name: &'static str,
     /// The type signature of this macro (argument types + return type).
     pub signature: Type,
-    /// The macro implementation (receives unevaluated syntax nodes).
+    /// The macro implementation (receives unevaluated AST expressions).
     ///
-    /// Takes the unevaluated syntax nodes and an evaluation context that provides
-    /// access to the environment and compiler.
-    pub func:
-        fn(&[rowan::GreenNode], &mut crate::context::EvalContext<'_>) -> Result<rowan::GreenNode>,
-}
-
-/// A built-in special form that receives unevaluated syntax nodes and returns a Value.
-///
-/// Unlike macros which transform syntax to syntax, special forms directly produce values.
-/// This allows implementing forms like `let` that have side effects (defining variables)
-/// and return values directly.
-#[derive(Clone)]
-pub struct BuiltinSpecialForm {
-    /// The special form name for display/debugging.
-    pub name: &'static str,
-    /// The type signature of this special form (argument types + return type).
-    pub signature: Type,
-    /// The special form implementation (receives unevaluated syntax nodes).
-    ///
-    /// Takes the unevaluated syntax nodes and an evaluation context that provides
-    /// access to the environment and compiler.
-    pub func: fn(&[rowan::GreenNode], &mut crate::context::EvalContext<'_>) -> Result<Value>,
+    /// Takes unevaluated Expr AST nodes and an evaluation context that provides
+    /// access to the environment and compiler. Returns a Value directly.
+    pub func: fn(&[Expr], &mut crate::context::EvalContext<'_>) -> Result<Value>,
 }
 
 impl Value {
@@ -293,7 +276,6 @@ impl Value {
             Value::Type(_) => Type::Type,
             Value::BuiltinFn(bf) => bf.signature.clone(),
             Value::BuiltinMacro(bm) => bm.signature.clone(),
-            Value::BuiltinSpecialForm(sf) => sf.signature.clone(),
         }
     }
 }
@@ -311,7 +293,6 @@ impl fmt::Debug for Value {
             Value::Type(t) => write!(f, "Type({t})"),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
-            Value::BuiltinSpecialForm(sf) => write!(f, "<builtin-special-form {}>", sf.name),
         }
     }
 }
@@ -338,7 +319,6 @@ impl fmt::Display for Value {
             Value::Type(t) => write!(f, "{t}"),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
-            Value::BuiltinSpecialForm(sf) => write!(f, "<builtin-special-form {}>", sf.name),
         }
     }
 }
