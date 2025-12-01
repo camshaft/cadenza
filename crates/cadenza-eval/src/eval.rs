@@ -14,7 +14,7 @@ use crate::{
     diagnostic::{Diagnostic, Result},
     env::Env,
     interner::InternedString,
-    value::{Type, Value},
+    value::{BuiltinSpecialForm, Type, Value},
 };
 use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
 
@@ -138,7 +138,7 @@ impl Eval for Apply {
             .value()
             .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
 
-        // Check if the receiver is an identifier that names a macro
+        // Check if the receiver is an identifier that names a macro or special form
         if let Expr::Ident(ref ident) = receiver_expr {
             let text = ident.syntax().text();
             let id: InternedString = text.to_string().as_str().into();
@@ -148,14 +148,35 @@ impl Eval for Apply {
                 return expand_and_eval_macro(macro_value.clone(), self, ctx);
             }
 
-            // Check for macro in environment
-            if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
-                let macro_value = ctx.env.get(id).unwrap().clone();
-                return expand_and_eval_macro(macro_value, self, ctx);
+            // Check for macro or special form in environment
+            if let Some(value) = ctx.env.get(id) {
+                match value {
+                    Value::BuiltinMacro(_) => {
+                        let macro_value = value.clone();
+                        return expand_and_eval_macro(macro_value, self, ctx);
+                    }
+                    Value::BuiltinSpecialForm(_) => {
+                        let special_form = value.clone();
+                        return apply_special_form(special_form, self, ctx);
+                    }
+                    _ => {}
+                }
             }
         }
 
-        // Not a macro call - evaluate normally
+        // Check if the receiver is an operator that's a special form
+        if let Expr::Op(ref op) = receiver_expr {
+            let text = op.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
+
+            // Check for special form in environment
+            if let Some(Value::BuiltinSpecialForm(_)) = ctx.env.get(id) {
+                let special_form = ctx.env.get(id).unwrap().clone();
+                return apply_special_form(special_form, self, ctx);
+            }
+        }
+
+        // Not a macro or special form call - evaluate normally
         let callee = receiver_expr.eval(ctx)?;
 
         // Collect and evaluate arguments
@@ -208,6 +229,36 @@ fn expand_and_eval_macro(
             }
         }
         _ => Err(Diagnostic::internal("expected macro value")),
+    }
+}
+
+/// Applies a special form to unevaluated arguments.
+fn apply_special_form(
+    special_form: Value,
+    apply: &Apply,
+    ctx: &mut EvalContext<'_>,
+) -> Result<Value> {
+    match special_form {
+        Value::BuiltinSpecialForm(builtin) => {
+            // Collect unevaluated argument syntax nodes
+            let arg_nodes: Vec<rowan::GreenNode> = apply
+                .arguments()
+                .filter_map(|arg| arg.value())
+                .filter_map(|expr| match expr {
+                    Expr::Apply(a) => Some(a.syntax().green().into_owned()),
+                    Expr::Ident(i) => Some(i.syntax().green().into_owned()),
+                    Expr::Literal(l) => Some(l.syntax().green().into_owned()),
+                    Expr::Op(o) => Some(o.syntax().green().into_owned()),
+                    Expr::Attr(a) => Some(a.syntax().green().into_owned()),
+                    Expr::Synthetic(s) => Some(s.syntax().green().into_owned()),
+                    Expr::Error(_) => None,
+                })
+                .collect();
+
+            // Call the builtin special form with unevaluated syntax nodes and context
+            (builtin.func)(&arg_nodes, ctx)
+        }
+        _ => Err(Diagnostic::internal("expected special form value")),
     }
 }
 
@@ -356,6 +407,108 @@ impl Eval for Synthetic {
                 "unknown synthetic node: {ident}"
             ))),
         }
+    }
+}
+
+// =============================================================================
+// Built-in special forms for variable declaration and assignment
+// =============================================================================
+
+/// Creates the `let` special form that declares a variable.
+///
+/// The `let` special form takes an identifier and declares it in the environment
+/// with an initial value of `Nil`. It returns the symbol so it can be used in
+/// assignment expressions.
+///
+/// Example: `let x = 42` is parsed as `= (let x) 42`
+pub fn builtin_let() -> BuiltinSpecialForm {
+    BuiltinSpecialForm {
+        name: "let",
+        signature: Type::function(vec![Type::Symbol], Type::Symbol),
+        func: |args, ctx| {
+            // Expect exactly one argument (the identifier)
+            if args.len() != 1 {
+                return Err(Diagnostic::arity(1, args.len()));
+            }
+
+            // Parse the argument to get the identifier name
+            let syntax_node = cadenza_syntax::Lang::parse_node(args[0].clone());
+            let text = syntax_node.text().to_string();
+            let name: InternedString = text.as_str().into();
+
+            // Define the variable in the environment with initial value Nil
+            ctx.env.define(name, Value::Nil);
+
+            // Return the symbol
+            Ok(Value::Symbol(name))
+        },
+    }
+}
+
+/// Creates the `=` special form that assigns a value to a variable.
+///
+/// The `=` special form takes two arguments:
+/// 1. The left-hand side (which should be a symbol from `let`)
+/// 2. The right-hand side (which is evaluated)
+///
+/// Example: `let x = 42` - The `let x` returns a symbol, then `=` assigns 42 to it.
+pub fn builtin_assign() -> BuiltinSpecialForm {
+    BuiltinSpecialForm {
+        name: "=",
+        signature: Type::function(vec![Type::Symbol, Type::Unknown], Type::Unknown),
+        func: |args, ctx| {
+            // Expect exactly two arguments
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            // Parse the LHS to determine how to handle it
+            let lhs_node = cadenza_syntax::Lang::parse_node(args[0].clone());
+            let lhs_expr = Expr::cast_syntax_node(&lhs_node)
+                .ok_or_else(|| Diagnostic::syntax("assignment LHS must be an expression"))?;
+
+            // Evaluate the RHS to get the value
+            let rhs_node = cadenza_syntax::Lang::parse_node(args[1].clone());
+            let rhs_value = if let Some(expr) = Expr::cast_syntax_node(&rhs_node) {
+                expr.eval(ctx)?
+            } else {
+                return Err(Diagnostic::syntax("assignment RHS must be an expression"));
+            };
+
+            // Determine the variable name based on LHS
+            match lhs_expr {
+                // If LHS is a plain identifier, get the name directly (for reassignment)
+                Expr::Ident(ref ident) => {
+                    let text = ident.syntax().text();
+                    let name: InternedString = text.to_string().as_str().into();
+
+                    // Check if the variable exists (must be declared with `let` first)
+                    if let Some(var) = ctx.env.get_mut(name) {
+                        *var = rhs_value.clone();
+                        Ok(rhs_value)
+                    } else {
+                        Err(Diagnostic::undefined_variable(name))
+                    }
+                }
+                // Otherwise, evaluate the LHS (e.g., from `let x`)
+                _ => {
+                    let lhs_value = lhs_expr.eval(ctx)?;
+
+                    match lhs_value {
+                        Value::Symbol(name) => {
+                            // Update the variable in the environment
+                            if let Some(var) = ctx.env.get_mut(name) {
+                                *var = rhs_value.clone();
+                                Ok(rhs_value)
+                            } else {
+                                Err(Diagnostic::undefined_variable(name))
+                            }
+                        }
+                        _ => Err(Diagnostic::type_error(Type::Symbol, lhs_value.type_of())),
+                    }
+                }
+            }
+        },
     }
 }
 

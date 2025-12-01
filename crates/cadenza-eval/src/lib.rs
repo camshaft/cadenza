@@ -34,10 +34,10 @@ pub use diagnostic::{
 // Backwards compatibility aliases
 pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;
-pub use eval::eval;
+pub use eval::{builtin_assign, builtin_let, eval};
 pub use interner::InternedString;
 pub use map::Map;
-pub use value::{Type, Value};
+pub use value::{BuiltinFn, BuiltinMacro, BuiltinSpecialForm, Type, Value};
 
 #[cfg(test)]
 mod tests;

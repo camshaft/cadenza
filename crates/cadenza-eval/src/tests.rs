@@ -287,3 +287,116 @@ fn test_parse_error_message() {
     assert!(err.span.is_some());
 }
 
+// =============================================================================
+// Tests for let and = special forms
+// =============================================================================
+
+/// Helper to evaluate with let and = special forms registered.
+fn eval_with_let(src: &str) -> Result<Vec<Value>, Box<Diagnostic>> {
+    let parsed = parse(src);
+    if let Some(err) = parsed.errors.first() {
+        return Err(Diagnostic::parse_error(&err.message, err.span));
+    }
+    let root = parsed.ast();
+    let mut env = Env::new();
+    let mut compiler = Compiler::new();
+
+    // Register the let and = special forms
+    let let_id: InternedString = "let".into();
+    let assign_id: InternedString = "=".into();
+    env.define(
+        let_id,
+        Value::BuiltinSpecialForm(crate::eval::builtin_let()),
+    );
+    env.define(
+        assign_id,
+        Value::BuiltinSpecialForm(crate::eval::builtin_assign()),
+    );
+
+    let results = crate::eval(&root, &mut env, &mut compiler);
+    if compiler.has_errors() {
+        return Err(Box::new(
+            compiler
+                .take_diagnostics()
+                .into_iter()
+                .next()
+                .expect("has_errors() returned true but no diagnostics found"),
+        ));
+    }
+    Ok(results)
+}
+
+/// Helper to evaluate a single expression with let and = special forms.
+fn eval_one_with_let(src: &str) -> Result<Value, Box<Diagnostic>> {
+    eval_with_let(src)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Diagnostic::syntax("no expressions"))
+}
+
+#[test]
+fn test_let_declares_variable() {
+    // `let x` should declare x and return the symbol
+    let result = eval_one_with_let("let x").unwrap();
+    // The result should be a symbol
+    assert!(
+        matches!(result, Value::Symbol(id) if &*id == "x"),
+        "Expected Symbol(x), got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_let_with_assignment() {
+    // `let x = 42` should declare x and assign 42 to it
+    let result = eval_one_with_let("let x = 42").unwrap();
+    // The result should be the assigned value (42)
+    assert_eq!(result, Value::Integer(42));
+}
+
+#[test]
+fn test_let_variable_usable() {
+    // After `let x = 42`, we should be able to use x
+    let results = eval_with_let("let x = 42\nx").unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], Value::Integer(42)); // let x = 42 returns 42
+    assert_eq!(results[1], Value::Integer(42)); // x evaluates to 42
+}
+
+#[test]
+fn test_let_multiple_variables() {
+    // Multiple let declarations
+    let results = eval_with_let("let x = 1\nlet y = 2\nx + y").unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0], Value::Integer(1)); // let x = 1
+    assert_eq!(results[1], Value::Integer(2)); // let y = 2
+    assert_eq!(results[2], Value::Integer(3)); // x + y = 3
+}
+
+#[test]
+fn test_let_with_expression() {
+    // Let with a complex expression on RHS
+    let results = eval_with_let("let x = 1 + 2\nx").unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], Value::Integer(3)); // let x = 1 + 2
+    assert_eq!(results[1], Value::Integer(3)); // x evaluates to 3
+}
+
+#[test]
+fn test_let_reassignment() {
+    // Reassignment to a let-declared variable
+    let results = eval_with_let("let x = 1\nx = 2\nx").unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0], Value::Integer(1)); // let x = 1
+    assert_eq!(results[1], Value::Integer(2)); // x = 2
+    assert_eq!(results[2], Value::Integer(2)); // x evaluates to 2
+}
+
+#[test]
+fn test_let_only_declaration() {
+    // let x without assignment
+    let results = eval_with_let("let x\nx").unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(matches!(results[0], Value::Symbol(_))); // let x returns symbol
+    assert_eq!(results[1], Value::Nil); // x evaluates to Nil
+}
