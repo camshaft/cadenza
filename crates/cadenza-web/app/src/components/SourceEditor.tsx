@@ -25,35 +25,39 @@ const MONACO_LOAD_TIMEOUT = 10000;
 export function SourceEditor({ value, onChange }: SourceEditorProps) {
   const [loadState, setLoadState] = useState<'loading' | 'loaded' | 'error'>('loading');
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    // Set a timeout to fall back to textarea if Monaco doesn't load
+    mountedRef.current = true;
+    
+    // Set a timeout to fall back to textarea if Monaco doesn't mount in time
     timeoutRef.current = setTimeout(() => {
-      setLoadState((current) => {
-        if (current === 'loading') {
-          console.warn('Monaco Editor load timeout - falling back to textarea');
-          return 'error';
-        }
-        return current;
-      });
+      if (mountedRef.current) {
+        setLoadState((current) => {
+          if (current === 'loading') {
+            console.warn('Monaco Editor load timeout - falling back to textarea');
+            return 'error';
+          }
+          return current;
+        });
+      }
     }, MONACO_LOAD_TIMEOUT);
 
     // Try to initialize Monaco and catch any errors
-    loader.init().then(() => {
-      // Monaco loader initialized successfully - clear timeout
-      // Note: The actual editor mounting is handled by onMount callback
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    }).catch((error) => {
+    // Note: We don't clear the timeout here since init() success doesn't guarantee
+    // the editor will mount. The timeout is only cleared in onMount or on error.
+    loader.init().catch((error) => {
       console.error('Monaco Editor failed to load:', error);
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
       }
-      setLoadState('error');
+      if (mountedRef.current) {
+        setLoadState('error');
+      }
     });
 
     return () => {
+      mountedRef.current = false;
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
       }
