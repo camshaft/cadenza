@@ -69,7 +69,9 @@ export function SourceEditor({ value, onChange }: SourceEditorProps) {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
     }
-    setLoadState('loaded');
+    if (mountedRef.current) {
+      setLoadState('loaded');
+    }
   };
 
   // If Monaco failed to load, show fallback textarea
