@@ -150,11 +150,12 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ### Testing & Ergonomics
 
-16. **Move tests to snapshot-based test-data directory**
-    - Current: Inline unit tests
-    - Needed: test-data directory with snapshot tests like parser
-    - Write `.cdz` files that get automatically picked up and evaluated with standard environment
-    - Snapshot return values and diagnostics
+16. ~~**Move tests to snapshot-based test-data directory**~~
+    - [x] COMPLETED: Created test-data directory with `.cdz` files
+    - [x] Added build script that generates tests from test-data files
+    - [x] Added `testing.rs` module with `eval_all` helper that returns values and diagnostics
+    - [x] Added snapshot testing via `insta` crate
+    - [x] Snapshots capture both evaluated values and diagnostics for verification
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573084407)
     - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575622101)
 
@@ -202,4 +203,5 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 - Item 20: Identifier validation in special forms
 
 ### Lower Priority (Ergonomics)
-- Items 5, 15, 16, 17: Types as values, snapshot tests, builtin! macro
+- Items 5, 15, 17: Types as values, builtin! macro
+- ~~Item 16~~: Snapshot tests (COMPLETED)

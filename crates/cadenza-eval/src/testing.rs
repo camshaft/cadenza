@@ -29,8 +29,8 @@ pub fn eval_all(src: &str) -> EvalResult {
     if !parsed.errors.is_empty() {
         let diagnostics: Vec<Diagnostic> = parsed
             .errors
-            .iter()
-            .map(|err| *Diagnostic::parse_error(&err.message, err.span))
+            .into_iter()
+            .map(|err| *Box::<Diagnostic>::from(err))
             .collect();
         return EvalResult {
             values: vec![],
