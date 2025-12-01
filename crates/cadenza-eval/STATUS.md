@@ -15,6 +15,7 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 - Look up variables in scoped environments
 - Apply builtin functions and macros
 - Handle macro expansion
+- Declare variables with `let` and assign with `=`
 
 ### Completed Tasks
 
@@ -30,6 +31,7 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 - [x] Use FxHash for all maps (compiler, env, interner) instead of std HashMap
 - [x] Add `get_mut` to Env for assignment operator support
 - [x] Remove `is_truthy` - only bools should be used for conditionals
+- [x] Implement `let` and `=` as special forms for variable declaration and assignment
 
 ## Remaining Work Items
 
@@ -95,14 +97,17 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ### Eval Architecture
 
-8. **Make eval a trait with stack trace support**
-   - Current: `eval_expr` is a standalone function
-   - Needed: Trait implementation with stack trace maintenance
+8. ~~**Make eval a trait with stack trace support**~~
+   - [x] COMPLETED: Created `Eval` trait with `eval(&self, ctx: &mut EvalContext) -> Result<Value>` method
+   - [x] Implemented `Eval` trait for `Expr`, `Literal`, `Ident`, `Apply`, `Attr`, and `Synthetic`
+   - [x] Created `EvalContext` struct that consolidates env and compiler into a single struct
+   - [ ] Stack trace maintenance (future work - tracked separately)
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573081207)
 
-9. **BuiltinFn needs scope info**
-   - Current: `fn(&[Value]) -> Result<Value>`
-   - Needed: Access to env, compiler, interner; return `Result` with Expr as possible type
+9. ~~**BuiltinFn needs scope info**~~
+   - [x] COMPLETED: Updated `BuiltinFn` signature from `fn(&[Value]) -> Result<Value>` to `fn(&[Value], &mut EvalContext<'_>) -> Result<Value>`
+   - [x] Updated `BuiltinMacro` signature from `fn(&[rowan::GreenNode]) -> Result<rowan::GreenNode>` to `fn(&[rowan::GreenNode], &mut EvalContext<'_>) -> Result<rowan::GreenNode>`
+   - [x] Native functions now have access to env and compiler via `EvalContext`
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573086109)
 
 10. **Move operators to std environment**
@@ -145,26 +150,60 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ### Testing & Ergonomics
 
-16. **Move tests to snapshot-based test-data directory**
-    - Current: Inline unit tests
-    - Needed: test-data directory with snapshot tests like parser
+16. ~~**Move tests to snapshot-based test-data directory**~~
+    - [x] COMPLETED: Created test-data directory with `.cdz` files
+    - [x] Added build script that generates tests from test-data files
+    - [x] Added `testing.rs` module with `eval_all` helper that returns values and diagnostics
+    - [x] Added snapshot testing via `insta` crate
+    - [x] Snapshots capture both evaluated values and diagnostics for verification
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573084407)
+    - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575622101)
 
 17. **Add builtin! macro helper**
     - Current: Verbose `BuiltinFn` struct construction
     - Needed: Ergonomic macro like `builtin!(fn inc(a: Integer) { a + 1 })`
     - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573089374)
 
+### Macros & Special Forms
+
+18. **Use Expr AST nodes instead of GreenNodes**
+    - Current: `BuiltinMacro` and `BuiltinSpecialForm` receive `&[rowan::GreenNode]`
+    - Needed: Pass `Expr` AST nodes which have better typing
+    - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575592663)
+
+19. **Unify macros and special forms into a single type**
+    - Current: Separate `BuiltinMacro` (returns GreenNode) and `BuiltinSpecialForm` (returns Value)
+    - Needed: Single macro type that can return either AST or Value
+    - Add `Value::Expr(Expr)` variant - macros return AST that gets evaluated in a loop until not AST
+    - Enables quote/splice functionality
+    - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575592663)
+
+20. ~~**Validate identifier nodes in special forms**~~
+    - [x] COMPLETED: Updated `builtin_let` to validate that argument is an identifier
+    - [x] Cast GreenNode to SyntaxNode, then to Expr
+    - [x] Match on `Expr::Ident` and return syntax error for non-identifier expressions
+    - [x] Added test case `error-let-invalid.cdz` to verify error message
+    - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575594998)
+
+21. **Simplify Apply evaluation logic**
+    - Current: Over-specialized if-checks for Ident vs Op vs other in receiver handling
+    - Needed: Evaluate/expand receiver in a loop without special-case checks
+    - Options: Flatten curried receiver during expansion OR update parser to not curry
+    - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575603972)
+
 ## Priority Suggestions
 
 ### High Priority (Architectural)
 - Items 1, 6, 8: Error/value source tracking and stack traces
 - Items 9, 10: BuiltinFn signature and std environment
+- Items 18, 19, 21: Macro/special form unification and Apply simplification
 
 ### Medium Priority (Performance/Correctness)
 - Items 11, 12, 13, 14, 15: Interner improvements
 - Items 2, 3, 4: Error handling improvements
 - Item 7: Value comparison semantics
+- ~~Item 20~~: Identifier validation in special forms (COMPLETED)
 
 ### Lower Priority (Ergonomics)
-- Items 5, 15, 16: Types as values, snapshot tests, builtin! macro
+- Items 5, 15, 17: Types as values, builtin! macro
+- ~~Item 16~~: Snapshot tests (COMPLETED)

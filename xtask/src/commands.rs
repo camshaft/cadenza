@@ -7,6 +7,7 @@ pub mod ci;
 pub mod common;
 pub mod hooks;
 pub mod precommit;
+pub mod explorer;
 pub mod test;
 
 #[derive(Subcommand)]
@@ -19,6 +20,8 @@ pub enum Command {
     Hooks(hooks::Hooks),
     /// Run precommit checks (applies rustfmt and runs clippy)
     Precommit(precommit::Precommit),
+    /// Run the Compiler Explorer development server or build for production
+    Explorer(explorer::Explorer),
     /// Run tests
     Test(test::Test),
 }
@@ -30,6 +33,7 @@ impl Command {
             Command::Ci(cmd) => cmd.run(sh),
             Command::Hooks(cmd) => cmd.run(sh),
             Command::Precommit(cmd) => cmd.run(sh),
+            Command::Explorer(cmd) => cmd.run(sh),
             Command::Test(cmd) => cmd.run(sh),
         }
     }

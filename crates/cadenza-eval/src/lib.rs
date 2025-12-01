@@ -13,27 +13,35 @@
 //! - [`Type`]: Runtime types as first-class values
 //! - [`Env`]: Scoped environment for variable bindings
 //! - [`Compiler`]: The compiler state that accumulates definitions
+//! - [`EvalContext`]: Consolidated evaluation context for all eval arguments
+//! - [`Eval`]: Trait for evaluatable expressions
 //! - [`eval`]: The main evaluation function
 
 mod compiler;
+mod context;
 mod diagnostic;
 mod env;
 mod eval;
+mod generated;
 pub mod interner;
 mod map;
 mod value;
 
 pub use compiler::Compiler;
+pub use context::{Eval, EvalContext};
 pub use diagnostic::{
     BoxedDiagnosticExt, Diagnostic, DiagnosticKind, DiagnosticLevel, Result, StackFrame,
 };
 // Backwards compatibility aliases
 pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;
-pub use eval::eval;
+pub use eval::{builtin_assign, builtin_let, eval};
 pub use interner::InternedString;
 pub use map::Map;
-pub use value::{Type, Value};
+pub use value::{BuiltinFn, BuiltinMacro, BuiltinSpecialForm, Type, Value};
+
+#[cfg(test)]
+mod testing;
 
 #[cfg(test)]
 mod tests;

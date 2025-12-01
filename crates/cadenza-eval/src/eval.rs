@@ -10,10 +10,11 @@
 
 use crate::{
     compiler::Compiler,
+    context::{Eval, EvalContext},
     diagnostic::{Diagnostic, Result},
     env::Env,
     interner::InternedString,
-    value::{Type, Value},
+    value::{BuiltinSpecialForm, Type, Value},
 };
 use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
 
@@ -29,12 +30,13 @@ use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root,
 /// that expression. Check `compiler.has_errors()` after calling to see if
 /// any errors occurred.
 pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
+    let mut ctx = EvalContext::new(env, compiler);
     let mut results = Vec::new();
     for expr in root.items() {
-        match eval_expr(&expr, env, compiler) {
+        match expr.eval(&mut ctx) {
             Ok(value) => results.push(value),
             Err(diagnostic) => {
-                compiler.record_diagnostic(*diagnostic);
+                ctx.compiler.record_diagnostic(*diagnostic);
                 results.push(Value::Nil);
             }
         }
@@ -42,131 +44,159 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
     results
 }
 
-/// Evaluates a single expression.
-pub fn eval_expr(expr: &Expr, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
-    match expr {
-        Expr::Literal(lit) => eval_literal(lit),
-        Expr::Ident(ident) => eval_ident(ident, env, compiler),
-        Expr::Apply(apply) => eval_apply(apply, env, compiler),
-        Expr::Attr(attr) => eval_attr(attr, env, compiler),
-        Expr::Op(op) => {
-            // Operators as values (for higher-order usage)
-            // Use SyntaxText directly without allocating a String
-            let text = op.syntax().text();
-            let id: InternedString = text.to_string().as_str().into();
-            Ok(Value::Symbol(id))
-        }
-        Expr::Synthetic(syn) => eval_synthetic(syn, env, compiler),
-        Expr::Error(_) => Err(Diagnostic::syntax("encountered error node in AST")),
-    }
-}
+// =============================================================================
+// Eval trait implementations
+// =============================================================================
 
-/// Evaluates a literal value.
-fn eval_literal(lit: &Literal) -> Result<Value> {
-    let value = lit
-        .value()
-        .ok_or_else(|| Diagnostic::syntax("missing literal value"))?;
-
-    match value {
-        LiteralValue::Integer(int_val) => {
-            let text = int_val.syntax().text();
-            let text_str = text.to_string();
-            // Remove underscores for parsing
-            let clean = text_str.replace('_', "");
-            let n: i64 = clean
-                .parse()
-                .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text_str}")))?;
-            Ok(Value::Integer(n))
-        }
-        LiteralValue::Float(float_val) => {
-            let text = float_val.syntax().text();
-            let text_str = text.to_string();
-            let clean = text_str.replace('_', "");
-            let n: f64 = clean
-                .parse()
-                .map_err(|_| Diagnostic::syntax(format!("invalid float: {text_str}")))?;
-            Ok(Value::Float(n))
-        }
-        LiteralValue::String(str_val) => {
-            let text = str_val.syntax().text().to_string();
-            Ok(Value::String(text))
-        }
-        LiteralValue::StringWithEscape(str_val) => {
-            let text = str_val.syntax().text().to_string();
-            // TODO: Process escape sequences
-            Ok(Value::String(text))
+impl Eval for Expr {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        match self {
+            Expr::Literal(lit) => lit.eval(ctx),
+            Expr::Ident(ident) => ident.eval(ctx),
+            Expr::Apply(apply) => apply.eval(ctx),
+            Expr::Attr(attr) => attr.eval(ctx),
+            Expr::Op(op) => {
+                // Operators as values (for higher-order usage)
+                // Use SyntaxText directly without allocating a String
+                let text = op.syntax().text();
+                let id: InternedString = text.to_string().as_str().into();
+                Ok(Value::Symbol(id))
+            }
+            Expr::Synthetic(syn) => syn.eval(ctx),
+            Expr::Error(_) => Err(Diagnostic::syntax("encountered error node in AST")),
         }
     }
 }
 
-/// Evaluates an identifier by looking it up in the environment.
-fn eval_ident(ident: &Ident, env: &Env, compiler: &Compiler) -> Result<Value> {
-    let text = ident.syntax().text();
-    // TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
-    // AsRef<str> directly. See STATUS.md for tracking.
-    let id: InternedString = text.to_string().as_str().into();
+impl Eval for Literal {
+    fn eval(&self, _ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let value = self
+            .value()
+            .ok_or_else(|| Diagnostic::syntax("missing literal value"))?;
 
-    // First check the local environment
-    if let Some(value) = env.get(id) {
-        return Ok(value.clone());
+        match value {
+            LiteralValue::Integer(int_val) => {
+                let text = int_val.syntax().text();
+                let text_str = text.to_string();
+                // Remove underscores for parsing
+                let clean = text_str.replace('_', "");
+                let n: i64 = clean
+                    .parse()
+                    .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text_str}")))?;
+                Ok(Value::Integer(n))
+            }
+            LiteralValue::Float(float_val) => {
+                let text = float_val.syntax().text();
+                let text_str = text.to_string();
+                let clean = text_str.replace('_', "");
+                let n: f64 = clean
+                    .parse()
+                    .map_err(|_| Diagnostic::syntax(format!("invalid float: {text_str}")))?;
+                Ok(Value::Float(n))
+            }
+            LiteralValue::String(str_val) => {
+                let text = str_val.syntax().text().to_string();
+                Ok(Value::String(text))
+            }
+            LiteralValue::StringWithEscape(str_val) => {
+                let text = str_val.syntax().text().to_string();
+                // TODO: Process escape sequences
+                Ok(Value::String(text))
+            }
+        }
     }
-
-    // Then check compiler definitions
-    if let Some(value) = compiler.get_var(id) {
-        return Ok(value.clone());
-    }
-
-    Err(Diagnostic::undefined_variable(id))
 }
 
-/// Evaluates a function/macro application.
-fn eval_apply(apply: &Apply, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
-    let receiver = apply
-        .receiver()
-        .ok_or_else(|| Diagnostic::syntax("missing receiver in application"))?;
-
-    let receiver_expr = receiver
-        .value()
-        .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
-
-    // Check if the receiver is an identifier that names a macro
-    if let Expr::Ident(ref ident) = receiver_expr {
-        let text = ident.syntax().text();
+impl Eval for Ident {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let text = self.syntax().text();
+        // TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
+        // AsRef<str> directly. See STATUS.md for tracking.
         let id: InternedString = text.to_string().as_str().into();
 
-        // Check for macro in compiler
-        if let Some(macro_value) = compiler.get_macro(id) {
-            return expand_and_eval_macro(macro_value.clone(), apply, env, compiler);
+        // First check the local environment
+        if let Some(value) = ctx.env.get(id) {
+            return Ok(value.clone());
         }
 
-        // Check for macro in environment
-        if let Some(Value::BuiltinMacro(_)) = env.get(id) {
-            let macro_value = env.get(id).unwrap().clone();
-            return expand_and_eval_macro(macro_value, apply, env, compiler);
+        // Then check compiler definitions
+        if let Some(value) = ctx.compiler.get_var(id) {
+            return Ok(value.clone());
         }
+
+        Err(Diagnostic::undefined_variable(id))
     }
+}
 
-    // Not a macro call - evaluate normally
-    let callee = eval_expr(&receiver_expr, env, compiler)?;
+impl Eval for Apply {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let receiver = self
+            .receiver()
+            .ok_or_else(|| Diagnostic::syntax("missing receiver in application"))?;
 
-    // Collect and evaluate arguments
-    let mut args = Vec::new();
-    for arg in apply.arguments() {
-        if let Some(arg_expr) = arg.value() {
-            let value = eval_expr(&arg_expr, env, compiler)?;
-            args.push(value);
+        let receiver_expr = receiver
+            .value()
+            .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
+
+        // Check if the receiver is an identifier that names a macro or special form
+        if let Expr::Ident(ref ident) = receiver_expr {
+            let text = ident.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
+
+            // Check for macro in compiler
+            if let Some(macro_value) = ctx.compiler.get_macro(id) {
+                return expand_and_eval_macro(macro_value.clone(), self, ctx);
+            }
+
+            // Check for macro or special form in environment
+            if let Some(value) = ctx.env.get(id) {
+                match value {
+                    Value::BuiltinMacro(_) => {
+                        let macro_value = value.clone();
+                        return expand_and_eval_macro(macro_value, self, ctx);
+                    }
+                    Value::BuiltinSpecialForm(_) => {
+                        let special_form = value.clone();
+                        return apply_special_form(special_form, self, ctx);
+                    }
+                    _ => {}
+                }
+            }
         }
-    }
 
-    apply_value(callee, args, env, compiler)
+        // Check if the receiver is an operator that's a special form
+        if let Expr::Op(ref op) = receiver_expr {
+            let text = op.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
+
+            // Check for special form in environment
+            if let Some(Value::BuiltinSpecialForm(_)) = ctx.env.get(id) {
+                let special_form = ctx.env.get(id).unwrap().clone();
+                return apply_special_form(special_form, self, ctx);
+            }
+        }
+
+        // Not a macro or special form call - evaluate normally
+        let callee = receiver_expr.eval(ctx)?;
+
+        // Collect and evaluate arguments
+        let mut args = Vec::new();
+        for arg in self.arguments() {
+            if let Some(arg_expr) = arg.value() {
+                let value = arg_expr.eval(ctx)?;
+                args.push(value);
+            }
+        }
+
+        apply_value(callee, args, ctx)
+    }
 }
 
 /// Expands a macro and evaluates the result.
 fn expand_and_eval_macro(
     macro_value: Value,
     apply: &Apply,
-    env: &mut Env,
-    compiler: &mut Compiler,
+    ctx: &mut EvalContext<'_>,
 ) -> Result<Value> {
     match macro_value {
         Value::BuiltinMacro(builtin) => {
@@ -185,13 +215,13 @@ fn expand_and_eval_macro(
                 })
                 .collect();
 
-            // Call the builtin macro with unevaluated syntax nodes
-            let expanded_node = (builtin.func)(&arg_nodes)?;
+            // Call the builtin macro with unevaluated syntax nodes and context
+            let expanded_node = (builtin.func)(&arg_nodes, ctx)?;
 
             // Create a SyntaxNode from the GreenNode and evaluate it
             let syntax_node = cadenza_syntax::Lang::parse_node(expanded_node);
             if let Some(expr) = Expr::cast_syntax_node(&syntax_node) {
-                eval_expr(&expr, env, compiler)
+                expr.eval(ctx)
             } else {
                 Err(Diagnostic::internal(
                     "macro expansion produced invalid syntax",
@@ -202,15 +232,40 @@ fn expand_and_eval_macro(
     }
 }
 
-/// Applies a callable value to arguments.
-fn apply_value(
-    callee: Value,
-    args: Vec<Value>,
-    _env: &mut Env,
-    _compiler: &mut Compiler,
+/// Applies a special form to unevaluated arguments.
+fn apply_special_form(
+    special_form: Value,
+    apply: &Apply,
+    ctx: &mut EvalContext<'_>,
 ) -> Result<Value> {
+    match special_form {
+        Value::BuiltinSpecialForm(builtin) => {
+            // Collect unevaluated argument syntax nodes
+            let arg_nodes: Vec<rowan::GreenNode> = apply
+                .arguments()
+                .filter_map(|arg| arg.value())
+                .filter_map(|expr| match expr {
+                    Expr::Apply(a) => Some(a.syntax().green().into_owned()),
+                    Expr::Ident(i) => Some(i.syntax().green().into_owned()),
+                    Expr::Literal(l) => Some(l.syntax().green().into_owned()),
+                    Expr::Op(o) => Some(o.syntax().green().into_owned()),
+                    Expr::Attr(a) => Some(a.syntax().green().into_owned()),
+                    Expr::Synthetic(s) => Some(s.syntax().green().into_owned()),
+                    Expr::Error(_) => None,
+                })
+                .collect();
+
+            // Call the builtin special form with unevaluated syntax nodes and context
+            (builtin.func)(&arg_nodes, ctx)
+        }
+        _ => Err(Diagnostic::internal("expected special form value")),
+    }
+}
+
+/// Applies a callable value to arguments.
+fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
-        Value::BuiltinFn(builtin) => (builtin.func)(&args),
+        Value::BuiltinFn(builtin) => (builtin.func)(&args, ctx),
         Value::Symbol(id) => {
             // Operator application
             apply_operator(id, args)
@@ -314,42 +369,161 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a >= b)),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
-        "=" => {
-            // Assignment operator - for now just return the right-hand side
-            // In a full implementation, this would modify the environment
-            match args.as_slice() {
-                [_, value] => Ok(value.clone()),
-                _ => Err(Diagnostic::arity(2, args.len())),
-            }
-        }
+        // Note: The `=` operator is handled as a special form (builtin_assign) for proper
+        // variable assignment semantics. If `=` appears here, it means it wasn't registered
+        // as a special form in the environment.
         _ => Err(Diagnostic::undefined_variable(op_id)),
     }
 }
 
-/// Evaluates an attribute (@decorator).
-fn eval_attr(attr: &Attr, env: &mut Env, compiler: &mut Compiler) -> Result<Value> {
-    // For now, attributes are evaluated and returned as-is
-    // In the future, they might have special semantics
-    if let Some(value_expr) = attr.value() {
-        eval_expr(&value_expr, env, compiler)
-    } else {
-        Ok(Value::Nil)
+impl Eval for Attr {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        // For now, attributes are evaluated and returned as-is
+        // In the future, they might have special semantics
+        if let Some(value_expr) = self.value() {
+            value_expr.eval(ctx)
+        } else {
+            Ok(Value::Nil)
+        }
     }
 }
 
-/// Evaluates a synthetic node (list, record, etc.).
-fn eval_synthetic(syn: &Synthetic, _env: &mut Env, _compiler: &mut Compiler) -> Result<Value> {
-    let ident = syn.identifier();
+impl Eval for Synthetic {
+    fn eval(&self, _ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let ident = self.identifier();
 
-    match ident {
-        "__list__" | "__record__" => {
-            // These should not appear as standalone expressions
-            // They're always wrapped in Apply nodes
-            Ok(Value::Nil)
+        match ident {
+            "__list__" | "__record__" => {
+                // These should not appear as standalone expressions
+                // They're always wrapped in Apply nodes
+                Ok(Value::Nil)
+            }
+            _ => Err(Diagnostic::syntax(format!(
+                "unknown synthetic node: {ident}"
+            ))),
         }
-        _ => Err(Diagnostic::syntax(format!(
-            "unknown synthetic node: {ident}"
-        ))),
+    }
+}
+
+// =============================================================================
+// Built-in special forms for variable declaration and assignment
+// =============================================================================
+
+/// Creates the `let` special form that declares a variable.
+///
+/// The `let` special form takes an identifier and declares it in the environment
+/// with an initial value of `Nil`. It returns the symbol so it can be used in
+/// assignment expressions.
+///
+/// # Parsing
+///
+/// The expression `let x = 42` is parsed as `[[=, [let, x], 42]]`, which is:
+/// - An `=` operator applied to `[let, x]` (the `let` special form applied to `x`) and `42`
+///
+/// This allows `let` to declare the variable and return a symbol, which `=` then uses
+/// to assign the value.
+pub fn builtin_let() -> BuiltinSpecialForm {
+    BuiltinSpecialForm {
+        name: "let",
+        signature: Type::function(vec![Type::Symbol], Type::Symbol),
+        func: |args, ctx| {
+            // Expect exactly one argument (the identifier)
+            if args.len() != 1 {
+                return Err(Diagnostic::arity(1, args.len()));
+            }
+
+            // Parse the argument and validate it's an identifier
+            let syntax_node = cadenza_syntax::Lang::parse_node(args[0].clone());
+            let expr = Expr::cast_syntax_node(&syntax_node)
+                .ok_or_else(|| Diagnostic::syntax("let requires a valid expression"))?;
+
+            // Validate that the expression is an identifier
+            let ident = match expr {
+                Expr::Ident(i) => i,
+                _ => {
+                    return Err(Diagnostic::syntax(
+                        "let requires an identifier, not an expression",
+                    ));
+                }
+            };
+
+            // Get the identifier name
+            let text = ident.syntax().text();
+            let name: InternedString = text.to_string().as_str().into();
+
+            // Define the variable in the environment with initial value Nil
+            ctx.env.define(name, Value::Nil);
+
+            // Return the symbol
+            Ok(Value::Symbol(name))
+        },
+    }
+}
+
+/// Creates the `=` special form that assigns a value to a variable.
+///
+/// The `=` special form takes two arguments:
+/// 1. The left-hand side (which should be a symbol from `let`)
+/// 2. The right-hand side (which is evaluated)
+///
+/// Example: `let x = 42` - The `let x` returns a symbol, then `=` assigns 42 to it.
+pub fn builtin_assign() -> BuiltinSpecialForm {
+    BuiltinSpecialForm {
+        name: "=",
+        signature: Type::function(vec![Type::Symbol, Type::Unknown], Type::Unknown),
+        func: |args, ctx| {
+            // Expect exactly two arguments
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            // Parse the LHS to determine how to handle it
+            let lhs_node = cadenza_syntax::Lang::parse_node(args[0].clone());
+            let lhs_expr = Expr::cast_syntax_node(&lhs_node)
+                .ok_or_else(|| Diagnostic::syntax("assignment LHS must be an expression"))?;
+
+            // Evaluate the RHS to get the value
+            let rhs_node = cadenza_syntax::Lang::parse_node(args[1].clone());
+            let rhs_value = if let Some(expr) = Expr::cast_syntax_node(&rhs_node) {
+                expr.eval(ctx)?
+            } else {
+                return Err(Diagnostic::syntax("assignment RHS must be an expression"));
+            };
+
+            // Determine the variable name based on LHS
+            match lhs_expr {
+                // If LHS is a plain identifier, get the name directly (for reassignment)
+                Expr::Ident(ref ident) => {
+                    let text = ident.syntax().text();
+                    let name: InternedString = text.to_string().as_str().into();
+
+                    // Check if the variable exists (must be declared with `let` first)
+                    if let Some(var) = ctx.env.get_mut(name) {
+                        *var = rhs_value.clone();
+                        Ok(rhs_value)
+                    } else {
+                        Err(Diagnostic::undefined_variable(name))
+                    }
+                }
+                // Otherwise, evaluate the LHS (e.g., from `let x`)
+                _ => {
+                    let lhs_value = lhs_expr.eval(ctx)?;
+
+                    match lhs_value {
+                        Value::Symbol(name) => {
+                            // Update the variable in the environment
+                            if let Some(var) = ctx.env.get_mut(name) {
+                                *var = rhs_value.clone();
+                                Ok(rhs_value)
+                            } else {
+                                Err(Diagnostic::undefined_variable(name))
+                            }
+                        }
+                        _ => Err(Diagnostic::type_error(Type::Symbol, lhs_value.type_of())),
+                    }
+                }
+            }
+        },
     }
 }
 

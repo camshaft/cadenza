@@ -12,7 +12,7 @@ repository = "https://github.com/camshaft/cadenza"
 [workspace.dependencies]
 anyhow = "1"
 miette = "7.6"
-rustc-hash = "1.1"
+rustc-hash = "2.1"
 axum = "0.7"
 bach = "0.1.0"
 bindgen = "0.71"
@@ -33,7 +33,7 @@ rand = "0.9"
 rowan = "0.16"
 serde = { version = "1.0", features = ["derive"] }
 syn = { version = "2.0", features = ["full"] }
-thiserror = "1.0"
+thiserror = "2.0"
 tokio = { version = "1.0" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
