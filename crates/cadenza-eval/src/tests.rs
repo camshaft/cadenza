@@ -1,4 +1,9 @@
 //! Integration tests for the Cadenza evaluator.
+//!
+//! Most basic evaluation tests have been moved to snapshot-based tests in
+//! the test-data/ directory. This file contains tests that require special
+//! setup (custom builtins, pre-populated environments) or test internal
+//! behavior that is not suitable for snapshot testing.
 
 use crate::{
     compiler::Compiler,
@@ -40,77 +45,13 @@ fn eval_one(src: &str) -> Result<Value, Box<Diagnostic>> {
         .ok_or_else(|| Diagnostic::syntax("no expressions"))
 }
 
-#[test]
-fn test_basic_arithmetic() {
-    assert_eq!(eval_one("1 + 2").unwrap(), Value::Integer(3));
-    assert_eq!(eval_one("10 - 4").unwrap(), Value::Integer(6));
-    assert_eq!(eval_one("3 * 7").unwrap(), Value::Integer(21));
-    assert_eq!(eval_one("20 / 4").unwrap(), Value::Integer(5));
-}
-
-#[test]
-fn test_operator_precedence() {
-    // * has higher precedence than +
-    assert_eq!(eval_one("2 + 3 * 4").unwrap(), Value::Integer(14));
-    // Left-to-right for same precedence
-    assert_eq!(eval_one("10 - 5 - 2").unwrap(), Value::Integer(3));
-}
-
-#[test]
-fn test_float_arithmetic() {
-    assert_eq!(eval_one("1.5 + 2.5").unwrap(), Value::Float(4.0));
-    assert_eq!(eval_one("3.0 * 2.0").unwrap(), Value::Float(6.0));
-}
-
-#[test]
-fn test_mixed_arithmetic() {
-    // Integer + Float = Float
-    assert_eq!(eval_one("1 + 2.5").unwrap(), Value::Float(3.5));
-    assert_eq!(eval_one("2.5 + 1").unwrap(), Value::Float(3.5));
-}
-
-#[test]
-fn test_comparison_operators() {
-    assert_eq!(eval_one("1 < 2").unwrap(), Value::Bool(true));
-    assert_eq!(eval_one("2 < 1").unwrap(), Value::Bool(false));
-    assert_eq!(eval_one("1 <= 1").unwrap(), Value::Bool(true));
-    assert_eq!(eval_one("2 > 1").unwrap(), Value::Bool(true));
-    assert_eq!(eval_one("1 >= 1").unwrap(), Value::Bool(true));
-    assert_eq!(eval_one("1 == 1").unwrap(), Value::Bool(true));
-    assert_eq!(eval_one("1 != 2").unwrap(), Value::Bool(true));
-}
-
-#[test]
-fn test_string_literal() {
-    assert_eq!(
-        eval_one("\"hello world\"").unwrap(),
-        Value::String("hello world".to_string())
-    );
-}
-
-#[test]
-fn test_multiple_expressions() {
-    let results = eval_all("1\n2\n3").unwrap();
-    assert_eq!(results.len(), 3);
-    assert_eq!(results[0], Value::Integer(1));
-    assert_eq!(results[1], Value::Integer(2));
-    assert_eq!(results[2], Value::Integer(3));
-}
-
-#[test]
-fn test_undefined_variable_error() {
-    let result = eval_one("undefined_variable");
-    assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err().kind,
-        crate::diagnostic::DiagnosticKind::UndefinedVariable(_)
-    ));
-}
+// =============================================================================
+// Tests for custom builtins and environment setup
+// =============================================================================
 
 #[test]
 fn test_builtin_function() {
-    // Note: "add 1 2" is parsed as ((add 1) 2), i.e., nested applies.
-    // For simple testing, we use a single-argument function.
+    // Tests custom function registration - not suitable for snapshot testing
     let parsed = parse("inc 5");
     let root = parsed.ast();
     let mut env = Env::new();
@@ -142,6 +83,7 @@ fn test_builtin_function() {
 
 #[test]
 fn test_variable_from_environment() {
+    // Tests pre-populated environment - not suitable for snapshot testing
     let parsed = parse("x + y");
     let root = parsed.ast();
     let mut env = Env::new();
@@ -159,6 +101,7 @@ fn test_variable_from_environment() {
 
 #[test]
 fn test_variable_from_compiler() {
+    // Tests compiler variable storage - not suitable for snapshot testing
     let parsed = parse("global_var");
     let root = parsed.ast();
     let mut env = Env::new();
@@ -172,11 +115,9 @@ fn test_variable_from_compiler() {
     assert_eq!(results[0], Value::Integer(42));
 }
 
-#[test]
-fn test_division_by_zero() {
-    let result = eval_one("1 / 0");
-    assert!(result.is_err());
-}
+// =============================================================================
+// Tests for internal data structures
+// =============================================================================
 
 #[test]
 fn test_interner_consistency() {
@@ -214,9 +155,13 @@ fn test_compiler_definitions() {
     assert_eq!(compiler.num_defs(), 2);
 }
 
+// =============================================================================
+// Tests for error collection behavior
+// =============================================================================
+
 #[test]
 fn test_eval_collecting_integration() {
-    // Test that eval properly collects errors during evaluation
+    // Tests that eval properly collects errors during evaluation
     // while still producing results for valid expressions
     let src = "x + 1\n2 + 3\ny + 4";
     let parsed = parse(src);
@@ -240,7 +185,7 @@ fn test_eval_collecting_integration() {
 
 #[test]
 fn test_eval_collecting_with_defined_variables() {
-    // Test that defined variables work in eval mode
+    // Tests mixed env/compiler variables with error collection
     let src = "x\ny + 1\nz";
     let parsed = parse(src);
     let root = parsed.ast();
@@ -268,7 +213,7 @@ fn test_eval_collecting_with_defined_variables() {
 
 #[test]
 fn test_parse_error_message() {
-    // Test that parse errors return actual error messages instead of generic "parse errors: [...]"
+    // Tests that parse errors return actual error messages
     let result = eval_one("[1, , 2]"); // Array with missing element
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -276,7 +221,7 @@ fn test_parse_error_message() {
         &err.kind,
         crate::diagnostic::DiagnosticKind::ParseError(_)
     ));
-    // The error message should contain the actual parse error, not "parse errors: [...]"
+    // The error message should contain the actual parse error
     let msg = format!("{}", err);
     assert!(
         msg.contains("expected expression before comma"),
@@ -285,118 +230,4 @@ fn test_parse_error_message() {
     );
     // The error should have a span
     assert!(err.span.is_some());
-}
-
-// =============================================================================
-// Tests for let and = special forms
-// =============================================================================
-
-/// Helper to evaluate with let and = special forms registered.
-fn eval_with_let(src: &str) -> Result<Vec<Value>, Box<Diagnostic>> {
-    let parsed = parse(src);
-    if let Some(err) = parsed.errors.first() {
-        return Err(Diagnostic::parse_error(&err.message, err.span));
-    }
-    let root = parsed.ast();
-    let mut env = Env::new();
-    let mut compiler = Compiler::new();
-
-    // Register the let and = special forms
-    let let_id: InternedString = "let".into();
-    let assign_id: InternedString = "=".into();
-    env.define(
-        let_id,
-        Value::BuiltinSpecialForm(crate::eval::builtin_let()),
-    );
-    env.define(
-        assign_id,
-        Value::BuiltinSpecialForm(crate::eval::builtin_assign()),
-    );
-
-    let results = crate::eval(&root, &mut env, &mut compiler);
-    if compiler.has_errors() {
-        return Err(Box::new(
-            compiler
-                .take_diagnostics()
-                .into_iter()
-                .next()
-                .expect("has_errors() returned true but no diagnostics found"),
-        ));
-    }
-    Ok(results)
-}
-
-/// Helper to evaluate a single expression with let and = special forms.
-fn eval_one_with_let(src: &str) -> Result<Value, Box<Diagnostic>> {
-    eval_with_let(src)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| Diagnostic::syntax("no expressions"))
-}
-
-#[test]
-fn test_let_declares_variable() {
-    // `let x` should declare x and return the symbol
-    let result = eval_one_with_let("let x").unwrap();
-    // The result should be a symbol
-    assert!(
-        matches!(result, Value::Symbol(id) if &*id == "x"),
-        "Expected Symbol(x), got {:?}",
-        result
-    );
-}
-
-#[test]
-fn test_let_with_assignment() {
-    // `let x = 42` should declare x and assign 42 to it
-    let result = eval_one_with_let("let x = 42").unwrap();
-    // The result should be the assigned value (42)
-    assert_eq!(result, Value::Integer(42));
-}
-
-#[test]
-fn test_let_variable_usable() {
-    // After `let x = 42`, we should be able to use x
-    let results = eval_with_let("let x = 42\nx").unwrap();
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0], Value::Integer(42)); // let x = 42 returns 42
-    assert_eq!(results[1], Value::Integer(42)); // x evaluates to 42
-}
-
-#[test]
-fn test_let_multiple_variables() {
-    // Multiple let declarations
-    let results = eval_with_let("let x = 1\nlet y = 2\nx + y").unwrap();
-    assert_eq!(results.len(), 3);
-    assert_eq!(results[0], Value::Integer(1)); // let x = 1
-    assert_eq!(results[1], Value::Integer(2)); // let y = 2
-    assert_eq!(results[2], Value::Integer(3)); // x + y = 3
-}
-
-#[test]
-fn test_let_with_expression() {
-    // Let with a complex expression on RHS
-    let results = eval_with_let("let x = 1 + 2\nx").unwrap();
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0], Value::Integer(3)); // let x = 1 + 2
-    assert_eq!(results[1], Value::Integer(3)); // x evaluates to 3
-}
-
-#[test]
-fn test_let_reassignment() {
-    // Reassignment to a let-declared variable
-    let results = eval_with_let("let x = 1\nx = 2\nx").unwrap();
-    assert_eq!(results.len(), 3);
-    assert_eq!(results[0], Value::Integer(1)); // let x = 1
-    assert_eq!(results[1], Value::Integer(2)); // x = 2
-    assert_eq!(results[2], Value::Integer(2)); // x evaluates to 2
-}
-
-#[test]
-fn test_let_only_declaration() {
-    // let x without assignment
-    let results = eval_with_let("let x\nx").unwrap();
-    assert_eq!(results.len(), 2);
-    assert!(matches!(results[0], Value::Symbol(_))); // let x returns symbol
-    assert_eq!(results[1], Value::Nil); // x evaluates to Nil
 }

@@ -1,0 +1,20 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "undefined_var\n"
+---
+EvalResult {
+    values: [
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: UndefinedVariable(
+                "undefined_var",
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}

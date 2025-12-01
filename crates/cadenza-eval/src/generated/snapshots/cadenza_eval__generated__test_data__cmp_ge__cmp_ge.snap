@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "1 >= 1\n"
+---
+EvalResult {
+    values: [
+        true,
+    ],
+    diagnostics: [],
+}

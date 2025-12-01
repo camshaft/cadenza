@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "2.5 + 1\n"
+---
+EvalResult {
+    values: [
+        3.5,
+    ],
+    diagnostics: [],
+}

@@ -1,0 +1,61 @@
+pub fn tests() -> String {
+    let examples = Example::load("test-data");
+    let mut out = String::new();
+    macro_rules! w {
+        ($($tt:tt)*) => {
+            out.push_str(&format!($($tt)*));
+            out.push('\n');
+        };
+    }
+
+    w!("use crate::testing as t;");
+    w!("use insta::assert_debug_snapshot as s;");
+
+    // Generate eval tests for each example
+    for Example { name, src } in examples.iter() {
+        w!("mod {name} {{");
+        w!("    use super::*;");
+        w!("    #[test]");
+        w!("    fn eval() {{");
+        w!("        s!({name:?}, t::eval_all({src:?}), {src:?});");
+        w!("    }}");
+        w!("}}");
+    }
+
+    out
+}
+
+pub struct Example {
+    pub name: String,
+    pub src: String,
+}
+
+impl Example {
+    fn load(subdir: &str) -> Box<[Example]> {
+        let dir = format!("{}/{}/", env!("CARGO_MANIFEST_DIR"), subdir);
+        let mut examples = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return examples.into();
+        };
+        for entry in entries {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            // Skip directories
+            if path.is_dir() {
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "cdz") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('-', "_");
+            let src = std::fs::read_to_string(path).unwrap();
+            examples.push(Example { name, src });
+        }
+        examples.into()
+    }
+}
