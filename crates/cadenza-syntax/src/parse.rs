@@ -57,8 +57,9 @@ impl<'src> Parser<'src> {
         while self.current() != Kind::Eof {
             // Skip leading trivia before creating the marker, so the marker
             // reflects the actual starting position of the expression.
-            // This fixes the bug where `\nfoo 123 456` was parsed as two
-            // separate expressions instead of one.
+            // This fixes the bug where `\nfoo 123 456` was parsed as
+            // `[foo, [123, 456]]` (two separate expressions) instead of
+            // the correct `[[foo, 123], 456]` (one nested expression).
             self.skip_trivia();
             let marker = self.whitespace.marker();
             self.parse_expression(marker);
