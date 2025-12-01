@@ -408,7 +408,7 @@ pub fn eval_source(source: &str) -> JsValue {
         .collect();
 
     let root = parsed.ast();
-    let mut env = Env::new();
+    let mut env = Env::with_standard_builtins();
     let mut compiler = Compiler::new();
 
     let results = cadenza_eval::eval(&root, &mut env, &mut compiler);
@@ -478,5 +478,39 @@ mod tests {
         let results = cadenza_eval::eval(&root, &mut env, &mut compiler);
         assert_eq!(results.len(), 1);
         assert!(!compiler.has_errors());
+    }
+
+    #[test]
+    fn test_eval_with_standard_builtins() {
+        // Test that Env::with_standard_builtins() works correctly
+        let source = "let x = 42\nx";
+        let parsed = parse::parse(source);
+        let root = parsed.ast();
+        let mut env = Env::with_standard_builtins();
+        let mut compiler = Compiler::new();
+
+        let results = cadenza_eval::eval(&root, &mut env, &mut compiler);
+        assert_eq!(results.len(), 2);
+        assert!(!compiler.has_errors());
+        // First result is the assignment value (42)
+        assert_eq!(results[0], Value::Integer(42));
+        // Second result is the value of x (42)
+        assert_eq!(results[1], Value::Integer(42));
+    }
+
+    #[test]
+    fn test_eval_let_with_expression() {
+        // Test let with a complex expression on RHS
+        let source = "let x = 1 + 2\nx";
+        let parsed = parse::parse(source);
+        let root = parsed.ast();
+        let mut env = Env::with_standard_builtins();
+        let mut compiler = Compiler::new();
+
+        let results = cadenza_eval::eval(&root, &mut env, &mut compiler);
+        assert_eq!(results.len(), 2);
+        assert!(!compiler.has_errors());
+        assert_eq!(results[0], Value::Integer(3));
+        assert_eq!(results[1], Value::Integer(3));
     }
 }
