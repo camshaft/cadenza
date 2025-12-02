@@ -57,3 +57,35 @@ cargo xtask ci test --no-default-features
 ## After Completing Work
 
 After completing work on a task from a crate's status document (e.g., `crates/cadenza-eval/STATUS.md`), update the status document to mark the task as complete. Use strikethrough (`~~`) to mark the task title and add checkmarks (`[x]`) to indicate completed sub-items.
+
+## PR Title Guidelines
+
+When creating or updating pull requests, use semantic commit conventions in PR titles to clearly communicate the nature of the changes:
+
+```
+<type>: <description>
+```
+
+### Common Types
+
+- `feat`: A new feature or capability
+- `fix`: A bug fix
+- `refactor`: Code restructuring without changing behavior
+- `docs`: Documentation changes only
+- `test`: Adding or updating tests
+- `chore`: Maintenance tasks, dependency updates, tooling changes
+- `perf`: Performance improvements
+- `style`: Code style/formatting changes (not CSS)
+
+### Examples
+
+```
+feat: add syntax node tracking to runtime values
+fix: resolve type mismatch in comparison operators
+refactor: unify macro and special form types
+docs: update AGENTS.md with semantic commit guidelines
+test: add snapshot tests for error diagnostics
+chore: update dependencies to latest versions
+```
+
+Use lowercase for the type and description. Keep the description concise and imperative (e.g., "add" not "added" or "adds").
