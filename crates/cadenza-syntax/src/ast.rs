@@ -103,6 +103,9 @@ impl Apply {
     ///
     /// For example, in `[[f, a], b]`, this returns `[a, b]` in order.
     /// This flattens the left-associative application chain into a single argument list.
+    ///
+    /// TODO: Return an iterator instead of Vec to avoid allocation. Would require storing
+    /// the root node and iterating down and back up the tree.
     pub fn all_arguments(&self) -> Vec<Expr> {
         let mut result = Vec::new();
         
