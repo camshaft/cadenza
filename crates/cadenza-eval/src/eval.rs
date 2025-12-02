@@ -155,6 +155,19 @@ impl Eval for Literal {
     }
 }
 
+/// Helper to auto-apply zero-parameter functions when referenced.
+///
+/// If the value is a zero-parameter function, it is automatically invoked.
+/// Otherwise, the value is returned as-is.
+fn maybe_auto_apply(value: Value, ctx: &mut EvalContext<'_>) -> Result<Value> {
+    if let Value::UserFunction(uf) = &value {
+        if uf.params.is_empty() {
+            return apply_value(value, vec![], ctx);
+        }
+    }
+    Ok(value)
+}
+
 impl Eval for Ident {
     fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
         let text = self.syntax().text();
@@ -164,24 +177,12 @@ impl Eval for Ident {
 
         // First check the local environment
         if let Some(value) = ctx.env.get(id) {
-            // Auto-apply zero-parameter functions
-            if let Value::UserFunction(uf) = value {
-                if uf.params.is_empty() {
-                    return apply_value(value.clone(), vec![], ctx);
-                }
-            }
-            return Ok(value.clone());
+            return maybe_auto_apply(value.clone(), ctx);
         }
 
         // Then check compiler definitions
         if let Some(value) = ctx.compiler.get_var(id) {
-            // Auto-apply zero-parameter functions
-            if let Value::UserFunction(uf) = value {
-                if uf.params.is_empty() {
-                    return apply_value(value.clone(), vec![], ctx);
-                }
-            }
-            return Ok(value.clone());
+            return maybe_auto_apply(value.clone(), ctx);
         }
 
         Err(Diagnostic::undefined_variable(id))
