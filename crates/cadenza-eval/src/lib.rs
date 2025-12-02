@@ -38,7 +38,7 @@ pub use env::Env;
 pub use eval::{builtin_assign, builtin_let, eval};
 pub use interner::InternedString;
 pub use map::Map;
-pub use value::{BuiltinFn, BuiltinMacro, Type, Value};
+pub use value::{BuiltinFn, BuiltinMacro, SourceInfo, TrackedValue, Type, Value};
 
 #[cfg(test)]
 mod testing;
