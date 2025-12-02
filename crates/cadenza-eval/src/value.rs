@@ -229,6 +229,9 @@ pub enum Value {
     /// Macros receive unevaluated AST expressions and return values directly.
     /// This unified type replaces both the old BuiltinMacro and BuiltinSpecialForm.
     BuiltinMacro(BuiltinMacro),
+
+    /// A user-defined function with parameter names and body expression.
+    UserFunction(UserFunction),
 }
 
 /// A built-in function type with type signature.
