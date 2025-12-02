@@ -217,8 +217,6 @@ impl Eval for Apply {
 
 /// Extracts an identifier from an expression if it is an Ident or Op node.
 /// Returns None for other expression types.
-/// Extracts an identifier from an expression if it is an Ident or Op node.
-/// Returns None for other expression types.
 ///
 /// TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
 /// AsRef<str> directly, so we need to allocate a String. See STATUS.md item #12.

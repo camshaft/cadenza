@@ -1,4 +1,9 @@
 //! Integration tests for the Cadenza evaluator.
+//!
+//! Most basic evaluation tests have been moved to snapshot-based tests in
+//! the test-data/ directory. This file contains tests that require special
+//! setup (custom builtins, pre-populated environments) or test internal
+//! behavior that is not suitable for snapshot testing.
 
 use crate::{
     compiler::Compiler,
