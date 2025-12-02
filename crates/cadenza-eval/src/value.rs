@@ -3,7 +3,7 @@
 //! Values can be symbols, lists, functions, macros, or built-in operations.
 
 use crate::{diagnostic::Result, interner::InternedString};
-use cadenza_syntax::ast::Expr;
+use cadenza_syntax::{ast::Expr, span::Span};
 use std::fmt;
 
 /// A runtime type in the Cadenza evaluator.
@@ -160,6 +160,41 @@ impl fmt::Display for Type {
     }
 }
 
+/// Source location information for a value.
+///
+/// This tracks where a value was created in the source code,
+/// enabling better error messages and debugging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceInfo {
+    /// The source file where this value originated, if known.
+    pub file: Option<InternedString>,
+    /// The source span where this value was created.
+    pub span: Span,
+}
+
+impl SourceInfo {
+    /// Creates new source info with a file and span.
+    pub fn new(file: Option<InternedString>, span: Span) -> Self {
+        Self { file, span }
+    }
+
+    /// Creates source info from just a span (no file information).
+    pub fn from_span(span: Span) -> Self {
+        Self { file: None, span }
+    }
+
+    /// Creates a synthetic/unknown source info with a zero-length span at position 0.
+    ///
+    /// Used for values that don't have a meaningful source location (e.g., built-in values,
+    /// synthesized values, or values created at runtime).
+    pub fn synthetic() -> Self {
+        Self {
+            file: None,
+            span: Span::new(0, 0),
+        }
+    }
+}
+
 /// A runtime value in the Cadenza evaluator.
 #[derive(Clone)]
 pub enum Value {
@@ -278,6 +313,112 @@ impl Value {
             Value::BuiltinMacro(bm) => bm.signature.clone(),
         }
     }
+
+    /// Wraps this value with source location information.
+    pub fn with_source(self, source: SourceInfo) -> TrackedValue {
+        TrackedValue {
+            value: self,
+            source,
+        }
+    }
+
+    /// Wraps this value with source information extracted from an expression.
+    ///
+    /// Extracts the text range from the expression's syntax node and converts it
+    /// to a Span. This conversion is necessary as rowan's TextRange uses a different
+    /// representation than our Span type.
+    pub fn from_expr(self, expr: &Expr) -> TrackedValue {
+        let syntax = match expr {
+            Expr::Literal(lit) => lit.syntax(),
+            Expr::Ident(ident) => ident.syntax(),
+            Expr::Apply(apply) => apply.syntax(),
+            Expr::Attr(attr) => attr.syntax(),
+            Expr::Op(op) => op.syntax(),
+            Expr::Synthetic(syn) => syn.syntax(),
+            Expr::Error(err) => err.syntax(),
+        };
+        let span = Span::new(
+            syntax.text_range().start().into(),
+            syntax.text_range().end().into(),
+        );
+        TrackedValue {
+            value: self,
+            source: SourceInfo::from_span(span),
+        }
+    }
+
+    /// Wraps this value with synthetic (unknown) source information.
+    pub fn without_source(self) -> TrackedValue {
+        TrackedValue {
+            value: self,
+            source: SourceInfo::synthetic(),
+        }
+    }
+}
+
+/// A value paired with source location information.
+///
+/// This allows values to carry information about where they were created
+/// in the source code, which is useful for error reporting and debugging.
+#[derive(Clone)]
+pub struct TrackedValue {
+    /// The actual runtime value.
+    pub value: Value,
+    /// Source location information.
+    pub source: SourceInfo,
+}
+
+impl TrackedValue {
+    /// Creates a new tracked value with synthetic (unknown) source information.
+    pub fn new(value: Value) -> Self {
+        Self {
+            value,
+            source: SourceInfo::synthetic(),
+        }
+    }
+
+    /// Creates a tracked value with source information.
+    pub fn with_source(value: Value, source: SourceInfo) -> Self {
+        Self { value, source }
+    }
+
+    /// Returns a reference to the underlying value.
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// Consumes self and returns the underlying value.
+    pub fn into_value(self) -> Value {
+        self.value
+    }
+
+    /// Returns the source information.
+    pub fn source(&self) -> SourceInfo {
+        self.source
+    }
+}
+
+impl From<Value> for TrackedValue {
+    fn from(value: Value) -> Self {
+        Self::new(value)
+    }
+}
+
+impl fmt::Debug for TrackedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Only show source info if it's not synthetic (has a non-zero span)
+        if self.source.span.start != 0 || self.source.span.end != 0 {
+            write!(f, "{:?}@{:?}", self.value, self.source.span)
+        } else {
+            write!(f, "{:?}", self.value)
+        }
+    }
+}
+
+impl fmt::Display for TrackedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.value)
+    }
 }
 
 impl fmt::Debug for Value {
@@ -345,6 +486,7 @@ impl Eq for Value {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cadenza_syntax::span::Span;
 
     #[test]
     fn type_of_returns_correct_types() {
@@ -428,5 +570,31 @@ mod tests {
     fn type_values_are_equal() {
         assert_eq!(Value::Type(Type::Integer), Value::Type(Type::Integer));
         assert_ne!(Value::Type(Type::Integer), Value::Type(Type::Float));
+    }
+
+    #[test]
+    fn tracked_value_debug_with_source() {
+        // Verifies that debug output includes both value and source information
+        // Expected format: "42@Span { start: 5, end: 7 }"
+        let value = Value::Integer(42);
+        let span = Span::new(5, 7);
+        let source = SourceInfo::from_span(span);
+        let tracked = TrackedValue::with_source(value, source);
+        let debug_str = format!("{tracked:?}");
+        assert!(debug_str.contains("42"));
+        assert!(debug_str.contains("5"));
+        assert!(debug_str.contains("7"));
+    }
+
+    #[test]
+    fn tracked_value_display_shows_value_only() {
+        // Verifies that Display output shows only the value, not source information
+        // Debug shows "42@Span{...}" while Display shows just "123"
+        // This allows values with source info to be printed cleanly in normal output
+        let value = Value::Integer(123);
+        let span = Span::new(10, 13);
+        let source = SourceInfo::from_span(span);
+        let tracked = TrackedValue::with_source(value, source);
+        assert_eq!(format!("{tracked}"), "123");
     }
 }

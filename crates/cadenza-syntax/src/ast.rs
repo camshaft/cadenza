@@ -320,6 +320,7 @@ impl fmt::Debug for Synthetic {
     }
 }
 
+#[derive(Clone)]
 pub enum Expr {
     Apply(Apply),
     Attr(Attr),
