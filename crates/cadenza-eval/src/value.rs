@@ -566,6 +566,7 @@ mod tests {
     #[test]
     fn tracked_value_debug_with_source() {
         // Verifies that debug output includes both value and source information
+        // Expected format: "42@Span { start: 5, end: 7 }"
         let value = Value::Integer(42);
         let span = Span::new(5, 7);
         let source = SourceInfo::from_span(span);
@@ -578,7 +579,9 @@ mod tests {
 
     #[test]
     fn tracked_value_display_shows_value_only() {
-        // Verifies that Display output shows the value without source information
+        // Verifies that Display output shows only the value, not source information
+        // Debug shows "42@Span{...}" while Display shows just "123"
+        // This allows values with source info to be printed cleanly in normal output
         let value = Value::Integer(123);
         let span = Span::new(10, 13);
         let source = SourceInfo::from_span(span);
