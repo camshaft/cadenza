@@ -85,14 +85,16 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Exported `Type` from crate root
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079828)
 
-6. ~~**Values need syntax nodes for source tracking**~~
-   - [x] COMPLETED: Added `SourceInfo` struct with file and span tracking
+6. **Values need syntax nodes for source tracking** (Partially Complete)
+   - [x] Added `SourceInfo` struct with file and span tracking
    - [x] Added `TrackedValue` wrapper type to pair values with optional source information
    - [x] Added helper methods to `Value` for creating tracked values
    - [x] Added `from_expr` method to extract source info from expressions
-   - [x] Added comprehensive tests for source tracking functionality
-   - [x] Exported `SourceInfo` and `TrackedValue` from crate root
-   - Note: Did not add `Value::Expr(Expr)` variant since `Expr` doesn't implement `Clone`
+   - [x] Implemented `Clone` for `Expr` to enable storing AST nodes when needed
+   - [ ] TODO: Update `Env` to store `TrackedValue` instead of `Value` for variable definitions
+   - [ ] TODO: Track source locations for function and variable definitions
+   - [ ] TODO: Use source information in error diagnostics (e.g., "variable `foo` defined at file:line")
+   - Note: Infrastructure is in place, but needs integration into evaluator and diagnostics
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573085238)
 
 7. **Value comparison should error on type mismatch**

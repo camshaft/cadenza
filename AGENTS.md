@@ -89,3 +89,38 @@ chore: update dependencies to latest versions
 ```
 
 Use lowercase for the type and description. Keep the description concise and imperative (e.g., "add" not "added" or "adds").
+
+## Test Writing Guidelines
+
+When writing tests, follow these principles to ensure high-quality, maintainable test code:
+
+### What to Test
+
+- **Focus on behavior, not implementation**: Test observable behavior and contracts, not internal implementation details
+- **Test complex logic and edge cases**: Prioritize testing non-trivial logic, error handling, and boundary conditions
+- **Avoid testing the type system**: Don't write tests for things the compiler already guarantees (e.g., type correctness)
+- **Skip trivial constructors/getters/setters**: Simple data structure manipulation rarely needs explicit testing
+
+### How to Test
+
+- **Use property-based testing for patterns**: When you find yourself writing many similar unit tests with slight variations, consider using property-based testing with `bolero` instead. Property tests assert relationships between inputs and outputs across a wide range of values.
+  
+  Example: Instead of 10 unit tests for different integer inputs, write one property test:
+  ```rust
+  #[test]
+  fn property_addition_commutative() {
+      bolero::check!().for_each(|a: i64, b: i64| {
+          assert_eq!(add(a, b), add(b, a));
+      });
+  }
+  ```
+
+- **Make test intent clear**: Each test should have a clear purpose. The test name and structure should communicate what is being tested and why it exists.
+
+- **One or two solid property tests > 100 specific unit tests**: Property tests provide better coverage and catch edge cases you might not think of.
+
+### What to Avoid
+
+- **Don't test the same thing repeatedly**: If multiple tests are checking the same behavior with trivial variations, consolidate them or use property testing
+- **Don't test trivial wrappers**: If a function just calls another function or wraps a value without logic, it doesn't need a dedicated test
+- **Don't assert on internal state**: Test public APIs and observable behavior, not private implementation details

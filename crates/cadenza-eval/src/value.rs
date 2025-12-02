@@ -564,82 +564,8 @@ mod tests {
     }
 
     #[test]
-    fn source_info_creation() {
-        let file: InternedString = "test.cdz".into();
-        let span = Span::new(10, 20);
-        let source = SourceInfo::new(Some(file), span);
-        assert_eq!(source.file, Some(file));
-        assert_eq!(source.span, span);
-    }
-
-    #[test]
-    fn source_info_from_span() {
-        let span = Span::new(5, 15);
-        let source = SourceInfo::from_span(span);
-        assert_eq!(source.file, None);
-        assert_eq!(source.span, span);
-    }
-
-    #[test]
-    fn tracked_value_without_source() {
-        let value = Value::Integer(42);
-        let tracked = TrackedValue::new(value.clone());
-        assert_eq!(tracked.value, value);
-        assert_eq!(tracked.source, None);
-    }
-
-    #[test]
-    fn tracked_value_with_source() {
-        let value = Value::Integer(42);
-        let span = Span::new(0, 2);
-        let source = SourceInfo::from_span(span);
-        let tracked = TrackedValue::with_source(value.clone(), source);
-        assert_eq!(tracked.value, value);
-        assert_eq!(tracked.source, Some(source));
-    }
-
-    #[test]
-    fn value_with_source_helper() {
-        let value = Value::String("hello".to_string());
-        let span = Span::new(10, 15);
-        let source = SourceInfo::from_span(span);
-        let tracked = value.clone().with_source(source);
-        assert_eq!(tracked.value, value);
-        assert_eq!(tracked.source, Some(source));
-    }
-
-    #[test]
-    fn tracked_value_from_value() {
-        let value = Value::Bool(true);
-        let tracked: TrackedValue = value.clone().into();
-        assert_eq!(tracked.value, value);
-        assert_eq!(tracked.source, None);
-    }
-
-    #[test]
-    fn tracked_value_into_value() {
-        let value = Value::Float(3.15);
-        let tracked = TrackedValue::new(value.clone());
-        let extracted = tracked.into_value();
-        assert_eq!(extracted, value);
-    }
-
-    #[test]
-    fn tracked_value_display() {
-        let value = Value::Integer(123);
-        let tracked = TrackedValue::new(value);
-        assert_eq!(format!("{tracked}"), "123");
-    }
-
-    #[test]
-    fn tracked_value_debug_without_source() {
-        let value = Value::Integer(42);
-        let tracked = TrackedValue::new(value);
-        assert_eq!(format!("{tracked:?}"), "42");
-    }
-
-    #[test]
     fn tracked_value_debug_with_source() {
+        // Verifies that debug output includes both value and source information
         let value = Value::Integer(42);
         let span = Span::new(5, 7);
         let source = SourceInfo::from_span(span);
@@ -648,5 +574,15 @@ mod tests {
         assert!(debug_str.contains("42"));
         assert!(debug_str.contains("5"));
         assert!(debug_str.contains("7"));
+    }
+
+    #[test]
+    fn tracked_value_display_shows_value_only() {
+        // Verifies that Display output shows the value without source information
+        let value = Value::Integer(123);
+        let span = Span::new(10, 13);
+        let source = SourceInfo::from_span(span);
+        let tracked = TrackedValue::with_source(value, source);
+        assert_eq!(format!("{tracked}"), "123");
     }
 }
