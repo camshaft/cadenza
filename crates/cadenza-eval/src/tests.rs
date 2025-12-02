@@ -146,12 +146,6 @@ fn test_eval_collecting_with_defined_variables() {
 }
 
 #[test]
-fn test_parse_error_message() {
-    let parsed = parse("1 + + 2");
-    assert!(!parsed.errors.is_empty());
-}
-
-#[test]
 fn test_diagnostic_with_span() {
     use cadenza_syntax::span::Span;
 

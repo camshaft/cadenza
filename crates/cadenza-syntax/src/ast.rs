@@ -110,10 +110,8 @@ impl Apply {
         let mut result = Vec::new();
 
         // First, get arguments from nested Apply in the receiver
-        if let Some(receiver) = self.receiver() {
-            if let Some(Expr::Apply(nested_apply)) = receiver.value() {
-                result.extend(nested_apply.all_arguments());
-            }
+        if let Some(Expr::Apply(nested_apply)) = self.receiver().and_then(|r| r.value()) {
+            result.extend(nested_apply.all_arguments());
         }
 
         // Then add arguments from this level
