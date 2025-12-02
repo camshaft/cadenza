@@ -9,6 +9,7 @@ use crate::{
     map::Map,
     value::Value,
 };
+use std::rc::Rc;
 
 /// A single scope in the environment.
 #[derive(Debug, Clone, Default)]
@@ -47,16 +48,18 @@ impl Scope {
 ///
 /// Variable lookup searches from the top scope to the bottom.
 /// New scopes are pushed for function calls and let bindings.
+///
+/// Uses Rc for cheap cloning - useful for closures that capture their environment.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
-    scopes: Vec<Scope>,
+    scopes: Rc<Vec<Scope>>,
 }
 
 impl Env {
     /// Creates a new environment with an empty global scope.
     pub fn new() -> Self {
         Self {
-            scopes: vec![Scope::new()],
+            scopes: Rc::new(vec![Scope::new()]),
         }
     }
 
@@ -94,7 +97,7 @@ impl Env {
 
     /// Pushes a new empty scope onto the stack.
     pub fn push_scope(&mut self) {
-        self.scopes.push(Scope::new());
+        Rc::make_mut(&mut self.scopes).push(Scope::new());
     }
 
     /// Pops the top scope from the stack.
@@ -104,12 +107,12 @@ impl Env {
     /// Panics if there is only one scope (the global scope).
     pub fn pop_scope(&mut self) {
         assert!(self.scopes.len() > 1, "Cannot pop the global scope");
-        self.scopes.pop();
+        Rc::make_mut(&mut self.scopes).pop();
     }
 
     /// Defines a binding in the current (top) scope.
     pub fn define(&mut self, name: InternedString, value: Value) {
-        if let Some(scope) = self.scopes.last_mut() {
+        if let Some(scope) = Rc::make_mut(&mut self.scopes).last_mut() {
             scope.define(name, value);
         }
     }
@@ -127,7 +130,7 @@ impl Env {
     /// Looks up a mutable binding, searching from the top scope to the bottom.
     /// Used by the `=` operator to update values.
     pub fn get_mut(&mut self, name: InternedString) -> Option<&mut Value> {
-        for scope in self.scopes.iter_mut().rev() {
+        for scope in Rc::make_mut(&mut self.scopes).iter_mut().rev() {
             if let Some(value) = scope.get_mut(name) {
                 return Some(value);
             }
@@ -147,7 +150,7 @@ impl Env {
 
     /// Defines a binding in the global (bottom) scope.
     pub fn define_global(&mut self, name: InternedString, value: Value) {
-        if let Some(scope) = self.scopes.first_mut() {
+        if let Some(scope) = Rc::make_mut(&mut self.scopes).first_mut() {
             scope.define(name, value);
         }
     }
