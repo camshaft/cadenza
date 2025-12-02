@@ -138,27 +138,13 @@ impl Eval for Apply {
             .value()
             .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
 
-        // Check if the receiver is an identifier that names a macro
-        if let Expr::Ident(ref ident) = receiver_expr {
-            let text = ident.syntax().text();
-            let id: InternedString = text.to_string().as_str().into();
-
+        // Try to extract an identifier/operator name from the receiver expression.
+        // If successful, check if it names a macro before evaluating.
+        if let Some(id) = extract_identifier(&receiver_expr) {
             // Check for macro in compiler
             if let Some(macro_value) = ctx.compiler.get_macro(id) {
                 return apply_macro(macro_value.clone(), self, ctx);
             }
-
-            // Check for macro in environment
-            if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
-                let macro_value = ctx.env.get(id).unwrap().clone();
-                return apply_macro(macro_value, self, ctx);
-            }
-        }
-
-        // Check if the receiver is an operator that's a macro
-        if let Expr::Op(ref op) = receiver_expr {
-            let text = op.syntax().text();
-            let id: InternedString = text.to_string().as_str().into();
 
             // Check for macro in environment
             if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
@@ -180,6 +166,25 @@ impl Eval for Apply {
         }
 
         apply_value(callee, args, ctx)
+    }
+}
+
+/// Extracts an identifier from an expression if it is an Ident or Op node.
+/// Returns None for other expression types.
+///
+/// TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
+/// AsRef<str> directly, so we need to allocate a String. See STATUS.md item #12.
+fn extract_identifier(expr: &Expr) -> Option<InternedString> {
+    match expr {
+        Expr::Ident(ident) => {
+            let text = ident.syntax().text();
+            Some(text.to_string().as_str().into())
+        }
+        Expr::Op(op) => {
+            let text = op.syntax().text();
+            Some(text.to_string().as_str().into())
+        }
+        _ => None,
     }
 }
 

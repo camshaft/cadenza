@@ -188,10 +188,10 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
     - [x] Added test case `error-let-invalid.cdz` to verify error message
     - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575594998)
 
-21. **Simplify Apply evaluation logic**
-    - Current: Over-specialized if-checks for Ident vs Op vs other in receiver handling
-    - Needed: Evaluate/expand receiver in a loop without special-case checks
-    - Options: Flatten curried receiver during expansion OR update parser to not curry
+21. ~~**Simplify Apply evaluation logic**~~
+    - [x] COMPLETED: Replaced duplicate Ident and Op checks with unified `extract_identifier` helper function
+    - [x] Eliminated special-case checks for Ident vs Op in receiver handling
+    - [x] Reduced code duplication and improved maintainability
     - [PR Comment](https://github.com/camshaft/cadenza/pull/21#discussion_r2575603972)
 
 ## Priority Suggestions
@@ -200,7 +200,7 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 - Items 1, 6, 8: Error/value source tracking and stack traces
 - Items 9, 10: BuiltinFn signature and std environment
 - ~~Items 18, 19~~: Macro/special form unification and Apply simplification (COMPLETED)
-- Item 21: Apply simplification
+- ~~Item 21~~: Apply simplification (COMPLETED)
 
 ### Medium Priority (Performance/Correctness)
 - Items 11, 12, 13, 14, 15: Interner improvements
