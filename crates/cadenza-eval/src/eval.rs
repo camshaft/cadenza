@@ -63,25 +63,21 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
         // Check if this is a function definition (= with fn pattern on LHS)
         if let Expr::Apply(apply) = expr {
             // Check if the callee is the = operator
-            if let Some(callee) = apply.callee() {
-                if let Expr::Op(op) = &callee {
-                    if op.syntax().text() == "=" {
-                        // This is an = application, get all arguments
-                        let args = apply.all_arguments();
-                        if args.len() == 2 {
-                            let lhs = &args[0];
-                            let rhs = &args[1];
+            if let Some(Expr::Op(op)) = apply.callee() {
+                if op.syntax().text() == "=" {
+                    // This is an = application, get all arguments
+                    let args = apply.all_arguments();
+                    if args.len() == 2 {
+                        let lhs = &args[0];
+                        let rhs = &args[1];
 
-                            // Check if LHS is fn pattern
-                            if let Expr::Apply(lhs_apply) = lhs {
-                                if let Some(fn_callee) = lhs_apply.callee() {
-                                    if let Expr::Ident(ident) = &fn_callee {
-                                        if ident.syntax().text() == "fn" {
-                                            // This is a function definition - handle it
-                                            let fn_args = lhs_apply.all_arguments();
-                                            let _ = handle_function_definition(&fn_args, rhs, &mut ctx);
-                                        }
-                                    }
+                        // Check if LHS is fn pattern
+                        if let Expr::Apply(lhs_apply) = lhs {
+                            if let Some(Expr::Ident(ident)) = lhs_apply.callee() {
+                                if ident.syntax().text() == "fn" {
+                                    // This is a function definition - handle it
+                                    let fn_args = lhs_apply.all_arguments();
+                                    let _ = handle_function_definition(&fn_args, rhs, &mut ctx);
                                 }
                             }
                         }
@@ -216,7 +212,7 @@ impl Eval for Apply {
 
         // Get all arguments (flattened from nested Apply nodes)
         let all_arg_exprs = self.all_arguments();
-        
+
         // Evaluate all arguments
         let mut args = Vec::new();
         for arg_expr in all_arg_exprs {
@@ -505,14 +501,12 @@ pub fn builtin_assign() -> BuiltinMacro {
             // Check if LHS is a function definition pattern (fn name params...)
             if let Expr::Apply(apply) = lhs_expr {
                 // Get the callee and all arguments
-                if let Some(callee) = apply.callee() {
+                if let Some(Expr::Ident(ident)) = apply.callee() {
                     // Check if the callee is 'fn'
-                    if let Expr::Ident(ident) = &callee {
-                        if ident.syntax().text() == "fn" {
-                            // This is a function definition: fn name params... = body
-                            let fn_args = apply.all_arguments();
-                            return handle_function_definition(&fn_args, rhs_expr, ctx);
-                        }
+                    if ident.syntax().text() == "fn" {
+                        // This is a function definition: fn name params... = body
+                        let fn_args = apply.all_arguments();
+                        return handle_function_definition(&fn_args, rhs_expr, ctx);
                     }
                 }
             }
@@ -568,9 +562,7 @@ fn handle_function_definition(
     ctx: &mut EvalContext<'_>,
 ) -> Result<Value> {
     if fn_args.is_empty() {
-        return Err(Diagnostic::syntax(
-            "fn requires at least a function name",
-        ));
+        return Err(Diagnostic::syntax("fn requires at least a function name"));
     }
 
     // First argument is the function name
@@ -595,9 +587,7 @@ fn handle_function_definition(
                 params.push(param_name);
             }
             _ => {
-                return Err(Diagnostic::syntax(
-                    "fn parameters must be identifiers",
-                ));
+                return Err(Diagnostic::syntax("fn parameters must be identifiers"));
             }
         }
     }

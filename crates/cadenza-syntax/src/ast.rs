@@ -92,7 +92,7 @@ impl Apply {
     pub fn callee(&self) -> Option<Expr> {
         let receiver = self.receiver()?;
         let receiver_expr = receiver.value()?;
-        
+
         match &receiver_expr {
             Expr::Apply(nested_apply) => nested_apply.callee(),
             _ => Some(receiver_expr),
@@ -108,23 +108,21 @@ impl Apply {
     /// the root node and iterating down and back up the tree.
     pub fn all_arguments(&self) -> Vec<Expr> {
         let mut result = Vec::new();
-        
+
         // First, get arguments from nested Apply in the receiver
         if let Some(receiver) = self.receiver() {
-            if let Some(receiver_expr) = receiver.value() {
-                if let Expr::Apply(nested_apply) = &receiver_expr {
-                    result.extend(nested_apply.all_arguments());
-                }
+            if let Some(Expr::Apply(nested_apply)) = receiver.value() {
+                result.extend(nested_apply.all_arguments());
             }
         }
-        
+
         // Then add arguments from this level
         for arg in self.arguments() {
             if let Some(arg_expr) = arg.value() {
                 result.push(arg_expr);
             }
         }
-        
+
         result
     }
 }
