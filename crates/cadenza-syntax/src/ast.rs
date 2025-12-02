@@ -85,6 +85,45 @@ impl Apply {
     pub fn arguments(&self) -> impl Iterator<Item = ApplyArgument> {
         self.0.children().filter_map(ApplyArgument::cast)
     }
+
+    /// Returns the innermost callee expression by recursively traversing nested Apply nodes.
+    ///
+    /// For example, in `[[f, a], b]`, this returns the expression `f`.
+    pub fn callee(&self) -> Option<Expr> {
+        let receiver = self.receiver()?;
+        let receiver_expr = receiver.value()?;
+        
+        match &receiver_expr {
+            Expr::Apply(nested_apply) => nested_apply.callee(),
+            _ => Some(receiver_expr),
+        }
+    }
+
+    /// Returns all arguments from this Apply and any nested Apply nodes in the receiver.
+    ///
+    /// For example, in `[[f, a], b]`, this returns `[a, b]` in order.
+    /// This flattens the left-associative application chain into a single argument list.
+    pub fn all_arguments(&self) -> Vec<Expr> {
+        let mut result = Vec::new();
+        
+        // First, get arguments from nested Apply in the receiver
+        if let Some(receiver) = self.receiver() {
+            if let Some(receiver_expr) = receiver.value() {
+                if let Expr::Apply(nested_apply) = &receiver_expr {
+                    result.extend(nested_apply.all_arguments());
+                }
+            }
+        }
+        
+        // Then add arguments from this level
+        for arg in self.arguments() {
+            if let Some(arg_expr) = arg.value() {
+                result.push(arg_expr);
+            }
+        }
+        
+        result
+    }
 }
 
 ast_node!(ApplyArgument);

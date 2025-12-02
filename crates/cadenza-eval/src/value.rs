@@ -270,6 +270,25 @@ pub struct BuiltinMacro {
     pub func: fn(&[Expr], &mut crate::context::EvalContext<'_>) -> Result<Value>,
 }
 
+/// A user-defined function with captured environment.
+///
+/// User functions are closures that capture their lexical environment at definition time.
+/// When called, they evaluate their body in a new scope that extends the captured environment
+/// with bindings for the parameters.
+#[derive(Clone)]
+pub struct UserFunction {
+    /// The function name for display/debugging.
+    pub name: InternedString,
+    /// The parameter names (in order).
+    pub params: Vec<InternedString>,
+    /// The function body expression.
+    pub body: Expr,
+    /// The captured environment at function definition time.
+    /// This enables closure semantics - the function uses this environment
+    /// when called, not the caller's environment.
+    pub captured_env: crate::env::Env,
+}
+
 impl Value {
     /// Returns true if this value is nil.
     pub fn is_nil(&self) -> bool {
@@ -314,6 +333,12 @@ impl Value {
             Value::Type(_) => Type::Type,
             Value::BuiltinFn(bf) => bf.signature.clone(),
             Value::BuiltinMacro(bm) => bm.signature.clone(),
+            Value::UserFunction(uf) => {
+                // Create a function type with Unknown parameter types and return type
+                // since we don't track types at compile time yet
+                let param_types = vec![Type::Unknown; uf.params.len()];
+                Type::function(param_types, Type::Unknown)
+            }
         }
     }
 
@@ -437,6 +462,7 @@ impl fmt::Debug for Value {
             Value::Type(t) => write!(f, "Type({t})"),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
+            Value::UserFunction(uf) => write!(f, "<fn {}>", &*uf.name),
         }
     }
 }
@@ -463,6 +489,7 @@ impl fmt::Display for Value {
             Value::Type(t) => write!(f, "{t}"),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
+            Value::UserFunction(uf) => write!(f, "<fn {}>", &*uf.name),
         }
     }
 }

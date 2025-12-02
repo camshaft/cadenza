@@ -4,7 +4,7 @@
 //! identifiers to values. Closures capture the environment by reference.
 
 use crate::{
-    eval::{builtin_assign, builtin_let},
+    eval::{builtin_assign, builtin_fn, builtin_let},
     interner::InternedString,
     map::Map,
     value::Value,
@@ -65,6 +65,7 @@ impl Env {
     /// This registers all standard built-ins including:
     /// - `let` - Variable declaration macro
     /// - `=` - Assignment macro
+    /// - `fn` - Function definition macro
     ///
     /// Use this when you want an environment ready for typical evaluation.
     pub fn with_standard_builtins() -> Self {
@@ -78,14 +79,17 @@ impl Env {
     /// This registers:
     /// - `let` - Variable declaration macro
     /// - `=` - Assignment macro
+    /// - `fn` - Function definition macro
     ///
     /// This can be called on an existing environment to add the standard built-ins.
     pub fn register_standard_builtins(&mut self) {
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
+        let fn_id: InternedString = "fn".into();
 
         self.define(let_id, Value::BuiltinMacro(builtin_let()));
         self.define(assign_id, Value::BuiltinMacro(builtin_assign()));
+        self.define(fn_id, Value::BuiltinMacro(builtin_fn()));
     }
 
     /// Pushes a new empty scope onto the stack.

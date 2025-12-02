@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "add 2 3\nfn add x y = x + y\nadd 2 3\n"
+---
+EvalResult {
+    values: [
+        5,
+        nil,
+        5,
+    ],
+    diagnostics: [],
+}
