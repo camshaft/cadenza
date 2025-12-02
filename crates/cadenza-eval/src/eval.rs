@@ -65,7 +65,7 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
             // Check if the callee is the = operator
             if let Some(callee) = apply.callee() {
                 if let Expr::Op(op) = &callee {
-                    if op.syntax().text().to_string() == "=" {
+                    if op.syntax().text() == "=" {
                         // This is an = application, get all arguments
                         let args = apply.all_arguments();
                         if args.len() == 2 {
@@ -76,7 +76,7 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
                             if let Expr::Apply(lhs_apply) = lhs {
                                 if let Some(fn_callee) = lhs_apply.callee() {
                                     if let Expr::Ident(ident) = &fn_callee {
-                                        if ident.syntax().text().to_string() == "fn" {
+                                        if ident.syntax().text() == "fn" {
                                             // This is a function definition - handle it
                                             let fn_args = lhs_apply.all_arguments();
                                             let _ = handle_function_definition(&fn_args, rhs, &mut ctx);
@@ -164,11 +164,23 @@ impl Eval for Ident {
 
         // First check the local environment
         if let Some(value) = ctx.env.get(id) {
+            // Auto-apply zero-parameter functions
+            if let Value::UserFunction(uf) = value {
+                if uf.params.is_empty() {
+                    return apply_value(value.clone(), vec![], ctx);
+                }
+            }
             return Ok(value.clone());
         }
 
         // Then check compiler definitions
         if let Some(value) = ctx.compiler.get_var(id) {
+            // Auto-apply zero-parameter functions
+            if let Value::UserFunction(uf) = value {
+                if uf.params.is_empty() {
+                    return apply_value(value.clone(), vec![], ctx);
+                }
+            }
             return Ok(value.clone());
         }
 
@@ -495,8 +507,7 @@ pub fn builtin_assign() -> BuiltinMacro {
                 if let Some(callee) = apply.callee() {
                     // Check if the callee is 'fn'
                     if let Expr::Ident(ident) = &callee {
-                        let text = ident.syntax().text();
-                        if text.to_string() == "fn" {
+                        if ident.syntax().text() == "fn" {
                             // This is a function definition: fn name params... = body
                             let fn_args = apply.all_arguments();
                             return handle_function_definition(&fn_args, rhs_expr, ctx);

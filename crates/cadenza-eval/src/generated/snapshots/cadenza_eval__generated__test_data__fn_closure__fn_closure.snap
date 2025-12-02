@@ -7,7 +7,7 @@ EvalResult {
         10,
         nil,
         20,
-        <fn capture_fn>,
+        10,
     ],
     diagnostics: [],
 }
