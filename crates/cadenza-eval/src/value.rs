@@ -312,6 +312,10 @@ impl Value {
     }
 
     /// Wraps this value with source information extracted from an expression.
+    ///
+    /// Extracts the text range from the expression's syntax node and converts it
+    /// to a Span. This conversion is necessary as rowan's TextRange uses a different
+    /// representation than our Span type.
     pub fn from_expr(self, expr: &Expr) -> TrackedValue {
         let syntax = match expr {
             Expr::Literal(lit) => lit.syntax(),
@@ -368,11 +372,6 @@ impl TrackedValue {
             value,
             source: Some(source),
         }
-    }
-
-    /// Creates a tracked value with source from an expression.
-    pub fn from_expr(value: Value, expr: &Expr) -> Self {
-        value.from_expr(expr)
     }
 
     /// Returns a reference to the underlying value.
