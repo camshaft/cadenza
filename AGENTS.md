@@ -109,7 +109,7 @@ When writing tests, follow these principles to ensure high-quality, maintainable
   ```rust
   #[test]
   fn property_addition_commutative() {
-      bolero::check!().for_each(|a: i64, b: i64| {
+      bolero::check!().with_type::<(i64, i64)>().for_each(|(a, b)| {
           assert_eq!(add(a, b), add(b, a));
       });
   }
@@ -118,6 +118,16 @@ When writing tests, follow these principles to ensure high-quality, maintainable
 - **Make test intent clear**: Each test should have a clear purpose. The test name and structure should communicate what is being tested and why it exists.
 
 - **One or two solid property tests > 100 specific unit tests**: Property tests provide better coverage and catch edge cases you might not think of.
+
+- **Use snapshot testing when appropriate**: Snapshot tests are ideal for:
+  - Complex output that would be tedious to check all fields, especially with large nested trees
+  - Output that shouldn't change without explicit acknowledgement
+  - Source file processing (lex, parse, eval, compile, etc.) - place these in the `test-data` directory
+  
+  Benefits of using `test-data` directory:
+  - Builds a large corpus of files in the language being developed
+  - Useful for other purposes like benchmarking
+  - Enables syntax highlighting support in the future
 
 ### What to Avoid
 

@@ -182,6 +182,17 @@ impl SourceInfo {
     pub fn from_span(span: Span) -> Self {
         Self { file: None, span }
     }
+
+    /// Creates a synthetic/unknown source info with a zero-length span at position 0.
+    ///
+    /// Used for values that don't have a meaningful source location (e.g., built-in values,
+    /// synthesized values, or values created at runtime).
+    pub fn synthetic() -> Self {
+        Self {
+            file: None,
+            span: Span::new(0, 0),
+        }
+    }
 }
 
 /// A runtime value in the Cadenza evaluator.
@@ -307,7 +318,7 @@ impl Value {
     pub fn with_source(self, source: SourceInfo) -> TrackedValue {
         TrackedValue {
             value: self,
-            source: Some(source),
+            source,
         }
     }
 
@@ -332,20 +343,20 @@ impl Value {
         );
         TrackedValue {
             value: self,
-            source: Some(SourceInfo::from_span(span)),
+            source: SourceInfo::from_span(span),
         }
     }
 
-    /// Wraps this value without source information.
+    /// Wraps this value with synthetic (unknown) source information.
     pub fn without_source(self) -> TrackedValue {
         TrackedValue {
             value: self,
-            source: None,
+            source: SourceInfo::synthetic(),
         }
     }
 }
 
-/// A value paired with optional source location information.
+/// A value paired with source location information.
 ///
 /// This allows values to carry information about where they were created
 /// in the source code, which is useful for error reporting and debugging.
@@ -353,25 +364,22 @@ impl Value {
 pub struct TrackedValue {
     /// The actual runtime value.
     pub value: Value,
-    /// Source location information, if available.
-    pub source: Option<SourceInfo>,
+    /// Source location information.
+    pub source: SourceInfo,
 }
 
 impl TrackedValue {
-    /// Creates a new tracked value without source information.
+    /// Creates a new tracked value with synthetic (unknown) source information.
     pub fn new(value: Value) -> Self {
         Self {
             value,
-            source: None,
+            source: SourceInfo::synthetic(),
         }
     }
 
     /// Creates a tracked value with source information.
     pub fn with_source(value: Value, source: SourceInfo) -> Self {
-        Self {
-            value,
-            source: Some(source),
-        }
+        Self { value, source }
     }
 
     /// Returns a reference to the underlying value.
@@ -384,8 +392,8 @@ impl TrackedValue {
         self.value
     }
 
-    /// Returns the source information, if available.
-    pub fn source(&self) -> Option<SourceInfo> {
+    /// Returns the source information.
+    pub fn source(&self) -> SourceInfo {
         self.source
     }
 }
@@ -398,8 +406,9 @@ impl From<Value> for TrackedValue {
 
 impl fmt::Debug for TrackedValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(source) = self.source {
-            write!(f, "{:?}@{:?}", self.value, source.span)
+        // Only show source info if it's not synthetic (has a non-zero span)
+        if self.source.span.start != 0 || self.source.span.end != 0 {
+            write!(f, "{:?}@{:?}", self.value, self.source.span)
         } else {
             write!(f, "{:?}", self.value)
         }
