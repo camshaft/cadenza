@@ -136,6 +136,19 @@ mod measure_quantity {
         );
     }
 }
+mod block_scope {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_scope",
+            t::eval_all(
+                "let outer = 100\nlet result =\n    let inner = 200\n    inner + outer\nresult\n"
+            ),
+            "let outer = 100\nlet result =\n    let inner = 200\n    inner + outer\nresult\n"
+        );
+    }
+}
 mod measure_base {
     use super::*;
     #[test]

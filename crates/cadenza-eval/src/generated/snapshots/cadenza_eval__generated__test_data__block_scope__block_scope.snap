@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let outer = 100\nlet result =\n    let inner = 200\n    inner + outer\nresult\n"
+---
+EvalResult {
+    values: [
+        100,
+        300,
+        300,
+    ],
+    diagnostics: [],
+}
