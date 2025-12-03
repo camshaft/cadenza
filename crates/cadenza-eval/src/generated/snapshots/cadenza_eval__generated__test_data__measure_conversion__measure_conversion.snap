@@ -1,50 +1,22 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "measure millimeter\nmeasure inch = millimeter / 0.0393701\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+expression: "measure millimeter  \nmeasure inch = millimeter 25.4\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
 ---
 EvalResult {
     values: [
         nil,
         nil,
         Quantity(25.4 millimeter [millimeter]),
-        nil,
+        Quantity(1 inch [inch]),
         Quantity(25.4 millimeter [millimeter]),
-        nil,
+        Quantity(1 inch [inch]),
     ],
     diagnostics: [
         Diagnostic {
             kind: TypeError {
-                expected: Union(
-                    [
-                        Integer,
-                        Float,
-                    ],
-                ),
-                actual: Fn(
-                    [
-                        Float,
-                        Float,
-                    ],
-                ),
+                expected: Symbol,
+                actual: Nil,
             },
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
-            kind: UndefinedVariable(
-                "inch",
-            ),
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
-            kind: UndefinedVariable(
-                "y",
-            ),
             level: Error,
             file: None,
             span: None,

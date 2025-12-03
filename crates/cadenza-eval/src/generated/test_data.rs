@@ -238,8 +238,8 @@ mod measure_multiply {
     fn eval() {
         s!(
             "measure_multiply",
-            t::eval_all("measure inch\nmeasure foot = inch * 12\n"),
-            "measure inch\nmeasure foot = inch * 12\n"
+            t::eval_all("measure inch\nmeasure foot = inch 12\n"),
+            "measure inch\nmeasure foot = inch 12\n"
         );
     }
 }
@@ -257,9 +257,9 @@ mod measure_conversion {
         s!(
             "measure_conversion",
             t::eval_all(
-                "measure millimeter\nmeasure inch = millimeter / 0.0393701\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+                "measure millimeter  \nmeasure inch = millimeter 25.4\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
             ),
-            "measure millimeter\nmeasure inch = millimeter / 0.0393701\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+            "measure millimeter  \nmeasure inch = millimeter 25.4\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
         );
     }
 }

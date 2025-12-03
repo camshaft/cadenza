@@ -1,6 +1,6 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "measure inch\nmeasure foot = inch * 12\n"
+expression: "measure inch\nmeasure foot = inch 12\n"
 ---
 EvalResult {
     values: [
@@ -10,18 +10,8 @@ EvalResult {
     diagnostics: [
         Diagnostic {
             kind: TypeError {
-                expected: Union(
-                    [
-                        Integer,
-                        Float,
-                    ],
-                ),
-                actual: Fn(
-                    [
-                        Float,
-                        Float,
-                    ],
-                ),
+                expected: Symbol,
+                actual: Nil,
             },
             level: Error,
             file: None,

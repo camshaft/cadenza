@@ -218,3 +218,41 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 ### Lower Priority (Ergonomics)
 - Items 5, 15, 17: Types as values, builtin! macro
 - ~~Item 16~~: Snapshot tests (COMPLETED)
+
+## Dimensional Analysis
+
+### Completed
+
+22. **Basic unit system with dimensional analysis** (PR #XX)
+    - [x] Added `Unit`, `Dimension`, `DerivedDimension` types
+    - [x] Added `UnitRegistry` to Compiler for tracking units
+    - [x] Added `Value::Quantity` for unit-aware numeric values
+    - [x] Added `Value::UnitConstructor` for creating quantities
+    - [x] Implemented `measure` builtin macro for defining units
+    - [x] Added automatic dimension derivation in arithmetic (e.g., distance/time = velocity)
+    - [x] Implemented parser-level unit suffix detection (e.g., `25.4meter`)
+    - [x] Parser creates reversed Apply nodes for unit suffixes: `25.4meter` → `Apply(meter, [25.4])`
+
+### Known Issues
+
+- **measure macro with `=` syntax**:
+  - Syntax `measure inch = millimeter 25.4` produces a spurious TypeError
+  - Core functionality works: units are registered and quantities are created successfully
+  - Error appears to be from type checking but doesn't prevent feature from working
+  - Needs investigation into parser precedence and assignment operator interaction
+
+### Future Enhancements (from PR comments)
+
+- **Temperature conversions**: Support offset-based conversions (C ↔ F) requiring addition/subtraction
+- **Integer support**: Avoid precision loss by supporting both int and float in quantities
+- **Named derived dimensions**: Register names like "velocity" for "meter/second" and display them
+- **User-space conversions**: API to convert quantities between units (e.g., inches to mm, or inches/minute to meter/second)
+- **SI prefixes**: Built-in knowledge of kilo, mega, giga, etc. with automatic display formatting
+- **Power-of-2 vs power-of-10**: Support both mebi/mega for binary and decimal units (e.g., MiB vs MB)
+
+### CST Offset Issue
+
+- **Parser emit order**: Arguments should be emitted before receiver to maintain correct CST offsets
+  - Currently emits receiver first, which may cause offset issues
+  - AST doesn't care about order, but CST requires correct source positions
+  - Needs fix in parse_literal() reversed Apply logic

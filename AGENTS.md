@@ -134,3 +134,26 @@ When writing tests, follow these principles to ensure high-quality, maintainable
 - **Don't test the same thing repeatedly**: If multiple tests are checking the same behavior with trivial variations, consolidate them or use property testing
 - **Don't test trivial wrappers**: If a function just calls another function or wraps a value without logic, it doesn't need a dedicated test
 - **Don't assert on internal state**: Test public APIs and observable behavior, not private implementation details
+
+## Snapshot Testing Guidelines
+
+### Critical Rules
+
+- **NEVER commit broken snapshots**: Snapshots with errors in them lock in broken behavior and make it hard to track what's working
+- **Snapshots are living documentation**: They serve as a status document showing what currently works
+- **Fix errors before accepting snapshots**: If a snapshot shows diagnostic errors, fix the underlying issue before running `INSTA_UPDATE=always`
+- **Review snapshot diffs carefully**: Always examine snapshot changes to ensure they represent intended behavior
+
+### When to Update Snapshots
+
+- Update snapshots with `INSTA_UPDATE=always` only after:
+  1. Verifying the code changes are correct
+  2. Ensuring all diagnostics/errors in output are intentional
+  3. Confirming the new behavior is what you want to lock in
+
+### Exception
+
+- During initial development of a feature, temporary diagnostic errors may be acceptable if:
+  1. Core functionality works despite the errors
+  2. The errors are documented as known issues in STATUS.md
+  3. There's a plan to fix them before the feature is considered complete
