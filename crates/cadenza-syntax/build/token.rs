@@ -659,6 +659,7 @@ impl Synthetic {
         [
             s("SyntheticList", "__list__"),
             s("SyntheticRecord", "__record__"),
+            s("SyntheticBlock", "__block__"),
         ]
     };
 }

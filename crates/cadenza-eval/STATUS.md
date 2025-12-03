@@ -255,3 +255,212 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
   - Currently emits receiver first, which may cause offset issues
   - AST doesn't care about order, but CST requires correct source positions
   - Needs fix in parse_literal() reversed Apply logic
+
+## Block Expressions
+
+### Current Status: Infrastructure Added, Implementation Incomplete
+
+**What Was Attempted (PR #XX)**
+- Tried to implement block expressions using a heuristic approach in the evaluator
+- Detected blocks by checking if an Apply node's receiver was a statement (like `let` or `=`)
+- This approach was **reverted** due to being too brittle and specific
+
+**Why the Heuristic Approach Failed**
+1. **Too Specific**: Only worked for `let` and `=` statements, couldn't handle arbitrary expressions
+2. **Structural Limitations**: Failed on 3+ statement blocks due to complex nested Apply structures
+   - Parser creates: `[[expr1, expr2], expr3]` for indented code
+   - This becomes deeply nested for multiple statements
+3. **Wrong Layer**: Trying to detect blocks in the evaluator is a workaround; blocks should be a parser concern
+4. **Not Extensible**: Couldn't handle function definitions, arbitrary function calls, or other expressions in blocks
+
+**Infrastructure Added**
+- [x] Added `SyntheticBlock` token type with `__block__` identifier in `crates/cadenza-syntax/build/token.rs`
+- [x] Token generation system now includes `SyntheticBlock` alongside `SyntheticList` and `SyntheticRecord`
+
+### Implementation Plan
+
+**Goal**: Enable multi-statement blocks using indentation, where the last expression is the block's return value.
+
+**Example Syntax**:
+```cadenza
+# Function with block body
+fn calculate x =
+  let doubled = x * 2
+  let squared = doubled * doubled
+  squared + 10
+
+# Block assigned to variable
+let result =
+  let temp = 100
+  temp + 23
+```
+
+**Required Changes**:
+
+#### 1. Parser Modifications (cadenza-syntax)
+
+**Location**: `crates/cadenza-syntax/src/parse.rs` in `parse_expression_bp()`
+
+**Current Behavior**:
+- Parser uses `WhitespaceMarker` to track indentation levels
+- Multiple indented expressions create nested Apply chains: `[[expr1, expr2], expr3]`
+- Each indented line continues as an argument to the previous expression
+
+**Needed Behavior**:
+- Detect when multiple expressions are at the **same indentation level** following a statement
+- Emit a synthetic block node: `[__block__, expr1, expr2, expr3]` instead of nested Apply chains
+- Block detection should occur when:
+  1. We're parsing arguments to an expression
+  2. The indentation level increases (entering a block)
+  3. Multiple expressions follow at that same indentation level
+
+**Implementation Strategy**:
+```rust
+// Pseudocode for parser changes
+fn parse_expression_bp(&mut self, min_bp: u8, marker: impl Marker) {
+    // ... existing code ...
+    
+    // After parsing primary expression, check for indented block
+    if should_enter_block(current_indent, marker_indent) {
+        // Start a synthetic block node
+        self.builder.start_node(Kind::SyntheticBlock.into());
+        
+        // Parse all expressions at this indentation level
+        while at_same_indent_level() {
+            self.parse_expression(new_marker);
+        }
+        
+        self.builder.finish_node(); // Close SyntheticBlock
+    }
+}
+```
+
+**Key Considerations**:
+- The `WhitespaceMarker` already tracks indentation via `len` and `line` fields
+- Need to distinguish between:
+  - **Continuation**: `f a b` (arguments to same function)
+  - **Block**: Multiple statements at same indent after a statement
+- May need to track "block context" state in the parser
+- The `should_continue()` method in `WhitespaceMarker` already handles indentation rules
+
+**Tricky Cases**:
+- Nested blocks (blocks within blocks)
+- Mixing blocks with function application
+- Determining when a statement "opens" a block context (e.g., after `=` in `let x = ...`)
+
+#### 2. Add `__block__` Builtin Macro (cadenza-eval)
+
+**Location**: `crates/cadenza-eval/src/eval.rs`
+
+**Implementation**:
+```rust
+pub fn builtin_block() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "__block__",
+        signature: Type::function(vec![Type::Unknown], Type::Unknown),
+        func: |args, ctx| {
+            if args.is_empty() {
+                return Ok(Value::Nil);
+            }
+            
+            // Push a new scope for the block
+            ctx.env.push_scope();
+            
+            // Evaluate each expression in sequence
+            let mut result = Value::Nil;
+            for (i, expr) in args.iter().enumerate() {
+                result = expr.eval(ctx)?;
+                
+                // Early return on error? Or collect all errors?
+                // Decision: Continue evaluation, let compiler collect errors
+            }
+            
+            // Pop the scope when exiting the block
+            ctx.env.pop_scope();
+            
+            // Return the last expression's value
+            Ok(result)
+        },
+    }
+}
+```
+
+**Register the Macro**:
+```rust
+// In crates/cadenza-eval/src/env.rs, in `with_standard_builtins()`
+let block_id: InternedString = "__block__".into();
+self.define(block_id, Value::BuiltinMacro(builtin_block()));
+```
+
+#### 3. Handle Synthetic Nodes in Evaluator
+
+**Location**: `crates/cadenza-eval/src/eval.rs` in `impl Eval for Synthetic`
+
+**Current Code**:
+```rust
+impl Eval for Synthetic {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
+        let identifier = self.identifier();
+        // Synthetic nodes are treated as identifiers for macro lookup
+        // ...
+    }
+}
+```
+
+**This Should Already Work**: The `Synthetic::eval` implementation treats synthetic nodes as macro names, which will look up `__block__` and call it with the arguments.
+
+#### 4. Testing Strategy
+
+**Test Files to Create** (in `crates/cadenza-eval/test-data/`):
+- `block-simple.cdz`: Basic 2-statement block
+- `block-function-body.cdz`: Function with block body containing local lets
+- `block-var-assign.cdz`: Block assigned to a variable
+- `block-nested.cdz`: Nested blocks
+- `block-mixed-exprs.cdz`: Block with various expression types (not just lets)
+- `block-scope.cdz`: Verify variables in block don't leak to outer scope
+
+**Example Test**:
+```cadenza
+# block-simple.cdz
+let result =
+  let x = 10
+  x + 5
+result
+# Expected: 15
+```
+
+### Known Challenges
+
+1. **Parser Complexity**: The Pratt parser is complex; adding block detection without breaking existing parsing is tricky
+2. **Indentation Edge Cases**: Need to handle:
+   - Empty lines within blocks
+   - Comments within blocks  
+   - Dedentation (when block ends)
+   - Continuation lines (operators at start of line)
+3. **Scope Management**: Blocks need proper scope isolation while still allowing access to outer variables
+4. **Error Recovery**: If one statement in a block fails, should the rest execute?
+5. **CST Preservation**: Synthetic nodes need correct span information for error reporting
+
+### Debugging Tips
+
+1. **Inspect AST**: Use `Debug` output on parsed expressions to see structure
+2. **Check Indentation**: The `WhitespaceMarker::len` field shows computed indentation (spaces + tabs*4)
+3. **Test Incrementally**: Start with 2-statement blocks before adding complexity
+4. **Compare with Root**: The `parse()` function already handles multiple statements at top level; blocks are similar but nested
+
+### Alternative Approaches Considered
+
+1. **Explicit Block Syntax**: Add `{` `}` or `do`/`end` keywords
+   - Pro: Simpler parsing, more explicit
+   - Con: Less elegant, violates indentation-based design philosophy
+   
+2. **Evaluator-Side Detection**: The reverted approach
+   - Pro: No parser changes needed
+   - Con: Too brittle, can't handle all cases, wrong abstraction layer
+
+### References
+
+- Parser code: `crates/cadenza-syntax/src/parse.rs` 
+- WhitespaceMarker: `parse.rs` lines 667-694
+- Existing synthetic nodes: `__list__` and `__record__` as examples
+- Token generation: `crates/cadenza-syntax/build/token.rs` lines 647-663
