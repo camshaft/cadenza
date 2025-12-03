@@ -1247,15 +1247,23 @@ pub struct SourceFile {
 
 impl SourceFile {
     fn position(&self, offset: u32) -> (usize, usize) {
-        // Binary search to find line number (returns Ok for exact match, Err for insertion point)
+        // Handle empty file or offset before first line
+        if self.line_starts.is_empty() || offset < self.line_starts[0] {
+            return (0, 0);
+        }
+        
+        // Binary search to find the line containing this offset
+        // Returns Ok(idx) if offset equals a line start, Err(idx) for insertion point
         let line = match self.line_starts.binary_search(&offset) {
-            Ok(line) => line,
-            Err(line) => line.saturating_sub(1), // Line before the insertion point
+            Ok(idx) => idx,  // Exact match - offset is at line start
+            Err(0) => 0,     // Before first line (shouldn't happen due to check above)
+            Err(idx) => idx - 1,  // Offset is between line_starts[idx-1] and line_starts[idx]
         };
-        // Calculate column (with bounds check)
-        let line_start = self.line_starts.get(line).copied().unwrap_or(0);
-        let column = offset.saturating_sub(line_start);
-        (line, column as usize)
+        
+        // Calculate column from line start
+        let line_start = self.line_starts[line];
+        let column = (offset - line_start) as usize;
+        (line, column)
     }
 }
 ```
