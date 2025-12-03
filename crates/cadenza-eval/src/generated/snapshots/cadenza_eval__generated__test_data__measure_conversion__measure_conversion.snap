@@ -1,0 +1,15 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure millimeter  \nmeasure inch = millimeter 25.4\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+        Quantity(25.4 millimeter [millimeter]),
+        Quantity(1 inch [millimeter]),
+        Quantity(25.4 millimeter [millimeter]),
+        Quantity(1 inch [millimeter]),
+    ],
+    diagnostics: [],
+}

@@ -1,0 +1,15 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\nlet velocity = distance / time\nvelocity\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+        Quantity(100 meter [meter]),
+        Quantity(10 second [second]),
+        Quantity(10 meter/second [meter/second]),
+        Quantity(10 meter/second [meter/second]),
+    ],
+    diagnostics: [],
+}

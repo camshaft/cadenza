@@ -1,0 +1,6 @@
+measure millimeter  
+measure inch = millimeter 25.4
+let x = 25.4millimeter
+let y = 1inch
+x
+y

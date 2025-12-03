@@ -222,6 +222,24 @@ pub enum Value {
     /// A type value (types are first-class values).
     Type(Type),
 
+    /// A quantity with a unit (for dimensional analysis).
+    ///
+    /// Represents a numeric value with an associated unit and dimension.
+    /// Used for automatic unit conversions and dimensional analysis.
+    Quantity {
+        /// The numeric value.
+        value: f64,
+        /// The unit of this quantity.
+        unit: crate::unit::Unit,
+        /// The derived dimension (for operations that create new dimensions).
+        dimension: crate::unit::DerivedDimension,
+    },
+
+    /// A unit constructor that creates quantities when applied to numbers.
+    ///
+    /// When a unit name is used as a function (e.g., `meter 5`), it creates a quantity.
+    UnitConstructor(crate::unit::Unit),
+
     /// A built-in function implemented in Rust.
     BuiltinFn(BuiltinFn),
 
@@ -331,6 +349,8 @@ impl Value {
             // For lists, we use Unknown since we don't track element types at runtime yet
             Value::List(_) => Type::list(Type::Unknown),
             Value::Type(_) => Type::Type,
+            Value::Quantity { .. } => Type::Float, // Quantities are numeric
+            Value::UnitConstructor(_) => Type::function(vec![Type::Float], Type::Float),
             Value::BuiltinFn(bf) => bf.signature.clone(),
             Value::BuiltinMacro(bm) => bm.signature.clone(),
             Value::UserFunction(uf) => {
@@ -460,6 +480,12 @@ impl fmt::Debug for Value {
             Value::String(s) => write!(f, "{s:?}"),
             Value::List(items) => f.debug_list().entries(items).finish(),
             Value::Type(t) => write!(f, "Type({t})"),
+            Value::Quantity {
+                value,
+                unit,
+                dimension,
+            } => write!(f, "Quantity({} {} [{}])", value, &*unit.name, dimension),
+            Value::UnitConstructor(unit) => write!(f, "<unit-constructor {}>", &*unit.name),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
             Value::UserFunction(uf) => write!(f, "<fn {}>", &*uf.name),
@@ -487,6 +513,12 @@ impl fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Type(t) => write!(f, "{t}"),
+            Value::Quantity {
+                value,
+                unit,
+                dimension: _,
+            } => write!(f, "{}{}", value, &*unit.name),
+            Value::UnitConstructor(unit) => write!(f, "<unit-constructor {}>", &*unit.name),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
             Value::UserFunction(uf) => write!(f, "<fn {}>", &*uf.name),
@@ -505,6 +537,29 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Type(a), Value::Type(b)) => a == b,
+            (
+                Value::Quantity {
+                    value: v1,
+                    unit: u1,
+                    dimension: d1,
+                },
+                Value::Quantity {
+                    value: v2,
+                    unit: u2,
+                    dimension: d2,
+                },
+            ) => {
+                // Quantities are equal if they're in the same dimension and convert to the same value
+                if d1 != d2 {
+                    return false;
+                }
+                // Convert v2 to u1's units and compare
+                if let Some(converted) = u2.convert_to(*v2, u1) {
+                    (v1 - converted).abs() < 1e-10 // Use epsilon for floating point comparison
+                } else {
+                    false
+                }
+            }
             // Functions and macros are compared by identity (they never compare equal)
             _ => false,
         }

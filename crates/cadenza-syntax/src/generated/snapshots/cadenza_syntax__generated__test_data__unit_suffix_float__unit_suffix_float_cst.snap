@@ -1,0 +1,14 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "25.4meter\n"
+---
+Root@0..10
+  Apply@0..9
+    ApplyArgument@0..4
+      Literal@0..4
+        Float@0..4
+          Float@0..4 "25.4"
+    ApplyReceiver@4..9
+      Identifier@4..9
+        Identifier@4..9 "meter"
+  Newline@9..10 "\n"

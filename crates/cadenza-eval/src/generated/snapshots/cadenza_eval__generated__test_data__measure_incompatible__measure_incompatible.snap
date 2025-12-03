@@ -1,0 +1,24 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\ndistance + time\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+        Quantity(100 meter [meter]),
+        Quantity(10 second [second]),
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: SyntaxError(
+                "cannot add quantities with incompatible dimensions: meter and second",
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}

@@ -50,11 +50,37 @@ mod cmp_eq {
         s!("cmp_eq", t::eval_all("1 == 1\n"), "1 == 1\n");
     }
 }
+mod measure_incompatible {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_incompatible",
+            t::eval_all(
+                "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\ndistance + time\n"
+            ),
+            "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\ndistance + time\n"
+        );
+    }
+}
 mod lit_float {
     use super::*;
     #[test]
     fn eval() {
         s!("lit_float", t::eval_all("3.14\n"), "3.14\n");
+    }
+}
+mod measure_unit_arithmetic {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_unit_arithmetic",
+            t::eval_all(
+                "measure millimeter\nmeasure meter = millimeter 1000\nlet x = millimeter 500\nlet y = meter 1\nlet sum = x + y\nsum\n"
+            ),
+            "measure millimeter\nmeasure meter = millimeter 1000\nlet x = millimeter 500\nlet y = meter 1\nlet sum = x + y\nsum\n"
+        );
     }
 }
 mod arith_mul {
@@ -72,6 +98,28 @@ mod error_let_invalid {
             "error_let_invalid",
             t::eval_all("let 42 = 1\n"),
             "let 42 = 1\n"
+        );
+    }
+}
+mod measure_quantity {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_quantity",
+            t::eval_all("measure meter\nlet x = meter 5\nx\n"),
+            "measure meter\nlet x = meter 5\nx\n"
+        );
+    }
+}
+mod measure_base {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_base",
+            t::eval_all("measure meter\n"),
+            "measure meter\n"
         );
     }
 }
@@ -150,6 +198,19 @@ mod arith_mixed_rev {
         s!("arith_mixed_rev", t::eval_all("2.5 + 1\n"), "2.5 + 1\n");
     }
 }
+mod measure_scalar_ops {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_scalar_ops",
+            t::eval_all(
+                "measure meter\nlet x = meter 10\nlet doubled = x * 2\nlet halved = x / 2\ndoubled\nhalved\n"
+            ),
+            "measure meter\nlet x = meter 10\nlet doubled = x * 2\nlet halved = x / 2\ndoubled\nhalved\n"
+        );
+    }
+}
 mod cmp_ne {
     use super::*;
     #[test]
@@ -190,6 +251,19 @@ mod let_simple {
         );
     }
 }
+mod measure_velocity {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_velocity",
+            t::eval_all(
+                "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\nlet velocity = distance / time\nvelocity\n"
+            ),
+            "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\nlet velocity = distance / time\nvelocity\n"
+        );
+    }
+}
 mod arith_sub {
     use super::*;
     #[test]
@@ -219,11 +293,35 @@ mod lit_string {
         );
     }
 }
+mod measure_multiply {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_multiply",
+            t::eval_all("measure inch\nmeasure foot = inch 12\n"),
+            "measure inch\nmeasure foot = inch 12\n"
+        );
+    }
+}
 mod arith_mixed {
     use super::*;
     #[test]
     fn eval() {
         s!("arith_mixed", t::eval_all("1 + 2.5\n"), "1 + 2.5\n");
+    }
+}
+mod measure_conversion {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_conversion",
+            t::eval_all(
+                "measure millimeter  \nmeasure inch = millimeter 25.4\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+            ),
+            "measure millimeter  \nmeasure inch = millimeter 25.4\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+        );
     }
 }
 mod let_reassign {
@@ -271,6 +369,17 @@ mod arith_div {
     #[test]
     fn eval() {
         s!("arith_div", t::eval_all("20 / 4\n"), "20 / 4\n");
+    }
+}
+mod measure_suffix {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_suffix",
+            t::eval_all("measure meter\nlet x = 25.4meter\nx\n"),
+            "measure meter\nlet x = 25.4meter\nx\n"
+        );
     }
 }
 mod fn_hoisting {

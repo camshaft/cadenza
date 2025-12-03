@@ -4,7 +4,9 @@
 //! definitions during evaluation. Macros call back into the compiler
 //! API to register definitions, emit IR, etc.
 
-use crate::{diagnostic::Diagnostic, interner::InternedString, map::Map, value::Value};
+use crate::{
+    diagnostic::Diagnostic, interner::InternedString, map::Map, unit::UnitRegistry, value::Value,
+};
 
 /// The compiler state that accumulates definitions during evaluation.
 ///
@@ -21,6 +23,8 @@ pub struct Compiler {
     macros: Map<Value>,
     /// Accumulated diagnostics (errors, warnings, hints).
     diagnostics: Vec<Diagnostic>,
+    /// Unit registry for dimensional analysis.
+    units: UnitRegistry,
 }
 
 impl Compiler {
@@ -103,6 +107,16 @@ impl Compiler {
     /// Clears all accumulated diagnostics.
     pub fn clear_diagnostics(&mut self) {
         self.diagnostics.clear();
+    }
+
+    /// Returns a reference to the unit registry.
+    pub fn units(&self) -> &UnitRegistry {
+        &self.units
+    }
+
+    /// Returns a mutable reference to the unit registry.
+    pub fn units_mut(&mut self) -> &mut UnitRegistry {
+        &mut self.units
     }
 }
 

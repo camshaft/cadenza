@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "10meter 5inch 3.14foot\n"
+---
+[
+    [[[meter, 10], [inch, 5]], [foot, 3.14]],
+]

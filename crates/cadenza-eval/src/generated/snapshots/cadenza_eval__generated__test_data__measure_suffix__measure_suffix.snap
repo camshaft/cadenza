@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\nlet x = 25.4meter\nx\n"
+---
+EvalResult {
+    values: [
+        nil,
+        Quantity(25.4 meter [meter]),
+        Quantity(25.4 meter [meter]),
+    ],
+    diagnostics: [],
+}

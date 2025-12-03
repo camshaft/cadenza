@@ -1,0 +1,38 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "10meter 5inch 3.14foot\n"
+---
+Root@0..23
+  Apply@0..23
+    ApplyReceiver@0..14
+      Apply@0..14
+        ApplyReceiver@0..8
+          Apply@0..7
+            ApplyArgument@0..2
+              Literal@0..2
+                Integer@0..2
+                  Integer@0..2 "10"
+            ApplyReceiver@2..7
+              Identifier@2..7
+                Identifier@2..7 "meter"
+          Space@7..8 " "
+        ApplyArgument@8..14
+          Apply@8..13
+            ApplyArgument@8..9
+              Literal@8..9
+                Integer@8..9
+                  Integer@8..9 "5"
+            ApplyReceiver@9..13
+              Identifier@9..13
+                Identifier@9..13 "inch"
+          Space@13..14 " "
+    ApplyArgument@14..23
+      Apply@14..22
+        ApplyArgument@14..18
+          Literal@14..18
+            Float@14..18
+              Float@14..18 "3.14"
+        ApplyReceiver@18..22
+          Identifier@18..22
+            Identifier@18..22 "foot"
+      Newline@22..23 "\n"

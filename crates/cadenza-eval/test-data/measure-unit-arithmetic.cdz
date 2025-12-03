@@ -1,0 +1,6 @@
+measure millimeter
+measure meter = millimeter 1000
+let x = millimeter 500
+let y = meter 1
+let sum = x + y
+sum

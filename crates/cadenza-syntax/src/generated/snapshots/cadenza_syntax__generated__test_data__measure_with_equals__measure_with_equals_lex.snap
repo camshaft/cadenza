@@ -1,0 +1,76 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "measure foot = inch 12\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 7,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 7,
+            end: 8,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 8,
+            end: 12,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 12,
+            end: 13,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 13,
+            end: 14,
+        },
+        kind: Equal,
+    },
+    Token {
+        span: Span {
+            start: 14,
+            end: 15,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 15,
+            end: 19,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 19,
+            end: 20,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 20,
+            end: 22,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 22,
+            end: 23,
+        },
+        kind: Newline,
+    },
+]

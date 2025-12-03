@@ -181,6 +181,12 @@ fn eval_ident_no_auto_apply(ident: &Ident, ctx: &mut EvalContext<'_>) -> Result<
         return Ok(value.clone());
     }
 
+    // Check if it's a registered unit name
+    // If so, return a unit constructor value
+    if let Some(unit) = ctx.compiler.units().get(id) {
+        return Ok(Value::UnitConstructor(unit.clone()));
+    }
+
     Err(Diagnostic::undefined_variable(id))
 }
 
@@ -275,6 +281,33 @@ fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> 
 fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
         Value::BuiltinFn(builtin) => (builtin.func)(&args, ctx),
+        Value::UnitConstructor(unit) => {
+            // Unit constructors create quantities from numbers
+            if args.len() != 1 {
+                return Err(Diagnostic::arity(1, args.len()));
+            }
+            
+            let value = match &args[0] {
+                Value::Integer(n) => *n as f64,
+                Value::Float(f) => *f,
+                _ => {
+                    return Err(Diagnostic::type_error(
+                        Type::union(vec![Type::Integer, Type::Float]),
+                        args[0].type_of()
+                    ));
+                }
+            };
+            
+            // Create a derived dimension from this unit's dimension
+            use crate::unit::DerivedDimension;
+            let dimension = DerivedDimension::from_dimension(unit.dimension);
+            
+            Ok(Value::Quantity {
+                value,
+                unit,
+                dimension,
+            })
+        }
         Value::UserFunction(user_fn) => {
             // Check arity
             if args.len() != user_fn.params.len() {
@@ -304,6 +337,54 @@ fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Re
     }
 }
 
+/// Helper function to extract numeric value and dimension from a Value.
+///
+/// Returns (value, Some(dimension)) for Quantity, (value, None) for plain numbers.
+fn extract_numeric_and_dimension(value: &Value) -> Result<(f64, Option<crate::unit::DerivedDimension>)> {
+    
+    
+    match value {
+        Value::Integer(n) => Ok((*n as f64, None)),
+        Value::Float(f) => Ok((*f, None)),
+        Value::Quantity { value, dimension, .. } => Ok((*value, Some(dimension.clone()))),
+        _ => Err(Diagnostic::type_error(
+            Type::union(vec![Type::Integer, Type::Float]),
+            value.type_of()
+        )),
+    }
+}
+
+/// Helper function to create a Value from a numeric result and optional dimension.
+///
+/// Returns Quantity if dimension is Some, otherwise returns Float.
+fn create_numeric_value(
+    value: f64,
+    dimension: Option<crate::unit::DerivedDimension>,
+    unit: Option<crate::unit::Unit>
+) -> Value {
+    match dimension {
+        Some(dim) if !dim.is_dimensionless() => {
+            // Create a quantity with the dimension
+            // For now, use a synthesized unit name based on the dimension
+            let unit = unit.unwrap_or_else(|| {
+                use crate::unit::Unit;
+                // Create a temporary unit for the dimension
+                let unit_name: InternedString = format!("{}", dim).as_str().into();
+                Unit::base(unit_name)
+            });
+            Value::Quantity {
+                value,
+                unit,
+                dimension: dim,
+            }
+        }
+        _ => {
+            // Dimensionless or no dimension - return plain float
+            Value::Float(value)
+        }
+    }
+}
+
 /// Applies a built-in operator.
 fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
     let op_name: &str = &op_id;
@@ -319,6 +400,47 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a + b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
+            // Handle quantity addition - dimensions must match
+            [Value::Quantity { value: v1, unit: u1, dimension: d1 }, 
+             Value::Quantity { value: v2, unit: u2, dimension: d2 }] => {
+                // Check if dimensions are compatible
+                if u1.dimension != u2.dimension {
+                    return Err(Diagnostic::syntax(&format!(
+                        "cannot add quantities with incompatible dimensions: {} and {}",
+                        u1.name, u2.name
+                    )));
+                }
+                
+                // Convert second quantity to first unit's scale
+                let scale_ratio = u2.scale / u1.scale;
+                let v2_converted = v2 * scale_ratio;
+                
+                let result = v1 + v2_converted;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: u1.clone(),
+                    dimension: d1.clone(),
+                })
+            }
+            // Allow adding plain numbers to quantities
+            [Value::Quantity { value, unit, dimension }, Value::Integer(n)] | 
+            [Value::Integer(n), Value::Quantity { value, unit, dimension }] => {
+                let result = value + (*n as f64);
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
+            [Value::Quantity { value, unit, dimension }, Value::Float(f)] | 
+            [Value::Float(f), Value::Quantity { value, unit, dimension }] => {
+                let result = value + f;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
             // For binary operators, report the first non-number type as the actual type
             [Value::Integer(_), b] | [Value::Float(_), b] => {
                 Err(Diagnostic::type_error(number_type(), b.type_of()))
@@ -329,10 +451,72 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
         "-" => match args.as_slice() {
             [Value::Integer(a)] => Ok(Value::Integer(-a)),
             [Value::Float(a)] => Ok(Value::Float(-a)),
+            [Value::Quantity { value, unit, dimension }] => {
+                Ok(Value::Quantity {
+                    value: -value,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a - b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a - b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
+            // Handle quantity subtraction - dimensions must match
+            [Value::Quantity { value: v1, unit: u1, dimension: d1 }, 
+             Value::Quantity { value: v2, unit: u2, dimension: d2 }] => {
+                // Check if dimensions are compatible
+                if u1.dimension != u2.dimension {
+                    return Err(Diagnostic::syntax(&format!(
+                        "cannot subtract quantities with incompatible dimensions: {} and {}",
+                        u1.name, u2.name
+                    )));
+                }
+                
+                // Convert second quantity to first unit's scale
+                let scale_ratio = u2.scale / u1.scale;
+                let v2_converted = v2 * scale_ratio;
+                
+                let result = v1 - v2_converted;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: u1.clone(),
+                    dimension: d1.clone(),
+                })
+            }
+            // Allow subtracting plain numbers from quantities
+            [Value::Quantity { value, unit, dimension }, Value::Integer(n)] => {
+                let result = value - (*n as f64);
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
+            [Value::Integer(n), Value::Quantity { value, unit, dimension }] => {
+                let result = (*n as f64) - value;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
+            [Value::Quantity { value, unit, dimension }, Value::Float(f)] => {
+                let result = value - f;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
+            [Value::Float(f), Value::Quantity { value, unit, dimension }] => {
+                let result = f - value;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
             // For binary operators, report the first non-number type as the actual type
             [Value::Integer(_), b] | [Value::Float(_), b] => {
                 Err(Diagnostic::type_error(number_type(), b.type_of()))
@@ -341,35 +525,67 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [] => Err(Diagnostic::arity(1, 0)),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
-        "*" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a * b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a * b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 * b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a * *b as f64)),
-            // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => {
-                Err(Diagnostic::type_error(number_type(), b.type_of()))
+        "*" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
             }
-            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
-            _ => Err(Diagnostic::arity(2, args.len())),
+            
+            // Extract numeric values and dimensions
+            let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
+            let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
+            
+            let result_val = a_val * b_val;
+            
+            // Calculate result dimension
+            let result_dim = match (a_dim, b_dim) {
+                (Some(a), Some(b)) => Some(a.multiply(&b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            };
+            
+            // If result is dimensionless and no fractional part, return integer
+            if result_dim.is_none() && result_val.fract() == 0.0 {
+                Ok(Value::Integer(result_val as i64))
+            } else {
+                Ok(create_numeric_value(result_val, result_dim, None))
+            }
         },
-        "/" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => {
-                if *b == 0 {
-                    Err(Diagnostic::syntax("division by zero"))
-                } else {
-                    Ok(Value::Integer(a / b))
+        "/" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+            
+            // Extract numeric values and dimensions
+            let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
+            let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
+            
+            if b_val == 0.0 {
+                return Err(Diagnostic::syntax("division by zero"));
+            }
+            
+            let result_val = a_val / b_val;
+            
+            // Calculate result dimension
+            let result_dim = match (a_dim, b_dim) {
+                (Some(a), Some(b)) => Some(a.divide(&b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => {
+                    // 1 / dimension means the dimension is inverted
+                    use crate::unit::DerivedDimension;
+                    Some(DerivedDimension {
+                        numerator: b.denominator.clone(),
+                        denominator: b.numerator.clone(),
+                    })
                 }
+                (None, None) => None,
+            };
+            
+            // If result is dimensionless and no fractional part, return integer
+            if result_dim.is_none() && result_val.fract() == 0.0 {
+                Ok(Value::Integer(result_val as i64))
+            } else {
+                Ok(create_numeric_value(result_val, result_dim, None))
             }
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a / b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 / b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a / *b as f64)),
-            // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => {
-                Err(Diagnostic::type_error(number_type(), b.type_of()))
-            }
-            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
-            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "==" => match args.as_slice() {
             [a, b] => Ok(Value::Bool(a == b)),
@@ -512,11 +728,104 @@ pub fn builtin_assign() -> BuiltinMacro {
             if let Expr::Apply(apply) = lhs_expr {
                 // Get the callee and all arguments
                 if let Some(Expr::Ident(ident)) = apply.callee() {
+                    let callee_text = ident.syntax().text();
+                    
                     // Check if the callee is 'fn'
-                    if ident.syntax().text() == "fn" {
+                    if callee_text == "fn" {
                         // This is a function definition: fn name params... = body
                         let fn_args = apply.all_arguments();
                         return handle_function_definition(&fn_args, rhs_expr, ctx);
+                    }
+                    
+                    // Check if the callee is 'measure'
+                    if callee_text == "measure" {
+                        // This is a unit definition: measure name = base scale
+                        // Handle it directly here (same pattern as fn)
+                        let measure_args = apply.all_arguments();
+                        if measure_args.len() != 1 {
+                            return Err(Diagnostic::syntax(
+                                "measure with = requires exactly one name argument"
+                            ));
+                        }
+                        
+                        // Get the unit name
+                        let name = match &measure_args[0] {
+                            Expr::Ident(ident) => {
+                                let text = ident.syntax().text();
+                                let name: InternedString = text.to_string().as_str().into();
+                                name
+                            }
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure unit name must be an identifier"
+                                ));
+                            }
+                        };
+                        
+                        // The RHS should be: base scale (an Apply node)
+                        match rhs_expr {
+                            Expr::Apply(rhs_apply) => {
+                                let base_expr = rhs_apply.callee();
+                                let scale_args: Vec<Expr> = rhs_apply.arguments()
+                                    .filter_map(|arg| arg.value())
+                                    .collect();
+                                
+                                if scale_args.len() != 1 {
+                                    return Err(Diagnostic::syntax(
+                                        "measure conversion requires: base scale (e.g., millimeter 25.4)"
+                                    ));
+                                }
+                                
+                                // Get base unit name
+                                let base_unit_name = match base_expr {
+                                    Some(Expr::Ident(ident)) => {
+                                        let text = ident.syntax().text();
+                                        let name: InternedString = text.to_string().as_str().into();
+                                        name
+                                    }
+                                    _ => {
+                                        return Err(Diagnostic::syntax(
+                                            "measure conversion base must be a unit name"
+                                        ));
+                                    }
+                                };
+                                
+                                // Get scale
+                                let scale_value = scale_args[0].eval(ctx)?;
+                                let scale = match scale_value {
+                                    Value::Integer(n) => n as f64,
+                                    Value::Float(f) => f,
+                                    _ => {
+                                        return Err(Diagnostic::syntax(
+                                            "measure conversion scale must be a number"
+                                        ));
+                                    }
+                                };
+                                
+                                // Look up the base unit
+                                use crate::unit::Unit;
+                                let base_unit = ctx.compiler.units().get(base_unit_name)
+                                    .ok_or_else(|| Diagnostic::syntax(
+                                        &format!("undefined unit '{}'", &*base_unit_name)
+                                    ))?;
+                                
+                                // Create derived unit: 1 new_unit = scale base_units
+                                let derived_unit = Unit::derived(
+                                    name,
+                                    base_unit.dimension,
+                                    scale,
+                                    0.0,
+                                );
+                                
+                                ctx.compiler.units_mut().register(derived_unit);
+                                return Ok(Value::Nil);
+                            }
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure conversion requires: base scale (e.g., millimeter 25.4)"
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -637,6 +946,160 @@ pub fn builtin_fn() -> BuiltinMacro {
             // This should not be called directly in normal usage.
             // Function definitions are handled by the `=` macro when it sees `fn` patterns.
             Ok(Value::Nil)
+        },
+    }
+}
+
+/// Creates the `measure` builtin macro for defining units and conversions.
+///
+/// The `measure` macro defines a unit for dimensional analysis. It can be used in two forms:
+///
+/// 1. Base unit definition: `measure meter`
+///    - Defines a new base unit with no conversion
+/// 
+/// 2. Derived unit with conversion: `measure inch = millimeter 25.4`
+///    - Defines a new unit where 1 inch = 25.4 millimeters
+///    - The syntax `measure inch = base scale` defines: 1 inch = scale * base
+///    - Creates a bidirectional link (both units can be converted to each other)
+///
+/// Examples:
+/// ```ignore
+/// measure meter               // Base unit
+/// measure inch = millimeter 25.4   // 1 inch = 25.4 millimeters
+/// measure foot = inch 12           // 1 foot = 12 inches
+/// ```
+pub fn builtin_measure() -> BuiltinMacro {
+    use crate::unit::Unit;
+
+    BuiltinMacro {
+        name: "measure",
+        signature: Type::function(vec![Type::Symbol], Type::Nil),
+        func: |args, ctx| {
+            // measure takes 1 argument, which can be:
+            // - An identifier (base unit): measure name
+            // - An Apply node with = (derived unit): measure (name = base scale)
+            
+            if args.len() != 1 {
+                return Err(Diagnostic::arity(1, args.len()));
+            }
+
+            let arg = &args[0];
+            
+            // Check if this is a simple identifier (base unit) or an Apply with = (derived unit)
+            match arg {
+                Expr::Ident(ident) => {
+                    // Base unit definition: measure name
+                    let text = ident.syntax().text();
+                    let name: InternedString = text.to_string().as_str().into();
+                    let unit = Unit::base(name);
+                    ctx.compiler.units_mut().register(unit);
+                    Ok(Value::Nil)
+                }
+                Expr::Apply(apply) => {
+                    // Derived unit definition: measure (name = base scale)
+                    // The apply node should have = as the operator
+                    let _op = match apply.callee() {
+                        Some(Expr::Op(op)) if op.syntax().text() == "=" => op,
+                        _ => {
+                            return Err(Diagnostic::syntax(
+                                "measure with multiple arguments requires = operator (e.g., measure inch = millimeter 25.4)"
+                            ));
+                        }
+                    };
+                    
+                    // Get the arguments: [name, base scale]
+                    let apply_args: Vec<Expr> = apply.arguments().filter_map(|arg| arg.value()).collect();
+                    if apply_args.len() != 2 {
+                        return Err(Diagnostic::syntax(
+                            "measure with = requires format: measure name = base scale"
+                        ));
+                    }
+                    
+                    // First arg should be the new unit name (identifier)
+                    let name = match &apply_args[0] {
+                        Expr::Ident(ident) => {
+                            let text = ident.syntax().text();
+                            let name: InternedString = text.to_string().as_str().into();
+                            name
+                        }
+                        _ => {
+                            return Err(Diagnostic::syntax(
+                                "measure unit name must be an identifier"
+                            ));
+                        }
+                    };
+                    
+                    // Second arg should be an Apply node: base scale (function application)
+                    let conversion = &apply_args[1];
+                    match conversion {
+                        Expr::Apply(conv_apply) => {
+                            // The conversion should be: base scale
+                            // This parses as Apply(base, [scale])
+                            let base_expr = conv_apply.callee();
+                            let scale_args: Vec<Expr> = conv_apply.arguments().filter_map(|arg| arg.value()).collect();
+                            
+                            if scale_args.len() != 1 {
+                                return Err(Diagnostic::syntax(
+                                    "measure conversion requires: base scale (e.g., millimeter 25.4)"
+                                ));
+                            }
+                            
+                            // Get base unit name
+                            let base_unit_name = match base_expr {
+                                Some(Expr::Ident(ident)) => {
+                                    let text = ident.syntax().text();
+                                    let name: InternedString = text.to_string().as_str().into();
+                                    name
+                                }
+                                _ => {
+                                    return Err(Diagnostic::syntax(
+                                        "measure conversion base must be a unit name"
+                                    ));
+                                }
+                            };
+                            
+                            // Get scale
+                            let scale_value = scale_args[0].eval(ctx)?;
+                            let scale = match scale_value {
+                                Value::Integer(n) => n as f64,
+                                Value::Float(f) => f,
+                                _ => {
+                                    return Err(Diagnostic::syntax(
+                                        "measure conversion scale must be a number"
+                                    ));
+                                }
+                            };
+                            
+                            // Look up the base unit
+                            let base_unit = ctx.compiler.units().get(base_unit_name)
+                                .ok_or_else(|| Diagnostic::syntax(
+                                    &format!("undefined unit '{}'", &*base_unit_name)
+                                ))?;
+                            
+                            // Create derived unit: 1 new_unit = scale base_units
+                            let derived_unit = Unit::derived(
+                                name,
+                                base_unit.dimension,
+                                scale,
+                                0.0,
+                            );
+                            
+                            ctx.compiler.units_mut().register(derived_unit);
+                            Ok(Value::Nil)
+                        }
+                        _ => {
+                            return Err(Diagnostic::syntax(
+                                "measure conversion requires: base scale (e.g., millimeter 25.4)"
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(Diagnostic::syntax(
+                        "measure requires an identifier or assignment expression"
+                    ));
+                }
+            }
         },
     }
 }
