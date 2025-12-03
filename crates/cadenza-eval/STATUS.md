@@ -235,11 +235,10 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ### Known Issues
 
-- **measure macro with `=` syntax**:
-  - Syntax `measure inch = millimeter 25.4` produces a spurious TypeError
-  - Core functionality works: units are registered and quantities are created successfully
-  - Error appears to be from type checking but doesn't prevent feature from working
-  - Needs investigation into parser precedence and assignment operator interaction
+- **measure macro with `=` syntax**: ~~(RESOLVED in a0f85c7)~~
+  - Parser precedence causes `measure foot = inch 12` to parse as `[=, [measure, foot], [inch, 12]]`
+  - Fixed by adding special handling in `=` operator for 'measure' callee (same pattern as 'fn')
+  - Both `measure` and `fn` now require special handling in `=` due to juxtaposition having higher precedence than assignment
 
 ### Future Enhancements (from PR comments)
 
