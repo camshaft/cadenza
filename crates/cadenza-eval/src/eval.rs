@@ -56,12 +56,14 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
 ///
 /// This scans top-level expressions looking for function definitions of the form
 /// `fn name params... = body` and registers them in the compiler without evaluating them fully.
+/// This now uses the same delegation pattern as the `=` operator: if LHS is a macro call,
+/// we delegate to that macro.
 #[allow(clippy::collapsible_if)]
 fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
     let mut ctx = EvalContext::new(env, compiler);
 
     for expr in root.items() {
-        // Check if this is a function definition (= with fn pattern on LHS)
+        // Check if this is a function definition (= with macro pattern on LHS)
         if let Expr::Apply(apply) = expr {
             // Check if the callee is the = operator
             if let Some(Expr::Op(op)) = apply.callee() {
@@ -72,13 +74,43 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
                         let lhs = &args[0];
                         let rhs = &args[1];
 
-                        // Check if LHS is fn pattern
+                        // Check if LHS is a macro application (e.g., fn)
                         if let Expr::Apply(lhs_apply) = lhs {
-                            if let Some(Expr::Ident(ident)) = lhs_apply.callee() {
-                                if ident.syntax().text() == "fn" {
-                                    // This is a function definition - handle it
-                                    let fn_args = lhs_apply.all_arguments();
-                                    let _ = handle_function_definition(&fn_args, rhs, &mut ctx);
+                            if let Some(callee_expr) = lhs_apply.callee() {
+                                // Try to get the macro identifier
+                                if let Some(id) = extract_identifier(&callee_expr) {
+                                    // Check if this is a macro (specifically, check for 'fn' for hoisting)
+                                    // We only hoist functions, not other macros
+                                    let id_str: &str = &id;
+                                    if id_str == "fn" {
+                                        // Check if this is actually registered as a macro
+                                        if ctx.compiler.get_macro(id).is_some()
+                                            || matches!(
+                                                ctx.env.get(id),
+                                                Some(Value::BuiltinMacro(_))
+                                            )
+                                        {
+                                            // This is a function definition - delegate to fn macro
+                                            let lhs_args = lhs_apply.all_arguments();
+                                            let mut new_args =
+                                                Vec::with_capacity(lhs_args.len() + 1);
+                                            new_args.extend(lhs_args);
+                                            new_args.push(rhs.clone());
+
+                                            // Get the fn macro and call it
+                                            let macro_value =
+                                                if let Some(value) = ctx.compiler.get_macro(id) {
+                                                    Some(value.clone())
+                                                } else {
+                                                    ctx.env.get(id).cloned()
+                                                };
+
+                                            if let Some(Value::BuiltinMacro(builtin)) = macro_value
+                                            {
+                                                let _ = (builtin.func)(&new_args, &mut ctx);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -286,22 +318,22 @@ fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Re
             if args.len() != 1 {
                 return Err(Diagnostic::arity(1, args.len()));
             }
-            
+
             let value = match &args[0] {
                 Value::Integer(n) => *n as f64,
                 Value::Float(f) => *f,
                 _ => {
                     return Err(Diagnostic::type_error(
                         Type::union(vec![Type::Integer, Type::Float]),
-                        args[0].type_of()
+                        args[0].type_of(),
                     ));
                 }
             };
-            
+
             // Create a derived dimension from this unit's dimension
             use crate::unit::DerivedDimension;
             let dimension = DerivedDimension::from_dimension(unit.dimension);
-            
+
             Ok(Value::Quantity {
                 value,
                 unit,
@@ -340,16 +372,18 @@ fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Re
 /// Helper function to extract numeric value and dimension from a Value.
 ///
 /// Returns (value, Some(dimension)) for Quantity, (value, None) for plain numbers.
-fn extract_numeric_and_dimension(value: &Value) -> Result<(f64, Option<crate::unit::DerivedDimension>)> {
-    
-    
+fn extract_numeric_and_dimension(
+    value: &Value,
+) -> Result<(f64, Option<crate::unit::DerivedDimension>)> {
     match value {
         Value::Integer(n) => Ok((*n as f64, None)),
         Value::Float(f) => Ok((*f, None)),
-        Value::Quantity { value, dimension, .. } => Ok((*value, Some(dimension.clone()))),
+        Value::Quantity {
+            value, dimension, ..
+        } => Ok((*value, Some(dimension.clone()))),
         _ => Err(Diagnostic::type_error(
             Type::union(vec![Type::Integer, Type::Float]),
-            value.type_of()
+            value.type_of(),
         )),
     }
 }
@@ -360,7 +394,7 @@ fn extract_numeric_and_dimension(value: &Value) -> Result<(f64, Option<crate::un
 fn create_numeric_value(
     value: f64,
     dimension: Option<crate::unit::DerivedDimension>,
-    unit: Option<crate::unit::Unit>
+    unit: Option<crate::unit::Unit>,
 ) -> Value {
     match dimension {
         Some(dim) if !dim.is_dimensionless() => {
@@ -401,20 +435,30 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
             // Handle quantity addition - dimensions must match
-            [Value::Quantity { value: v1, unit: u1, dimension: d1 }, 
-             Value::Quantity { value: v2, unit: u2, dimension: d2 }] => {
+            [
+                Value::Quantity {
+                    value: v1,
+                    unit: u1,
+                    dimension: d1,
+                },
+                Value::Quantity {
+                    value: v2,
+                    unit: u2,
+                    dimension: _d2,
+                },
+            ] => {
                 // Check if dimensions are compatible
                 if u1.dimension != u2.dimension {
-                    return Err(Diagnostic::syntax(&format!(
+                    return Err(Diagnostic::syntax(format!(
                         "cannot add quantities with incompatible dimensions: {} and {}",
                         u1.name, u2.name
                     )));
                 }
-                
+
                 // Convert second quantity to first unit's scale
                 let scale_ratio = u2.scale / u1.scale;
                 let v2_converted = v2 * scale_ratio;
-                
+
                 let result = v1 + v2_converted;
                 Ok(Value::Quantity {
                     value: result,
@@ -423,8 +467,22 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
                 })
             }
             // Allow adding plain numbers to quantities
-            [Value::Quantity { value, unit, dimension }, Value::Integer(n)] | 
-            [Value::Integer(n), Value::Quantity { value, unit, dimension }] => {
+            [
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+                Value::Integer(n),
+            ]
+            | [
+                Value::Integer(n),
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+            ] => {
                 let result = value + (*n as f64);
                 Ok(Value::Quantity {
                     value: result,
@@ -432,8 +490,22 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
                     dimension: dimension.clone(),
                 })
             }
-            [Value::Quantity { value, unit, dimension }, Value::Float(f)] | 
-            [Value::Float(f), Value::Quantity { value, unit, dimension }] => {
+            [
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+                Value::Float(f),
+            ]
+            | [
+                Value::Float(f),
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+            ] => {
                 let result = value + f;
                 Ok(Value::Quantity {
                     value: result,
@@ -451,32 +523,46 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
         "-" => match args.as_slice() {
             [Value::Integer(a)] => Ok(Value::Integer(-a)),
             [Value::Float(a)] => Ok(Value::Float(-a)),
-            [Value::Quantity { value, unit, dimension }] => {
-                Ok(Value::Quantity {
-                    value: -value,
-                    unit: unit.clone(),
-                    dimension: dimension.clone(),
-                })
-            }
+            [
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+            ] => Ok(Value::Quantity {
+                value: -value,
+                unit: unit.clone(),
+                dimension: dimension.clone(),
+            }),
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a - b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a - b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
             // Handle quantity subtraction - dimensions must match
-            [Value::Quantity { value: v1, unit: u1, dimension: d1 }, 
-             Value::Quantity { value: v2, unit: u2, dimension: d2 }] => {
+            [
+                Value::Quantity {
+                    value: v1,
+                    unit: u1,
+                    dimension: d1,
+                },
+                Value::Quantity {
+                    value: v2,
+                    unit: u2,
+                    dimension: _d2,
+                },
+            ] => {
                 // Check if dimensions are compatible
                 if u1.dimension != u2.dimension {
-                    return Err(Diagnostic::syntax(&format!(
+                    return Err(Diagnostic::syntax(format!(
                         "cannot subtract quantities with incompatible dimensions: {} and {}",
                         u1.name, u2.name
                     )));
                 }
-                
+
                 // Convert second quantity to first unit's scale
                 let scale_ratio = u2.scale / u1.scale;
                 let v2_converted = v2 * scale_ratio;
-                
+
                 let result = v1 - v2_converted;
                 Ok(Value::Quantity {
                     value: result,
@@ -485,7 +571,14 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
                 })
             }
             // Allow subtracting plain numbers from quantities
-            [Value::Quantity { value, unit, dimension }, Value::Integer(n)] => {
+            [
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+                Value::Integer(n),
+            ] => {
                 let result = value - (*n as f64);
                 Ok(Value::Quantity {
                     value: result,
@@ -493,7 +586,14 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
                     dimension: dimension.clone(),
                 })
             }
-            [Value::Integer(n), Value::Quantity { value, unit, dimension }] => {
+            [
+                Value::Integer(n),
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+            ] => {
                 let result = (*n as f64) - value;
                 Ok(Value::Quantity {
                     value: result,
@@ -501,7 +601,14 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
                     dimension: dimension.clone(),
                 })
             }
-            [Value::Quantity { value, unit, dimension }, Value::Float(f)] => {
+            [
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+                Value::Float(f),
+            ] => {
                 let result = value - f;
                 Ok(Value::Quantity {
                     value: result,
@@ -509,7 +616,14 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
                     dimension: dimension.clone(),
                 })
             }
-            [Value::Float(f), Value::Quantity { value, unit, dimension }] => {
+            [
+                Value::Float(f),
+                Value::Quantity {
+                    value,
+                    unit,
+                    dimension,
+                },
+            ] => {
                 let result = f - value;
                 Ok(Value::Quantity {
                     value: result,
@@ -529,42 +643,42 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
             }
-            
+
             // Extract numeric values and dimensions
             let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
             let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
-            
+
             let result_val = a_val * b_val;
-            
+
             // Calculate result dimension
             let result_dim = match (a_dim, b_dim) {
                 (Some(a), Some(b)) => Some(a.multiply(&b)),
                 (Some(a), None) | (None, Some(a)) => Some(a),
                 (None, None) => None,
             };
-            
+
             // If result is dimensionless and no fractional part, return integer
             if result_dim.is_none() && result_val.fract() == 0.0 {
                 Ok(Value::Integer(result_val as i64))
             } else {
                 Ok(create_numeric_value(result_val, result_dim, None))
             }
-        },
+        }
         "/" => {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
             }
-            
+
             // Extract numeric values and dimensions
             let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
             let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
-            
+
             if b_val == 0.0 {
                 return Err(Diagnostic::syntax("division by zero"));
             }
-            
+
             let result_val = a_val / b_val;
-            
+
             // Calculate result dimension
             let result_dim = match (a_dim, b_dim) {
                 (Some(a), Some(b)) => Some(a.divide(&b)),
@@ -579,14 +693,14 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
                 }
                 (None, None) => None,
             };
-            
+
             // If result is dimensionless and no fractional part, return integer
             if result_dim.is_none() && result_val.fract() == 0.0 {
                 Ok(Value::Integer(result_val as i64))
             } else {
                 Ok(create_numeric_value(result_val, result_dim, None))
             }
-        },
+        }
         "==" => match args.as_slice() {
             [a, b] => Ok(Value::Bool(a == b)),
             _ => Err(Diagnostic::arity(2, args.len())),
@@ -655,35 +769,50 @@ impl Eval for Synthetic {
 // Built-in special forms for variable declaration and assignment
 // =============================================================================
 
-/// Creates the `let` special form that declares a variable.
+/// Creates the `let` macro for declaring and initializing variables.
 ///
-/// The `let` special form takes an identifier and declares it in the environment
-/// with an initial value of `Nil`. It returns the symbol so it can be used in
-/// assignment expressions.
+/// The `let` macro can be used in two forms:
 ///
-/// # Parsing
+/// 1. With `=` operator (delegated from `=`): `let x = 42`
+///    - Called by `=` with arguments: `[x, 42]`
+///    - Declares the variable and assigns the value
 ///
-/// The expression `let x = 42` is parsed as `[[=, [let, x], 42]]`, which is:
-/// - An `=` operator applied to `[let, x]` (the `let` special form applied to `x`) and `42`
+/// 2. Standalone (returns Nil): `let x` (when used before `=`, returns Nil to signal delegation)
 ///
-/// This allows `let` to declare the variable and return a symbol, which `=` then uses
-/// to assign the value.
+/// When called with 2 arguments, it declares the variable and assigns the value.
+/// When called with 1 argument, it returns Nil to signal that delegation is needed.
+///
+/// Examples:
+/// - `let x = 42` - Called with `[x, 42]`, declares `x` and assigns 42
+/// - `let y = x + 10` - Called with `[y, x + 10]`, declares `y` and assigns the result
 pub fn builtin_let() -> BuiltinMacro {
     BuiltinMacro {
         name: "let",
-        signature: Type::function(vec![Type::Symbol], Type::Symbol),
+        signature: Type::function(vec![Type::Symbol], Type::Nil),
         func: |args, ctx| {
-            // Expect exactly one argument (the identifier)
-            if args.len() != 1 {
-                return Err(Diagnostic::arity(1, args.len()));
+            // If called with 0 arguments, return Nil
+            if args.is_empty() {
+                return Ok(Value::Nil);
             }
 
-            // Validate that the expression is an identifier
+            // If called with 1 argument, return Nil (needs delegation)
+            if args.len() == 1 {
+                return Ok(Value::Nil);
+            }
+
+            // Called with 2 arguments: [name, value]
+            if args.len() != 2 {
+                return Err(Diagnostic::syntax(
+                    "let expects 1 or 2 arguments (e.g., let x, or let x = 42)",
+                ));
+            }
+
+            // First argument is the identifier
             let ident = match &args[0] {
                 Expr::Ident(i) => i,
                 _ => {
                     return Err(Diagnostic::syntax(
-                        "let requires an identifier, not an expression",
+                        "let requires an identifier as the variable name",
                     ));
                 }
             };
@@ -692,24 +821,35 @@ pub fn builtin_let() -> BuiltinMacro {
             let text = ident.syntax().text();
             let name: InternedString = text.to_string().as_str().into();
 
-            // Define the variable in the environment with initial value Nil
-            ctx.env.define(name, Value::Nil);
+            // Second argument is the value expression
+            let value_expr = &args[1];
+            let value = value_expr.eval(ctx)?;
 
-            // Return the symbol
-            Ok(Value::Symbol(name))
+            // Define the variable in the environment with the evaluated value
+            ctx.env.define(name, value.clone());
+
+            // Return the value
+            Ok(value)
         },
     }
 }
 
-/// Creates the `=` special form that assigns a value to a variable or defines a function.
+/// Creates the `=` operator that assigns values or delegates to macros.
 ///
-/// The `=` special form takes two arguments:
-/// 1. The left-hand side (which should be a symbol from `let`, or a `fn` application)
-/// 2. The right-hand side (which is evaluated for variables, or used as the function body)
+/// The `=` operator takes two arguments:
+/// 1. The left-hand side (which can be a macro application or an identifier)
+/// 2. The right-hand side (the value to assign or pass to the macro)
+///
+/// When the LHS is a macro application (e.g., `let x`, `fn name params...`, `measure name`),
+/// the `=` operator delegates to that macro by calling it with `[lhs_args..., rhs]`.
+///
+/// When the LHS is a plain identifier, `=` performs a direct reassignment to that variable.
 ///
 /// Examples:
-/// - `let x = 42` - The `let x` returns a symbol, then `=` assigns 42 to it.
-/// - `fn add x y = x + y` - The `fn add x y` is recognized as a function definition pattern
+/// - `let x = 42` - Delegates to `let` with `[x, 42]`
+/// - `fn add x y = x + y` - Delegates to `fn` with `[add, x, y, x + y]`
+/// - `measure inch = millimeter 25.4` - Delegates to `measure` with `[inch, millimeter 25.4]`
+/// - `x = 50` - Direct reassignment to existing variable `x`
 pub fn builtin_assign() -> BuiltinMacro {
     BuiltinMacro {
         name: "=",
@@ -724,122 +864,42 @@ pub fn builtin_assign() -> BuiltinMacro {
             let lhs_expr = &args[0];
             let rhs_expr = &args[1];
 
-            // Check if LHS is a function definition pattern (fn name params...)
+            // Check if LHS is a macro application - delegate if so
             if let Expr::Apply(apply) = lhs_expr {
-                // Get the callee and all arguments
-                if let Some(Expr::Ident(ident)) = apply.callee() {
-                    let callee_text = ident.syntax().text();
-                    
-                    // Check if the callee is 'fn'
-                    if callee_text == "fn" {
-                        // This is a function definition: fn name params... = body
-                        let fn_args = apply.all_arguments();
-                        return handle_function_definition(&fn_args, rhs_expr, ctx);
-                    }
-                    
-                    // Check if the callee is 'measure'
-                    if callee_text == "measure" {
-                        // This is a unit definition: measure name = base scale
-                        // Handle it directly here (same pattern as fn)
-                        let measure_args = apply.all_arguments();
-                        if measure_args.len() != 1 {
-                            return Err(Diagnostic::syntax(
-                                "measure with = requires exactly one name argument"
-                            ));
-                        }
-                        
-                        // Get the unit name
-                        let name = match &measure_args[0] {
-                            Expr::Ident(ident) => {
-                                let text = ident.syntax().text();
-                                let name: InternedString = text.to_string().as_str().into();
-                                name
-                            }
-                            _ => {
-                                return Err(Diagnostic::syntax(
-                                    "measure unit name must be an identifier"
-                                ));
-                            }
+                if let Some(callee_expr) = apply.callee() {
+                    // Try to extract an identifier from the callee
+                    if let Some(id) = extract_identifier(&callee_expr) {
+                        // Check if this identifier refers to a macro
+                        let macro_value = if let Some(value) = ctx.compiler.get_macro(id) {
+                            Some(value.clone())
+                        } else {
+                            ctx.env.get(id).and_then(|v| match v {
+                                Value::BuiltinMacro(_) => Some(v.clone()),
+                                _ => None,
+                            })
                         };
-                        
-                        // The RHS should be: base scale (an Apply node)
-                        match rhs_expr {
-                            Expr::Apply(rhs_apply) => {
-                                let base_expr = rhs_apply.callee();
-                                let scale_args: Vec<Expr> = rhs_apply.arguments()
-                                    .filter_map(|arg| arg.value())
-                                    .collect();
-                                
-                                if scale_args.len() != 1 {
-                                    return Err(Diagnostic::syntax(
-                                        "measure conversion requires: base scale (e.g., millimeter 25.4)"
-                                    ));
-                                }
-                                
-                                // Get base unit name
-                                let base_unit_name = match base_expr {
-                                    Some(Expr::Ident(ident)) => {
-                                        let text = ident.syntax().text();
-                                        let name: InternedString = text.to_string().as_str().into();
-                                        name
-                                    }
-                                    _ => {
-                                        return Err(Diagnostic::syntax(
-                                            "measure conversion base must be a unit name"
-                                        ));
-                                    }
-                                };
-                                
-                                // Get scale
-                                let scale_value = scale_args[0].eval(ctx)?;
-                                let scale = match scale_value {
-                                    Value::Integer(n) => n as f64,
-                                    Value::Float(f) => f,
-                                    _ => {
-                                        return Err(Diagnostic::syntax(
-                                            "measure conversion scale must be a number"
-                                        ));
-                                    }
-                                };
-                                
-                                // Look up the base unit
-                                use crate::unit::Unit;
-                                let base_unit = ctx.compiler.units().get(base_unit_name)
-                                    .ok_or_else(|| Diagnostic::syntax(
-                                        &format!("undefined unit '{}'", &*base_unit_name)
-                                    ))?;
-                                
-                                // Create derived unit: 1 new_unit = scale base_units
-                                let derived_unit = Unit::derived(
-                                    name,
-                                    base_unit.dimension,
-                                    scale,
-                                    0.0,
-                                );
-                                
-                                ctx.compiler.units_mut().register(derived_unit);
-                                return Ok(Value::Nil);
-                            }
-                            _ => {
-                                return Err(Diagnostic::syntax(
-                                    "measure conversion requires: base scale (e.g., millimeter 25.4)"
-                                ));
-                            }
+
+                        if let Some(Value::BuiltinMacro(builtin)) = macro_value {
+                            // This is a macro! Delegate to it with [lhs_args..., rhs]
+                            let lhs_args = apply.all_arguments();
+                            let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
+                            new_args.extend(lhs_args);
+                            new_args.push(rhs_expr.clone());
+
+                            // Call the macro directly
+                            return (builtin.func)(&new_args, ctx);
                         }
                     }
                 }
             }
 
-            // Not a function definition - handle as normal assignment
-            // Evaluate the RHS to get the value
-            let rhs_value = rhs_expr.eval(ctx)?;
-
-            // Determine the variable name based on LHS
+            // LHS is not a macro application - handle as direct identifier reassignment
             match lhs_expr {
-                // If LHS is a plain identifier, get the name directly (for reassignment)
                 Expr::Ident(ident) => {
                     let text = ident.syntax().text();
                     let name: InternedString = text.to_string().as_str().into();
+
+                    let rhs_value = rhs_expr.eval(ctx)?;
 
                     // Check if the variable exists (must be declared with `let` first)
                     if let Some(var) = ctx.env.get_mut(name) {
@@ -849,22 +909,11 @@ pub fn builtin_assign() -> BuiltinMacro {
                         Err(Diagnostic::undefined_variable(name))
                     }
                 }
-                // Otherwise, evaluate the LHS (e.g., from `let x`)
                 _ => {
-                    let lhs_value = lhs_expr.eval(ctx)?;
-
-                    match lhs_value {
-                        Value::Symbol(name) => {
-                            // Update the variable in the environment
-                            if let Some(var) = ctx.env.get_mut(name) {
-                                *var = rhs_value.clone();
-                                Ok(rhs_value)
-                            } else {
-                                Err(Diagnostic::undefined_variable(name))
-                            }
-                        }
-                        _ => Err(Diagnostic::type_error(Type::Symbol, lhs_value.type_of())),
-                    }
+                    // LHS is neither a macro application nor an identifier
+                    Err(Diagnostic::syntax(
+                        "left side of = must be an identifier or a macro application (e.g., let x, fn name, measure unit)",
+                    ))
                 }
             }
         },
@@ -932,20 +981,39 @@ fn handle_function_definition(
     Ok(Value::Nil)
 }
 
-/// Creates the `fn` identifier for use in function definitions.
+/// Creates the `fn` macro for defining functions.
 ///
-/// The `fn` identifier is used in conjunction with the `=` operator to define functions.
-/// When `=` sees a pattern like `fn name params... = body`, it handles the function definition.
+/// The `fn` macro is used to define functions. It can be used in two forms:
 ///
-/// This standalone macro just returns Nil if called directly (which shouldn't happen in normal use).
+/// 1. With `=` operator (delegated from `=`): `fn name params... = body`
+///    - Called by `=` with arguments: `[name, params..., body]`
+///    - Defines a function with the given name, parameters, and body
+///
+/// 2. Standalone (returns Nil): `fn name params...` (when used before `=`, returns Nil to signal delegation)
+///
+/// When called with at least 2 arguments, the last argument is treated as the body,
+/// and all previous arguments are treated as [name, params...].
+///
+/// Examples:
+/// - `fn add x y = x + y` - Called with `[add, x, y, x + y]`, defines a 2-param function
+/// - `fn square x = x * x` - Called with `[square, x, x * x]`, defines a 1-param function
+/// - `fn const = 42` - Called with `[const, 42]`, defines a 0-param function
 pub fn builtin_fn() -> BuiltinMacro {
     BuiltinMacro {
         name: "fn",
         signature: Type::function(vec![Type::Unknown], Type::Nil),
-        func: |_args, _ctx| {
-            // This should not be called directly in normal usage.
-            // Function definitions are handled by the `=` macro when it sees `fn` patterns.
-            Ok(Value::Nil)
+        func: |args, ctx| {
+            // If called with 0 or 1 arguments, return Nil (needs delegation)
+            if args.len() < 2 {
+                return Ok(Value::Nil);
+            }
+
+            // When called with 2+ arguments, treat last as body and rest as [name, params...]
+            let (fn_args, body_slice) = args.split_at(args.len() - 1);
+            let body_expr = &body_slice[0];
+
+            // Use the existing helper function
+            handle_function_definition(fn_args, body_expr, ctx)
         },
     }
 }
@@ -955,9 +1023,11 @@ pub fn builtin_fn() -> BuiltinMacro {
 /// The `measure` macro defines a unit for dimensional analysis. It can be used in two forms:
 ///
 /// 1. Base unit definition: `measure meter`
+///    - Called with 1 argument: `[meter]`
 ///    - Defines a new base unit with no conversion
-/// 
+///
 /// 2. Derived unit with conversion: `measure inch = millimeter 25.4`
+///    - Called by `=` with 2 arguments: `[inch, millimeter 25.4]`
 ///    - Defines a new unit where 1 inch = 25.4 millimeters
 ///    - The syntax `measure inch = base scale` defines: 1 inch = scale * base
 ///    - Creates a bidirectional link (both units can be converted to each other)
@@ -975,130 +1045,107 @@ pub fn builtin_measure() -> BuiltinMacro {
         name: "measure",
         signature: Type::function(vec![Type::Symbol], Type::Nil),
         func: |args, ctx| {
-            // measure takes 1 argument, which can be:
-            // - An identifier (base unit): measure name
-            // - An Apply node with = (derived unit): measure (name = base scale)
-            
-            if args.len() != 1 {
-                return Err(Diagnostic::arity(1, args.len()));
+            if args.is_empty() {
+                return Err(Diagnostic::syntax("measure requires at least one argument"));
             }
 
-            let arg = &args[0];
-            
-            // Check if this is a simple identifier (base unit) or an Apply with = (derived unit)
-            match arg {
-                Expr::Ident(ident) => {
-                    // Base unit definition: measure name
-                    let text = ident.syntax().text();
-                    let name: InternedString = text.to_string().as_str().into();
-                    let unit = Unit::base(name);
-                    ctx.compiler.units_mut().register(unit);
-                    Ok(Value::Nil)
-                }
-                Expr::Apply(apply) => {
-                    // Derived unit definition: measure (name = base scale)
-                    // The apply node should have = as the operator
-                    let _op = match apply.callee() {
-                        Some(Expr::Op(op)) if op.syntax().text() == "=" => op,
-                        _ => {
-                            return Err(Diagnostic::syntax(
-                                "measure with multiple arguments requires = operator (e.g., measure inch = millimeter 25.4)"
-                            ));
-                        }
-                    };
-                    
-                    // Get the arguments: [name, base scale]
-                    let apply_args: Vec<Expr> = apply.arguments().filter_map(|arg| arg.value()).collect();
-                    if apply_args.len() != 2 {
+            // Case 1: Base unit definition - measure name
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Ident(ident) => {
+                        let text = ident.syntax().text();
+                        let name: InternedString = text.to_string().as_str().into();
+                        let unit = Unit::base(name);
+                        ctx.compiler.units_mut().register(unit);
+                        return Ok(Value::Nil);
+                    }
+                    _ => {
                         return Err(Diagnostic::syntax(
-                            "measure with = requires format: measure name = base scale"
+                            "measure requires an identifier as unit name",
                         ));
                     }
-                    
-                    // First arg should be the new unit name (identifier)
-                    let name = match &apply_args[0] {
-                        Expr::Ident(ident) => {
-                            let text = ident.syntax().text();
-                            let name: InternedString = text.to_string().as_str().into();
-                            name
-                        }
-                        _ => {
+                }
+            }
+
+            // Case 2: Derived unit definition - measure name = base scale
+            // When called from `=`, we receive [name, rhs] where rhs is `base scale`
+            if args.len() == 2 {
+                // Get the unit name
+                let name = match &args[0] {
+                    Expr::Ident(ident) => {
+                        let text = ident.syntax().text();
+                        let name: InternedString = text.to_string().as_str().into();
+                        name
+                    }
+                    _ => {
+                        return Err(Diagnostic::syntax(
+                            "measure unit name must be an identifier",
+                        ));
+                    }
+                };
+
+                // The RHS should be: base scale (an Apply node)
+                let rhs_expr = &args[1];
+                match rhs_expr {
+                    Expr::Apply(rhs_apply) => {
+                        let base_expr = rhs_apply.callee();
+                        let scale_args: Vec<Expr> = rhs_apply
+                            .arguments()
+                            .filter_map(|arg| arg.value())
+                            .collect();
+
+                        if scale_args.len() != 1 {
                             return Err(Diagnostic::syntax(
-                                "measure unit name must be an identifier"
+                                "measure conversion requires: base scale (e.g., millimeter 25.4)",
                             ));
                         }
-                    };
-                    
-                    // Second arg should be an Apply node: base scale (function application)
-                    let conversion = &apply_args[1];
-                    match conversion {
-                        Expr::Apply(conv_apply) => {
-                            // The conversion should be: base scale
-                            // This parses as Apply(base, [scale])
-                            let base_expr = conv_apply.callee();
-                            let scale_args: Vec<Expr> = conv_apply.arguments().filter_map(|arg| arg.value()).collect();
-                            
-                            if scale_args.len() != 1 {
+
+                        // Get base unit name
+                        let base_unit_name = match base_expr {
+                            Some(Expr::Ident(ident)) => {
+                                let text = ident.syntax().text();
+                                let name: InternedString = text.to_string().as_str().into();
+                                name
+                            }
+                            _ => {
                                 return Err(Diagnostic::syntax(
-                                    "measure conversion requires: base scale (e.g., millimeter 25.4)"
+                                    "measure conversion base must be a unit name",
                                 ));
                             }
-                            
-                            // Get base unit name
-                            let base_unit_name = match base_expr {
-                                Some(Expr::Ident(ident)) => {
-                                    let text = ident.syntax().text();
-                                    let name: InternedString = text.to_string().as_str().into();
-                                    name
-                                }
-                                _ => {
-                                    return Err(Diagnostic::syntax(
-                                        "measure conversion base must be a unit name"
-                                    ));
-                                }
-                            };
-                            
-                            // Get scale
-                            let scale_value = scale_args[0].eval(ctx)?;
-                            let scale = match scale_value {
-                                Value::Integer(n) => n as f64,
-                                Value::Float(f) => f,
-                                _ => {
-                                    return Err(Diagnostic::syntax(
-                                        "measure conversion scale must be a number"
-                                    ));
-                                }
-                            };
-                            
-                            // Look up the base unit
-                            let base_unit = ctx.compiler.units().get(base_unit_name)
-                                .ok_or_else(|| Diagnostic::syntax(
-                                    &format!("undefined unit '{}'", &*base_unit_name)
-                                ))?;
-                            
-                            // Create derived unit: 1 new_unit = scale base_units
-                            let derived_unit = Unit::derived(
-                                name,
-                                base_unit.dimension,
-                                scale,
-                                0.0,
-                            );
-                            
-                            ctx.compiler.units_mut().register(derived_unit);
-                            Ok(Value::Nil)
-                        }
-                        _ => {
-                            return Err(Diagnostic::syntax(
-                                "measure conversion requires: base scale (e.g., millimeter 25.4)"
-                            ));
-                        }
+                        };
+
+                        // Get scale
+                        let scale_value = scale_args[0].eval(ctx)?;
+                        let scale = match scale_value {
+                            Value::Integer(n) => n as f64,
+                            Value::Float(f) => f,
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure conversion scale must be a number",
+                                ));
+                            }
+                        };
+
+                        // Look up the base unit
+                        let base_unit =
+                            ctx.compiler.units().get(base_unit_name).ok_or_else(|| {
+                                Diagnostic::syntax(format!("undefined unit '{}'", &*base_unit_name))
+                            })?;
+
+                        // Create derived unit: 1 new_unit = scale base_units
+                        let derived_unit = Unit::derived(name, base_unit.dimension, scale, 0.0);
+
+                        ctx.compiler.units_mut().register(derived_unit);
+                        Ok(Value::Nil)
                     }
+                    _ => Err(Diagnostic::syntax(
+                        "measure conversion requires: base scale (e.g., millimeter 25.4)",
+                    )),
                 }
-                _ => {
-                    return Err(Diagnostic::syntax(
-                        "measure requires an identifier or assignment expression"
-                    ));
-                }
+            } else {
+                Err(Diagnostic::syntax(
+                    "measure expects 1 or 2 arguments (e.g., measure meter, or measure inch = millimeter 25.4)",
+                ))
             }
         },
     }
