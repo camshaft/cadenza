@@ -115,6 +115,8 @@ The evaluator runs **before** type checking because:
 2. **Compile-time computation**: Some types may depend on compile-time computations (e.g., array sizes, unit conversions).
 3. **Module building**: The evaluator accumulates exports into the Compiler state, which the type checker validates.
 
+**Note on error handling**: If evaluation fails or produces errors, those diagnostics are recorded in the Compiler state but don't prevent type checking. The type checker operates on both successfully evaluated code and unevaluated branches, ensuring we get comprehensive type errors even when evaluation issues exist. This provides better overall error reporting than stopping at the first evaluation failure.
+
 #### Handling Unevaluated Branches
 
 **Problem**: If the interpreter encounters a conditional that isn't evaluated (e.g., `if false then ... else ...`), we still need to type-check the unevaluated branch.
@@ -369,7 +371,8 @@ import mymodule *
 
 # Qualified import
 import mymodule as m
-let x = m.public_fn 10
+# Access with module prefix (uses function application syntax)
+let x = (m.public_fn) 10
 ```
 
 The type checker ensures:
@@ -512,8 +515,9 @@ impl Monomorphizer {
         
         // Create new specialized function
         let specialized = self.specialize(func, types);
-        let id = self.specialized.push(specialized);
-        self.instantiations.entry(func.id).push(Instantiation { types, id });
+        let id = self.specialized.len();
+        self.specialized.push(specialized);
+        self.instantiations.entry(func.id).or_default().push(Instantiation { types, id });
         id
     }
 }
@@ -1243,10 +1247,15 @@ pub struct SourceFile {
 
 impl SourceFile {
     fn position(&self, offset: u32) -> (usize, usize) {
-        // Binary search to find line number
-        let line = self.line_starts.binary_search(&offset);
-        let column = offset - self.line_starts[line];
-        (line, column)
+        // Binary search to find line number (returns Ok for exact match, Err for insertion point)
+        let line = match self.line_starts.binary_search(&offset) {
+            Ok(line) => line,
+            Err(line) => line.saturating_sub(1), // Line before the insertion point
+        };
+        // Calculate column (with bounds check)
+        let line_start = self.line_starts.get(line).copied().unwrap_or(0);
+        let column = offset.saturating_sub(line_start);
+        (line, column as usize)
     }
 }
 ```
