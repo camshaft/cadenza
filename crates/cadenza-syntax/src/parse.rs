@@ -214,13 +214,6 @@ impl<'src> Parser<'src> {
                         self.builder.finish_node(); // ApplyArgument
 
                         self.skip_trivia();
-
-                        // Stop if no more expressions at same indent
-                        if self.whitespace.line == block_start_line
-                            || self.whitespace.len != block_indent_level
-                        {
-                            break;
-                        }
                     }
 
                     self.builder.finish_node(); // Apply (__block__)
