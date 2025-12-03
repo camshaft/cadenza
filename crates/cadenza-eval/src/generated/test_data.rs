@@ -18,6 +18,17 @@ mod fn_basic {
         );
     }
 }
+mod fn_auto_apply {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_auto_apply",
+            t::eval_all("fn add x y = x + y\nadd\n"),
+            "fn add x y = x + y\nadd\n"
+        );
+    }
+}
 mod lit_int {
     use super::*;
     #[test]
@@ -176,6 +187,17 @@ mod fn_single_param {
             "fn_single_param",
             t::eval_all("fn triple x = x * 3\ntriple 7\n"),
             "fn triple x = x * 3\ntriple 7\n"
+        );
+    }
+}
+mod fn_zero_arity {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_zero_arity",
+            t::eval_all("fn get_value = 42\nget_value\n"),
+            "fn get_value = 42\nget_value\n"
         );
     }
 }

@@ -56,6 +56,7 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
 ///
 /// This scans top-level expressions looking for function definitions of the form
 /// `fn name params... = body` and registers them in the compiler without evaluating them fully.
+#[allow(clippy::collapsible_if)]
 fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
     let mut ctx = EvalContext::new(env, compiler);
 
@@ -151,43 +152,48 @@ impl Eval for Literal {
     }
 }
 
-/// Helper to auto-apply zero-parameter functions when referenced.
+/// Helper to auto-apply functions when referenced as standalone identifiers.
 ///
-/// If the value is a zero-parameter function, it is automatically invoked.
+/// If the value is a user function, it is automatically invoked with no arguments.
+/// This will succeed for zero-parameter functions and produce an arity error for
+/// functions that require parameters.
 /// Otherwise, the value is returned as-is.
 fn maybe_auto_apply(value: Value, ctx: &mut EvalContext<'_>) -> Result<Value> {
-    if let Value::UserFunction(uf) = &value {
-        if uf.params.is_empty() {
-            return apply_value(value, vec![], ctx);
-        }
+    if let Value::UserFunction(_) = &value {
+        return apply_value(value, vec![], ctx);
     }
     Ok(value)
 }
 
+/// Helper to look up an identifier value without auto-applying.
+/// Used when the identifier is being used as a callee in an application.
+fn eval_ident_no_auto_apply(ident: &Ident, ctx: &mut EvalContext<'_>) -> Result<Value> {
+    let text = ident.syntax().text();
+    let id: InternedString = text.to_string().as_str().into();
+
+    // First check the local environment
+    if let Some(value) = ctx.env.get(id) {
+        return Ok(value.clone());
+    }
+
+    // Then check compiler definitions
+    if let Some(value) = ctx.compiler.get_var(id) {
+        return Ok(value.clone());
+    }
+
+    // Check if it's a registered unit name
+    // If so, return a unit constructor value
+    if let Some(unit) = ctx.compiler.units().get(id) {
+        return Ok(Value::UnitConstructor(unit.clone()));
+    }
+
+    Err(Diagnostic::undefined_variable(id))
+}
+
 impl Eval for Ident {
     fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
-        let text = self.syntax().text();
-        // TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
-        // AsRef<str> directly. See STATUS.md for tracking.
-        let id: InternedString = text.to_string().as_str().into();
-
-        // First check the local environment
-        if let Some(value) = ctx.env.get(id) {
-            return maybe_auto_apply(value.clone(), ctx);
-        }
-
-        // Then check compiler definitions
-        if let Some(value) = ctx.compiler.get_var(id) {
-            return maybe_auto_apply(value.clone(), ctx);
-        }
-
-        // Check if it's a registered unit name
-        // If so, return a unit constructor value
-        if let Some(unit) = ctx.compiler.units().get(id) {
-            return Ok(Value::UnitConstructor(unit.clone()));
-        }
-
-        Err(Diagnostic::undefined_variable(id))
+        let value = eval_ident_no_auto_apply(self, ctx)?;
+        maybe_auto_apply(value, ctx)
     }
 }
 
@@ -213,8 +219,12 @@ impl Eval for Apply {
             }
         }
 
-        // Not a macro call - evaluate normally with flattened arguments
-        let callee = callee_expr.eval(ctx)?;
+        // Not a macro call - evaluate the callee
+        // For identifiers, we must NOT auto-apply since this is an application context
+        let callee = match &callee_expr {
+            Expr::Ident(ident) => eval_ident_no_auto_apply(ident, ctx)?,
+            _ => callee_expr.eval(ctx)?,
+        };
 
         // Get all arguments (flattened from nested Apply nodes)
         let all_arg_exprs = self.all_arguments();
