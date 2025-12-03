@@ -238,22 +238,24 @@ impl Eval for Apply {
         let receiver_opt = self.receiver().and_then(|r| r.value());
         let local_args: Vec<Expr> = self.arguments().filter_map(|a| a.value()).collect();
 
-        if let Some(Expr::Apply(receiver_apply)) = &receiver_opt {
-            // Check if the receiver Apply is a statement that returns nil
-            // (like let or = at the statement level)
-            if !local_args.is_empty() {
-                if let Some(callee) = receiver_apply.callee() {
-                    if let Some(id) = extract_identifier(&callee) {
-                        let id_str: &str = &id;
-                        // Check if this is a statement-like form (let, =)
-                        // These return nil and shouldn't be called with arguments
-                        if id_str == "let" || id_str == "=" {
-                            // This is a block: evaluate receiver, then arguments in sequence
-                            let mut result = receiver_opt.unwrap().eval(ctx)?;
-                            for arg_expr in local_args {
-                                result = arg_expr.eval(ctx)?;
+        if let Some(receiver_expr) = &receiver_opt {
+            if let Expr::Apply(receiver_apply) = receiver_expr {
+                // Check if the receiver Apply is a statement that returns nil
+                // (like let or = at the statement level)
+                if !local_args.is_empty() {
+                    if let Some(callee) = receiver_apply.callee() {
+                        if let Some(id) = extract_identifier(&callee) {
+                            let id_str: &str = &id;
+                            // Check if this is a statement-like form (let, =)
+                            // These return nil and shouldn't be called with arguments
+                            if id_str == "let" || id_str == "=" {
+                                // This is a block: evaluate receiver, then arguments in sequence
+                                let mut result = receiver_expr.eval(ctx)?;
+                                for arg_expr in local_args {
+                                    result = arg_expr.eval(ctx)?;
+                                }
+                                return Ok(result);
                             }
-                            return Ok(result);
                         }
                     }
                 }
@@ -276,7 +278,11 @@ impl Eval for Apply {
 
             // Check for macro in environment
             if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
-                let macro_value = ctx.env.get(id).unwrap().clone();
+                let macro_value = ctx
+                    .env
+                    .get(id)
+                    .expect("macro value should exist since we just checked for it")
+                    .clone();
                 return apply_macro(macro_value, self, ctx);
             }
         }
