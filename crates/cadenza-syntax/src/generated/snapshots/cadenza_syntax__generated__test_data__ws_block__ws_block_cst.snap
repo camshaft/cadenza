@@ -24,7 +24,9 @@ Root@0..72
     Space@25..29 "    "
     ApplyArgument@29..72
       Apply@29..72
-        ApplyReceiver@29..68
+        ApplyReceiver@29..29
+          SyntheticBlock@29..29
+        ApplyArgument@29..68
           Apply@29..68
             ApplyArgument@29..37
               Apply@29..37

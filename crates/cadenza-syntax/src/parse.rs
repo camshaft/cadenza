@@ -176,9 +176,60 @@ impl<'src> Parser<'src> {
                 // Parse the right side with appropriate binding power
                 let child_marker = self.whitespace.marker();
                 self.skip_trivia();
+
+                // Capture indentation level for block detection
+                let block_indent_level = self.whitespace.len;
+                let block_start_line = self.whitespace.line;
+
+                // Check if we're entering an indented block context
+                // (indentation increased from parent)
+                let entering_block = block_indent_level > child_marker.len;
+
                 self.builder.start_node(Kind::ApplyArgument.into());
-                self.parse_expression_bp(r_bp, child_marker);
-                self.builder.finish_node();
+
+                if entering_block {
+                    // Parse as a block: collect all expressions at this indentation level
+                    self.builder.start_node(Kind::Apply.into());
+
+                    // Create synthetic block receiver
+                    self.builder.start_node(Kind::ApplyReceiver.into());
+                    self.builder.start_node(Kind::SyntheticBlock.into());
+                    self.builder.finish_node(); // SyntheticBlock
+                    self.builder.finish_node(); // ApplyReceiver
+
+                    // Parse expressions at this indentation level
+                    loop {
+                        if self.current() == Kind::Eof {
+                            break;
+                        }
+
+                        // Stop if we're not at the block's indentation level
+                        if self.whitespace.len != block_indent_level {
+                            break;
+                        }
+
+                        self.builder.start_node(Kind::ApplyArgument.into());
+                        let expr_marker = self.whitespace.marker();
+                        self.parse_expression_bp(r_bp, expr_marker);
+                        self.builder.finish_node(); // ApplyArgument
+
+                        self.skip_trivia();
+
+                        // Stop if no more expressions at same indent
+                        if self.whitespace.line == block_start_line
+                            || self.whitespace.len != block_indent_level
+                        {
+                            break;
+                        }
+                    }
+
+                    self.builder.finish_node(); // Apply (__block__)
+                } else {
+                    // Parse single expression (no block)
+                    self.parse_expression_bp(r_bp, child_marker);
+                }
+
+                self.builder.finish_node(); // Close ApplyArgument
 
                 self.builder.finish_node();
                 // Continue the outer loop to check for more operators

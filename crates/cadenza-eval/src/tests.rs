@@ -172,22 +172,22 @@ fn test_fn_multi_arg() {
 #[cfg(test)]
 mod test {
     use cadenza_syntax::parse::parse;
-    
+
     #[test]
     fn test_ast_structure() {
         let src = r#"let foo =
     let bar = 1
     let baz = 2
     bar"#;
-        
+
         let parsed = parse(src);
         let root = parsed.ast();
-        
+
         for expr in root.exprs() {
             eprintln!("AST: {:#?}", expr);
             eprintln!("Syntax: {:?}", expr.syntax());
         }
-        
+
         panic!("Check output above");
     }
 }
