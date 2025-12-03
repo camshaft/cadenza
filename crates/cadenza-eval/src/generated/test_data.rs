@@ -103,6 +103,17 @@ mod arith_mul {
         s!("arith_mul", t::eval_all("4 * 5\n"), "4 * 5\n");
     }
 }
+mod block_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_simple",
+            t::eval_all("let foo =\n    let bar = 1\n    let baz = 2\n    bar\nfoo\n"),
+            "let foo =\n    let bar = 1\n    let baz = 2\n    bar\nfoo\n"
+        );
+    }
+}
 mod error_let_invalid {
     use super::*;
     #[test]
@@ -384,17 +395,6 @@ mod let_reassign {
             "let_reassign",
             t::eval_all("let x = 1\nx = 2\nx\n"),
             "let x = 1\nx = 2\nx\n"
-        );
-    }
-}
-mod block_test {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "block_test",
-            t::eval_all("let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"),
-            "let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"
         );
     }
 }
