@@ -1770,6 +1770,33 @@ mod op_add {
         s!("op_add_ast", t::ast("a + b\n"), "a + b\n");
     }
 }
+mod measure_with_equals {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "measure_with_equals_lex",
+            t::lex("measure foot = inch 12\n"),
+            "measure foot = inch 12\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "measure_with_equals_cst",
+            t::cst("measure foot = inch 12\n"),
+            "measure foot = inch 12\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "measure_with_equals_ast",
+            t::ast("measure foot = inch 12\n"),
+            "measure foot = inch 12\n"
+        );
+    }
+}
 mod invalid_parse {
     use super::*;
     mod array_sparse_entries {

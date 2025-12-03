@@ -615,11 +615,104 @@ pub fn builtin_assign() -> BuiltinMacro {
             if let Expr::Apply(apply) = lhs_expr {
                 // Get the callee and all arguments
                 if let Some(Expr::Ident(ident)) = apply.callee() {
+                    let callee_text = ident.syntax().text();
+                    
                     // Check if the callee is 'fn'
-                    if ident.syntax().text() == "fn" {
+                    if callee_text == "fn" {
                         // This is a function definition: fn name params... = body
                         let fn_args = apply.all_arguments();
                         return handle_function_definition(&fn_args, rhs_expr, ctx);
+                    }
+                    
+                    // Check if the callee is 'measure'
+                    if callee_text == "measure" {
+                        // This is a unit definition: measure name = base scale
+                        // Handle it directly here (same pattern as fn)
+                        let measure_args = apply.all_arguments();
+                        if measure_args.len() != 1 {
+                            return Err(Diagnostic::syntax(
+                                "measure with = requires exactly one name argument"
+                            ));
+                        }
+                        
+                        // Get the unit name
+                        let name = match &measure_args[0] {
+                            Expr::Ident(ident) => {
+                                let text = ident.syntax().text();
+                                let name: InternedString = text.to_string().as_str().into();
+                                name
+                            }
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure unit name must be an identifier"
+                                ));
+                            }
+                        };
+                        
+                        // The RHS should be: base scale (an Apply node)
+                        match rhs_expr {
+                            Expr::Apply(rhs_apply) => {
+                                let base_expr = rhs_apply.callee();
+                                let scale_args: Vec<Expr> = rhs_apply.arguments()
+                                    .filter_map(|arg| arg.value())
+                                    .collect();
+                                
+                                if scale_args.len() != 1 {
+                                    return Err(Diagnostic::syntax(
+                                        "measure conversion requires: base scale (e.g., millimeter 25.4)"
+                                    ));
+                                }
+                                
+                                // Get base unit name
+                                let base_unit_name = match base_expr {
+                                    Some(Expr::Ident(ident)) => {
+                                        let text = ident.syntax().text();
+                                        let name: InternedString = text.to_string().as_str().into();
+                                        name
+                                    }
+                                    _ => {
+                                        return Err(Diagnostic::syntax(
+                                            "measure conversion base must be a unit name"
+                                        ));
+                                    }
+                                };
+                                
+                                // Get scale
+                                let scale_value = scale_args[0].eval(ctx)?;
+                                let scale = match scale_value {
+                                    Value::Integer(n) => n as f64,
+                                    Value::Float(f) => f,
+                                    _ => {
+                                        return Err(Diagnostic::syntax(
+                                            "measure conversion scale must be a number"
+                                        ));
+                                    }
+                                };
+                                
+                                // Look up the base unit
+                                use crate::unit::Unit;
+                                let base_unit = ctx.compiler.units().get(base_unit_name)
+                                    .ok_or_else(|| Diagnostic::syntax(
+                                        &format!("undefined unit '{}'", &*base_unit_name)
+                                    ))?;
+                                
+                                // Create derived unit: 1 new_unit = scale base_units
+                                let derived_unit = Unit::derived(
+                                    name,
+                                    base_unit.dimension,
+                                    scale,
+                                    0.0,
+                                );
+                                
+                                ctx.compiler.units_mut().register(derived_unit);
+                                return Ok(Value::Nil);
+                            }
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure conversion requires: base scale (e.g., millimeter 25.4)"
+                                ));
+                            }
+                        }
                     }
                 }
             }

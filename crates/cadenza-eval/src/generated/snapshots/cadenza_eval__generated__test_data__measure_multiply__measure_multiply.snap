@@ -7,16 +7,5 @@ EvalResult {
         nil,
         nil,
     ],
-    diagnostics: [
-        Diagnostic {
-            kind: TypeError {
-                expected: Symbol,
-                actual: Nil,
-            },
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-    ],
+    diagnostics: [],
 }

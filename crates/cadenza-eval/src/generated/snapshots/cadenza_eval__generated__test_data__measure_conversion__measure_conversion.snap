@@ -7,20 +7,9 @@ EvalResult {
         nil,
         nil,
         Quantity(25.4 millimeter [millimeter]),
-        Quantity(1 inch [inch]),
+        Quantity(1 inch [millimeter]),
         Quantity(25.4 millimeter [millimeter]),
-        Quantity(1 inch [inch]),
+        Quantity(1 inch [millimeter]),
     ],
-    diagnostics: [
-        Diagnostic {
-            kind: TypeError {
-                expected: Symbol,
-                actual: Nil,
-            },
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-    ],
+    diagnostics: [],
 }
