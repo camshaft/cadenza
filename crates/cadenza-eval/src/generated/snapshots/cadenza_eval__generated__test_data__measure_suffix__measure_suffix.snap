@@ -1,0 +1,31 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\nlet x = 25.4meter\nx\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: NotCallable(
+                Float,
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+        Diagnostic {
+            kind: UndefinedVariable(
+                "x",
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}

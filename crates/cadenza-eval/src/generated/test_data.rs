@@ -190,6 +190,19 @@ mod let_simple {
         );
     }
 }
+mod measure_velocity {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_velocity",
+            t::eval_all(
+                "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\nlet velocity = distance / time\nvelocity\n"
+            ),
+            "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\nlet velocity = distance / time\nvelocity\n"
+        );
+    }
+}
 mod arith_sub {
     use super::*;
     #[test]
@@ -243,8 +256,10 @@ mod measure_conversion {
     fn eval() {
         s!(
             "measure_conversion",
-            t::eval_all("measure millimeter\nmeasure inch = millimeter / 0.0393701\n"),
-            "measure millimeter\nmeasure inch = millimeter / 0.0393701\n"
+            t::eval_all(
+                "measure millimeter\nmeasure inch = millimeter / 0.0393701\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+            ),
+            "measure millimeter\nmeasure inch = millimeter / 0.0393701\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
         );
     }
 }
@@ -293,6 +308,17 @@ mod arith_div {
     #[test]
     fn eval() {
         s!("arith_div", t::eval_all("20 / 4\n"), "20 / 4\n");
+    }
+}
+mod measure_suffix {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_suffix",
+            t::eval_all("measure meter\nlet x = 25.4meter\nx\n"),
+            "measure meter\nlet x = 25.4meter\nx\n"
+        );
     }
 }
 mod fn_hoisting {

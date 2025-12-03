@@ -113,12 +113,15 @@ impl Eval for Expr {
 }
 
 impl Eval for Literal {
-    fn eval(&self, _ctx: &mut EvalContext<'_>) -> Result<Value> {
+    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
         let value = self
             .value()
             .ok_or_else(|| Diagnostic::syntax("missing literal value"))?;
 
-        match value {
+        // Check for unit suffix (e.g., 25.4mm)
+        let unit_suffix = self.unit_suffix();
+
+        let numeric_value = match value {
             LiteralValue::Integer(int_val) => {
                 let text = int_val.syntax().text();
                 let text_str = text.to_string();
@@ -127,7 +130,13 @@ impl Eval for Literal {
                 let n: i64 = clean
                     .parse()
                     .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text_str}")))?;
-                Ok(Value::Integer(n))
+                
+                // If there's a unit suffix, convert to f64, otherwise return integer
+                if unit_suffix.is_some() {
+                    n as f64
+                } else {
+                    return Ok(Value::Integer(n));
+                }
             }
             LiteralValue::Float(float_val) => {
                 let text = float_val.syntax().text();
@@ -136,17 +145,45 @@ impl Eval for Literal {
                 let n: f64 = clean
                     .parse()
                     .map_err(|_| Diagnostic::syntax(format!("invalid float: {text_str}")))?;
-                Ok(Value::Float(n))
+                
+                // If there's no unit suffix, return plain float
+                if unit_suffix.is_none() {
+                    return Ok(Value::Float(n));
+                }
+                
+                n
             }
             LiteralValue::String(str_val) => {
                 let text = str_val.syntax().text().to_string();
-                Ok(Value::String(text))
+                return Ok(Value::String(text));
             }
             LiteralValue::StringWithEscape(str_val) => {
                 let text = str_val.syntax().text().to_string();
                 // TODO: Process escape sequences
-                Ok(Value::String(text))
+                return Ok(Value::String(text));
             }
+        };
+
+        // If we have a unit suffix, create a Quantity
+        if let Some(unit_ident) = unit_suffix {
+            let unit_name: InternedString = unit_ident.syntax().text().to_string().as_str().into();
+            
+            // Look up the unit
+            if let Some(unit) = ctx.compiler.units().get(unit_name) {
+                use crate::unit::DerivedDimension;
+                let dimension = DerivedDimension::from_dimension(unit.dimension);
+                
+                Ok(Value::Quantity {
+                    value: numeric_value,
+                    unit: unit.clone(),
+                    dimension,
+                })
+            } else {
+                Err(Diagnostic::syntax(&format!("undefined unit '{}'", &*unit_name)))
+            }
+        } else {
+            // No unit suffix, return plain float
+            Ok(Value::Float(numeric_value))
         }
     }
 }
