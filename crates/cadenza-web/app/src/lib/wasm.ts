@@ -1,7 +1,7 @@
 // WASM bindings for cadenza-web
 // This module loads the actual WASM module built by wasm-pack
 
-import type { LexResult, ParseResult, AstResult, EvalResult, CadenzaWasm } from '../types/cadenza';
+import type { LexResult, ParseResult, AstResult, EvalResult, CadenzaWasm, Example } from '../types/cadenza';
 
 // The WASM module will be loaded from the pkg directory
 let wasmModule: typeof import('../../pkg/cadenza_web') | null = null;
@@ -43,8 +43,8 @@ function createWasmBindings(module: typeof import('../../pkg/cadenza_web')): Cad
     get_token_kinds: (): string[] => {
       return module.get_token_kinds() as string[];
     },
-    get_examples: () => {
-      return module.get_examples() as any;
+    get_examples: (): Example[] => {
+      return module.get_examples() as Example[];
     },
   };
 }

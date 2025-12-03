@@ -11,6 +11,5 @@ let name = "Cadenza"
 let version = 0.1
 
 # Create functions
-fn greet x = "Hello " 
 fn square x = x * x
 square 5
