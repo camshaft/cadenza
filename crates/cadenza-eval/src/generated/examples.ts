@@ -165,23 +165,4 @@ let speed = 100meter / 10second
 speed
 `,
   },
-  {
-    id: "blocks",
-    name: "Blocks",
-    source: `# Block Expressions
-# Blocks allow multiple statements with indentation
-
-# Simple block assigned to variable
-let result =
-  let temp = 100
-  temp + 23
-result
-
-# Function with block body
-fn calculate x =
-  let doubled = x * 2
-  doubled + 10
-calculate 5
-`,
-  },
 ];

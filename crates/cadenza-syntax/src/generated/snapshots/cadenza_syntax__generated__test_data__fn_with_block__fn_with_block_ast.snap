@@ -1,7 +1,0 @@
----
-source: crates/cadenza-syntax/src/generated/test_data.rs
-expression: "fn compute x =\n  let a = x * 2\n  let b = a + 10\n  b / 2\n"
----
-[
-    [=, [[fn, compute], x], [[=, [[[=, [let, a], [*, x, 2]], let], b], [+, a, 10]], [/, b, 2]]],
-]

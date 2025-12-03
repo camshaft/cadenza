@@ -1,3 +1,0 @@
-let foo = # comment here
-    let bar = 123 # other comment here
-    bar

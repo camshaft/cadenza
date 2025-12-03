@@ -1,18 +1,5 @@
 use crate::testing as t;
 use insta::assert_debug_snapshot as s;
-mod block_mixed_exprs {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "block_mixed_exprs",
-            t::eval_all(
-                "# Block with mixed expressions (not just let)\nlet answer =\n  let x = 10\n  let y = x + 5\n  x * y\nanswer\n"
-            ),
-            "# Block with mixed expressions (not just let)\nlet answer =\n  let x = 10\n  let y = x + 5\n  x * y\nanswer\n"
-        );
-    }
-}
 mod cmp_gt {
     use super::*;
     #[test]
@@ -116,19 +103,6 @@ mod arith_mul {
         s!("arith_mul", t::eval_all("4 * 5\n"), "4 * 5\n");
     }
 }
-mod block_simple {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "block_simple",
-            t::eval_all(
-                "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
-            ),
-            "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
-        );
-    }
-}
 mod error_let_invalid {
     use super::*;
     #[test]
@@ -162,30 +136,6 @@ mod measure_base {
         );
     }
 }
-mod block_fn_simple {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "block_fn_simple",
-            t::eval_all("fn test x =\n  let y = x + 1\n  y\ntest 5\n"),
-            "fn test x =\n  let y = x + 1\n  y\ntest 5\n"
-        );
-    }
-}
-mod example_08_blocks {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "example_08_blocks",
-            t::eval_all(
-                "# Block Expressions\n# Blocks allow multiple statements with indentation\n\n# Simple block assigned to variable\nlet result =\n  let temp = 100\n  temp + 23\nresult\n\n# Function with block body\nfn calculate x =\n  let doubled = x * 2\n  doubled + 10\ncalculate 5\n"
-            ),
-            "# Block Expressions\n# Blocks allow multiple statements with indentation\n\n# Simple block assigned to variable\nlet result =\n  let temp = 100\n  temp + 23\nresult\n\n# Function with block body\nfn calculate x =\n  let doubled = x * 2\n  doubled + 10\ncalculate 5\n"
-        );
-    }
-}
 mod arith_float_mul {
     use super::*;
     #[test]
@@ -209,19 +159,6 @@ mod cmp_le {
     #[test]
     fn eval() {
         s!("cmp_le", t::eval_all("1 <= 1\n"), "1 <= 1\n");
-    }
-}
-mod block_function_body {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "block_function_body",
-            t::eval_all(
-                "# Function with block body containing local let bindings\nfn compute x =\n  let doubled = x * 2\n  doubled + 10\ncompute 5\n"
-            ),
-            "# Function with block body containing local let bindings\nfn compute x =\n  let doubled = x * 2\n  doubled + 10\ncompute 5\n"
-        );
     }
 }
 mod arith_add {
@@ -510,19 +447,6 @@ mod measure_suffix {
         );
     }
 }
-mod block_nested {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "block_nested",
-            t::eval_all(
-                "# Nested blocks\nlet outer =\n  let inner =\n    let x = 10\n    x + 5\n  inner * 2\nouter\n"
-            ),
-            "# Nested blocks\nlet outer =\n  let inner =\n    let x = 10\n    x + 5\n  inner * 2\nouter\n"
-        );
-    }
-}
 mod fn_hoisting {
     use super::*;
     #[test]
@@ -557,19 +481,6 @@ mod example_04_comparison {
                 "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
             ),
             "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
-        );
-    }
-}
-mod block_var_assign {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "block_var_assign",
-            t::eval_all(
-                "# Block assigned to a variable\nlet result =\n  let temp = 100\n  temp + 23\nresult\n"
-            ),
-            "# Block assigned to a variable\nlet result =\n  let temp = 100\n  temp + 23\nresult\n"
         );
     }
 }

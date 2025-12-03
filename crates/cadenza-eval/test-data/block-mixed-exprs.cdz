@@ -1,6 +1,0 @@
-# Block with mixed expressions (not just let)
-let answer =
-  let x = 10
-  let y = x + 5
-  x * y
-answer

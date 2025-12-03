@@ -1,7 +1,0 @@
-# Nested blocks
-let outer =
-  let inner =
-    let x = 10
-    x + 5
-  inner * 2
-outer

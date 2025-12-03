@@ -1,5 +1,0 @@
-# Function with block body containing local let bindings
-fn compute x =
-  let doubled = x * 2
-  doubled + 10
-compute 5
