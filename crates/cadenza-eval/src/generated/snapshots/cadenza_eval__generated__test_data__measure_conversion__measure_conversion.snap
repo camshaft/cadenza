@@ -6,9 +6,9 @@ EvalResult {
     values: [
         nil,
         nil,
+        Quantity(25.4 millimeter [millimeter]),
         nil,
-        nil,
-        nil,
+        Quantity(25.4 millimeter [millimeter]),
         nil,
     ],
     diagnostics: [
@@ -33,26 +33,8 @@ EvalResult {
             stack_trace: [],
         },
         Diagnostic {
-            kind: NotCallable(
-                Float,
-            ),
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
             kind: UndefinedVariable(
                 "inch",
-            ),
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
-            kind: UndefinedVariable(
-                "x",
             ),
             level: Error,
             file: None,

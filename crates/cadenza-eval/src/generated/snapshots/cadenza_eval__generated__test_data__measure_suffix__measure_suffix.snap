@@ -5,27 +5,8 @@ expression: "measure meter\nlet x = 25.4meter\nx\n"
 EvalResult {
     values: [
         nil,
-        nil,
-        nil,
+        Quantity(25.4 meter [meter]),
+        Quantity(25.4 meter [meter]),
     ],
-    diagnostics: [
-        Diagnostic {
-            kind: NotCallable(
-                Float,
-            ),
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
-            kind: UndefinedVariable(
-                "x",
-            ),
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-    ],
+    diagnostics: [],
 }

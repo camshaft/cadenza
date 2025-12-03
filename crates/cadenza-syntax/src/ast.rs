@@ -219,44 +219,6 @@ impl Literal {
     pub fn value(&self) -> Option<LiteralValue> {
         self.0.children().find_map(LiteralValue::cast)
     }
-
-    /// Returns the unit suffix if this literal is immediately followed by an identifier.
-    ///
-    /// For example, `25.4mm` would return Some("mm"), while `25.4 mm` (with whitespace)
-    /// would return None.
-    pub fn unit_suffix(&self) -> Option<Ident> {
-        // Check the next sibling token
-        let mut current = self.0.next_sibling_or_token();
-        
-        // Skip any non-whitespace trivia
-        loop {
-            match current {
-                Some(ref element) if element.kind().is_trivia() && !element.kind().is_whitespace() => {
-                    current = element.next_sibling_or_token();
-                }
-                _ => break,
-            }
-        }
-        
-        // If the next non-trivia element is an identifier with no whitespace before it,
-        // treat it as a unit suffix
-        if let Some(element) = current {
-            if element.kind() == Kind::Identifier {
-                // Check that there's no whitespace between the literal and identifier
-                let literal_end = self.0.text_range().end();
-                let ident_start = element.text_range().start();
-                
-                if literal_end == ident_start {
-                    // No whitespace - this is a unit suffix
-                    if let Some(node) = element.into_node() {
-                        return Ident::cast(node);
-                    }
-                }
-            }
-        }
-        
-        None
-    }
 }
 
 #[derive(Clone)]

@@ -346,9 +346,50 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_literal(&mut self) {
+        // Check if there's an immediate identifier after the number (no whitespace)
+        // If so, create an Apply node with reversed order: unit(number)
+        
+        // Get the current number token info
+        let number_token = self.tokens.peek().expect("parse_literal called without a token");
+        let number_kind = number_token.kind;
+        let number_span = number_token.span;
+        let number_end = number_span.end;
+        
+        // Consume the number
+        self.tokens.next();
+        self.whitespace.on_token(&Token { kind: number_kind, span: number_span });
+        
+        // Now check if the next token is an identifier with no whitespace
+        if let Some(next_token) = self.tokens.peek() {
+            if next_token.kind == Kind::Identifier && next_token.span.start == number_end {
+                // Create an Apply node: unit(number)
+                self.builder.start_node(Kind::Apply.into());
+                
+                // The identifier is the receiver
+                self.builder.start_node(Kind::ApplyReceiver.into());
+                self.bump(); // Consume the identifier
+                self.builder.finish_node();
+                
+                // The number is the argument
+                self.builder.start_node(Kind::ApplyArgument.into());
+                self.builder.start_node(Kind::Literal.into());
+                self.builder.start_node(number_kind.into());
+                self.builder.token(number_kind.into(), self.text(number_span));
+                self.builder.finish_node(); // Close Integer/Float node
+                self.builder.finish_node(); // Close Literal
+                self.builder.finish_node(); // Close ApplyArgument
+                
+                self.builder.finish_node(); // Close Apply
+                return;
+            }
+        }
+        
+        // Default case: no unit suffix, add the number as a literal
         self.builder.start_node(Kind::Literal.into());
-        self.bump(); // Integer or Float
-        self.builder.finish_node();
+        self.builder.start_node(number_kind.into());
+        self.builder.token(number_kind.into(), self.text(number_span));
+        self.builder.finish_node(); // Close Integer/Float node
+        self.builder.finish_node(); // Close Literal
     }
 
     fn parse_string(&mut self) {
