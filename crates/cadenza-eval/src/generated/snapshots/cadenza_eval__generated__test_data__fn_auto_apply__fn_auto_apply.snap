@@ -1,0 +1,22 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "fn add x y = x + y\nadd\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: ArityError {
+                expected: 2,
+                actual: 0,
+            },
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}
