@@ -54,6 +54,32 @@ The test command supports passing additional arguments to cargo test:
 cargo xtask ci test --no-default-features
 ```
 
+## Leave the Codebase Better Than You Found It
+
+**Always strive to keep CI green.** A passing CI build gives everyone confidence that the codebase is in a good state.
+
+### Fix Existing CI Failures
+
+If you encounter failing CI checks (e.g., Clippy warnings, rustfmt issues, failing tests) that are **unrelated to your current task**, fix them as part of your change. Don't ignore them or work around them.
+
+**Why this matters:**
+- Broken CI creates a culture of ignoring failures
+- Unfixed issues accumulate and become harder to resolve
+- Green CI signals that the codebase is healthy and maintainable
+
+### Guidelines
+
+- **Before starting**: Run `cargo xtask ci` to check the current state
+- **Fix unrelated issues**: If you see Clippy warnings or formatting issues in files you're working on or nearby, fix them
+- **Don't introduce new issues**: Always run CI checks before committing to ensure your changes don't break anything
+- **When in doubt**: It's better to fix an extra issue than to leave the codebase worse than you found it
+
+This applies to all types of CI failures:
+- Rustfmt formatting issues (`cargo xtask fmt`)
+- Clippy lints (`cargo xtask ci clippy`)
+- Failing tests (`cargo xtask ci test`)
+- Unused dependencies (`cargo xtask ci udeps`)
+
 ## After Completing Work
 
 After completing work on a task from a crate's status document (e.g., `crates/cadenza-eval/STATUS.md`), update the status document to mark the task as complete. Use strikethrough (`~~`) to mark the task title and add checkmarks (`[x]`) to indicate completed sub-items.
