@@ -38,8 +38,9 @@ function App() {
       setWasm(module);
       
       // Load examples
+      let examplesList: Example[] = [];
       try {
-        const examplesList = module.get_examples();
+        examplesList = module.get_examples();
         setExamples(examplesList);
       } catch (e) {
         console.error('Failed to load examples:', e);
@@ -53,9 +54,9 @@ function App() {
           setSource(savedSource);
           setIsUserEdited(true);
           setSelectedExample('custom');
-        } else if (savedExample && examplesList) {
+        } else if (savedExample && examplesList.length > 0) {
           // Load the saved example if available
-          const example = examplesList.find(ex => ex.id === savedExample);
+          const example = examplesList.find((ex: Example) => ex.id === savedExample);
           if (example) {
             setSource(example.source);
             setSelectedExample(savedExample);

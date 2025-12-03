@@ -43,6 +43,9 @@ function createWasmBindings(module: typeof import('../../pkg/cadenza_web')): Cad
     get_token_kinds: (): string[] => {
       return module.get_token_kinds() as string[];
     },
+    get_examples: () => {
+      return module.get_examples() as any;
+    },
   };
 }
 
@@ -179,4 +182,5 @@ export const mockWasm: CadenzaWasm = {
     'LParen', 'RParen', 'LBracket', 'RBracket', 'LBrace', 'RBrace',
     'Comma', 'Dot', 'Colon', 'Semicolon', 'Space', 'Newline',
   ],
+  get_examples: () => [],
 };
