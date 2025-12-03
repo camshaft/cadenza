@@ -387,6 +387,17 @@ mod let_reassign {
         );
     }
 }
+mod block_test {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_test",
+            t::eval_all("let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"),
+            "let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"
+        );
+    }
+}
 mod example_01_welcome {
     use super::*;
     #[test]
