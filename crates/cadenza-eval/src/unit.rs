@@ -67,12 +67,7 @@ impl Unit {
     ///
     /// The scale represents how many base units equal one of this unit.
     /// For example: inch with scale 25.4 and base millimeter means 1 inch = 25.4 mm.
-    pub fn derived(
-        name: InternedString,
-        dimension: Dimension,
-        scale: f64,
-        offset: f64,
-    ) -> Self {
+    pub fn derived(name: InternedString, dimension: Dimension, scale: f64, offset: f64) -> Self {
         Self {
             name,
             dimension,

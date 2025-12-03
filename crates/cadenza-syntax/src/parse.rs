@@ -348,17 +348,23 @@ impl<'src> Parser<'src> {
     fn parse_literal(&mut self) {
         // Check if there's an immediate identifier after the number (no whitespace)
         // If so, create an Apply node with reversed order: unit(number)
-        
+
         // Get the current number token info
-        let number_token = self.tokens.peek().expect("parse_literal called without a token");
+        let number_token = self
+            .tokens
+            .peek()
+            .expect("parse_literal called without a token");
         let number_kind = number_token.kind;
         let number_span = number_token.span;
         let number_end = number_span.end;
-        
+
         // Consume the number
         self.tokens.next();
-        self.whitespace.on_token(&Token { kind: number_kind, span: number_span });
-        
+        self.whitespace.on_token(&Token {
+            kind: number_kind,
+            span: number_span,
+        });
+
         // Now check if the next token is an identifier with no whitespace
         if let Some(next_token) = self.tokens.peek() {
             if next_token.kind == Kind::Identifier && next_token.span.start == number_end {
@@ -367,30 +373,32 @@ impl<'src> Parser<'src> {
                 // correct CST offsets, as the number appears first in the source text.
                 // The AST doesn't care about the order, similar to infix operators.
                 self.builder.start_node(Kind::Apply.into());
-                
+
                 // The number is the argument - emit it first since it appears first in source
                 self.builder.start_node(Kind::ApplyArgument.into());
                 self.builder.start_node(Kind::Literal.into());
                 self.builder.start_node(number_kind.into());
-                self.builder.token(number_kind.into(), self.text(number_span));
+                self.builder
+                    .token(number_kind.into(), self.text(number_span));
                 self.builder.finish_node(); // Close Integer/Float node
                 self.builder.finish_node(); // Close Literal
                 self.builder.finish_node(); // Close ApplyArgument
-                
+
                 // The identifier is the receiver - emit it second
                 self.builder.start_node(Kind::ApplyReceiver.into());
                 self.bump(); // Consume the identifier
                 self.builder.finish_node();
-                
+
                 self.builder.finish_node(); // Close Apply
                 return;
             }
         }
-        
+
         // Default case: no unit suffix, add the number as a literal
         self.builder.start_node(Kind::Literal.into());
         self.builder.start_node(number_kind.into());
-        self.builder.token(number_kind.into(), self.text(number_span));
+        self.builder
+            .token(number_kind.into(), self.text(number_span));
         self.builder.finish_node(); // Close Integer/Float node
         self.builder.finish_node(); // Close Literal
     }
