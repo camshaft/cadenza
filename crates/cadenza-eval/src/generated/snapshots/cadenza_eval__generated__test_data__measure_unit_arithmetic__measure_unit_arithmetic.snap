@@ -1,0 +1,15 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure millimeter\nmeasure meter = millimeter 1000\nlet x = millimeter 500\nlet y = meter 1\nlet sum = x + y\nsum\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+        Quantity(500 millimeter [millimeter]),
+        Quantity(1 meter [millimeter]),
+        Quantity(1500 millimeter [millimeter]),
+        Quantity(1500 millimeter [millimeter]),
+    ],
+    diagnostics: [],
+}

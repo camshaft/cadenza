@@ -400,6 +400,47 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a + b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
+            // Handle quantity addition - dimensions must match
+            [Value::Quantity { value: v1, unit: u1, dimension: d1 }, 
+             Value::Quantity { value: v2, unit: u2, dimension: d2 }] => {
+                // Check if dimensions are compatible
+                if u1.dimension != u2.dimension {
+                    return Err(Diagnostic::syntax(&format!(
+                        "cannot add quantities with incompatible dimensions: {} and {}",
+                        u1.name, u2.name
+                    )));
+                }
+                
+                // Convert second quantity to first unit's scale
+                let scale_ratio = u2.scale / u1.scale;
+                let v2_converted = v2 * scale_ratio;
+                
+                let result = v1 + v2_converted;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: u1.clone(),
+                    dimension: d1.clone(),
+                })
+            }
+            // Allow adding plain numbers to quantities
+            [Value::Quantity { value, unit, dimension }, Value::Integer(n)] | 
+            [Value::Integer(n), Value::Quantity { value, unit, dimension }] => {
+                let result = value + (*n as f64);
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
+            [Value::Quantity { value, unit, dimension }, Value::Float(f)] | 
+            [Value::Float(f), Value::Quantity { value, unit, dimension }] => {
+                let result = value + f;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
             // For binary operators, report the first non-number type as the actual type
             [Value::Integer(_), b] | [Value::Float(_), b] => {
                 Err(Diagnostic::type_error(number_type(), b.type_of()))
@@ -410,10 +451,72 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
         "-" => match args.as_slice() {
             [Value::Integer(a)] => Ok(Value::Integer(-a)),
             [Value::Float(a)] => Ok(Value::Float(-a)),
+            [Value::Quantity { value, unit, dimension }] => {
+                Ok(Value::Quantity {
+                    value: -value,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a - b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a - b)),
             [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
             [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
+            // Handle quantity subtraction - dimensions must match
+            [Value::Quantity { value: v1, unit: u1, dimension: d1 }, 
+             Value::Quantity { value: v2, unit: u2, dimension: d2 }] => {
+                // Check if dimensions are compatible
+                if u1.dimension != u2.dimension {
+                    return Err(Diagnostic::syntax(&format!(
+                        "cannot subtract quantities with incompatible dimensions: {} and {}",
+                        u1.name, u2.name
+                    )));
+                }
+                
+                // Convert second quantity to first unit's scale
+                let scale_ratio = u2.scale / u1.scale;
+                let v2_converted = v2 * scale_ratio;
+                
+                let result = v1 - v2_converted;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: u1.clone(),
+                    dimension: d1.clone(),
+                })
+            }
+            // Allow subtracting plain numbers from quantities
+            [Value::Quantity { value, unit, dimension }, Value::Integer(n)] => {
+                let result = value - (*n as f64);
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
+            [Value::Integer(n), Value::Quantity { value, unit, dimension }] => {
+                let result = (*n as f64) - value;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
+            [Value::Quantity { value, unit, dimension }, Value::Float(f)] => {
+                let result = value - f;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
+            [Value::Float(f), Value::Quantity { value, unit, dimension }] => {
+                let result = f - value;
+                Ok(Value::Quantity {
+                    value: result,
+                    unit: unit.clone(),
+                    dimension: dimension.clone(),
+                })
+            }
             // For binary operators, report the first non-number type as the actual type
             [Value::Integer(_), b] | [Value::Float(_), b] => {
                 Err(Diagnostic::type_error(number_type(), b.type_of()))

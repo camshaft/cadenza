@@ -1,0 +1,6 @@
+measure meter
+let x = meter 10
+let doubled = x * 2
+let halved = x / 2
+doubled
+halved

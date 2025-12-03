@@ -1,0 +1,14 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "25inch\n"
+---
+Root@0..7
+  Apply@0..6
+    ApplyArgument@0..2
+      Literal@0..2
+        Integer@0..2
+          Integer@0..2 "25"
+    ApplyReceiver@2..6
+      Identifier@2..6
+        Identifier@2..6 "inch"
+  Newline@6..7 "\n"

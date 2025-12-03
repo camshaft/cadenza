@@ -1,0 +1,15 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\nlet x = meter 10\nlet doubled = x * 2\nlet halved = x / 2\ndoubled\nhalved\n"
+---
+EvalResult {
+    values: [
+        nil,
+        Quantity(10 meter [meter]),
+        Quantity(20 meter [meter]),
+        Quantity(5 meter [meter]),
+        Quantity(20 meter [meter]),
+        Quantity(5 meter [meter]),
+    ],
+    diagnostics: [],
+}

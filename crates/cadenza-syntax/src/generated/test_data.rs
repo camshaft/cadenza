@@ -180,6 +180,33 @@ mod ident_leading_underscore_numbers {
         );
     }
 }
+mod unit_suffix_float {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "unit_suffix_float_lex",
+            t::lex("25.4meter\n"),
+            "25.4meter\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "unit_suffix_float_cst",
+            t::cst("25.4meter\n"),
+            "25.4meter\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "unit_suffix_float_ast",
+            t::ast("25.4meter\n"),
+            "25.4meter\n"
+        );
+    }
+}
 mod lit_empty_string {
     use super::*;
     #[test]
@@ -250,6 +277,48 @@ mod op_sub {
     #[test]
     fn ast() {
         s!("op_sub_ast", t::ast("a - b"), "a - b");
+    }
+}
+mod unit_suffix_int {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("unit_suffix_int_lex", t::lex("25inch\n"), "25inch\n");
+    }
+    #[test]
+    fn cst() {
+        s!("unit_suffix_int_cst", t::cst("25inch\n"), "25inch\n");
+    }
+    #[test]
+    fn ast() {
+        s!("unit_suffix_int_ast", t::ast("25inch\n"), "25inch\n");
+    }
+}
+mod unit_suffix_multiple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "unit_suffix_multiple_lex",
+            t::lex("10meter 5inch 3.14foot\n"),
+            "10meter 5inch 3.14foot\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "unit_suffix_multiple_cst",
+            t::cst("10meter 5inch 3.14foot\n"),
+            "10meter 5inch 3.14foot\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "unit_suffix_multiple_ast",
+            t::ast("10meter 5inch 3.14foot\n"),
+            "10meter 5inch 3.14foot\n"
+        );
     }
 }
 mod lit_multiline_string {

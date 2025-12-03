@@ -50,11 +50,37 @@ mod cmp_eq {
         s!("cmp_eq", t::eval_all("1 == 1\n"), "1 == 1\n");
     }
 }
+mod measure_incompatible {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_incompatible",
+            t::eval_all(
+                "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\ndistance + time\n"
+            ),
+            "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\ndistance + time\n"
+        );
+    }
+}
 mod lit_float {
     use super::*;
     #[test]
     fn eval() {
         s!("lit_float", t::eval_all("3.14\n"), "3.14\n");
+    }
+}
+mod measure_unit_arithmetic {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_unit_arithmetic",
+            t::eval_all(
+                "measure millimeter\nmeasure meter = millimeter 1000\nlet x = millimeter 500\nlet y = meter 1\nlet sum = x + y\nsum\n"
+            ),
+            "measure millimeter\nmeasure meter = millimeter 1000\nlet x = millimeter 500\nlet y = meter 1\nlet sum = x + y\nsum\n"
+        );
     }
 }
 mod arith_mul {
@@ -170,6 +196,19 @@ mod arith_mixed_rev {
     #[test]
     fn eval() {
         s!("arith_mixed_rev", t::eval_all("2.5 + 1\n"), "2.5 + 1\n");
+    }
+}
+mod measure_scalar_ops {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_scalar_ops",
+            t::eval_all(
+                "measure meter\nlet x = meter 10\nlet doubled = x * 2\nlet halved = x / 2\ndoubled\nhalved\n"
+            ),
+            "measure meter\nlet x = meter 10\nlet doubled = x * 2\nlet halved = x / 2\ndoubled\nhalved\n"
+        );
     }
 }
 mod cmp_ne {

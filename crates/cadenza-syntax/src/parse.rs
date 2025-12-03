@@ -363,14 +363,12 @@ impl<'src> Parser<'src> {
         if let Some(next_token) = self.tokens.peek() {
             if next_token.kind == Kind::Identifier && next_token.span.start == number_end {
                 // Create an Apply node: unit(number)
+                // Note: We emit the argument (number) before the receiver (unit) to maintain
+                // correct CST offsets, as the number appears first in the source text.
+                // The AST doesn't care about the order, similar to infix operators.
                 self.builder.start_node(Kind::Apply.into());
                 
-                // The identifier is the receiver
-                self.builder.start_node(Kind::ApplyReceiver.into());
-                self.bump(); // Consume the identifier
-                self.builder.finish_node();
-                
-                // The number is the argument
+                // The number is the argument - emit it first since it appears first in source
                 self.builder.start_node(Kind::ApplyArgument.into());
                 self.builder.start_node(Kind::Literal.into());
                 self.builder.start_node(number_kind.into());
@@ -378,6 +376,11 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node(); // Close Integer/Float node
                 self.builder.finish_node(); // Close Literal
                 self.builder.finish_node(); // Close ApplyArgument
+                
+                // The identifier is the receiver - emit it second
+                self.builder.start_node(Kind::ApplyReceiver.into());
+                self.bump(); // Consume the identifier
+                self.builder.finish_node();
                 
                 self.builder.finish_node(); // Close Apply
                 return;
