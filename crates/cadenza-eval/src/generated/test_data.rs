@@ -64,6 +64,17 @@ mod error_let_invalid {
         );
     }
 }
+mod measure_quantity {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_quantity",
+            t::eval_all("measure meter\nlet x = meter 5\nx\n"),
+            "measure meter\nlet x = meter 5\nx\n"
+        );
+    }
+}
 mod measure_base {
     use super::*;
     #[test]
@@ -205,6 +216,17 @@ mod lit_string {
             "lit_string",
             t::eval_all("\"hello world\"\n"),
             "\"hello world\"\n"
+        );
+    }
+}
+mod measure_multiply {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_multiply",
+            t::eval_all("measure inch\nmeasure foot = inch * 12\n"),
+            "measure inch\nmeasure foot = inch * 12\n"
         );
     }
 }

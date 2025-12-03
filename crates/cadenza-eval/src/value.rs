@@ -235,6 +235,11 @@ pub enum Value {
         dimension: crate::unit::DerivedDimension,
     },
 
+    /// A unit constructor that creates quantities when applied to numbers.
+    ///
+    /// When a unit name is used as a function (e.g., `meter 5`), it creates a quantity.
+    UnitConstructor(crate::unit::Unit),
+
     /// A built-in function implemented in Rust.
     BuiltinFn(BuiltinFn),
 
@@ -345,6 +350,7 @@ impl Value {
             Value::List(_) => Type::list(Type::Unknown),
             Value::Type(_) => Type::Type,
             Value::Quantity { .. } => Type::Float, // Quantities are numeric
+            Value::UnitConstructor(_) => Type::function(vec![Type::Float], Type::Float),
             Value::BuiltinFn(bf) => bf.signature.clone(),
             Value::BuiltinMacro(bm) => bm.signature.clone(),
             Value::UserFunction(uf) => {
@@ -479,6 +485,7 @@ impl fmt::Debug for Value {
                 unit,
                 dimension,
             } => write!(f, "Quantity({} {} [{}])", value, &*unit.name, dimension),
+            Value::UnitConstructor(unit) => write!(f, "<unit-constructor {}>", &*unit.name),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
             Value::UserFunction(uf) => write!(f, "<fn {}>", &*uf.name),
@@ -511,6 +518,7 @@ impl fmt::Display for Value {
                 unit,
                 dimension: _,
             } => write!(f, "{}{}", value, &*unit.name),
+            Value::UnitConstructor(unit) => write!(f, "<unit-constructor {}>", &*unit.name),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
             Value::UserFunction(uf) => write!(f, "<fn {}>", &*uf.name),

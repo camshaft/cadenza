@@ -1,6 +1,6 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "measure millimeter\nmeasure inch = millimeter / 0.0393701\n"
+expression: "measure inch\nmeasure foot = inch * 12\n"
 ---
 EvalResult {
     values: [

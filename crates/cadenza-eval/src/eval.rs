@@ -181,6 +181,12 @@ impl Eval for Ident {
             return maybe_auto_apply(value.clone(), ctx);
         }
 
+        // Check if it's a registered unit name
+        // If so, return a unit constructor value
+        if let Some(unit) = ctx.compiler.units().get(id) {
+            return Ok(Value::UnitConstructor(unit.clone()));
+        }
+
         Err(Diagnostic::undefined_variable(id))
     }
 }
@@ -265,6 +271,33 @@ fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> 
 fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
         Value::BuiltinFn(builtin) => (builtin.func)(&args, ctx),
+        Value::UnitConstructor(unit) => {
+            // Unit constructors create quantities from numbers
+            if args.len() != 1 {
+                return Err(Diagnostic::arity(1, args.len()));
+            }
+            
+            let value = match &args[0] {
+                Value::Integer(n) => *n as f64,
+                Value::Float(f) => *f,
+                _ => {
+                    return Err(Diagnostic::type_error(
+                        Type::union(vec![Type::Integer, Type::Float]),
+                        args[0].type_of()
+                    ));
+                }
+            };
+            
+            // Create a derived dimension from this unit's dimension
+            use crate::unit::DerivedDimension;
+            let dimension = DerivedDimension::from_dimension(unit.dimension);
+            
+            Ok(Value::Quantity {
+                value,
+                unit,
+                dimension,
+            })
+        }
         Value::UserFunction(user_fn) => {
             // Check arity
             if args.len() != user_fn.params.len() {
@@ -291,6 +324,54 @@ fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Re
             apply_operator(id, args)
         }
         _ => Err(Diagnostic::not_callable(callee.type_of())),
+    }
+}
+
+/// Helper function to extract numeric value and dimension from a Value.
+///
+/// Returns (value, Some(dimension)) for Quantity, (value, None) for plain numbers.
+fn extract_numeric_and_dimension(value: &Value) -> Result<(f64, Option<crate::unit::DerivedDimension>)> {
+    use crate::unit::DerivedDimension;
+    
+    match value {
+        Value::Integer(n) => Ok((*n as f64, None)),
+        Value::Float(f) => Ok((*f, None)),
+        Value::Quantity { value, dimension, .. } => Ok((*value, Some(dimension.clone()))),
+        _ => Err(Diagnostic::type_error(
+            Type::union(vec![Type::Integer, Type::Float]),
+            value.type_of()
+        )),
+    }
+}
+
+/// Helper function to create a Value from a numeric result and optional dimension.
+///
+/// Returns Quantity if dimension is Some, otherwise returns Float.
+fn create_numeric_value(
+    value: f64,
+    dimension: Option<crate::unit::DerivedDimension>,
+    unit: Option<crate::unit::Unit>
+) -> Value {
+    match dimension {
+        Some(dim) if !dim.is_dimensionless() => {
+            // Create a quantity with the dimension
+            // For now, use a synthesized unit name based on the dimension
+            let unit = unit.unwrap_or_else(|| {
+                use crate::unit::Unit;
+                // Create a temporary unit for the dimension
+                let unit_name: InternedString = format!("{}", dim).as_str().into();
+                Unit::base(unit_name)
+            });
+            Value::Quantity {
+                value,
+                unit,
+                dimension: dim,
+            }
+        }
+        _ => {
+            // Dimensionless or no dimension - return plain float
+            Value::Float(value)
+        }
     }
 }
 
@@ -331,35 +412,67 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             [] => Err(Diagnostic::arity(1, 0)),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
-        "*" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a * b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a * b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 * b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a * *b as f64)),
-            // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => {
-                Err(Diagnostic::type_error(number_type(), b.type_of()))
+        "*" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
             }
-            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
-            _ => Err(Diagnostic::arity(2, args.len())),
+            
+            // Extract numeric values and dimensions
+            let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
+            let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
+            
+            let result_val = a_val * b_val;
+            
+            // Calculate result dimension
+            let result_dim = match (a_dim, b_dim) {
+                (Some(a), Some(b)) => Some(a.multiply(&b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            };
+            
+            // If result is dimensionless and no fractional part, return integer
+            if result_dim.is_none() && result_val.fract() == 0.0 {
+                Ok(Value::Integer(result_val as i64))
+            } else {
+                Ok(create_numeric_value(result_val, result_dim, None))
+            }
         },
-        "/" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => {
-                if *b == 0 {
-                    Err(Diagnostic::syntax("division by zero"))
-                } else {
-                    Ok(Value::Integer(a / b))
+        "/" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+            
+            // Extract numeric values and dimensions
+            let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
+            let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
+            
+            if b_val == 0.0 {
+                return Err(Diagnostic::syntax("division by zero"));
+            }
+            
+            let result_val = a_val / b_val;
+            
+            // Calculate result dimension
+            let result_dim = match (a_dim, b_dim) {
+                (Some(a), Some(b)) => Some(a.divide(&b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => {
+                    // 1 / dimension means the dimension is inverted
+                    use crate::unit::DerivedDimension;
+                    Some(DerivedDimension {
+                        numerator: b.denominator.clone(),
+                        denominator: b.numerator.clone(),
+                    })
                 }
+                (None, None) => None,
+            };
+            
+            // If result is dimensionless and no fractional part, return integer
+            if result_dim.is_none() && result_val.fract() == 0.0 {
+                Ok(Value::Integer(result_val as i64))
+            } else {
+                Ok(create_numeric_value(result_val, result_dim, None))
             }
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a / b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 / b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a / *b as f64)),
-            // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => {
-                Err(Diagnostic::type_error(number_type(), b.type_of()))
-            }
-            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
-            _ => Err(Diagnostic::arity(2, args.len())),
         },
         "==" => match args.as_slice() {
             [a, b] => Ok(Value::Bool(a == b)),
@@ -711,7 +824,7 @@ pub fn builtin_measure() -> BuiltinMacro {
                         };
 
                         // Get the arguments (base_unit and scale)
-                        let args = apply.all_arguments();
+                        let args: Vec<Expr> = apply.arguments().filter_map(|arg| arg.value()).collect();
                         if args.len() != 2 {
                             return Err(Diagnostic::syntax(
                                 "measure conversion requires two arguments: base_unit and scale",
