@@ -7,6 +7,17 @@ mod cmp_gt {
         s!("cmp_gt", t::eval_all("2 > 1\n"), "2 > 1\n");
     }
 }
+mod fn_basic {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_basic",
+            t::eval_all("fn add x y = x + y\nadd 3 5\n"),
+            "fn add x y = x + y\nadd 3 5\n"
+        );
+    }
+}
 mod lit_int {
     use super::*;
     #[test]
@@ -103,6 +114,17 @@ mod arith_left_assoc {
         );
     }
 }
+mod fn_closure {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_closure",
+            t::eval_all("let x = 10\nfn capture_fn = x\nlet x = 20\ncapture_fn\n"),
+            "let x = 10\nfn capture_fn = x\nlet x = 20\ncapture_fn\n"
+        );
+    }
+}
 mod cmp_lt {
     use super::*;
     #[test]
@@ -122,6 +144,17 @@ mod cmp_ne {
     #[test]
     fn eval() {
         s!("cmp_ne", t::eval_all("1 != 2\n"), "1 != 2\n");
+    }
+}
+mod fn_single_param {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_single_param",
+            t::eval_all("fn triple x = x * 3\ntriple 7\n"),
+            "fn triple x = x * 3\ntriple 7\n"
+        );
     }
 }
 mod let_simple {
@@ -216,6 +249,17 @@ mod arith_div {
     #[test]
     fn eval() {
         s!("arith_div", t::eval_all("20 / 4\n"), "20 / 4\n");
+    }
+}
+mod fn_hoisting {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_hoisting",
+            t::eval_all("add 2 3\nfn add x y = x + y\nadd 2 3\n"),
+            "add 2 3\nfn add x y = x + y\nadd 2 3\n"
+        );
     }
 }
 mod multi_expr {

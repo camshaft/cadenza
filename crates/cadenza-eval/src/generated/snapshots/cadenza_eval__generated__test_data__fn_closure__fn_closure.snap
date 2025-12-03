@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let x = 10\nfn capture_fn = x\nlet x = 20\ncapture_fn\n"
+---
+EvalResult {
+    values: [
+        10,
+        nil,
+        20,
+        10,
+    ],
+    diagnostics: [],
+}

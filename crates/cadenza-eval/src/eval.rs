@@ -25,11 +25,19 @@ use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root,
 /// return `Value::Nil` as side effects on the `Compiler` are the
 /// primary purpose.
 ///
-/// This function continues evaluation even when expressions fail, recording
+/// This function implements function hoisting by performing two passes:
+/// 1. First pass: scan for function definitions and register them in the compiler
+/// 2. Second pass: evaluate all expressions normally
+///
+/// This continues evaluation even when expressions fail, recording
 /// errors in the compiler. On error, `Value::Nil` is used as the result for
 /// that expression. Check `compiler.has_errors()` after calling to see if
 /// any errors occurred.
 pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
+    // First pass: hoist function definitions
+    hoist_functions(root, env, compiler);
+
+    // Second pass: evaluate all expressions
     let mut ctx = EvalContext::new(env, compiler);
     let mut results = Vec::new();
     for expr in root.items() {
@@ -42,6 +50,42 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
         }
     }
     results
+}
+
+/// First pass: scan for function definitions and register them (hoisting).
+///
+/// This scans top-level expressions looking for function definitions of the form
+/// `fn name params... = body` and registers them in the compiler without evaluating them fully.
+fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
+    let mut ctx = EvalContext::new(env, compiler);
+
+    for expr in root.items() {
+        // Check if this is a function definition (= with fn pattern on LHS)
+        if let Expr::Apply(apply) = expr {
+            // Check if the callee is the = operator
+            if let Some(Expr::Op(op)) = apply.callee() {
+                if op.syntax().text() == "=" {
+                    // This is an = application, get all arguments
+                    let args = apply.all_arguments();
+                    if args.len() == 2 {
+                        let lhs = &args[0];
+                        let rhs = &args[1];
+
+                        // Check if LHS is fn pattern
+                        if let Expr::Apply(lhs_apply) = lhs {
+                            if let Some(Expr::Ident(ident)) = lhs_apply.callee() {
+                                if ident.syntax().text() == "fn" {
+                                    // This is a function definition - handle it
+                                    let fn_args = lhs_apply.all_arguments();
+                                    let _ = handle_function_definition(&fn_args, rhs, &mut ctx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -107,6 +151,19 @@ impl Eval for Literal {
     }
 }
 
+/// Helper to auto-apply zero-parameter functions when referenced.
+///
+/// If the value is a zero-parameter function, it is automatically invoked.
+/// Otherwise, the value is returned as-is.
+fn maybe_auto_apply(value: Value, ctx: &mut EvalContext<'_>) -> Result<Value> {
+    if let Value::UserFunction(uf) = &value {
+        if uf.params.is_empty() {
+            return apply_value(value, vec![], ctx);
+        }
+    }
+    Ok(value)
+}
+
 impl Eval for Ident {
     fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
         let text = self.syntax().text();
@@ -116,12 +173,12 @@ impl Eval for Ident {
 
         // First check the local environment
         if let Some(value) = ctx.env.get(id) {
-            return Ok(value.clone());
+            return maybe_auto_apply(value.clone(), ctx);
         }
 
         // Then check compiler definitions
         if let Some(value) = ctx.compiler.get_var(id) {
-            return Ok(value.clone());
+            return maybe_auto_apply(value.clone(), ctx);
         }
 
         Err(Diagnostic::undefined_variable(id))
@@ -130,17 +187,14 @@ impl Eval for Ident {
 
 impl Eval for Apply {
     fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
-        let receiver = self
-            .receiver()
-            .ok_or_else(|| Diagnostic::syntax("missing receiver in application"))?;
+        // Get the callee (innermost identifier in nested applications)
+        let callee_expr = self
+            .callee()
+            .ok_or_else(|| Diagnostic::syntax("missing callee in application"))?;
 
-        let receiver_expr = receiver
-            .value()
-            .ok_or_else(|| Diagnostic::syntax("missing receiver expression"))?;
-
-        // Try to extract an identifier/operator name from the receiver expression.
+        // Try to extract an identifier/operator name from the callee.
         // If successful, check if it names a macro before evaluating.
-        if let Some(id) = extract_identifier(&receiver_expr) {
+        if let Some(id) = extract_identifier(&callee_expr) {
             // Check for macro in compiler
             if let Some(macro_value) = ctx.compiler.get_macro(id) {
                 return apply_macro(macro_value.clone(), self, ctx);
@@ -153,16 +207,17 @@ impl Eval for Apply {
             }
         }
 
-        // Not a macro call - evaluate normally
-        let callee = receiver_expr.eval(ctx)?;
+        // Not a macro call - evaluate normally with flattened arguments
+        let callee = callee_expr.eval(ctx)?;
 
-        // Collect and evaluate arguments
+        // Get all arguments (flattened from nested Apply nodes)
+        let all_arg_exprs = self.all_arguments();
+
+        // Evaluate all arguments
         let mut args = Vec::new();
-        for arg in self.arguments() {
-            if let Some(arg_expr) = arg.value() {
-                let value = arg_expr.eval(ctx)?;
-                args.push(value);
-            }
+        for arg_expr in all_arg_exprs {
+            let value = arg_expr.eval(ctx)?;
+            args.push(value);
         }
 
         apply_value(callee, args, ctx)
@@ -210,6 +265,27 @@ fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> 
 fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
         Value::BuiltinFn(builtin) => (builtin.func)(&args, ctx),
+        Value::UserFunction(user_fn) => {
+            // Check arity
+            if args.len() != user_fn.params.len() {
+                return Err(Diagnostic::arity(user_fn.params.len(), args.len()));
+            }
+
+            // Create a new environment extending the captured environment
+            let mut call_env = user_fn.captured_env.clone();
+            call_env.push_scope();
+
+            // Bind parameters to arguments
+            for (param, arg) in user_fn.params.iter().zip(args.iter()) {
+                call_env.define(*param, arg.clone());
+            }
+
+            // Evaluate the body in the new environment
+            let mut call_ctx = EvalContext::new(&mut call_env, ctx.compiler);
+            let result = user_fn.body.eval(&mut call_ctx)?;
+
+            Ok(result)
+        }
         Value::Symbol(id) => {
             // Operator application
             apply_operator(id, args)
@@ -399,28 +475,45 @@ pub fn builtin_let() -> BuiltinMacro {
     }
 }
 
-/// Creates the `=` special form that assigns a value to a variable.
+/// Creates the `=` special form that assigns a value to a variable or defines a function.
 ///
 /// The `=` special form takes two arguments:
-/// 1. The left-hand side (which should be a symbol from `let`)
-/// 2. The right-hand side (which is evaluated)
+/// 1. The left-hand side (which should be a symbol from `let`, or a `fn` application)
+/// 2. The right-hand side (which is evaluated for variables, or used as the function body)
 ///
-/// Example: `let x = 42` - The `let x` returns a symbol, then `=` assigns 42 to it.
+/// Examples:
+/// - `let x = 42` - The `let x` returns a symbol, then `=` assigns 42 to it.
+/// - `fn add x y = x + y` - The `fn add x y` is recognized as a function definition pattern
 pub fn builtin_assign() -> BuiltinMacro {
     BuiltinMacro {
         name: "=",
-        signature: Type::function(vec![Type::Symbol, Type::Unknown], Type::Unknown),
+        signature: Type::function(vec![Type::Unknown, Type::Unknown], Type::Unknown),
         func: |args, ctx| {
             // Expect exactly two arguments
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
             }
 
-            // Get the LHS expression
+            // Get the LHS and RHS expressions
             let lhs_expr = &args[0];
+            let rhs_expr = &args[1];
 
+            // Check if LHS is a function definition pattern (fn name params...)
+            if let Expr::Apply(apply) = lhs_expr {
+                // Get the callee and all arguments
+                if let Some(Expr::Ident(ident)) = apply.callee() {
+                    // Check if the callee is 'fn'
+                    if ident.syntax().text() == "fn" {
+                        // This is a function definition: fn name params... = body
+                        let fn_args = apply.all_arguments();
+                        return handle_function_definition(&fn_args, rhs_expr, ctx);
+                    }
+                }
+            }
+
+            // Not a function definition - handle as normal assignment
             // Evaluate the RHS to get the value
-            let rhs_value = args[1].eval(ctx)?;
+            let rhs_value = rhs_expr.eval(ctx)?;
 
             // Determine the variable name based on LHS
             match lhs_expr {
@@ -455,6 +548,85 @@ pub fn builtin_assign() -> BuiltinMacro {
                     }
                 }
             }
+        },
+    }
+}
+
+/// Handles function definitions of the form: fn name param1 param2... = body
+///
+/// The fn_args slice contains the arguments after 'fn' (i.e., `name param1 param2...`),
+/// and body_expr is the function body (the RHS of the `=`).
+fn handle_function_definition(
+    fn_args: &[Expr],
+    body_expr: &Expr,
+    ctx: &mut EvalContext<'_>,
+) -> Result<Value> {
+    if fn_args.is_empty() {
+        return Err(Diagnostic::syntax("fn requires at least a function name"));
+    }
+
+    // First argument is the function name
+    let name_ident = match &fn_args[0] {
+        Expr::Ident(i) => i,
+        _ => {
+            return Err(Diagnostic::syntax(
+                "fn requires an identifier as the function name",
+            ));
+        }
+    };
+    let name_text = name_ident.syntax().text();
+    let name: InternedString = name_text.to_string().as_str().into();
+
+    // Remaining arguments are parameters
+    let mut params = Vec::new();
+    for arg in &fn_args[1..] {
+        match arg {
+            Expr::Ident(ident) => {
+                let param_text = ident.syntax().text();
+                let param_name: InternedString = param_text.to_string().as_str().into();
+                params.push(param_name);
+            }
+            _ => {
+                return Err(Diagnostic::syntax("fn parameters must be identifiers"));
+            }
+        }
+    }
+
+    // Clone the body expression
+    let body = body_expr.clone();
+
+    // Capture the current environment for closure semantics
+    let captured_env = ctx.env.clone();
+
+    // Create the user function value
+    let user_fn = Value::UserFunction(crate::value::UserFunction {
+        name,
+        params,
+        body,
+        captured_env,
+    });
+
+    // Register the function in the compiler (hoisting)
+    ctx.compiler.define_var(name, user_fn);
+
+    // Return nil
+    Ok(Value::Nil)
+}
+
+/// Creates the `fn` identifier for use in function definitions.
+///
+/// The `fn` identifier is used in conjunction with the `=` operator to define functions.
+/// When `=` sees a pattern like `fn name params... = body`, it handles the function definition.
+///
+/// This standalone macro just returns Nil if called directly (which shouldn't happen in normal use).
+pub fn builtin_fn() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "fn",
+        signature: Type::function(vec![Type::Unknown], Type::Nil),
+        func: |_args, _ctx| {
+            // This should not be called directly in normal usage.
+            // Function definitions are handled by the `=` macro when it sees `fn` patterns.
+            Ok(Value::Nil)
         },
     }
 }
