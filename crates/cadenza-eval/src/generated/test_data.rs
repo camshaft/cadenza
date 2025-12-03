@@ -103,6 +103,19 @@ mod arith_mul {
         s!("arith_mul", t::eval_all("4 * 5\n"), "4 * 5\n");
     }
 }
+mod block_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_simple",
+            t::eval_all(
+                "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
+            ),
+            "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
+        );
+    }
+}
 mod error_let_invalid {
     use super::*;
     #[test]
