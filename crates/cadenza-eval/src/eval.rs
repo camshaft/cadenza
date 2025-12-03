@@ -631,6 +631,173 @@ pub fn builtin_fn() -> BuiltinMacro {
     }
 }
 
+/// Creates the `measure` builtin macro for defining units and conversions.
+///
+/// The `measure` macro defines a unit for dimensional analysis. It can be used in two forms:
+///
+/// 1. Base unit definition: `measure meter`
+///    - Defines a new base unit with no conversion
+/// 
+/// 2. Derived unit with conversion: `measure inch = meter / 39.37`
+///    - Defines a new unit with a conversion to another unit
+///    - The conversion is specified as: base_unit / scale or base_unit * scale
+///    - Creates a bidirectional link (both units can be converted to each other)
+///
+/// Examples:
+/// ```ignore
+/// measure meter       // Base unit
+/// measure inch = meter / 39.37   // 1 meter = 39.37 inches, so 1 inch = meter/39.37
+/// measure foot = inch * 12       // 1 foot = 12 inches
+/// ```
+pub fn builtin_measure() -> BuiltinMacro {
+    use crate::unit::Unit;
+
+    BuiltinMacro {
+        name: "measure",
+        signature: Type::function(vec![Type::Symbol], Type::Nil),
+        func: |args, ctx| {
+            // measure can take 1 or 3 arguments:
+            // - measure name (base unit)
+            // - measure name = base_unit / scale (derived unit with division)
+            // - measure name = base_unit * scale (derived unit with multiplication)
+            
+            if args.is_empty() {
+                return Err(Diagnostic::arity(1, 0));
+            }
+
+            // Get the unit name
+            let name_expr = &args[0];
+            let name = match name_expr {
+                Expr::Ident(ident) => {
+                    let text = ident.syntax().text();
+                    let name: InternedString = text.to_string().as_str().into();
+                    name
+                }
+                _ => {
+                    return Err(Diagnostic::syntax("measure requires an identifier as the unit name"));
+                }
+            };
+
+            // Check if this is a derived unit (has = and conversion)
+            if args.len() == 3 {
+                // Check that second arg is =
+                let eq_expr = &args[1];
+                let is_eq = match eq_expr {
+                    Expr::Op(op) => op.syntax().text() == "=",
+                    _ => false,
+                };
+
+                if !is_eq {
+                    return Err(Diagnostic::syntax("expected '=' in measure definition"));
+                }
+
+                // Parse the conversion expression (e.g., "meter / 39.37" or "inch * 12")
+                let conversion_expr = &args[2];
+                
+                // Expect an Apply node with / or * operator
+                match conversion_expr {
+                    Expr::Apply(apply) => {
+                        // Get the operator
+                        let op = match apply.callee() {
+                            Some(Expr::Op(op)) => {
+                                let text = op.syntax().text();
+                                text.to_string()
+                            }
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure conversion must use / or * operator",
+                                ));
+                            }
+                        };
+
+                        // Get the arguments (base_unit and scale)
+                        let args = apply.all_arguments();
+                        if args.len() != 2 {
+                            return Err(Diagnostic::syntax(
+                                "measure conversion requires two arguments: base_unit and scale",
+                            ));
+                        }
+
+                        // Get base unit name
+                        let base_unit_name = match &args[0] {
+                            Expr::Ident(ident) => {
+                                let text = ident.syntax().text();
+                                let name: InternedString = text.to_string().as_str().into();
+                                name
+                            }
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure conversion must specify a base unit as first argument",
+                                ));
+                            }
+                        };
+
+                        // Get the conversion scale
+                        let scale_value = args[1].eval(ctx)?;
+                        let scale = match scale_value {
+                            Value::Integer(n) => n as f64,
+                            Value::Float(f) => f,
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure conversion scale must be a number",
+                                ));
+                            }
+                        };
+
+                        // Look up the base unit
+                        let base_unit = ctx.compiler.units().get(base_unit_name)
+                            .ok_or_else(|| Diagnostic::syntax(
+                                &format!("undefined unit '{}'", &*base_unit_name)
+                            ))?;
+
+                        // Calculate the actual scale based on the operator
+                        let actual_scale = match op.as_str() {
+                            "/" => {
+                                // base_unit / scale means: 1 base_unit = scale new_units
+                                // So 1 new_unit = base_unit / scale
+                                1.0 / scale
+                            }
+                            "*" => {
+                                // base_unit * scale means: 1 new_unit = scale base_units
+                                scale
+                            }
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "measure conversion must use / or * operator",
+                                ));
+                            }
+                        };
+
+                        // Create the derived unit
+                        let derived_unit = Unit::derived(
+                            name,
+                            base_unit.dimension,
+                            actual_scale,
+                            0.0,
+                        );
+
+                        // Register the unit
+                        ctx.compiler.units_mut().register(derived_unit);
+                    }
+                    _ => {
+                        return Err(Diagnostic::syntax(
+                            "measure conversion must be an operation (e.g., meter / 39.37)",
+                        ));
+                    }
+                }
+            } else if args.len() == 1 {
+                // Base unit definition
+                let unit = Unit::base(name);
+                ctx.compiler.units_mut().register(unit);
+            } else {
+                return Err(Diagnostic::arity(1, args.len()));
+            }
+
+            Ok(Value::Nil)
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

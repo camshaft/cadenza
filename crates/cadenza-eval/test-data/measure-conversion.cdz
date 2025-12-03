@@ -1,0 +1,2 @@
+measure millimeter
+measure inch = millimeter / 0.0393701

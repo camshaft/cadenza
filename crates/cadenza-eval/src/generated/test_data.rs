@@ -64,6 +64,17 @@ mod error_let_invalid {
         );
     }
 }
+mod measure_base {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_base",
+            t::eval_all("measure meter\n"),
+            "measure meter\n"
+        );
+    }
+}
 mod arith_float_mul {
     use super::*;
     #[test]
@@ -202,6 +213,17 @@ mod arith_mixed {
     #[test]
     fn eval() {
         s!("arith_mixed", t::eval_all("1 + 2.5\n"), "1 + 2.5\n");
+    }
+}
+mod measure_conversion {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_conversion",
+            t::eval_all("measure millimeter\nmeasure inch = millimeter / 0.0393701\n"),
+            "measure millimeter\nmeasure inch = millimeter / 0.0393701\n"
+        );
     }
 }
 mod let_reassign {
