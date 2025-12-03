@@ -371,8 +371,11 @@ import mymodule *
 
 # Qualified import
 import mymodule as m
-# Access with module prefix (uses function application syntax)
+# Access with module prefix
+# The dot notation accesses a field/function, wrapped in parens to make it a value
+# Then applied to the argument using function application syntax
 let x = (m.public_fn) 10
+# Or without whitespace: (m.public_fn)(10)
 ```
 
 The type checker ensures:
@@ -514,7 +517,8 @@ impl Monomorphizer {
         }
         
         // Create new specialized function
-        let specialized = self.specialize(func, types);
+        let specialized = self.specialize(func, types.clone());
+        // Get the ID that will be assigned to this function (current length)
         let id = self.specialized.len();
         self.specialized.push(specialized);
         self.instantiations.entry(func.id).or_default().push(Instantiation { types, id });
@@ -1256,8 +1260,8 @@ impl SourceFile {
         // Returns Ok(idx) if offset equals a line start, Err(idx) for insertion point
         let line = match self.line_starts.binary_search(&offset) {
             Ok(idx) => idx,  // Exact match - offset is at line start
-            Err(0) => 0,     // Before first line (shouldn't happen due to check above)
-            Err(idx) => idx - 1,  // Offset is between line_starts[idx-1] and line_starts[idx]
+            Err(0) => 0,     // Before first line (handled by check above, but defensive)
+            Err(idx) => idx.saturating_sub(1),  // Offset is between line_starts[idx-1] and line_starts[idx]
         };
         
         // Calculate column from line start
