@@ -1,0 +1,31 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Block with mixed expressions (not just let)\nlet answer =\n  let x = 10\n  let y = x + 5\n  x * y\nanswer\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: ArityError {
+                expected: 2,
+                actual: 5,
+            },
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+        Diagnostic {
+            kind: UndefinedVariable(
+                "answer",
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}

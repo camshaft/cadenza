@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let foo = # comment here\n    let bar = 123 # other comment here\n    bar\n"
+---
+EvalResult {
+    values: [
+        123,
+    ],
+    diagnostics: [],
+}

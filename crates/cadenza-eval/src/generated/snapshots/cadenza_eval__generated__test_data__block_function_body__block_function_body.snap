@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Function with block body containing local let bindings\nfn compute x =\n  let doubled = x * 2\n  doubled + 10\ncompute 5\n"
+---
+EvalResult {
+    values: [
+        nil,
+        20,
+    ],
+    diagnostics: [],
+}

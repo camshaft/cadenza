@@ -1,0 +1,4 @@
+fn test x =
+  let y = x + 1
+  y
+test 5

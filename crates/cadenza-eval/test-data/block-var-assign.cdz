@@ -1,0 +1,5 @@
+# Block assigned to a variable
+let result =
+  let temp = 100
+  temp + 23
+result

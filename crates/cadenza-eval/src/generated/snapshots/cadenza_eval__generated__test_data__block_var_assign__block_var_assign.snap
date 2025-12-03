@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Block assigned to a variable\nlet result =\n  let temp = 100\n  temp + 23\nresult\n"
+---
+EvalResult {
+    values: [
+        123,
+        123,
+    ],
+    diagnostics: [],
+}

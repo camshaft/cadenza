@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Block Expressions\n# Blocks allow multiple statements with indentation\n\n# Simple block assigned to variable\nlet result =\n  let temp = 100\n  temp + 23\nresult\n\n# Function with block body\nfn calculate x =\n  let doubled = x * 2\n  doubled + 10\ncalculate 5\n"
+---
+EvalResult {
+    values: [
+        123,
+        123,
+        nil,
+        20,
+    ],
+    diagnostics: [],
+}
