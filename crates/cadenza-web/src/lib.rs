@@ -465,6 +465,12 @@ pub struct Example {
 /// - `id`: Unique identifier for the example
 /// - `name`: Display name for the UI
 /// - `source`: The source code content
+///
+/// # Note for Future Improvement
+///
+/// This list is currently hardcoded. When adding new example files to
+/// `crates/cadenza-eval/test-data/example-*.cdz`, remember to add them here.
+/// A future improvement could use a build script to auto-discover example files.
 #[wasm_bindgen]
 pub fn get_examples() -> JsValue {
     let examples = vec![

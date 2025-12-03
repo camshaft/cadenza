@@ -27,16 +27,16 @@ Examples:
 
 1. Create comprehensive test files following the `<category>-<description>.cdz` pattern
 2. **ALWAYS create a corresponding `example-<feature>.cdz` file** to showcase the feature in the Compiler Explorer
-3. Keep examples clear and well-commented to help users learn the language
-4. Update this README if new example categories are needed
+3. **Add the new example to `crates/cadenza-web/src/lib.rs` in the `get_examples()` function**
+4. Keep examples clear and well-commented to help users learn the language
+5. Update this README if new example categories are needed
 
-Example files are automatically discovered by the build system and made available in the web UI's example selector dropdown.
+Example files are embedded in the WASM module at build time and made available in the web UI's example selector dropdown.
 
 ## Build Integration
 
 The `build/test_data.rs` script automatically:
 - Loads all `.cdz` files from this directory
 - Generates snapshot tests for each file
-- Exports example files (with `example-` prefix) for the web UI
 
-Files are processed at build time, so no manual registration is needed.
+For the web UI, examples must be manually added to the `get_examples()` function in `crates/cadenza-web/src/lib.rs` using `include_str!()` macro.
