@@ -5,46 +5,27 @@ import { CstPanel } from './components/CstPanel'
 import { AstPanel } from './components/AstPanel'
 import { EvalPanel } from './components/EvalPanel'
 import { loadWasm } from './lib/wasm'
-import type { CadenzaWasm, LexResult, ParseResult, AstResult, EvalResult, Example } from './types/cadenza'
+import { EXAMPLES } from './generated/examples'
+import type { CadenzaWasm, LexResult, ParseResult, AstResult, EvalResult } from './types/cadenza'
 import './index.css'
 
 type Tab = 'tokens' | 'cst' | 'ast' | 'eval';
-
-const DEFAULT_SOURCE = `# Welcome to Cadenza Compiler Explorer!
-# Try some expressions:
-
-42
-3.14159
-1 + 2
-10 * 5
-"hello world"
-`;
 
 const STORAGE_KEY = 'cadenza-compiler-explorer-source';
 const STORAGE_EXAMPLE_KEY = 'cadenza-compiler-explorer-example';
 
 function App() {
-  const [source, setSource] = useState(DEFAULT_SOURCE);
+  const [source, setSource] = useState(EXAMPLES[0]?.source || '');
   const [activeTab, setActiveTab] = useState<Tab>('tokens');
   const [wasm, setWasm] = useState<CadenzaWasm | null>(null);
   const [loading, setLoading] = useState(true);
-  const [examples, setExamples] = useState<Example[]>([]);
-  const [selectedExample, setSelectedExample] = useState<string>('');
+  const [selectedExample, setSelectedExample] = useState<string>(EXAMPLES[0]?.id || '');
   const [isUserEdited, setIsUserEdited] = useState(false);
 
-  // Load WASM module and examples on mount
+  // Load WASM module on mount
   useEffect(() => {
     loadWasm().then((module) => {
       setWasm(module);
-      
-      // Load examples
-      let examplesList: Example[] = [];
-      try {
-        examplesList = module.get_examples();
-        setExamples(examplesList);
-      } catch (e) {
-        console.error('Failed to load examples:', e);
-      }
       
       // Try to load saved source from localStorage
       try {
@@ -54,9 +35,9 @@ function App() {
           setSource(savedSource);
           setIsUserEdited(true);
           setSelectedExample('custom');
-        } else if (savedExample && examplesList.length > 0) {
+        } else if (savedExample && EXAMPLES.length > 0) {
           // Load the saved example if available
-          const example = examplesList.find((ex: Example) => ex.id === savedExample);
+          const example = EXAMPLES.find((ex) => ex.id === savedExample);
           if (example) {
             setSource(example.source);
             setSelectedExample(savedExample);
@@ -132,7 +113,7 @@ function App() {
       return;
     }
     
-    const example = examples.find(ex => ex.id === exampleId);
+    const example = EXAMPLES.find(ex => ex.id === exampleId);
     if (example) {
       setSource(example.source);
       setSelectedExample(exampleId);
@@ -146,7 +127,7 @@ function App() {
         console.error('Failed to save to localStorage:', e);
       }
     }
-  }, [examples]);
+  }, []);
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'tokens', label: 'Tokens', count: lexResult?.tokens.length },
@@ -183,7 +164,7 @@ function App() {
         <div className="h-[40vh] md:h-auto md:w-1/2 border-b md:border-b-0 md:border-r border-gray-700 flex flex-col">
           <div className="bg-gray-800 px-4 py-2 border-b border-gray-700 flex items-center justify-between gap-2">
             <span className="text-sm text-gray-400 whitespace-nowrap">Source Code</span>
-            {examples.length > 0 && (
+            {EXAMPLES.length > 0 && (
               <div className="flex items-center gap-2 flex-1 justify-end">
                 <label htmlFor="example-select" className="text-xs text-gray-500 whitespace-nowrap">
                   Example:
@@ -200,7 +181,7 @@ function App() {
                   {!selectedExample && !isUserEdited && (
                     <option value="">Select an example...</option>
                   )}
-                  {examples.map((ex) => (
+                  {EXAMPLES.map((ex) => (
                     <option key={ex.id} value={ex.id}>
                       {ex.name}
                     </option>

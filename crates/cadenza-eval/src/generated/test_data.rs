@@ -7,19 +7,6 @@ mod cmp_gt {
         s!("cmp_gt", t::eval_all("2 > 1\n"), "2 > 1\n");
     }
 }
-mod example_literals {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "example_literals",
-            t::eval_all(
-                "# Literal Values\n# Different types of literals\n\n# Integers\n42\n-17\n0\n\n# Floating point\n3.14159\n-2.5\n1.0\n\n# Strings\n\"hello\"\n\"world\"\n\"hello world\"\n"
-            ),
-            "# Literal Values\n# Different types of literals\n\n# Integers\n42\n-17\n0\n\n# Floating point\n3.14159\n-2.5\n1.0\n\n# Strings\n\"hello\"\n\"world\"\n\"hello world\"\n"
-        );
-    }
-}
 mod fn_basic {
     use super::*;
     #[test]
@@ -39,19 +26,6 @@ mod fn_auto_apply {
             "fn_auto_apply",
             t::eval_all("fn add x y = x + y\nadd\n"),
             "fn add x y = x + y\nadd\n"
-        );
-    }
-}
-mod example_welcome {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "example_welcome",
-            t::eval_all(
-                "# Welcome to Cadenza!\n# A functional language with units of measure\n\n# Try some basic expressions\n42\n3.14159\n1 + 2 * 3\n\n# Define variables\nlet name = \"Cadenza\"\nlet version = 0.1\n\n# Create functions\nfn square x = x * x\nsquare 5\n"
-            ),
-            "# Welcome to Cadenza!\n# A functional language with units of measure\n\n# Try some basic expressions\n42\n3.14159\n1 + 2 * 3\n\n# Define variables\nlet name = \"Cadenza\"\nlet version = 0.1\n\n# Create functions\nfn square x = x * x\nsquare 5\n"
         );
     }
 }
@@ -96,6 +70,19 @@ mod lit_float {
         s!("lit_float", t::eval_all("3.14\n"), "3.14\n");
     }
 }
+mod example_03_arithmetic {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "example_03_arithmetic",
+            t::eval_all(
+                "# Arithmetic Operations\n# Basic math with integers and floats\n\n# Addition and subtraction\n1 + 2\n10 - 3\n\n# Multiplication and division\n4 * 5\n20 / 4\n\n# Operator precedence\n2 + 3 * 4\n(2 + 3) * 4\n\n# Floating point\n3.14 * 2.0\n10.5 / 2.0\n"
+            ),
+            "# Arithmetic Operations\n# Basic math with integers and floats\n\n# Addition and subtraction\n1 + 2\n10 - 3\n\n# Multiplication and division\n4 * 5\n20 / 4\n\n# Operator precedence\n2 + 3 * 4\n(2 + 3) * 4\n\n# Floating point\n3.14 * 2.0\n10.5 / 2.0\n"
+        );
+    }
+}
 mod measure_unit_arithmetic {
     use super::*;
     #[test]
@@ -138,19 +125,6 @@ mod measure_quantity {
         );
     }
 }
-mod example_measures {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "example_measures",
-            t::eval_all(
-                "# Units of Measure\n# Define and use physical units\n\n# Define base units\nmeasure meter\nmeasure second\n\n# Use base units\n10meter\n5second\n\n# Derived units\nmeasure kilometer = meter 1000\n2kilometer\n\n# Convert between units\nlet distance = 5000meter\nlet km = 5kilometer\ndistance\nkm\n\n# Unit arithmetic\nlet speed = 100meter / 10second\nspeed\n"
-            ),
-            "# Units of Measure\n# Define and use physical units\n\n# Define base units\nmeasure meter\nmeasure second\n\n# Use base units\n10meter\n5second\n\n# Derived units\nmeasure kilometer = meter 1000\n2kilometer\n\n# Convert between units\nlet distance = 5000meter\nlet km = 5kilometer\ndistance\nkm\n\n# Unit arithmetic\nlet speed = 100meter / 10second\nspeed\n"
-        );
-    }
-}
 mod measure_base {
     use super::*;
     #[test]
@@ -187,19 +161,6 @@ mod cmp_le {
         s!("cmp_le", t::eval_all("1 <= 1\n"), "1 <= 1\n");
     }
 }
-mod example_variables {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "example_variables",
-            t::eval_all(
-                "# Variables with let\n# Define and use variables\n\n# Simple binding\nlet x = 42\nx\n\n# Multiple bindings\nlet a = 1\nlet b = 2\na + b\n\n# Using expressions\nlet result = 10 * 5 + 3\nresult\n\n# Variable reassignment\nlet counter = 0\nlet counter = counter + 1\nlet counter = counter + 1\ncounter\n"
-            ),
-            "# Variables with let\n# Define and use variables\n\n# Simple binding\nlet x = 42\nx\n\n# Multiple bindings\nlet a = 1\nlet b = 2\na + b\n\n# Using expressions\nlet result = 10 * 5 + 3\nresult\n\n# Variable reassignment\nlet counter = 0\nlet counter = counter + 1\nlet counter = counter + 1\ncounter\n"
-        );
-    }
-}
 mod arith_add {
     use super::*;
     #[test]
@@ -212,6 +173,19 @@ mod cmp_ge {
     #[test]
     fn eval() {
         s!("cmp_ge", t::eval_all("1 >= 1\n"), "1 >= 1\n");
+    }
+}
+mod example_02_literals {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "example_02_literals",
+            t::eval_all(
+                "# Literal Values\n# Different types of literals\n\n# Integers\n42\n-17\n0\n\n# Floating point\n3.14159\n-2.5\n1.0\n\n# Strings\n\"hello\"\n\"world\"\n\"hello world\"\n"
+            ),
+            "# Literal Values\n# Different types of literals\n\n# Integers\n42\n-17\n0\n\n# Floating point\n3.14159\n-2.5\n1.0\n\n# Strings\n\"hello\"\n\"world\"\n\"hello world\"\n"
+        );
     }
 }
 mod arith_left_assoc {
@@ -292,6 +266,32 @@ mod fn_zero_arity {
         );
     }
 }
+mod example_06_functions {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "example_06_functions",
+            t::eval_all(
+                "# Functions\n# Define and call functions\n\n# Simple function\nfn double x = x * 2\ndouble 5\n\n# Multi-parameter function\nfn add x y = x + y\nadd 3 7\n\n# Function with closure\nlet outer = 100\nfn capture = outer + 1\ncapture\n"
+            ),
+            "# Functions\n# Define and call functions\n\n# Simple function\nfn double x = x * 2\ndouble 5\n\n# Multi-parameter function\nfn add x y = x + y\nadd 3 7\n\n# Function with closure\nlet outer = 100\nfn capture = outer + 1\ncapture\n"
+        );
+    }
+}
+mod example_05_variables {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "example_05_variables",
+            t::eval_all(
+                "# Variables with let\n# Define and use variables\n\n# Simple binding\nlet x = 42\nx\n\n# Multiple bindings\nlet a = 1\nlet b = 2\na + b\n\n# Using expressions\nlet result = 10 * 5 + 3\nresult\n\n# Variable reassignment\nlet counter = 0\nlet counter = counter + 1\nlet counter = counter + 1\ncounter\n"
+            ),
+            "# Variables with let\n# Define and use variables\n\n# Simple binding\nlet x = 42\nx\n\n# Multiple bindings\nlet a = 1\nlet b = 2\na + b\n\n# Using expressions\nlet result = 10 * 5 + 3\nresult\n\n# Variable reassignment\nlet counter = 0\nlet counter = counter + 1\nlet counter = counter + 1\ncounter\n"
+        );
+    }
+}
 mod let_simple {
     use super::*;
     #[test]
@@ -363,19 +363,6 @@ mod arith_mixed {
         s!("arith_mixed", t::eval_all("1 + 2.5\n"), "1 + 2.5\n");
     }
 }
-mod example_comparison {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "example_comparison",
-            t::eval_all(
-                "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
-            ),
-            "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
-        );
-    }
-}
 mod measure_conversion {
     use super::*;
     #[test]
@@ -397,6 +384,19 @@ mod let_reassign {
             "let_reassign",
             t::eval_all("let x = 1\nx = 2\nx\n"),
             "let x = 1\nx = 2\nx\n"
+        );
+    }
+}
+mod example_01_welcome {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "example_01_welcome",
+            t::eval_all(
+                "# Welcome to Cadenza!\n# A functional language with units of measure\n\n# Try some basic expressions\n42\n3.14159\n1 + 2 * 3\n\n# Define variables\nlet name = \"Cadenza\"\nlet version = 0.1\n\n# Create functions\nfn square x = x * x\nsquare 5\n"
+            ),
+            "# Welcome to Cadenza!\n# A functional language with units of measure\n\n# Try some basic expressions\n42\n3.14159\n1 + 2 * 3\n\n# Define variables\nlet name = \"Cadenza\"\nlet version = 0.1\n\n# Create functions\nfn square x = x * x\nsquare 5\n"
         );
     }
 }
@@ -429,19 +429,6 @@ mod arith_float {
         s!("arith_float", t::eval_all("1.5 + 2.5\n"), "1.5 + 2.5\n");
     }
 }
-mod example_functions {
-    use super::*;
-    #[test]
-    fn eval() {
-        s!(
-            "example_functions",
-            t::eval_all(
-                "# Functions\n# Define and call functions\n\n# Simple function\nfn double x = x * 2\ndouble 5\n\n# Multi-parameter function\nfn add x y = x + y\nadd 3 7\n\n# Nested functions\nfn make_adder n = fn x = x + n\nlet add5 = make_adder 5\nadd5 10\n\n# Function with closure\nlet outer = 100\nfn capture = outer + 1\ncapture\n"
-            ),
-            "# Functions\n# Define and call functions\n\n# Simple function\nfn double x = x * 2\ndouble 5\n\n# Multi-parameter function\nfn add x y = x + y\nadd 3 7\n\n# Nested functions\nfn make_adder n = fn x = x + n\nlet add5 = make_adder 5\nadd5 10\n\n# Function with closure\nlet outer = 100\nfn capture = outer + 1\ncapture\n"
-        );
-    }
-}
 mod arith_div {
     use super::*;
     #[test]
@@ -471,16 +458,29 @@ mod fn_hoisting {
         );
     }
 }
-mod example_arithmetic {
+mod example_07_measures {
     use super::*;
     #[test]
     fn eval() {
         s!(
-            "example_arithmetic",
+            "example_07_measures",
             t::eval_all(
-                "# Arithmetic Operations\n# Basic math with integers and floats\n\n# Addition and subtraction\n1 + 2\n10 - 3\n\n# Multiplication and division\n4 * 5\n20 / 4\n\n# Operator precedence\n2 + 3 * 4\n(2 + 3) * 4\n\n# Floating point\n3.14 * 2.0\n10.5 / 2.0\n"
+                "# Units of Measure\n# Define and use physical units\n\n# Define base units\nmeasure meter\nmeasure second\n\n# Use base units\n10meter\n5second\n\n# Derived units\nmeasure kilometer = meter 1000\n2kilometer\n\n# Convert between units\nlet distance = 5000meter\nlet km = 5kilometer\ndistance\nkm\n\n# Unit arithmetic\nlet speed = 100meter / 10second\nspeed\n"
             ),
-            "# Arithmetic Operations\n# Basic math with integers and floats\n\n# Addition and subtraction\n1 + 2\n10 - 3\n\n# Multiplication and division\n4 * 5\n20 / 4\n\n# Operator precedence\n2 + 3 * 4\n(2 + 3) * 4\n\n# Floating point\n3.14 * 2.0\n10.5 / 2.0\n"
+            "# Units of Measure\n# Define and use physical units\n\n# Define base units\nmeasure meter\nmeasure second\n\n# Use base units\n10meter\n5second\n\n# Derived units\nmeasure kilometer = meter 1000\n2kilometer\n\n# Convert between units\nlet distance = 5000meter\nlet km = 5kilometer\ndistance\nkm\n\n# Unit arithmetic\nlet speed = 100meter / 10second\nspeed\n"
+        );
+    }
+}
+mod example_04_comparison {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "example_04_comparison",
+            t::eval_all(
+                "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
+            ),
+            "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
         );
     }
 }

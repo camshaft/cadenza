@@ -77,5 +77,4 @@ export interface CadenzaWasm {
   ast: (source: string) => AstResult;
   eval_source: (source: string) => EvalResult;
   get_token_kinds: () => string[];
-  get_examples: () => Example[];
 }

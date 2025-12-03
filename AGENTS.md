@@ -161,6 +161,40 @@ When writing tests, follow these principles to ensure high-quality, maintainable
 - **Don't test trivial wrappers**: If a function just calls another function or wraps a value without logic, it doesn't need a dedicated test
 - **Don't assert on internal state**: Test public APIs and observable behavior, not private implementation details
 
+## Adding Examples to Compiler Explorer
+
+When implementing new language features, create example files in `crates/cadenza-eval/test-data/` to showcase them in the Compiler Explorer UI.
+
+### File Naming Convention
+
+Example files must follow this pattern: `example-##-name.cdz` where `##` is a 0-padded number indicating the order.
+
+Examples:
+- `example-01-welcome.cdz` - Welcome message and basic intro
+- `example-02-literals.cdz` - Integer, float, and string literals
+- `example-03-arithmetic.cdz` - Arithmetic operations
+- `example-04-comparison.cdz` - Comparison operators
+- `example-05-variables.cdz` - Variable bindings with `let`
+- `example-06-functions.cdz` - Function definitions and closures
+- `example-07-measures.cdz` - Units of measure feature
+
+### How to Add a New Example
+
+1. Create a file in `crates/cadenza-eval/test-data/` following the naming pattern `example-##-name.cdz`
+2. Write clear, well-commented code that demonstrates the feature
+3. The build script will automatically:
+   - Generate snapshot tests for the file
+   - Generate TypeScript code for the web UI
+   - Make it available in the Compiler Explorer's example dropdown
+
+The examples are displayed in numeric order, so choose an appropriate number that places your example in a logical sequence for introducing language features.
+
+### Important Notes
+
+- **No manual registration required**: The build script automatically discovers and includes all `example-*.cdz` files
+- **Keep examples working**: Examples should not have errors in their snapshots - they demonstrate working language features
+- **TypeScript generation**: Examples are automatically converted to TypeScript and symlinked to the web app
+
 ## Snapshot Testing Guidelines
 
 ### Critical Rules
