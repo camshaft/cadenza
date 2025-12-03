@@ -1,0 +1,29 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Functions\n# Define and call functions\n\n# Simple function\nfn double x = x * 2\ndouble 5\n\n# Multi-parameter function\nfn add x y = x + y\nadd 3 7\n\n# Nested functions\nfn make_adder n = fn x = x + n\nlet add5 = make_adder 5\nadd5 10\n\n# Function with closure\nlet outer = 100\nfn capture = outer + 1\ncapture\n"
+---
+EvalResult {
+    values: [
+        nil,
+        10,
+        nil,
+        10,
+        nil,
+        nil,
+        nil,
+        100,
+        nil,
+        101,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: NotCallable(
+                Nil,
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}
