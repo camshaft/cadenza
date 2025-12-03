@@ -1,0 +1,24 @@
+# Units of Measure
+# Define and use physical units
+
+# Define base units
+measure meter
+measure second
+
+# Use base units
+10meter
+5second
+
+# Derived units
+measure kilometer = meter 1000
+2kilometer
+
+# Convert between units
+let distance = 5000meter
+let km = 5kilometer
+distance
+km
+
+# Unit arithmetic
+let speed = 100meter / 10second
+speed

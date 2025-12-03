@@ -30,6 +30,8 @@ The crate provides WebAssembly bindings for the Cadenza compiler and a companion
 - [x] Add `xtask explorer build` command for production builds
 - [x] Remove boilerplate files (SVGs, README)
 - [x] Integrate actual WASM module with the app (with fallback to mocks)
+- [x] Add example selector with pre-built language examples
+- [x] Implement localStorage persistence for user code and example selection
 
 ## Remaining Work Items
 
@@ -52,9 +54,10 @@ The crate provides WebAssembly bindings for the Cadenza compiler and a companion
    - Current: No hover-to-highlight
    - Needed: Click/hover on output highlights source
 
-5. **Persistent state**
-   - Current: State lost on refresh
-   - Needed: Save source to localStorage or URL
+5. ~~**Persistent state**~~
+   - [x] Save source to localStorage
+   - [x] Save example selection to localStorage
+   - [x] Restore state on page load
 
 6. **Keyboard shortcuts**
    - Current: None

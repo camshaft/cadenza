@@ -1,0 +1,15 @@
+# Welcome to Cadenza!
+# A functional language with units of measure
+
+# Try some basic expressions
+42
+3.14159
+1 + 2 * 3
+
+# Define variables
+let name = "Cadenza"
+let version = 0.1
+
+# Create functions
+fn square x = x * x
+square 5
