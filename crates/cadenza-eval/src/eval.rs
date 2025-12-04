@@ -640,7 +640,7 @@ fn handle_field_assignment(
         _ => {
             return Err(Diagnostic::syntax(
                 "field assignment requires a variable name for the record",
-            ))
+            ));
         }
     };
 
@@ -651,11 +651,7 @@ fn handle_field_assignment(
             let id: InternedString = text.to_string().as_str().into();
             id
         }
-        _ => {
-            return Err(Diagnostic::syntax(
-                "field name must be an identifier",
-            ))
-        }
+        _ => return Err(Diagnostic::syntax("field name must be an identifier")),
     };
 
     // Evaluate the RHS value
@@ -868,14 +864,14 @@ pub fn builtin_record() -> BuiltinMacro {
                     Expr::Ident(ident) => {
                         let text = ident.syntax().text();
                         let field_name: InternedString = text.to_string().as_str().into();
-                        
+
                         // Look up the variable in the environment
                         let value = ctx
                             .env
                             .get(field_name)
                             .cloned()
                             .ok_or_else(|| Diagnostic::undefined_variable(field_name))?;
-                        
+
                         fields.push((field_name, value));
                     }
                     // Full syntax: { a = 1, b = 2 }
@@ -1795,7 +1791,7 @@ pub fn builtin_field_access() -> BuiltinMacro {
                 _ => {
                     return Err(Diagnostic::syntax(
                         "field name must be an identifier".to_string(),
-                    ))
+                    ));
                 }
             };
 

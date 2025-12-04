@@ -5,10 +5,9 @@
 
 use crate::{
     eval::{
-        builtin_add, builtin_assign, builtin_block, builtin_div, builtin_eq,
-        builtin_field_access, builtin_fn, builtin_gt, builtin_gte, builtin_let, builtin_list,
-        builtin_lt, builtin_lte, builtin_measure, builtin_mul, builtin_ne, builtin_record,
-        builtin_sub,
+        builtin_add, builtin_assign, builtin_block, builtin_div, builtin_eq, builtin_field_access,
+        builtin_fn, builtin_gt, builtin_gte, builtin_let, builtin_list, builtin_lt, builtin_lte,
+        builtin_measure, builtin_mul, builtin_ne, builtin_record, builtin_sub,
     },
     interner::InternedString,
     map::Map,

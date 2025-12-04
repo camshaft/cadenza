@@ -431,15 +431,15 @@ assert record.a == 3
 ```
 
 **Requirements**:
-- [ ] Parser already supports field access syntax (appears to be implemented in lexer/parser based on test files)
-- [ ] Implement field access evaluation in evaluator
-- [ ] Support field access chaining (e.g., `record.a.b`)
-- [ ] Implement field assignment (mutation)
-- [ ] Type checking for field access (field must exist)
-- [ ] Error messages for accessing non-existent fields
-- [ ] Handle field access on non-record types with clear errors
+- [x] Parser already supports field access syntax (appears to be implemented in lexer/parser based on test files)
+- [x] Implement field access evaluation in evaluator
+- [x] Support field access chaining (e.g., `record.a.b`)
+- [x] Implement field assignment (mutation)
+- [x] Type checking for field access (field must exist)
+- [x] Error messages for accessing non-existent fields
+- [x] Handle field access on non-record types with clear errors
 
-**Notes**: Field access may already be partially implemented (test files show `op_field_access`). Check current evaluator implementation.
+**Notes**: Field access is fully implemented as the `.` operator (builtin macro). Field assignment is handled by the `=` operator detecting field access on the LHS.
 
 ### Destructuring / Pattern Matching on Records
 
