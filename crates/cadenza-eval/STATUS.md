@@ -274,8 +274,6 @@ This section tracks longer-term features described in `/docs/COMPILER_ARCHITECTU
 
 ---
 
----
-
 ## Implementation Roadmap
 
 See `/docs/COMPILER_ARCHITECTURE.md` for the complete multi-phase roadmap:
