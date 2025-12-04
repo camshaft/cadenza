@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let point = { x = 10, y = 20 }\npoint.z\n"
+---
+[
+    [=, [let, point], [__record__, [=, x, 10], [=, y, 20]]],
+    [., point, z],
+]

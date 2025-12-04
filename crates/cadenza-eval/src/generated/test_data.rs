@@ -101,6 +101,25 @@ mod cmp_eq {
         s!("cmp_eq_ast", t::ast("1 == 1\n"), "1 == 1\n");
     }
 }
+mod field_access_chained {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_chained",
+            t::eval_all("let obj = { a = { b = 42 } }\nobj.a.b\n"),
+            "let obj = { a = { b = 42 } }\nobj.a.b\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_chained_ast",
+            t::ast("let obj = { a = { b = 42 } }\nobj.a.b\n"),
+            "let obj = { a = { b = 42 } }\nobj.a.b\n"
+        );
+    }
+}
 mod measure_incompatible {
     use super::*;
     #[test]
@@ -448,6 +467,25 @@ mod record_shorthand {
         );
     }
 }
+mod field_access_missing_field {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_missing_field",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.z\n"),
+            "let point = { x = 10, y = 20 }\npoint.z\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_missing_field_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.z\n"),
+            "let point = { x = 10, y = 20 }\npoint.z\n"
+        );
+    }
+}
 mod arith_add {
     use super::*;
     #[test]
@@ -542,6 +580,25 @@ mod arith_left_assoc {
         );
     }
 }
+mod field_access_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_simple",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x\n"),
+            "let point = { x = 10, y = 20 }\npoint.x\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_simple_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x\n"),
+            "let point = { x = 10, y = 20 }\npoint.x\n"
+        );
+    }
+}
 mod fn_closure {
     use super::*;
     #[test]
@@ -606,6 +663,25 @@ mod measure_scalar_ops {
         );
     }
 }
+mod field_access_in_expr {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_in_expr",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x + point.y\n"),
+            "let point = { x = 10, y = 20 }\npoint.x + point.y\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_in_expr_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x + point.y\n"),
+            "let point = { x = 10, y = 20 }\npoint.x + point.y\n"
+        );
+    }
+}
 mod cmp_ne {
     use super::*;
     #[test]
@@ -633,6 +709,25 @@ mod fn_single_param {
             "fn_single_param_ast",
             t::ast("fn triple x = x * 3\ntriple 7\n"),
             "fn triple x = x * 3\ntriple 7\n"
+        );
+    }
+}
+mod field_access_on_non_record {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_on_non_record",
+            t::eval_all("let x = 42\nx.field\n"),
+            "let x = 42\nx.field\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_on_non_record_ast",
+            t::ast("let x = 42\nx.field\n"),
+            "let x = 42\nx.field\n"
         );
     }
 }

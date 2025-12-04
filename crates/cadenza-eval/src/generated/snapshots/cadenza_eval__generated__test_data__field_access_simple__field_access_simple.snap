@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let point = { x = 10, y = 20 }\npoint.x\n"
+---
+EvalResult {
+    values: [
+        {x: 10, y: 20},
+        10,
+    ],
+    diagnostics: [],
+}

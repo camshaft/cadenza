@@ -1660,6 +1660,77 @@ pub fn builtin_gte() -> BuiltinFn {
     }
 }
 
+/// Creates the `.` field access operator.
+///
+/// Field access is implemented as a macro because the field name must not be evaluated
+/// as a variable lookup. The `.` operator takes two arguments:
+/// 1. The record (evaluated)
+/// 2. The field name (unevaluated identifier)
+///
+/// # Examples
+///
+/// ```cadenza
+/// let point = { x = 10, y = 20 }
+/// point.x  # returns 10
+/// point.y  # returns 20
+/// ```
+///
+/// # Errors
+///
+/// - Returns a type error if the first argument is not a record
+/// - Returns a syntax error if the field name is not an identifier
+/// - Returns an error if the field does not exist in the record
+pub fn builtin_field_access() -> BuiltinMacro {
+    BuiltinMacro {
+        name: ".",
+        signature: Type::function(vec![Type::Unknown, Type::Symbol], Type::Unknown),
+        func: |args, ctx| {
+            // Field access requires exactly 2 arguments: record and field name
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            // Evaluate the record (first argument)
+            let record_value = args[0].eval(ctx)?;
+
+            // Extract the field name from the second argument (must be an identifier)
+            let field_name = match &args[1] {
+                Expr::Ident(ident) => {
+                    let text = ident.syntax().text();
+                    let id: InternedString = text.to_string().as_str().into();
+                    id
+                }
+                _ => {
+                    return Err(Diagnostic::syntax(
+                        "field name must be an identifier".to_string(),
+                    ))
+                }
+            };
+
+            // Extract the record fields
+            match record_value {
+                Value::Record(fields) => {
+                    // Look up the field in the record
+                    for (name, value) in fields {
+                        if name == field_name {
+                            return Ok(value);
+                        }
+                    }
+                    // Field not found
+                    Err(Diagnostic::syntax(format!(
+                        "field '{}' not found in record",
+                        &*field_name
+                    )))
+                }
+                other => Err(Diagnostic::type_error(
+                    Type::Record(vec![]),
+                    other.type_of(),
+                )),
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
