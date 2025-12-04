@@ -432,6 +432,33 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
         Type::union(vec![Type::Integer, Type::Float])
     }
 
+    /// Helper function to check if two values have the same type and return a type error if not.
+    fn check_same_type(a: &Value, b: &Value) -> Result<()> {
+        let type_a = a.type_of();
+        let type_b = b.type_of();
+        if type_a != type_b {
+            return Err(Diagnostic::type_error(type_a, type_b));
+        }
+        Ok(())
+    }
+
+    /// Helper function to compare two numeric values (with integer/float coercion) using a comparison function.
+    /// Returns a type error if the values are not numeric or have incompatible types.
+    fn compare_numeric<F>(a: &Value, b: &Value, cmp: F) -> Result<Value>
+    where
+        F: FnOnce(f64, f64) -> bool,
+    {
+        match (a, b) {
+            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Bool(cmp(*a as f64, *b as f64))),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(cmp(*a, *b))),
+            // Support numeric coercion between integer and float
+            // Note: Converting large integers (beyond 2^53) to f64 may lose precision
+            (Value::Integer(a), Value::Float(b)) => Ok(Value::Bool(cmp(*a as f64, *b))),
+            (Value::Float(a), Value::Integer(b)) => Ok(Value::Bool(cmp(*a, *b as f64))),
+            _ => Err(Diagnostic::type_error(a.type_of(), b.type_of())),
+        }
+    }
+
     match op_name {
         "+" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a + b)),
@@ -707,70 +734,32 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
         }
         "==" => match args.as_slice() {
             [a, b] => {
-                // Check if types match - comparison should only work on same types
-                let type_a = a.type_of();
-                let type_b = b.type_of();
-                if type_a != type_b {
-                    return Err(Diagnostic::type_error(type_a, type_b));
-                }
+                check_same_type(a, b)?;
                 Ok(Value::Bool(a == b))
             }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "!=" => match args.as_slice() {
             [a, b] => {
-                // Check if types match - comparison should only work on same types
-                let type_a = a.type_of();
-                let type_b = b.type_of();
-                if type_a != type_b {
-                    return Err(Diagnostic::type_error(type_a, type_b));
-                }
+                check_same_type(a, b)?;
                 Ok(Value::Bool(a != b))
             }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a < b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a < b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Bool((*a as f64) < *b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Bool(*a < (*b as f64))),
-            [a, b] if args.len() == 2 => {
-                // Provide a better error message for type mismatches
-                Err(Diagnostic::type_error(a.type_of(), b.type_of()))
-            }
+            [a, b] => compare_numeric(a, b, |x, y| x < y),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<=" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a <= b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a <= b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Bool((*a as f64) <= *b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Bool(*a <= (*b as f64))),
-            [a, b] if args.len() == 2 => {
-                // Provide a better error message for type mismatches
-                Err(Diagnostic::type_error(a.type_of(), b.type_of()))
-            }
+            [a, b] => compare_numeric(a, b, |x, y| x <= y),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a > b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a > b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Bool((*a as f64) > *b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Bool(*a > (*b as f64))),
-            [a, b] if args.len() == 2 => {
-                // Provide a better error message for type mismatches
-                Err(Diagnostic::type_error(a.type_of(), b.type_of()))
-            }
+            [a, b] => compare_numeric(a, b, |x, y| x > y),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">=" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a >= b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a >= b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Bool((*a as f64) >= *b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Bool(*a >= (*b as f64))),
-            [a, b] if args.len() == 2 => {
-                // Provide a better error message for type mismatches
-                Err(Diagnostic::type_error(a.type_of(), b.type_of()))
-            }
+            [a, b] => compare_numeric(a, b, |x, y| x >= y),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         // Note: The `=` operator is handled as a special form (builtin_assign) for proper
