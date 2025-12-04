@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "{ a = 1,, b = 2 }\n"
+---
+[
+    ParseError {
+        span: Span {
+            start: 8,
+            end: 9,
+        },
+        message: "expected expression before comma",
+    },
+]

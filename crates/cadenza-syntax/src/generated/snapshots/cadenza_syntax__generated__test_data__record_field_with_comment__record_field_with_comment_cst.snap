@@ -1,0 +1,46 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "{ a = 1, # comment\nb = 2 }\n"
+---
+Root@0..27
+  Apply@0..26
+    LBrace@0..1 "{"
+    Space@1..2 " "
+    ApplyReceiver@2..2
+      SyntheticRecord@2..2
+    ApplyArgument@2..7
+      Apply@2..7
+        ApplyArgument@2..4
+          Identifier@2..3
+            Identifier@2..3 "a"
+          Space@3..4 " "
+        ApplyReceiver@4..5
+          Equal@4..5
+            Equal@4..5 "="
+        Space@5..6 " "
+        ApplyArgument@6..7
+          Literal@6..7
+            Integer@6..7
+              Integer@6..7 "1"
+    Comma@7..8 ","
+    Space@8..9 " "
+    CommentStart@9..10 "#"
+    CommentContent@10..18 " comment"
+    Newline@18..19 "\n"
+    ApplyArgument@19..25
+      Apply@19..25
+        ApplyArgument@19..21
+          Identifier@19..20
+            Identifier@19..20 "b"
+          Space@20..21 " "
+        ApplyReceiver@21..22
+          Equal@21..22
+            Equal@21..22 "="
+        Space@22..23 " "
+        ApplyArgument@23..25
+          Literal@23..24
+            Integer@23..24
+              Integer@23..24 "2"
+          Space@24..25 " "
+    RBrace@25..26 "}"
+  Newline@26..27 "\n"

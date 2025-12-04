@@ -1,8 +1,7 @@
 ---
 source: crates/cadenza-syntax/src/generated/test_data.rs
-expression: "foo [\nbar\n"
+expression: "{ a = 1 }\n"
 ---
 [
-    [foo, [__list__]],
-    bar,
+    [__record__, [=, a, 1]],
 ]
