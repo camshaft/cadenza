@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let x = 42\nx.field\n"
+---
+[
+    [=, [let, x], 42],
+    [., x, field],
+]

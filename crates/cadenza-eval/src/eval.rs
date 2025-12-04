@@ -549,8 +549,17 @@ pub fn builtin_assign() -> BuiltinMacro {
             let rhs_expr = &args[1];
 
             // Check if LHS is a macro application - delegate if so
+            // EXCEPT for field access (.) which should be handled as field assignment
             if let Expr::Apply(apply) = lhs_expr {
                 if let Some(callee_expr) = apply.callee() {
+                    // Check if this is field access - handle separately
+                    if let Expr::Op(op) = &callee_expr {
+                        if op.syntax().text() == "." {
+                            // This is field assignment: record.field = value
+                            return handle_field_assignment(apply, rhs_expr, ctx);
+                        }
+                    }
+
                     // Try to extract an identifier from the callee
                     if let Some(id) = extract_identifier(&callee_expr) {
                         // Check if this identifier refers to a macro
@@ -596,11 +605,109 @@ pub fn builtin_assign() -> BuiltinMacro {
                 _ => {
                     // LHS is neither a macro application nor an identifier
                     Err(Diagnostic::syntax(
-                        "left side of = must be an identifier or a macro application (e.g., let x, fn name, measure unit)",
+                        "left side of = must be an identifier, field access (e.g., record.field), or a macro application (e.g., let x, fn name, measure unit)",
                     ))
                 }
             }
         },
+    }
+}
+
+/// Handles field assignment of the form: record.field = value
+///
+/// The apply expression represents the field access (e.g., `record.field`),
+/// and rhs_expr is the value to assign.
+///
+/// **Note on identifier requirement**: Field assignment requires the record to be a
+/// variable name (identifier) rather than an arbitrary expression. This is because
+/// assignment mutates the record in place within the environment. Ephemeral values
+/// produced by expressions cannot be mutated since they don't exist in the environment.
+///
+/// For example:
+/// - `record.field = value` - ✓ Works (record is a variable)
+/// - `(make_rec 1).field = value` - ✗ Cannot mutate an ephemeral value
+///
+/// **Note on chaining**: This currently only supports direct variable field assignment
+/// (e.g., `record.field = value`). Chained field assignment (e.g., `obj.a.field = value`)
+/// is not yet supported.
+fn handle_field_assignment(
+    apply: &Apply,
+    rhs_expr: &Expr,
+    ctx: &mut EvalContext<'_>,
+) -> Result<Value> {
+    // Field assignment requires exactly 2 arguments in the apply: record and field
+    let args = apply.all_arguments();
+    if args.len() != 2 {
+        return Err(Diagnostic::syntax(
+            "field assignment requires exactly record and field name",
+        ));
+    }
+
+    // Get the record identifier (first argument)
+    let record_name = match &args[0] {
+        Expr::Ident(ident) => {
+            let text = ident.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
+            id
+        }
+        _ => {
+            return Err(Diagnostic::syntax(
+                "field assignment requires a variable name for the record",
+            ));
+        }
+    };
+
+    // Get the field name (second argument)
+    let field_name = match &args[1] {
+        Expr::Ident(ident) => {
+            let text = ident.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
+            id
+        }
+        _ => return Err(Diagnostic::syntax("field name must be an identifier")),
+    };
+
+    // Evaluate the RHS value
+    let new_value = rhs_expr.eval(ctx)?;
+
+    // Get a mutable reference to the record from the environment
+    let record = ctx
+        .env
+        .get_mut(record_name)
+        .ok_or_else(|| Diagnostic::undefined_variable(record_name))?;
+
+    // Update the field in the record
+    match record {
+        Value::Record(fields) => {
+            // Find and update the field
+            let mut found = false;
+            for (name, value) in fields.iter_mut() {
+                if *name == field_name {
+                    // Check that the new value's type matches the old value's type
+                    let old_type = value.type_of();
+                    let new_type = new_value.type_of();
+                    if old_type != new_type {
+                        return Err(Diagnostic::type_error(old_type, new_type));
+                    }
+                    *value = new_value.clone();
+                    found = true;
+                    break;
+                }
+            }
+
+            if found {
+                Ok(new_value)
+            } else {
+                Err(Diagnostic::syntax(format!(
+                    "field '{}' not found in record",
+                    &*field_name
+                )))
+            }
+        }
+        _ => Err(Diagnostic::type_error(
+            Type::Record(vec![]),
+            record.type_of(),
+        )),
     }
 }
 
@@ -776,14 +883,14 @@ pub fn builtin_record() -> BuiltinMacro {
                     Expr::Ident(ident) => {
                         let text = ident.syntax().text();
                         let field_name: InternedString = text.to_string().as_str().into();
-                        
+
                         // Look up the variable in the environment
                         let value = ctx
                             .env
                             .get(field_name)
                             .cloned()
                             .ok_or_else(|| Diagnostic::undefined_variable(field_name))?;
-                        
+
                         fields.push((field_name, value));
                     }
                     // Full syntax: { a = 1, b = 2 }
@@ -1656,6 +1763,73 @@ pub fn builtin_gte() -> BuiltinFn {
                 return Err(Diagnostic::arity(2, args.len()));
             }
             compare_ordered(&args[0], &args[1], |ord| ord != std::cmp::Ordering::Less)
+        },
+    }
+}
+
+/// Creates the `.` field access operator.
+///
+/// Field access is implemented as a macro because the field name must not be evaluated
+/// as a variable lookup. The `.` operator takes two arguments:
+/// 1. The record (evaluated)
+/// 2. The field name (unevaluated identifier)
+///
+/// # Examples
+///
+/// ```cadenza
+/// let point = { x = 10, y = 20 }
+/// point.x  # returns 10
+/// point.y  # returns 20
+/// ```
+///
+/// # Errors
+///
+/// - Returns a type error if the first argument is not a record
+/// - Returns a syntax error if the field name is not an identifier
+/// - Returns an error if the field does not exist in the record
+pub fn builtin_field_access() -> BuiltinMacro {
+    BuiltinMacro {
+        name: ".",
+        signature: Type::function(vec![Type::Unknown, Type::Symbol], Type::Unknown),
+        func: |args, ctx| {
+            // Field access requires exactly 2 arguments: record and field name
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            // Evaluate the record (first argument)
+            let record_value = args[0].eval(ctx)?;
+
+            // Extract the field name from the second argument (must be an identifier)
+            let field_name = match &args[1] {
+                Expr::Ident(ident) => {
+                    let text = ident.syntax().text();
+                    let id: InternedString = text.to_string().as_str().into();
+                    id
+                }
+                _ => return Err(Diagnostic::syntax("field name must be an identifier")),
+            };
+
+            // Extract the record fields
+            match record_value {
+                Value::Record(fields) => {
+                    // Look up the field in the record
+                    for (name, value) in fields {
+                        if name == field_name {
+                            return Ok(value);
+                        }
+                    }
+                    // Field not found
+                    Err(Diagnostic::syntax(format!(
+                        "field '{}' not found in record",
+                        &*field_name
+                    )))
+                }
+                other => Err(Diagnostic::type_error(
+                    Type::Record(vec![]),
+                    other.type_of(),
+                )),
+            }
         },
     }
 }

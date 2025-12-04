@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let obj = { a = { b = 42 } }\nobj.a.b\n"
+---
+EvalResult {
+    values: [
+        {a: {b: 42}},
+        42,
+    ],
+    diagnostics: [],
+}

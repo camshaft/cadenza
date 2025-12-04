@@ -1,0 +1,22 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"
+---
+EvalResult {
+    values: [
+        {x: 10, y: 20},
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: TypeError {
+                expected: Integer,
+                actual: String,
+            },
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}

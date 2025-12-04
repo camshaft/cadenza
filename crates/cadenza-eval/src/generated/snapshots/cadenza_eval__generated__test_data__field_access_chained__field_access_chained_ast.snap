@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let obj = { a = { b = 42 } }\nobj.a.b\n"
+---
+[
+    [=, [let, obj], [__record__, [=, a, [__record__, [=, b, 42]]]]],
+    [., [., obj, a], b],
+]

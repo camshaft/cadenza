@@ -1,0 +1,21 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let point = { x = 10, y = 20 }\npoint.z = 30\n"
+---
+EvalResult {
+    values: [
+        {x: 10, y: 20},
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: SyntaxError(
+                "field 'z' not found in record",
+            ),
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}

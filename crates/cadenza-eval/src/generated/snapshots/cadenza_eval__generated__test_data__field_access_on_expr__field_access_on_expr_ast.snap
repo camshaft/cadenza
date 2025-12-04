@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "fn make_rec x = { x }\n(make_rec 1).x\n"
+---
+[
+    [=, [[fn, make_rec], x], [__record__, x]],
+    [., [make_rec, 1], x],
+]

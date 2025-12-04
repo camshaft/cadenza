@@ -5,8 +5,8 @@
 
 use crate::{
     eval::{
-        builtin_add, builtin_assign, builtin_block, builtin_div, builtin_eq, builtin_fn,
-        builtin_gt, builtin_gte, builtin_let, builtin_list, builtin_lt, builtin_lte,
+        builtin_add, builtin_assign, builtin_block, builtin_div, builtin_eq, builtin_field_access,
+        builtin_fn, builtin_gt, builtin_gte, builtin_let, builtin_list, builtin_lt, builtin_lte,
         builtin_measure, builtin_mul, builtin_ne, builtin_record, builtin_sub,
     },
     interner::InternedString,
@@ -144,6 +144,10 @@ impl Env {
         self.define(lte_id, Value::BuiltinFn(builtin_lte()));
         self.define(gt_id, Value::BuiltinFn(builtin_gt()));
         self.define(gte_id, Value::BuiltinFn(builtin_gte()));
+
+        // Field access operator
+        let dot_id: InternedString = ".".into();
+        self.define(dot_id, Value::BuiltinMacro(builtin_field_access()));
     }
 
     /// Pushes a new empty scope onto the stack.

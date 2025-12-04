@@ -101,6 +101,25 @@ mod cmp_eq {
         s!("cmp_eq_ast", t::ast("1 == 1\n"), "1 == 1\n");
     }
 }
+mod field_access_chained {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_chained",
+            t::eval_all("let obj = { a = { b = 42 } }\nobj.a.b\n"),
+            "let obj = { a = { b = 42 } }\nobj.a.b\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_chained_ast",
+            t::ast("let obj = { a = { b = 42 } }\nobj.a.b\n"),
+            "let obj = { a = { b = 42 } }\nobj.a.b\n"
+        );
+    }
+}
 mod measure_incompatible {
     use super::*;
     #[test]
@@ -220,6 +239,25 @@ mod error_cmp_type_mismatch_ne {
             "error_cmp_type_mismatch_ne_ast",
             t::ast("# Test that != errors on type mismatch\n42 != \"world\"\n"),
             "# Test that != errors on type mismatch\n42 != \"world\"\n"
+        );
+    }
+}
+mod field_assign_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_assign_simple",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_assign_simple_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n"
         );
     }
 }
@@ -448,6 +486,25 @@ mod record_shorthand {
         );
     }
 }
+mod field_access_missing_field {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_missing_field",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.z\n"),
+            "let point = { x = 10, y = 20 }\npoint.z\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_missing_field_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.z\n"),
+            "let point = { x = 10, y = 20 }\npoint.z\n"
+        );
+    }
+}
 mod arith_add {
     use super::*;
     #[test]
@@ -468,6 +525,25 @@ mod cmp_ge {
     #[test]
     fn ast() {
         s!("cmp_ge_ast", t::ast("1 >= 1\n"), "1 >= 1\n");
+    }
+}
+mod field_assign_type_mismatch {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_assign_type_mismatch",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_assign_type_mismatch_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"
+        );
     }
 }
 mod record_empty {
@@ -523,6 +599,25 @@ mod error_cmp_type_mismatch_gt {
         );
     }
 }
+mod field_access_on_expr {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_on_expr",
+            t::eval_all("fn make_rec x = { x }\n(make_rec 1).x\n"),
+            "fn make_rec x = { x }\n(make_rec 1).x\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_on_expr_ast",
+            t::ast("fn make_rec x = { x }\n(make_rec 1).x\n"),
+            "fn make_rec x = { x }\n(make_rec 1).x\n"
+        );
+    }
+}
 mod arith_left_assoc {
     use super::*;
     #[test]
@@ -539,6 +634,25 @@ mod arith_left_assoc {
             "arith_left_assoc_ast",
             t::ast("10 - 5 - 2\n"),
             "10 - 5 - 2\n"
+        );
+    }
+}
+mod field_access_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_simple",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x\n"),
+            "let point = { x = 10, y = 20 }\npoint.x\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_simple_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x\n"),
+            "let point = { x = 10, y = 20 }\npoint.x\n"
         );
     }
 }
@@ -606,6 +720,25 @@ mod measure_scalar_ops {
         );
     }
 }
+mod field_access_in_expr {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_in_expr",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x + point.y\n"),
+            "let point = { x = 10, y = 20 }\npoint.x + point.y\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_in_expr_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x + point.y\n"),
+            "let point = { x = 10, y = 20 }\npoint.x + point.y\n"
+        );
+    }
+}
 mod cmp_ne {
     use super::*;
     #[test]
@@ -633,6 +766,25 @@ mod fn_single_param {
             "fn_single_param_ast",
             t::ast("fn triple x = x * 3\ntriple 7\n"),
             "fn triple x = x * 3\ntriple 7\n"
+        );
+    }
+}
+mod field_access_on_non_record {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_on_non_record",
+            t::eval_all("let x = 42\nx.field\n"),
+            "let x = 42\nx.field\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_on_non_record_ast",
+            t::ast("let x = 42\nx.field\n"),
+            "let x = 42\nx.field\n"
         );
     }
 }
@@ -1061,6 +1213,25 @@ mod measure_suffix {
         );
     }
 }
+mod field_assign_with_expr {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_assign_with_expr",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_assign_with_expr_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n"
+        );
+    }
+}
 mod error_cmp_type_mismatch_lte {
     use super::*;
     #[test]
@@ -1165,6 +1336,25 @@ mod example_04_comparison {
                 "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
             ),
             "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
+        );
+    }
+}
+mod field_assign_missing_field {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_assign_missing_field",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.z = 30\n"),
+            "let point = { x = 10, y = 20 }\npoint.z = 30\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_assign_missing_field_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.z = 30\n"),
+            "let point = { x = 10, y = 20 }\npoint.z = 30\n"
         );
     }
 }
