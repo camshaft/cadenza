@@ -219,6 +219,350 @@ let foo =
 
 ---
 
+## Language Features to Implement
+
+This section tracks planned language features for the Cadenza evaluator that extend the core functionality.
+
+### Assertions
+
+Support for runtime assertions with rich diagnostic output that inspects and displays values.
+
+**Syntax**:
+```cadenza
+let v = 1
+assert v == 1
+
+assert v == 1 "expected v to be one"
+```
+
+**Requirements**:
+- [ ] Implement `assert` as a builtin macro or special form
+- [ ] Basic assertion support (condition only)
+- [ ] Optional custom error message parameter
+- [ ] Rich diagnostic reporting that inspects and displays actual vs expected values
+- [ ] Show variable names and their values in assertion failures
+- [ ] Integration with existing diagnostic system (miette)
+
+**Notes**: Should provide excellent error messages similar to testing frameworks like Jest or pytest that show what was expected vs actual.
+
+### String Interpolation
+
+Support for embedding expressions inside string literals using `${}` syntax.
+
+**Syntax**:
+```cadenza
+let v = "world"
+let s = "hello ${v}"
+```
+
+**Requirements**:
+- [ ] Extend lexer to recognize `${}` within string literals
+- [ ] Parser support for interpolated string expressions
+- [ ] AST representation for interpolated strings
+- [ ] Evaluator support to evaluate embedded expressions and concatenate results
+- [ ] Handle nested expressions and escaping of `$` and `{}`
+- [ ] Proper source tracking for interpolated parts
+
+**Notes**: Common in many modern languages (JavaScript, Kotlin, Swift, etc.). Should convert all expressions to strings automatically. **Dependency**: Requires trait system to support automatic conversion of values to strings.
+
+### Rational Numbers
+
+Support for exact rational number arithmetic to avoid integer truncation and floating-point precision issues.
+
+**Syntax**:
+```cadenza
+let v = 1 / 2  # does not immediately divide and truncate the integer
+let a = v * 2
+assert a == 1 "expected exact rational arithmetic: 1/2 * 2 should equal 1"
+```
+
+**Requirements**:
+- [ ] Implement `Rational` type (likely using a numerator/denominator pair)
+- [ ] Add `Value::Rational` variant
+- [ ] Update division operator to return rationals when dividing integers
+- [ ] Implement rational arithmetic (+, -, *, /)
+- [ ] Implement comparison operators for rationals
+- [ ] Auto-simplification of rationals (reduce to lowest terms)
+- [ ] Conversion between integers, floats, and rationals
+- [ ] Display formatting for rationals
+
+**Notes**: Essential for exact arithmetic. Consider using existing Rust crates like `num-rational`. Should integrate with type system and unit system. Rationals should support measurement units for proper dimensional analysis.
+
+### Quote and Unquote
+
+Support for quoting expressions to create AST values and unquoting to evaluate them.
+
+**Syntax**:
+```cadenza
+let foo = 1
+let ast = quote foo
+unquote ast  # returns 1
+```
+
+**Requirements**:
+- [ ] Implement `quote` macro that prevents evaluation and returns AST
+- [ ] Add `Value::Ast` or similar variant to hold unevaluated expressions
+- [ ] Implement `unquote` macro to evaluate AST values
+- [ ] Proper environment capture and hygiene
+- [ ] Handle nested quote/unquote correctly
+
+**Notes**: Foundation for metaprogramming and macros. Similar to Lisp's quote/unquote or Rust's `quote!` macro.
+
+### Quote with Splicing (Unquote within Quote)
+
+Support for embedding evaluated expressions within quoted code using unquote.
+
+**Syntax**:
+```cadenza
+let foo = 1
+let ast = quote foo
+let ast2 = quote
+    (unquote ast) + (unquote ast)
+unquote ast2  # returns 2
+```
+
+**Requirements**:
+- [ ] Extend quote macro to detect and handle `unquote` within quoted expressions
+- [ ] Implement splicing mechanism to substitute evaluated expressions into AST
+- [ ] Handle nested quote/unquote combinations
+- [ ] Maintain proper source location information through splicing
+- [ ] Test complex splicing scenarios
+
+**Notes**: Enables template-like code generation. Must handle hygiene correctly to avoid variable capture issues.
+
+### User-Defined Macros
+
+Support for user-defined compile-time macros with proper hygiene and environment capture.
+
+**Syntax**:
+```cadenza
+macro add_one expr =
+    # Macros are functions that take unevaluated AST arguments and return an AST
+    let one = quote 1
+    quote
+        (unquote expr) + (unquote one)
+
+add_one 5  # expands to 5 + 1, returns 6
+```
+
+**Requirements**:
+- [ ] Implement `macro` as a builtin macro (no keyword needed - identifiers handled by environment)
+- [ ] Parser support for macro definitions
+- [ ] AST representation for macro definitions
+- [ ] Implement macro storage in environment (similar to functions)
+- [ ] Macro expansion during evaluation (before evaluating macro application)
+- [ ] Parameter binding for macro arguments (unevaluated)
+- [ ] Hygiene: Ensure macros don't capture variables from call site unintentionally
+- [ ] Proper error messages for macro expansion failures
+- [ ] Recursive macro expansion support
+
+**Notes**: Macros are compile-time functions that transform AST. Must ensure proper hygiene (gensym or similar). Dependencies: quote/unquote must be implemented first.
+
+### Record Construction
+
+Support for creating record (struct-like) values with named fields.
+
+**Syntax**:
+```cadenza
+let record = { a = 1, b = 2 }
+
+# Shorthand syntax
+let a = 1
+let b = 2
+let record2 = { a, b }  # equivalent to { a = a, b = b }
+```
+
+**Requirements**:
+- [x] Extend lexer/parser for record literal syntax `{ field = value, ... }` (Merged in #43)
+- [ ] Parser support for shorthand syntax `{ field, ... }`
+- [x] Add AST nodes for record literals (Merged in #43)
+- [ ] Implement `Value::Record` type with field name to value mapping
+- [ ] Evaluator support for record construction
+- [ ] Type checking for record literals (all fields present)
+- [ ] Implement record display/debug formatting
+
+**Notes**: Records have structural typing initially. Fields are known at compile time. Consider using `InternedString` for field names.
+
+### Record Merging
+
+Support for merging multiple records into a new record using spread syntax.
+
+**Syntax**:
+```cadenza
+let record_a = { a = 1 }
+let record_b = { b = 2 }
+let merged = { ...record_a, ...record_b }  # creates { a = 1, b = 2 }
+
+# Later values override earlier ones if types match
+let record_c = { a = 10 }
+let overridden = { ...record_a, ...record_c }  # OK: { a = 10 }, same field type
+```
+
+**Requirements**:
+- [ ] Add `...` (spread/rest) token to lexer
+- [ ] Parser support for spread syntax in record literals
+- [ ] AST representation for record spread
+- [ ] Evaluator support for merging records
+- [ ] Type checking: ensure overlapping fields have matching types
+- [ ] Error messages for type conflicts in overlapping fields
+- [ ] Preserve field order or define merge semantics
+
+**Notes**: Spread operator is common in JavaScript/TypeScript. Later fields should override earlier ones if types match.
+
+### Record Field Access
+
+Support for accessing and assigning record fields using dot notation.
+
+**Syntax**:
+```cadenza
+let record = { a = 1 }
+let a = record.a
+
+record.a = a + 2
+
+assert record.a == 3
+```
+
+**Requirements**:
+- [ ] Parser already supports field access syntax (appears to be implemented in lexer/parser based on test files)
+- [ ] Implement field access evaluation in evaluator
+- [ ] Support field access chaining (e.g., `record.a.b`)
+- [ ] Implement field assignment (mutation)
+- [ ] Type checking for field access (field must exist)
+- [ ] Error messages for accessing non-existent fields
+- [ ] Handle field access on non-record types with clear errors
+
+**Notes**: Field access may already be partially implemented (test files show `op_field_access`). Check current evaluator implementation.
+
+### Destructuring / Pattern Matching on Records
+
+Support for destructuring records in `let` bindings.
+
+**Syntax**:
+```cadenza
+let record = { a = 1, b = 2 }
+let { a, b } = record
+
+# With renaming
+let { a = a_renamed, b = b_renamed } = record
+
+# With rest pattern
+let { a, ...without_a } = record  # without_a is { b = 2 }
+```
+
+**Requirements**:
+- [ ] Extend parser to support destructuring patterns in `let`
+- [ ] AST nodes for destructuring patterns
+- [ ] Implement record destructuring in evaluator
+- [ ] Support field renaming syntax
+- [ ] Support rest patterns (`...rest`) to capture remaining fields
+- [ ] Type checking: ensure all destructured fields exist
+- [ ] Error messages for missing fields or type mismatches
+- [ ] Consider supporting nested destructuring
+
+**Notes**: Start with simple cases, add renaming, then rest patterns. Foundation for more general pattern matching.
+
+### Match Expressions
+
+Support for pattern matching on values with multiple branches.
+
+**Syntax**:
+```cadenza
+fn len a =
+  match a
+    [] ->
+      0
+    [_, ...tail] ->
+      1 + len tail
+
+assert (len [1, 2, 3]) == 3
+```
+
+**Requirements**:
+- [ ] Add `match` keyword to lexer
+- [ ] Parser support for match expressions with pattern arms
+- [ ] AST representation for match expressions and patterns
+- [ ] Pattern types: literals, variables, list patterns, record patterns, wildcards
+- [ ] Implement pattern matching algorithm in evaluator
+- [ ] Support list destructuring patterns (`[head, ...tail]`)
+- [ ] Support record destructuring patterns in match arms
+- [ ] Exhaustiveness checking (warn if not all cases covered)
+- [ ] Error messages for non-exhaustive matches
+- [ ] Proper scoping for pattern-bound variables
+
+**Notes**: Complex feature, may want to start with simple patterns. Consider how this interacts with type system. The `_` wildcard and `...` rest patterns are essential.
+
+### Struct (Nominal Record Types)
+
+Support for defining nominally-typed records (structs) with type constructors.
+
+**Syntax**:
+```cadenza
+struct Foo {
+  a = Integer,
+  b = Float,
+}
+
+let foo = Foo { a = 1, b = 2.0 }
+
+assert foo.a == 1
+assert foo.b == 2.0
+```
+
+**Requirements**:
+- [ ] Implement `struct` as a builtin macro (no keyword needed - identifiers handled by environment)
+- [ ] Parser support for struct definitions
+- [ ] AST representation for struct definitions
+- [ ] Type system support for nominal types
+- [ ] Store struct definitions in environment/compiler
+- [ ] Generate constructor functions for structs
+- [ ] Struct type checking: ensure fields match definition
+- [ ] Module-scoped nominal typing (structs from different modules are different)
+- [ ] Field access on struct values
+- [ ] Display/debug formatting for struct instances
+
+**Notes**: Structs provide nominal typing vs structural typing of records. Same field structure but different names = different types. Important for type safety and API design.
+
+### Enum Types
+
+Support for algebraic data types (tagged unions) with named variants.
+
+**Syntax**:
+```cadenza
+enum Foo {
+  A = {
+    a = Integer,
+  },
+  B = {
+    b = Float,
+  },
+}
+
+let value_a = Foo.A { a = 42 }
+let value_b = Foo.B { b = 3.14 }
+
+match value_a
+  Foo.A { a } -> a
+  Foo.B { b } -> 0  # would need to convert float to int or use common type
+```
+
+**Requirements**:
+- [ ] Implement `enum` as a builtin macro (no keyword needed - identifiers handled by environment)
+- [ ] Parser support for enum definitions with variants
+- [ ] AST representation for enum definitions
+- [ ] Type system support for sum types / tagged unions
+- [ ] Store enum definitions in environment/compiler
+- [ ] Generate constructor functions for enum variants
+- [ ] Runtime tagging mechanism to identify variants
+- [ ] Pattern matching integration for enums
+- [ ] Type checking for enum construction and matching
+- [ ] Exhaustiveness checking in match expressions for enums
+- [ ] Display/debug formatting for enum values
+
+**Notes**: Algebraic data types are essential for robust code. Common in functional languages (Rust, OCaml, Haskell). Should integrate with match expressions for destructuring. Consider how variants are constructed (e.g., `Foo.A { ... }` or `Foo::A { ... }`).
+
+---
+
 ## Future Work (From Compiler Architecture)
 
 This section tracks longer-term features described in `/docs/COMPILER_ARCHITECTURE.md` that extend beyond the current evaluator implementation.
