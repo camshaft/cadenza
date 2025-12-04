@@ -776,36 +776,29 @@ pub fn builtin_record() -> BuiltinMacro {
                     }
                 };
 
-                // Extract the field name (should be an identifier)
-                let field_name = {
-                    let all_args = apply.all_arguments();
-                    if all_args.len() != 2 {
-                        return Err(Diagnostic::syntax(
-                            "record field assignment must have exactly 2 arguments",
-                        ));
-                    }
+                // Get all arguments once to avoid duplicate calls
+                let all_args = apply.all_arguments();
+                if all_args.len() != 2 {
+                    return Err(Diagnostic::syntax(
+                        "record field assignment must have exactly 2 arguments",
+                    ));
+                }
 
-                    // First arg is the field name
-                    let name_expr = &all_args[0];
-                    match name_expr {
-                        Expr::Ident(ident) => {
-                            let text = ident.syntax().text();
-                            text.to_string().as_str().into()
-                        }
-                        _ => {
-                            return Err(Diagnostic::syntax(
-                                "record field name must be an identifier",
-                            ));
-                        }
+                // Extract the field name (should be an identifier)
+                let field_name = match &all_args[0] {
+                    Expr::Ident(ident) => {
+                        let text = ident.syntax().text();
+                        text.to_string().as_str().into()
+                    }
+                    _ => {
+                        return Err(Diagnostic::syntax(
+                            "record field name must be an identifier",
+                        ));
                     }
                 };
 
                 // Evaluate the field value (second arg)
-                let value = {
-                    let all_args = apply.all_arguments();
-                    let value_expr = &all_args[1];
-                    value_expr.eval(ctx)?
-                };
+                let value = all_args[1].eval(ctx)?;
 
                 fields.push((field_name, value));
             }
