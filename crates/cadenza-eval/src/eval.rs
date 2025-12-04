@@ -706,31 +706,71 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             }
         }
         "==" => match args.as_slice() {
-            [a, b] => Ok(Value::Bool(a == b)),
+            [a, b] => {
+                // Check if types match - comparison should only work on same types
+                let type_a = a.type_of();
+                let type_b = b.type_of();
+                if type_a != type_b {
+                    return Err(Diagnostic::type_error(type_a, type_b));
+                }
+                Ok(Value::Bool(a == b))
+            }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "!=" => match args.as_slice() {
-            [a, b] => Ok(Value::Bool(a != b)),
+            [a, b] => {
+                // Check if types match - comparison should only work on same types
+                let type_a = a.type_of();
+                let type_b = b.type_of();
+                if type_a != type_b {
+                    return Err(Diagnostic::type_error(type_a, type_b));
+                }
+                Ok(Value::Bool(a != b))
+            }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a < b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a < b)),
+            [Value::Integer(a), Value::Float(b)] => Ok(Value::Bool((*a as f64) < *b)),
+            [Value::Float(a), Value::Integer(b)] => Ok(Value::Bool(*a < (*b as f64))),
+            [a, b] if args.len() == 2 => {
+                // Provide a better error message for type mismatches
+                Err(Diagnostic::type_error(a.type_of(), b.type_of()))
+            }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<=" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a <= b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a <= b)),
+            [Value::Integer(a), Value::Float(b)] => Ok(Value::Bool((*a as f64) <= *b)),
+            [Value::Float(a), Value::Integer(b)] => Ok(Value::Bool(*a <= (*b as f64))),
+            [a, b] if args.len() == 2 => {
+                // Provide a better error message for type mismatches
+                Err(Diagnostic::type_error(a.type_of(), b.type_of()))
+            }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a > b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a > b)),
+            [Value::Integer(a), Value::Float(b)] => Ok(Value::Bool((*a as f64) > *b)),
+            [Value::Float(a), Value::Integer(b)] => Ok(Value::Bool(*a > (*b as f64))),
+            [a, b] if args.len() == 2 => {
+                // Provide a better error message for type mismatches
+                Err(Diagnostic::type_error(a.type_of(), b.type_of()))
+            }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">=" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a >= b)),
             [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a >= b)),
+            [Value::Integer(a), Value::Float(b)] => Ok(Value::Bool((*a as f64) >= *b)),
+            [Value::Float(a), Value::Integer(b)] => Ok(Value::Bool(*a >= (*b as f64))),
+            [a, b] if args.len() == 2 => {
+                // Provide a better error message for type mismatches
+                Err(Diagnostic::type_error(a.type_of(), b.type_of()))
+            }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         // Note: The `=` operator is handled as a special form (builtin_assign) for proper

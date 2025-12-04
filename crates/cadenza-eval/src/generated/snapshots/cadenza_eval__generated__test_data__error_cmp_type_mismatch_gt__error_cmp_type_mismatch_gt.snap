@@ -1,0 +1,21 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test that > errors on type mismatch\n100 > \"baz\"\n"
+---
+EvalResult {
+    values: [
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: TypeError {
+                expected: Integer,
+                actual: String,
+            },
+            level: Error,
+            file: None,
+            span: None,
+            stack_trace: [],
+        },
+    ],
+}

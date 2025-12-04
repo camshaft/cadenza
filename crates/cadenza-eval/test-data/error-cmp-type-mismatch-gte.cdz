@@ -1,0 +1,2 @@
+# Test that >= errors on type mismatch
+200 >= "qux"

@@ -1,0 +1,2 @@
+# Test that < errors on non-numeric types
+"foo" < 5
