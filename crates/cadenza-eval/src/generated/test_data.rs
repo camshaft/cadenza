@@ -109,6 +109,17 @@ mod measure_unit_arithmetic {
         );
     }
 }
+mod error_cmp_type_mismatch_ne {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "error_cmp_type_mismatch_ne",
+            t::eval_all("# Test that != errors on type mismatch\n42 != \"world\"\n"),
+            "# Test that != errors on type mismatch\n42 != \"world\"\n"
+        );
+    }
+}
 mod arith_mul {
     use super::*;
     #[test]
@@ -170,6 +181,17 @@ mod measure_base {
             "measure_base",
             t::eval_all("measure meter\n"),
             "measure meter\n"
+        );
+    }
+}
+mod error_cmp_type_mismatch_lt {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "error_cmp_type_mismatch_lt",
+            t::eval_all("# Test that < errors on non-numeric types\n\"foo\" < 5\n"),
+            "# Test that < errors on non-numeric types\n\"foo\" < 5\n"
         );
     }
 }
@@ -235,6 +257,17 @@ mod example_02_literals {
                 "# Literal Values\n# Different types of literals\n\n# Integers\n42\n-17\n0\n\n# Floating point\n3.14159\n-2.5\n1.0\n\n# Strings\n\"hello\"\n\"world\"\n\"hello world\"\n"
             ),
             "# Literal Values\n# Different types of literals\n\n# Integers\n42\n-17\n0\n\n# Floating point\n3.14159\n-2.5\n1.0\n\n# Strings\n\"hello\"\n\"world\"\n\"hello world\"\n"
+        );
+    }
+}
+mod error_cmp_type_mismatch_gt {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "error_cmp_type_mismatch_gt",
+            t::eval_all("# Test that > errors on type mismatch\n100 > \"baz\"\n"),
+            "# Test that > errors on type mismatch\n100 > \"baz\"\n"
         );
     }
 }
@@ -486,6 +519,17 @@ mod arith_div {
         s!("arith_div", t::eval_all("20 / 4\n"), "20 / 4\n");
     }
 }
+mod error_cmp_type_mismatch_gte {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "error_cmp_type_mismatch_gte",
+            t::eval_all("# Test that >= errors on type mismatch\n200 >= \"qux\"\n"),
+            "# Test that >= errors on type mismatch\n200 >= \"qux\"\n"
+        );
+    }
+}
 mod measure_suffix {
     use super::*;
     #[test]
@@ -494,6 +538,17 @@ mod measure_suffix {
             "measure_suffix",
             t::eval_all("measure meter\nlet x = 25.4meter\nx\n"),
             "measure meter\nlet x = 25.4meter\nx\n"
+        );
+    }
+}
+mod error_cmp_type_mismatch_lte {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "error_cmp_type_mismatch_lte",
+            t::eval_all("# Test that <= errors on type mismatch\n\"bar\" <= 10\n"),
+            "# Test that <= errors on type mismatch\n\"bar\" <= 10\n"
         );
     }
 }
@@ -552,5 +607,16 @@ mod multi_expr {
     #[test]
     fn eval() {
         s!("multi_expr", t::eval_all("1\n2\n3\n"), "1\n2\n3\n");
+    }
+}
+mod error_cmp_type_mismatch_eq {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "error_cmp_type_mismatch_eq",
+            t::eval_all("# Test that == errors on type mismatch\n1 == \"hello\"\n"),
+            "# Test that == errors on type mismatch\n1 == \"hello\"\n"
+        );
     }
 }

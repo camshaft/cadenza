@@ -97,9 +97,14 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - Note: Infrastructure is in place, but needs integration into evaluator and diagnostics
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573085238)
 
-7. **Value comparison should error on type mismatch**
-   - Current: `PartialEq` silently returns false for mismatched types
-   - Needed: Dedicated comparison function returning type mismatch error
+7. ~~**Value comparison should error on type mismatch**~~
+   - [x] COMPLETED: Updated `==` and `!=` operators to check type compatibility before comparison
+   - [x] Updated `<`, `<=`, `>`, `>=` operators to require exact type match (strongly typed)
+   - [x] Type mismatches now return `TypeError` diagnostic instead of silently returning false
+   - [x] Added comprehensive test coverage for type mismatch errors
+   - [x] Created snapshot tests for all comparison operators with type mismatches
+   - [x] Uses `cmp()` and `partial_cmp()` for comparisons instead of float casting
+   - Note: All comparison operators now require exact type match - no implicit conversions
    - [PR Comment](https://github.com/camshaft/cadenza/pull/4#discussion_r2573087893)
 
 ### Eval Architecture

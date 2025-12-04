@@ -300,3 +300,86 @@ fn test_fn_multi_arg() {
     assert!(!compiler.has_errors());
     assert_eq!(results[1], Value::Integer(8));
 }
+
+#[test]
+fn test_comparison_type_mismatch_errors() {
+    use crate::{diagnostic::DiagnosticKind, testing::eval_all};
+
+    // Test == operator should error on type mismatch
+    let result = eval_all("1 == \"hello\"");
+    assert_eq!(result.values.len(), 1);
+    assert_eq!(result.values[0], Value::Nil); // Error returns Nil
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].kind,
+        DiagnosticKind::TypeError { .. }
+    ));
+
+    // Test != operator should error on type mismatch
+    let result = eval_all("1 != \"world\"");
+    assert_eq!(result.values.len(), 1);
+    assert_eq!(result.values[0], Value::Nil);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].kind,
+        DiagnosticKind::TypeError { .. }
+    ));
+
+    // Test < operator should error on non-numeric type
+    let result = eval_all("\"foo\" < 5");
+    assert_eq!(result.values.len(), 1);
+    assert_eq!(result.values[0], Value::Nil);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].kind,
+        DiagnosticKind::TypeError { .. }
+    ));
+
+    // Test <= operator should error on non-numeric type
+    let result = eval_all("\"bar\" <= 10");
+    assert_eq!(result.values.len(), 1);
+    assert_eq!(result.values[0], Value::Nil);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].kind,
+        DiagnosticKind::TypeError { .. }
+    ));
+
+    // Test > operator should error on type mismatch
+    let result = eval_all("5 > \"hello\"");
+    assert_eq!(result.values.len(), 1);
+    assert_eq!(result.values[0], Value::Nil);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].kind,
+        DiagnosticKind::TypeError { .. }
+    ));
+
+    // Test >= operator should error on type mismatch
+    let result = eval_all("10 >= \"world\"");
+    assert_eq!(result.values.len(), 1);
+    assert_eq!(result.values[0], Value::Nil);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].kind,
+        DiagnosticKind::TypeError { .. }
+    ));
+
+    // Test that mixing integers and floats now also errors (strongly typed)
+    let result = eval_all("1 < 2.5");
+    assert_eq!(result.values.len(), 1);
+    assert_eq!(result.values[0], Value::Nil);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].kind,
+        DiagnosticKind::TypeError { .. }
+    ));
+
+    let result = eval_all("1 == 1.0");
+    assert_eq!(result.values[0], Value::Nil);
+    assert!(!result.diagnostics.is_empty());
+
+    let result = eval_all("1.0 != 1");
+    assert_eq!(result.values[0], Value::Nil);
+    assert!(!result.diagnostics.is_empty());
+}

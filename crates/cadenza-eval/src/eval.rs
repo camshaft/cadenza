@@ -432,6 +432,44 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
         Type::union(vec![Type::Integer, Type::Float])
     }
 
+    /// Helper function to check if two values have the same type and return a type error if not.
+    fn check_same_type(a: &Value, b: &Value) -> Result<()> {
+        let type_a = a.type_of();
+        let type_b = b.type_of();
+        if type_a != type_b {
+            return Err(Diagnostic::type_error(type_a, type_b));
+        }
+        Ok(())
+    }
+
+    /// Helper function to compare two values using their PartialOrd implementation.
+    /// Returns a type error if the values have different types or are not comparable.
+    fn compare_ordered<F>(a: &Value, b: &Value, check_ordering: F) -> Result<Value>
+    where
+        F: FnOnce(std::cmp::Ordering) -> bool,
+    {
+        // Check that types match - strongly typed, no implicit conversions
+        check_same_type(a, b)?;
+
+        match (a, b) {
+            (Value::Integer(a), Value::Integer(b)) => {
+                let ordering = a.cmp(b);
+                Ok(Value::Bool(check_ordering(ordering)))
+            }
+            (Value::Float(a), Value::Float(b)) => {
+                // For floats, use partial_cmp since they may be NaN
+                match a.partial_cmp(b) {
+                    Some(ordering) => Ok(Value::Bool(check_ordering(ordering))),
+                    None => Err(Diagnostic::syntax("cannot compare NaN values".to_string())),
+                }
+            }
+            _ => Err(Diagnostic::syntax(format!(
+                "cannot compare values of type {}",
+                a.type_of()
+            ))),
+        }
+    }
+
     match op_name {
         "+" => match args.as_slice() {
             [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a + b)),
@@ -706,31 +744,33 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             }
         }
         "==" => match args.as_slice() {
-            [a, b] => Ok(Value::Bool(a == b)),
+            [a, b] => {
+                check_same_type(a, b)?;
+                Ok(Value::Bool(a == b))
+            }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "!=" => match args.as_slice() {
-            [a, b] => Ok(Value::Bool(a != b)),
+            [a, b] => {
+                check_same_type(a, b)?;
+                Ok(Value::Bool(a != b))
+            }
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a < b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a < b)),
+            [a, b] => compare_ordered(a, b, |ord| ord == std::cmp::Ordering::Less),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<=" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a <= b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a <= b)),
+            [a, b] => compare_ordered(a, b, |ord| ord != std::cmp::Ordering::Greater),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a > b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a > b)),
+            [a, b] => compare_ordered(a, b, |ord| ord == std::cmp::Ordering::Greater),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">=" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Bool(a >= b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Bool(a >= b)),
+            [a, b] => compare_ordered(a, b, |ord| ord != std::cmp::Ordering::Less),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         // Note: The `=` operator is handled as a special form (builtin_assign) for proper
