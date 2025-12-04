@@ -45,6 +45,30 @@ fn test_builtin_function() {
 }
 
 #[test]
+fn test_list_parsing_and_eval() {
+    let src = "let l = [1, 2, 3]\nl";
+    let parsed = parse(src);
+    
+    println!("Parse errors: {:?}", parsed.errors);
+    println!("AST: {:#?}", parsed.ast());
+    
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+    
+    let results = crate::eval(&parsed.ast(), &mut env, &mut compiler);
+    
+    println!("\nResults:");
+    for (i, result) in results.iter().enumerate() {
+        println!("  [{}] {result:?}", i);
+    }
+    
+    println!("\nDiagnostics:");
+    for diag in compiler.diagnostics() {
+        println!("  {:?}", diag);
+    }
+}
+
+#[test]
 fn test_variable_from_environment() {
     let parsed = parse("x + y");
     let root = parsed.ast();
