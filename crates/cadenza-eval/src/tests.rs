@@ -179,7 +179,7 @@ fn test_nested_lists() {
 fn test_variable_from_environment() {
     let parsed = parse("x + y");
     let root = parsed.ast();
-    let mut env = Env::new();
+    let mut env = Env::with_standard_builtins();
     let mut compiler = Compiler::new();
 
     let x_id: InternedString = "x".into();
@@ -196,7 +196,7 @@ fn test_variable_from_environment() {
 fn test_variable_from_compiler() {
     let parsed = parse("x + y");
     let root = parsed.ast();
-    let mut env = Env::new();
+    let mut env = Env::with_standard_builtins();
     let mut compiler = Compiler::new();
 
     let x_id: InternedString = "x".into();

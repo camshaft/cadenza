@@ -4,7 +4,11 @@
 //! identifiers to values. Closures capture the environment by reference.
 
 use crate::{
-    eval::{builtin_assign, builtin_block, builtin_fn, builtin_let, builtin_list, builtin_measure},
+    eval::{
+        builtin_add, builtin_assign, builtin_block, builtin_div, builtin_eq, builtin_fn,
+        builtin_gt, builtin_gte, builtin_let, builtin_list, builtin_lt, builtin_lte,
+        builtin_measure, builtin_mul, builtin_ne, builtin_sub,
+    },
     interner::InternedString,
     map::Map,
     value::Value,
@@ -72,6 +76,8 @@ impl Env {
     /// - `measure` - Unit definition macro for dimensional analysis
     /// - `__block__` - Block expression macro (automatically emitted by parser)
     /// - `__list__` - List literal macro (automatically emitted by parser)
+    /// - Arithmetic operators: `+`, `-`, `*`, `/`
+    /// - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
     ///
     /// Use this when you want an environment ready for typical evaluation.
     pub fn with_standard_builtins() -> Self {
@@ -89,9 +95,12 @@ impl Env {
     /// - `measure` - Unit definition macro for dimensional analysis
     /// - `__block__` - Block expression macro (automatically emitted by parser)
     /// - `__list__` - List literal macro (automatically emitted by parser)
+    /// - Arithmetic operators: `+`, `-`, `*`, `/`
+    /// - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
     ///
     /// This can be called on an existing environment to add the standard built-ins.
     pub fn register_standard_builtins(&mut self) {
+        // Macros
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
         let fn_id: InternedString = "fn".into();
@@ -105,6 +114,32 @@ impl Env {
         self.define(measure_id, Value::BuiltinMacro(builtin_measure()));
         self.define(block_id, Value::BuiltinMacro(builtin_block()));
         self.define(list_id, Value::BuiltinMacro(builtin_list()));
+
+        // Arithmetic operators
+        let add_id: InternedString = "+".into();
+        let sub_id: InternedString = "-".into();
+        let mul_id: InternedString = "*".into();
+        let div_id: InternedString = "/".into();
+
+        self.define(add_id, Value::BuiltinFn(builtin_add()));
+        self.define(sub_id, Value::BuiltinFn(builtin_sub()));
+        self.define(mul_id, Value::BuiltinFn(builtin_mul()));
+        self.define(div_id, Value::BuiltinFn(builtin_div()));
+
+        // Comparison operators
+        let eq_id: InternedString = "==".into();
+        let ne_id: InternedString = "!=".into();
+        let lt_id: InternedString = "<".into();
+        let lte_id: InternedString = "<=".into();
+        let gt_id: InternedString = ">".into();
+        let gte_id: InternedString = ">=".into();
+
+        self.define(eq_id, Value::BuiltinFn(builtin_eq()));
+        self.define(ne_id, Value::BuiltinFn(builtin_ne()));
+        self.define(lt_id, Value::BuiltinFn(builtin_lt()));
+        self.define(lte_id, Value::BuiltinFn(builtin_lte()));
+        self.define(gt_id, Value::BuiltinFn(builtin_gt()));
+        self.define(gte_id, Value::BuiltinFn(builtin_gte()));
     }
 
     /// Pushes a new empty scope onto the stack.
