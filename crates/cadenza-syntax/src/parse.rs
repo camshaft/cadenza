@@ -197,17 +197,16 @@ impl<'src> Parser<'src> {
                     self.builder.finish_node(); // SyntheticBlock
                     self.builder.finish_node(); // ApplyReceiver
 
+                    // Create a marker at the block's indentation level
+                    // We'll use this to check if we're still within the parent's continuation context
+                    let block_marker = self.whitespace.marker();
+
                     // Parse expressions at this indentation level
-                    loop {
-                        if self.current() == Kind::Eof {
-                            break;
-                        }
-
-                        // Stop if we're not at the block's indentation level
-                        if self.whitespace.len != block_indent_level {
-                            break;
-                        }
-
+                    // The marker's should_continue() will ensure we stop if we dedent below the parent,
+                    // and the indentation check ensures we stay at the block level
+                    while child_marker.should_continue(self)
+                        && self.whitespace.len == block_indent_level
+                    {
                         self.builder.start_node(Kind::ApplyArgument.into());
                         let expr_marker = self.whitespace.marker();
                         self.parse_expression_bp(r_bp, expr_marker);
