@@ -10,6 +10,8 @@ pub enum Kind {
     Tilde,
     /// "$"
     Dollar,
+    /// "..."
+    DotDotDot,
     /// "?"
     Question,
     /// "|?"
@@ -152,6 +154,7 @@ impl Kind {
         Self::Bang,
         Self::Tilde,
         Self::Dollar,
+        Self::DotDotDot,
         Self::Question,
         Self::PipeQuestion,
         Self::PipeGreater,
@@ -257,6 +260,7 @@ impl Kind {
         Self::Bang,
         Self::Tilde,
         Self::Dollar,
+        Self::DotDotDot,
         Self::Question,
         Self::PipeQuestion,
         Self::PipeGreater,
@@ -321,6 +325,7 @@ impl Kind {
                 | Self::Bang
                 | Self::Tilde
                 | Self::Dollar
+                | Self::DotDotDot
                 | Self::Question
                 | Self::PipeQuestion
                 | Self::PipeGreater
@@ -385,6 +390,7 @@ impl Kind {
             Self::Bang => Some("!"),
             Self::Tilde => Some("~"),
             Self::Dollar => Some("$"),
+            Self::DotDotDot => Some("..."),
             Self::Question => Some("?"),
             Self::PipeQuestion => Some("|?"),
             Self::PipeGreater => Some("|>"),
@@ -449,7 +455,7 @@ impl Kind {
 
     /// Try to convert a u16 discriminant to a Kind
     pub const fn try_from_u16(value: u16) -> Option<Self> {
-        if value < 81 {
+        if value < 82 {
             // SAFETY: value is within valid discriminant range
             Some(unsafe { core::mem::transmute::<u16, Kind>(value) })
         } else {
@@ -464,6 +470,7 @@ impl Kind {
             Self::Bang => "!",
             Self::Tilde => "~",
             Self::Dollar => "$",
+            Self::DotDotDot => "...",
             Self::Question => "?",
             Self::PipeQuestion => "|?",
             Self::PipeGreater => "|>",
@@ -550,6 +557,7 @@ impl Kind {
             Self::Bang => Some(Op::Bang),
             Self::Tilde => Some(Op::Tilde),
             Self::Dollar => Some(Op::Dollar),
+            Self::DotDotDot => Some(Op::DotDotDot),
             Self::Question => Some(Op::Question),
             Self::PipeQuestion => Some(Op::PipeQuestion),
             Self::PipeGreater => Some(Op::PipeGreater),
@@ -599,6 +607,7 @@ impl Kind {
             Self::Bang => Some(26),
             Self::Tilde => Some(26),
             Self::Dollar => Some(26),
+            Self::DotDotDot => Some(26),
             _ => None,
         }
     }
@@ -697,6 +706,8 @@ pub enum Op {
     Tilde,
     /// "$"
     Dollar,
+    /// "..."
+    DotDotDot,
     /// "?"
     Question,
     /// "|?"

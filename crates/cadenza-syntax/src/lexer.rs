@@ -218,8 +218,10 @@ impl<'a> Lexer<'a> {
             ',' => Kind::Comma.spanned(a),
             '.' => {
                 if let Some(b) = self.chars.next_if_eq('.') {
-                    // Check for ..=
-                    if let Some(c) = self.chars.next_if_eq('=') {
+                    // Check for ... or ..=
+                    if let Some(c) = self.chars.next_if_eq('.') {
+                        Kind::DotDotDot.spanned((a, c))
+                    } else if let Some(c) = self.chars.next_if_eq('=') {
                         Kind::DotDotEqual.spanned((a, c))
                     } else {
                         Kind::DotDot.spanned((a, b))

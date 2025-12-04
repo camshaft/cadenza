@@ -467,6 +467,7 @@ impl Punctuation {
             p("Bang", "!").prefix(PrefixBindingPower::Unary),
             p("Tilde", "~").prefix(PrefixBindingPower::Unary),
             p("Dollar", "$").prefix(PrefixBindingPower::Unary),
+            p("DotDotDot", "...").prefix(PrefixBindingPower::Unary),
             // Postfix operators
             p("Question", "?").postfix(PostfixBindingPower::Try),
             p("PipeQuestion", "|?").postfix(PostfixBindingPower::PipeTry),
