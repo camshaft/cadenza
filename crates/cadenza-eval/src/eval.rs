@@ -740,6 +740,82 @@ pub fn builtin_list() -> BuiltinMacro {
     }
 }
 
+/// Creates the `__record__` builtin macro for record literals.
+///
+/// The `__record__` macro evaluates field assignments and constructs a record value.
+/// It is automatically used by the parser when encountering record literal syntax `{...}`.
+///
+/// Each argument is expected to be an assignment expression `[=, field_name, value_expr]`
+/// that defines a field with its value.
+///
+/// Examples:
+/// ```ignore
+/// { a = 1 }              // Creates Value::Record([("a", Integer(1))])
+/// {}                     // Creates Value::Record([])
+/// { x = 1, y = 2 }       // Creates Value::Record([("x", Integer(1)), ("y", Integer(2))])
+/// { a = x + 1, b = f y } // Evaluates field value expressions
+/// ```
+///
+/// The parser transforms `{ a = 1, b = 2 }` into: `[__record__, [=, a, 1], [=, b, 2]]`
+pub fn builtin_record() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "__record__",
+        signature: Type::function(vec![], Type::Record(vec![])),
+        func: |args, ctx| {
+            // Each argument should be an assignment expression: [=, field_name, value_expr]
+            let mut fields = Vec::with_capacity(args.len());
+            
+            for arg in args {
+                // Each arg should be an Apply node with "=" as the operator
+                let apply = match arg {
+                    Expr::Apply(apply) => apply,
+                    _ => {
+                        return Err(Diagnostic::syntax(
+                            "record field must be an assignment expression"
+                        ));
+                    }
+                };
+
+                // Extract the field name (should be an identifier)
+                let field_name = {
+                    let all_args = apply.all_arguments();
+                    if all_args.len() != 2 {
+                        return Err(Diagnostic::syntax(
+                            "record field assignment must have exactly 2 arguments"
+                        ));
+                    }
+
+                    // First arg is the field name
+                    let name_expr = &all_args[0];
+                    match name_expr {
+                        Expr::Ident(ident) => {
+                            let text = ident.syntax().text();
+                            text.to_string().as_str().into()
+                        }
+                        _ => {
+                            return Err(Diagnostic::syntax(
+                                "record field name must be an identifier"
+                            ));
+                        }
+                    }
+                };
+
+                // Evaluate the field value (second arg)
+                let value = {
+                    let all_args = apply.all_arguments();
+                    let value_expr = &all_args[1];
+                    value_expr.eval(ctx)?
+                };
+
+                fields.push((field_name, value));
+            }
+
+            // Return the record value
+            Ok(Value::Record(fields))
+        },
+    }
+}
+
 /// Creates the `fn` macro for defining functions.
 ///
 /// The `fn` macro is used to define functions. It can be used in two forms:

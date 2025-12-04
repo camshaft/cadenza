@@ -219,6 +219,12 @@ pub enum Value {
     /// A list of values.
     List(Vec<Value>),
 
+    /// A record (struct-like) value with named fields.
+    ///
+    /// Records are structural types with field names mapping to values.
+    /// Field order is preserved from construction.
+    Record(Vec<(InternedString, Value)>),
+
     /// A type value (types are first-class values).
     Type(Type),
 
@@ -348,6 +354,15 @@ impl Value {
             Value::String(_) => Type::String,
             // For lists, we use Unknown since we don't track element types at runtime yet
             Value::List(_) => Type::list(Type::Unknown),
+            // For records, we extract field names and use Unknown for field types
+            // since we don't track types at compile time yet
+            Value::Record(fields) => {
+                let field_types = fields
+                    .iter()
+                    .map(|(name, _)| (*name, Type::Unknown))
+                    .collect();
+                Type::Record(field_types)
+            }
             Value::Type(_) => Type::Type,
             Value::Quantity { .. } => Type::Float, // Quantities are numeric
             Value::UnitConstructor(_) => Type::function(vec![Type::Float], Type::Float),
@@ -479,6 +494,13 @@ impl fmt::Debug for Value {
             Value::Float(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "{s:?}"),
             Value::List(items) => f.debug_list().entries(items).finish(),
+            Value::Record(fields) => {
+                let mut debug_map = f.debug_map();
+                for (name, value) in fields {
+                    debug_map.entry(&name.to_string(), value);
+                }
+                debug_map.finish()
+            }
             Value::Type(t) => write!(f, "Type({t})"),
             Value::Quantity {
                 value,
@@ -512,6 +534,16 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::Record(fields) => {
+                write!(f, "{{")?;
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} = {}", &**name, value)?;
+                }
+                write!(f, "}}")
+            }
             Value::Type(t) => write!(f, "{t}"),
             Value::Quantity {
                 value,
@@ -536,6 +568,11 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
+            (Value::Record(a), Value::Record(b)) => {
+                // Records are equal if they have the same fields with the same values
+                // Field order matters for structural equality
+                a == b
+            }
             (Value::Type(a), Value::Type(b)) => a == b,
             (
                 Value::Quantity {
