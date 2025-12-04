@@ -138,6 +138,33 @@ mod op_path_with_ap {
         );
     }
 }
+mod record_in_application {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_in_application_lex",
+            t::lex("foo 1 {\n  a = 1\n} 2\nbar\n"),
+            "foo 1 {\n  a = 1\n} 2\nbar\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_in_application_cst",
+            t::cst("foo 1 {\n  a = 1\n} 2\nbar\n"),
+            "foo 1 {\n  a = 1\n} 2\nbar\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_in_application_ast",
+            t::ast("foo 1 {\n  a = 1\n} 2\nbar\n"),
+            "foo 1 {\n  a = 1\n} 2\nbar\n"
+        );
+    }
+}
 mod op_path {
     use super::*;
     #[test]
@@ -2097,6 +2124,46 @@ mod invalid_parse {
             );
         }
     }
+    mod record_missing_brace_simple {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_record_missing_brace_simple_cst",
+                t::cst_no_assert("{ a = 1\nfoo\n"),
+                "{ a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_record_missing_brace_simple_ast",
+                t::ast_no_assert("{ a = 1\nfoo\n"),
+                "{ a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_record_missing_brace_simple_lex",
+                t::lex("{ a = 1\nfoo\n"),
+                "{ a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("{ a = 1\nfoo\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_record_missing_brace_simple_errors",
+                errors,
+                "{ a = 1\nfoo\n"
+            );
+        }
+    }
     mod array_multiple_commas {
         use super::*;
         #[test]
@@ -2217,6 +2284,46 @@ mod invalid_parse {
             );
         }
     }
+    mod record_missing_brace_comma {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_record_missing_brace_comma_cst",
+                t::cst_no_assert("{ a = 1,\nfoo\n"),
+                "{ a = 1,\nfoo\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_record_missing_brace_comma_ast",
+                t::ast_no_assert("{ a = 1,\nfoo\n"),
+                "{ a = 1,\nfoo\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_record_missing_brace_comma_lex",
+                t::lex("{ a = 1,\nfoo\n"),
+                "{ a = 1,\nfoo\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("{ a = 1,\nfoo\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_record_missing_brace_comma_errors",
+                errors,
+                "{ a = 1,\nfoo\n"
+            );
+        }
+    }
     mod array_leading_comma {
         use super::*;
         #[test]
@@ -2254,6 +2361,46 @@ mod invalid_parse {
                 "invalid_parse_array_leading_comma_errors",
                 errors,
                 "[, a, b]\n"
+            );
+        }
+    }
+    mod record_missing_brace_indented {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_record_missing_brace_indented_cst",
+                t::cst_no_assert("{\n  a = 1\nfoo\n"),
+                "{\n  a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_record_missing_brace_indented_ast",
+                t::ast_no_assert("{\n  a = 1\nfoo\n"),
+                "{\n  a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_record_missing_brace_indented_lex",
+                t::lex("{\n  a = 1\nfoo\n"),
+                "{\n  a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("{\n  a = 1\nfoo\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_record_missing_brace_indented_errors",
+                errors,
+                "{\n  a = 1\nfoo\n"
             );
         }
     }
