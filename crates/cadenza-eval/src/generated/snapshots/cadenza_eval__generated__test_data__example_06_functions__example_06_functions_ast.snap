@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Functions\n# Define and call functions\n\n# Simple function\nfn double x = x * 2\ndouble 5\n\n# Multi-parameter function\nfn add x y = x + y\nadd 3 7\n\n# Function with closure\nlet outer = 100\nfn capture = outer + 1\ncapture\n"
+---
+[
+    [=, [[fn, double], x], [*, x, 2]],
+    [double, 5],
+    [=, [[[fn, add], x], y], [+, x, y]],
+    [[add, 3], 7],
+    [=, [let, outer], 100],
+    [=, [fn, capture], [+, outer, 1]],
+    capture,
+]

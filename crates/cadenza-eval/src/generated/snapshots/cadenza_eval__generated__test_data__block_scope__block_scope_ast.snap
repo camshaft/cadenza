@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let outer = 100\nlet result =\n    let inner = 200\n    inner + outer\nresult\n"
+---
+[
+    [=, [let, outer], 100],
+    [=, [let, result], [__block__, [=, [let, inner], 200], [+, inner, outer]]],
+    result,
+]

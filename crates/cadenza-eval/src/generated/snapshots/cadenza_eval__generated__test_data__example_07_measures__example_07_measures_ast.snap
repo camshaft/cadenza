@@ -1,0 +1,18 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Units of Measure\n# Define and use physical units\n\n# Define base units\nmeasure meter\nmeasure second\n\n# Use base units\n10meter\n5second\n\n# Derived units\nmeasure kilometer = meter 1000\n2kilometer\n\n# Convert between units\nlet distance = 5000meter\nlet km = 5kilometer\ndistance\nkm\n\n# Unit arithmetic\nlet speed = 100meter / 10second\nspeed\n"
+---
+[
+    [measure, meter],
+    [measure, second],
+    [meter, 10],
+    [second, 5],
+    [=, [measure, kilometer], [meter, 1000]],
+    [kilometer, 2],
+    [=, [let, distance], [meter, 5000]],
+    [=, [let, km], [kilometer, 5]],
+    distance,
+    km,
+    [=, [let, speed], [/, [meter, 100], [second, 10]]],
+    speed,
+]

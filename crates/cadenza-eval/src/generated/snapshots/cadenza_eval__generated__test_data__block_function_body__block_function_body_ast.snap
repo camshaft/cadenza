@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "fn foo a b =\n    let av = a * 2\n    let bv = b * 3\n    av * bv\nfoo 5 7\n"
+---
+[
+    [=, [[[fn, foo], a], b], [__block__, [=, [let, av], [*, a, 2]], [=, [let, bv], [*, b, 3]], [*, av, bv]]],
+    [[foo, 5], 7],
+]

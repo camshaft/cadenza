@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "add 2 3\nfn add x y = x + y\nadd 2 3\n"
+---
+[
+    [[add, 2], 3],
+    [=, [[[fn, add], x], y], [+, x, y]],
+    [[add, 2], 3],
+]

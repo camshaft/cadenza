@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure inch\nmeasure foot = inch 12\n"
+---
+[
+    [measure, inch],
+    [=, [measure, foot], [inch, 12]],
+]

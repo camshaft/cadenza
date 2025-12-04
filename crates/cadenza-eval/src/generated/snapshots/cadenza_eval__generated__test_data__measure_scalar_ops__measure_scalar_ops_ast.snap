@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\nlet x = meter 10\nlet doubled = x * 2\nlet halved = x / 2\ndoubled\nhalved\n"
+---
+[
+    [measure, meter],
+    [=, [let, x], [meter, 10]],
+    [=, [let, doubled], [*, x, 2]],
+    [=, [let, halved], [/, x, 2]],
+    doubled,
+    halved,
+]

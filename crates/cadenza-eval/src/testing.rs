@@ -48,3 +48,12 @@ pub fn eval_all(src: &str) -> EvalResult {
         diagnostics,
     }
 }
+
+/// Parse a source string and return the AST root.
+///
+/// This function parses the source and returns the AST, making it suitable
+/// for snapshot testing the parse tree structure.
+pub fn ast(src: &str) -> cadenza_syntax::ast::Root {
+    let parsed = parse(src);
+    parsed.ast()
+}

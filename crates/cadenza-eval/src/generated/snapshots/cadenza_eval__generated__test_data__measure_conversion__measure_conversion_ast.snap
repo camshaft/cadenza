@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure millimeter  \nmeasure inch = millimeter 25.4\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+---
+[
+    [measure, millimeter],
+    [=, [measure, inch], [millimeter, 25.4]],
+    [=, [let, x], [millimeter, 25.4]],
+    [=, [let, y], [inch, 1]],
+    x,
+    y,
+]

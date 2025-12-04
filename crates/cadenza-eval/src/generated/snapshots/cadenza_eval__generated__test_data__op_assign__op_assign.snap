@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let add_op = +\nadd_op 1 2\n"
+---
+EvalResult {
+    values: [
+        Symbol("+"),
+        3,
+    ],
+    diagnostics: [],
+}

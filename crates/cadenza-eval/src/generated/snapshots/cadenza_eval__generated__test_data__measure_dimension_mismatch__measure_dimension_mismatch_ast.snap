@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\n1meter * 2meter + 3meter\n"
+---
+[
+    [measure, meter],
+    [+, [*, [meter, 1], [meter, 2]], [meter, 3]],
+]
