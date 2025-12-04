@@ -3,5 +3,6 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "foo (\n    a + b\n) c d e + f\n"
 ---
 [
-    [[[[foo, [+, a, b]], c], d], [+, e, f]],
+    [foo, [+, a, b]],
+    [[c, d], [+, e, f]],
 ]

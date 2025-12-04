@@ -3,30 +3,27 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "{ a = 1,\nfoo\n"
 ---
 Root@0..13
-  Apply@0..13
-    ApplyReceiver@0..9
-      Apply@0..9
-        LBrace@0..1 "{"
-        Space@1..2 " "
-        ApplyReceiver@2..2
-          SyntheticRecord@2..2
-        ApplyArgument@2..7
-          Apply@2..7
-            ApplyArgument@2..4
-              Identifier@2..3
-                Identifier@2..3 "a"
-              Space@3..4 " "
-            ApplyReceiver@4..5
-              Equal@4..5
-                Equal@4..5 "="
-            Space@5..6 " "
-            ApplyArgument@6..7
-              Literal@6..7
-                Integer@6..7
-                  Integer@6..7 "1"
-        Comma@7..8 ","
-        Newline@8..9 "\n"
-    ApplyArgument@9..13
-      Identifier@9..12
-        Identifier@9..12 "foo"
-      Newline@12..13 "\n"
+  Apply@0..9
+    LBrace@0..1 "{"
+    Space@1..2 " "
+    ApplyReceiver@2..2
+      SyntheticRecord@2..2
+    ApplyArgument@2..7
+      Apply@2..7
+        ApplyArgument@2..4
+          Identifier@2..3
+            Identifier@2..3 "a"
+          Space@3..4 " "
+        ApplyReceiver@4..5
+          Equal@4..5
+            Equal@4..5 "="
+        Space@5..6 " "
+        ApplyArgument@6..7
+          Literal@6..7
+            Integer@6..7
+              Integer@6..7 "1"
+    Comma@7..8 ","
+    Newline@8..9 "\n"
+  Identifier@9..12
+    Identifier@9..12 "foo"
+  Newline@12..13 "\n"

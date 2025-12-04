@@ -3,20 +3,17 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "foo [\nbar\n"
 ---
 Root@0..10
-  Apply@0..10
-    ApplyReceiver@0..6
-      Apply@0..6
-        ApplyReceiver@0..4
-          Identifier@0..3
-            Identifier@0..3 "foo"
-          Space@3..4 " "
-        ApplyArgument@4..6
-          Apply@4..6
-            LBracket@4..5 "["
-            Newline@5..6 "\n"
-            ApplyReceiver@6..6
-              SyntheticList@6..6
-    ApplyArgument@6..10
-      Identifier@6..9
-        Identifier@6..9 "bar"
-      Newline@9..10 "\n"
+  Apply@0..6
+    ApplyReceiver@0..4
+      Identifier@0..3
+        Identifier@0..3 "foo"
+      Space@3..4 " "
+    ApplyArgument@4..6
+      Apply@4..6
+        LBracket@4..5 "["
+        Newline@5..6 "\n"
+        ApplyReceiver@6..6
+          SyntheticList@6..6
+  Identifier@6..9
+    Identifier@6..9 "bar"
+  Newline@9..10 "\n"

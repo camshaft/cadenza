@@ -295,16 +295,24 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
 
         // Parse comma-separated elements
+        let mut after_comma = false;
+        let mut comma_line = 0;
         loop {
             // First check for closing bracket
             if self.current() == Kind::RBracket || self.current() == Kind::Eof {
                 break;
             }
             
-            // Check for dedentation (error recovery) - use indent-only check to allow commas
+            // Check for dedentation (error recovery)
             if !bracket_marker.saved_whitespace.should_continue_indent(self) {
-                break;
+                // Dedented - check if we should stop or continue
+                // If we just consumed a comma on a dedented line (comma-first style), continue
+                // If no comma or comma was on same line (trailing comma), stop
+                if !after_comma || comma_line <= bracket_marker.saved_whitespace.line {
+                    break;
+                }
             }
+            after_comma = false;
             
             // Check for empty element (comma without content)
             if self.current() == Kind::Comma {
@@ -314,6 +322,8 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
                 self.bump();
                 self.skip_trivia();
+                after_comma = true;
+                comma_line = self.whitespace.line;
                 continue;
             }
 
@@ -326,8 +336,10 @@ impl<'src> Parser<'src> {
 
             // Handle comma separator
             if self.current() == Kind::Comma {
+                comma_line = self.whitespace.line;
                 self.bump();
                 self.skip_trivia();
+                after_comma = true;
             } else {
                 // No comma - we should be at the closing bracket or error
                 break;
@@ -358,16 +370,24 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
 
         // Parse comma-separated elements
+        let mut after_comma = false;
+        let mut comma_line = 0;
         loop {
             // First check for closing brace
             if self.current() == Kind::RBrace || self.current() == Kind::Eof {
                 break;
             }
             
-            // Check for dedentation (error recovery) - use indent-only check to allow commas
+            // Check for dedentation (error recovery)
             if !brace_marker.saved_whitespace.should_continue_indent(self) {
-                break;
+                // Dedented - check if we should stop or continue
+                // If we just consumed a comma on a dedented line (comma-first style), continue
+                // If no comma or comma was on same line (trailing comma), stop
+                if !after_comma || comma_line <= brace_marker.saved_whitespace.line {
+                    break;
+                }
             }
+            after_comma = false;
             
             // Check for empty element (comma without content)
             if self.current() == Kind::Comma {
@@ -377,6 +397,8 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
                 self.bump();
                 self.skip_trivia();
+                after_comma = true;
+                comma_line = self.whitespace.line;
                 continue;
             }
 
@@ -389,8 +411,10 @@ impl<'src> Parser<'src> {
 
             // Handle comma separator
             if self.current() == Kind::Comma {
+                comma_line = self.whitespace.line;
                 self.bump();
                 self.skip_trivia();
+                after_comma = true;
             } else {
                 // No comma - we should be at the closing brace or an error
                 break;
@@ -605,10 +629,12 @@ impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
             let msg = Self::close_kind().display_name();
             parser.error(&format!("expected {}", msg));
         }
-        // Restore whitespace state from before the delimiter block
+        // Restore whitespace indentation from before the delimiter block
+        // but keep the current line number since we've moved forward in the file
         parser.whitespace.span = self.saved_whitespace.span;
         parser.whitespace.len = self.saved_whitespace.len;
-        parser.whitespace.line = self.saved_whitespace.line;
+        // Don't restore line - we need to track where we actually are in the file
+        // parser.whitespace.line = self.saved_whitespace.line;
     }
 }
 
@@ -646,10 +672,12 @@ impl<M: Marker> Marker for CommaMarker<M> {
     }
 
     fn finish(&self, parser: &mut Parser) {
-        // Don't call inner.finish() - we just restore whitespace state
+        // Don't call inner.finish() - we just restore whitespace indentation
+        // but keep the current line number since we've moved forward in the file
         parser.whitespace.span = self.saved_whitespace.span;
         parser.whitespace.len = self.saved_whitespace.len;
-        parser.whitespace.line = self.saved_whitespace.line;
+        // Don't restore line - we need to track where we actually are in the file
+        // parser.whitespace.line = self.saved_whitespace.line;
     }
 }
 
@@ -731,10 +759,9 @@ struct WhitespaceMarker {
 impl WhitespaceMarker {
     /// Check if parsing should continue based on indentation, ignoring punctuation boundaries.
     /// 
-    /// This method is used for error recovery in delimiter parsing. Unlike the main
-    /// `should_continue` method, this allows commas at the same indentation level,
-    /// which is necessary for comma-separated lists to detect dedentation errors
-    /// without being blocked by commas themselves.
+    /// This method is used for error recovery in delimiter parsing. It allows continuation
+    /// when indented more than the marker, or when at the same indentation if the current
+    /// token is a comma (comma-first style), infix, or postfix operator.
     fn should_continue_indent(&self, parser: &mut Parser) -> bool {
         if parser.current() == Kind::Eof {
             return false;
@@ -746,9 +773,10 @@ impl WhitespaceMarker {
         }
 
         let current = parser.current();
-        // Infix, postfix operators and comma are allowed at same indentation level
-        // for error recovery (e.g., comma-first style: [ 1\n, 2\n, 3])
-        if current.is_infix() || current.is_postfix() || current == Kind::Comma {
+        
+        // For comma-first style and operators: allow same indentation if current is comma/infix/postfix
+        // This enables: [ 1\n, 2\n, 3] and similar patterns
+        if current == Kind::Comma || current.is_infix() || current.is_postfix() {
             return parser.whitespace.len >= self.len;
         }
 

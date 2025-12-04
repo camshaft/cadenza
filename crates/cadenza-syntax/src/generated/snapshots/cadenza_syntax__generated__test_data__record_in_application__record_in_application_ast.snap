@@ -3,6 +3,7 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "foo 1 {\n  a = 1\n} 2\nbar\n"
 ---
 [
-    [[[foo, 1], [__record__, [=, a, 1]]], 2],
+    [[foo, 1], [__record__, [=, a, 1]]],
+    2,
     bar,
 ]
