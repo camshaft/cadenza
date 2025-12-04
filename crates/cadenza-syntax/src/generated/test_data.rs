@@ -1731,6 +1731,33 @@ mod record_field_trailing_comma {
         );
     }
 }
+mod op_spread_multiple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_spread_multiple_lex",
+            t::lex("{ ...a, ...b, c = 1 }\n"),
+            "{ ...a, ...b, c = 1 }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_spread_multiple_cst",
+            t::cst("{ ...a, ...b, c = 1 }\n"),
+            "{ ...a, ...b, c = 1 }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_spread_multiple_ast",
+            t::ast("{ ...a, ...b, c = 1 }\n"),
+            "{ ...a, ...b, c = 1 }\n"
+        );
+    }
+}
 mod op_try_after_add {
     use super::*;
     #[test]
