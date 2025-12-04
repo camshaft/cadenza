@@ -242,6 +242,25 @@ mod error_cmp_type_mismatch_ne {
         );
     }
 }
+mod field_assign_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_assign_simple",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_assign_simple_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n"
+        );
+    }
+}
 mod arith_mul {
     use super::*;
     #[test]
@@ -1156,6 +1175,25 @@ mod measure_suffix {
         );
     }
 }
+mod field_assign_with_expr {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_assign_with_expr",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_assign_with_expr_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n"
+        );
+    }
+}
 mod error_cmp_type_mismatch_lte {
     use super::*;
     #[test]
@@ -1260,6 +1298,25 @@ mod example_04_comparison {
                 "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
             ),
             "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
+        );
+    }
+}
+mod field_assign_missing_field {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_assign_missing_field",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.z = 30\n"),
+            "let point = { x = 10, y = 20 }\npoint.z = 30\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_assign_missing_field_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.z = 30\n"),
+            "let point = { x = 10, y = 20 }\npoint.z = 30\n"
         );
     }
 }

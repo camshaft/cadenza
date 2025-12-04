@@ -549,8 +549,17 @@ pub fn builtin_assign() -> BuiltinMacro {
             let rhs_expr = &args[1];
 
             // Check if LHS is a macro application - delegate if so
+            // EXCEPT for field access (.) which should be handled as field assignment
             if let Expr::Apply(apply) = lhs_expr {
                 if let Some(callee_expr) = apply.callee() {
+                    // Check if this is field access - handle separately
+                    if let Expr::Op(op) = &callee_expr {
+                        if op.syntax().text() == "." {
+                            // This is field assignment: record.field = value
+                            return handle_field_assignment(apply, rhs_expr, ctx);
+                        }
+                    }
+
                     // Try to extract an identifier from the callee
                     if let Some(id) = extract_identifier(&callee_expr) {
                         // Check if this identifier refers to a macro
@@ -596,11 +605,94 @@ pub fn builtin_assign() -> BuiltinMacro {
                 _ => {
                     // LHS is neither a macro application nor an identifier
                     Err(Diagnostic::syntax(
-                        "left side of = must be an identifier or a macro application (e.g., let x, fn name, measure unit)",
+                        "left side of = must be an identifier, field access (e.g., record.field), or a macro application (e.g., let x, fn name, measure unit)",
                     ))
                 }
             }
         },
+    }
+}
+
+/// Handles field assignment of the form: record.field = value
+///
+/// The apply expression represents the field access (e.g., `record.field`),
+/// and rhs_expr is the value to assign.
+fn handle_field_assignment(
+    apply: &Apply,
+    rhs_expr: &Expr,
+    ctx: &mut EvalContext<'_>,
+) -> Result<Value> {
+    // Field assignment requires exactly 2 arguments in the apply: record and field
+    let args = apply.all_arguments();
+    if args.len() != 2 {
+        return Err(Diagnostic::syntax(
+            "field assignment requires exactly record and field name",
+        ));
+    }
+
+    // Get the record identifier (first argument)
+    let record_name = match &args[0] {
+        Expr::Ident(ident) => {
+            let text = ident.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
+            id
+        }
+        _ => {
+            return Err(Diagnostic::syntax(
+                "field assignment requires a variable name for the record",
+            ))
+        }
+    };
+
+    // Get the field name (second argument)
+    let field_name = match &args[1] {
+        Expr::Ident(ident) => {
+            let text = ident.syntax().text();
+            let id: InternedString = text.to_string().as_str().into();
+            id
+        }
+        _ => {
+            return Err(Diagnostic::syntax(
+                "field name must be an identifier",
+            ))
+        }
+    };
+
+    // Evaluate the RHS value
+    let new_value = rhs_expr.eval(ctx)?;
+
+    // Get a mutable reference to the record from the environment
+    let record = ctx
+        .env
+        .get_mut(record_name)
+        .ok_or_else(|| Diagnostic::undefined_variable(record_name))?;
+
+    // Update the field in the record
+    match record {
+        Value::Record(fields) => {
+            // Find and update the field
+            let mut found = false;
+            for (name, value) in fields.iter_mut() {
+                if *name == field_name {
+                    *value = new_value.clone();
+                    found = true;
+                    break;
+                }
+            }
+
+            if found {
+                Ok(new_value)
+            } else {
+                Err(Diagnostic::syntax(format!(
+                    "field '{}' not found in record",
+                    &*field_name
+                )))
+            }
+        }
+        _ => Err(Diagnostic::type_error(
+            Type::Record(vec![]),
+            record.type_of(),
+        )),
     }
 }
 
