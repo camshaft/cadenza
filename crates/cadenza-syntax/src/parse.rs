@@ -630,11 +630,11 @@ impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
             parser.error(&format!("expected {}", msg));
         }
         // Restore whitespace indentation from before the delimiter block
-        // but keep the current line number since we've moved forward in the file
+        // but keep the current line number since we've moved forward in the file.
+        // Not restoring the line is critical for error recovery - it allows us to
+        // detect dedentation after exiting a delimiter context.
         parser.whitespace.span = self.saved_whitespace.span;
         parser.whitespace.len = self.saved_whitespace.len;
-        // Don't restore line - we need to track where we actually are in the file
-        // parser.whitespace.line = self.saved_whitespace.line;
     }
 }
 
@@ -672,12 +672,12 @@ impl<M: Marker> Marker for CommaMarker<M> {
     }
 
     fn finish(&self, parser: &mut Parser) {
-        // Don't call inner.finish() - we just restore whitespace indentation
-        // but keep the current line number since we've moved forward in the file
+        // Restore whitespace indentation from before the comma marker
+        // but keep the current line number since we've moved forward in the file.
+        // Not restoring the line is critical for error recovery - it allows us to
+        // detect dedentation after parsing a comma-separated element.
         parser.whitespace.span = self.saved_whitespace.span;
         parser.whitespace.len = self.saved_whitespace.len;
-        // Don't restore line - we need to track where we actually are in the file
-        // parser.whitespace.line = self.saved_whitespace.line;
     }
 }
 
