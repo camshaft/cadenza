@@ -294,8 +294,19 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
         self.builder.finish_node();
 
-        // Parse comma-separated elements - delegate continue logic to marker
-        while bracket_marker.should_continue(self) {
+        // Parse comma-separated elements
+        // Track if we just consumed a comma to handle comma-first style
+        let mut skip_marker_check = false;
+        loop {
+            // After consuming a comma, skip the marker check once to allow comma-first style
+            // where the next element may be at the same indentation level
+            if !skip_marker_check {
+                if !bracket_marker.should_continue(self) {
+                    break;
+                }
+            }
+            skip_marker_check = false;
+            
             // Check for empty element (comma without content)
             if self.current() == Kind::Comma {
                 // Emit an error node in the CST
@@ -304,6 +315,7 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
                 self.bump();
                 self.skip_trivia();
+                skip_marker_check = true;
                 continue;
             }
 
@@ -318,6 +330,12 @@ impl<'src> Parser<'src> {
             if self.current() == Kind::Comma {
                 self.bump();
                 self.skip_trivia();
+                // Check for closing bracket after trailing comma
+                if self.current() == Kind::RBracket {
+                    break;
+                }
+                // Set flag to skip marker check on next iteration
+                skip_marker_check = true;
             } else {
                 // No comma - we should be at the closing bracket or an error
                 break;
@@ -347,8 +365,19 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
         self.builder.finish_node();
 
-        // Parse comma-separated elements - delegate continue logic to marker
-        while brace_marker.should_continue(self) {
+        // Parse comma-separated elements
+        // Track if we just consumed a comma to handle comma-first style
+        let mut skip_marker_check = false;
+        loop {
+            // After consuming a comma, skip the marker check once to allow comma-first style
+            // where the next element may be at the same indentation level
+            if !skip_marker_check {
+                if !brace_marker.should_continue(self) {
+                    break;
+                }
+            }
+            skip_marker_check = false;
+            
             // Check for empty element (comma without content)
             if self.current() == Kind::Comma {
                 // Emit an error node in the CST
@@ -357,6 +386,7 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
                 self.bump();
                 self.skip_trivia();
+                skip_marker_check = true;
                 continue;
             }
 
@@ -371,6 +401,12 @@ impl<'src> Parser<'src> {
             if self.current() == Kind::Comma {
                 self.bump();
                 self.skip_trivia();
+                // Check for closing brace after trailing comma
+                if self.current() == Kind::RBrace {
+                    break;
+                }
+                // Set flag to skip marker check on next iteration
+                skip_marker_check = true;
             } else {
                 // No comma - we should be at the closing brace or an error
                 break;
@@ -573,10 +609,9 @@ impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
         if current == Self::close_kind() || current == Kind::Eof {
             return false;
         }
-        
-        // Inside delimiters, always continue unless we're at the closing delimiter
-        // This allows both same-line and multi-line content without strict indentation rules
-        true
+        // Delegate to saved whitespace marker for indentation checking
+        // It already handles commas specially (as it handles infix operators)
+        self.saved_whitespace.should_continue(parser)
     }
 
     fn finish(&self, parser: &mut Parser) {
@@ -718,8 +753,8 @@ impl Marker for WhitespaceMarker {
 
         let current = parser.current();
         
-        // Stop at closing delimiters
-        if matches!(current, Kind::RBrace | Kind::RBracket | Kind::RParen) {
+        // Stop at closing delimiters and comma to prevent them from being parsed incorrectly
+        if matches!(current, Kind::RBrace | Kind::RBracket | Kind::RParen | Kind::Comma) {
             return false;
         }
 
@@ -727,9 +762,9 @@ impl Marker for WhitespaceMarker {
             return true;
         }
 
-        // Infix, postfix operators and comma are allowed to start continuation lines
-        // at same indentation level (for comma-first style like: [ 1\n, 2\n, 3])
-        if current.is_infix() || current.is_postfix() || current == Kind::Comma {
+        // Infix, postfix operators are allowed to start continuation lines
+        // at same indentation level
+        if current.is_infix() || current.is_postfix() {
             return parser.whitespace.len >= self.len;
         }
 

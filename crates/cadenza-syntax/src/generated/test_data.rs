@@ -474,6 +474,33 @@ mod ap_nested {
         );
     }
 }
+mod record_field_nested {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_nested_lex",
+            t::lex("{ a = { b = 1 } }\n"),
+            "{ a = { b = 1 } }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_nested_cst",
+            t::cst("{ a = { b = 1 } }\n"),
+            "{ a = { b = 1 } }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_nested_ast",
+            t::ast("{ a = { b = 1 } }\n"),
+            "{ a = { b = 1 } }\n"
+        );
+    }
+}
 mod lit_string_with_escape {
     use super::*;
     #[test]
@@ -780,6 +807,33 @@ mod ident_emoji_multiple {
         s!("ident_emoji_multiple_ast", t::ast("🎉🎊🎁\n"), "🎉🎊🎁\n");
     }
 }
+mod record_field_with_comment {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_with_comment_lex",
+            t::lex("{ a = 1, # comment\nb = 2 }\n"),
+            "{ a = 1, # comment\nb = 2 }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_with_comment_cst",
+            t::cst("{ a = 1, # comment\nb = 2 }\n"),
+            "{ a = 1, # comment\nb = 2 }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_with_comment_ast",
+            t::ast("{ a = 1, # comment\nb = 2 }\n"),
+            "{ a = 1, # comment\nb = 2 }\n"
+        );
+    }
+}
 mod ap_op_or {
     use super::*;
     #[test]
@@ -861,33 +915,6 @@ mod ident_utf8_japanese {
             "ident_utf8_japanese_ast",
             t::ast("こんにちは\n"),
             "こんにちは\n"
-        );
-    }
-}
-mod record_field_multiline {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!(
-            "record_field_multiline_lex",
-            t::lex("{ a = 2\n, b = 3\n, }\n"),
-            "{ a = 2\n, b = 3\n, }\n"
-        );
-    }
-    #[test]
-    fn cst() {
-        s!(
-            "record_field_multiline_cst",
-            t::cst("{ a = 2\n, b = 3\n, }\n"),
-            "{ a = 2\n, b = 3\n, }\n"
-        );
-    }
-    #[test]
-    fn ast() {
-        s!(
-            "record_field_multiline_ast",
-            t::ast("{ a = 2\n, b = 3\n, }\n"),
-            "{ a = 2\n, b = 3\n, }\n"
         );
     }
 }
@@ -1554,6 +1581,33 @@ mod ident_underscore_middle {
         );
     }
 }
+mod record_field_trailing_comma {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_trailing_comma_lex",
+            t::lex("{ a = 1, b = 2, }\n"),
+            "{ a = 1, b = 2, }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_trailing_comma_cst",
+            t::cst("{ a = 1, b = 2, }\n"),
+            "{ a = 1, b = 2, }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_trailing_comma_ast",
+            t::ast("{ a = 1, b = 2, }\n"),
+            "{ a = 1, b = 2, }\n"
+        );
+    }
+}
 mod op_try_after_add {
     use super::*;
     #[test]
@@ -2093,6 +2147,46 @@ mod invalid_parse {
                 "invalid_parse_array_dedent_recovery_errors",
                 errors,
                 "foo [\nbar\n"
+            );
+        }
+    }
+    mod record_double_comma {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_record_double_comma_cst",
+                t::cst_no_assert("{ a = 1,, b = 2 }\n"),
+                "{ a = 1,, b = 2 }\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_record_double_comma_ast",
+                t::ast_no_assert("{ a = 1,, b = 2 }\n"),
+                "{ a = 1,, b = 2 }\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_record_double_comma_lex",
+                t::lex("{ a = 1,, b = 2 }\n"),
+                "{ a = 1,, b = 2 }\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("{ a = 1,, b = 2 }\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_record_double_comma_errors",
+                errors,
+                "{ a = 1,, b = 2 }\n"
             );
         }
     }
