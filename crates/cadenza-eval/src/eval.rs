@@ -617,6 +617,10 @@ pub fn builtin_assign() -> BuiltinMacro {
 ///
 /// The apply expression represents the field access (e.g., `record.field`),
 /// and rhs_expr is the value to assign.
+///
+/// **Note**: This currently only supports direct variable field assignment
+/// (e.g., `record.field = value`). Chained field assignment (e.g., `obj.a.field = value`)
+/// is not yet supported - the record must be a variable name, not a nested field access.
 fn handle_field_assignment(
     apply: &Apply,
     rhs_expr: &Expr,
@@ -1788,11 +1792,7 @@ pub fn builtin_field_access() -> BuiltinMacro {
                     let id: InternedString = text.to_string().as_str().into();
                     id
                 }
-                _ => {
-                    return Err(Diagnostic::syntax(
-                        "field name must be an identifier".to_string(),
-                    ));
-                }
+                _ => return Err(Diagnostic::syntax("field name must be an identifier")),
             };
 
             // Extract the record fields
