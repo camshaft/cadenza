@@ -494,6 +494,17 @@ mod example_01_welcome {
         );
     }
 }
+mod measure_dimension_mismatch {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "measure_dimension_mismatch",
+            t::eval_all("measure meter\n1meter * 2meter + 3meter\n"),
+            "measure meter\n1meter * 2meter + 3meter\n"
+        );
+    }
+}
 mod let_multi {
     use super::*;
     #[test]
@@ -522,8 +533,8 @@ mod op_override {
     fn eval() {
         s!(
             "op_override",
-            t::eval_all("fn my_op x y = x + y + 1\nlet my_op = +\nmy_op 1 2\n"),
-            "fn my_op x y = x + y + 1\nlet my_op = +\nmy_op 1 2\n"
+            t::eval_all("let my_buggy_add = *\nlet + = my_buggy_add\n1 + 2\n"),
+            "let my_buggy_add = *\nlet + = my_buggy_add\n1 + 2\n"
         );
     }
 }

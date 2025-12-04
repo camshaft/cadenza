@@ -1508,13 +1508,10 @@ where
 pub fn builtin_lt() -> BuiltinFn {
     BuiltinFn {
         name: "<",
-        signature: Type::function(
-            vec![
-                Type::union(vec![Type::Integer, Type::Float]),
-                Type::union(vec![Type::Integer, Type::Float]),
-            ],
-            Type::Bool,
-        ),
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Bool),
+            Type::function(vec![Type::Float, Type::Float], Type::Bool),
+        ]),
         func: |args, _ctx| {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
@@ -1528,13 +1525,10 @@ pub fn builtin_lt() -> BuiltinFn {
 pub fn builtin_lte() -> BuiltinFn {
     BuiltinFn {
         name: "<=",
-        signature: Type::function(
-            vec![
-                Type::union(vec![Type::Integer, Type::Float]),
-                Type::union(vec![Type::Integer, Type::Float]),
-            ],
-            Type::Bool,
-        ),
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Bool),
+            Type::function(vec![Type::Float, Type::Float], Type::Bool),
+        ]),
         func: |args, _ctx| {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
@@ -1548,13 +1542,10 @@ pub fn builtin_lte() -> BuiltinFn {
 pub fn builtin_gt() -> BuiltinFn {
     BuiltinFn {
         name: ">",
-        signature: Type::function(
-            vec![
-                Type::union(vec![Type::Integer, Type::Float]),
-                Type::union(vec![Type::Integer, Type::Float]),
-            ],
-            Type::Bool,
-        ),
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Bool),
+            Type::function(vec![Type::Float, Type::Float], Type::Bool),
+        ]),
         func: |args, _ctx| {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
@@ -1568,13 +1559,10 @@ pub fn builtin_gt() -> BuiltinFn {
 pub fn builtin_gte() -> BuiltinFn {
     BuiltinFn {
         name: ">=",
-        signature: Type::function(
-            vec![
-                Type::union(vec![Type::Integer, Type::Float]),
-                Type::union(vec![Type::Integer, Type::Float]),
-            ],
-            Type::Bool,
-        ),
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Bool),
+            Type::function(vec![Type::Float, Type::Float], Type::Bool),
+        ]),
         func: |args, _ctx| {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));

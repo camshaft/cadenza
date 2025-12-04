@@ -1,19 +1,17 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "let my_buggy_add = *\nlet + = my_buggy_add\n1 + 2\n"
+expression: "measure meter\n1meter * 2meter + 3meter\n"
 ---
 EvalResult {
     values: [
-        Symbol("*"),
         nil,
-        3,
+        nil,
     ],
     diagnostics: [
         Diagnostic {
-            kind: ArityError {
-                expected: 2,
-                actual: 3,
-            },
+            kind: SyntaxError(
+                "cannot add quantities with incompatible dimensions: meter^2 and meter",
+            ),
             level: Error,
             file: None,
             span: None,
