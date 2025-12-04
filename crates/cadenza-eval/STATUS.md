@@ -258,9 +258,55 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 
 ## Block Expressions
 
-### Current Status: Infrastructure Added, Implementation Incomplete
+### Current Status: ✅ Completed
 
-**What Was Attempted (PR #XX)**
+Block expression support has been successfully implemented in both the parser and evaluator.
+
+**Implementation Summary (PR #XX)**
+- Parser detects when multiple expressions are at the same indentation level following an operator
+- Emits synthetic `__block__` nodes instead of creating nested Apply chains
+- Evaluator implements `__block__` builtin macro with proper scope management
+- Block expressions have lexical scoping - variables defined inside blocks are isolated from outer scope
+
+**Example**:
+```cadenza
+let foo =
+    let bar = 1
+    let baz = 2
+    bar
+```
+
+**Parser Output**: `[=, [let, foo], [__block__, [=, [let, bar], 1], [=, [let, baz], 2], bar]]`
+
+### What Was Completed
+
+#### Parser Changes (`cadenza-syntax/src/parse.rs`)
+- [x] Detect block contexts when indentation increases from parent during infix operator argument parsing
+- [x] Use `child_marker.should_continue()` combined with indentation checks for proper continuation logic
+- [x] Collect all expressions at the same indentation level into a synthetic `__block__` node
+- [x] Emit `Apply(__block__, expr1, expr2, ...)` structure
+
+#### Evaluator Changes (`cadenza-eval/src/eval.rs`)
+- [x] Implement `builtin_block()` macro that:
+  - Pushes a new scope for the block
+  - Evaluates each expression in sequence
+  - Returns the last expression's value
+  - Pops the scope when exiting
+- [x] Update `extract_identifier()` to handle Synthetic nodes for macro lookup
+- [x] Register `__block__` in synthetic node whitelist
+
+#### Environment (`cadenza-eval/src/env.rs`)
+- [x] Register `__block__` macro in standard builtins
+
+#### Tests
+- [x] `block-simple.cdz`: Basic multi-statement block
+- [x] `block-scope.cdz`: Verifies proper variable scoping
+- [x] `block-function-body.cdz`: Function definitions with block bodies
+- [x] `block-nested.cdz`: Deeply nested blocks
+
+### Previous Implementation Attempts
+
+**What Was Attempted (Earlier PR)**
 - Tried to implement block expressions using a heuristic approach in the evaluator
 - Detected blocks by checking if an Apply node's receiver was a statement (like `let` or `=`)
 - This approach was **reverted** due to being too brittle and specific
@@ -268,199 +314,94 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 **Why the Heuristic Approach Failed**
 1. **Too Specific**: Only worked for `let` and `=` statements, couldn't handle arbitrary expressions
 2. **Structural Limitations**: Failed on 3+ statement blocks due to complex nested Apply structures
-   - Parser creates: `[[expr1, expr2], expr3]` for indented code
-   - This becomes deeply nested for multiple statements
 3. **Wrong Layer**: Trying to detect blocks in the evaluator is a workaround; blocks should be a parser concern
 4. **Not Extensible**: Couldn't handle function definitions, arbitrary function calls, or other expressions in blocks
 
-**Infrastructure Added**
-- [x] Added `SyntheticBlock` token type with `__block__` identifier in `crates/cadenza-syntax/build/token.rs`
-- [x] Token generation system now includes `SyntheticBlock` alongside `SyntheticList` and `SyntheticRecord`
 
-### Implementation Plan
+### Known Challenges (Resolved)
 
-**Goal**: Enable multi-statement blocks using indentation, where the last expression is the block's return value.
+1. ~~**Parser Complexity**~~: Successfully added block detection without breaking existing parsing
+2. ~~**Indentation Edge Cases**~~: Handled through `WhitespaceMarker` and `should_continue()` logic
+3. ~~**Scope Management**~~: Blocks properly push/pop scopes while allowing access to outer variables
+4. **Error Recovery**: Currently stops on first error in a block (see Error Recovery section below)
+5. ~~**CST Preservation**~~: Synthetic nodes correctly preserve span information
 
-**Example Syntax**:
-```cadenza
-# Function with block body
-fn calculate x =
-  let doubled = x * 2
-  let squared = doubled * doubled
-  squared + 10
+### Future Enhancements
 
-# Block assigned to variable
-let result =
-  let temp = 100
-  temp + 23
-```
+See the "Error Recovery with Error Values" section below for planned improvements to error handling in blocks.
 
-**Required Changes**:
+## Error Recovery with Error Values
 
-#### 1. Parser Modifications (cadenza-syntax)
+### Current Status: Proposed Enhancement
 
-**Location**: `crates/cadenza-syntax/src/parse.rs` in `parse_expression_bp()`
+**Current Behavior**
+- When an expression in a block fails to evaluate, the `?` operator causes the entire block to stop evaluation
+- Only the first error is reported, subsequent expressions are not evaluated
+- This leads to cascading errors and incomplete error reporting
 
-**Current Behavior**:
-- Parser uses `WhitespaceMarker` to track indentation levels
-- Multiple indented expressions create nested Apply chains: `[[expr1, expr2], expr3]`
-- Each indented line continues as an argument to the previous expression
+**Proposed Enhancement**
+The evaluator should introduce a special `Error` value type that:
+- Type-checks with any type to prevent cascading type errors
+- Allows evaluation to continue past errors
+- Collects all errors for the entire module upfront rather than one at a time
 
-**Needed Behavior**:
-- Detect when multiple expressions are at the **same indentation level** following a statement
-- Emit a synthetic block node: `[__block__, expr1, expr2, expr3]` instead of nested Apply chains
-- Block detection should occur when:
-  1. We're parsing arguments to an expression
-  2. The indentation level increases (entering a block)
-  3. Multiple expressions follow at that same indentation level
+**Benefits**
+1. **Better Error Messages**: See all errors in a module, not just the first one
+2. **Reduced Cascading Errors**: An error in one expression doesn't prevent type-checking later expressions
+3. **Improved Developer Experience**: Fix multiple errors in one iteration instead of one at a time
 
-**Implementation Strategy**:
+**Implementation Approach**
+
 ```rust
-// Pseudocode for parser changes
-fn parse_expression_bp(&mut self, min_bp: u8, marker: impl Marker) {
-    // ... existing code ...
-    
-    // After parsing primary expression, check for indented block
-    if should_enter_block(current_indent, marker_indent) {
-        // Start a synthetic block node
-        self.builder.start_node(Kind::SyntheticBlock.into());
-        
-        // Parse all expressions at this indentation level
-        while at_same_indent_level() {
-            self.parse_expression(new_marker);
+// Add to Value enum
+pub enum Value {
+    // ... existing variants
+    Error(Box<Diagnostic>),
+}
+
+// In builtin_block:
+for expr in args {
+    match expr.eval(ctx) {
+        Ok(value) => result = value,
+        Err(diagnostic) => {
+            // Record the error
+            ctx.compiler.record_diagnostic(diagnostic);
+            // Continue with an Error value
+            result = Value::Error(Box::new(diagnostic));
         }
-        
-        self.builder.finish_node(); // Close SyntheticBlock
     }
 }
 ```
 
-**Key Considerations**:
-- The `WhitespaceMarker` already tracks indentation via `len` and `line` fields
-- Need to distinguish between:
-  - **Continuation**: `f a b` (arguments to same function)
-  - **Block**: Multiple statements at same indent after a statement
-- May need to track "block context" state in the parser
-- The `should_continue()` method in `WhitespaceMarker` already handles indentation rules
+**Type Checking Considerations**
+- `Error` values should be considered compatible with any expected type
+- When an `Error` value is used in an operation, it propagates but doesn't cause a new error
+- This prevents cascading "undefined variable" errors when a previous error made a variable unavailable
 
-**Tricky Cases**:
-- Nested blocks (blocks within blocks)
-- Mixing blocks with function application
-- Determining when a statement "opens" a block context (e.g., after `=` in `let x = ...`)
-
-#### 2. Add `__block__` Builtin Macro (cadenza-eval)
-
-**Location**: `crates/cadenza-eval/src/eval.rs`
-
-**Implementation**:
-```rust
-pub fn builtin_block() -> BuiltinMacro {
-    BuiltinMacro {
-        name: "__block__",
-        signature: Type::function(vec![Type::Unknown], Type::Unknown),
-        func: |args, ctx| {
-            if args.is_empty() {
-                return Ok(Value::Nil);
-            }
-            
-            // Push a new scope for the block
-            ctx.env.push_scope();
-            
-            // Evaluate each expression in sequence
-            let mut result = Value::Nil;
-            for (i, expr) in args.iter().enumerate() {
-                result = expr.eval(ctx)?;
-                
-                // Early return on error? Or collect all errors?
-                // Decision: Continue evaluation, let compiler collect errors
-            }
-            
-            // Pop the scope when exiting the block
-            ctx.env.pop_scope();
-            
-            // Return the last expression's value
-            Ok(result)
-        },
-    }
-}
-```
-
-**Register the Macro**:
-```rust
-// In crates/cadenza-eval/src/env.rs, in `with_standard_builtins()`
-let block_id: InternedString = "__block__".into();
-self.define(block_id, Value::BuiltinMacro(builtin_block()));
-```
-
-#### 3. Handle Synthetic Nodes in Evaluator
-
-**Location**: `crates/cadenza-eval/src/eval.rs` in `impl Eval for Synthetic`
-
-**Current Code**:
-```rust
-impl Eval for Synthetic {
-    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
-        let identifier = self.identifier();
-        // Synthetic nodes are treated as identifiers for macro lookup
-        // ...
-    }
-}
-```
-
-**This Should Already Work**: The `Synthetic::eval` implementation treats synthetic nodes as macro names, which will look up `__block__` and call it with the arguments.
-
-#### 4. Testing Strategy
-
-**Test Files to Create** (in `crates/cadenza-eval/test-data/`):
-- `block-simple.cdz`: Basic 2-statement block
-- `block-function-body.cdz`: Function with block body containing local lets
-- `block-var-assign.cdz`: Block assigned to a variable
-- `block-nested.cdz`: Nested blocks
-- `block-mixed-exprs.cdz`: Block with various expression types (not just lets)
-- `block-scope.cdz`: Verify variables in block don't leak to outer scope
-
-**Example Test**:
+**Example**
 ```cadenza
-# block-simple.cdz
-let result =
-  let x = 10
-  x + 5
-result
-# Expected: 15
+let foo =
+    let bar = undefined_var  # Error 1: undefined variable
+    let baz = bar * 2        # Would normally error, but continues with Error value
+    baz + 10                 # Would normally error, but continues with Error value
+
+# Both errors reported:
+# - undefined_var is not defined
+# (no cascading errors about bar or baz)
 ```
 
-### Known Challenges
+**Related Issues**
+- Diagnostic collection infrastructure already exists (STATUS.md item #3 - completed)
+- Need to update type system to handle Error values
+- Need to update all builtin operations to propagate Error values
 
-1. **Parser Complexity**: The Pratt parser is complex; adding block detection without breaking existing parsing is tricky
-2. **Indentation Edge Cases**: Need to handle:
-   - Empty lines within blocks
-   - Comments within blocks  
-   - Dedentation (when block ends)
-   - Continuation lines (operators at start of line)
-3. **Scope Management**: Blocks need proper scope isolation while still allowing access to outer variables
-4. **Error Recovery**: If one statement in a block fails, should the rest execute?
-5. **CST Preservation**: Synthetic nodes need correct span information for error reporting
+**Priority**: Medium - Would significantly improve developer experience but not blocking for current functionality
 
-### Debugging Tips
-
-1. **Inspect AST**: Use `Debug` output on parsed expressions to see structure
-2. **Check Indentation**: The `WhitespaceMarker::len` field shows computed indentation (spaces + tabs*4)
-3. **Test Incrementally**: Start with 2-statement blocks before adding complexity
-4. **Compare with Root**: The `parse()` function already handles multiple statements at top level; blocks are similar but nested
-
-### Alternative Approaches Considered
-
-1. **Explicit Block Syntax**: Add `{` `}` or `do`/`end` keywords
-   - Pro: Simpler parsing, more explicit
-   - Con: Less elegant, violates indentation-based design philosophy
-   
-2. **Evaluator-Side Detection**: The reverted approach
-   - Pro: No parser changes needed
-   - Con: Too brittle, can't handle all cases, wrong abstraction layer
-
-### References
+## References
 
 - Parser code: `crates/cadenza-syntax/src/parse.rs` 
-- WhitespaceMarker: `parse.rs` lines 667-694
+- WhitespaceMarker: `parse.rs` lines 717-737
+- Block implementation: `crates/cadenza-eval/src/eval.rs` lines 1004-1030
 - Existing synthetic nodes: `__list__` and `__record__` as examples
 - Token generation: `crates/cadenza-syntax/build/token.rs` lines 647-663
+

@@ -103,6 +103,17 @@ mod arith_mul {
         s!("arith_mul", t::eval_all("4 * 5\n"), "4 * 5\n");
     }
 }
+mod block_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_simple",
+            t::eval_all("let foo =\n    let bar = 1\n    let baz = 2\n    bar\nfoo\n"),
+            "let foo =\n    let bar = 1\n    let baz = 2\n    bar\nfoo\n"
+        );
+    }
+}
 mod error_let_invalid {
     use super::*;
     #[test]
@@ -122,6 +133,19 @@ mod measure_quantity {
             "measure_quantity",
             t::eval_all("measure meter\nlet x = meter 5\nx\n"),
             "measure meter\nlet x = meter 5\nx\n"
+        );
+    }
+}
+mod block_scope {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_scope",
+            t::eval_all(
+                "let outer = 100\nlet result =\n    let inner = 200\n    inner + outer\nresult\n"
+            ),
+            "let outer = 100\nlet result =\n    let inner = 200\n    inner + outer\nresult\n"
         );
     }
 }
@@ -159,6 +183,19 @@ mod cmp_le {
     #[test]
     fn eval() {
         s!("cmp_le", t::eval_all("1 <= 1\n"), "1 <= 1\n");
+    }
+}
+mod block_function_body {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_function_body",
+            t::eval_all(
+                "fn foo a b =\n    let av = a * 2\n    let bv = b * 3\n    av * bv\nfoo 5 7\n"
+            ),
+            "fn foo a b =\n    let av = a * 2\n    let bv = b * 3\n    av * bv\nfoo 5 7\n"
+        );
     }
 }
 mod arith_add {
@@ -444,6 +481,19 @@ mod measure_suffix {
             "measure_suffix",
             t::eval_all("measure meter\nlet x = 25.4meter\nx\n"),
             "measure meter\nlet x = 25.4meter\nx\n"
+        );
+    }
+}
+mod block_nested {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_nested",
+            t::eval_all(
+                "let foo =\n    let bar =\n        let baz =\n            1\n        baz\n    bar\nfoo\n"
+            ),
+            "let foo =\n    let bar =\n        let baz =\n            1\n        baz\n    bar\nfoo\n"
         );
     }
 }

@@ -1,0 +1,5 @@
+let outer = 100
+let result =
+    let inner = 200
+    inner + outer
+result

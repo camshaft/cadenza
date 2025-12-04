@@ -4,7 +4,7 @@
 //! identifiers to values. Closures capture the environment by reference.
 
 use crate::{
-    eval::{builtin_assign, builtin_fn, builtin_let, builtin_measure},
+    eval::{builtin_assign, builtin_block, builtin_fn, builtin_let, builtin_measure},
     interner::InternedString,
     map::Map,
     value::Value,
@@ -70,6 +70,7 @@ impl Env {
     /// - `=` - Assignment macro
     /// - `fn` - Function definition macro
     /// - `measure` - Unit definition macro for dimensional analysis
+    /// - `__block__` - Block expression macro (automatically emitted by parser)
     ///
     /// Use this when you want an environment ready for typical evaluation.
     pub fn with_standard_builtins() -> Self {
@@ -85,6 +86,7 @@ impl Env {
     /// - `=` - Assignment macro
     /// - `fn` - Function definition macro
     /// - `measure` - Unit definition macro for dimensional analysis
+    /// - `__block__` - Block expression macro (automatically emitted by parser)
     ///
     /// This can be called on an existing environment to add the standard built-ins.
     pub fn register_standard_builtins(&mut self) {
@@ -92,11 +94,13 @@ impl Env {
         let assign_id: InternedString = "=".into();
         let fn_id: InternedString = "fn".into();
         let measure_id: InternedString = "measure".into();
+        let block_id: InternedString = "__block__".into();
 
         self.define(let_id, Value::BuiltinMacro(builtin_let()));
         self.define(assign_id, Value::BuiltinMacro(builtin_assign()));
         self.define(fn_id, Value::BuiltinMacro(builtin_fn()));
         self.define(measure_id, Value::BuiltinMacro(builtin_measure()));
+        self.define(block_id, Value::BuiltinMacro(builtin_block()));
     }
 
     /// Pushes a new empty scope onto the stack.

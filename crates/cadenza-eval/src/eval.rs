@@ -287,6 +287,10 @@ fn extract_identifier(expr: &Expr) -> Option<InternedString> {
             let text = op.syntax().text();
             Some(text.to_string().as_str().into())
         }
+        Expr::Synthetic(syn) => {
+            // Synthetic nodes provide their identifier directly
+            Some(syn.identifier().into())
+        }
         _ => None,
     }
 }
@@ -753,7 +757,7 @@ impl Eval for Synthetic {
         let ident = self.identifier();
 
         match ident {
-            "__list__" | "__record__" => {
+            "__list__" | "__record__" | "__block__" => {
                 // These should not appear as standalone expressions
                 // They're always wrapped in Apply nodes
                 Ok(Value::Nil)
@@ -979,6 +983,50 @@ fn handle_function_definition(
 
     // Return nil
     Ok(Value::Nil)
+}
+
+/// Creates the `__block__` synthetic macro for handling block expressions.
+///
+/// The `__block__` macro is automatically emitted by the parser when multiple
+/// expressions are at the same indentation level. It creates a new scope,
+/// evaluates each expression in sequence, and returns the value of the last
+/// expression.
+///
+/// Example:
+/// ```cadenza
+/// let result =
+///     let x = 10
+///     let y = 20
+///     x + y
+/// ```
+///
+/// The parser transforms this into: `[=, [let, result], [__block__, [=, [let, x], 10], [=, [let, y], 20], [+, x, y]]]`
+pub fn builtin_block() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "__block__",
+        signature: Type::function(vec![Type::Unknown], Type::Unknown),
+        func: |args, ctx| {
+            if args.is_empty() {
+                return Ok(Value::Nil);
+            }
+
+            // Push a new scope for the block
+            ctx.env.push_scope();
+
+            // Evaluate each expression in sequence
+            let mut result = Value::Nil;
+            for expr in args {
+                result = expr.eval(ctx)?;
+                // Continue evaluation even if one expression returns Nil
+            }
+
+            // Pop the scope when exiting the block
+            ctx.env.pop_scope();
+
+            // Return the last expression's value
+            Ok(result)
+        },
+    }
 }
 
 /// Creates the `fn` macro for defining functions.
