@@ -263,7 +263,7 @@ let s = "hello ${v}"
 - [ ] Handle nested expressions and escaping of `$` and `{}`
 - [ ] Proper source tracking for interpolated parts
 
-**Notes**: Common in many modern languages (JavaScript, Kotlin, Swift, etc.). Should convert all expressions to strings automatically.
+**Notes**: Common in many modern languages (JavaScript, Kotlin, Swift, etc.). Should convert all expressions to strings automatically. **Dependency**: Requires trait system to support automatic conversion of values to strings.
 
 ### Rational Numbers
 
@@ -286,7 +286,7 @@ assert a == 1 "expected exact rational arithmetic: 1/2 * 2 should equal 1"
 - [ ] Conversion between integers, floats, and rationals
 - [ ] Display formatting for rationals
 
-**Notes**: Essential for exact arithmetic. Consider using existing Rust crates like `num-rational`. Should integrate with type system and unit system.
+**Notes**: Essential for exact arithmetic. Consider using existing Rust crates like `num-rational`. Should integrate with type system and unit system. Rationals should support measurement units for proper dimensional analysis.
 
 ### Quote and Unquote
 
@@ -346,7 +346,7 @@ add_one 5  # expands to 5 + 1, returns 6
 ```
 
 **Requirements**:
-- [ ] Add `macro` keyword to lexer and parser
+- [ ] Implement `macro` as a builtin macro (no keyword needed - identifiers handled by environment)
 - [ ] Parser support for macro definitions
 - [ ] AST representation for macro definitions
 - [ ] Implement macro storage in environment (similar to functions)
@@ -373,9 +373,9 @@ let record2 = { a, b }  # equivalent to { a = a, b = b }
 ```
 
 **Requirements**:
-- [ ] Extend lexer/parser for record literal syntax `{ field = value, ... }`
+- [x] Extend lexer/parser for record literal syntax `{ field = value, ... }` (Merged in #43)
 - [ ] Parser support for shorthand syntax `{ field, ... }`
-- [ ] Add AST nodes for record literals
+- [x] Add AST nodes for record literals (Merged in #43)
 - [ ] Implement `Value::Record` type with field name to value mapping
 - [ ] Evaluator support for record construction
 - [ ] Type checking for record literals (all fields present)
@@ -510,7 +510,7 @@ assert foo.b == 2.0
 ```
 
 **Requirements**:
-- [ ] Add `struct` keyword to lexer
+- [ ] Implement `struct` as a builtin macro (no keyword needed - identifiers handled by environment)
 - [ ] Parser support for struct definitions
 - [ ] AST representation for struct definitions
 - [ ] Type system support for nominal types
@@ -547,7 +547,7 @@ match value_a
 ```
 
 **Requirements**:
-- [ ] Add `enum` keyword to lexer
+- [ ] Implement `enum` as a builtin macro (no keyword needed - identifiers handled by environment)
 - [ ] Parser support for enum definitions with variants
 - [ ] AST representation for enum definitions
 - [ ] Type system support for sum types / tagged unions
