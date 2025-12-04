@@ -3,7 +3,5 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "[, a, b]\n"
 ---
 [
-    [__list__],
-    [<MISSING APPLY RECEIVER EXPR in []>, a],
-    [<MISSING APPLY RECEIVER EXPR in []>, b],
+    [__list__, a, b],
 ]

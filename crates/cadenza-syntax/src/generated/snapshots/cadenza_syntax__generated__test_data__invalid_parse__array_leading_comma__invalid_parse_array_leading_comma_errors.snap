@@ -8,6 +8,6 @@ expression: "[, a, b]\n"
             start: 1,
             end: 2,
         },
-        message: "expected ]",
+        message: "expected expression before comma",
     },
 ]

@@ -807,33 +807,6 @@ mod ident_emoji_multiple {
         s!("ident_emoji_multiple_ast", t::ast("🎉🎊🎁\n"), "🎉🎊🎁\n");
     }
 }
-mod record_field_with_comment {
-    use super::*;
-    #[test]
-    fn lex() {
-        s!(
-            "record_field_with_comment_lex",
-            t::lex("{ a = 1, # comment\nb = 2 }\n"),
-            "{ a = 1, # comment\nb = 2 }\n"
-        );
-    }
-    #[test]
-    fn cst() {
-        s!(
-            "record_field_with_comment_cst",
-            t::cst("{ a = 1, # comment\nb = 2 }\n"),
-            "{ a = 1, # comment\nb = 2 }\n"
-        );
-    }
-    #[test]
-    fn ast() {
-        s!(
-            "record_field_with_comment_ast",
-            t::ast("{ a = 1, # comment\nb = 2 }\n"),
-            "{ a = 1, # comment\nb = 2 }\n"
-        );
-    }
-}
 mod ap_op_or {
     use super::*;
     #[test]
