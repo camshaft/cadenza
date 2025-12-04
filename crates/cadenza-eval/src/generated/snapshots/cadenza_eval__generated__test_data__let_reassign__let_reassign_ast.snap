@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let x = 1\nx = 2\nx\n"
+---
+[
+    [=, [let, x], 1],
+    [=, x, 2],
+    x,
+]

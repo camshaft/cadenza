@@ -14,7 +14,7 @@ use crate::{
     diagnostic::{Diagnostic, Result},
     env::Env,
     interner::InternedString,
-    value::{BuiltinMacro, Type, Value},
+    value::{BuiltinFn, BuiltinMacro, Type, Value},
 };
 use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
 
@@ -252,9 +252,18 @@ impl Eval for Apply {
         }
 
         // Not a macro call - evaluate the callee
-        // For identifiers, we must NOT auto-apply since this is an application context
+        // For identifiers and operators, we must NOT auto-apply since this is an application context
         let callee = match &callee_expr {
             Expr::Ident(ident) => eval_ident_no_auto_apply(ident, ctx)?,
+            Expr::Op(op) => {
+                // Look up operator in environment
+                let text = op.syntax().text();
+                let id: InternedString = text.to_string().as_str().into();
+                ctx.env
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| Diagnostic::undefined_variable(id))?
+            }
             _ => callee_expr.eval(ctx)?,
         };
 
@@ -317,6 +326,17 @@ fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> 
 fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
         Value::BuiltinFn(builtin) => (builtin.func)(&args, ctx),
+        Value::Symbol(id) => {
+            // Look up the symbol in the environment and try to call it
+            // This handles operators and other functions stored in variables
+            let actual_value = ctx
+                .env
+                .get(id)
+                .cloned()
+                .ok_or_else(|| Diagnostic::undefined_variable(id))?;
+            // Recursively apply the looked-up value
+            apply_value(actual_value, args, ctx)
+        }
         Value::UnitConstructor(unit) => {
             // Unit constructors create quantities from numbers
             if args.len() != 1 {
@@ -365,30 +385,7 @@ fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Re
 
             Ok(result)
         }
-        Value::Symbol(id) => {
-            // Operator application
-            apply_operator(id, args)
-        }
         _ => Err(Diagnostic::not_callable(callee.type_of())),
-    }
-}
-
-/// Helper function to extract numeric value and dimension from a Value.
-///
-/// Returns (value, Some(dimension)) for Quantity, (value, None) for plain numbers.
-fn extract_numeric_and_dimension(
-    value: &Value,
-) -> Result<(f64, Option<crate::unit::DerivedDimension>)> {
-    match value {
-        Value::Integer(n) => Ok((*n as f64, None)),
-        Value::Float(f) => Ok((*f, None)),
-        Value::Quantity {
-            value, dimension, ..
-        } => Ok((*value, Some(dimension.clone()))),
-        _ => Err(Diagnostic::type_error(
-            Type::union(vec![Type::Integer, Type::Float]),
-            value.type_of(),
-        )),
     }
 }
 
@@ -420,363 +417,6 @@ fn create_numeric_value(
             // Dimensionless or no dimension - return plain float
             Value::Float(value)
         }
-    }
-}
-
-/// Applies a built-in operator.
-fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
-    let op_name: &str = &op_id;
-
-    /// Creates the "number" type (integer | float) lazily only when needed for errors.
-    fn number_type() -> Type {
-        Type::union(vec![Type::Integer, Type::Float])
-    }
-
-    /// Helper function to check if two values have the same type and return a type error if not.
-    fn check_same_type(a: &Value, b: &Value) -> Result<()> {
-        let type_a = a.type_of();
-        let type_b = b.type_of();
-        if type_a != type_b {
-            return Err(Diagnostic::type_error(type_a, type_b));
-        }
-        Ok(())
-    }
-
-    /// Helper function to compare two values using their PartialOrd implementation.
-    /// Returns a type error if the values have different types or are not comparable.
-    fn compare_ordered<F>(a: &Value, b: &Value, check_ordering: F) -> Result<Value>
-    where
-        F: FnOnce(std::cmp::Ordering) -> bool,
-    {
-        // Check that types match - strongly typed, no implicit conversions
-        check_same_type(a, b)?;
-
-        match (a, b) {
-            (Value::Integer(a), Value::Integer(b)) => {
-                let ordering = a.cmp(b);
-                Ok(Value::Bool(check_ordering(ordering)))
-            }
-            (Value::Float(a), Value::Float(b)) => {
-                // For floats, use partial_cmp since they may be NaN
-                match a.partial_cmp(b) {
-                    Some(ordering) => Ok(Value::Bool(check_ordering(ordering))),
-                    None => Err(Diagnostic::syntax("cannot compare NaN values".to_string())),
-                }
-            }
-            _ => Err(Diagnostic::syntax(format!(
-                "cannot compare values of type {}",
-                a.type_of()
-            ))),
-        }
-    }
-
-    match op_name {
-        "+" => match args.as_slice() {
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a + b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a + b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 + b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a + *b as f64)),
-            // Handle quantity addition - dimensions must match
-            [
-                Value::Quantity {
-                    value: v1,
-                    unit: u1,
-                    dimension: d1,
-                },
-                Value::Quantity {
-                    value: v2,
-                    unit: u2,
-                    dimension: _d2,
-                },
-            ] => {
-                // Check if dimensions are compatible
-                if u1.dimension != u2.dimension {
-                    return Err(Diagnostic::syntax(format!(
-                        "cannot add quantities with incompatible dimensions: {} and {}",
-                        u1.name, u2.name
-                    )));
-                }
-
-                // Convert second quantity to first unit's scale
-                let scale_ratio = u2.scale / u1.scale;
-                let v2_converted = v2 * scale_ratio;
-
-                let result = v1 + v2_converted;
-                Ok(Value::Quantity {
-                    value: result,
-                    unit: u1.clone(),
-                    dimension: d1.clone(),
-                })
-            }
-            // Allow adding plain numbers to quantities
-            [
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-                Value::Integer(n),
-            ]
-            | [
-                Value::Integer(n),
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-            ] => {
-                let result = value + (*n as f64);
-                Ok(Value::Quantity {
-                    value: result,
-                    unit: unit.clone(),
-                    dimension: dimension.clone(),
-                })
-            }
-            [
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-                Value::Float(f),
-            ]
-            | [
-                Value::Float(f),
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-            ] => {
-                let result = value + f;
-                Ok(Value::Quantity {
-                    value: result,
-                    unit: unit.clone(),
-                    dimension: dimension.clone(),
-                })
-            }
-            // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => {
-                Err(Diagnostic::type_error(number_type(), b.type_of()))
-            }
-            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
-            _ => Err(Diagnostic::arity(2, args.len())),
-        },
-        "-" => match args.as_slice() {
-            [Value::Integer(a)] => Ok(Value::Integer(-a)),
-            [Value::Float(a)] => Ok(Value::Float(-a)),
-            [
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-            ] => Ok(Value::Quantity {
-                value: -value,
-                unit: unit.clone(),
-                dimension: dimension.clone(),
-            }),
-            [Value::Integer(a), Value::Integer(b)] => Ok(Value::Integer(a - b)),
-            [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a - b)),
-            [Value::Integer(a), Value::Float(b)] => Ok(Value::Float(*a as f64 - b)),
-            [Value::Float(a), Value::Integer(b)] => Ok(Value::Float(a - *b as f64)),
-            // Handle quantity subtraction - dimensions must match
-            [
-                Value::Quantity {
-                    value: v1,
-                    unit: u1,
-                    dimension: d1,
-                },
-                Value::Quantity {
-                    value: v2,
-                    unit: u2,
-                    dimension: _d2,
-                },
-            ] => {
-                // Check if dimensions are compatible
-                if u1.dimension != u2.dimension {
-                    return Err(Diagnostic::syntax(format!(
-                        "cannot subtract quantities with incompatible dimensions: {} and {}",
-                        u1.name, u2.name
-                    )));
-                }
-
-                // Convert second quantity to first unit's scale
-                let scale_ratio = u2.scale / u1.scale;
-                let v2_converted = v2 * scale_ratio;
-
-                let result = v1 - v2_converted;
-                Ok(Value::Quantity {
-                    value: result,
-                    unit: u1.clone(),
-                    dimension: d1.clone(),
-                })
-            }
-            // Allow subtracting plain numbers from quantities
-            [
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-                Value::Integer(n),
-            ] => {
-                let result = value - (*n as f64);
-                Ok(Value::Quantity {
-                    value: result,
-                    unit: unit.clone(),
-                    dimension: dimension.clone(),
-                })
-            }
-            [
-                Value::Integer(n),
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-            ] => {
-                let result = (*n as f64) - value;
-                Ok(Value::Quantity {
-                    value: result,
-                    unit: unit.clone(),
-                    dimension: dimension.clone(),
-                })
-            }
-            [
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-                Value::Float(f),
-            ] => {
-                let result = value - f;
-                Ok(Value::Quantity {
-                    value: result,
-                    unit: unit.clone(),
-                    dimension: dimension.clone(),
-                })
-            }
-            [
-                Value::Float(f),
-                Value::Quantity {
-                    value,
-                    unit,
-                    dimension,
-                },
-            ] => {
-                let result = f - value;
-                Ok(Value::Quantity {
-                    value: result,
-                    unit: unit.clone(),
-                    dimension: dimension.clone(),
-                })
-            }
-            // For binary operators, report the first non-number type as the actual type
-            [Value::Integer(_), b] | [Value::Float(_), b] => {
-                Err(Diagnostic::type_error(number_type(), b.type_of()))
-            }
-            [a, _] => Err(Diagnostic::type_error(number_type(), a.type_of())),
-            [] => Err(Diagnostic::arity(1, 0)),
-            _ => Err(Diagnostic::arity(2, args.len())),
-        },
-        "*" => {
-            if args.len() != 2 {
-                return Err(Diagnostic::arity(2, args.len()));
-            }
-
-            // Extract numeric values and dimensions
-            let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
-            let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
-
-            let result_val = a_val * b_val;
-
-            // Calculate result dimension
-            let result_dim = match (a_dim, b_dim) {
-                (Some(a), Some(b)) => Some(a.multiply(&b)),
-                (Some(a), None) | (None, Some(a)) => Some(a),
-                (None, None) => None,
-            };
-
-            // If result is dimensionless and no fractional part, return integer
-            if result_dim.is_none() && result_val.fract() == 0.0 {
-                Ok(Value::Integer(result_val as i64))
-            } else {
-                Ok(create_numeric_value(result_val, result_dim, None))
-            }
-        }
-        "/" => {
-            if args.len() != 2 {
-                return Err(Diagnostic::arity(2, args.len()));
-            }
-
-            // Extract numeric values and dimensions
-            let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
-            let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
-
-            if b_val == 0.0 {
-                return Err(Diagnostic::syntax("division by zero"));
-            }
-
-            let result_val = a_val / b_val;
-
-            // Calculate result dimension
-            let result_dim = match (a_dim, b_dim) {
-                (Some(a), Some(b)) => Some(a.divide(&b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => {
-                    // 1 / dimension means the dimension is inverted
-                    use crate::unit::DerivedDimension;
-                    Some(DerivedDimension {
-                        numerator: b.denominator.clone(),
-                        denominator: b.numerator.clone(),
-                    })
-                }
-                (None, None) => None,
-            };
-
-            // If result is dimensionless and no fractional part, return integer
-            if result_dim.is_none() && result_val.fract() == 0.0 {
-                Ok(Value::Integer(result_val as i64))
-            } else {
-                Ok(create_numeric_value(result_val, result_dim, None))
-            }
-        }
-        "==" => match args.as_slice() {
-            [a, b] => {
-                check_same_type(a, b)?;
-                Ok(Value::Bool(a == b))
-            }
-            _ => Err(Diagnostic::arity(2, args.len())),
-        },
-        "!=" => match args.as_slice() {
-            [a, b] => {
-                check_same_type(a, b)?;
-                Ok(Value::Bool(a != b))
-            }
-            _ => Err(Diagnostic::arity(2, args.len())),
-        },
-        "<" => match args.as_slice() {
-            [a, b] => compare_ordered(a, b, |ord| ord == std::cmp::Ordering::Less),
-            _ => Err(Diagnostic::arity(2, args.len())),
-        },
-        "<=" => match args.as_slice() {
-            [a, b] => compare_ordered(a, b, |ord| ord != std::cmp::Ordering::Greater),
-            _ => Err(Diagnostic::arity(2, args.len())),
-        },
-        ">" => match args.as_slice() {
-            [a, b] => compare_ordered(a, b, |ord| ord == std::cmp::Ordering::Greater),
-            _ => Err(Diagnostic::arity(2, args.len())),
-        },
-        ">=" => match args.as_slice() {
-            [a, b] => compare_ordered(a, b, |ord| ord != std::cmp::Ordering::Less),
-            _ => Err(Diagnostic::arity(2, args.len())),
-        },
-        // Note: The `=` operator is handled as a special form (builtin_assign) for proper
-        // variable assignment semantics. If `=` appears here, it means it wasn't registered
-        // as a special form in the environment.
-        _ => Err(Diagnostic::undefined_variable(op_id)),
     }
 }
 
@@ -1270,6 +910,668 @@ pub fn builtin_measure() -> BuiltinMacro {
     }
 }
 
+// =============================================================================
+// Built-in operators (registered as functions in the standard environment)
+// =============================================================================
+
+/// Creates the `+` addition operator.
+pub fn builtin_add() -> BuiltinFn {
+    BuiltinFn {
+        name: "+",
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float, Type::Float], Type::Float),
+        ]),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            match (&args[0], &args[1]) {
+                (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
+                (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+                // Handle quantity addition - dimensions must match
+                (
+                    Value::Quantity {
+                        value: v1,
+                        unit: u1,
+                        dimension: d1,
+                    },
+                    Value::Quantity {
+                        value: v2,
+                        unit: u2,
+                        dimension: _d2,
+                    },
+                ) => {
+                    // Check if dimensions are compatible
+                    if u1.dimension != u2.dimension {
+                        return Err(Diagnostic::syntax(format!(
+                            "cannot add quantities with incompatible dimensions: {} and {}",
+                            u1.name, u2.name
+                        )));
+                    }
+
+                    // Convert second quantity to first unit's scale
+                    let scale_ratio = u2.scale / u1.scale;
+                    let v2_converted = v2 * scale_ratio;
+
+                    let result = v1 + v2_converted;
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: u1.clone(),
+                        dimension: d1.clone(),
+                    })
+                }
+                // Allow adding plain numbers to quantities
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Integer(n),
+                )
+                | (
+                    Value::Integer(n),
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                ) => {
+                    let result = value + (*n as f64);
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Float(f),
+                )
+                | (
+                    Value::Float(f),
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                ) => {
+                    let result = value + f;
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                // Type mismatch - reject mixed integer/float operations
+                (Value::Integer(_), Value::Float(_)) | (Value::Float(_), Value::Integer(_)) => {
+                    Err(Diagnostic::type_error(args[0].type_of(), args[1].type_of()))
+                }
+                // For non-numeric types, report type error
+                (Value::Integer(_), b) | (Value::Float(_), b) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    b.type_of(),
+                )),
+                (a, _) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    a.type_of(),
+                )),
+            }
+        },
+    }
+}
+
+/// Creates the `-` subtraction/negation operator.
+pub fn builtin_sub() -> BuiltinFn {
+    BuiltinFn {
+        name: "-",
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float], Type::Float),
+            Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float, Type::Float], Type::Float),
+        ]),
+        func: |args, _ctx| {
+            match args.len() {
+                1 => {
+                    // Unary negation
+                    match &args[0] {
+                        Value::Integer(a) => Ok(Value::Integer(-a)),
+                        Value::Float(a) => Ok(Value::Float(-a)),
+                        Value::Quantity {
+                            value,
+                            unit,
+                            dimension,
+                        } => Ok(Value::Quantity {
+                            value: -value,
+                            unit: unit.clone(),
+                            dimension: dimension.clone(),
+                        }),
+                        a => Err(Diagnostic::type_error(
+                            Type::union(vec![Type::Integer, Type::Float]),
+                            a.type_of(),
+                        )),
+                    }
+                }
+                2 => {
+                    // Binary subtraction
+                    match (&args[0], &args[1]) {
+                        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a - b)),
+                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
+                        // Handle quantity subtraction - dimensions must match
+                        (
+                            Value::Quantity {
+                                value: v1,
+                                unit: u1,
+                                dimension: d1,
+                            },
+                            Value::Quantity {
+                                value: v2,
+                                unit: u2,
+                                dimension: _d2,
+                            },
+                        ) => {
+                            // Check if dimensions are compatible
+                            if u1.dimension != u2.dimension {
+                                return Err(Diagnostic::syntax(format!(
+                                    "cannot subtract quantities with incompatible dimensions: {} and {}",
+                                    u1.name, u2.name
+                                )));
+                            }
+
+                            // Convert second quantity to first unit's scale
+                            let scale_ratio = u2.scale / u1.scale;
+                            let v2_converted = v2 * scale_ratio;
+
+                            let result = v1 - v2_converted;
+                            Ok(Value::Quantity {
+                                value: result,
+                                unit: u1.clone(),
+                                dimension: d1.clone(),
+                            })
+                        }
+                        // Allow subtracting plain numbers from quantities
+                        (
+                            Value::Quantity {
+                                value,
+                                unit,
+                                dimension,
+                            },
+                            Value::Integer(n),
+                        ) => {
+                            let result = value - (*n as f64);
+                            Ok(Value::Quantity {
+                                value: result,
+                                unit: unit.clone(),
+                                dimension: dimension.clone(),
+                            })
+                        }
+                        (
+                            Value::Integer(n),
+                            Value::Quantity {
+                                value,
+                                unit,
+                                dimension,
+                            },
+                        ) => {
+                            let result = (*n as f64) - value;
+                            Ok(Value::Quantity {
+                                value: result,
+                                unit: unit.clone(),
+                                dimension: dimension.clone(),
+                            })
+                        }
+                        (
+                            Value::Quantity {
+                                value,
+                                unit,
+                                dimension,
+                            },
+                            Value::Float(f),
+                        ) => {
+                            let result = value - f;
+                            Ok(Value::Quantity {
+                                value: result,
+                                unit: unit.clone(),
+                                dimension: dimension.clone(),
+                            })
+                        }
+                        (
+                            Value::Float(f),
+                            Value::Quantity {
+                                value,
+                                unit,
+                                dimension,
+                            },
+                        ) => {
+                            let result = f - value;
+                            Ok(Value::Quantity {
+                                value: result,
+                                unit: unit.clone(),
+                                dimension: dimension.clone(),
+                            })
+                        }
+                        // Type mismatch - reject mixed integer/float operations
+                        (Value::Integer(_), Value::Float(_))
+                        | (Value::Float(_), Value::Integer(_)) => {
+                            Err(Diagnostic::type_error(args[0].type_of(), args[1].type_of()))
+                        }
+                        // For non-numeric types, report type error
+                        (Value::Integer(_), b) | (Value::Float(_), b) => {
+                            Err(Diagnostic::type_error(
+                                Type::union(vec![Type::Integer, Type::Float]),
+                                b.type_of(),
+                            ))
+                        }
+                        (a, _) => Err(Diagnostic::type_error(
+                            Type::union(vec![Type::Integer, Type::Float]),
+                            a.type_of(),
+                        )),
+                    }
+                }
+                0 => Err(Diagnostic::arity(1, 0)),
+                _ => Err(Diagnostic::arity(2, args.len())),
+            }
+        },
+    }
+}
+
+/// Creates the `*` multiplication operator.
+pub fn builtin_mul() -> BuiltinFn {
+    BuiltinFn {
+        name: "*",
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float, Type::Float], Type::Float),
+        ]),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            match (&args[0], &args[1]) {
+                // Integer multiplication
+                (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
+                // Float multiplication
+                (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+                // Quantity multiplication with dimensions
+                (
+                    Value::Quantity {
+                        value: v1,
+                        unit: _,
+                        dimension: d1,
+                    },
+                    Value::Quantity {
+                        value: v2,
+                        unit: _,
+                        dimension: d2,
+                    },
+                ) => {
+                    let result_val = v1 * v2;
+                    let result_dim = d1.multiply(d2);
+                    Ok(create_numeric_value(result_val, Some(result_dim), None))
+                }
+                // Quantity * scalar
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Float(f),
+                )
+                | (
+                    Value::Float(f),
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                ) => {
+                    let result = value * f;
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Integer(n),
+                )
+                | (
+                    Value::Integer(n),
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                ) => {
+                    let result = value * (*n as f64);
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                // Type mismatch - reject mixed integer/float operations
+                (Value::Integer(_), Value::Float(_)) | (Value::Float(_), Value::Integer(_)) => {
+                    Err(Diagnostic::type_error(args[0].type_of(), args[1].type_of()))
+                }
+                // For non-numeric types, report type error
+                (Value::Integer(_), b) | (Value::Float(_), b) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    b.type_of(),
+                )),
+                (a, _) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    a.type_of(),
+                )),
+            }
+        },
+    }
+}
+
+/// Creates the `/` division operator.
+pub fn builtin_div() -> BuiltinFn {
+    BuiltinFn {
+        name: "/",
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float, Type::Float], Type::Float),
+        ]),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            match (&args[0], &args[1]) {
+                // Integer division
+                (Value::Integer(a), Value::Integer(b)) => {
+                    if *b == 0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    Ok(Value::Integer(a / b))
+                }
+                // Float division
+                (Value::Float(a), Value::Float(b)) => {
+                    if *b == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    Ok(Value::Float(a / b))
+                }
+                // Quantity division with dimensions
+                (
+                    Value::Quantity {
+                        value: v1,
+                        unit: _,
+                        dimension: d1,
+                    },
+                    Value::Quantity {
+                        value: v2,
+                        unit: _,
+                        dimension: d2,
+                    },
+                ) => {
+                    if *v2 == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result_val = v1 / v2;
+                    let result_dim = d1.divide(d2);
+                    Ok(create_numeric_value(result_val, Some(result_dim), None))
+                }
+                // Quantity / scalar
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Float(f),
+                ) => {
+                    if *f == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result = value / f;
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Integer(n),
+                ) => {
+                    if *n == 0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result = value / (*n as f64);
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                // scalar / Quantity - inverts dimension
+                (
+                    Value::Float(f),
+                    Value::Quantity {
+                        value, dimension, ..
+                    },
+                ) => {
+                    if *value == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result_val = f / value;
+                    // Invert the dimension
+                    use crate::unit::DerivedDimension;
+                    let inverted_dim = DerivedDimension {
+                        numerator: dimension.denominator.clone(),
+                        denominator: dimension.numerator.clone(),
+                    };
+                    Ok(create_numeric_value(result_val, Some(inverted_dim), None))
+                }
+                (
+                    Value::Integer(n),
+                    Value::Quantity {
+                        value, dimension, ..
+                    },
+                ) => {
+                    if *value == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result_val = (*n as f64) / value;
+                    // Invert the dimension
+                    use crate::unit::DerivedDimension;
+                    let inverted_dim = DerivedDimension {
+                        numerator: dimension.denominator.clone(),
+                        denominator: dimension.numerator.clone(),
+                    };
+                    Ok(create_numeric_value(result_val, Some(inverted_dim), None))
+                }
+                // Type mismatch - reject mixed integer/float operations
+                (Value::Integer(_), Value::Float(_)) | (Value::Float(_), Value::Integer(_)) => {
+                    Err(Diagnostic::type_error(args[0].type_of(), args[1].type_of()))
+                }
+                // For non-numeric types, report type error
+                (Value::Integer(_), b) | (Value::Float(_), b) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    b.type_of(),
+                )),
+                (a, _) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    a.type_of(),
+                )),
+            }
+        },
+    }
+}
+
+/// Creates the `==` equality operator.
+pub fn builtin_eq() -> BuiltinFn {
+    BuiltinFn {
+        name: "==",
+        signature: Type::function(vec![Type::Unknown, Type::Unknown], Type::Bool),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            let a = &args[0];
+            let b = &args[1];
+
+            // Check that types match
+            let type_a = a.type_of();
+            let type_b = b.type_of();
+            if type_a != type_b {
+                return Err(Diagnostic::type_error(type_a, type_b));
+            }
+
+            Ok(Value::Bool(a == b))
+        },
+    }
+}
+
+/// Creates the `!=` inequality operator.
+pub fn builtin_ne() -> BuiltinFn {
+    BuiltinFn {
+        name: "!=",
+        signature: Type::function(vec![Type::Unknown, Type::Unknown], Type::Bool),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+
+            let a = &args[0];
+            let b = &args[1];
+
+            // Check that types match
+            let type_a = a.type_of();
+            let type_b = b.type_of();
+            if type_a != type_b {
+                return Err(Diagnostic::type_error(type_a, type_b));
+            }
+
+            Ok(Value::Bool(a != b))
+        },
+    }
+}
+
+/// Helper function to compare two values using their PartialOrd implementation.
+/// Returns a type error if the values have different types or are not comparable.
+fn compare_ordered<F>(a: &Value, b: &Value, check_ordering: F) -> Result<Value>
+where
+    F: FnOnce(std::cmp::Ordering) -> bool,
+{
+    // Check that types match - strongly typed, no implicit conversions
+    let type_a = a.type_of();
+    let type_b = b.type_of();
+    if type_a != type_b {
+        return Err(Diagnostic::type_error(type_a, type_b));
+    }
+
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => {
+            let ordering = a.cmp(b);
+            Ok(Value::Bool(check_ordering(ordering)))
+        }
+        (Value::Float(a), Value::Float(b)) => {
+            // For floats, use partial_cmp since they may be NaN
+            match a.partial_cmp(b) {
+                Some(ordering) => Ok(Value::Bool(check_ordering(ordering))),
+                None => Err(Diagnostic::syntax("cannot compare NaN values".to_string())),
+            }
+        }
+        _ => Err(Diagnostic::syntax(format!(
+            "cannot compare values of type {}",
+            a.type_of()
+        ))),
+    }
+}
+
+/// Creates the `<` less-than operator.
+pub fn builtin_lt() -> BuiltinFn {
+    BuiltinFn {
+        name: "<",
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Bool),
+            Type::function(vec![Type::Float, Type::Float], Type::Bool),
+        ]),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+            compare_ordered(&args[0], &args[1], |ord| ord == std::cmp::Ordering::Less)
+        },
+    }
+}
+
+/// Creates the `<=` less-than-or-equal operator.
+pub fn builtin_lte() -> BuiltinFn {
+    BuiltinFn {
+        name: "<=",
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Bool),
+            Type::function(vec![Type::Float, Type::Float], Type::Bool),
+        ]),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+            compare_ordered(&args[0], &args[1], |ord| ord != std::cmp::Ordering::Greater)
+        },
+    }
+}
+
+/// Creates the `>` greater-than operator.
+pub fn builtin_gt() -> BuiltinFn {
+    BuiltinFn {
+        name: ">",
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Bool),
+            Type::function(vec![Type::Float, Type::Float], Type::Bool),
+        ]),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+            compare_ordered(&args[0], &args[1], |ord| ord == std::cmp::Ordering::Greater)
+        },
+    }
+}
+
+/// Creates the `>=` greater-than-or-equal operator.
+pub fn builtin_gte() -> BuiltinFn {
+    BuiltinFn {
+        name: ">=",
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Bool),
+            Type::function(vec![Type::Float, Type::Float], Type::Bool),
+        ]),
+        func: |args, _ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::arity(2, args.len()));
+            }
+            compare_ordered(&args[0], &args[1], |ord| ord != std::cmp::Ordering::Less)
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1281,7 +1583,7 @@ mod tests {
             return Err(Diagnostic::parse_error(&err.message, err.span));
         }
         let root = parsed.ast();
-        let mut env = Env::new();
+        let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
         let results = eval(&root, &mut env, &mut compiler);
         if compiler.has_errors() {

@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\nlet velocity = distance / time\nvelocity\n"
+---
+[
+    [measure, meter],
+    [measure, second],
+    [=, [let, distance], [meter, 100]],
+    [=, [let, time], [second, 10]],
+    [=, [let, velocity], [/, distance, time]],
+    velocity,
+]

@@ -83,9 +83,11 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Updated BuiltinFn and BuiltinMacro signatures to take EvalContext
    - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573086109)
 
-10. **Move operators to std environment**
-    - Current: Operators hardcoded in `apply_operator` function
-    - Needed: Load from "std" environment at startup
+10. ~~**Move operators to std environment**~~ ✅
+    - [x] Created BuiltinFn implementations for all operators (+, -, *, /, ==, !=, <, <=, >, >=)
+    - [x] Registered operators in Env::register_standard_builtins()
+    - [x] Removed hardcoded apply_operator function
+    - [x] Operators are now first-class values in the environment
     - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573095772)
 
 ### Interner Improvements

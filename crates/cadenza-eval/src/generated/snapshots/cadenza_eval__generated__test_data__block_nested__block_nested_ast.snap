@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let foo =\n    let bar =\n        let baz =\n            1\n        baz\n    bar\nfoo\n"
+---
+[
+    [=, [let, foo], [__block__, [=, [let, bar], [__block__, [=, [let, baz], [__block__, 1]], baz]], bar]],
+    foo,
+]

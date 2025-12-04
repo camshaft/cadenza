@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test that >= errors on type mismatch\n200 >= \"qux\"\n"
+---
+[
+    [>=, 200, "qux"],
+]

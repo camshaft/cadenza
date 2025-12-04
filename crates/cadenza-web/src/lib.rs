@@ -472,7 +472,7 @@ mod tests {
         let source = "1 + 2";
         let parsed = parse::parse(source);
         let root = parsed.ast();
-        let mut env = Env::new();
+        let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
 
         let results = cadenza_eval::eval(&root, &mut env, &mut compiler);

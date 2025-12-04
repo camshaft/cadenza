@@ -36,7 +36,11 @@ pub use diagnostic::{
 // Backwards compatibility aliases
 pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;
-pub use eval::{builtin_assign, builtin_fn, builtin_let, builtin_list, builtin_measure, eval};
+pub use eval::{
+    builtin_add, builtin_assign, builtin_div, builtin_eq, builtin_fn, builtin_gt, builtin_gte,
+    builtin_let, builtin_list, builtin_lt, builtin_lte, builtin_measure, builtin_mul, builtin_ne,
+    builtin_sub, eval,
+};
 pub use interner::InternedString;
 pub use map::Map;
 pub use unit::{DerivedDimension, Dimension, Unit, UnitRegistry};

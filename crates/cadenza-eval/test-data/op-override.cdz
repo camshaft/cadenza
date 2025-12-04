@@ -1,0 +1,3 @@
+let my_buggy_add = *
+let + = my_buggy_add
+1 + 2
