@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "{ a = 1, b = 2 }\n"
+---
+[
+    [__record__, [=, a, 1], [=, b, 2]],
+]

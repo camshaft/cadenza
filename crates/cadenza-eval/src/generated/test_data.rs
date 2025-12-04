@@ -1,5 +1,24 @@
 use crate::testing as t;
 use insta::assert_debug_snapshot as s;
+mod record_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "record_simple",
+            t::eval_all("{ a = 1, b = 2 }\n"),
+            "{ a = 1, b = 2 }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_simple_ast",
+            t::ast("{ a = 1, b = 2 }\n"),
+            "{ a = 1, b = 2 }\n"
+        );
+    }
+}
 mod cmp_gt {
     use super::*;
     #[test]
@@ -234,6 +253,25 @@ mod block_simple {
         );
     }
 }
+mod record_with_variables {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "record_with_variables",
+            t::eval_all("let x = 1\nlet y = 2\n{ a = x, b = y }\n"),
+            "let x = 1\nlet y = 2\n{ a = x, b = y }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_with_variables_ast",
+            t::ast("let x = 1\nlet y = 2\n{ a = x, b = y }\n"),
+            "let x = 1\nlet y = 2\n{ a = x, b = y }\n"
+        );
+    }
+}
 mod error_let_invalid {
     use super::*;
     #[test]
@@ -391,6 +429,25 @@ mod block_function_body {
         );
     }
 }
+mod record_shorthand {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "record_shorthand",
+            t::eval_all("let x = 1\nlet y = 2\n{ x, y }\n"),
+            "let x = 1\nlet y = 2\n{ x, y }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_shorthand_ast",
+            t::ast("let x = 1\nlet y = 2\n{ x, y }\n"),
+            "let x = 1\nlet y = 2\n{ x, y }\n"
+        );
+    }
+}
 mod arith_add {
     use super::*;
     #[test]
@@ -411,6 +468,17 @@ mod cmp_ge {
     #[test]
     fn ast() {
         s!("cmp_ge_ast", t::ast("1 >= 1\n"), "1 >= 1\n");
+    }
+}
+mod record_empty {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!("record_empty", t::eval_all("{}\n"), "{}\n");
+    }
+    #[test]
+    fn ast() {
+        s!("record_empty_ast", t::ast("{}\n"), "{}\n");
     }
 }
 mod example_02_literals {
@@ -649,6 +717,25 @@ mod let_simple {
             "let_simple_ast",
             t::ast("let x = 42\nx\n"),
             "let x = 42\nx\n"
+        );
+    }
+}
+mod record_nested {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "record_nested",
+            t::eval_all("{ a = { b = 1 } }\n"),
+            "{ a = { b = 1 } }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_nested_ast",
+            t::ast("{ a = { b = 1 } }\n"),
+            "{ a = { b = 1 } }\n"
         );
     }
 }

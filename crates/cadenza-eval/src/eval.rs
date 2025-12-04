@@ -740,6 +740,94 @@ pub fn builtin_list() -> BuiltinMacro {
     }
 }
 
+/// Creates the `__record__` builtin macro for record literals.
+///
+/// The `__record__` macro evaluates field assignments and constructs a record value.
+/// It is automatically used by the parser when encountering record literal syntax `{...}`.
+///
+/// Each argument can be either:
+/// - An assignment expression `[=, field_name, value_expr]` that defines a field with its value
+/// - A shorthand identifier `field_name` that expands to `field_name = field_name`
+///
+/// Examples:
+/// ```ignore
+/// { a = 1 }              // Creates Value::Record([("a", Integer(1))])
+/// {}                     // Creates Value::Record([])
+/// { x = 1, y = 2 }       // Creates Value::Record([("x", Integer(1)), ("y", Integer(2))])
+/// { a = x + 1, b = f y } // Evaluates field value expressions
+/// { x, y }               // Shorthand: equivalent to { x = x, y = y }
+/// ```
+///
+/// The parser transforms `{ a = 1, b = 2 }` into: `[__record__, [=, a, 1], [=, b, 2]]`
+/// The parser transforms `{ x, y }` into: `[__record__, x, y]`
+pub fn builtin_record() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "__record__",
+        signature: Type::function(vec![], Type::Record(vec![])),
+        func: |args, ctx| {
+            // Each argument can be either:
+            // 1. An assignment expression: [=, field_name, value_expr]
+            // 2. A shorthand identifier: just the field name (expands to field = field)
+            let mut fields = Vec::with_capacity(args.len());
+
+            for arg in args {
+                match arg {
+                    // Shorthand syntax: { x, y } where x and y are identifiers
+                    Expr::Ident(ident) => {
+                        let text = ident.syntax().text();
+                        let field_name: InternedString = text.to_string().as_str().into();
+                        
+                        // Look up the variable in the environment
+                        let value = ctx
+                            .env
+                            .get(field_name)
+                            .cloned()
+                            .ok_or_else(|| Diagnostic::undefined_variable(field_name))?;
+                        
+                        fields.push((field_name, value));
+                    }
+                    // Full syntax: { a = 1, b = 2 }
+                    Expr::Apply(apply) => {
+                        // Get all arguments once to avoid duplicate calls
+                        let all_args = apply.all_arguments();
+                        if all_args.len() != 2 {
+                            return Err(Diagnostic::syntax(
+                                "record field assignment must have exactly 2 arguments",
+                            ));
+                        }
+
+                        // Extract the field name (should be an identifier)
+                        let field_name = match &all_args[0] {
+                            Expr::Ident(ident) => {
+                                let text = ident.syntax().text();
+                                text.to_string().as_str().into()
+                            }
+                            _ => {
+                                return Err(Diagnostic::syntax(
+                                    "record field name must be an identifier",
+                                ));
+                            }
+                        };
+
+                        // Evaluate the field value (second arg)
+                        let value = all_args[1].eval(ctx)?;
+
+                        fields.push((field_name, value));
+                    }
+                    _ => {
+                        return Err(Diagnostic::syntax(
+                            "record field must be an identifier or assignment expression",
+                        ));
+                    }
+                }
+            }
+
+            // Return the record value
+            Ok(Value::Record(fields))
+        },
+    }
+}
+
 /// Creates the `fn` macro for defining functions.
 ///
 /// The `fn` macro is used to define functions. It can be used in two forms:

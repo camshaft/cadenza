@@ -7,7 +7,7 @@ use crate::{
     eval::{
         builtin_add, builtin_assign, builtin_block, builtin_div, builtin_eq, builtin_fn,
         builtin_gt, builtin_gte, builtin_let, builtin_list, builtin_lt, builtin_lte,
-        builtin_measure, builtin_mul, builtin_ne, builtin_sub,
+        builtin_measure, builtin_mul, builtin_ne, builtin_record, builtin_sub,
     },
     interner::InternedString,
     map::Map,
@@ -76,6 +76,7 @@ impl Env {
     /// - `measure` - Unit definition macro for dimensional analysis
     /// - `__block__` - Block expression macro (automatically emitted by parser)
     /// - `__list__` - List literal macro (automatically emitted by parser)
+    /// - `__record__` - Record literal macro (automatically emitted by parser)
     /// - Arithmetic operators: `+`, `-`, `*`, `/`
     /// - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
     ///
@@ -95,6 +96,7 @@ impl Env {
     /// - `measure` - Unit definition macro for dimensional analysis
     /// - `__block__` - Block expression macro (automatically emitted by parser)
     /// - `__list__` - List literal macro (automatically emitted by parser)
+    /// - `__record__` - Record literal macro (automatically emitted by parser)
     /// - Arithmetic operators: `+`, `-`, `*`, `/`
     /// - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
     ///
@@ -107,6 +109,7 @@ impl Env {
         let measure_id: InternedString = "measure".into();
         let block_id: InternedString = "__block__".into();
         let list_id: InternedString = "__list__".into();
+        let record_id: InternedString = "__record__".into();
 
         self.define(let_id, Value::BuiltinMacro(builtin_let()));
         self.define(assign_id, Value::BuiltinMacro(builtin_assign()));
@@ -114,6 +117,7 @@ impl Env {
         self.define(measure_id, Value::BuiltinMacro(builtin_measure()));
         self.define(block_id, Value::BuiltinMacro(builtin_block()));
         self.define(list_id, Value::BuiltinMacro(builtin_list()));
+        self.define(record_id, Value::BuiltinMacro(builtin_record()));
 
         // Arithmetic operators
         let add_id: InternedString = "+".into();
