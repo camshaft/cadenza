@@ -542,8 +542,8 @@ impl Monomorphizer {
         
         // Create new specialized function
         let specialized = self.specialize(func, types.clone());
-        // Get the ID that will be assigned to this function (current length)
-        let id = self.specialized.len();
+        // Use vector length as ID (index where it will be inserted)
+        let id = FunctionId(self.specialized.len());
         self.specialized.push(specialized);
         self.instantiations.entry(func.id).or_default().push(Instantiation { types, id });
         id
@@ -1251,8 +1251,13 @@ pub struct SourceFile {
 
 impl SourceFile {
     fn position(&self, offset: u32) -> (usize, usize) {
-        // Handle empty file or offset before first line
-        if self.line_starts.is_empty() || offset < self.line_starts[0] {
+        // Handle empty file
+        if self.line_starts.is_empty() {
+            return (0, 0);
+        }
+        
+        // Handle offset before first line
+        if offset < self.line_starts[0] {
             return (0, 0);
         }
         
@@ -1260,7 +1265,7 @@ impl SourceFile {
         // Returns Ok(idx) if offset equals a line start, Err(idx) for insertion point
         let line = match self.line_starts.binary_search(&offset) {
             Ok(idx) => idx,  // Exact match - offset is at line start
-            Err(0) => 0,     // Before first line (handled by check above, but defensive)
+            Err(0) => 0,     // Before first line (handled above, but defensive)
             Err(idx) => idx.saturating_sub(1),  // Offset is between line_starts[idx-1] and line_starts[idx]
         };
         
