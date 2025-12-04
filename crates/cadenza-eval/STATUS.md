@@ -248,7 +248,7 @@ This section tracks longer-term features described in `/docs/COMPILER_ARCHITECTU
 
 **References**: COMPILER_ARCHITECTURE.md "Monomorphization and Trait System", "Effect System"
 
-### Code Generation (Phase 5-6)
+### Code Generation (Phase 5)
 - [ ] **Intermediate representation**: Target-independent IR with optimization passes
 - [ ] **Monomorphization**: Generate specialized functions for each type usage
 - [ ] **Browser targets**: TypeScript/JavaScript (primary), WASM (optional)
