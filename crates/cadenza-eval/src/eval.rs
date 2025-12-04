@@ -1545,7 +1545,7 @@ mod tests {
         match result {
             Ok(values) => {
                 assert_eq!(values.len(), 2);
-                // First value is the operator assignment (should succeed)
+                // First value is the operator assignment (should return the operator)
                 // Second value is the function call result
                 assert_eq!(values[1], Value::Integer(3));
             }
