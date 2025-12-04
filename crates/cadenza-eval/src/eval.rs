@@ -442,20 +442,31 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
         Ok(())
     }
 
-    /// Helper function to compare two numeric values (with integer/float coercion) using a comparison function.
-    /// Returns a type error if the values are not numeric or have incompatible types.
-    fn compare_numeric<F>(a: &Value, b: &Value, cmp: F) -> Result<Value>
+    /// Helper function to compare two values using their PartialOrd implementation.
+    /// Returns a type error if the values have different types or are not comparable.
+    fn compare_ordered<F>(a: &Value, b: &Value, check_ordering: F) -> Result<Value>
     where
-        F: FnOnce(f64, f64) -> bool,
+        F: FnOnce(std::cmp::Ordering) -> bool,
     {
+        // Check that types match - strongly typed, no implicit conversions
+        check_same_type(a, b)?;
+
         match (a, b) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Bool(cmp(*a as f64, *b as f64))),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(cmp(*a, *b))),
-            // Support numeric coercion between integer and float
-            // Note: Converting large integers (beyond 2^53) to f64 may lose precision
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Bool(cmp(*a as f64, *b))),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Bool(cmp(*a, *b as f64))),
-            _ => Err(Diagnostic::type_error(a.type_of(), b.type_of())),
+            (Value::Integer(a), Value::Integer(b)) => {
+                let ordering = a.cmp(b);
+                Ok(Value::Bool(check_ordering(ordering)))
+            }
+            (Value::Float(a), Value::Float(b)) => {
+                // For floats, use partial_cmp since they may be NaN
+                match a.partial_cmp(b) {
+                    Some(ordering) => Ok(Value::Bool(check_ordering(ordering))),
+                    None => Err(Diagnostic::syntax("cannot compare NaN values".to_string())),
+                }
+            }
+            _ => Err(Diagnostic::syntax(format!(
+                "cannot compare values of type {}",
+                a.type_of()
+            ))),
         }
     }
 
@@ -747,19 +758,19 @@ fn apply_operator(op_id: InternedString, args: Vec<Value>) -> Result<Value> {
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<" => match args.as_slice() {
-            [a, b] => compare_numeric(a, b, |x, y| x < y),
+            [a, b] => compare_ordered(a, b, |ord| ord == std::cmp::Ordering::Less),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         "<=" => match args.as_slice() {
-            [a, b] => compare_numeric(a, b, |x, y| x <= y),
+            [a, b] => compare_ordered(a, b, |ord| ord != std::cmp::Ordering::Greater),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">" => match args.as_slice() {
-            [a, b] => compare_numeric(a, b, |x, y| x > y),
+            [a, b] => compare_ordered(a, b, |ord| ord == std::cmp::Ordering::Greater),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         ">=" => match args.as_slice() {
-            [a, b] => compare_numeric(a, b, |x, y| x >= y),
+            [a, b] => compare_ordered(a, b, |ord| ord != std::cmp::Ordering::Less),
             _ => Err(Diagnostic::arity(2, args.len())),
         },
         // Note: The `=` operator is handled as a special form (builtin_assign) for proper
