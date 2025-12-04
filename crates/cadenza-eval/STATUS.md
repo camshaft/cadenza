@@ -273,7 +273,7 @@ Support for exact rational number arithmetic to avoid integer truncation and flo
 ```cadenza
 let v = 1 / 2  # does not immediately divide and truncate the integer
 let a = v * 2
-assert a == 1 "expected rational number support"
+assert a == 1 "expected exact rational arithmetic: 1/2 * 2 should equal 1"
 ```
 
 **Requirements**:
@@ -393,8 +393,9 @@ let record_a = { a = 1 }
 let record_b = { b = 2 }
 let merged = { ...record_a, ...record_b }  # creates { a = 1, b = 2 }
 
-# If fields overlap, types must match
-let conflict = { ...record_a, ...record_a }  # OK, same field same type
+# Later values override earlier ones if types match
+let record_c = { a = 10 }
+let overridden = { ...record_a, ...record_c }  # OK: { a = 10 }, same field type
 ```
 
 **Requirements**:
@@ -542,7 +543,7 @@ let value_b = Foo.B { b = 3.14 }
 
 match value_a
   Foo.A { a } -> a
-  Foo.B { b } -> 0
+  Foo.B { b } -> 0  # would need to convert float to int or use common type
 ```
 
 **Requirements**:
