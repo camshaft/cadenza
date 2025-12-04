@@ -417,6 +417,33 @@ mod let_decl {
         s!("let_decl_ast", t::ast("let x"), "let x");
     }
 }
+mod op_spread_in_record {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_spread_in_record_lex",
+            t::lex("{ ...a, b = 1 }\n"),
+            "{ ...a, b = 1 }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_spread_in_record_cst",
+            t::cst("{ ...a, b = 1 }\n"),
+            "{ ...a, b = 1 }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_spread_in_record_ast",
+            t::ast("{ ...a, b = 1 }\n"),
+            "{ ...a, b = 1 }\n"
+        );
+    }
+}
 mod let_eq_lit {
     use super::*;
     #[test]
@@ -861,6 +888,21 @@ mod ident_emoji_multiple {
         s!("ident_emoji_multiple_ast", t::ast("🎉🎊🎁\n"), "🎉🎊🎁\n");
     }
 }
+mod op_spread_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("op_spread_simple_lex", t::lex("...a\n"), "...a\n");
+    }
+    #[test]
+    fn cst() {
+        s!("op_spread_simple_cst", t::cst("...a\n"), "...a\n");
+    }
+    #[test]
+    fn ast() {
+        s!("op_spread_simple_ast", t::ast("...a\n"), "...a\n");
+    }
+}
 mod ap_op_or {
     use super::*;
     #[test]
@@ -973,6 +1015,33 @@ mod record_empty {
     #[test]
     fn ast() {
         s!("record_empty_ast", t::ast("{}\n"), "{}\n");
+    }
+}
+mod op_spread_in_list {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "op_spread_in_list_lex",
+            t::lex("[...a, 1, 2]\n"),
+            "[...a, 1, 2]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "op_spread_in_list_cst",
+            t::cst("[...a, 1, 2]\n"),
+            "[...a, 1, 2]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "op_spread_in_list_ast",
+            t::ast("[...a, 1, 2]\n"),
+            "[...a, 1, 2]\n"
+        );
     }
 }
 mod ident_underscore_leading {
