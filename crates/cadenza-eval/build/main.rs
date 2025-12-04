@@ -4,6 +4,7 @@ use std::{
     process::{Command, Stdio},
 };
 
+mod examples;
 mod test_data;
 
 pub fn main() {
@@ -11,6 +12,12 @@ pub fn main() {
 
     write("src/generated.rs", GENERATED.trim_start()).unwrap();
     write("src/generated/test_data.rs", rustfmt(&test_data::tests())).unwrap();
+
+    // Generate TypeScript examples file in cadenza-eval's generated directory
+    let typescript_output = examples::generate_typescript();
+    write("src/generated/examples.ts", typescript_output).unwrap();
+
+    println!("cargo:rerun-if-changed=test-data/");
 }
 
 fn rustfmt(code: &str) -> String {

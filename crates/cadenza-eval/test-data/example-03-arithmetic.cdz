@@ -1,0 +1,18 @@
+# Arithmetic Operations
+# Basic math with integers and floats
+
+# Addition and subtraction
+1 + 2
+10 - 3
+
+# Multiplication and division
+4 * 5
+20 / 4
+
+# Operator precedence
+2 + 3 * 4
+(2 + 3) * 4
+
+# Floating point
+3.14 * 2.0
+10.5 / 2.0

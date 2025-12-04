@@ -1,0 +1,61 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Lists\n# Collection of values in square brackets\n\n# Empty list\n[]\n\n# Simple list of integers\n[1, 2, 3, 4, 5]\n\n# Assign to variable\nlet numbers = [10, 20, 30]\nnumbers\n\n# List with expressions\nlet x = 5\nlet y = 10\n[x, y, x + y, x * y]\n\n# Nested lists\n[[1, 2], [3, 4], [5, 6]]\n\n# List with computed values\nlet a = 100\nlet b = 200\n[[a, a * 2], [b, b / 2]]\n"
+---
+EvalResult {
+    values: [
+        [],
+        [
+            1,
+            2,
+            3,
+            4,
+            5,
+        ],
+        [
+            10,
+            20,
+            30,
+        ],
+        [
+            10,
+            20,
+            30,
+        ],
+        5,
+        10,
+        [
+            5,
+            10,
+            15,
+            50,
+        ],
+        [
+            [
+                1,
+                2,
+            ],
+            [
+                3,
+                4,
+            ],
+            [
+                5,
+                6,
+            ],
+        ],
+        100,
+        200,
+        [
+            [
+                100,
+                200,
+            ],
+            [
+                200,
+                100,
+            ],
+        ],
+    ],
+    diagnostics: [],
+}

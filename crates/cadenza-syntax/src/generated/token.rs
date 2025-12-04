@@ -143,6 +143,7 @@ pub enum Kind {
     Error,
     SyntheticList,
     SyntheticRecord,
+    SyntheticBlock,
     Eof,
 }
 impl Kind {
@@ -226,6 +227,7 @@ impl Kind {
         Self::Error,
         Self::SyntheticList,
         Self::SyntheticRecord,
+        Self::SyntheticBlock,
         Self::Eof,
     ];
 
@@ -309,6 +311,7 @@ impl Kind {
         Self::Error,
         Self::SyntheticList,
         Self::SyntheticRecord,
+        Self::SyntheticBlock,
     ];
 
     pub const fn is_node(self) -> bool {
@@ -372,6 +375,7 @@ impl Kind {
                 | Self::Error
                 | Self::SyntheticList
                 | Self::SyntheticRecord
+                | Self::SyntheticBlock
         )
     }
 
@@ -445,7 +449,7 @@ impl Kind {
 
     /// Try to convert a u16 discriminant to a Kind
     pub const fn try_from_u16(value: u16) -> Option<Self> {
-        if value < 80 {
+        if value < 81 {
             // SAFETY: value is within valid discriminant range
             Some(unsafe { core::mem::transmute::<u16, Kind>(value) })
         } else {
@@ -535,6 +539,7 @@ impl Kind {
             Self::Error => "error",
             Self::SyntheticList => "synthetic list",
             Self::SyntheticRecord => "synthetic record",
+            Self::SyntheticBlock => "synthetic block",
             Self::Eof => "eof",
         }
     }
@@ -675,6 +680,7 @@ impl Kind {
         match self {
             Self::SyntheticList => Some("__list__"),
             Self::SyntheticRecord => Some("__record__"),
+            Self::SyntheticBlock => Some("__block__"),
             _ => None,
         }
     }

@@ -1,0 +1,17 @@
+# Literal Values
+# Different types of literals
+
+# Integers
+42
+-17
+0
+
+# Floating point
+3.14159
+-2.5
+1.0
+
+# Strings
+"hello"
+"world"
+"hello world"

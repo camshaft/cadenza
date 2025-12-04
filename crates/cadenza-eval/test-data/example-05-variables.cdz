@@ -1,0 +1,21 @@
+# Variables with let
+# Define and use variables
+
+# Simple binding
+let x = 42
+x
+
+# Multiple bindings
+let a = 1
+let b = 2
+a + b
+
+# Using expressions
+let result = 10 * 5 + 3
+result
+
+# Variable reassignment
+let counter = 0
+let counter = counter + 1
+let counter = counter + 1
+counter

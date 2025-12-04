@@ -176,9 +176,47 @@ impl<'src> Parser<'src> {
                 // Parse the right side with appropriate binding power
                 let child_marker = self.whitespace.marker();
                 self.skip_trivia();
+
+                // Capture indentation level for block detection
+                let block_indent_level = self.whitespace.len;
+
+                // Check if we're entering an indented block context
+                // (indentation increased from parent)
+                let entering_block = block_indent_level > child_marker.len;
+
                 self.builder.start_node(Kind::ApplyArgument.into());
-                self.parse_expression_bp(r_bp, child_marker);
-                self.builder.finish_node();
+
+                if entering_block {
+                    // Parse as a block: collect all expressions at this indentation level
+                    self.builder.start_node(Kind::Apply.into());
+
+                    // Create synthetic block receiver
+                    self.builder.start_node(Kind::ApplyReceiver.into());
+                    self.builder.start_node(Kind::SyntheticBlock.into());
+                    self.builder.finish_node(); // SyntheticBlock
+                    self.builder.finish_node(); // ApplyReceiver
+
+                    // Parse expressions at this indentation level
+                    // The marker's should_continue() will ensure we stop if we dedent below the parent,
+                    // and the indentation check ensures we stay at the block level
+                    while child_marker.should_continue(self)
+                        && self.whitespace.len == block_indent_level
+                    {
+                        self.builder.start_node(Kind::ApplyArgument.into());
+                        let expr_marker = self.whitespace.marker();
+                        self.parse_expression_bp(r_bp, expr_marker);
+                        self.builder.finish_node(); // ApplyArgument
+
+                        self.skip_trivia();
+                    }
+
+                    self.builder.finish_node(); // Apply (__block__)
+                } else {
+                    // Parse single expression (no block)
+                    self.parse_expression_bp(r_bp, child_marker);
+                }
+
+                self.builder.finish_node(); // Close ApplyArgument
 
                 self.builder.finish_node();
                 // Continue the outer loop to check for more operators
@@ -348,17 +386,23 @@ impl<'src> Parser<'src> {
     fn parse_literal(&mut self) {
         // Check if there's an immediate identifier after the number (no whitespace)
         // If so, create an Apply node with reversed order: unit(number)
-        
+
         // Get the current number token info
-        let number_token = self.tokens.peek().expect("parse_literal called without a token");
+        let number_token = self
+            .tokens
+            .peek()
+            .expect("parse_literal called without a token");
         let number_kind = number_token.kind;
         let number_span = number_token.span;
         let number_end = number_span.end;
-        
+
         // Consume the number
         self.tokens.next();
-        self.whitespace.on_token(&Token { kind: number_kind, span: number_span });
-        
+        self.whitespace.on_token(&Token {
+            kind: number_kind,
+            span: number_span,
+        });
+
         // Now check if the next token is an identifier with no whitespace
         if let Some(next_token) = self.tokens.peek() {
             if next_token.kind == Kind::Identifier && next_token.span.start == number_end {
@@ -367,30 +411,32 @@ impl<'src> Parser<'src> {
                 // correct CST offsets, as the number appears first in the source text.
                 // The AST doesn't care about the order, similar to infix operators.
                 self.builder.start_node(Kind::Apply.into());
-                
+
                 // The number is the argument - emit it first since it appears first in source
                 self.builder.start_node(Kind::ApplyArgument.into());
                 self.builder.start_node(Kind::Literal.into());
                 self.builder.start_node(number_kind.into());
-                self.builder.token(number_kind.into(), self.text(number_span));
+                self.builder
+                    .token(number_kind.into(), self.text(number_span));
                 self.builder.finish_node(); // Close Integer/Float node
                 self.builder.finish_node(); // Close Literal
                 self.builder.finish_node(); // Close ApplyArgument
-                
+
                 // The identifier is the receiver - emit it second
                 self.builder.start_node(Kind::ApplyReceiver.into());
                 self.bump(); // Consume the identifier
                 self.builder.finish_node();
-                
+
                 self.builder.finish_node(); // Close Apply
                 return;
             }
         }
-        
+
         // Default case: no unit suffix, add the number as a literal
         self.builder.start_node(Kind::Literal.into());
         self.builder.start_node(number_kind.into());
-        self.builder.token(number_kind.into(), self.text(number_span));
+        self.builder
+            .token(number_kind.into(), self.text(number_span));
         self.builder.finish_node(); // Close Integer/Float node
         self.builder.finish_node(); // Close Literal
     }

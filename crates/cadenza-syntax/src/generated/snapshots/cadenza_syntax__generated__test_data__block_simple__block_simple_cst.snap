@@ -1,0 +1,73 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"
+---
+Root@0..50
+  Apply@0..50
+    ApplyArgument@0..8
+      Apply@0..8
+        ApplyReceiver@0..4
+          Identifier@0..3
+            Identifier@0..3 "let"
+          Space@3..4 " "
+        ApplyArgument@4..8
+          Identifier@4..7
+            Identifier@4..7 "foo"
+          Space@7..8 " "
+    ApplyReceiver@8..9
+      Equal@8..9
+        Equal@8..9 "="
+    Newline@9..10 "\n"
+    Space@10..14 "    "
+    ApplyArgument@14..50
+      Apply@14..50
+        ApplyReceiver@14..14
+          SyntheticBlock@14..14
+        ApplyArgument@14..30
+          Apply@14..30
+            ApplyArgument@14..22
+              Apply@14..22
+                ApplyReceiver@14..18
+                  Identifier@14..17
+                    Identifier@14..17 "let"
+                  Space@17..18 " "
+                ApplyArgument@18..22
+                  Identifier@18..21
+                    Identifier@18..21 "bar"
+                  Space@21..22 " "
+            ApplyReceiver@22..23
+              Equal@22..23
+                Equal@22..23 "="
+            Space@23..24 " "
+            ApplyArgument@24..30
+              Literal@24..25
+                Integer@24..25
+                  Integer@24..25 "1"
+              Newline@25..26 "\n"
+              Space@26..30 "    "
+        ApplyArgument@30..46
+          Apply@30..46
+            ApplyArgument@30..38
+              Apply@30..38
+                ApplyReceiver@30..34
+                  Identifier@30..33
+                    Identifier@30..33 "let"
+                  Space@33..34 " "
+                ApplyArgument@34..38
+                  Identifier@34..37
+                    Identifier@34..37 "baz"
+                  Space@37..38 " "
+            ApplyReceiver@38..39
+              Equal@38..39
+                Equal@38..39 "="
+            Space@39..40 " "
+            ApplyArgument@40..46
+              Literal@40..41
+                Integer@40..41
+                  Integer@40..41 "2"
+              Newline@41..42 "\n"
+              Space@42..46 "    "
+        ApplyArgument@46..50
+          Identifier@46..49
+            Identifier@46..49 "bar"
+          Newline@49..50 "\n"

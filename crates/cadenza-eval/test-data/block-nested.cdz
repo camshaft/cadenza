@@ -1,0 +1,7 @@
+let foo =
+    let bar =
+        let baz =
+            1
+        baz
+    bar
+foo

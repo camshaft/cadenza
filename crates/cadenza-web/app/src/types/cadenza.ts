@@ -64,6 +64,12 @@ export interface EvalResult {
   success: boolean;
 }
 
+export interface Example {
+  id: string;
+  name: string;
+  source: string;
+}
+
 // WASM module interface (will be loaded dynamically)
 export interface CadenzaWasm {
   lex: (source: string) => LexResult;

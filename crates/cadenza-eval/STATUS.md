@@ -255,3 +255,153 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
   - Currently emits receiver first, which may cause offset issues
   - AST doesn't care about order, but CST requires correct source positions
   - Needs fix in parse_literal() reversed Apply logic
+
+## Block Expressions
+
+### Current Status: ✅ Completed
+
+Block expression support has been successfully implemented in both the parser and evaluator.
+
+**Implementation Summary (PR #XX)**
+- Parser detects when multiple expressions are at the same indentation level following an operator
+- Emits synthetic `__block__` nodes instead of creating nested Apply chains
+- Evaluator implements `__block__` builtin macro with proper scope management
+- Block expressions have lexical scoping - variables defined inside blocks are isolated from outer scope
+
+**Example**:
+```cadenza
+let foo =
+    let bar = 1
+    let baz = 2
+    bar
+```
+
+**Parser Output**: `[=, [let, foo], [__block__, [=, [let, bar], 1], [=, [let, baz], 2], bar]]`
+
+### What Was Completed
+
+#### Parser Changes (`cadenza-syntax/src/parse.rs`)
+- [x] Detect block contexts when indentation increases from parent during infix operator argument parsing
+- [x] Use `child_marker.should_continue()` combined with indentation checks for proper continuation logic
+- [x] Collect all expressions at the same indentation level into a synthetic `__block__` node
+- [x] Emit `Apply(__block__, expr1, expr2, ...)` structure
+
+#### Evaluator Changes (`cadenza-eval/src/eval.rs`)
+- [x] Implement `builtin_block()` macro that:
+  - Pushes a new scope for the block
+  - Evaluates each expression in sequence
+  - Returns the last expression's value
+  - Pops the scope when exiting
+- [x] Update `extract_identifier()` to handle Synthetic nodes for macro lookup
+- [x] Register `__block__` in synthetic node whitelist
+
+#### Environment (`cadenza-eval/src/env.rs`)
+- [x] Register `__block__` macro in standard builtins
+
+#### Tests
+- [x] `block-simple.cdz`: Basic multi-statement block
+- [x] `block-scope.cdz`: Verifies proper variable scoping
+- [x] `block-function-body.cdz`: Function definitions with block bodies
+- [x] `block-nested.cdz`: Deeply nested blocks
+
+### Previous Implementation Attempts
+
+**What Was Attempted (Earlier PR)**
+- Tried to implement block expressions using a heuristic approach in the evaluator
+- Detected blocks by checking if an Apply node's receiver was a statement (like `let` or `=`)
+- This approach was **reverted** due to being too brittle and specific
+
+**Why the Heuristic Approach Failed**
+1. **Too Specific**: Only worked for `let` and `=` statements, couldn't handle arbitrary expressions
+2. **Structural Limitations**: Failed on 3+ statement blocks due to complex nested Apply structures
+3. **Wrong Layer**: Trying to detect blocks in the evaluator is a workaround; blocks should be a parser concern
+4. **Not Extensible**: Couldn't handle function definitions, arbitrary function calls, or other expressions in blocks
+
+
+### Known Challenges (Resolved)
+
+1. ~~**Parser Complexity**~~: Successfully added block detection without breaking existing parsing
+2. ~~**Indentation Edge Cases**~~: Handled through `WhitespaceMarker` and `should_continue()` logic
+3. ~~**Scope Management**~~: Blocks properly push/pop scopes while allowing access to outer variables
+4. **Error Recovery**: Currently stops on first error in a block (see Error Recovery section below)
+5. ~~**CST Preservation**~~: Synthetic nodes correctly preserve span information
+
+### Future Enhancements
+
+See the "Error Recovery with Error Values" section below for planned improvements to error handling in blocks.
+
+## Error Recovery with Error Values
+
+### Current Status: Proposed Enhancement
+
+**Current Behavior**
+- When an expression in a block fails to evaluate, the `?` operator causes the entire block to stop evaluation
+- Only the first error is reported, subsequent expressions are not evaluated
+- This leads to cascading errors and incomplete error reporting
+
+**Proposed Enhancement**
+The evaluator should introduce a special `Error` value type that:
+- Type-checks with any type to prevent cascading type errors
+- Allows evaluation to continue past errors
+- Collects all errors for the entire module upfront rather than one at a time
+
+**Benefits**
+1. **Better Error Messages**: See all errors in a module, not just the first one
+2. **Reduced Cascading Errors**: An error in one expression doesn't prevent type-checking later expressions
+3. **Improved Developer Experience**: Fix multiple errors in one iteration instead of one at a time
+
+**Implementation Approach**
+
+```rust
+// Add to Value enum
+pub enum Value {
+    // ... existing variants
+    Error(Box<Diagnostic>),
+}
+
+// In builtin_block:
+for expr in args {
+    match expr.eval(ctx) {
+        Ok(value) => result = value,
+        Err(diagnostic) => {
+            // Record the error
+            ctx.compiler.record_diagnostic(diagnostic);
+            // Continue with an Error value
+            result = Value::Error(Box::new(diagnostic));
+        }
+    }
+}
+```
+
+**Type Checking Considerations**
+- `Error` values should be considered compatible with any expected type
+- When an `Error` value is used in an operation, it propagates but doesn't cause a new error
+- This prevents cascading "undefined variable" errors when a previous error made a variable unavailable
+
+**Example**
+```cadenza
+let foo =
+    let bar = undefined_var  # Error 1: undefined variable
+    let baz = bar * 2        # Would normally error, but continues with Error value
+    baz + 10                 # Would normally error, but continues with Error value
+
+# Both errors reported:
+# - undefined_var is not defined
+# (no cascading errors about bar or baz)
+```
+
+**Related Issues**
+- Diagnostic collection infrastructure already exists (STATUS.md item #3 - completed)
+- Need to update type system to handle Error values
+- Need to update all builtin operations to propagate Error values
+
+**Priority**: Medium - Would significantly improve developer experience but not blocking for current functionality
+
+## References
+
+- Parser code: `crates/cadenza-syntax/src/parse.rs` 
+- WhitespaceMarker: `parse.rs` lines 717-737
+- Block implementation: `crates/cadenza-eval/src/eval.rs` lines 1004-1030
+- Existing synthetic nodes: `__list__` and `__record__` as examples
+- Token generation: `crates/cadenza-syntax/build/token.rs` lines 647-663
+

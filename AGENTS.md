@@ -54,6 +54,32 @@ The test command supports passing additional arguments to cargo test:
 cargo xtask ci test --no-default-features
 ```
 
+## Leave the Codebase Better Than You Found It
+
+**Always strive to keep CI green.** A passing CI build gives everyone confidence that the codebase is in a good state.
+
+### Fix Existing CI Failures
+
+If you encounter failing CI checks (e.g., Clippy warnings, rustfmt issues, failing tests) that are **unrelated to your current task**, fix them as part of your change. Don't ignore them or work around them.
+
+**Why this matters:**
+- Broken CI creates a culture of ignoring failures
+- Unfixed issues accumulate and become harder to resolve
+- Green CI signals that the codebase is healthy and maintainable
+
+### Guidelines
+
+- **Before starting**: Run `cargo xtask ci` to check the current state
+- **Fix unrelated issues**: If you see Clippy warnings or formatting issues in files you're working on or nearby, fix them
+- **Don't introduce new issues**: Always run CI checks before committing to ensure your changes don't break anything
+- **When in doubt**: It's better to fix an extra issue than to leave the codebase worse than you found it
+
+This applies to all types of CI failures:
+- Rustfmt formatting issues (`cargo xtask fmt`)
+- Clippy lints (`cargo xtask ci clippy`)
+- Failing tests (`cargo xtask ci test`)
+- Unused dependencies (`cargo xtask ci udeps`)
+
 ## After Completing Work
 
 After completing work on a task from a crate's status document (e.g., `crates/cadenza-eval/STATUS.md`), update the status document to mark the task as complete. Use strikethrough (`~~`) to mark the task title and add checkmarks (`[x]`) to indicate completed sub-items.
@@ -134,6 +160,40 @@ When writing tests, follow these principles to ensure high-quality, maintainable
 - **Don't test the same thing repeatedly**: If multiple tests are checking the same behavior with trivial variations, consolidate them or use property testing
 - **Don't test trivial wrappers**: If a function just calls another function or wraps a value without logic, it doesn't need a dedicated test
 - **Don't assert on internal state**: Test public APIs and observable behavior, not private implementation details
+
+## Adding Examples to Compiler Explorer
+
+When implementing new language features, create example files in `crates/cadenza-eval/test-data/` to showcase them in the Compiler Explorer UI.
+
+### File Naming Convention
+
+Example files must follow this pattern: `example-##-name.cdz` where `##` is a 0-padded number indicating the order.
+
+Examples:
+- `example-01-welcome.cdz` - Welcome message and basic intro
+- `example-02-literals.cdz` - Integer, float, and string literals
+- `example-03-arithmetic.cdz` - Arithmetic operations
+- `example-04-comparison.cdz` - Comparison operators
+- `example-05-variables.cdz` - Variable bindings with `let`
+- `example-06-functions.cdz` - Function definitions and closures
+- `example-07-measures.cdz` - Units of measure feature
+
+### How to Add a New Example
+
+1. Create a file in `crates/cadenza-eval/test-data/` following the naming pattern `example-##-name.cdz`
+2. Write clear, well-commented code that demonstrates the feature
+3. The build script will automatically:
+   - Generate snapshot tests for the file
+   - Generate TypeScript code for the web UI
+   - Make it available in the Compiler Explorer's example dropdown
+
+The examples are displayed in numeric order, so choose an appropriate number that places your example in a logical sequence for introducing language features.
+
+### Important Notes
+
+- **No manual registration required**: The build script automatically discovers and includes all `example-*.cdz` files
+- **Keep examples working**: Examples should not have errors in their snapshots - they demonstrate working language features
+- **TypeScript generation**: Examples are automatically converted to TypeScript and symlinked to the web app
 
 ## Snapshot Testing Guidelines
 

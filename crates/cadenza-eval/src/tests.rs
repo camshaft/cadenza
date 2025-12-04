@@ -45,6 +45,137 @@ fn test_builtin_function() {
 }
 
 #[test]
+fn test_list_parsing_and_eval() {
+    let src = "let l = [1, 2, 3]\nl";
+    let parsed = parse(src);
+
+    assert!(
+        parsed.errors.is_empty(),
+        "Parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let results = crate::eval(&parsed.ast(), &mut env, &mut compiler);
+
+    assert!(
+        !compiler.has_errors(),
+        "Diagnostics: {:?}",
+        compiler.diagnostics()
+    );
+    assert_eq!(results.len(), 2);
+
+    // First result should be the list assigned to l
+    match &results[0] {
+        Value::List(elements) => {
+            assert_eq!(elements.len(), 3);
+            assert_eq!(elements[0], Value::Integer(1));
+            assert_eq!(elements[1], Value::Integer(2));
+            assert_eq!(elements[2], Value::Integer(3));
+        }
+        other => panic!("Expected List, got {:?}", other),
+    }
+
+    // Second result should be the value of l (same list)
+    match &results[1] {
+        Value::List(elements) => {
+            assert_eq!(elements.len(), 3);
+            assert_eq!(elements[0], Value::Integer(1));
+            assert_eq!(elements[1], Value::Integer(2));
+            assert_eq!(elements[2], Value::Integer(3));
+        }
+        other => panic!("Expected List, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_empty_list() {
+    let src = "[]";
+    let parsed = parse(src);
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let results = crate::eval(&parsed.ast(), &mut env, &mut compiler);
+    assert!(!compiler.has_errors());
+    assert_eq!(results.len(), 1);
+
+    match &results[0] {
+        Value::List(elements) => {
+            assert_eq!(elements.len(), 0);
+        }
+        other => panic!("Expected empty List, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_list_with_expressions() {
+    let src = "let x = 10\nlet y = 20\n[x, y, x + y]";
+    let parsed = parse(src);
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let results = crate::eval(&parsed.ast(), &mut env, &mut compiler);
+    assert!(
+        !compiler.has_errors(),
+        "Diagnostics: {:?}",
+        compiler.diagnostics()
+    );
+    assert_eq!(results.len(), 3);
+
+    // Last result should be the list with evaluated expressions
+    match &results[2] {
+        Value::List(elements) => {
+            assert_eq!(elements.len(), 3);
+            assert_eq!(elements[0], Value::Integer(10));
+            assert_eq!(elements[1], Value::Integer(20));
+            assert_eq!(elements[2], Value::Integer(30));
+        }
+        other => panic!("Expected List, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_nested_lists() {
+    let src = "[[1, 2], [3, 4]]";
+    let parsed = parse(src);
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let results = crate::eval(&parsed.ast(), &mut env, &mut compiler);
+    assert!(!compiler.has_errors());
+    assert_eq!(results.len(), 1);
+
+    match &results[0] {
+        Value::List(outer) => {
+            assert_eq!(outer.len(), 2);
+
+            // First nested list
+            match &outer[0] {
+                Value::List(inner) => {
+                    assert_eq!(inner.len(), 2);
+                    assert_eq!(inner[0], Value::Integer(1));
+                    assert_eq!(inner[1], Value::Integer(2));
+                }
+                other => panic!("Expected nested List, got {:?}", other),
+            }
+
+            // Second nested list
+            match &outer[1] {
+                Value::List(inner) => {
+                    assert_eq!(inner.len(), 2);
+                    assert_eq!(inner[0], Value::Integer(3));
+                    assert_eq!(inner[1], Value::Integer(4));
+                }
+                other => panic!("Expected nested List, got {:?}", other),
+            }
+        }
+        other => panic!("Expected List, got {:?}", other),
+    }
+}
+
+#[test]
 fn test_variable_from_environment() {
     let parsed = parse("x + y");
     let root = parsed.ast();

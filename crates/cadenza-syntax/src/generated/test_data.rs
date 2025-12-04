@@ -555,6 +555,33 @@ mod op_try_then_pipe {
         );
     }
 }
+mod block_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "block_simple_lex",
+            t::lex("let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"),
+            "let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "block_simple_cst",
+            t::cst("let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"),
+            "let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "block_simple_ast",
+            t::ast("let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"),
+            "let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"
+        );
+    }
+}
 mod let_op_or {
     use super::*;
     #[test]
