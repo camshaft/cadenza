@@ -185,6 +185,19 @@ mod cmp_le {
         s!("cmp_le", t::eval_all("1 <= 1\n"), "1 <= 1\n");
     }
 }
+mod block_function_body {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_function_body",
+            t::eval_all(
+                "fn foo a b =\n    let av = a * 2\n    let bv = b * 3\n    av * bv\nfoo 5 7\n"
+            ),
+            "fn foo a b =\n    let av = a * 2\n    let bv = b * 3\n    av * bv\nfoo 5 7\n"
+        );
+    }
+}
 mod arith_add {
     use super::*;
     #[test]
@@ -468,6 +481,19 @@ mod measure_suffix {
             "measure_suffix",
             t::eval_all("measure meter\nlet x = 25.4meter\nx\n"),
             "measure meter\nlet x = 25.4meter\nx\n"
+        );
+    }
+}
+mod block_nested {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "block_nested",
+            t::eval_all(
+                "let foo =\n    let bar =\n        let baz =\n            1\n        baz\n    bar\nfoo\n"
+            ),
+            "let foo =\n    let bar =\n        let baz =\n            1\n        baz\n    bar\nfoo\n"
         );
     }
 }
