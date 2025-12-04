@@ -428,7 +428,6 @@ fn create_numeric_value(
     }
 }
 
-
 impl Eval for Attr {
     fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
         // For now, attributes are evaluated and returned as-is
