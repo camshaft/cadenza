@@ -49,7 +49,6 @@ impl<I: Iterator> Peek2<I> {
         })
     }
 
-    #[cfg(test)]
     pub fn peek2(&mut self) -> (Option<&I::Item>, Option<&I::Item>) {
         while self.len < 2 {
             self.push();

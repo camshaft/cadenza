@@ -582,6 +582,33 @@ mod block_simple {
         );
     }
 }
+mod record_field_expr {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_expr_lex",
+            t::lex("{ a = 2 + 2 }\n"),
+            "{ a = 2 + 2 }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_expr_cst",
+            t::cst("{ a = 2 + 2 }\n"),
+            "{ a = 2 + 2 }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_expr_ast",
+            t::ast("{ a = 2 + 2 }\n"),
+            "{ a = 2 + 2 }\n"
+        );
+    }
+}
 mod let_op_or {
     use super::*;
     #[test]
@@ -834,6 +861,33 @@ mod ident_utf8_japanese {
             "ident_utf8_japanese_ast",
             t::ast("こんにちは\n"),
             "こんにちは\n"
+        );
+    }
+}
+mod record_field_multiline {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_multiline_lex",
+            t::lex("{ a = 2\n, b = 3\n, }\n"),
+            "{ a = 2\n, b = 3\n, }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_multiline_cst",
+            t::cst("{ a = 2\n, b = 3\n, }\n"),
+            "{ a = 2\n, b = 3\n, }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_multiline_ast",
+            t::ast("{ a = 2\n, b = 3\n, }\n"),
+            "{ a = 2\n, b = 3\n, }\n"
         );
     }
 }
@@ -1570,6 +1624,33 @@ mod op_field_long {
     #[test]
     fn ast() {
         s!("op_field_long_ast", t::ast("a.b.c.d.e\n"), "a.b.c.d.e\n");
+    }
+}
+mod record_field_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_simple_lex",
+            t::lex("{ a = 1 }\n"),
+            "{ a = 1 }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_simple_cst",
+            t::cst("{ a = 1 }\n"),
+            "{ a = 1 }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_simple_ast",
+            t::ast("{ a = 1 }\n"),
+            "{ a = 1 }\n"
+        );
     }
 }
 mod op_path_simple {

@@ -1,0 +1,54 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "{ a = 2\n, b = 3\n, }\n"
+---
+Root@0..20
+  Apply@0..19
+    LBrace@0..1 "{"
+    Space@1..2 " "
+    ApplyReceiver@2..2
+      SyntheticRecord@2..2
+    ApplyArgument@2..18
+      Apply@2..18
+        ApplyArgument@2..12
+          Apply@2..12
+            ApplyReceiver@2..10
+              Apply@2..10
+                ApplyArgument@2..4
+                  Identifier@2..3
+                    Identifier@2..3 "a"
+                  Space@3..4 " "
+                ApplyReceiver@4..5
+                  Equal@4..5
+                    Equal@4..5 "="
+                Space@5..6 " "
+                ApplyArgument@6..10
+                  Apply@6..10
+                    ApplyReceiver@6..8
+                      Literal@6..7
+                        Integer@6..7
+                          Integer@6..7 "2"
+                      Newline@7..8 "\n"
+                    ApplyArgument@8..10
+                      Comma@8..9 ","
+                      Space@9..10 " "
+            ApplyArgument@10..12
+              Identifier@10..11
+                Identifier@10..11 "b"
+              Space@11..12 " "
+        ApplyReceiver@12..13
+          Equal@12..13
+            Equal@12..13 "="
+        Space@13..14 " "
+        ApplyArgument@14..18
+          Apply@14..18
+            ApplyReceiver@14..16
+              Literal@14..15
+                Integer@14..15
+                  Integer@14..15 "3"
+              Newline@15..16 "\n"
+            ApplyArgument@16..18
+              Comma@16..17 ","
+              Space@17..18 " "
+    RBrace@18..19 "}"
+  Newline@19..20 "\n"

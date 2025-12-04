@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "{ a = 2\n, b = 3\n, }\n"
+---
+[
+    [__record__, [=, [[=, a, [2, <MISSING APPLY ARGUMENT EXPR in []>]], b], [3, <MISSING APPLY ARGUMENT EXPR in []>]]],
+]

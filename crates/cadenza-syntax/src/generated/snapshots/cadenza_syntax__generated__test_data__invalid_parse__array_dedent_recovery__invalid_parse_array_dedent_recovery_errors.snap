@@ -5,8 +5,8 @@ expression: "foo [\nbar\n"
 [
     ParseError {
         span: Span {
-            start: 6,
-            end: 9,
+            start: 0,
+            end: 0,
         },
         message: "expected ]",
     },

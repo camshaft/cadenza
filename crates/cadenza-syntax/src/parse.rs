@@ -573,9 +573,10 @@ impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
         if current == Self::close_kind() || current == Kind::Eof {
             return false;
         }
-        // Delegate to saved whitespace marker for indentation checking
-        // It already handles commas specially (as it handles infix operators)
-        self.saved_whitespace.should_continue(parser)
+        
+        // Inside delimiters, always continue unless we're at the closing delimiter
+        // This allows both same-line and multi-line content without strict indentation rules
+        true
     }
 
     fn finish(&self, parser: &mut Parser) {
@@ -715,11 +716,17 @@ impl Marker for WhitespaceMarker {
             return false;
         }
 
+        let current = parser.current();
+        
+        // Stop at closing delimiters
+        if matches!(current, Kind::RBrace | Kind::RBracket | Kind::RParen) {
+            return false;
+        }
+
         if self.line == parser.whitespace.line {
             return true;
         }
 
-        let current = parser.current();
         // Infix, postfix operators and comma are allowed to start continuation lines
         // at same indentation level (for comma-first style like: [ 1\n, 2\n, 3])
         if current.is_infix() || current.is_postfix() || current == Kind::Comma {
