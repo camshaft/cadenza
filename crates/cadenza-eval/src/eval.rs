@@ -326,6 +326,17 @@ fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> 
 fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
         Value::BuiltinFn(builtin) => (builtin.func)(&args, ctx),
+        Value::Symbol(id) => {
+            // Look up the symbol in the environment and try to call it
+            // This handles operators and other functions stored in variables
+            let actual_value = ctx
+                .env
+                .get(id)
+                .cloned()
+                .ok_or_else(|| Diagnostic::undefined_variable(id))?;
+            // Recursively apply the looked-up value
+            apply_value(actual_value, args, ctx)
+        }
         Value::UnitConstructor(unit) => {
             // Unit constructors create quantities from numbers
             if args.len() != 1 {
@@ -1525,6 +1536,23 @@ mod tests {
         assert_eq!(eval_single("2 > 1").unwrap(), Value::Bool(true));
         assert_eq!(eval_single("1 == 1").unwrap(), Value::Bool(true));
         assert_eq!(eval_single("1 != 2").unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn eval_operator_as_variable() {
+        // Test that operators can be stored in variables and used as first-class values
+        let result = eval_str("let add_op = +\nadd_op 1 2");
+        match result {
+            Ok(values) => {
+                assert_eq!(values.len(), 2);
+                // First value is the operator assignment (should succeed)
+                // Second value is the function call result
+                assert_eq!(values[1], Value::Integer(3));
+            }
+            Err(e) => {
+                panic!("Expected success, got error: {:?}", e);
+            }
+        }
     }
 
     #[test]
