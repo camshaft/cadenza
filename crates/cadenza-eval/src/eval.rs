@@ -1029,6 +1029,37 @@ pub fn builtin_block() -> BuiltinMacro {
     }
 }
 
+/// Creates the `__list__` builtin macro for list literals.
+///
+/// The `__list__` macro evaluates its arguments and constructs a list value.
+/// It is automatically used by the parser when encountering list literal syntax `[...]`.
+///
+/// Examples:
+/// ```ignore
+/// [1, 2, 3]         // Creates Value::List([Integer(1), Integer(2), Integer(3)])
+/// []                // Creates Value::List([])
+/// [x, y + 1, f z]   // Evaluates each element expression
+/// ```
+///
+/// The parser transforms `[1, 2, 3]` into: `[__list__, 1, 2, 3]`
+pub fn builtin_list() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "__list__",
+        signature: Type::function(vec![Type::Unknown], Type::list(Type::Unknown)),
+        func: |args, ctx| {
+            // Evaluate each argument expression
+            let mut elements = Vec::with_capacity(args.len());
+            for expr in args {
+                let value = expr.eval(ctx)?;
+                elements.push(value);
+            }
+
+            // Return the list value
+            Ok(Value::List(elements))
+        },
+    }
+}
+
 /// Creates the `fn` macro for defining functions.
 ///
 /// The `fn` macro is used to define functions. It can be used in two forms:

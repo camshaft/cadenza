@@ -179,7 +179,7 @@ impl<'src> Parser<'src> {
 
                 // Capture indentation level for block detection
                 let block_indent_level = self.whitespace.len;
-                let block_start_line = self.whitespace.line;
+                let _block_start_line = self.whitespace.line;
 
                 // Check if we're entering an indented block context
                 // (indentation increased from parent)
