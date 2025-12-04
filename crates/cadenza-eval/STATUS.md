@@ -61,10 +61,12 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Removed TypeExpectation enum in favor of union types
    - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079828)
 
-6. **Values need syntax nodes for source tracking** (Partially Complete)
+6. ~~**Values need syntax nodes for source tracking**~~ ✅
    - [x] Added SourceInfo struct and TrackedValue wrapper
    - [x] Implemented Clone for Expr to enable storing AST nodes
-   - [ ] TODO: Integrate into Env and use in diagnostics
+   - [x] Attach source spans to diagnostics from AST nodes
+   - [x] UndefinedVariable errors now include span of identifier
+   - [x] Field access errors now include span of field name
    - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573085238)
 
 7. ~~**Value comparison should error on type mismatch**~~ ✅
