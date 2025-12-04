@@ -197,10 +197,6 @@ impl<'src> Parser<'src> {
                     self.builder.finish_node(); // SyntheticBlock
                     self.builder.finish_node(); // ApplyReceiver
 
-                    // Create a marker at the block's indentation level
-                    // We'll use this to check if we're still within the parent's continuation context
-                    let block_marker = self.whitespace.marker();
-
                     // Parse expressions at this indentation level
                     // The marker's should_continue() will ensure we stop if we dedent below the parent,
                     // and the indentation check ensures we stay at the block level
