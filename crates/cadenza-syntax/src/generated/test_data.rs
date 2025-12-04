@@ -321,6 +321,33 @@ mod unit_suffix_multiple {
         );
     }
 }
+mod record_field_indented {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_indented_lex",
+            t::lex("{\n  a = 1,\n  b = 2,\n}\n"),
+            "{\n  a = 1,\n  b = 2,\n}\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_indented_cst",
+            t::cst("{\n  a = 1,\n  b = 2,\n}\n"),
+            "{\n  a = 1,\n  b = 2,\n}\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_indented_ast",
+            t::ast("{\n  a = 1,\n  b = 2,\n}\n"),
+            "{\n  a = 1,\n  b = 2,\n}\n"
+        );
+    }
+}
 mod lit_multiline_string {
     use super::*;
     #[test]
@@ -1140,6 +1167,33 @@ mod op_field_chained {
             "op_field_chained_ast",
             t::ast("obj.field.subfield\n"),
             "obj.field.subfield\n"
+        );
+    }
+}
+mod record_field_comma_first {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_comma_first_lex",
+            t::lex("{ a = 1\n, b = 2\n}\n"),
+            "{ a = 1\n, b = 2\n}\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_comma_first_cst",
+            t::cst("{ a = 1\n, b = 2\n}\n"),
+            "{ a = 1\n, b = 2\n}\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_comma_first_ast",
+            t::ast("{ a = 1\n, b = 2\n}\n"),
+            "{ a = 1\n, b = 2\n}\n"
         );
     }
 }
