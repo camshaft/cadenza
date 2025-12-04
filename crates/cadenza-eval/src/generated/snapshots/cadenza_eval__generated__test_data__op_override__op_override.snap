@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "fn my_op x y = x + y + 1\nlet my_op = +\nmy_op 1 2\n"
+---
+EvalResult {
+    values: [
+        nil,
+        Symbol("+"),
+        3,
+    ],
+    diagnostics: [],
+}

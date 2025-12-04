@@ -470,6 +470,17 @@ mod let_reassign {
         );
     }
 }
+mod op_assign {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "op_assign",
+            t::eval_all("let add_op = +\nadd_op 1 2\n"),
+            "let add_op = +\nadd_op 1 2\n"
+        );
+    }
+}
 mod example_01_welcome {
     use super::*;
     #[test]
@@ -502,6 +513,17 @@ mod let_expr {
             "let_expr",
             t::eval_all("let x = 1 + 2\nx\n"),
             "let x = 1 + 2\nx\n"
+        );
+    }
+}
+mod op_override {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "op_override",
+            t::eval_all("fn my_op x y = x + y + 1\nlet my_op = +\nmy_op 1 2\n"),
+            "fn my_op x y = x + y + 1\nlet my_op = +\nmy_op 1 2\n"
         );
     }
 }

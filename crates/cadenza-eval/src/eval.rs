@@ -389,25 +389,6 @@ fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Re
     }
 }
 
-/// Helper function to extract numeric value and dimension from a Value.
-///
-/// Returns (value, Some(dimension)) for Quantity, (value, None) for plain numbers.
-fn extract_numeric_and_dimension(
-    value: &Value,
-) -> Result<(f64, Option<crate::unit::DerivedDimension>)> {
-    match value {
-        Value::Integer(n) => Ok((*n as f64, None)),
-        Value::Float(f) => Ok((*f, None)),
-        Value::Quantity {
-            value, dimension, ..
-        } => Ok((*value, Some(dimension.clone()))),
-        _ => Err(Diagnostic::type_error(
-            Type::union(vec![Type::Integer, Type::Float]),
-            value.type_of(),
-        )),
-    }
-}
-
 /// Helper function to create a Value from a numeric result and optional dimension.
 ///
 /// Returns Quantity if dimension is Some, otherwise returns Float.
@@ -937,27 +918,18 @@ pub fn builtin_measure() -> BuiltinMacro {
 pub fn builtin_add() -> BuiltinFn {
     BuiltinFn {
         name: "+",
-        signature: Type::function(
-            vec![
-                Type::union(vec![Type::Integer, Type::Float]),
-                Type::union(vec![Type::Integer, Type::Float]),
-            ],
-            Type::union(vec![Type::Integer, Type::Float]),
-        ),
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float, Type::Float], Type::Float),
+        ]),
         func: |args, _ctx| {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
             }
 
-            fn number_type() -> Type {
-                Type::union(vec![Type::Integer, Type::Float])
-            }
-
             match (&args[0], &args[1]) {
                 (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
                 (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-                (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
-                (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a + *b as f64)),
                 // Handle quantity addition - dimensions must match
                 (
                     Value::Quantity {
@@ -1037,11 +1009,19 @@ pub fn builtin_add() -> BuiltinFn {
                         dimension: dimension.clone(),
                     })
                 }
-                // For binary operators, report the first non-number type as the actual type
-                (Value::Integer(_), b) | (Value::Float(_), b) => {
-                    Err(Diagnostic::type_error(number_type(), b.type_of()))
+                // Type mismatch - reject mixed integer/float operations
+                (Value::Integer(_), Value::Float(_)) | (Value::Float(_), Value::Integer(_)) => {
+                    Err(Diagnostic::type_error(args[0].type_of(), args[1].type_of()))
                 }
-                (a, _) => Err(Diagnostic::type_error(number_type(), a.type_of())),
+                // For non-numeric types, report type error
+                (Value::Integer(_), b) | (Value::Float(_), b) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    b.type_of(),
+                )),
+                (a, _) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    a.type_of(),
+                )),
             }
         },
     }
@@ -1051,18 +1031,13 @@ pub fn builtin_add() -> BuiltinFn {
 pub fn builtin_sub() -> BuiltinFn {
     BuiltinFn {
         name: "-",
-        signature: Type::function(
-            vec![
-                Type::union(vec![Type::Integer, Type::Float]),
-                Type::union(vec![Type::Integer, Type::Float]),
-            ],
-            Type::union(vec![Type::Integer, Type::Float]),
-        ),
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float], Type::Float),
+            Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float, Type::Float], Type::Float),
+        ]),
         func: |args, _ctx| {
-            fn number_type() -> Type {
-                Type::union(vec![Type::Integer, Type::Float])
-            }
-
             match args.len() {
                 1 => {
                     // Unary negation
@@ -1078,7 +1053,10 @@ pub fn builtin_sub() -> BuiltinFn {
                             unit: unit.clone(),
                             dimension: dimension.clone(),
                         }),
-                        a => Err(Diagnostic::type_error(number_type(), a.type_of())),
+                        a => Err(Diagnostic::type_error(
+                            Type::union(vec![Type::Integer, Type::Float]),
+                            a.type_of(),
+                        )),
                     }
                 }
                 2 => {
@@ -1086,8 +1064,6 @@ pub fn builtin_sub() -> BuiltinFn {
                     match (&args[0], &args[1]) {
                         (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a - b)),
                         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-                        (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 - b)),
-                        (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a - *b as f64)),
                         // Handle quantity subtraction - dimensions must match
                         (
                             Value::Quantity {
@@ -1181,11 +1157,22 @@ pub fn builtin_sub() -> BuiltinFn {
                                 dimension: dimension.clone(),
                             })
                         }
-                        // For binary operators, report the first non-number type as the actual type
-                        (Value::Integer(_), b) | (Value::Float(_), b) => {
-                            Err(Diagnostic::type_error(number_type(), b.type_of()))
+                        // Type mismatch - reject mixed integer/float operations
+                        (Value::Integer(_), Value::Float(_))
+                        | (Value::Float(_), Value::Integer(_)) => {
+                            Err(Diagnostic::type_error(args[0].type_of(), args[1].type_of()))
                         }
-                        (a, _) => Err(Diagnostic::type_error(number_type(), a.type_of())),
+                        // For non-numeric types, report type error
+                        (Value::Integer(_), b) | (Value::Float(_), b) => {
+                            Err(Diagnostic::type_error(
+                                Type::union(vec![Type::Integer, Type::Float]),
+                                b.type_of(),
+                            ))
+                        }
+                        (a, _) => Err(Diagnostic::type_error(
+                            Type::union(vec![Type::Integer, Type::Float]),
+                            a.type_of(),
+                        )),
                     }
                 }
                 0 => Err(Diagnostic::arity(1, 0)),
@@ -1199,36 +1186,97 @@ pub fn builtin_sub() -> BuiltinFn {
 pub fn builtin_mul() -> BuiltinFn {
     BuiltinFn {
         name: "*",
-        signature: Type::function(
-            vec![
-                Type::union(vec![Type::Integer, Type::Float]),
-                Type::union(vec![Type::Integer, Type::Float]),
-            ],
-            Type::union(vec![Type::Integer, Type::Float]),
-        ),
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float, Type::Float], Type::Float),
+        ]),
         func: |args, _ctx| {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
             }
 
-            // Extract numeric values and dimensions
-            let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
-            let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
-
-            let result_val = a_val * b_val;
-
-            // Calculate result dimension
-            let result_dim = match (a_dim, b_dim) {
-                (Some(a), Some(b)) => Some(a.multiply(&b)),
-                (Some(a), None) | (None, Some(a)) => Some(a),
-                (None, None) => None,
-            };
-
-            // If result is dimensionless and no fractional part, return integer
-            if result_dim.is_none() && result_val.fract() == 0.0 {
-                Ok(Value::Integer(result_val as i64))
-            } else {
-                Ok(create_numeric_value(result_val, result_dim, None))
+            match (&args[0], &args[1]) {
+                // Integer multiplication
+                (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
+                // Float multiplication
+                (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+                // Quantity multiplication with dimensions
+                (
+                    Value::Quantity {
+                        value: v1,
+                        unit: _,
+                        dimension: d1,
+                    },
+                    Value::Quantity {
+                        value: v2,
+                        unit: _,
+                        dimension: d2,
+                    },
+                ) => {
+                    let result_val = v1 * v2;
+                    let result_dim = d1.multiply(d2);
+                    Ok(create_numeric_value(result_val, Some(result_dim), None))
+                }
+                // Quantity * scalar
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Float(f),
+                )
+                | (
+                    Value::Float(f),
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                ) => {
+                    let result = value * f;
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Integer(n),
+                )
+                | (
+                    Value::Integer(n),
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                ) => {
+                    let result = value * (*n as f64);
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                // Type mismatch - reject mixed integer/float operations
+                (Value::Integer(_), Value::Float(_)) | (Value::Float(_), Value::Integer(_)) => {
+                    Err(Diagnostic::type_error(args[0].type_of(), args[1].type_of()))
+                }
+                // For non-numeric types, report type error
+                (Value::Integer(_), b) | (Value::Float(_), b) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    b.type_of(),
+                )),
+                (a, _) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    a.type_of(),
+                )),
             }
         },
     }
@@ -1238,48 +1286,137 @@ pub fn builtin_mul() -> BuiltinFn {
 pub fn builtin_div() -> BuiltinFn {
     BuiltinFn {
         name: "/",
-        signature: Type::function(
-            vec![
-                Type::union(vec![Type::Integer, Type::Float]),
-                Type::union(vec![Type::Integer, Type::Float]),
-            ],
-            Type::union(vec![Type::Integer, Type::Float]),
-        ),
+        signature: Type::union(vec![
+            Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+            Type::function(vec![Type::Float, Type::Float], Type::Float),
+        ]),
         func: |args, _ctx| {
             if args.len() != 2 {
                 return Err(Diagnostic::arity(2, args.len()));
             }
 
-            // Extract numeric values and dimensions
-            let (a_val, a_dim) = extract_numeric_and_dimension(&args[0])?;
-            let (b_val, b_dim) = extract_numeric_and_dimension(&args[1])?;
-
-            if b_val == 0.0 {
-                return Err(Diagnostic::syntax("division by zero"));
-            }
-
-            let result_val = a_val / b_val;
-
-            // Calculate result dimension
-            let result_dim = match (a_dim, b_dim) {
-                (Some(a), Some(b)) => Some(a.divide(&b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => {
-                    // 1 / dimension means the dimension is inverted
-                    use crate::unit::DerivedDimension;
-                    Some(DerivedDimension {
-                        numerator: b.denominator.clone(),
-                        denominator: b.numerator.clone(),
+            match (&args[0], &args[1]) {
+                // Integer division
+                (Value::Integer(a), Value::Integer(b)) => {
+                    if *b == 0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    Ok(Value::Integer(a / b))
+                }
+                // Float division
+                (Value::Float(a), Value::Float(b)) => {
+                    if *b == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    Ok(Value::Float(a / b))
+                }
+                // Quantity division with dimensions
+                (
+                    Value::Quantity {
+                        value: v1,
+                        unit: _,
+                        dimension: d1,
+                    },
+                    Value::Quantity {
+                        value: v2,
+                        unit: _,
+                        dimension: d2,
+                    },
+                ) => {
+                    if *v2 == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result_val = v1 / v2;
+                    let result_dim = d1.divide(d2);
+                    Ok(create_numeric_value(result_val, Some(result_dim), None))
+                }
+                // Quantity / scalar
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Float(f),
+                ) => {
+                    if *f == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result = value / f;
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
                     })
                 }
-                (None, None) => None,
-            };
-
-            // If result is dimensionless and no fractional part, return integer
-            if result_dim.is_none() && result_val.fract() == 0.0 {
-                Ok(Value::Integer(result_val as i64))
-            } else {
-                Ok(create_numeric_value(result_val, result_dim, None))
+                (
+                    Value::Quantity {
+                        value,
+                        unit,
+                        dimension,
+                    },
+                    Value::Integer(n),
+                ) => {
+                    if *n == 0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result = value / (*n as f64);
+                    Ok(Value::Quantity {
+                        value: result,
+                        unit: unit.clone(),
+                        dimension: dimension.clone(),
+                    })
+                }
+                // scalar / Quantity - inverts dimension
+                (
+                    Value::Float(f),
+                    Value::Quantity {
+                        value, dimension, ..
+                    },
+                ) => {
+                    if *value == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result_val = f / value;
+                    // Invert the dimension
+                    use crate::unit::DerivedDimension;
+                    let inverted_dim = DerivedDimension {
+                        numerator: dimension.denominator.clone(),
+                        denominator: dimension.numerator.clone(),
+                    };
+                    Ok(create_numeric_value(result_val, Some(inverted_dim), None))
+                }
+                (
+                    Value::Integer(n),
+                    Value::Quantity {
+                        value, dimension, ..
+                    },
+                ) => {
+                    if *value == 0.0 {
+                        return Err(Diagnostic::syntax("division by zero"));
+                    }
+                    let result_val = (*n as f64) / value;
+                    // Invert the dimension
+                    use crate::unit::DerivedDimension;
+                    let inverted_dim = DerivedDimension {
+                        numerator: dimension.denominator.clone(),
+                        denominator: dimension.numerator.clone(),
+                    };
+                    Ok(create_numeric_value(result_val, Some(inverted_dim), None))
+                }
+                // Type mismatch - reject mixed integer/float operations
+                (Value::Integer(_), Value::Float(_)) | (Value::Float(_), Value::Integer(_)) => {
+                    Err(Diagnostic::type_error(args[0].type_of(), args[1].type_of()))
+                }
+                // For non-numeric types, report type error
+                (Value::Integer(_), b) | (Value::Float(_), b) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    b.type_of(),
+                )),
+                (a, _) => Err(Diagnostic::type_error(
+                    Type::union(vec![Type::Integer, Type::Float]),
+                    a.type_of(),
+                )),
             }
         },
     }
@@ -1536,23 +1673,6 @@ mod tests {
         assert_eq!(eval_single("2 > 1").unwrap(), Value::Bool(true));
         assert_eq!(eval_single("1 == 1").unwrap(), Value::Bool(true));
         assert_eq!(eval_single("1 != 2").unwrap(), Value::Bool(true));
-    }
-
-    #[test]
-    fn eval_operator_as_variable() {
-        // Test that operators can be stored in variables and used as first-class values
-        let result = eval_str("let add_op = +\nadd_op 1 2");
-        match result {
-            Ok(values) => {
-                assert_eq!(values.len(), 2);
-                // First value is the operator assignment (should return the operator)
-                // Second value is the function call result
-                assert_eq!(values[1], Value::Integer(3));
-            }
-            Err(e) => {
-                panic!("Expected success, got error: {:?}", e);
-            }
-        }
     }
 
     #[test]
