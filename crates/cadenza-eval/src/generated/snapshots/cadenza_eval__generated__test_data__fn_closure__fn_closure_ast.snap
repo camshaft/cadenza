@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let x = 10\nfn capture_fn = x\nlet x = 20\ncapture_fn\n"
+---
+[
+    [=, [let, x], 10],
+    [=, [fn, capture_fn], x],
+    [=, [let, x], 20],
+    capture_fn,
+]

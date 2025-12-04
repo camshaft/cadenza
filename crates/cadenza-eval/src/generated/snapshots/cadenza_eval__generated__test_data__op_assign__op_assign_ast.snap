@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let add_op = +\nadd_op 1 2\n"
+---
+[
+    [=, [let, add_op], +],
+    [[add_op, 1], 2],
+]

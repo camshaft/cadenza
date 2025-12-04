@@ -1,0 +1,17 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Variables with let\n# Define and use variables\n\n# Simple binding\nlet x = 42\nx\n\n# Multiple bindings\nlet a = 1\nlet b = 2\na + b\n\n# Using expressions\nlet result = 10 * 5 + 3\nresult\n\n# Variable reassignment\nlet counter = 0\nlet counter = counter + 1\nlet counter = counter + 1\ncounter\n"
+---
+[
+    [=, [let, x], 42],
+    x,
+    [=, [let, a], 1],
+    [=, [let, b], 2],
+    [+, a, b],
+    [=, [let, result], [+, [*, 10, 5], 3]],
+    result,
+    [=, [let, counter], 0],
+    [=, [let, counter], [+, counter, 1]],
+    [=, [let, counter], [+, counter, 1]],
+    counter,
+]

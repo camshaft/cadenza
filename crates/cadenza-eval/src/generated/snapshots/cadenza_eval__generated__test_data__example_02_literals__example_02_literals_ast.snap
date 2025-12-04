@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Literal Values\n# Different types of literals\n\n# Integers\n42\n-17\n0\n\n# Floating point\n3.14159\n-2.5\n1.0\n\n# Strings\n\"hello\"\n\"world\"\n\"hello world\"\n"
+---
+[
+    [-, 42, 17],
+    0,
+    [-, 3.14159, 2.5],
+    1.0,
+    "hello",
+    "world",
+    "hello world",
+]

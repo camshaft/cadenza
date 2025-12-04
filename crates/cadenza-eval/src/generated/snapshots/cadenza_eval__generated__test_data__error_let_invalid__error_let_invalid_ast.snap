@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let 42 = 1\n"
+---
+[
+    [=, [let, 42], 1],
+]

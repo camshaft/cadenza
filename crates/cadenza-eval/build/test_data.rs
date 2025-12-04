@@ -11,13 +11,18 @@ pub fn tests() -> String {
     w!("use crate::testing as t;");
     w!("use insta::assert_debug_snapshot as s;");
 
-    // Generate eval tests for each example
+    // Generate eval and ast tests for each example
     for Example { name, src } in examples.iter() {
         w!("mod {name} {{");
         w!("    use super::*;");
         w!("    #[test]");
         w!("    fn eval() {{");
         w!("        s!({name:?}, t::eval_all({src:?}), {src:?});");
+        w!("    }}");
+        w!("    #[test]");
+        w!("    fn ast() {{");
+        let ast_name = format!("{name}_ast");
+        w!("        s!({ast_name:?}, t::ast({src:?}), {src:?});");
         w!("    }}");
         w!("}}");
     }

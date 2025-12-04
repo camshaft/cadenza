@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "measure meter\nlet x = meter 5\nx\n"
+---
+[
+    [measure, meter],
+    [=, [let, x], [meter, 5]],
+    x,
+]
