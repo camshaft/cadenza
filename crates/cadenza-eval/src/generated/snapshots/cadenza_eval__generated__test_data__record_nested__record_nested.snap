@@ -4,11 +4,7 @@ expression: "{ a = { b = 1 } }\n"
 ---
 EvalResult {
     values: [
-        {
-            "a": {
-                "b": 1,
-            },
-        },
+        {a: {b: 1}},
     ],
     diagnostics: [],
 }

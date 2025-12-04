@@ -495,11 +495,14 @@ impl fmt::Debug for Value {
             Value::String(s) => write!(f, "{s:?}"),
             Value::List(items) => f.debug_list().entries(items).finish(),
             Value::Record(fields) => {
-                let mut debug_map = f.debug_map();
-                for (name, value) in fields {
-                    debug_map.entry(&name.to_string(), value);
+                write!(f, "{{")?;
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {:?}", &**name, value)?;
                 }
-                debug_map.finish()
+                write!(f, "}}")
             }
             Value::Type(t) => write!(f, "Type({t})"),
             Value::Quantity {

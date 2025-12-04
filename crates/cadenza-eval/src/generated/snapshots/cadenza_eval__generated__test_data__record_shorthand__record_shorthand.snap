@@ -1,10 +1,12 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "{ a = 1, b = 2 }\n"
+expression: "let x = 1\nlet y = 2\n{ x, y }\n"
 ---
 EvalResult {
     values: [
-        {a: 1, b: 2},
+        1,
+        2,
+        {x: 1, y: 2},
     ],
     diagnostics: [],
 }

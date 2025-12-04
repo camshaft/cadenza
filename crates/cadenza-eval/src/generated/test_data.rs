@@ -429,6 +429,25 @@ mod block_function_body {
         );
     }
 }
+mod record_shorthand {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "record_shorthand",
+            t::eval_all("let x = 1\nlet y = 2\n{ x, y }\n"),
+            "let x = 1\nlet y = 2\n{ x, y }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_shorthand_ast",
+            t::ast("let x = 1\nlet y = 2\n{ x, y }\n"),
+            "let x = 1\nlet y = 2\n{ x, y }\n"
+        );
+    }
+}
 mod arith_add {
     use super::*;
     #[test]
