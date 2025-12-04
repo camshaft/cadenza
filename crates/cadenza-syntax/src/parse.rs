@@ -305,9 +305,15 @@ impl<'src> Parser<'src> {
             
             // Check for dedentation (error recovery)
             if !bracket_marker.saved_whitespace.should_continue_indent(self) {
-                // Dedented - check if we should stop or continue
+                // Dedented - check if the next token is our closing delimiter
+                // If it is, exit the loop to let finish() handle it
+                if self.current() == Kind::RBracket {
+                    break;
+                }
+                
+                // Otherwise, check if we should stop or continue based on comma position
                 // If we just consumed a comma on a dedented line (comma-first style), continue
-                // If no comma or comma was on same line (trailing comma), stop
+                // If no comma or comma was on same line (trailing comma), stop for error recovery
                 if !after_comma || comma_line <= bracket_marker.saved_whitespace.line {
                     break;
                 }
@@ -380,9 +386,15 @@ impl<'src> Parser<'src> {
             
             // Check for dedentation (error recovery)
             if !brace_marker.saved_whitespace.should_continue_indent(self) {
-                // Dedented - check if we should stop or continue
+                // Dedented - check if the next token is our closing delimiter
+                // If it is, exit the loop to let finish() handle it
+                if self.current() == Kind::RBrace {
+                    break;
+                }
+                
+                // Otherwise, check if we should stop or continue based on comma position
                 // If we just consumed a comma on a dedented line (comma-first style), continue
-                // If no comma or comma was on same line (trailing comma), stop
+                // If no comma or comma was on same line (trailing comma), stop for error recovery
                 if !after_comma || comma_line <= brace_marker.saved_whitespace.line {
                     break;
                 }
@@ -622,19 +634,28 @@ impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
     }
 
     fn finish(&self, parser: &mut Parser) {
-        if parser.current() == Self::close_kind() {
+        let found_closing_delimiter = parser.current() == Self::close_kind();
+        
+        if found_closing_delimiter {
             parser.bump();
+            // When we successfully close the delimiter, restore the full whitespace state
+            // including the line number. This allows parsing to continue correctly after
+            // the delimiter in cases like:  foo [\n    a\n] b c
+            parser.whitespace.span = self.saved_whitespace.span;
+            parser.whitespace.len = self.saved_whitespace.len;
+            parser.whitespace.line = self.saved_whitespace.line;
         } else {
+            // Emit an error node in the CST before reporting the error
+            parser.builder.start_node(Kind::Error.into());
             // Use the generated display_name for human-readable error message
             let msg = Self::close_kind().display_name();
             parser.error(&format!("expected {}", msg));
+            parser.builder.finish_node();
+            // For error recovery, restore indentation but NOT line number.
+            // This allows us to detect dedentation after a missing closing delimiter.
+            parser.whitespace.span = self.saved_whitespace.span;
+            parser.whitespace.len = self.saved_whitespace.len;
         }
-        // Restore whitespace indentation from before the delimiter block
-        // but keep the current line number since we've moved forward in the file.
-        // Not restoring the line is critical for error recovery - it allows us to
-        // detect dedentation after exiting a delimiter context.
-        parser.whitespace.span = self.saved_whitespace.span;
-        parser.whitespace.len = self.saved_whitespace.len;
     }
 }
 

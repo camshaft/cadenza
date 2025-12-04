@@ -3,46 +3,49 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "foo 1 {\n  a = 1\n} 2\nbar\n"
 ---
 Root@0..24
-  Apply@0..18
-    ApplyReceiver@0..6
-      Apply@0..6
-        ApplyReceiver@0..4
-          Identifier@0..3
-            Identifier@0..3 "foo"
-          Space@3..4 " "
-        ApplyArgument@4..6
-          Literal@4..5
-            Integer@4..5
-              Integer@4..5 "1"
-          Space@5..6 " "
-    ApplyArgument@6..18
-      Apply@6..17
-        LBrace@6..7 "{"
-        Newline@7..8 "\n"
-        Space@8..10 "  "
-        ApplyReceiver@10..10
-          SyntheticRecord@10..10
-        ApplyArgument@10..16
-          Apply@10..16
-            ApplyArgument@10..12
-              Identifier@10..11
-                Identifier@10..11 "a"
-              Space@11..12 " "
-            ApplyReceiver@12..13
-              Equal@12..13
-                Equal@12..13 "="
-            Space@13..14 " "
-            ApplyArgument@14..16
-              Literal@14..15
-                Integer@14..15
-                  Integer@14..15 "1"
-              Newline@15..16 "\n"
-        RBrace@16..17 "}"
-      Space@17..18 " "
-  Literal@18..19
-    Integer@18..19
-      Integer@18..19 "2"
-  Newline@19..20 "\n"
+  Apply@0..20
+    ApplyReceiver@0..18
+      Apply@0..18
+        ApplyReceiver@0..6
+          Apply@0..6
+            ApplyReceiver@0..4
+              Identifier@0..3
+                Identifier@0..3 "foo"
+              Space@3..4 " "
+            ApplyArgument@4..6
+              Literal@4..5
+                Integer@4..5
+                  Integer@4..5 "1"
+              Space@5..6 " "
+        ApplyArgument@6..18
+          Apply@6..17
+            LBrace@6..7 "{"
+            Newline@7..8 "\n"
+            Space@8..10 "  "
+            ApplyReceiver@10..10
+              SyntheticRecord@10..10
+            ApplyArgument@10..16
+              Apply@10..16
+                ApplyArgument@10..12
+                  Identifier@10..11
+                    Identifier@10..11 "a"
+                  Space@11..12 " "
+                ApplyReceiver@12..13
+                  Equal@12..13
+                    Equal@12..13 "="
+                Space@13..14 " "
+                ApplyArgument@14..16
+                  Literal@14..15
+                    Integer@14..15
+                      Integer@14..15 "1"
+                  Newline@15..16 "\n"
+            RBrace@16..17 "}"
+          Space@17..18 " "
+    ApplyArgument@18..20
+      Literal@18..19
+        Integer@18..19
+          Integer@18..19 "2"
+      Newline@19..20 "\n"
   Identifier@20..23
     Identifier@20..23 "bar"
   Newline@23..24 "\n"

@@ -24,6 +24,7 @@ Root@0..14
             Integer@8..9
               Integer@8..9 "1"
           Newline@9..10 "\n"
+    Error@10..10
   Identifier@10..13
     Identifier@10..13 "foo"
   Newline@13..14 "\n"
