@@ -1045,7 +1045,7 @@ pub fn builtin_block() -> BuiltinMacro {
 pub fn builtin_list() -> BuiltinMacro {
     BuiltinMacro {
         name: "__list__",
-        signature: Type::function(vec![Type::Unknown], Type::list(Type::Unknown)),
+        signature: Type::function(vec![], Type::list(Type::Unknown)),
         func: |args, ctx| {
             // Evaluate each argument expression
             let mut elements = Vec::with_capacity(args.len());
