@@ -4,6 +4,18 @@
 
 This document describes the comprehensive architecture for the Cadenza compiler, covering type checking, multi-phase compilation, module system, code generation, LSP integration, and more. The design prioritizes incremental compilation, excellent error messages, and seamless integration between compile-time and runtime execution.
 
+### Primary Use Cases
+
+Cadenza is designed to make it easy to model and interact with things in the real world:
+
+1. **3D Modeling**: Define everything in code (like OpenSCAD) to generate exportable models (STL, etc.)
+2. **Algorithmic Music Composition**: Define compositions that can be listened to and exported
+3. **Visual Art**: Create generative and interactive visual artworks
+4. **Interactive Books**: Drive simulations and visualizations to describe concepts
+5. **Quick Calculations**: Fast scratch computation with proper unit handling (e.g., "459174794 bytes/second to Gbps")
+
+These use cases drive our focus on dimensional analysis, interactivity, and creative exploration inspired by Bret Victor's ideas.
+
 ## Table of Contents
 
 1. [Design Principles](#design-principles)
@@ -28,7 +40,9 @@ This document describes the comprehensive architecture for the Cadenza compiler,
 3. **Errors are First-Class**: Multi-error reporting, beautiful diagnostics, and precise source tracking throughout.
 4. **LSP-Native**: The compiler and LSP server are the same thing—one is queryable, one is batch.
 5. **Units and Dimensions**: Type system includes dimensional analysis for physical units.
-6. **No Hidden Magic**: Explicit compiler API, explicit phase separation, explicit type constraints.
+6. **Homoiconic Syntax**: The language AST is simple enough to be manipulated by the language itself, enabling user macros and AST quote/splicing.
+7. **Minimal Lexing/Parsing Rules**: Everything is function application (similar to Lisp). The parser doesn't specialize on keywords—identifiers get their semantic meaning at evaluation time.
+8. **Real-World Modeling**: Make it easy to model real-world things with dimension analysis and interactive exploration.
 
 ### Non-Goals
 
@@ -138,8 +152,10 @@ The evaluator emits both evaluated values AND unevaluated expressions to the com
 
 **Example**:
 ```cadenza
-let config = load_config()  # Evaluated at compile-time
+let config = load_config "config.txt"  # Evaluated at compile-time
 
+# Note: Syntax for conditionals is still being designed
+# This is illustrative of the concept of type-checking unevaluated branches
 let process =
     if config.mode == "debug"
         fn x -> debug_print x  # Might not be evaluated
@@ -322,27 +338,28 @@ Type errors include:
 ```cadenza
 # mymodule.cdz
 
-# Private function (not exported by default)
-let internal_helper = fn x -> x + 1
+# Private function (prefix with _ to hide)
+fn _internal_helper x = x + 1
 
-# Public function (explicit export)
-@export
-let public_fn = fn x -> x * 2
+# Public function (exported by default)
+fn public_fn x = x * 2
 
-# Public type
-@export
+# Public type/measure
 measure meter
 
 # Public macro
-@export
 defmacro my_macro args = ...
 ```
+
+**Export semantics**: Functions and definitions are exported by default. Prefix names with `_` to make them private.
+
+**Artifacts**: The `@export` attribute is used to name artifacts (models, compositions, etc.) that can be exported from a running program (e.g., STL files for 3D models, audio files for compositions).
 
 ### Import/Export Mechanism
 
 #### Exports
 
-Modules explicitly mark exports with `@export` attribute. The evaluator collects these into the compiler state:
+Modules export all top-level definitions by default (except those prefixed with `_`). The evaluator collects these into the compiler state:
 
 ```rust
 pub struct ModuleExports {
@@ -362,20 +379,20 @@ pub struct ModuleExports {
 
 #### Imports
 
+Modules are treated as records, allowing destructuring and natural access patterns:
+
 ```cadenza
-# Import specific items
-import mymodule (public_fn, meter)
+# Destructuring import (modules are records)
+import { public_fn, meter } = mymodule
 
-# Import all exports
-import mymodule *
+# Import entire module
+import mymodule
 
-# Qualified import
-import mymodule as m
-# Access with module prefix
-# The dot notation accesses a field/function, wrapped in parens to make it a value
-# Then applied to the argument using function application syntax
-let x = (m.public_fn) 10
-# Or without whitespace: (m.public_fn)(10)
+# Qualified import with alias
+import m = mymodule
+
+# Access module members using dot notation
+let x = m.public_fn 10  # Dot operator works naturally with records
 ```
 
 The type checker ensures:
@@ -417,19 +434,26 @@ Circular dependencies are detected during evaluation phase before type checking.
 ### Trait Definition
 
 ```cadenza
-# Define a trait
-@trait
-let Numeric = trait
-    add : Self -> Self -> Self
-    mul : Self -> Self -> Self
-    zero : Self
+# Define a trait (basic version)
+trait Numeric =
+  fn add Self Self = Self
+  fn mul Self Self = Self
+  fn zero = Self
+
+# Define a trait with generics for more complex patterns
+trait Numeric Rhs Output =
+  fn add Self Rhs = Output
+  fn mul Self Rhs = Output
+  fn zero = Self
 
 # Implement trait for a type
-@impl Numeric for Integer
-    add = fn a b -> a + b
-    mul = fn a b -> a * b
-    zero = 0
+impl Integer = Numeric
+  fn add a b = a + b
+  fn mul a b = a * b
+  fn zero = 0
 ```
+
+**Note**: The trait system complexity can snowball quickly with generics. The exact syntax and feature set is still being designed to balance power with simplicity.
 
 ### Implicit Trait Constraints
 
@@ -545,15 +569,20 @@ Effects represent computational context (like Reader monad in Haskell):
 
 ```cadenza
 # Define an effect
-@effect
-let Logger = effect
-    log : String -> ()
+# Note: Exact syntax still being designed
+effect Logger =
+  fn log String = ()
 
 # Function using an effect
-let process = fn data ->
+fn process data =
     Logger.log "Processing"
     # ... do work
 ```
+
+**Design considerations**:
+- How to handle state updates in the effect system? Should effects act as reducers returning next state?
+- Effects need to associate state (e.g., file descriptor for logging to a file)
+- Balance between pure immutability and practical state management
 
 ### Implicit Effect Propagation
 
@@ -650,6 +679,7 @@ The type checker verifies all effect constraints are satisfied before the top-le
 - Requires runtime (WASM engine)
 - FFI with JS can be complex
 - Debugging harder than JS
+- **Major challenge**: Substantial effort to efficiently lower high-level language to WASM (allocations, lifetime management, memory safety)
 
 **Approach**: Use `wasm32-unknown-unknown` target, compile IR to WASM bytecode.
 
@@ -672,6 +702,7 @@ impl WasmBackend {
 - Good tooling
 - Easy debugging
 - Source maps
+- Less lowering work than WASM
 
 **Cons**:
 - Requires transpilation step
@@ -686,27 +717,30 @@ impl WasmBackend {
 - No compilation needed
 - Universal browser support
 - Easy debugging
+- Minimal lowering required
 
 **Cons**:
 - No static type checking
 - Larger output
 - Less efficient than WASM
+- **Concern**: Lack of actual integers causes inconsistent runtime behavior across environments
 
 **Approach**: Emit JS code directly from IR.
 
 #### Recommendation for Browser
 
-**Hybrid approach**:
-- **AOT (Ahead-of-time)**: Compile to WASM for production
-  - Best performance
-  - Smallest bundle size
-  
-- **In-browser**: Compile to JavaScript for development
+**Prioritize high-level targets**:
+- **Primary**: Target TypeScript or JavaScript to minimize backend complexity
+  - Much less lowering work required
+  - Faster development iteration
   - Easier debugging
-  - Source maps
-  - No WASM compilation complexity
+  - Good enough performance for most use cases
+  
+- **Optional**: WASM for performance-critical applications
+  - When the substantial lowering effort is justified
+  - Near-native performance needed
 
-The compiler can target both from the same IR.
+The compiler can target multiple backends from the same IR, allowing flexibility based on requirements.
 
 ### Standalone Targets
 
@@ -722,6 +756,7 @@ The compiler can target both from the same IR.
 - Large dependency
 - Complex API
 - Longer compile times
+- **Major challenge**: Substantial lowering work similar to WASM
 
 **Approach**: Use `inkwell` crate for LLVM bindings.
 
@@ -740,13 +775,14 @@ pub struct LlvmBackend<'ctx> {
 - Excellent error messages
 - Already set up in our workflow
 - Good debugging
+- **Minimal lowering work**: Rust is high-level, less backend complexity
 
 **Cons**:
 - Requires Rust toolchain
-- Slower compilation
+- Slower compilation than Cranelift
 - Not truly standalone
 
-**Approach**: Emit Rust code from IR, invoke `rustc`.
+**Approach**: Emit Rust code from IR, invoke `rustc`. Likely the least amount of backend work required.
 
 #### Option 3: Emit C
 
@@ -775,6 +811,7 @@ pub struct LlvmBackend<'ctx> {
 - Less optimization than LLVM
 - Fewer target architectures
 - Younger project
+- **Similar challenge**: Still requires substantial lowering work
 
 **Approach**: Use Cranelift as a library for code generation.
 
@@ -786,14 +823,23 @@ pub struct CraneliftBackend {
 
 #### Recommendation for Standalone
 
-**Primary**: Cranelift
-- Fast compilation (critical for LSP responsiveness)
-- Pure Rust (easier integration)
-- Good enough optimization
+**Primary**: Emit Rust
+- Minimal backend work (high-level target)
+- Leverages existing Rust compiler infrastructure
+- Good performance via rustc optimizations
+- Easier to implement and maintain
+
+**Alternative**: Cranelift
+- Fast compilation (important for LSP)
+- Pure Rust integration
+- More control over codegen
+- Requires substantial lowering effort
 
 **Optional**: LLVM
-- Enable with feature flag for production builds
-- Better optimization for release builds
+- Best optimizations for production
+- Many target architectures
+- Enable with feature flag when needed
+- Most complex lowering work
 
 ### Intermediate Representation (IR)
 
@@ -1050,102 +1096,56 @@ impl LspServer {
 
 ### Model Context Protocol (MCP)
 
-MCP is a protocol for LLM agents to interact with tools and data sources. Making it first-class in Cadenza enables:
+MCP is a protocol for LLM agents to interact with tools and data sources. Cadenza integrates with MCP in two ways:
 
-1. **Language-level MCP support**: Define tools in Cadenza
-2. **Type-safe tool definitions**: Tools are typed functions
-3. **Automatic MCP server generation**: Compiler generates MCP servers
-4. **Agent-friendly APIs**: Optimize for LLM consumption
+#### 1. Compiler as MCP Server (Primary Focus)
 
-### MCP Server as Compilation Target
+The Cadenza compiler itself exposes an MCP server that allows LLMs to inspect and interact with projects:
 
-```cadenza
-# Define an MCP tool
-@mcp_tool
-let calculate_area = fn width height ->
-    width * height
+**Capabilities**:
+- Query types for expressions at specific locations
+- Search for symbols across the codebase
+- Look up documentation for dependencies
+- Get type signatures and function definitions
+- Inspect the type environment and compiler state
 
-# Define a tool with description
-@mcp_tool(name: "calculate_area", description: "Calculate area of rectangle")
-let calculate_area : Integer -> Integer -> Integer = fn width height ->
-    width * height
-
-# Compiler generates MCP server that exposes these tools
-```
-
-### Generated MCP Server
-
-The compiler can generate:
+**Goal**: Provide a powerful query engine that gives LLMs deep insight into Cadenza programs, enabling better code understanding and assistance.
 
 ```rust
-pub struct McpServer {
-    tools: Map<InternedString, McpTool>,
+pub struct CadenzaMcpServer {
+    compiler: IncrementalCompiler,
 }
 
-pub struct McpTool {
-    name: String,
-    description: String,
-    input_schema: JsonSchema,
-    function: CompiledFunction,
-}
-
-impl McpServer {
-    fn handle_request(&self, req: McpRequest) -> Result<McpResponse> {
-        let tool = self.tools.get(&req.tool_name)?;
-        let args = self.parse_args(&req.arguments, &tool.input_schema)?;
-        let result = tool.function.call(args)?;
-        Ok(McpResponse::new(result))
-    }
+impl McpTools for CadenzaMcpServer {
+    fn query_type(&self, file: String, line: usize, col: usize) -> Result<Type>;
+    fn find_definition(&self, symbol: String) -> Result<Location>;
+    fn search_symbols(&self, query: String) -> Result<Vec<Symbol>>;
+    fn get_docs(&self, symbol: String) -> Result<String>;
 }
 ```
 
-### Type System Integration
+#### 2. Writing MCP Tools in Cadenza (Ecosystem)
 
-MCP tools are just typed functions:
+While not the primary focus, the language should be expressive enough to enable writing MCP tools:
+
+**Requirements for user-space MCP tools**:
+- Introspection capabilities (query types at compile-time)
+- User-space macros that can access type information
+- Ability to generate JSON schemas from types
+- Export functions with metadata
 
 ```cadenza
-# The type system ensures:
-let safe_tool : Integer -> Integer -> Integer = fn x y ->
-    if x < 0 or y < 0
-        error "Negative dimensions not allowed"
-    else
-        x * y
+# Example: User writes an MCP tool
+fn calculate_area width height =
+    width * height
+
+# With sufficient introspection, ecosystem tooling could:
+# - Extract type signature: Integer -> Integer -> Integer
+# - Generate JSON schema for MCP
+# - Package as MCP server
 ```
 
-Type signatures automatically generate JSON schemas for MCP:
-
-```json
-{
-  "name": "safe_tool",
-  "description": "...",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "x": { "type": "integer" },
-      "y": { "type": "integer" }
-    },
-    "required": ["x", "y"]
-  }
-}
-```
-
-### Benefits for LLM Agents
-
-1. **Type safety**: Agents can't call tools with wrong types
-2. **Clear contracts**: JSON schemas from type signatures
-3. **Discoverable**: Tools list with descriptions
-4. **Composable**: Agents can chain tool calls
-5. **Debuggable**: Full stack traces for errors
-
-### Compiler Flag
-
-```bash
-# Compile to MCP server
-cadenza compile --target mcp mytools.cdz -o mcp-server
-
-# Run MCP server
-./mcp-server
-```
+This is viewed more as an ecosystem concern, but the language needs to provide the necessary introspection primitives.
 
 ---
 
@@ -1411,6 +1411,9 @@ impl Compiler {
 6. **FFI**: How do we call into Rust/JS/C from Cadenza?
 
 7. **Package manager**: How do we distribute and install libraries?
+   - **Consideration**: Reuse npm for browser compatibility (unpkg, jsDelivr can load dependencies)
+   - Cargo has better interface but harder to load in browser
+   - Need to support both browser and native use cases
 
 ---
 
