@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "...a\n"
+---
+Root@0..5
+  Apply@0..5
+    ApplyReceiver@0..3
+      DotDotDot@0..3
+        DotDotDot@0..3 "..."
+    ApplyArgument@3..5
+      Identifier@3..4
+        Identifier@3..4 "a"
+      Newline@4..5 "\n"
