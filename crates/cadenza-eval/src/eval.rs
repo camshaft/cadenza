@@ -764,14 +764,14 @@ pub fn builtin_record() -> BuiltinMacro {
         func: |args, ctx| {
             // Each argument should be an assignment expression: [=, field_name, value_expr]
             let mut fields = Vec::with_capacity(args.len());
-            
+
             for arg in args {
                 // Each arg should be an Apply node with "=" as the operator
                 let apply = match arg {
                     Expr::Apply(apply) => apply,
                     _ => {
                         return Err(Diagnostic::syntax(
-                            "record field must be an assignment expression"
+                            "record field must be an assignment expression",
                         ));
                     }
                 };
@@ -781,7 +781,7 @@ pub fn builtin_record() -> BuiltinMacro {
                     let all_args = apply.all_arguments();
                     if all_args.len() != 2 {
                         return Err(Diagnostic::syntax(
-                            "record field assignment must have exactly 2 arguments"
+                            "record field assignment must have exactly 2 arguments",
                         ));
                     }
 
@@ -794,7 +794,7 @@ pub fn builtin_record() -> BuiltinMacro {
                         }
                         _ => {
                             return Err(Diagnostic::syntax(
-                                "record field name must be an identifier"
+                                "record field name must be an identifier",
                             ));
                         }
                     }
