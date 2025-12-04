@@ -610,7 +610,6 @@ impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
             return false;
         }
         // Delegate to saved whitespace marker for indentation checking
-        // It already handles commas specially (as it handles infix operators)
         self.saved_whitespace.should_continue(parser)
     }
 
@@ -762,8 +761,8 @@ impl Marker for WhitespaceMarker {
             return true;
         }
 
-        // Infix, postfix operators are allowed to start continuation lines
-        // at same indentation level
+        // Infix and postfix operators (excluding comma) are allowed to start continuation lines
+        // at same indentation level. Comma is explicitly excluded and handled at call sites.
         if current.is_infix() || current.is_postfix() {
             return parser.whitespace.len >= self.len;
         }
