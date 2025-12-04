@@ -594,7 +594,6 @@ impl<const CLOSE: u16> Marker for DelimiterMarker<CLOSE> {
             return false;
         }
         // Delegate to saved whitespace marker for indentation checking
-        // It already handles commas specially (as it handles infix operators)
         self.saved_whitespace.should_continue(parser)
     }
 
@@ -731,7 +730,11 @@ struct WhitespaceMarker {
 
 impl WhitespaceMarker {
     /// Check if parsing should continue based on indentation, ignoring punctuation boundaries.
-    /// Used for error recovery in delimiter parsing.
+    /// 
+    /// This method is used for error recovery in delimiter parsing. Unlike the main
+    /// `should_continue` method, this allows commas at the same indentation level,
+    /// which is necessary for comma-separated lists to detect dedentation errors
+    /// without being blocked by commas themselves.
     fn should_continue_indent(&self, parser: &mut Parser) -> bool {
         if parser.current() == Kind::Eof {
             return false;
@@ -743,7 +746,8 @@ impl WhitespaceMarker {
         }
 
         let current = parser.current();
-        // Infix, postfix operators and comma are allowed at same indentation
+        // Infix, postfix operators and comma are allowed at same indentation level
+        // for error recovery (e.g., comma-first style: [ 1\n, 2\n, 3])
         if current.is_infix() || current.is_postfix() || current == Kind::Comma {
             return parser.whitespace.len >= self.len;
         }
