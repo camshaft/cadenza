@@ -177,9 +177,6 @@ speed
 # Simple list of integers
 [1, 2, 3, 4, 5]
 
-# List of mixed types
-[42, 3.14, "hello"]
-
 # Assign to variable
 let numbers = [10, 20, 30]
 numbers
