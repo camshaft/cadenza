@@ -138,6 +138,33 @@ mod op_path_with_ap {
         );
     }
 }
+mod record_in_application {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_in_application_lex",
+            t::lex("foo 1 {\n  a = 1\n} 2\nbar\n"),
+            "foo 1 {\n  a = 1\n} 2\nbar\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_in_application_cst",
+            t::cst("foo 1 {\n  a = 1\n} 2\nbar\n"),
+            "foo 1 {\n  a = 1\n} 2\nbar\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_in_application_ast",
+            t::ast("foo 1 {\n  a = 1\n} 2\nbar\n"),
+            "foo 1 {\n  a = 1\n} 2\nbar\n"
+        );
+    }
+}
 mod op_path {
     use super::*;
     #[test]
@@ -321,6 +348,33 @@ mod unit_suffix_multiple {
         );
     }
 }
+mod record_field_indented {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_indented_lex",
+            t::lex("{\n  a = 1,\n  b = 2,\n}\n"),
+            "{\n  a = 1,\n  b = 2,\n}\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_indented_cst",
+            t::cst("{\n  a = 1,\n  b = 2,\n}\n"),
+            "{\n  a = 1,\n  b = 2,\n}\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_indented_ast",
+            t::ast("{\n  a = 1,\n  b = 2,\n}\n"),
+            "{\n  a = 1,\n  b = 2,\n}\n"
+        );
+    }
+}
 mod lit_multiline_string {
     use super::*;
     #[test]
@@ -474,6 +528,33 @@ mod ap_nested {
         );
     }
 }
+mod record_field_nested {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_nested_lex",
+            t::lex("{ a = { b = 1 } }\n"),
+            "{ a = { b = 1 } }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_nested_cst",
+            t::cst("{ a = { b = 1 } }\n"),
+            "{ a = { b = 1 } }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_nested_ast",
+            t::ast("{ a = { b = 1 } }\n"),
+            "{ a = { b = 1 } }\n"
+        );
+    }
+}
 mod lit_string_with_escape {
     use super::*;
     #[test]
@@ -579,6 +660,33 @@ mod block_simple {
             "block_simple_ast",
             t::ast("let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"),
             "let foo =\n    let bar = 1\n    let baz = 2\n    bar\n"
+        );
+    }
+}
+mod record_field_expr {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_expr_lex",
+            t::lex("{ a = 2 + 2 }\n"),
+            "{ a = 2 + 2 }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_expr_cst",
+            t::cst("{ a = 2 + 2 }\n"),
+            "{ a = 2 + 2 }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_expr_ast",
+            t::ast("{ a = 2 + 2 }\n"),
+            "{ a = 2 + 2 }\n"
         );
     }
 }
@@ -1089,6 +1197,33 @@ mod op_field_chained {
         );
     }
 }
+mod record_field_comma_first {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_comma_first_lex",
+            t::lex("{ a = 1\n, b = 2\n}\n"),
+            "{ a = 1\n, b = 2\n}\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_comma_first_cst",
+            t::cst("{ a = 1\n, b = 2\n}\n"),
+            "{ a = 1\n, b = 2\n}\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_comma_first_ast",
+            t::ast("{ a = 1\n, b = 2\n}\n"),
+            "{ a = 1\n, b = 2\n}\n"
+        );
+    }
+}
 mod ident_underscore_with_numbers {
     use super::*;
     #[test]
@@ -1500,6 +1635,33 @@ mod ident_underscore_middle {
         );
     }
 }
+mod record_field_trailing_comma {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_trailing_comma_lex",
+            t::lex("{ a = 1, b = 2, }\n"),
+            "{ a = 1, b = 2, }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_trailing_comma_cst",
+            t::cst("{ a = 1, b = 2, }\n"),
+            "{ a = 1, b = 2, }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_trailing_comma_ast",
+            t::ast("{ a = 1, b = 2, }\n"),
+            "{ a = 1, b = 2, }\n"
+        );
+    }
+}
 mod op_try_after_add {
     use super::*;
     #[test]
@@ -1570,6 +1732,33 @@ mod op_field_long {
     #[test]
     fn ast() {
         s!("op_field_long_ast", t::ast("a.b.c.d.e\n"), "a.b.c.d.e\n");
+    }
+}
+mod record_field_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "record_field_simple_lex",
+            t::lex("{ a = 1 }\n"),
+            "{ a = 1 }\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "record_field_simple_cst",
+            t::cst("{ a = 1 }\n"),
+            "{ a = 1 }\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "record_field_simple_ast",
+            t::ast("{ a = 1 }\n"),
+            "{ a = 1 }\n"
+        );
     }
 }
 mod op_path_simple {
@@ -1935,6 +2124,46 @@ mod invalid_parse {
             );
         }
     }
+    mod record_missing_brace_simple {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_record_missing_brace_simple_cst",
+                t::cst_no_assert("{ a = 1\nfoo\n"),
+                "{ a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_record_missing_brace_simple_ast",
+                t::ast_no_assert("{ a = 1\nfoo\n"),
+                "{ a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_record_missing_brace_simple_lex",
+                t::lex("{ a = 1\nfoo\n"),
+                "{ a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("{ a = 1\nfoo\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_record_missing_brace_simple_errors",
+                errors,
+                "{ a = 1\nfoo\n"
+            );
+        }
+    }
     mod array_multiple_commas {
         use super::*;
         #[test]
@@ -2015,6 +2244,86 @@ mod invalid_parse {
             );
         }
     }
+    mod record_double_comma {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_record_double_comma_cst",
+                t::cst_no_assert("{ a = 1,, b = 2 }\n"),
+                "{ a = 1,, b = 2 }\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_record_double_comma_ast",
+                t::ast_no_assert("{ a = 1,, b = 2 }\n"),
+                "{ a = 1,, b = 2 }\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_record_double_comma_lex",
+                t::lex("{ a = 1,, b = 2 }\n"),
+                "{ a = 1,, b = 2 }\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("{ a = 1,, b = 2 }\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_record_double_comma_errors",
+                errors,
+                "{ a = 1,, b = 2 }\n"
+            );
+        }
+    }
+    mod record_missing_brace_comma {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_record_missing_brace_comma_cst",
+                t::cst_no_assert("{ a = 1,\nfoo\n"),
+                "{ a = 1,\nfoo\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_record_missing_brace_comma_ast",
+                t::ast_no_assert("{ a = 1,\nfoo\n"),
+                "{ a = 1,\nfoo\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_record_missing_brace_comma_lex",
+                t::lex("{ a = 1,\nfoo\n"),
+                "{ a = 1,\nfoo\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("{ a = 1,\nfoo\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_record_missing_brace_comma_errors",
+                errors,
+                "{ a = 1,\nfoo\n"
+            );
+        }
+    }
     mod array_leading_comma {
         use super::*;
         #[test]
@@ -2052,6 +2361,46 @@ mod invalid_parse {
                 "invalid_parse_array_leading_comma_errors",
                 errors,
                 "[, a, b]\n"
+            );
+        }
+    }
+    mod record_missing_brace_indented {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_record_missing_brace_indented_cst",
+                t::cst_no_assert("{\n  a = 1\nfoo\n"),
+                "{\n  a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_record_missing_brace_indented_ast",
+                t::ast_no_assert("{\n  a = 1\nfoo\n"),
+                "{\n  a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_record_missing_brace_indented_lex",
+                t::lex("{\n  a = 1\nfoo\n"),
+                "{\n  a = 1\nfoo\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("{\n  a = 1\nfoo\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_record_missing_brace_indented_errors",
+                errors,
+                "{\n  a = 1\nfoo\n"
             );
         }
     }

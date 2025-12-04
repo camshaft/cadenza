@@ -1,0 +1,29 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "{ a = 1\nfoo\n"
+---
+Root@0..12
+  Apply@0..8
+    LBrace@0..1 "{"
+    Space@1..2 " "
+    ApplyReceiver@2..2
+      SyntheticRecord@2..2
+    ApplyArgument@2..8
+      Apply@2..8
+        ApplyArgument@2..4
+          Identifier@2..3
+            Identifier@2..3 "a"
+          Space@3..4 " "
+        ApplyReceiver@4..5
+          Equal@4..5
+            Equal@4..5 "="
+        Space@5..6 " "
+        ApplyArgument@6..8
+          Literal@6..7
+            Integer@6..7
+              Integer@6..7 "1"
+          Newline@7..8 "\n"
+    Error@8..8
+  Identifier@8..11
+    Identifier@8..11 "foo"
+  Newline@11..12 "\n"
