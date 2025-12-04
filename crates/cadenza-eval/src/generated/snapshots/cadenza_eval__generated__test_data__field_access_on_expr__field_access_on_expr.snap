@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "fn make_rec x = { x }\n(make_rec 1).x\n"
+---
+EvalResult {
+    values: [
+        nil,
+        1,
+    ],
+    diagnostics: [],
+}

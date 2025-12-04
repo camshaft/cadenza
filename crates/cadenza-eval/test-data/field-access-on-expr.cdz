@@ -1,0 +1,2 @@
+fn make_rec x = { x }
+(make_rec 1).x

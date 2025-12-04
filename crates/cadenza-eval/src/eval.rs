@@ -618,9 +618,18 @@ pub fn builtin_assign() -> BuiltinMacro {
 /// The apply expression represents the field access (e.g., `record.field`),
 /// and rhs_expr is the value to assign.
 ///
-/// **Note**: This currently only supports direct variable field assignment
+/// **Note on identifier requirement**: Field assignment requires the record to be a
+/// variable name (identifier) rather than an arbitrary expression. This is because
+/// assignment mutates the record in place within the environment. Ephemeral values
+/// produced by expressions cannot be mutated since they don't exist in the environment.
+///
+/// For example:
+/// - `record.field = value` - ✓ Works (record is a variable)
+/// - `(make_rec 1).field = value` - ✗ Cannot mutate an ephemeral value
+///
+/// **Note on chaining**: This currently only supports direct variable field assignment
 /// (e.g., `record.field = value`). Chained field assignment (e.g., `obj.a.field = value`)
-/// is not yet supported - the record must be a variable name, not a nested field access.
+/// is not yet supported.
 fn handle_field_assignment(
     apply: &Apply,
     rhs_expr: &Expr,
@@ -674,6 +683,12 @@ fn handle_field_assignment(
             let mut found = false;
             for (name, value) in fields.iter_mut() {
                 if *name == field_name {
+                    // Check that the new value's type matches the old value's type
+                    let old_type = value.type_of();
+                    let new_type = new_value.type_of();
+                    if old_type != new_type {
+                        return Err(Diagnostic::type_error(old_type, new_type));
+                    }
                     *value = new_value.clone();
                     found = true;
                     break;

@@ -527,6 +527,25 @@ mod cmp_ge {
         s!("cmp_ge_ast", t::ast("1 >= 1\n"), "1 >= 1\n");
     }
 }
+mod field_assign_type_mismatch {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_assign_type_mismatch",
+            t::eval_all("let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_assign_type_mismatch_ast",
+            t::ast("let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"),
+            "let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n"
+        );
+    }
+}
 mod record_empty {
     use super::*;
     #[test]
@@ -577,6 +596,25 @@ mod error_cmp_type_mismatch_gt {
             "error_cmp_type_mismatch_gt_ast",
             t::ast("# Test that > errors on type mismatch\n100 > \"baz\"\n"),
             "# Test that > errors on type mismatch\n100 > \"baz\"\n"
+        );
+    }
+}
+mod field_access_on_expr {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "field_access_on_expr",
+            t::eval_all("fn make_rec x = { x }\n(make_rec 1).x\n"),
+            "fn make_rec x = { x }\n(make_rec 1).x\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "field_access_on_expr_ast",
+            t::ast("fn make_rec x = { x }\n(make_rec 1).x\n"),
+            "fn make_rec x = { x }\n(make_rec 1).x\n"
         );
     }
 }
