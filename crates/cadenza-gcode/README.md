@@ -15,7 +15,7 @@ This crate treats GCode as an alternative lexer/parser for Cadenza, producing Ca
 - **Non-Positional Parameters**: Parameters represented as `[Letter, value]` for flexible handling
 - **Checksum Support**: Parses and preserves checksums (`*##` suffix) in the CST
 - **Klipper Format**: Supports Klipper-style named parameters (e.g., `SET_PIN PIN=my_led VALUE=1`)
-- **Line Numbers**: Supports N-codes for line numbering (e.g., `N10 G28`, `N20 G1 X100`)
+- **Line Numbers**: N-codes parsed as Apply nodes (e.g., `N10` → `[N, 10]`)
 - **Percent Delimiters**: Recognizes `%` as program delimiters
 - **Multiple Comment Styles**: Both semicolon `;` and parentheses `()` comment formats
 

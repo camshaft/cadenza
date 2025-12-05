@@ -9,7 +9,14 @@ Root@0..119
   Newline@20..21 "\n"
   CommentContent@21..42 "; Mixed features test"
   Newline@42..43 "\n"
-  CommentContent@43..46 "N10"
+  Apply@43..46
+    ApplyReceiver@43..44
+      Identifier@43..44
+        Identifier@43..44 "N"
+    ApplyArgument@44..46
+      Literal@44..46
+        Integer@44..46
+          Integer@44..46 "10"
   Space@46..47 " "
   Apply@47..57
     ApplyReceiver@47..50
@@ -18,7 +25,14 @@ Root@0..119
     Space@50..51 " "
     CommentContent@51..57 "(Home)"
   Newline@57..58 "\n"
-  CommentContent@58..61 "N20"
+  Apply@58..61
+    ApplyReceiver@58..59
+      Identifier@58..59
+        Identifier@58..59 "N"
+    ApplyArgument@59..61
+      Literal@59..61
+        Integer@59..61
+          Integer@59..61 "20"
   Space@61..62 " "
   Apply@62..80
     ApplyReceiver@62..64
@@ -57,7 +71,14 @@ Root@0..119
     Space@79..80 " "
   CommentContent@80..86 "; Move"
   Newline@86..87 "\n"
-  CommentContent@87..90 "N30"
+  Apply@87..90
+    ApplyReceiver@87..88
+      Identifier@87..88
+        Identifier@87..88 "N"
+    ApplyArgument@88..90
+      Literal@88..90
+        Integer@88..90
+          Integer@88..90 "30"
   Space@90..91 " "
   Apply@91..116
     ApplyReceiver@91..95

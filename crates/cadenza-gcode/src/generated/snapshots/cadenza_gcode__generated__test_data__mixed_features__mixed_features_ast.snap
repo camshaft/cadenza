@@ -3,7 +3,10 @@ source: crates/cadenza-gcode/src/generated/test_data.rs
 expression: "%\n(3D Print Program)\n; Mixed features test\nN10 G28 (Home)\nN20 G1 X100 Y50 F3000 ; Move\nN30 M104 S200 (Heat extruder)\n%\n"
 ---
 [
+    [N, 10],
     [G28],
+    [N, 20],
     [G1, [X, 100], [Y, 50], [F, 3000]],
+    [N, 30],
     [M104, [S, 200]],
 ]

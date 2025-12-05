@@ -7,7 +7,14 @@ Root@0..108
   Newline@17..18 "\n"
   CommentContent@18..35 "(Unclosed comment"
   Newline@35..36 "\n"
-  CommentContent@36..40 "N100"
+  Apply@36..40
+    ApplyReceiver@36..37
+      Identifier@36..37
+        Identifier@36..37 "N"
+    ApplyArgument@37..40
+      Literal@37..40
+        Integer@37..40
+          Integer@37..40 "100"
   Space@40..41 " "
   Apply@41..44
     ApplyReceiver@41..44

@@ -451,28 +451,28 @@ impl<'src> Parser<'src> {
 
     fn parse_line_number(&mut self) {
         // Line numbers are in format N123 where 123 is a line number
-        // They're typically used for error recovery but don't affect execution
-        // We'll parse them as comment tokens to preserve them in the CST
-        let start = self.pos;
+        // Parse as Apply node: [N, 123]
+        // This makes line numbers part of the AST structure
+        
+        // Start Apply node
+        self.builder.start_node(Kind::Apply.into());
+
+        // 'N' as receiver
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        self.builder.start_node(Kind::Identifier.into());
+        self.builder.token(Kind::Identifier.into(), "N");
+        self.builder.finish_node();
+        self.builder.finish_node();
 
         // Skip 'N'
         self.pos += 1;
 
-        // Parse the number
-        while self.pos < self.src.len() {
-            if let Some(ch) = self.peek_char() {
-                if ch.is_ascii_digit() {
-                    self.pos += 1;
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
+        // Parse the number as argument
+        self.builder.start_node(Kind::ApplyArgument.into());
+        self.parse_number();
+        self.builder.finish_node();
 
-        let text = &self.src[start..self.pos];
-        self.builder.token(Kind::CommentContent.into(), text);
+        self.builder.finish_node();
     }
 
     fn parse_parentheses_comment(&mut self) {
