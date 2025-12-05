@@ -69,7 +69,7 @@ impl<'src> Parser<'src> {
             } else if ch == Some('%') {
                 self.parse_percent_delimiter();
                 self.skip_newline();
-            } else if ch == Some('N') && self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit()) {
+            } else if self.is_line_number_start() {
                 // Line number - parse and continue with command on same line
                 self.parse_line_number();
                 self.skip_line_whitespace();
@@ -444,6 +444,11 @@ impl<'src> Parser<'src> {
         }
     }
 
+    fn is_line_number_start(&self) -> bool {
+        // Line numbers start with 'N' followed immediately by a digit
+        self.peek_char() == Some('N') && self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit())
+    }
+
     fn parse_line_number(&mut self) {
         // Line numbers are in format N123 where 123 is a line number
         // They're typically used for error recovery but don't affect execution
@@ -455,9 +460,12 @@ impl<'src> Parser<'src> {
 
         // Parse the number
         while self.pos < self.src.len() {
-            let ch = self.peek_char().unwrap();
-            if ch.is_ascii_digit() {
-                self.pos += 1;
+            if let Some(ch) = self.peek_char() {
+                if ch.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
@@ -477,15 +485,18 @@ impl<'src> Parser<'src> {
 
         // Read until closing parenthesis or end of line
         while self.pos < self.src.len() {
-            let ch = self.peek_char().unwrap();
-            if ch == ')' {
+            if let Some(ch) = self.peek_char() {
+                if ch == ')' {
+                    self.pos += 1;
+                    break;
+                } else if ch == '\n' || ch == '\r' {
+                    // Unclosed comment - stop at newline
+                    break;
+                }
                 self.pos += 1;
-                break;
-            } else if ch == '\n' || ch == '\r' {
-                // Unclosed comment - stop at newline
+            } else {
                 break;
             }
-            self.pos += 1;
         }
 
         let content = &self.src[start..self.pos];
