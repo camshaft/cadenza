@@ -2050,17 +2050,20 @@ pub fn builtin_assert() -> BuiltinMacro {
     }
 }
 
-/// A builtin macro that returns the inferred type of an expression as a string.
+/// A builtin macro that returns the inferred type of an expression.
 ///
 /// This demonstrates how macros can use the type inference system to query types.
+/// Since types are first-class values in Cadenza, this returns a `Type` value that
+/// can be inspected and manipulated at runtime.
 ///
 /// # Example
 ///
 /// ```cadenza
 /// let x = 42
-/// typeof x  # returns "integer"
+/// typeof x  # returns Type::Integer
 ///
-/// typeof (fn x -> x)  # returns "fn(t0) -> t0" (or similar polymorphic type)
+/// fn identity x = x
+/// typeof identity  # returns Type::Unknown (polymorphic types become unknown)
 /// ```
 ///
 /// # Arguments
@@ -2069,11 +2072,13 @@ pub fn builtin_assert() -> BuiltinMacro {
 ///
 /// # Returns
 ///
-/// A string representing the inferred type of the expression.
+/// A `Type` value representing the inferred type of the expression.
+/// If the type contains unresolved type variables (e.g., for polymorphic functions),
+/// returns `Type::Unknown`.
 pub fn builtin_typeof() -> BuiltinMacro {
     BuiltinMacro {
         name: "typeof",
-        signature: Type::function(vec![Type::Unknown], Type::String),
+        signature: Type::function(vec![Type::Unknown], Type::Type),
         func: |args, ctx| {
             // Validate argument count
             if args.len() != 1 {
@@ -2095,9 +2100,9 @@ pub fn builtin_typeof() -> BuiltinMacro {
                         .with_span(expr.span())
                 })?;
 
-            // Convert type to string
-            let type_str = format!("{}", inferred_type);
-            Ok(Value::String(type_str))
+            // Convert to concrete type, or use Unknown if it has type variables
+            let concrete_type = inferred_type.to_concrete().unwrap_or(Type::Unknown);
+            Ok(Value::Type(concrete_type))
         },
     }
 }

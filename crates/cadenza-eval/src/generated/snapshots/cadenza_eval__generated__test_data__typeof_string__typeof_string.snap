@@ -5,7 +5,7 @@ expression: "let s = \"hello\"\ntypeof s"
 EvalResult {
     values: [
         "hello",
-        "string",
+        Type(string),
     ],
     diagnostics: [],
 }

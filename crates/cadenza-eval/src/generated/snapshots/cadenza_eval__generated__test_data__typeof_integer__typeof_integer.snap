@@ -5,7 +5,7 @@ expression: "let x = 42\ntypeof x"
 EvalResult {
     values: [
         42,
-        "integer",
+        Type(integer),
     ],
     diagnostics: [],
 }

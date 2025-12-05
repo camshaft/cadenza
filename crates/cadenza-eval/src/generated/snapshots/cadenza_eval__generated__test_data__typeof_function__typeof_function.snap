@@ -5,7 +5,7 @@ expression: "fn identity x = x\ntypeof identity"
 EvalResult {
     values: [
         nil,
-        "fn(unknown) -> unknown",
+        Type(fn(unknown) -> unknown),
     ],
     diagnostics: [],
 }
