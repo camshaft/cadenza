@@ -1,0 +1,224 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; Simple test GCode file\n; Home all axes\nG28\n\n; Set absolute positioning\nG90\n\n; Heat extruder\nM104 S200\n\n; Move to starting position\nG1 X10 Y10 Z0.2 F3000\n\n; Draw a simple square\nG1 X100 Y10 F1500\nG1 X100 Y100\nG1 X10 Y100\nG1 X10 Y10\n\n; Finish\nG28\nM104 S0\n"
+---
+Root@0..255
+  CommentContent@0..24 "; Simple test GCode file"
+  Newline@24..25 "\n"
+  CommentContent@25..40 "; Home all axes"
+  Newline@40..41 "\n"
+  Apply@41..44
+    ApplyReceiver@41..44
+      Identifier@41..44
+        Identifier@41..44 "G28"
+  Newline@44..45 "\n"
+  Newline@45..46 "\n"
+  CommentContent@46..72 "; Set absolute positi ..."
+  Newline@72..73 "\n"
+  Apply@73..76
+    ApplyReceiver@73..76
+      Identifier@73..76
+        Identifier@73..76 "G90"
+  Newline@76..77 "\n"
+  Newline@77..78 "\n"
+  CommentContent@78..93 "; Heat extruder"
+  Newline@93..94 "\n"
+  Apply@94..103
+    ApplyReceiver@94..98
+      Identifier@94..98
+        Identifier@94..98 "M104"
+    Space@98..99 " "
+    ApplyArgument@99..103
+      Apply@99..103
+        ApplyReceiver@99..100
+          Identifier@99..100
+            Identifier@99..100 "S"
+        ApplyArgument@100..103
+          Literal@100..103
+            Integer@100..103
+              Integer@100..103 "200"
+  Newline@103..104 "\n"
+  Newline@104..105 "\n"
+  CommentContent@105..132 "; Move to starting po ..."
+  Newline@132..133 "\n"
+  Apply@133..154
+    ApplyReceiver@133..135
+      Identifier@133..135
+        Identifier@133..135 "G1"
+    Space@135..136 " "
+    ApplyArgument@136..139
+      Apply@136..139
+        ApplyReceiver@136..137
+          Identifier@136..137
+            Identifier@136..137 "X"
+        ApplyArgument@137..139
+          Literal@137..139
+            Integer@137..139
+              Integer@137..139 "10"
+    Space@139..140 " "
+    ApplyArgument@140..143
+      Apply@140..143
+        ApplyReceiver@140..141
+          Identifier@140..141
+            Identifier@140..141 "Y"
+        ApplyArgument@141..143
+          Literal@141..143
+            Integer@141..143
+              Integer@141..143 "10"
+    Space@143..144 " "
+    ApplyArgument@144..148
+      Apply@144..148
+        ApplyReceiver@144..145
+          Identifier@144..145
+            Identifier@144..145 "Z"
+        ApplyArgument@145..148
+          Literal@145..148
+            Float@145..148
+              Float@145..148 "0.2"
+    Space@148..149 " "
+    ApplyArgument@149..154
+      Apply@149..154
+        ApplyReceiver@149..150
+          Identifier@149..150
+            Identifier@149..150 "F"
+        ApplyArgument@150..154
+          Literal@150..154
+            Integer@150..154
+              Integer@150..154 "3000"
+  Newline@154..155 "\n"
+  Newline@155..156 "\n"
+  CommentContent@156..178 "; Draw a simple square"
+  Newline@178..179 "\n"
+  Apply@179..196
+    ApplyReceiver@179..181
+      Identifier@179..181
+        Identifier@179..181 "G1"
+    Space@181..182 " "
+    ApplyArgument@182..186
+      Apply@182..186
+        ApplyReceiver@182..183
+          Identifier@182..183
+            Identifier@182..183 "X"
+        ApplyArgument@183..186
+          Literal@183..186
+            Integer@183..186
+              Integer@183..186 "100"
+    Space@186..187 " "
+    ApplyArgument@187..190
+      Apply@187..190
+        ApplyReceiver@187..188
+          Identifier@187..188
+            Identifier@187..188 "Y"
+        ApplyArgument@188..190
+          Literal@188..190
+            Integer@188..190
+              Integer@188..190 "10"
+    Space@190..191 " "
+    ApplyArgument@191..196
+      Apply@191..196
+        ApplyReceiver@191..192
+          Identifier@191..192
+            Identifier@191..192 "F"
+        ApplyArgument@192..196
+          Literal@192..196
+            Integer@192..196
+              Integer@192..196 "1500"
+  Newline@196..197 "\n"
+  Apply@197..209
+    ApplyReceiver@197..199
+      Identifier@197..199
+        Identifier@197..199 "G1"
+    Space@199..200 " "
+    ApplyArgument@200..204
+      Apply@200..204
+        ApplyReceiver@200..201
+          Identifier@200..201
+            Identifier@200..201 "X"
+        ApplyArgument@201..204
+          Literal@201..204
+            Integer@201..204
+              Integer@201..204 "100"
+    Space@204..205 " "
+    ApplyArgument@205..209
+      Apply@205..209
+        ApplyReceiver@205..206
+          Identifier@205..206
+            Identifier@205..206 "Y"
+        ApplyArgument@206..209
+          Literal@206..209
+            Integer@206..209
+              Integer@206..209 "100"
+  Newline@209..210 "\n"
+  Apply@210..221
+    ApplyReceiver@210..212
+      Identifier@210..212
+        Identifier@210..212 "G1"
+    Space@212..213 " "
+    ApplyArgument@213..216
+      Apply@213..216
+        ApplyReceiver@213..214
+          Identifier@213..214
+            Identifier@213..214 "X"
+        ApplyArgument@214..216
+          Literal@214..216
+            Integer@214..216
+              Integer@214..216 "10"
+    Space@216..217 " "
+    ApplyArgument@217..221
+      Apply@217..221
+        ApplyReceiver@217..218
+          Identifier@217..218
+            Identifier@217..218 "Y"
+        ApplyArgument@218..221
+          Literal@218..221
+            Integer@218..221
+              Integer@218..221 "100"
+  Newline@221..222 "\n"
+  Apply@222..232
+    ApplyReceiver@222..224
+      Identifier@222..224
+        Identifier@222..224 "G1"
+    Space@224..225 " "
+    ApplyArgument@225..228
+      Apply@225..228
+        ApplyReceiver@225..226
+          Identifier@225..226
+            Identifier@225..226 "X"
+        ApplyArgument@226..228
+          Literal@226..228
+            Integer@226..228
+              Integer@226..228 "10"
+    Space@228..229 " "
+    ApplyArgument@229..232
+      Apply@229..232
+        ApplyReceiver@229..230
+          Identifier@229..230
+            Identifier@229..230 "Y"
+        ApplyArgument@230..232
+          Literal@230..232
+            Integer@230..232
+              Integer@230..232 "10"
+  Newline@232..233 "\n"
+  Newline@233..234 "\n"
+  CommentContent@234..242 "; Finish"
+  Newline@242..243 "\n"
+  Apply@243..246
+    ApplyReceiver@243..246
+      Identifier@243..246
+        Identifier@243..246 "G28"
+  Newline@246..247 "\n"
+  Apply@247..254
+    ApplyReceiver@247..251
+      Identifier@247..251
+        Identifier@247..251 "M104"
+    Space@251..252 " "
+    ApplyArgument@252..254
+      Apply@252..254
+        ApplyReceiver@252..253
+          Identifier@252..253
+            Identifier@252..253 "S"
+        ApplyArgument@253..254
+          Literal@253..254
+            Integer@253..254
+              Integer@253..254 "0"
+  Newline@254..255 "\n"

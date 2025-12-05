@@ -9,22 +9,35 @@ pub fn tests() -> String {
     }
 
     w!("use crate::parse;");
-    w!("use insta::assert_snapshot as s;");
+    w!("use insta::assert_debug_snapshot as s;");
     w!("");
 
-    // Generate parse and AST snapshot tests for each example
+    // Generate CST and AST snapshot tests for each example
     for Example { name, src } in examples.iter() {
         w!("mod {name} {{");
         w!("    use super::*;");
+
+        // CST test to verify all bytes are attributed to tokens
         w!("    #[test]");
-        w!("    fn parse_ast() {{");
+        w!("    fn cst() {{");
+        w!("        let gcode = {src:?};");
+        w!("        let parse = parse(gcode);");
+        w!("        let cst = parse.syntax();");
+        let snap_name_cst = format!("{name}_cst");
+        w!("        s!({snap_name_cst:?}, &cst, {src:?});");
+        w!("    }}");
+
+        // AST test
+        w!("    #[test]");
+        w!("    fn ast() {{");
         w!("        let gcode = {src:?};");
         w!("        let parse = parse(gcode);");
         w!("        let root = parse.ast();");
         w!("        let ast_debug = format!(\"{{:?}}\", root);");
-        let snap_name = format!("{name}_parse_ast");
-        w!("        s!({snap_name:?}, ast_debug);");
+        let snap_name_ast = format!("{name}_ast");
+        w!("        s!({snap_name_ast:?}, ast_debug, {src:?});");
         w!("    }}");
+
         w!("}}");
     }
 

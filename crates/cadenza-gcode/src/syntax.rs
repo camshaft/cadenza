@@ -82,6 +82,7 @@ impl<'src> Parser<'src> {
     }
 
     fn skip_line_whitespace(&mut self) {
+        let start = self.pos;
         while self.pos < self.src.len() {
             let ch = self.src.as_bytes()[self.pos];
             if ch == b' ' || ch == b'\t' {
@@ -90,9 +91,14 @@ impl<'src> Parser<'src> {
                 break;
             }
         }
+        if self.pos > start {
+            let text = &self.src[start..self.pos];
+            self.builder.token(Kind::Space.into(), text);
+        }
     }
 
     fn skip_newline(&mut self) {
+        let start = self.pos;
         if self.pos < self.src.len() {
             let ch = self.src.as_bytes()[self.pos];
             if ch == b'\r' {
@@ -104,11 +110,15 @@ impl<'src> Parser<'src> {
                 self.pos += 1;
             }
         }
+        if self.pos > start {
+            let text = &self.src[start..self.pos];
+            self.builder.token(Kind::Newline.into(), text);
+        }
     }
 
     fn parse_comment(&mut self) {
+        // The comment includes the semicolon and everything up to (but not including) the newline
         let start = self.pos;
-        self.pos += 1; // skip ';'
 
         // Read until end of line
         while self.pos < self.src.len() {

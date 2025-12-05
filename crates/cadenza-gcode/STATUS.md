@@ -38,10 +38,8 @@ Handler macros receive parameter expressions and can:
 ### 🚀 Future Enhancements
 
 1. **Extended GCode Support**:
-   - Checksums and validation
-   - Variable substitution
-   - Conditional execution
-   - Looping constructs
+   - Checksums and validation (`*##` suffix)
+   - Klipper macro format (e.g., `SET_PIN PIN=my_led VALUE=1`)
 
 2. **Better Error Messages**:
    - Detailed diagnostic messages
@@ -55,7 +53,6 @@ Handler macros receive parameter expressions and can:
 4. **Tooling**:
    - Formatter for GCode
    - Linter with configurable rules
-   - Language server protocol support
 
 ## Testing
 
