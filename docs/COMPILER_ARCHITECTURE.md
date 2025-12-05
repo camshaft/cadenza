@@ -843,49 +843,466 @@ pub struct CraneliftBackend {
 
 ### Intermediate Representation (IR)
 
-All backends consume the same IR:
+All backends consume the same IR. The IR is designed to be:
+- Simple to generate from typed AST
+- Easy to optimize
+- Target-independent
+- Translates cleanly to all backends
+
+#### IR Design
 
 ```rust
+/// Intermediate Representation for Cadenza
+/// This is a typed, SSA-like IR suitable for optimization and code generation
+
+/// A unique identifier for values in SSA form
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValueId(u32);
+
+/// A unique identifier for basic blocks
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockId(u32);
+
+/// A unique identifier for functions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FunctionId(u32);
+
+/// IR instruction
 pub enum IrInstr {
     /// Load a constant value
-    Const(Value),
+    /// %result = const <value>
+    Const {
+        result: ValueId,
+        value: IrConst,
+    },
     
     /// Binary operation
+    /// %result = binop <op> %lhs %rhs
     BinOp {
+        result: ValueId,
         op: BinOp,
-        lhs: IrValue,
-        rhs: IrValue,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    
+    /// Unary operation
+    /// %result = unop <op> %operand
+    UnOp {
+        result: ValueId,
+        op: UnOp,
+        operand: ValueId,
     },
     
     /// Function call
+    /// %result = call <func> (%arg1, %arg2, ...)
     Call {
+        result: Option<ValueId>,  // None for void returns
         func: FunctionId,
-        args: Vec<IrValue>,
+        args: Vec<ValueId>,
+    },
+    
+    /// Create a record
+    /// %result = record { field1: %val1, field2: %val2, ... }
+    Record {
+        result: ValueId,
+        fields: Vec<(InternedString, ValueId)>,
+    },
+    
+    /// Field access
+    /// %result = field %record .field_name
+    Field {
+        result: ValueId,
+        record: ValueId,
+        field: InternedString,
+    },
+    
+    /// Create a list/tuple
+    /// %result = tuple (%elem1, %elem2, ...)
+    Tuple {
+        result: ValueId,
+        elements: Vec<ValueId>,
     },
     
     /// Conditional branch
+    /// br %cond, then: <then_block>, else: <else_block>
     Branch {
-        cond: IrValue,
+        cond: ValueId,
         then_block: BlockId,
         else_block: BlockId,
     },
     
+    /// Unconditional jump
+    /// jmp <target_block>
+    Jump {
+        target: BlockId,
+    },
+    
     /// Return from function
-    Return(IrValue),
+    /// ret %value
+    Return {
+        value: Option<ValueId>,  // None for void functions
+    },
+    
+    /// Phi node for SSA (join point for values from different blocks)
+    /// %result = phi [%val1 from <block1>], [%val2 from <block2>], ...
+    Phi {
+        result: ValueId,
+        incoming: Vec<(ValueId, BlockId)>,
+    },
 }
 
+/// Constants in IR
+pub enum IrConst {
+    Nil,
+    Bool(bool),
+    Integer(i64),
+    Float(f64),
+    String(InternedString),
+    /// Quantity with dimension (e.g., 5.0 meters)
+    Quantity {
+        value: f64,
+        dimension: Dimension,
+    },
+}
+
+/// Binary operators
+pub enum BinOp {
+    // Arithmetic
+    Add, Sub, Mul, Div, Rem,
+    
+    // Comparison
+    Eq, Ne, Lt, Le, Gt, Ge,
+    
+    // Logical
+    And, Or,
+    
+    // Bitwise (future)
+    BitAnd, BitOr, BitXor, Shl, Shr,
+}
+
+/// Unary operators
+pub enum UnOp {
+    Neg,    // Numeric negation
+    Not,    // Logical not
+    BitNot, // Bitwise not (future)
+}
+
+/// Basic block - sequence of instructions
+pub struct IrBlock {
+    pub id: BlockId,
+    pub instructions: Vec<IrInstr>,
+    pub terminator: IrTerminator,
+}
+
+/// Block terminators (control flow instructions)
+pub enum IrTerminator {
+    Branch {
+        cond: ValueId,
+        then_block: BlockId,
+        else_block: BlockId,
+    },
+    Jump {
+        target: BlockId,
+    },
+    Return {
+        value: Option<ValueId>,
+    },
+}
+
+/// Function in IR
 pub struct IrFunction {
+    pub id: FunctionId,
     pub name: InternedString,
     pub params: Vec<IrParam>,
     pub return_ty: Type,
     pub blocks: Vec<IrBlock>,
+    pub entry_block: BlockId,
+}
+
+/// Function parameter
+pub struct IrParam {
+    pub name: InternedString,
+    pub ty: Type,
+    pub value_id: ValueId,  // SSA value for this parameter
+}
+
+/// Complete IR module
+pub struct IrModule {
+    pub functions: Vec<IrFunction>,
+    pub exports: Vec<IrExport>,
+}
+
+/// Exported items from a module
+pub struct IrExport {
+    pub name: InternedString,
+    pub kind: IrExportKind,
+}
+
+pub enum IrExportKind {
+    Function(FunctionId),
+    Constant(ValueId),
 }
 ```
 
-This IR is:
-- Simple to generate from typed AST
-- Easy to optimize
-- Translates cleanly to all targets
+#### IR Generation Strategy
+
+The IR is generated after type checking and monomorphization:
+
+1. **From Typed AST**: Convert type-checked expressions to IR
+2. **SSA Form**: All values are assigned once (Single Static Assignment)
+3. **Basic Blocks**: Group instructions into basic blocks
+4. **Explicit Control Flow**: Branches and jumps are explicit
+
+#### Example IR Generation
+
+**Source Cadenza Code**:
+```cadenza
+fn add_one x = x + 1
+
+let result = add_one 5
+```
+
+**Generated IR**:
+```
+; Function: add_one
+function @add_one(%x: Integer) -> Integer {
+  block_0 (entry):
+    %0 = const 1
+    %1 = binop Add %x %0
+    ret %1
+}
+
+; Top-level evaluation
+function @__main() -> Integer {
+  block_0 (entry):
+    %0 = const 5
+    %1 = call @add_one(%0)
+    ret %1
+}
+```
+
+#### Optimization Pipeline
+
+Once IR is generated, we can apply optimization passes:
+
+```rust
+pub trait IrOptimizationPass {
+    fn run(&mut self, module: &mut IrModule) -> bool;  // Returns true if changed
+}
+
+/// Optimization pipeline - configurable set of passes
+pub struct IrOptimizer {
+    passes: Vec<Box<dyn IrOptimizationPass>>,
+}
+
+impl IrOptimizer {
+    pub fn new() -> Self {
+        Self { passes: vec![] }
+    }
+    
+    pub fn add_pass(&mut self, pass: Box<dyn IrOptimizationPass>) {
+        self.passes.push(pass);
+    }
+    
+    pub fn run(&mut self, module: &mut IrModule) {
+        let mut changed = true;
+        let mut iterations = 0;
+        const MAX_ITERATIONS: usize = 10;
+        
+        while changed && iterations < MAX_ITERATIONS {
+            changed = false;
+            for pass in &mut self.passes {
+                changed |= pass.run(module);
+            }
+            iterations += 1;
+        }
+    }
+}
+```
+
+#### Standard Optimization Passes
+
+**Constant Folding**:
+```rust
+pub struct ConstantFolding;
+
+impl IrOptimizationPass for ConstantFolding {
+    fn run(&mut self, module: &mut IrModule) -> bool {
+        let mut changed = false;
+        for func in &mut module.functions {
+            for block in &mut func.blocks {
+                for instr in &mut block.instructions {
+                    if let IrInstr::BinOp { result, op, lhs, rhs } = instr {
+                        // If both operands are constants, compute at compile time
+                        if is_const(*lhs) && is_const(*rhs) {
+                            let folded = fold_binop(*op, get_const(*lhs), get_const(*rhs));
+                            *instr = IrInstr::Const { result: *result, value: folded };
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        changed
+    }
+}
+```
+
+**Dead Code Elimination (DCE)**:
+```rust
+pub struct DeadCodeElimination;
+
+impl IrOptimizationPass for DeadCodeElimination {
+    fn run(&mut self, module: &mut IrModule) -> bool {
+        let mut changed = false;
+        for func in &mut module.functions {
+            // Mark all used values
+            let mut used = HashSet::new();
+            mark_used(func, &mut used);
+            
+            // Remove instructions that produce unused values
+            for block in &mut func.blocks {
+                block.instructions.retain(|instr| {
+                    if let Some(result) = instr.result_value() {
+                        if !used.contains(&result) {
+                            changed = true;
+                            return false;
+                        }
+                    }
+                    true
+                });
+            }
+        }
+        changed
+    }
+}
+```
+
+**Common Subexpression Elimination (CSE)**:
+```rust
+pub struct CommonSubexpressionElimination;
+
+impl IrOptimizationPass for CommonSubexpressionElimination {
+    fn run(&mut self, module: &mut IrModule) -> bool {
+        // Find expressions computed multiple times
+        // Replace redundant computations with references to first result
+        // Requires value numbering and equivalence analysis
+        todo!("CSE implementation")
+    }
+}
+```
+
+**Function Inlining**:
+```rust
+pub struct FunctionInlining {
+    max_size: usize,  // Only inline small functions
+}
+
+impl IrOptimizationPass for FunctionInlining {
+    fn run(&mut self, module: &mut IrModule) -> bool {
+        // Inline small functions at call sites
+        // Replace call instruction with function body
+        // Update value IDs and blocks
+        todo!("Inlining implementation")
+    }
+}
+```
+
+#### Creating an Optimization Pipeline
+
+```rust
+pub fn create_optimization_pipeline(level: OptLevel) -> IrOptimizer {
+    let mut optimizer = IrOptimizer::new();
+    
+    match level {
+        OptLevel::None => {
+            // No optimizations
+        }
+        OptLevel::Basic => {
+            optimizer.add_pass(Box::new(ConstantFolding));
+            optimizer.add_pass(Box::new(DeadCodeElimination));
+        }
+        OptLevel::Aggressive => {
+            optimizer.add_pass(Box::new(ConstantFolding));
+            optimizer.add_pass(Box::new(CommonSubexpressionElimination));
+            optimizer.add_pass(Box::new(FunctionInlining { max_size: 50 }));
+            optimizer.add_pass(Box::new(DeadCodeElimination));
+            // Multiple passes may discover new opportunities
+        }
+    }
+    
+    optimizer
+}
+
+pub enum OptLevel {
+    None,
+    Basic,
+    Aggressive,
+}
+```
+
+---
+
+### IR Emission from Evaluator
+
+The evaluator can optionally emit IR during or after evaluation:
+
+```rust
+pub struct Compiler {
+    // ... existing fields ...
+    
+    /// IR module being built
+    ir_module: Option<IrModule>,
+    
+    /// Whether to emit IR
+    emit_ir: bool,
+}
+
+impl Compiler {
+    pub fn emit_ir(&mut self, enable: bool) {
+        self.emit_ir = enable;
+        if enable && self.ir_module.is_none() {
+            self.ir_module = Some(IrModule::new());
+        }
+    }
+    
+    pub fn take_ir(&mut self) -> Option<IrModule> {
+        self.ir_module.take()
+    }
+}
+
+/// Extension trait for converting typed expressions to IR
+pub trait ToIr {
+    fn to_ir(&self, builder: &mut IrBuilder) -> ValueId;
+}
+
+pub struct IrBuilder {
+    current_function: FunctionId,
+    current_block: BlockId,
+    next_value_id: u32,
+    next_block_id: u32,
+    value_map: HashMap<InternedString, ValueId>,  // Variable name -> SSA value
+}
+
+impl IrBuilder {
+    fn new_value(&mut self) -> ValueId {
+        let id = ValueId(self.next_value_id);
+        self.next_value_id += 1;
+        id
+    }
+    
+    fn new_block(&mut self) -> BlockId {
+        let id = BlockId(self.next_block_id);
+        self.next_block_id += 1;
+        id
+    }
+    
+    fn emit(&mut self, instr: IrInstr) {
+        // Add instruction to current block
+        todo!()
+    }
+}
+```
 
 ---
 
