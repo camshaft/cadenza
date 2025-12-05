@@ -1,5 +1,5 @@
 ---
-source: crates/cadenza-gcode/tests/snapshot_tests.rs
+source: crates/cadenza-gcode/src/generated/test_data.rs
 expression: cadenza
 ---
 # Generated from GCode

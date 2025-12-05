@@ -6,14 +6,30 @@ use crate::{
 };
 
 /// Parse a GCode string into a Program.
+///
+/// This collects all parsed lines into a Program. For streaming/iterative parsing,
+/// use `parse_gcode_lines` instead.
 pub fn parse_gcode(input: &str) -> Result<Program> {
-    let mut lines = Vec::new();
-
-    for line_str in input.lines() {
-        lines.push(parse_line(line_str)?);
-    }
-
+    let lines = parse_gcode_lines(input).collect::<Result<Vec<_>>>()?;
     Ok(Program { lines })
+}
+
+/// Parse GCode lines as an iterator.
+///
+/// This allows for streaming/incremental parsing without allocating a Vec upfront.
+///
+/// # Example
+/// ```
+/// use cadenza_gcode::parse_gcode_lines;
+///
+/// let gcode = "G28\nG1 X100\n";
+/// for line in parse_gcode_lines(gcode) {
+///     let line = line.unwrap();
+///     // Process line
+/// }
+/// ```
+pub fn parse_gcode_lines(input: &str) -> impl Iterator<Item = Result<Line>> + '_ {
+    input.lines().map(parse_line)
 }
 
 /// Parse a single line of GCode.
@@ -64,20 +80,19 @@ fn parse_command(input: &str) -> Result<Command> {
         return Err(Error::InvalidCommand("Empty command".to_string()));
     }
 
-    // Split into tokens
-    let tokens: Vec<&str> = input.split_whitespace().collect();
-    if tokens.is_empty() {
-        return Err(Error::InvalidCommand("No tokens found".to_string()));
-    }
-
+    // Split into tokens using iterator
+    let mut tokens = input.split_whitespace();
+    
     // Parse the command code
-    let code = parse_command_code(tokens[0])?;
+    let code_token = tokens
+        .next()
+        .ok_or_else(|| Error::InvalidCommand("No tokens found".to_string()))?;
+    let code = parse_command_code(code_token)?;
 
-    // Parse parameters
-    let mut parameters = Vec::new();
-    for token in &tokens[1..] {
-        parameters.push(parse_parameter(token)?);
-    }
+    // Parse parameters using iterator
+    let parameters = tokens
+        .map(parse_parameter)
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(Command { code, parameters })
 }
