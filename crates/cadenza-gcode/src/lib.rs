@@ -19,6 +19,7 @@ pub mod error;
 pub mod parser;
 pub mod transpiler;
 
+pub use ast::CommandCode;
 pub use error::{Error, Result};
 pub use parser::parse_gcode;
-pub use transpiler::transpile_to_cadenza;
+pub use transpiler::{TranspilerConfig, transpile_to_cadenza, transpile_with_config};
