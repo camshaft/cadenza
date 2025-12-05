@@ -448,7 +448,8 @@ impl<'src> Parser<'src> {
         
         let n_start = self.pos;
         
-        // Start Apply node for N
+        // Start Apply node: [N, number, [command]]
+        // This wraps the command as an argument, allowing N macro to control environment
         self.builder.start_node(Kind::Apply.into());
 
         // 'N' as receiver - extract from source
