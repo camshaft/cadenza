@@ -9,6 +9,7 @@ pub fn tests() -> String {
     }
 
     w!("use crate::parse;");
+    w!("use crate::testing::verify_cst_coverage;");
     w!("use insta::assert_debug_snapshot as s;");
     w!("");
 
@@ -23,6 +24,10 @@ pub fn tests() -> String {
         w!("        let gcode = {src:?};");
         w!("        let parse = parse(gcode);");
         w!("        let cst = parse.syntax();");
+        w!("");
+        w!("        // Verify CST span coverage and token text accuracy");
+        w!("        verify_cst_coverage(gcode);");
+        w!("");
         let snap_name_cst = format!("{name}_cst");
         w!("        s!({snap_name_cst:?}, &cst, {src:?});");
         w!("    }}");
@@ -33,9 +38,8 @@ pub fn tests() -> String {
         w!("        let gcode = {src:?};");
         w!("        let parse = parse(gcode);");
         w!("        let root = parse.ast();");
-        w!("        let ast_debug = format!(\"{{:?}}\", root);");
         let snap_name_ast = format!("{name}_ast");
-        w!("        s!({snap_name_ast:?}, ast_debug, {src:?});");
+        w!("        s!({snap_name_ast:?}, root, {src:?});");
         w!("    }}");
 
         w!("}}");

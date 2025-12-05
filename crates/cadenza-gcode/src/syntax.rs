@@ -134,6 +134,9 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_command(&mut self) {
+        // Track the start of this command line for checksum validation
+        let line_start = self.pos;
+
         // Start an Apply node for the command
         self.builder.start_node(Kind::Apply.into());
 
@@ -147,6 +150,11 @@ impl<'src> Parser<'src> {
             self.skip_line_whitespace();
             let ch = self.peek_char();
             if ch == Some(';') || ch == Some('\n') || ch == Some('\r') || ch.is_none() {
+                break;
+            }
+            // Check for checksum marker
+            if ch == Some('*') {
+                self.parse_checksum(line_start);
                 break;
             }
             if self.peek_char().is_some_and(|c| c.is_ascii_alphabetic()) {
@@ -165,7 +173,7 @@ impl<'src> Parser<'src> {
         let start = self.pos;
         while self.pos < self.src.len() {
             let ch = self.src.as_bytes()[self.pos];
-            if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_alphanumeric() || ch == b'_' {
                 self.pos += 1;
             } else {
                 break;
@@ -179,42 +187,176 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_parameter(&mut self) {
-        // Parameter is like X100 or Y50 or just X (flag)
-        // We'll parse it as: [X, 100] where X is the receiver (letter) and 100 is the argument
+        // Parameter can be:
+        // 1. X100 or Y50 (traditional GCode - single letter + value)
+        // 2. PIN=my_led (Klipper named parameter - multi-char identifier with =)
+        // 3. X (flag without value)
 
         let letter_start = self.pos;
+
+        // Parse the first character (letter)
         self.pos += 1;
+
+        // Check if this is a Klipper-style named parameter (more letters/underscores before =)
+        let mut is_klipper_style = false;
+        let save_pos = self.pos;
+
+        while self.pos < self.src.len() {
+            let ch = self.peek_char().unwrap();
+            if ch.is_ascii_alphabetic() || ch == '_' {
+                self.pos += 1;
+                is_klipper_style = true;
+            } else if ch == '=' && is_klipper_style {
+                // This is Klipper format
+                break;
+            } else {
+                // Not Klipper format, restore position
+                self.pos = save_pos;
+                break;
+            }
+        }
+
         let letter_text = &self.src[letter_start..self.pos];
 
-        // Check if there's a value after the letter
-        let has_value = self.pos < self.src.len()
-            && self
-                .peek_char()
-                .is_some_and(|c| c.is_ascii_digit() || c == '.' || c == '-');
+        // Check for equals sign (Klipper format: NAME=value)
+        if self.peek_char() == Some('=') {
+            let eq_start = self.pos;
+            self.pos += 1; // Move past '='
+            let eq_text = &self.src[eq_start..self.pos];
 
-        if has_value {
-            // Create Apply node: [Letter, value]
+            // Create Apply node: [=, NAME, value]
+            // Tokens must be in source order, but nodes determine structure
             self.builder.start_node(Kind::Apply.into());
 
-            // Letter as receiver
-            self.builder.start_node(Kind::ApplyReceiver.into());
+            // First, emit NAME as first argument (comes first in source)
+            self.builder.start_node(Kind::ApplyArgument.into());
             self.builder.start_node(Kind::Identifier.into());
             self.builder.token(Kind::Identifier.into(), letter_text);
             self.builder.finish_node();
             self.builder.finish_node();
 
-            // Value as argument
+            // Then emit = as receiver (comes second in source)
+            self.builder.start_node(Kind::ApplyReceiver.into());
+            self.builder.start_node(Kind::Identifier.into());
+            self.builder.token(Kind::Equal.into(), eq_text);
+            self.builder.finish_node();
+            self.builder.finish_node();
+
+            // Finally parse the value after '=' as second argument
             self.builder.start_node(Kind::ApplyArgument.into());
-            self.parse_number();
+            self.parse_parameter_value();
             self.builder.finish_node();
 
             self.builder.finish_node();
         } else {
-            // Just the letter as an identifier (flag)
+            // Traditional GCode format or flag
+            let has_value = self.pos < self.src.len()
+                && self
+                    .peek_char()
+                    .is_some_and(|c| c.is_ascii_digit() || c == '.' || c == '-');
+
+            if has_value {
+                // Create Apply node: [Letter, value]
+                self.builder.start_node(Kind::Apply.into());
+
+                // Letter as receiver
+                self.builder.start_node(Kind::ApplyReceiver.into());
+                self.builder.start_node(Kind::Identifier.into());
+                self.builder.token(Kind::Identifier.into(), letter_text);
+                self.builder.finish_node();
+                self.builder.finish_node();
+
+                // Value as argument
+                self.builder.start_node(Kind::ApplyArgument.into());
+                self.parse_number();
+                self.builder.finish_node();
+
+                self.builder.finish_node();
+            } else {
+                // Just the letter as an identifier (flag)
+                self.builder.start_node(Kind::Identifier.into());
+                self.builder.token(Kind::Identifier.into(), letter_text);
+                self.builder.finish_node();
+            }
+        }
+    }
+
+    fn parse_parameter_value(&mut self) {
+        // Parse value after '=' in Klipper format
+        // Can be a number or an identifier/string
+        let ch = self.peek_char();
+        if ch.is_some_and(|c| c.is_ascii_digit() || c == '.' || c == '-') {
+            self.parse_number();
+        } else if ch.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+            // Parse identifier value
+            let start = self.pos;
+            while self.pos < self.src.len() {
+                let ch = self.peek_char().unwrap();
+                if ch.is_ascii_alphanumeric() || ch == '_' {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            let text = &self.src[start..self.pos];
             self.builder.start_node(Kind::Identifier.into());
-            self.builder.token(Kind::Identifier.into(), letter_text);
+            self.builder.token(Kind::Identifier.into(), text);
             self.builder.finish_node();
         }
+    }
+
+    fn parse_checksum(&mut self, line_start: usize) {
+        // Parse checksum in format *NN where NN is a number
+        // GCode checksum is XOR of all bytes before the asterisk
+        if self.peek_char() != Some('*') {
+            return;
+        }
+
+        let checksum_start = self.pos;
+        self.pos += 1; // Move past '*'
+
+        // Parse the checksum number
+        let num_start = self.pos;
+        while self.pos < self.src.len() {
+            let ch = self.peek_char().unwrap();
+            if ch.is_ascii_digit() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+
+        let text = &self.src[checksum_start..self.pos];
+
+        // Validate checksum
+        let checksum_str = &self.src[num_start..self.pos];
+        if let Ok(expected_checksum) = checksum_str.parse::<u8>() {
+            // Calculate actual checksum (XOR of all bytes before *)
+            let mut calculated: u8 = 0;
+            for &byte in self.src[line_start..checksum_start].as_bytes() {
+                calculated ^= byte;
+            }
+
+            if calculated != expected_checksum {
+                // Emit error node for invalid checksum
+                self.builder.start_node(Kind::Error.into());
+                self.builder.token(Kind::CommentContent.into(), text);
+                self.builder.finish_node();
+
+                // Add parse error
+                self.errors.push(cadenza_syntax::parse::ParseError {
+                    message: format!(
+                        "Invalid checksum: expected {}, got {}",
+                        calculated, expected_checksum
+                    ),
+                    span: (checksum_start..self.pos).into(),
+                });
+                return;
+            }
+        }
+
+        // Emit checksum as a comment token to preserve it in CST
+        self.builder.token(Kind::CommentContent.into(), text);
     }
 
     fn parse_number(&mut self) {

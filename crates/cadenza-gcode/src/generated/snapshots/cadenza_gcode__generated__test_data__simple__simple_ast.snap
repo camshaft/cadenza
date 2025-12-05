@@ -2,4 +2,15 @@
 source: crates/cadenza-gcode/src/generated/test_data.rs
 expression: "; Simple test GCode file\n; Home all axes\nG28\n\n; Set absolute positioning\nG90\n\n; Heat extruder\nM104 S200\n\n; Move to starting position\nG1 X10 Y10 Z0.2 F3000\n\n; Draw a simple square\nG1 X100 Y10 F1500\nG1 X100 Y100\nG1 X10 Y100\nG1 X10 Y10\n\n; Finish\nG28\nM104 S0\n"
 ---
-"[[G28], [G90], [M104, [S, 200]], [G1, [X, 10], [Y, 10], [Z, 0.2], [F, 3000]], [G1, [X, 100], [Y, 10], [F, 1500]], [G1, [X, 100], [Y, 100]], [G1, [X, 10], [Y, 100]], [G1, [X, 10], [Y, 10]], [G28], [M104, [S, 0]]]"
+[
+    [G28],
+    [G90],
+    [M104, [S, 200]],
+    [G1, [X, 10], [Y, 10], [Z, 0.2], [F, 3000]],
+    [G1, [X, 100], [Y, 10], [F, 1500]],
+    [G1, [X, 100], [Y, 100]],
+    [G1, [X, 10], [Y, 100]],
+    [G1, [X, 10], [Y, 10]],
+    [G28],
+    [M104, [S, 0]],
+]

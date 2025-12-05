@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; Invalid checksum test\nG28*99\nG1 X100*11\n"
+---
+[
+    [G28],
+    [G1, [X, 100]],
+]
