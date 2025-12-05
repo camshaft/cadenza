@@ -1,0 +1,14 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+---
+[
+    [=, [let, x], 5],
+    [assert, [>, x, 0]],
+    [=, [let, value], 42],
+    [[assert, [==, value, 42]], "value must be 42"],
+    [=, [[[fn, divide], a], b], [__block__, [[assert, [!=, b, 0]], "cannot divide by zero"], [/, a, b]]],
+    [[divide, 10], 2],
+    [=, [let, result], [[divide, 10], 2]],
+    [[assert, [==, result, 5]], "expected result to be 5"],
+]

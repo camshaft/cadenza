@@ -79,6 +79,25 @@ mod lit_int {
         s!("lit_int_ast", t::ast("42\n"), "42\n");
     }
 }
+mod assert_fail {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "assert_fail",
+            t::eval_all("let v = 1\nassert v == 2\n"),
+            "let v = 1\nassert v == 2\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "assert_fail_ast",
+            t::ast("let v = 1\nassert v == 2\n"),
+            "let v = 1\nassert v == 2\n"
+        );
+    }
+}
 mod error_divzero {
     use super::*;
     #[test]
@@ -539,6 +558,25 @@ mod arith_add {
         s!("arith_add_ast", t::ast("1 + 2\n"), "1 + 2\n");
     }
 }
+mod assert_pass {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "assert_pass",
+            t::eval_all("let v = 1\nassert v == 1\n"),
+            "let v = 1\nassert v == 1\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "assert_pass_ast",
+            t::ast("let v = 1\nassert v == 1\n"),
+            "let v = 1\nassert v == 1\n"
+        );
+    }
+}
 mod cmp_ge {
     use super::*;
     #[test]
@@ -895,6 +933,29 @@ mod let_simple {
         );
     }
 }
+mod example_09_assertions {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "example_09_assertions",
+            t::eval_all(
+                "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+            ),
+            "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "example_09_assertions_ast",
+            t::ast(
+                "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+            ),
+            "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+        );
+    }
+}
 mod pipeline_basic {
     use super::*;
     #[test]
@@ -1142,6 +1203,25 @@ mod example_01_welcome {
         );
     }
 }
+mod assert_fail_with_message {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "assert_fail_with_message",
+            t::eval_all("let v = 1\nassert v == 2 \"v should be 2\"\n"),
+            "let v = 1\nassert v == 2 \"v should be 2\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "assert_fail_with_message_ast",
+            t::ast("let v = 1\nassert v == 2 \"v should be 2\"\n"),
+            "let v = 1\nassert v == 2 \"v should be 2\"\n"
+        );
+    }
+}
 mod measure_dimension_mismatch {
     use super::*;
     #[test]
@@ -1177,6 +1257,25 @@ mod let_multi {
             "let_multi_ast",
             t::ast("let x = 1\nlet y = 2\nx + y\n"),
             "let x = 1\nlet y = 2\nx + y\n"
+        );
+    }
+}
+mod assert_with_message {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "assert_with_message",
+            t::eval_all("let v = 1\nassert v == 1 \"expected v to be one\"\n"),
+            "let v = 1\nassert v == 1 \"expected v to be one\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "assert_with_message_ast",
+            t::ast("let v = 1\nassert v == 1 \"expected v to be one\"\n"),
+            "let v = 1\nassert v == 1 \"expected v to be one\"\n"
         );
     }
 }
