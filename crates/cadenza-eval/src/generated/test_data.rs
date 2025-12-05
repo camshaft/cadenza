@@ -101,6 +101,29 @@ mod cmp_eq {
         s!("cmp_eq_ast", t::ast("1 == 1\n"), "1 == 1\n");
     }
 }
+mod pipeline_multi {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "pipeline_multi",
+            t::eval_all(
+                "fn add x y = x + y\nfn mul x y = x * y\nfn sub x y = x - y\n\n5 |> add 3 |> mul 2\n10 |> sub 3 |> add 5 |> mul 2\n"
+            ),
+            "fn add x y = x + y\nfn mul x y = x * y\nfn sub x y = x - y\n\n5 |> add 3 |> mul 2\n10 |> sub 3 |> add 5 |> mul 2\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "pipeline_multi_ast",
+            t::ast(
+                "fn add x y = x + y\nfn mul x y = x * y\nfn sub x y = x - y\n\n5 |> add 3 |> mul 2\n10 |> sub 3 |> add 5 |> mul 2\n"
+            ),
+            "fn add x y = x + y\nfn mul x y = x * y\nfn sub x y = x - y\n\n5 |> add 3 |> mul 2\n10 |> sub 3 |> add 5 |> mul 2\n"
+        );
+    }
+}
 mod field_access_chained {
     use super::*;
     #[test]
@@ -872,6 +895,25 @@ mod let_simple {
         );
     }
 }
+mod pipeline_basic {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "pipeline_basic",
+            t::eval_all("fn add x y = x + y\nfn double x = x * 2\n\n5 |> add 3\n10 |> double\n"),
+            "fn add x y = x + y\nfn double x = x * 2\n\n5 |> add 3\n10 |> double\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "pipeline_basic_ast",
+            t::ast("fn add x y = x + y\nfn double x = x * 2\n\n5 |> add 3\n10 |> double\n"),
+            "fn add x y = x + y\nfn double x = x * 2\n\n5 |> add 3\n10 |> double\n"
+        );
+    }
+}
 mod record_nested {
     use super::*;
     #[test]
@@ -923,6 +965,29 @@ mod arith_sub {
     #[test]
     fn ast() {
         s!("arith_sub_ast", t::ast("10 - 3\n"), "10 - 3\n");
+    }
+}
+mod pipeline_comprehensive {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "pipeline_comprehensive",
+            t::eval_all(
+                "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+            ),
+            "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "pipeline_comprehensive_ast",
+            t::ast(
+                "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+            ),
+            "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+        );
     }
 }
 mod error_undefined {
