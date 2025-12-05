@@ -11,8 +11,10 @@
 - **Offset Tracking**: Accurate source positions for all tokens
 - **Snapshot Tests**: Auto-generated from test-data/*.gcode files
 - **Zero Allocations**: Iterator-based parsing without intermediate collections
-- **Checksum Support**: Parses and preserves checksums (`*##` suffix) in CST
-- **Klipper Format**: Named parameters with `=` syntax (e.g., `PIN=my_led`)
+- **Checksum Support**: Parses, preserves, and validates checksums (`*##` suffix)
+- **Klipper Format**: Named parameters with `=` syntax (e.g., `SET_PIN PIN=my_led VALUE=1`)
+- **Error Recovery**: Invalid checksums emit Error nodes and parse errors
+- **CST Span Coverage**: All source bytes represented in CST tokens
 
 ### 🎯 Architecture
 
@@ -33,28 +35,20 @@ Handler macros receive parameter expressions and can:
 ### 📋 Known Limitations
 
 1. **Basic GCode Only**: Currently parses simple command + parameter structure
-2. ~~**No Checksums**: Doesn't validate or parse checksums (`*##` suffix)~~ ✅ Checksums now parsed and preserved in CST
-3. **No Checksum Validation**: Checksums are parsed but not validated
-4. **Limited Error Recovery**: Basic error handling, could be more robust
-5. **No Macro Expansion**: GCode macros/variables not yet supported
+2. **Limited Error Recovery**: Basic error handling, could be more robust
 
 ### 🚀 Future Enhancements
 
-1. **Extended GCode Support**:
-   - ~~Checksums and validation (`*##` suffix)~~ ✅ Parsing implemented
-   - Checksum validation (verify XOR of bytes)
-   - ~~Klipper macro format (e.g., `SET_PIN PIN=my_led VALUE=1`)~~ ✅ Implemented
-
-2. **Better Error Messages**:
+1. **Better Error Messages**:
    - Detailed diagnostic messages
    - Suggestions for common mistakes
    - Context-aware error recovery
 
-3. **Performance**:
+2. **Performance**:
    - Streaming parser for large files
    - Incremental re-parsing
 
-4. **Tooling**:
+3. **Tooling**:
    - Formatter for GCode
    - Linter with configurable rules
 

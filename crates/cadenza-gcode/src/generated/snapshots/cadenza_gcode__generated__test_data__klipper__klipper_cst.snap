@@ -12,24 +12,24 @@ Root@0..230
     Space@52..53 " "
     ApplyArgument@53..63
       Apply@53..63
-        ApplyReceiver@53..54
-          Identifier@53..54
-            Equal@53..54 "="
-        ApplyArgument@54..57
-          Identifier@54..57
-            Identifier@54..57 "PIN"
+        ApplyArgument@53..56
+          Identifier@53..56
+            Identifier@53..56 "PIN"
+        ApplyReceiver@56..57
+          Identifier@56..57
+            Equal@56..57 "="
         ApplyArgument@57..63
           Identifier@57..63
             Identifier@57..63 "my_led"
     Space@63..64 " "
     ApplyArgument@64..71
       Apply@64..71
-        ApplyReceiver@64..65
-          Identifier@64..65
-            Equal@64..65 "="
-        ApplyArgument@65..70
-          Identifier@65..70
-            Identifier@65..70 "VALUE"
+        ApplyArgument@64..69
+          Identifier@64..69
+            Identifier@64..69 "VALUE"
+        ApplyReceiver@69..70
+          Identifier@69..70
+            Equal@69..70 "="
         ApplyArgument@70..71
           Literal@70..71
             Integer@70..71
@@ -42,24 +42,24 @@ Root@0..230
     Space@94..95 " "
     ApplyArgument@95..110
       Apply@95..110
-        ApplyReceiver@95..96
-          Identifier@95..96
-            Equal@95..96 "="
-        ApplyArgument@96..102
-          Identifier@96..102
-            Identifier@96..102 "HEATER"
+        ApplyArgument@95..101
+          Identifier@95..101
+            Identifier@95..101 "HEATER"
+        ApplyReceiver@101..102
+          Identifier@101..102
+            Equal@101..102 "="
         ApplyArgument@102..110
           Identifier@102..110
             Identifier@102..110 "extruder"
     Space@110..111 " "
     ApplyArgument@111..121
       Apply@111..121
-        ApplyReceiver@111..112
-          Identifier@111..112
-            Equal@111..112 "="
-        ApplyArgument@112..118
-          Identifier@112..118
-            Identifier@112..118 "TARGET"
+        ApplyArgument@111..117
+          Identifier@111..117
+            Identifier@111..117 "TARGET"
+        ApplyReceiver@117..118
+          Identifier@117..118
+            Equal@117..118 "="
         ApplyArgument@118..121
           Literal@118..121
             Integer@118..121
@@ -72,12 +72,12 @@ Root@0..230
     Space@140..141 " "
     ApplyArgument@141..153
       Apply@141..153
-        ApplyReceiver@141..142
-          Identifier@141..142
-            Equal@141..142 "="
-        ApplyArgument@142..150
-          Identifier@142..150
-            Identifier@142..150 "VELOCITY"
+        ApplyArgument@141..149
+          Identifier@141..149
+            Identifier@141..149 "VELOCITY"
+        ApplyReceiver@149..150
+          Identifier@149..150
+            Equal@149..150 "="
         ApplyArgument@150..153
           Literal@150..153
             Integer@150..153
@@ -85,12 +85,12 @@ Root@0..230
     Space@153..154 " "
     ApplyArgument@154..164
       Apply@154..164
-        ApplyReceiver@154..155
-          Identifier@154..155
-            Equal@154..155 "="
-        ApplyArgument@155..160
-          Identifier@155..160
-            Identifier@155..160 "ACCEL"
+        ApplyArgument@154..159
+          Identifier@154..159
+            Identifier@154..159 "ACCEL"
+        ApplyReceiver@159..160
+          Identifier@159..160
+            Equal@159..160 "="
         ApplyArgument@160..164
           Literal@160..164
             Integer@160..164
@@ -116,24 +116,24 @@ Root@0..230
     Space@189..190 " "
     ApplyArgument@190..205
       Apply@190..205
-        ApplyReceiver@190..191
-          Identifier@190..191
-            Equal@190..191 "="
-        ApplyArgument@191..197
-          Identifier@191..197
-            Identifier@191..197 "SENSOR"
+        ApplyArgument@190..196
+          Identifier@190..196
+            Identifier@190..196 "SENSOR"
+        ApplyReceiver@196..197
+          Identifier@196..197
+            Equal@196..197 "="
         ApplyArgument@197..205
           Identifier@197..205
             Identifier@197..205 "extruder"
     Space@205..206 " "
     ApplyArgument@206..217
       Apply@206..217
-        ApplyReceiver@206..207
-          Identifier@206..207
-            Equal@206..207 "="
-        ApplyArgument@207..214
-          Identifier@207..214
-            Identifier@207..214 "MINIMUM"
+        ApplyArgument@206..213
+          Identifier@206..213
+            Identifier@206..213 "MINIMUM"
+        ApplyReceiver@213..214
+          Identifier@213..214
+            Equal@213..214 "="
         ApplyArgument@214..217
           Literal@214..217
             Integer@214..217
@@ -141,12 +141,12 @@ Root@0..230
     Space@217..218 " "
     ApplyArgument@218..229
       Apply@218..229
-        ApplyReceiver@218..219
-          Identifier@218..219
-            Equal@218..219 "="
-        ApplyArgument@219..226
-          Identifier@219..226
-            Identifier@219..226 "MAXIMUM"
+        ApplyArgument@218..225
+          Identifier@218..225
+            Identifier@218..225 "MAXIMUM"
+        ApplyReceiver@225..226
+          Identifier@225..226
+            Equal@225..226 "="
         ApplyArgument@226..229
           Literal@226..229
             Integer@226..229

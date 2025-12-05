@@ -225,23 +225,24 @@ impl<'src> Parser<'src> {
             let eq_text = &self.src[eq_start..self.pos];
 
             // Create Apply node: [=, NAME, value]
+            // Tokens must be in source order, but nodes determine structure
             self.builder.start_node(Kind::Apply.into());
 
-            // = as receiver
-            self.builder.start_node(Kind::ApplyReceiver.into());
-            self.builder.start_node(Kind::Identifier.into());
-            self.builder.token(Kind::Equal.into(), eq_text);
-            self.builder.finish_node();
-            self.builder.finish_node();
-
-            // NAME as first argument
+            // First, emit NAME as first argument (comes first in source)
             self.builder.start_node(Kind::ApplyArgument.into());
             self.builder.start_node(Kind::Identifier.into());
             self.builder.token(Kind::Identifier.into(), letter_text);
             self.builder.finish_node();
             self.builder.finish_node();
 
-            // Parse the value after '=' as second argument
+            // Then emit = as receiver (comes second in source)
+            self.builder.start_node(Kind::ApplyReceiver.into());
+            self.builder.start_node(Kind::Identifier.into());
+            self.builder.token(Kind::Equal.into(), eq_text);
+            self.builder.finish_node();
+            self.builder.finish_node();
+
+            // Finally parse the value after '=' as second argument
             self.builder.start_node(Kind::ApplyArgument.into());
             self.parse_parameter_value();
             self.builder.finish_node();
@@ -462,44 +463,5 @@ mod tests {
         // Evaluate - eval doesn't care this came from GCode!
         let results = eval(&root, &mut env, &mut compiler);
         assert_eq!(results.len(), 2);
-    }
-
-    #[test]
-    fn test_cst_span_coverage() {
-        // Test that CST spans cover all bytes in the source
-        let test_cases = vec![
-            "G28\n",
-            "G1 X100 Y50\n",
-            "G1 X100 Y50*57\n",
-            "SET_PIN PIN=my_led VALUE=1\n",
-            "; comment\nG28\n",
-        ];
-
-        for src in test_cases {
-            let parse_result = parse(src);
-            let cst = parse_result.syntax();
-
-            // Collect all text ranges from CST
-            let mut covered = vec![false; src.len()];
-            for node in cst.descendants_with_tokens() {
-                if let Some(token) = node.as_token() {
-                    let range = token.text_range();
-                    let start: usize = range.start().into();
-                    let end: usize = range.end().into();
-                    for item in &mut covered[start..end] {
-                        *item = true;
-                    }
-                }
-            }
-
-            // Check all bytes are covered
-            for (i, &is_covered) in covered.iter().enumerate() {
-                assert!(
-                    is_covered,
-                    "Byte at position {} not covered in CST for input {:?}",
-                    i, src
-                );
-            }
-        }
     }
 }

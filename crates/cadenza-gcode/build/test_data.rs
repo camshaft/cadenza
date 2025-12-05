@@ -23,6 +23,36 @@ pub fn tests() -> String {
         w!("        let gcode = {src:?};");
         w!("        let parse = parse(gcode);");
         w!("        let cst = parse.syntax();");
+        w!("");
+        w!("        // Verify CST span coverage");
+        w!("        let mut covered = vec![false; gcode.len()];");
+        w!("        for node in cst.descendants_with_tokens() {{");
+        w!("            if let Some(token) = node.as_token() {{");
+        w!("                let range = token.text_range();");
+        w!("                let start: usize = range.start().into();");
+        w!("                let end: usize = range.end().into();");
+        w!("                for item in &mut covered[start..end] {{");
+        w!("                    *item = true;");
+        w!("                }}");
+        w!("                // Verify token text matches source");
+        w!("                let token_text = token.text();");
+        w!("                let source_text = &gcode[start..end];");
+        w!("                assert_eq!(");
+        w!("                    token_text, source_text,");
+        w!(
+            "                    \"Token text mismatch at {{}}..{{}}: token='{{}}', source='{{}}'\","
+        );
+        w!("                    start, end, token_text, source_text");
+        w!("                );");
+        w!("            }}");
+        w!("        }}");
+        w!("        for (i, &is_covered) in covered.iter().enumerate() {{");
+        w!("            assert!(");
+        w!("                is_covered,");
+        w!("                \"Byte at position {{}} not covered in CST\", i");
+        w!("            );");
+        w!("        }}");
+        w!("");
         let snap_name_cst = format!("{name}_cst");
         w!("        s!({snap_name_cst:?}, &cst, {src:?});");
         w!("    }}");
