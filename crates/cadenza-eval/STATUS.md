@@ -61,13 +61,22 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Removed TypeExpectation enum in favor of union types
    - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573079828)
 
-6. ~~**Values need syntax nodes for source tracking**~~ ✅
+6. **Values need syntax nodes for source tracking** (Partially Complete)
    - [x] Added SourceInfo struct and TrackedValue wrapper
    - [x] Implemented Clone for Expr to enable storing AST nodes
    - [x] Attach source spans to diagnostics from AST nodes
    - [x] UndefinedVariable errors now include span of identifier
    - [x] Field access errors now include span of field name
+   - [x] Added span() method to all AST nodes in syntax crate
+   - [ ] TODO: Track source file information in diagnostics
+   - [ ] TODO: Store "defined at" location for variables/functions
+   - [ ] TODO: Show "defined at" messages in diagnostics (e.g., "variable `foo` defined at module.cdz:4")
    - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573085238)
+   
+   **Note**: Current implementation provides span information for error locations within
+   a single source file. Full source tracking requires storing file info and definition
+   locations with values, which is a larger feature requiring changes to how values are
+   stored in the environment.
 
 7. ~~**Value comparison should error on type mismatch**~~ ✅
    - [x] All comparison operators now require exact type match
