@@ -598,8 +598,25 @@ match value_a
 This section tracks longer-term features described in `/docs/COMPILER_ARCHITECTURE.md` that extend beyond the current evaluator implementation.
 
 ### Type System (Phase 2)
-- [ ] **Hindley-Milner type inference**: Algorithm W with constraint generation/solving
+- [x] **Hindley-Milner type inference**: Algorithm W with constraint generation/solving
+  - [x] Type variables and unification
+  - [x] Generalization and instantiation
+  - [x] Occurs check
+  - [x] Type environment for polymorphism
+  - [x] Basic expression type inference (literals, identifiers, application)
+  - [ ] Full expression coverage (all language constructs)
+- [ ] **Lazy type checking**: On-demand type inference for LSP responsiveness
+  - [x] Type inferencer integrated with Compiler
+  - [ ] API for LSP to request types
+  - [ ] Background type checking
+  - [ ] Cancellation support
+- [ ] **Macro metaprogramming with types**: Allow macros to query expression types
+  - [x] Type inferencer accessible from compiler
+  - [ ] Macro API for type queries
+  - [ ] Example macros using type information
 - [ ] **Type checking after evaluation**: Validate both evaluated and unevaluated branches
+  - [ ] Track unevaluated branches
+  - [ ] Type check unevaluated code paths
 - [ ] **Dimensional analysis integration**: Dimension constraints alongside type constraints
 - [ ] **Type annotations**: Optional type annotations in syntax
 - [ ] **Unevaluated branch handling**: Mark and type-check branches not taken at eval-time

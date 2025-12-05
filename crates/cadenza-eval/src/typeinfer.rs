@@ -447,6 +447,14 @@ impl TypeEnv {
         }
     }
 
+    /// Adds a value's type to the environment.
+    ///
+    /// This converts the runtime value's type to an InferType for use in type checking.
+    pub fn add_value(&mut self, name: InternedString, value: &crate::value::Value) {
+        let ty = value.type_of();
+        self.insert(name, InferType::from_concrete(&ty));
+    }
+
     /// Inserts a binding into the environment.
     pub fn insert(&mut self, name: InternedString, ty: InferType) {
         self.bindings.insert(name, ty);
@@ -485,6 +493,7 @@ impl Default for TypeEnv {
 }
 
 /// The type inference engine.
+#[derive(Debug)]
 pub struct TypeInferencer {
     /// Counter for generating fresh type variables.
     next_var: u32,
