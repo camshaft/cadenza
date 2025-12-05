@@ -574,12 +574,15 @@ fn test_type_inference_attribute() {
 
     // Attributes like @export are parsed as Apply nodes with @ as the operator
     // The @ operator itself needs to be in the environment
-    // For this test, let's say @ is a function that takes any value and returns it
+    // For this test, let's say @ is a polymorphic identity function: forall a. a -> a
     let attr_op: InternedString = "@".into();
     let type_var = compiler.type_inferencer_mut().fresh_var();
-    let attr_type = InferType::Fn(
-        vec![InferType::Var(type_var)],
-        Box::new(InferType::Var(type_var)),
+    let attr_type = InferType::Forall(
+        vec![type_var],
+        Box::new(InferType::Fn(
+            vec![InferType::Var(type_var)],
+            Box::new(InferType::Var(type_var)),
+        )),
     );
     env.insert(attr_op, attr_type);
 
