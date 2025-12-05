@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "fn identity x = x\ntypeof identity"
+---
+[
+    [=, [[fn, identity], x], x],
+    [typeof, identity],
+]

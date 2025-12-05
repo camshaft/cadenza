@@ -610,10 +610,10 @@ This section tracks longer-term features described in `/docs/COMPILER_ARCHITECTU
   - [ ] API for LSP to request types
   - [ ] Background type checking
   - [ ] Cancellation support
-- [ ] **Macro metaprogramming with types**: Allow macros to query expression types
+- [x] **Macro metaprogramming with types**: Allow macros to query expression types
   - [x] Type inferencer accessible from compiler
-  - [ ] Macro API for type queries
-  - [ ] Example macros using type information
+  - [x] Macro API for type queries (TypeEnv::from_context)
+  - [x] Example macros using type information (typeof builtin)
 - [ ] **Type checking after evaluation**: Validate both evaluated and unevaluated branches
   - [ ] Track unevaluated branches
   - [ ] Type check unevaluated code paths

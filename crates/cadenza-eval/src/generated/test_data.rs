@@ -79,6 +79,25 @@ mod lit_int {
         s!("lit_int_ast", t::ast("42\n"), "42\n");
     }
 }
+mod typeof_string {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "typeof_string",
+            t::eval_all("let s = \"hello\"\ntypeof s"),
+            "let s = \"hello\"\ntypeof s"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "typeof_string_ast",
+            t::ast("let s = \"hello\"\ntypeof s"),
+            "let s = \"hello\"\ntypeof s"
+        );
+    }
+}
 mod assert_fail {
     use super::*;
     #[test]
@@ -432,6 +451,25 @@ mod measure_base {
         );
     }
 }
+mod typeof_integer {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "typeof_integer",
+            t::eval_all("let x = 42\ntypeof x"),
+            "let x = 42\ntypeof x"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "typeof_integer_ast",
+            t::ast("let x = 42\ntypeof x"),
+            "let x = 42\ntypeof x"
+        );
+    }
+}
 mod error_cmp_type_mismatch_lt {
     use super::*;
     #[test]
@@ -574,6 +612,25 @@ mod assert_pass {
             "assert_pass_ast",
             t::ast("let v = 1\nassert v == 1\n"),
             "let v = 1\nassert v == 1\n"
+        );
+    }
+}
+mod typeof_function {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "typeof_function",
+            t::eval_all("fn identity x = x\ntypeof identity"),
+            "fn identity x = x\ntypeof identity"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "typeof_function_ast",
+            t::ast("fn identity x = x\ntypeof identity"),
+            "fn identity x = x\ntypeof identity"
         );
     }
 }

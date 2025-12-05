@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let s = \"hello\"\ntypeof s"
+---
+[
+    [=, [let, s], "hello"],
+    [typeof, s],
+]

@@ -2050,6 +2050,63 @@ pub fn builtin_assert() -> BuiltinMacro {
     }
 }
 
+/// A builtin macro that returns the inferred type of an expression.
+///
+/// This demonstrates how macros can use the type inference system to query types.
+/// Since types are first-class values in Cadenza, this returns a `Type` value that
+/// can be inspected and manipulated at runtime.
+///
+/// # Example
+///
+/// ```cadenza
+/// let x = 42
+/// typeof x  # returns Type::Integer
+///
+/// fn identity x = x
+/// typeof identity  # returns Type::Unknown (polymorphic types become unknown)
+/// ```
+///
+/// # Arguments
+///
+/// - `expr`: The expression to get the type of (not evaluated)
+///
+/// # Returns
+///
+/// A `Type` value representing the inferred type of the expression.
+/// If the type contains unresolved type variables (e.g., for polymorphic functions),
+/// returns `Type::Unknown`.
+pub fn builtin_typeof() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "typeof",
+        signature: Type::function(vec![Type::Unknown], Type::Type),
+        func: |args, ctx| {
+            // Validate argument count
+            if args.len() != 1 {
+                return Err(Diagnostic::syntax("typeof expects 1 argument: expression"));
+            }
+
+            let expr = &args[0];
+
+            // Build type environment from current runtime environment and compiler
+            let type_env = crate::typeinfer::TypeEnv::from_context(ctx.env, ctx.compiler);
+
+            // Infer the type of the expression
+            let inferred_type = ctx
+                .compiler
+                .type_inferencer_mut()
+                .infer_expr(expr, &type_env)
+                .map_err(|e| {
+                    Diagnostic::syntax(format!("type inference failed: {}", e))
+                        .with_span(expr.span())
+                })?;
+
+            // Convert to concrete type, or use Unknown if it has type variables
+            let concrete_type = inferred_type.to_concrete().unwrap_or(Type::Unknown);
+            Ok(Value::Type(concrete_type))
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
