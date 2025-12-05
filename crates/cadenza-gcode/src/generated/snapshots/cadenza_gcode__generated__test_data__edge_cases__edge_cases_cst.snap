@@ -1,0 +1,73 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; Edge cases test\n(Unclosed comment\nN100 G28\nN G28\n(Normal) G1 X10 (Another comment) Y20 ; Semicolon too\n%%\n"
+---
+Root@0..108
+  CommentContent@0..17 "; Edge cases test"
+  Newline@17..18 "\n"
+  CommentContent@18..35 "(Unclosed comment"
+  Newline@35..36 "\n"
+  Apply@36..44
+    ApplyReceiver@36..37
+      Identifier@36..37
+        Identifier@36..37 "N"
+    ApplyArgument@37..40
+      Literal@37..40
+        Integer@37..40
+          Integer@37..40 "100"
+    Space@40..41 " "
+    ApplyArgument@41..44
+      Apply@41..44
+        ApplyReceiver@41..44
+          Identifier@41..44
+            Identifier@41..44 "G28"
+  Newline@44..45 "\n"
+  Apply@45..50
+    ApplyReceiver@45..46
+      Identifier@45..46
+        Identifier@45..46 "N"
+    Space@46..47 " "
+    ApplyArgument@47..50
+      Apply@47..50
+        ApplyReceiver@47..48
+          Identifier@47..48
+            Identifier@47..48 "G"
+        ApplyArgument@48..50
+          Literal@48..50
+            Integer@48..50
+              Integer@48..50 "28"
+  Newline@50..51 "\n"
+  CommentContent@51..59 "(Normal)"
+  Space@59..60 " "
+  Apply@60..89
+    ApplyReceiver@60..62
+      Identifier@60..62
+        Identifier@60..62 "G1"
+    Space@62..63 " "
+    ApplyArgument@63..66
+      Apply@63..66
+        ApplyReceiver@63..64
+          Identifier@63..64
+            Identifier@63..64 "X"
+        ApplyArgument@64..66
+          Literal@64..66
+            Integer@64..66
+              Integer@64..66 "10"
+    Space@66..67 " "
+    CommentContent@67..84 "(Another comment)"
+    Space@84..85 " "
+    ApplyArgument@85..88
+      Apply@85..88
+        ApplyReceiver@85..86
+          Identifier@85..86
+            Identifier@85..86 "Y"
+        ApplyArgument@86..88
+          Literal@86..88
+            Integer@86..88
+              Integer@86..88 "20"
+    Space@88..89 " "
+  CommentContent@89..104 "; Semicolon too"
+  Newline@104..105 "\n"
+  CommentContent@105..106 "%"
+  CommentContent@106..107 "%"
+  Newline@107..108 "\n"

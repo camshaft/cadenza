@@ -1,0 +1,56 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "%\n; Program body\nG28\nG1 X100 Y50\nM104 S200\n%\n"
+---
+Root@0..45
+  CommentContent@0..1 "%"
+  Newline@1..2 "\n"
+  CommentContent@2..16 "; Program body"
+  Newline@16..17 "\n"
+  Apply@17..20
+    ApplyReceiver@17..20
+      Identifier@17..20
+        Identifier@17..20 "G28"
+  Newline@20..21 "\n"
+  Apply@21..32
+    ApplyReceiver@21..23
+      Identifier@21..23
+        Identifier@21..23 "G1"
+    Space@23..24 " "
+    ApplyArgument@24..28
+      Apply@24..28
+        ApplyReceiver@24..25
+          Identifier@24..25
+            Identifier@24..25 "X"
+        ApplyArgument@25..28
+          Literal@25..28
+            Integer@25..28
+              Integer@25..28 "100"
+    Space@28..29 " "
+    ApplyArgument@29..32
+      Apply@29..32
+        ApplyReceiver@29..30
+          Identifier@29..30
+            Identifier@29..30 "Y"
+        ApplyArgument@30..32
+          Literal@30..32
+            Integer@30..32
+              Integer@30..32 "50"
+  Newline@32..33 "\n"
+  Apply@33..42
+    ApplyReceiver@33..37
+      Identifier@33..37
+        Identifier@33..37 "M104"
+    Space@37..38 " "
+    ApplyArgument@38..42
+      Apply@38..42
+        ApplyReceiver@38..39
+          Identifier@38..39
+            Identifier@38..39 "S"
+        ApplyArgument@39..42
+          Literal@39..42
+            Integer@39..42
+              Integer@39..42 "200"
+  Newline@42..43 "\n"
+  CommentContent@43..44 "%"
+  Newline@44..45 "\n"

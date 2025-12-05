@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "%\n; Program body\nG28\nG1 X100 Y50\nM104 S200\n%\n"
+---
+[
+    [G28],
+    [G1, [X, 100], [Y, 50]],
+    [M104, [S, 200]],
+]

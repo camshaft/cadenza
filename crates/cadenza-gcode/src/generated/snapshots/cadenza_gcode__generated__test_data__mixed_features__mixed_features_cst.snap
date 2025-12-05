@@ -1,0 +1,104 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "%\n(3D Print Program)\n; Mixed features test\nN10 G28 (Home)\nN20 G1 X100 Y50 F3000 ; Move\nN30 M104 S200 (Heat extruder)\n%\n"
+---
+Root@0..119
+  CommentContent@0..1 "%"
+  Newline@1..2 "\n"
+  CommentContent@2..20 "(3D Print Program)"
+  Newline@20..21 "\n"
+  CommentContent@21..42 "; Mixed features test"
+  Newline@42..43 "\n"
+  Apply@43..57
+    ApplyReceiver@43..44
+      Identifier@43..44
+        Identifier@43..44 "N"
+    ApplyArgument@44..46
+      Literal@44..46
+        Integer@44..46
+          Integer@44..46 "10"
+    Space@46..47 " "
+    ApplyArgument@47..57
+      Apply@47..57
+        ApplyReceiver@47..50
+          Identifier@47..50
+            Identifier@47..50 "G28"
+        Space@50..51 " "
+        CommentContent@51..57 "(Home)"
+  Newline@57..58 "\n"
+  Apply@58..86
+    ApplyReceiver@58..59
+      Identifier@58..59
+        Identifier@58..59 "N"
+    ApplyArgument@59..61
+      Literal@59..61
+        Integer@59..61
+          Integer@59..61 "20"
+    Space@61..62 " "
+    ApplyArgument@62..80
+      Apply@62..80
+        ApplyReceiver@62..64
+          Identifier@62..64
+            Identifier@62..64 "G1"
+        Space@64..65 " "
+        ApplyArgument@65..69
+          Apply@65..69
+            ApplyReceiver@65..66
+              Identifier@65..66
+                Identifier@65..66 "X"
+            ApplyArgument@66..69
+              Literal@66..69
+                Integer@66..69
+                  Integer@66..69 "100"
+        Space@69..70 " "
+        ApplyArgument@70..73
+          Apply@70..73
+            ApplyReceiver@70..71
+              Identifier@70..71
+                Identifier@70..71 "Y"
+            ApplyArgument@71..73
+              Literal@71..73
+                Integer@71..73
+                  Integer@71..73 "50"
+        Space@73..74 " "
+        ApplyArgument@74..79
+          Apply@74..79
+            ApplyReceiver@74..75
+              Identifier@74..75
+                Identifier@74..75 "F"
+            ApplyArgument@75..79
+              Literal@75..79
+                Integer@75..79
+                  Integer@75..79 "3000"
+        Space@79..80 " "
+    CommentContent@80..86 "; Move"
+  Newline@86..87 "\n"
+  Apply@87..116
+    ApplyReceiver@87..88
+      Identifier@87..88
+        Identifier@87..88 "N"
+    ApplyArgument@88..90
+      Literal@88..90
+        Integer@88..90
+          Integer@88..90 "30"
+    Space@90..91 " "
+    ApplyArgument@91..116
+      Apply@91..116
+        ApplyReceiver@91..95
+          Identifier@91..95
+            Identifier@91..95 "M104"
+        Space@95..96 " "
+        ApplyArgument@96..100
+          Apply@96..100
+            ApplyReceiver@96..97
+              Identifier@96..97
+                Identifier@96..97 "S"
+            ApplyArgument@97..100
+              Literal@97..100
+                Integer@97..100
+                  Integer@97..100 "200"
+        Space@100..101 " "
+        CommentContent@101..116 "(Heat extruder)"
+  Newline@116..117 "\n"
+  CommentContent@117..118 "%"
+  Newline@118..119 "\n"

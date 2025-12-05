@@ -8,6 +8,8 @@
 - **Direct AST Construction**: No string generation or re-parsing
 - **Parameter Representation**: `[Letter, value]` structure (e.g., `X100` → `[X, 100]`)
 - **Comment Handling**: Comments preserved in CST as trivia
+  - Semicolon comments: `; comment text`
+  - Parentheses comments: `(comment text)`
 - **Offset Tracking**: Accurate source positions for all tokens
 - **Snapshot Tests**: Auto-generated from test-data/*.gcode files
 - **Zero Allocations**: Iterator-based parsing without intermediate collections
@@ -15,6 +17,9 @@
 - **Klipper Format**: Named parameters with `=` syntax (e.g., `SET_PIN PIN=my_led VALUE=1`)
 - **Error Recovery**: Invalid checksums emit Error nodes and parse errors
 - **CST Span Coverage**: All source bytes represented in CST tokens
+- **Line Numbers**: N-codes wrap commands on same line (e.g., `N10 G28` → `[N, 10, [G28]]`)
+- **Percent Delimiters**: Program delimiters using `%` symbol
+- **Multiple Comment Styles**: Both semicolon `;` and parentheses `()` comment formats
 
 ### 🎯 Architecture
 

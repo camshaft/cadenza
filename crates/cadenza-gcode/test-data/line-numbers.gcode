@@ -1,0 +1,5 @@
+; GCode with line numbers
+N10 G28
+N20 G1 X100 Y50 F3000
+N30 M104 S200
+N40 G90
