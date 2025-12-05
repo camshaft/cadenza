@@ -79,6 +79,25 @@ mod lit_int {
         s!("lit_int_ast", t::ast("42\n"), "42\n");
     }
 }
+mod assert_fail {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "assert_fail",
+            t::eval_all("let v = 1\nassert v == 2\n"),
+            "let v = 1\nassert v == 2\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "assert_fail_ast",
+            t::ast("let v = 1\nassert v == 2\n"),
+            "let v = 1\nassert v == 2\n"
+        );
+    }
+}
 mod error_divzero {
     use super::*;
     #[test]
@@ -537,6 +556,25 @@ mod arith_add {
     #[test]
     fn ast() {
         s!("arith_add_ast", t::ast("1 + 2\n"), "1 + 2\n");
+    }
+}
+mod assert_pass {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "assert_pass",
+            t::eval_all("let v = 1\nassert v == 1\n"),
+            "let v = 1\nassert v == 1\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "assert_pass_ast",
+            t::ast("let v = 1\nassert v == 1\n"),
+            "let v = 1\nassert v == 1\n"
+        );
     }
 }
 mod cmp_ge {
@@ -1142,6 +1180,25 @@ mod example_01_welcome {
         );
     }
 }
+mod assert_fail_with_message {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "assert_fail_with_message",
+            t::eval_all("let v = 1\nassert v == 2 \"v should be 2\"\n"),
+            "let v = 1\nassert v == 2 \"v should be 2\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "assert_fail_with_message_ast",
+            t::ast("let v = 1\nassert v == 2 \"v should be 2\"\n"),
+            "let v = 1\nassert v == 2 \"v should be 2\"\n"
+        );
+    }
+}
 mod measure_dimension_mismatch {
     use super::*;
     #[test]
@@ -1177,6 +1234,25 @@ mod let_multi {
             "let_multi_ast",
             t::ast("let x = 1\nlet y = 2\nx + y\n"),
             "let x = 1\nlet y = 2\nx + y\n"
+        );
+    }
+}
+mod assert_with_message {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "assert_with_message",
+            t::eval_all("let v = 1\nassert v == 1 \"expected v to be one\"\n"),
+            "let v = 1\nassert v == 1 \"expected v to be one\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "assert_with_message_ast",
+            t::ast("let v = 1\nassert v == 1 \"expected v to be one\"\n"),
+            "let v = 1\nassert v == 1 \"expected v to be one\"\n"
         );
     }
 }

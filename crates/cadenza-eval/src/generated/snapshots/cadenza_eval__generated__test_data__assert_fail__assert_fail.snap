@@ -1,0 +1,26 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let v = 1\nassert v == 2\n"
+---
+EvalResult {
+    values: [
+        1,
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: AssertionFailed {
+                message: "v == 2\n",
+            },
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 17,
+                    end: 24,
+                },
+            ),
+            stack_trace: [],
+        },
+    ],
+}

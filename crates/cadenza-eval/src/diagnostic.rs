@@ -108,6 +108,10 @@ pub enum DiagnosticKind {
     /// An internal error in the evaluator.
     #[error("internal error: {0}")]
     InternalError(String),
+
+    /// An assertion failed during runtime.
+    #[error("assertion failed: {message}")]
+    AssertionFailed { message: String },
 }
 
 /// A diagnostic message with source location and stack trace.
@@ -200,6 +204,7 @@ impl MietteDiagnostic for Diagnostic {
             DiagnosticKind::SyntaxError(_) => "E0005",
             DiagnosticKind::ParseError(_) => "E0007",
             DiagnosticKind::InternalError(_) => "E0006",
+            DiagnosticKind::AssertionFailed { .. } => "E0008",
         };
         Some(Box::new(code))
     }
@@ -328,6 +333,16 @@ impl Diagnostic {
     /// Creates an internal error.
     pub fn internal(msg: impl Into<String>) -> Box<Self> {
         Box::new(Self::new(DiagnosticKind::InternalError(msg.into()), None))
+    }
+
+    /// Creates an assertion failed error.
+    pub fn assertion_failed(msg: impl Into<String>) -> Box<Self> {
+        Box::new(Self::new(
+            DiagnosticKind::AssertionFailed {
+                message: msg.into(),
+            },
+            None,
+        ))
     }
 }
 
