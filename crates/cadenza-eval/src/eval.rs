@@ -2014,7 +2014,7 @@ pub fn builtin_assert() -> BuiltinMacro {
                 _ => {
                     return Err(
                         Diagnostic::type_error(Type::Bool, condition_value.type_of())
-                            .with_span(get_expr_span(condition_expr)),
+                            .with_span(condition_expr.span()),
                     );
                 }
             };
@@ -2022,8 +2022,7 @@ pub fn builtin_assert() -> BuiltinMacro {
             // If condition is false, create assertion failure
             if !condition_result {
                 // Get the condition expression text for error message
-                let syntax = get_expr_syntax(condition_expr);
-                let condition_text = syntax.text().to_string();
+                let condition_text = condition_expr.syntax().text().to_string();
 
                 // Build the error message
                 let message = if args.len() == 2 {
@@ -2034,7 +2033,7 @@ pub fn builtin_assert() -> BuiltinMacro {
                         Value::String(s) => format!("{}\n  condition: {}", s, condition_text),
                         _ => {
                             return Err(Diagnostic::type_error(Type::String, msg_value.type_of())
-                                .with_span(get_expr_span(msg_expr)));
+                                .with_span(msg_expr.span()));
                         }
                     }
                 } else {
@@ -2042,37 +2041,13 @@ pub fn builtin_assert() -> BuiltinMacro {
                     format!("Assertion failed: {}", condition_text)
                 };
 
-                return Err(
-                    Diagnostic::assertion_failed(message).with_span(get_expr_span(condition_expr))
-                );
+                return Err(Diagnostic::assertion_failed(message).with_span(condition_expr.span()));
             }
 
             // Assertion passed
             Ok(Value::Nil)
         },
     }
-}
-
-/// Helper function to get the syntax node from an expression.
-fn get_expr_syntax(expr: &Expr) -> &cadenza_syntax::SyntaxNode {
-    match expr {
-        Expr::Literal(lit) => lit.syntax(),
-        Expr::Ident(ident) => ident.syntax(),
-        Expr::Op(op) => op.syntax(),
-        Expr::Apply(apply) => apply.syntax(),
-        Expr::Attr(attr) => attr.syntax(),
-        Expr::Synthetic(syn) => syn.syntax(),
-        Expr::Error(err) => err.syntax(),
-    }
-}
-
-/// Helper function to get the span from an expression.
-fn get_expr_span(expr: &Expr) -> Span {
-    let syntax = get_expr_syntax(expr);
-    Span::new(
-        syntax.text_range().start().into(),
-        syntax.text_range().end().into(),
-    )
 }
 
 #[cfg(test)]

@@ -433,4 +433,17 @@ impl Expr {
             Self::Synthetic(expr) => expr.span(),
         }
     }
+
+    /// Returns a reference to the underlying syntax node.
+    pub fn syntax(&self) -> &SyntaxNode {
+        match self {
+            Self::Apply(expr) => expr.syntax(),
+            Self::Attr(expr) => expr.syntax(),
+            Self::Ident(expr) => expr.syntax(),
+            Self::Error(expr) => expr.syntax(),
+            Self::Literal(expr) => expr.syntax(),
+            Self::Op(expr) => expr.syntax(),
+            Self::Synthetic(expr) => expr.syntax(),
+        }
+    }
 }
