@@ -22,6 +22,9 @@
 pub mod error;
 pub mod syntax;
 
+#[cfg(test)]
+pub mod testing;
+
 mod generated;
 
 pub use error::{Error, Result};

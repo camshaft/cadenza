@@ -1,4 +1,5 @@
 use crate::parse;
+use crate::testing::verify_cst_coverage;
 use insta::assert_debug_snapshot as s;
 
 mod checksums {
@@ -9,29 +10,8 @@ mod checksums {
         let parse = parse(gcode);
         let cst = parse.syntax();
 
-        // Verify CST span coverage
-        let mut covered = vec![false; gcode.len()];
-        for node in cst.descendants_with_tokens() {
-            if let Some(token) = node.as_token() {
-                let range = token.text_range();
-                let start: usize = range.start().into();
-                let end: usize = range.end().into();
-                for item in &mut covered[start..end] {
-                    *item = true;
-                }
-                // Verify token text matches source
-                let token_text = token.text();
-                let source_text = &gcode[start..end];
-                assert_eq!(
-                    token_text, source_text,
-                    "Token text mismatch at {}..{}: token='{}', source='{}'",
-                    start, end, token_text, source_text
-                );
-            }
-        }
-        for (i, &is_covered) in covered.iter().enumerate() {
-            assert!(is_covered, "Byte at position {} not covered in CST", i);
-        }
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
 
         s!(
             "checksums_cst",
@@ -59,29 +39,8 @@ mod complex {
         let parse = parse(gcode);
         let cst = parse.syntax();
 
-        // Verify CST span coverage
-        let mut covered = vec![false; gcode.len()];
-        for node in cst.descendants_with_tokens() {
-            if let Some(token) = node.as_token() {
-                let range = token.text_range();
-                let start: usize = range.start().into();
-                let end: usize = range.end().into();
-                for item in &mut covered[start..end] {
-                    *item = true;
-                }
-                // Verify token text matches source
-                let token_text = token.text();
-                let source_text = &gcode[start..end];
-                assert_eq!(
-                    token_text, source_text,
-                    "Token text mismatch at {}..{}: token='{}', source='{}'",
-                    start, end, token_text, source_text
-                );
-            }
-        }
-        for (i, &is_covered) in covered.iter().enumerate() {
-            assert!(is_covered, "Byte at position {} not covered in CST", i);
-        }
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
 
         s!(
             "complex_cst",
@@ -109,29 +68,8 @@ mod invalid_checksum {
         let parse = parse(gcode);
         let cst = parse.syntax();
 
-        // Verify CST span coverage
-        let mut covered = vec![false; gcode.len()];
-        for node in cst.descendants_with_tokens() {
-            if let Some(token) = node.as_token() {
-                let range = token.text_range();
-                let start: usize = range.start().into();
-                let end: usize = range.end().into();
-                for item in &mut covered[start..end] {
-                    *item = true;
-                }
-                // Verify token text matches source
-                let token_text = token.text();
-                let source_text = &gcode[start..end];
-                assert_eq!(
-                    token_text, source_text,
-                    "Token text mismatch at {}..{}: token='{}', source='{}'",
-                    start, end, token_text, source_text
-                );
-            }
-        }
-        for (i, &is_covered) in covered.iter().enumerate() {
-            assert!(is_covered, "Byte at position {} not covered in CST", i);
-        }
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
 
         s!(
             "invalid_checksum_cst",
@@ -159,29 +97,8 @@ mod klipper {
         let parse = parse(gcode);
         let cst = parse.syntax();
 
-        // Verify CST span coverage
-        let mut covered = vec![false; gcode.len()];
-        for node in cst.descendants_with_tokens() {
-            if let Some(token) = node.as_token() {
-                let range = token.text_range();
-                let start: usize = range.start().into();
-                let end: usize = range.end().into();
-                for item in &mut covered[start..end] {
-                    *item = true;
-                }
-                // Verify token text matches source
-                let token_text = token.text();
-                let source_text = &gcode[start..end];
-                assert_eq!(
-                    token_text, source_text,
-                    "Token text mismatch at {}..{}: token='{}', source='{}'",
-                    start, end, token_text, source_text
-                );
-            }
-        }
-        for (i, &is_covered) in covered.iter().enumerate() {
-            assert!(is_covered, "Byte at position {} not covered in CST", i);
-        }
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
 
         s!(
             "klipper_cst",
@@ -209,29 +126,8 @@ mod simple {
         let parse = parse(gcode);
         let cst = parse.syntax();
 
-        // Verify CST span coverage
-        let mut covered = vec![false; gcode.len()];
-        for node in cst.descendants_with_tokens() {
-            if let Some(token) = node.as_token() {
-                let range = token.text_range();
-                let start: usize = range.start().into();
-                let end: usize = range.end().into();
-                for item in &mut covered[start..end] {
-                    *item = true;
-                }
-                // Verify token text matches source
-                let token_text = token.text();
-                let source_text = &gcode[start..end];
-                assert_eq!(
-                    token_text, source_text,
-                    "Token text mismatch at {}..{}: token='{}', source='{}'",
-                    start, end, token_text, source_text
-                );
-            }
-        }
-        for (i, &is_covered) in covered.iter().enumerate() {
-            assert!(is_covered, "Byte at position {} not covered in CST", i);
-        }
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
 
         s!(
             "simple_cst",
