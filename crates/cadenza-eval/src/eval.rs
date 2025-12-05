@@ -1929,10 +1929,10 @@ pub fn builtin_pipeline() -> BuiltinMacro {
                     // Get all RHS arguments and evaluate them
                     let rhs_arg_exprs = apply.all_arguments();
                     let mut all_args = Vec::with_capacity(1 + rhs_arg_exprs.len());
-                    
+
                     // Inject the LHS value as the first argument
                     all_args.push(lhs_value);
-                    
+
                     // Then add the evaluated RHS arguments
                     for arg_expr in rhs_arg_exprs {
                         let value = arg_expr.eval(ctx)?;
