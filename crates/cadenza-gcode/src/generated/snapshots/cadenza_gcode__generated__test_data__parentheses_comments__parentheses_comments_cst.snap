@@ -7,14 +7,14 @@ Root@0..135
   Newline@39..40 "\n"
   CommentContent@40..55 "(Program start)"
   Newline@55..56 "\n"
-  Apply@56..60
+  Apply@56..75
     ApplyReceiver@56..59
       Identifier@56..59
         Identifier@56..59 "G28"
     Space@59..60 " "
-  CommentContent@60..75 "(Home all axes)"
+    CommentContent@60..75 "(Home all axes)"
   Newline@75..76 "\n"
-  Apply@76..88
+  Apply@76..106
     ApplyReceiver@76..78
       Identifier@76..78
         Identifier@76..78 "G1"
@@ -39,7 +39,7 @@ Root@0..135
             Integer@85..87
               Integer@85..87 "50"
     Space@87..88 " "
-  CommentContent@88..106 "(Move to position)"
+    CommentContent@88..106 "(Move to position)"
   Newline@106..107 "\n"
   CommentContent@107..124 "(Set temperature)"
   Newline@124..125 "\n"

@@ -60,6 +60,35 @@ mod complex {
         );
     }
 }
+mod edge_cases {
+    use super::*;
+    #[test]
+    fn cst() {
+        let gcode = "; Edge cases test\n(Unclosed comment\nN100 G28\nN G28\n(Normal) G1 X10 (Another comment) Y20 ; Semicolon too\n%%\n";
+        let parse = parse(gcode);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
+
+        s!(
+            "edge_cases_cst",
+            &cst,
+            "; Edge cases test\n(Unclosed comment\nN100 G28\nN G28\n(Normal) G1 X10 (Another comment) Y20 ; Semicolon too\n%%\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let gcode = "; Edge cases test\n(Unclosed comment\nN100 G28\nN G28\n(Normal) G1 X10 (Another comment) Y20 ; Semicolon too\n%%\n";
+        let parse = parse(gcode);
+        let root = parse.ast();
+        s!(
+            "edge_cases_ast",
+            root,
+            "; Edge cases test\n(Unclosed comment\nN100 G28\nN G28\n(Normal) G1 X10 (Another comment) Y20 ; Semicolon too\n%%\n"
+        );
+    }
+}
 mod invalid_checksum {
     use super::*;
     #[test]

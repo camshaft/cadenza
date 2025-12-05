@@ -11,12 +11,12 @@ Root@0..119
   Newline@42..43 "\n"
   CommentContent@43..46 "N10"
   Space@46..47 " "
-  Apply@47..51
+  Apply@47..57
     ApplyReceiver@47..50
       Identifier@47..50
         Identifier@47..50 "G28"
     Space@50..51 " "
-  CommentContent@51..57 "(Home)"
+    CommentContent@51..57 "(Home)"
   Newline@57..58 "\n"
   CommentContent@58..61 "N20"
   Space@61..62 " "
@@ -59,7 +59,7 @@ Root@0..119
   Newline@86..87 "\n"
   CommentContent@87..90 "N30"
   Space@90..91 " "
-  Apply@91..101
+  Apply@91..116
     ApplyReceiver@91..95
       Identifier@91..95
         Identifier@91..95 "M104"
@@ -74,7 +74,7 @@ Root@0..119
             Integer@97..100
               Integer@97..100 "200"
     Space@100..101 " "
-  CommentContent@101..116 "(Heat extruder)"
+    CommentContent@101..116 "(Heat extruder)"
   Newline@116..117 "\n"
   CommentContent@117..118 "%"
   Newline@118..119 "\n"

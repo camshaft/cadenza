@@ -175,6 +175,11 @@ impl<'src> Parser<'src> {
             if ch == Some(';') || ch == Some('\n') || ch == Some('\r') || ch.is_none() {
                 break;
             }
+            // Check for inline parentheses comment
+            if ch == Some('(') {
+                self.parse_parentheses_comment();
+                continue; // Continue parsing parameters after comment
+            }
             // Check for checksum marker
             if ch == Some('*') {
                 self.parse_checksum(line_start);
