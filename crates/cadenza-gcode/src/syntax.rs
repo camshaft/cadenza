@@ -454,18 +454,20 @@ impl<'src> Parser<'src> {
         // Parse as Apply node: [N, 123]
         // This makes line numbers part of the AST structure
         
+        let n_start = self.pos;
+        
         // Start Apply node
         self.builder.start_node(Kind::Apply.into());
 
-        // 'N' as receiver
+        // 'N' as receiver - extract from source
+        self.pos += 1; // Move past 'N'
+        let n_text = &self.src[n_start..self.pos];
+        
         self.builder.start_node(Kind::ApplyReceiver.into());
         self.builder.start_node(Kind::Identifier.into());
-        self.builder.token(Kind::Identifier.into(), "N");
+        self.builder.token(Kind::Identifier.into(), n_text);
         self.builder.finish_node();
         self.builder.finish_node();
-
-        // Skip 'N'
-        self.pos += 1;
 
         // Parse the number as argument
         self.builder.start_node(Kind::ApplyArgument.into());
