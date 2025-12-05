@@ -1,0 +1,2 @@
+let v = 1
+assert v == 1

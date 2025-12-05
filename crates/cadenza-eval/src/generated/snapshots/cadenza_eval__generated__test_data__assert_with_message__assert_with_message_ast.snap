@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let v = 1\nassert (v == 1) \"expected v to be one\"\n"
+---
+[
+    [=, [let, v], 1],
+    [[assert, [==, v, 1]], "expected v to be one"],
+]

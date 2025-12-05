@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let v = 1\nassert v == 1\n"
+---
+EvalResult {
+    values: [
+        1,
+        nil,
+    ],
+    diagnostics: [],
+}

@@ -5,9 +5,10 @@
 
 use crate::{
     eval::{
-        builtin_add, builtin_assign, builtin_block, builtin_div, builtin_eq, builtin_field_access,
-        builtin_fn, builtin_gt, builtin_gte, builtin_let, builtin_list, builtin_lt, builtin_lte,
-        builtin_measure, builtin_mul, builtin_ne, builtin_pipeline, builtin_record, builtin_sub,
+        builtin_add, builtin_assert, builtin_assign, builtin_block, builtin_div, builtin_eq,
+        builtin_field_access, builtin_fn, builtin_gt, builtin_gte, builtin_let, builtin_list,
+        builtin_lt, builtin_lte, builtin_measure, builtin_mul, builtin_ne, builtin_pipeline,
+        builtin_record, builtin_sub,
     },
     interner::InternedString,
     map::Map,
@@ -73,6 +74,7 @@ impl Env {
     /// - `let` - Variable declaration macro
     /// - `=` - Assignment macro
     /// - `fn` - Function definition macro
+    /// - `assert` - Assertion macro for runtime checks
     /// - `measure` - Unit definition macro for dimensional analysis
     /// - `|>` - Pipeline operator macro
     /// - `__block__` - Block expression macro (automatically emitted by parser)
@@ -94,6 +96,7 @@ impl Env {
     /// - `let` - Variable declaration macro
     /// - `=` - Assignment macro
     /// - `fn` - Function definition macro
+    /// - `assert` - Assertion macro for runtime checks
     /// - `measure` - Unit definition macro for dimensional analysis
     /// - `|>` - Pipeline operator macro
     /// - `__block__` - Block expression macro (automatically emitted by parser)
@@ -108,6 +111,7 @@ impl Env {
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
         let fn_id: InternedString = "fn".into();
+        let assert_id: InternedString = "assert".into();
         let measure_id: InternedString = "measure".into();
         let pipeline_id: InternedString = "|>".into();
         let block_id: InternedString = "__block__".into();
@@ -117,6 +121,7 @@ impl Env {
         self.define(let_id, Value::BuiltinMacro(builtin_let()));
         self.define(assign_id, Value::BuiltinMacro(builtin_assign()));
         self.define(fn_id, Value::BuiltinMacro(builtin_fn()));
+        self.define(assert_id, Value::BuiltinMacro(builtin_assert()));
         self.define(measure_id, Value::BuiltinMacro(builtin_measure()));
         self.define(pipeline_id, Value::BuiltinMacro(builtin_pipeline()));
         self.define(block_id, Value::BuiltinMacro(builtin_block()));

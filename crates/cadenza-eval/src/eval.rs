@@ -317,8 +317,8 @@ fn extract_identifier(expr: &Expr) -> Option<InternedString> {
 fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match macro_value {
         Value::BuiltinMacro(builtin) => {
-            // Collect unevaluated argument expressions
-            let arg_exprs: Vec<Expr> = apply.arguments().filter_map(|arg| arg.value()).collect();
+            // Collect unevaluated argument expressions (use all_arguments to get flattened args)
+            let arg_exprs: Vec<Expr> = apply.all_arguments();
 
             // Call the builtin macro with unevaluated expressions
             (builtin.func)(&arg_exprs, ctx)
@@ -1950,6 +1950,102 @@ pub fn builtin_pipeline() -> BuiltinMacro {
                     ))
                 }
             }
+        },
+    }
+}
+
+/// Creates the `assert` builtin macro for runtime assertions.
+///
+/// The `assert` macro checks that a condition is true and reports a detailed error if it fails.
+///
+/// # Arguments
+///
+/// The macro accepts 1 or 2 arguments:
+/// - `condition` - An expression that should evaluate to a boolean
+/// - `message` (optional) - A custom error message string
+///
+/// # Returns
+///
+/// Returns `Value::Nil` if the assertion passes.
+///
+/// # Errors
+///
+/// Returns an `AssertionFailed` diagnostic if:
+/// - The condition evaluates to `false`
+/// - The condition is not a boolean value
+///
+/// # Examples
+///
+/// ```ignore
+/// let v = 1
+/// assert v == 1
+///
+/// assert v == 1 "expected v to be one"
+///
+/// let x = 5
+/// assert x > 0 "x must be positive"
+/// ```
+///
+/// The error message will include:
+/// - The condition expression that failed
+/// - The custom message (if provided)
+/// - Source location information
+pub fn builtin_assert() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "assert",
+        signature: Type::function(vec![Type::Bool], Type::Nil),
+        func: |args, ctx| {
+            // Validate argument count (1 or 2)
+            if args.is_empty() || args.len() > 2 {
+                return Err(Diagnostic::syntax(
+                    "assert expects 1 or 2 arguments: condition [message]",
+                ));
+            }
+
+            // Get the condition expression
+            let condition_expr = &args[0];
+
+            // Evaluate the condition
+            let condition_value = condition_expr.eval(ctx)?;
+
+            // Check that condition is a boolean
+            let condition_result = match condition_value {
+                Value::Bool(b) => b,
+                _ => {
+                    return Err(
+                        Diagnostic::type_error(Type::Bool, condition_value.type_of())
+                            .with_span(condition_expr.span()),
+                    );
+                }
+            };
+
+            // If condition is false, create assertion failure
+            if !condition_result {
+                // Get the condition expression text for error message
+                let condition_text = condition_expr.syntax().text().to_string();
+
+                // Build the error message
+                let message = if args.len() == 2 {
+                    // Custom message provided
+                    let msg_expr = &args[1];
+                    let msg_value = msg_expr.eval(ctx)?;
+                    match msg_value {
+                        Value::String(s) => format!("{}\n  condition: {}", s, condition_text),
+                        _ => {
+                            return Err(Diagnostic::type_error(Type::String, msg_value.type_of())
+                                .with_span(msg_expr.span()));
+                        }
+                    }
+                } else {
+                    // No custom message, add descriptive prefix
+                    format!("Assertion failed: {}", condition_text)
+                };
+
+                return Err(Diagnostic::assertion_failed(message).with_span(condition_expr.span()));
+            }
+
+            // Assertion passed
+            Ok(Value::Nil)
         },
     }
 }
