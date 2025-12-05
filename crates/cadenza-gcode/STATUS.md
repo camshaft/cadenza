@@ -17,7 +17,7 @@
 - **Klipper Format**: Named parameters with `=` syntax (e.g., `SET_PIN PIN=my_led VALUE=1`)
 - **Error Recovery**: Invalid checksums emit Error nodes and parse errors
 - **CST Span Coverage**: All source bytes represented in CST tokens
-- **Line Numbers**: N-codes parsed as Apply nodes (e.g., `N10` → `[N, 10]`)
+- **Line Numbers**: N-codes wrap commands on same line (e.g., `N10 G28` → `[N, 10, [G28]]`)
 - **Percent Delimiters**: Program delimiters using `%` symbol
 - **Multiple Comment Styles**: Both semicolon `;` and parentheses `()` comment formats
 

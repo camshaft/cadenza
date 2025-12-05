@@ -5,7 +5,7 @@ expression: "; GCode with line numbers\nN10 G28\nN20 G1 X100 Y50 F3000\nN30 M104
 Root@0..78
   CommentContent@0..25 "; GCode with line num ..."
   Newline@25..26 "\n"
-  Apply@26..29
+  Apply@26..33
     ApplyReceiver@26..27
       Identifier@26..27
         Identifier@26..27 "N"
@@ -13,13 +13,14 @@ Root@0..78
       Literal@27..29
         Integer@27..29
           Integer@27..29 "10"
-  Space@29..30 " "
-  Apply@30..33
-    ApplyReceiver@30..33
-      Identifier@30..33
-        Identifier@30..33 "G28"
+    Space@29..30 " "
+    ApplyArgument@30..33
+      Apply@30..33
+        ApplyReceiver@30..33
+          Identifier@30..33
+            Identifier@30..33 "G28"
   Newline@33..34 "\n"
-  Apply@34..37
+  Apply@34..55
     ApplyReceiver@34..35
       Identifier@34..35
         Identifier@34..35 "N"
@@ -27,43 +28,44 @@ Root@0..78
       Literal@35..37
         Integer@35..37
           Integer@35..37 "20"
-  Space@37..38 " "
-  Apply@38..55
-    ApplyReceiver@38..40
-      Identifier@38..40
-        Identifier@38..40 "G1"
-    Space@40..41 " "
-    ApplyArgument@41..45
-      Apply@41..45
-        ApplyReceiver@41..42
-          Identifier@41..42
-            Identifier@41..42 "X"
-        ApplyArgument@42..45
-          Literal@42..45
-            Integer@42..45
-              Integer@42..45 "100"
-    Space@45..46 " "
-    ApplyArgument@46..49
-      Apply@46..49
-        ApplyReceiver@46..47
-          Identifier@46..47
-            Identifier@46..47 "Y"
-        ApplyArgument@47..49
-          Literal@47..49
-            Integer@47..49
-              Integer@47..49 "50"
-    Space@49..50 " "
-    ApplyArgument@50..55
-      Apply@50..55
-        ApplyReceiver@50..51
-          Identifier@50..51
-            Identifier@50..51 "F"
-        ApplyArgument@51..55
-          Literal@51..55
-            Integer@51..55
-              Integer@51..55 "3000"
+    Space@37..38 " "
+    ApplyArgument@38..55
+      Apply@38..55
+        ApplyReceiver@38..40
+          Identifier@38..40
+            Identifier@38..40 "G1"
+        Space@40..41 " "
+        ApplyArgument@41..45
+          Apply@41..45
+            ApplyReceiver@41..42
+              Identifier@41..42
+                Identifier@41..42 "X"
+            ApplyArgument@42..45
+              Literal@42..45
+                Integer@42..45
+                  Integer@42..45 "100"
+        Space@45..46 " "
+        ApplyArgument@46..49
+          Apply@46..49
+            ApplyReceiver@46..47
+              Identifier@46..47
+                Identifier@46..47 "Y"
+            ApplyArgument@47..49
+              Literal@47..49
+                Integer@47..49
+                  Integer@47..49 "50"
+        Space@49..50 " "
+        ApplyArgument@50..55
+          Apply@50..55
+            ApplyReceiver@50..51
+              Identifier@50..51
+                Identifier@50..51 "F"
+            ApplyArgument@51..55
+              Literal@51..55
+                Integer@51..55
+                  Integer@51..55 "3000"
   Newline@55..56 "\n"
-  Apply@56..59
+  Apply@56..69
     ApplyReceiver@56..57
       Identifier@56..57
         Identifier@56..57 "N"
@@ -71,23 +73,24 @@ Root@0..78
       Literal@57..59
         Integer@57..59
           Integer@57..59 "30"
-  Space@59..60 " "
-  Apply@60..69
-    ApplyReceiver@60..64
-      Identifier@60..64
-        Identifier@60..64 "M104"
-    Space@64..65 " "
-    ApplyArgument@65..69
-      Apply@65..69
-        ApplyReceiver@65..66
-          Identifier@65..66
-            Identifier@65..66 "S"
-        ApplyArgument@66..69
-          Literal@66..69
-            Integer@66..69
-              Integer@66..69 "200"
+    Space@59..60 " "
+    ApplyArgument@60..69
+      Apply@60..69
+        ApplyReceiver@60..64
+          Identifier@60..64
+            Identifier@60..64 "M104"
+        Space@64..65 " "
+        ApplyArgument@65..69
+          Apply@65..69
+            ApplyReceiver@65..66
+              Identifier@65..66
+                Identifier@65..66 "S"
+            ApplyArgument@66..69
+              Literal@66..69
+                Integer@66..69
+                  Integer@66..69 "200"
   Newline@69..70 "\n"
-  Apply@70..73
+  Apply@70..77
     ApplyReceiver@70..71
       Identifier@70..71
         Identifier@70..71 "N"
@@ -95,9 +98,10 @@ Root@0..78
       Literal@71..73
         Integer@71..73
           Integer@71..73 "40"
-  Space@73..74 " "
-  Apply@74..77
-    ApplyReceiver@74..77
-      Identifier@74..77
-        Identifier@74..77 "G90"
+    Space@73..74 " "
+    ApplyArgument@74..77
+      Apply@74..77
+        ApplyReceiver@74..77
+          Identifier@74..77
+            Identifier@74..77 "G90"
   Newline@77..78 "\n"

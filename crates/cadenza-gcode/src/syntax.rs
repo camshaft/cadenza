@@ -70,16 +70,8 @@ impl<'src> Parser<'src> {
                 self.parse_percent_delimiter();
                 self.skip_newline();
             } else if self.is_line_number_start() {
-                // Line number - parse and continue with command on same line
-                self.parse_line_number();
-                self.skip_line_whitespace();
-                if self.peek_char().is_some_and(|c| c.is_ascii_alphabetic()) {
-                    self.parse_command();
-                    self.skip_line_whitespace();
-                    if self.peek_char() == Some(';') {
-                        self.parse_comment();
-                    }
-                }
+                // Line number - parse N with number and optional command as arguments
+                self.parse_line_number_with_command();
                 self.skip_newline();
             } else if self.peek_char().is_some_and(|c| c.is_ascii_alphabetic()) {
                 self.parse_command();
@@ -449,14 +441,14 @@ impl<'src> Parser<'src> {
         self.peek_char() == Some('N') && self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit())
     }
 
-    fn parse_line_number(&mut self) {
-        // Line numbers are in format N123 where 123 is a line number
-        // Parse as Apply node: [N, 123]
-        // This makes line numbers part of the AST structure
+    fn parse_line_number_with_command(&mut self) {
+        // Line numbers are in format N123 [command]
+        // Parse as Apply node: [N, 123, [command]] if command is present
+        // This allows the N macro to set up environment before executing the command
         
         let n_start = self.pos;
         
-        // Start Apply node
+        // Start Apply node for N
         self.builder.start_node(Kind::Apply.into());
 
         // 'N' as receiver - extract from source
@@ -469,10 +461,25 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
         self.builder.finish_node();
 
-        // Parse the number as argument
+        // Parse the number as first argument
         self.builder.start_node(Kind::ApplyArgument.into());
         self.parse_number();
         self.builder.finish_node();
+
+        // Check if there's a command following on the same line
+        self.skip_line_whitespace();
+        if self.peek_char().is_some_and(|c| c.is_ascii_alphabetic()) {
+            // Parse the command as second argument to N
+            self.builder.start_node(Kind::ApplyArgument.into());
+            self.parse_command();
+            self.builder.finish_node();
+            
+            // Handle any trailing comments
+            self.skip_line_whitespace();
+            if self.peek_char() == Some(';') {
+                self.parse_comment();
+            }
+        }
 
         self.builder.finish_node();
     }
