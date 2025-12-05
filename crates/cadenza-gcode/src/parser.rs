@@ -82,7 +82,7 @@ fn parse_command(input: &str) -> Result<Command> {
 
     // Split into tokens using iterator
     let mut tokens = input.split_whitespace();
-    
+
     // Parse the command code
     let code_token = tokens
         .next()
@@ -90,9 +90,7 @@ fn parse_command(input: &str) -> Result<Command> {
     let code = parse_command_code(code_token)?;
 
     // Parse parameters using iterator
-    let parameters = tokens
-        .map(parse_parameter)
-        .collect::<Result<Vec<_>>>()?;
+    let parameters = tokens.map(parse_parameter).collect::<Result<Vec<_>>>()?;
 
     Ok(Command { code, parameters })
 }

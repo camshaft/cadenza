@@ -10,11 +10,7 @@ pub fn main() {
     let _ = std::fs::create_dir_all("src/generated");
 
     write("src/generated.rs", GENERATED.trim_start()).unwrap();
-    write(
-        "src/generated/test_data.rs",
-        rustfmt(&test_data::tests()),
-    )
-    .unwrap();
+    write("src/generated/test_data.rs", rustfmt(&test_data::tests())).unwrap();
 
     println!("cargo:rerun-if-changed=test-data/");
 }
@@ -31,9 +27,7 @@ fn rustfmt(code: &str) -> String {
     stdin.write_all(code.as_bytes()).expect("failed to write");
     drop(stdin);
 
-    let output = child
-        .wait_with_output()
-        .expect("failed to wait on rustfmt");
+    let output = child.wait_with_output().expect("failed to wait on rustfmt");
     if !output.status.success() {
         panic!("rustfmt failed");
     }

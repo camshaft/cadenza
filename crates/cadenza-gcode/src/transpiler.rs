@@ -1,57 +1,95 @@
 //! GCode to Cadenza transpiler.
 
 use crate::{
-    ast::{Command, CommandCode, Line, Parameter, ParameterValue, Program},
+    ast::{CommandCode, Line, Program},
     error::{Error, Result},
+    handler::{CommandHandler, CommandInfo, DefaultHandler},
 };
 use std::collections::HashMap;
 
 /// Configuration for transpilation.
-#[derive(Debug, Clone)]
 pub struct TranspilerConfig {
-    /// Mapping from command codes to Cadenza function names
-    pub command_handlers: HashMap<CommandCode, String>,
+    /// Mapping from command codes to handler implementations
+    handlers: HashMap<CommandCode, Box<dyn CommandHandler + Send + Sync>>,
     /// Whether to include comments in the output
     pub include_comments: bool,
-    /// State variable name (default: "state")
-    pub state_var: String,
+    /// Source file name for error reporting
+    pub source_file: Option<String>,
+}
+
+// Manual Debug impl since CommandHandler doesn't implement Debug
+impl std::fmt::Debug for TranspilerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranspilerConfig")
+            .field("handlers", &format!("{} handlers", self.handlers.len()))
+            .field("include_comments", &self.include_comments)
+            .field("source_file", &self.source_file)
+            .finish()
+    }
 }
 
 impl Default for TranspilerConfig {
     fn default() -> Self {
-        let mut command_handlers = HashMap::new();
-
-        // Register common RepRap commands
-        // G-codes
-        command_handlers.insert(CommandCode::G(0), "handle_g0".to_string()); // Rapid move
-        command_handlers.insert(CommandCode::G(1), "handle_g1".to_string()); // Linear move
-        command_handlers.insert(CommandCode::G(28), "handle_g28".to_string()); // Home
-        command_handlers.insert(CommandCode::G(90), "handle_g90".to_string()); // Absolute positioning
-        command_handlers.insert(CommandCode::G(91), "handle_g91".to_string()); // Relative positioning
-        command_handlers.insert(CommandCode::G(92), "handle_g92".to_string()); // Set position
-
-        // M-codes
-        command_handlers.insert(CommandCode::M(104), "handle_m104".to_string()); // Set extruder temp
-        command_handlers.insert(CommandCode::M(109), "handle_m109".to_string()); // Set extruder temp and wait
-        command_handlers.insert(CommandCode::M(140), "handle_m140".to_string()); // Set bed temp
-        command_handlers.insert(CommandCode::M(190), "handle_m190".to_string()); // Set bed temp and wait
-        command_handlers.insert(CommandCode::M(106), "handle_m106".to_string()); // Fan on
-        command_handlers.insert(CommandCode::M(107), "handle_m107".to_string()); // Fan off
-        command_handlers.insert(CommandCode::M(82), "handle_m82".to_string()); // E absolute
-        command_handlers.insert(CommandCode::M(83), "handle_m83".to_string()); // E relative
-
-        Self {
-            command_handlers,
+        let mut config = Self {
+            handlers: HashMap::new(),
             include_comments: true,
-            state_var: "state".to_string(),
-        }
+            source_file: None,
+        };
+
+        // Register common RepRap commands with default handlers
+        config.register_default_handler(CommandCode::G(0), "handle_g0");
+        config.register_default_handler(CommandCode::G(1), "handle_g1");
+        config.register_default_handler(CommandCode::G(28), "handle_g28");
+        config.register_default_handler(CommandCode::G(90), "handle_g90");
+        config.register_default_handler(CommandCode::G(91), "handle_g91");
+        config.register_default_handler(CommandCode::G(92), "handle_g92");
+        config.register_default_handler(CommandCode::M(82), "handle_m82");
+        config.register_default_handler(CommandCode::M(83), "handle_m83");
+        config.register_default_handler(CommandCode::M(104), "handle_m104");
+        config.register_default_handler(CommandCode::M(106), "handle_m106");
+        config.register_default_handler(CommandCode::M(107), "handle_m107");
+        config.register_default_handler(CommandCode::M(109), "handle_m109");
+        config.register_default_handler(CommandCode::M(140), "handle_m140");
+        config.register_default_handler(CommandCode::M(190), "handle_m190");
+
+        config
     }
 }
 
 impl TranspilerConfig {
     /// Register a custom command handler.
-    pub fn register_handler(&mut self, code: CommandCode, handler: String) {
-        self.command_handlers.insert(code, handler);
+    ///
+    /// This is a convenience method for backward compatibility.
+    /// It creates a DefaultHandler with the given function name.
+    pub fn register_handler(&mut self, code: CommandCode, handler_name: String) {
+        self.register_default_handler(code, handler_name);
+    }
+
+    /// Register a handler using the default parameter transpilation logic.
+    pub fn register_default_handler(&mut self, code: CommandCode, handler_name: impl Into<String>) {
+        let handler = DefaultHandler::new(handler_name);
+        self.handlers.insert(
+            code,
+            Box::new(handler) as Box<dyn CommandHandler + Send + Sync>,
+        );
+    }
+
+    /// Register a custom command handler implementation.
+    pub fn register_custom_handler(
+        &mut self,
+        code: CommandCode,
+        handler: impl CommandHandler + Send + Sync + 'static,
+    ) {
+        self.handlers.insert(
+            code,
+            Box::new(handler) as Box<dyn CommandHandler + Send + Sync>,
+        );
+    }
+
+    /// Set the source file name for error reporting.
+    pub fn with_source_file(mut self, file: impl Into<String>) -> Self {
+        self.source_file = Some(file.into());
+        self
     }
 }
 
@@ -67,10 +105,15 @@ pub fn transpile_with_config(program: &Program, config: &TranspilerConfig) -> Re
     // Add header comment
     output.push_str("# Generated from GCode\n\n");
 
-    for line in &program.lines {
+    for (line_num, line) in program.lines.iter().enumerate() {
         match line {
             Line::Command(cmd) => {
-                let cadenza_line = transpile_command(cmd, config)?;
+                let info = CommandInfo {
+                    command: cmd,
+                    line_number: line_num + 1,
+                    source_file: config.source_file.as_deref(),
+                };
+                let cadenza_line = transpile_command(&info, config)?;
                 output.push_str(&cadenza_line);
                 output.push('\n');
             }
@@ -90,59 +133,15 @@ pub fn transpile_with_config(program: &Program, config: &TranspilerConfig) -> Re
     Ok(output)
 }
 
-/// Transpile a single command to a Cadenza function call.
-fn transpile_command(cmd: &Command, config: &TranspilerConfig) -> Result<String> {
+/// Transpile a single command using the configured handler.
+fn transpile_command(info: &CommandInfo<'_>, config: &TranspilerConfig) -> Result<String> {
     // Look up the handler for this command
     let handler = config
-        .command_handlers
-        .get(&cmd.code)
-        .ok_or_else(|| Error::UnsupportedCommand(cmd.code.to_string()))?;
+        .handlers
+        .get(&info.command.code)
+        .ok_or_else(|| Error::UnsupportedCommand(info.command.code.to_string()))?;
 
-    // Build the function call
-    let mut call = format!("{} {}", handler, config.state_var);
-
-    // Add parameters
-    for param in &cmd.parameters {
-        let param_str = transpile_parameter(param)?;
-        call.push(' ');
-        call.push_str(&param_str);
-    }
-
-    Ok(call)
-}
-
-/// Transpile a parameter to Cadenza syntax.
-fn transpile_parameter(param: &Parameter) -> Result<String> {
-    // Handle flag parameters - just use true as a boolean
-    if matches!(param.value, ParameterValue::Flag) {
-        return Ok("true".to_string());
-    }
-
-    // Determine the appropriate unit based on the parameter letter
-    let unit = match param.letter {
-        'X' | 'Y' | 'Z' | 'E' => "millimeter",
-        'F' => {
-            // Feedrate in GCode is typically in mm/min
-            // We keep it as millimeter_per_minute for now
-            // In the future, this could be converted to mm/s if needed
-            "millimeter_per_minute"
-        }
-        'S' => {
-            // S parameter is context-dependent (temperature, speed, etc.)
-            // For temperatures, it's dimensionless (degrees)
-            // For now, no unit
-            ""
-        }
-        _ => "",
-    };
-
-    let value = param.value.as_float();
-
-    if unit.is_empty() {
-        Ok(format!("{}", value))
-    } else {
-        Ok(format!("{}{}", value, unit))
-    }
+    handler.transpile(info)
 }
 
 #[cfg(test)]
