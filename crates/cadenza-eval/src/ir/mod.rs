@@ -31,8 +31,7 @@
 
 pub mod optimize;
 
-use crate::{InternedString, Type};
-use crate::unit::Dimension;
+use crate::{InternedString, Type, unit::Dimension};
 use std::fmt;
 
 /// A unique identifier for values in SSA form
@@ -70,10 +69,7 @@ impl fmt::Display for FunctionId {
 pub enum IrInstr {
     /// Load a constant value
     /// %result = const <value>
-    Const {
-        result: ValueId,
-        value: IrConst,
-    },
+    Const { result: ValueId, value: IrConst },
 
     /// Binary operation
     /// %result = binop <op> %lhs %rhs
@@ -155,7 +151,10 @@ pub enum IrConst {
     Float(f64),
     String(InternedString),
     /// Quantity with dimension (e.g., 5.0 meters)
-    Quantity { value: f64, dimension: Dimension },
+    Quantity {
+        value: f64,
+        dimension: Dimension,
+    },
 }
 
 /// Binary operators

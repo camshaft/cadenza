@@ -46,12 +46,12 @@ pub use eval::{
 };
 pub use interner::InternedString;
 pub use ir::{
-    optimize::{
-        create_optimization_pipeline, ConstantFolding, DeadCodeElimination, IrOptimizationPass,
-        IrOptimizer, OptLevel,
-    },
     BinOp, BlockId, FunctionId, IrBlock, IrBuilder, IrConst, IrExport, IrExportKind, IrFunction,
     IrInstr, IrModule, IrParam, IrTerminator, UnOp, ValueId,
+    optimize::{
+        ConstantFolding, DeadCodeElimination, IrOptimizationPass, IrOptimizer, OptLevel,
+        create_optimization_pipeline,
+    },
 };
 pub use map::Map;
 pub use typeinfer::{Constraint, InferType, Substitution, TypeEnv, TypeInferencer, TypeVar};

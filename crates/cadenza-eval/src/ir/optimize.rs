@@ -149,7 +149,7 @@ impl IrOptimizationPass for ConstantFolding {
                         let op_val = *op;
                         let lhs_val = *lhs;
                         let rhs_val = *rhs;
-                        
+
                         // Check if both operands are constants
                         if let (Some(lhs_const), Some(rhs_const)) =
                             (constants.get(&lhs_val), constants.get(&rhs_val))
@@ -317,8 +317,10 @@ fn mark_used_values(func: &super::IrFunction, used: &mut HashSet<ValueId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{IrBuilder, IrTerminator};
-    use crate::{InternedString, Type};
+    use crate::{
+        InternedString, Type,
+        ir::{IrBuilder, IrTerminator},
+    };
 
     #[test]
     fn test_constant_folding() {
