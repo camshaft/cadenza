@@ -298,7 +298,10 @@ impl fmt::Display for InferType {
                 }
                 write!(f, ". {}", ty)
             }
-            InferType::Quantity { value_type, dimension } => {
+            InferType::Quantity {
+                value_type,
+                dimension,
+            } => {
                 write!(f, "{}[{}]", value_type, &**dimension)
             }
         }
@@ -348,7 +351,7 @@ impl Substitution {
                 if visiting.contains(v) {
                     return ty.clone();
                 }
-                
+
                 if let Some(t) = self.get(*v) {
                     visiting.push(*v);
                     let result = self.apply_impl(t, visiting);
@@ -359,7 +362,10 @@ impl Substitution {
                 }
             }
             InferType::Fn(args, ret) => {
-                let new_args = args.iter().map(|arg| self.apply_impl(arg, visiting)).collect();
+                let new_args = args
+                    .iter()
+                    .map(|arg| self.apply_impl(arg, visiting))
+                    .collect();
                 let new_ret = Box::new(self.apply_impl(ret, visiting));
                 InferType::Fn(new_args, new_ret)
             }
@@ -370,12 +376,18 @@ impl Substitution {
                     .map(|(name, ty)| (*name, self.apply_impl(ty, visiting)))
                     .collect(),
             ),
-            InferType::Tuple(elems) => {
-                InferType::Tuple(elems.iter().map(|elem| self.apply_impl(elem, visiting)).collect())
-            }
-            InferType::Union(types) => {
-                InferType::Union(types.iter().map(|ty| self.apply_impl(ty, visiting)).collect())
-            }
+            InferType::Tuple(elems) => InferType::Tuple(
+                elems
+                    .iter()
+                    .map(|elem| self.apply_impl(elem, visiting))
+                    .collect(),
+            ),
+            InferType::Union(types) => InferType::Union(
+                types
+                    .iter()
+                    .map(|ty| self.apply_impl(ty, visiting))
+                    .collect(),
+            ),
             InferType::Forall(vars, ty) => {
                 // Don't apply substitutions to bound variables
                 // Only apply to free variables in the body
@@ -385,7 +397,10 @@ impl Substitution {
                         filtered_subst.insert(*var, subst_ty.clone());
                     }
                 }
-                InferType::Forall(vars.clone(), Box::new(filtered_subst.apply_impl(ty, visiting)))
+                InferType::Forall(
+                    vars.clone(),
+                    Box::new(filtered_subst.apply_impl(ty, visiting)),
+                )
             }
             InferType::Quantity {
                 value_type,
@@ -515,6 +530,7 @@ impl TypeInferencer {
     /// Unifies two types, returning a substitution that makes them equal.
     ///
     /// This implements the standard unification algorithm with an occurs check.
+    #[allow(clippy::only_used_in_recursion)]
     pub fn unify(&self, t1: &InferType, t2: &InferType, span: Span) -> Result<Substitution> {
         match (t1, t2) {
             // Two identical concrete types unify with empty substitution
@@ -710,12 +726,9 @@ impl TypeInferencer {
         }
     }
 
-    fn infer_literal(
-        &mut self,
-        lit: &cadenza_syntax::ast::Literal,
-    ) -> Result<InferType> {
+    fn infer_literal(&mut self, lit: &cadenza_syntax::ast::Literal) -> Result<InferType> {
         use cadenza_syntax::ast::LiteralValue;
-        
+
         let ty = match lit.value() {
             Some(LiteralValue::Integer(_)) => Type::Integer,
             Some(LiteralValue::Float(_)) => Type::Float,
@@ -731,7 +744,7 @@ impl TypeInferencer {
         env: &TypeEnv,
     ) -> Result<InferType> {
         let name = InternedString::new(ident.syntax().text().to_string().as_str());
-        
+
         if let Some(ty) = env.get(name) {
             // Instantiate polymorphic types
             Ok(self.instantiate(ty))
@@ -832,10 +845,7 @@ mod tests {
     fn test_generalize() {
         let mut inf = TypeInferencer::new();
         let v = inf.fresh_var();
-        let ty = InferType::Fn(
-            vec![InferType::Var(v)],
-            Box::new(InferType::Var(v)),
-        );
+        let ty = InferType::Fn(vec![InferType::Var(v)], Box::new(InferType::Var(v)));
         let env = TypeEnv::new();
         let generalized = inf.generalize(&ty, &env);
         match generalized {
@@ -894,10 +904,7 @@ mod tests {
         let v1 = TypeVar::new(0);
         let v2 = TypeVar::new(1);
 
-        let ty = InferType::Fn(
-            vec![InferType::Var(v1)],
-            Box::new(InferType::Var(v2)),
-        );
+        let ty = InferType::Fn(vec![InferType::Var(v1)], Box::new(InferType::Var(v2)));
 
         let free = ty.free_vars();
         assert_eq!(free.len(), 2);

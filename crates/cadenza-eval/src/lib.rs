@@ -45,9 +45,7 @@ pub use eval::{
 };
 pub use interner::InternedString;
 pub use map::Map;
-pub use typeinfer::{
-    Constraint, InferType, Substitution, TypeEnv, TypeInferencer, TypeVar,
-};
+pub use typeinfer::{Constraint, InferType, Substitution, TypeEnv, TypeInferencer, TypeVar};
 pub use unit::{DerivedDimension, Dimension, Unit, UnitRegistry};
 pub use value::{BuiltinFn, BuiltinMacro, SourceInfo, TrackedValue, Type, UserFunction, Value};
 

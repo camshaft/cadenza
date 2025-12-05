@@ -387,23 +387,23 @@ fn test_comparison_type_mismatch_errors() {
 #[test]
 fn test_type_inference_literals() {
     use crate::typeinfer::{InferType, TypeEnv};
-    
+
     let mut compiler = Compiler::new();
     let env = TypeEnv::new();
-    
+
     // Parse a literal expression
     let parsed = parse("42");
     let root = parsed.ast();
     let items: Vec<_> = root.items().collect();
     assert_eq!(items.len(), 1);
-    
+
     // Infer its type
     let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
     assert!(inferred.is_ok());
-    
+
     let ty = inferred.unwrap();
     assert_eq!(ty, InferType::Concrete(Type::Integer));
-    
+
     // Try with a float
     let parsed = parse("3.14");
     let root = parsed.ast();
@@ -411,7 +411,7 @@ fn test_type_inference_literals() {
     let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
     assert!(inferred.is_ok());
     assert_eq!(inferred.unwrap(), InferType::Concrete(Type::Float));
-    
+
     // Try with a string
     let parsed = parse("\"hello\"");
     let root = parsed.ast();
@@ -424,19 +424,19 @@ fn test_type_inference_literals() {
 #[test]
 fn test_type_inference_with_environment() {
     use crate::typeinfer::{InferType, TypeEnv};
-    
+
     let mut compiler = Compiler::new();
     let mut env = TypeEnv::new();
-    
+
     // Add a variable to the environment
     let x: InternedString = "x".into();
     env.insert(x, InferType::Concrete(Type::Integer));
-    
+
     // Parse an identifier expression
     let parsed = parse("x");
     let root = parsed.ast();
     let items: Vec<_> = root.items().collect();
-    
+
     // Infer its type - should get Integer from environment
     let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
     assert!(inferred.is_ok());
@@ -446,29 +446,29 @@ fn test_type_inference_with_environment() {
 #[test]
 fn test_type_inference_function_application() {
     use crate::typeinfer::InferType;
-    
+
     let mut compiler = Compiler::new();
-    
+
     // Parse a function application: `f 42`
     let parsed = parse("f 42");
     let root = parsed.ast();
     let items: Vec<_> = root.items().collect();
-    
+
     // Create an environment with f as a function
     let mut env = crate::typeinfer::TypeEnv::new();
     let f: InternedString = "f".into();
-    
+
     // f has type Integer -> String
     let f_type = InferType::Fn(
         vec![InferType::Concrete(Type::Integer)],
         Box::new(InferType::Concrete(Type::String)),
     );
     env.insert(f, f_type);
-    
+
     // Infer the type of the application
     let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
     assert!(inferred.is_ok());
-    
+
     // Should infer String as the result type
     assert_eq!(inferred.unwrap(), InferType::Concrete(Type::String));
 }
@@ -476,9 +476,9 @@ fn test_type_inference_function_application() {
 #[test]
 fn test_type_inference_polymorphic_identity() {
     use crate::typeinfer::InferType;
-    
+
     let mut compiler = Compiler::new();
-    
+
     // Create a polymorphic identity function: forall a. a -> a
     let type_var = compiler.type_inferencer_mut().fresh_var();
     let id_type = InferType::Forall(
@@ -488,21 +488,21 @@ fn test_type_inference_polymorphic_identity() {
             Box::new(InferType::Var(type_var)),
         )),
     );
-    
+
     let mut env = crate::typeinfer::TypeEnv::new();
     let id: InternedString = "id".into();
     env.insert(id, id_type);
-    
+
     // Parse: `id 42`
     let parsed = parse("id 42");
     let root = parsed.ast();
     let items: Vec<_> = root.items().collect();
-    
+
     // Type inference should instantiate the polymorphic type
     // and infer Integer as the result
     let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
     assert!(inferred.is_ok());
-    
+
     // The result should be Integer (the type variable was unified with Integer)
     assert_eq!(inferred.unwrap(), InferType::Concrete(Type::Integer));
 }
