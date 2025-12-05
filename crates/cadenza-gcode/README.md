@@ -11,14 +11,18 @@ This crate treats GCode as an alternative lexer/parser for Cadenza, producing Ca
 - **Proper Offset Tracking**: Every byte accounted for with accurate source positions
 - **Comment Preservation**: Comments are included in the CST as trivia
 - **Non-Positional Parameters**: Parameters represented as `[Letter, value]` for flexible handling
+- **Checksum Support**: Parses and preserves checksums (`*##` suffix) in the CST
+- **Klipper Format**: Supports Klipper-style named parameters (e.g., `SET_PIN PIN=my_led VALUE=1`)
 
 ## Architecture
 
 GCode is parsed directly into Cadenza's AST format:
 - **GCode commands** → Apply nodes (e.g., `G1` becomes a function call)
 - **Parameters** → Apply nodes with letter as receiver (e.g., `X100` → `[X, 100]`)
+- **Named parameters** → Apply nodes (e.g., `PIN=my_led` → `[PIN, my_led]`)
 - **Flags** → Identifier nodes (e.g., `X` without value → `X` identifier)
 - **Comments** → Comment tokens in CST
+- **Checksums** → Preserved in CST as comment tokens (e.g., `*57`)
 
 ## Example
 
@@ -64,11 +68,11 @@ let results = eval(&root, &mut env, &mut compiler);
 
 ### Input and Output
 
-Input GCode:
+**Traditional GCode:**
 ```gcode
 G28              ; Home all axes
 G1 X100 Y50 F3000
-M104 S200
+M104 S200*99     ; With checksum
 ```
 
 Parsed AST:
@@ -78,8 +82,20 @@ Parsed AST:
 [M104, [S, 200]]
 ```
 
+**Klipper Format:**
+```gcode
+SET_PIN PIN=my_led VALUE=1
+SET_HEATER_TEMPERATURE HEATER=extruder TARGET=200
+```
+
+Parsed AST:
+```
+[SET_PIN, [PIN, my_led], [VALUE, 1]]
+[SET_HEATER_TEMPERATURE, [HEATER, extruder], [TARGET, 200]]
+```
+
 Handler macros receive unevaluated parameter expressions and can:
-- Pattern match on parameter names (X, Y, Z, F, S, etc.)
+- Pattern match on parameter names (X, Y, Z, F, S, PIN, VALUE, etc.)
 - Apply appropriate units based on command context
 - Handle missing/optional parameters
 - Implement custom command semantics

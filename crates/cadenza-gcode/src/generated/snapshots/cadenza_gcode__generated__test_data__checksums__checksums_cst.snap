@@ -1,0 +1,63 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; GCode with checksums\n; Checksum is XOR of all bytes before the asterisk\nG28*18\nG1 X100 Y50*57\nM104 S200*99\nG90*21\n"
+---
+Root@0..116
+  CommentContent@0..22 "; GCode with checksums"
+  Newline@22..23 "\n"
+  CommentContent@23..73 "; Checksum is XOR of  ..."
+  Newline@73..74 "\n"
+  Apply@74..80
+    ApplyReceiver@74..77
+      Identifier@74..77
+        Identifier@74..77 "G28"
+    CommentContent@77..80 "*18"
+  Newline@80..81 "\n"
+  Apply@81..95
+    ApplyReceiver@81..83
+      Identifier@81..83
+        Identifier@81..83 "G1"
+    Space@83..84 " "
+    ApplyArgument@84..88
+      Apply@84..88
+        ApplyReceiver@84..85
+          Identifier@84..85
+            Identifier@84..85 "X"
+        ApplyArgument@85..88
+          Literal@85..88
+            Integer@85..88
+              Integer@85..88 "100"
+    Space@88..89 " "
+    ApplyArgument@89..92
+      Apply@89..92
+        ApplyReceiver@89..90
+          Identifier@89..90
+            Identifier@89..90 "Y"
+        ApplyArgument@90..92
+          Literal@90..92
+            Integer@90..92
+              Integer@90..92 "50"
+    CommentContent@92..95 "*57"
+  Newline@95..96 "\n"
+  Apply@96..108
+    ApplyReceiver@96..100
+      Identifier@96..100
+        Identifier@96..100 "M104"
+    Space@100..101 " "
+    ApplyArgument@101..105
+      Apply@101..105
+        ApplyReceiver@101..102
+          Identifier@101..102
+            Identifier@101..102 "S"
+        ApplyArgument@102..105
+          Literal@102..105
+            Integer@102..105
+              Integer@102..105 "200"
+    CommentContent@105..108 "*99"
+  Newline@108..109 "\n"
+  Apply@109..115
+    ApplyReceiver@109..112
+      Identifier@109..112
+        Identifier@109..112 "G90"
+    CommentContent@112..115 "*21"
+  Newline@115..116 "\n"

@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; GCode with checksums\n; Checksum is XOR of all bytes before the asterisk\nG28*18\nG1 X100 Y50*57\nM104 S200*99\nG90*21\n"
+---
+"[[G28], [G1, [X, 100], [Y, 50]], [M104, [S, 200]], [G90]]"

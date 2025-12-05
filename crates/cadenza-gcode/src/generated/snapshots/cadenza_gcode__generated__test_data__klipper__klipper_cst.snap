@@ -1,0 +1,127 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; Klipper macro format with named parameters\nSET_PIN PIN=my_led VALUE=1\nSET_HEATER_TEMPERATURE HEATER=extruder TARGET=200\nSET_VELOCITY_LIMIT VELOCITY=100 ACCEL=3000\nG28 X Y\nTEMPERATURE_WAIT SENSOR=extruder MINIMUM=195 MAXIMUM=205\n"
+---
+Root@0..221
+  CommentContent@0..44 "; Klipper macro forma ..."
+  Newline@44..45 "\n"
+  Apply@45..69
+    ApplyReceiver@45..52
+      Identifier@45..52
+        Identifier@45..52 "SET_PIN"
+    Space@52..53 " "
+    ApplyArgument@53..62
+      Apply@53..62
+        ApplyReceiver@53..56
+          Identifier@53..56
+            Identifier@53..56 "PIN"
+        ApplyArgument@56..62
+          Identifier@56..62
+            Identifier@56..62 "my_led"
+    Space@62..63 " "
+    ApplyArgument@63..69
+      Apply@63..69
+        ApplyReceiver@63..68
+          Identifier@63..68
+            Identifier@63..68 "VALUE"
+        ApplyArgument@68..69
+          Literal@68..69
+            Integer@68..69
+              Integer@68..69 "1"
+  Newline@69..70 "\n"
+  Apply@70..117
+    ApplyReceiver@70..92
+      Identifier@70..92
+        Identifier@70..92 "SET_HEATER_TEMPERATURE"
+    Space@92..93 " "
+    ApplyArgument@93..107
+      Apply@93..107
+        ApplyReceiver@93..99
+          Identifier@93..99
+            Identifier@93..99 "HEATER"
+        ApplyArgument@99..107
+          Identifier@99..107
+            Identifier@99..107 "extruder"
+    Space@107..108 " "
+    ApplyArgument@108..117
+      Apply@108..117
+        ApplyReceiver@108..114
+          Identifier@108..114
+            Identifier@108..114 "TARGET"
+        ApplyArgument@114..117
+          Literal@114..117
+            Integer@114..117
+              Integer@114..117 "200"
+  Newline@117..118 "\n"
+  Apply@118..158
+    ApplyReceiver@118..136
+      Identifier@118..136
+        Identifier@118..136 "SET_VELOCITY_LIMIT"
+    Space@136..137 " "
+    ApplyArgument@137..148
+      Apply@137..148
+        ApplyReceiver@137..145
+          Identifier@137..145
+            Identifier@137..145 "VELOCITY"
+        ApplyArgument@145..148
+          Literal@145..148
+            Integer@145..148
+              Integer@145..148 "100"
+    Space@148..149 " "
+    ApplyArgument@149..158
+      Apply@149..158
+        ApplyReceiver@149..154
+          Identifier@149..154
+            Identifier@149..154 "ACCEL"
+        ApplyArgument@154..158
+          Literal@154..158
+            Integer@154..158
+              Integer@154..158 "3000"
+  Newline@158..159 "\n"
+  Apply@159..166
+    ApplyReceiver@159..162
+      Identifier@159..162
+        Identifier@159..162 "G28"
+    Space@162..163 " "
+    ApplyArgument@163..164
+      Identifier@163..164
+        Identifier@163..164 "X"
+    Space@164..165 " "
+    ApplyArgument@165..166
+      Identifier@165..166
+        Identifier@165..166 "Y"
+  Newline@166..167 "\n"
+  Apply@167..220
+    ApplyReceiver@167..183
+      Identifier@167..183
+        Identifier@167..183 "TEMPERATURE_WAIT"
+    Space@183..184 " "
+    ApplyArgument@184..198
+      Apply@184..198
+        ApplyReceiver@184..190
+          Identifier@184..190
+            Identifier@184..190 "SENSOR"
+        ApplyArgument@190..198
+          Identifier@190..198
+            Identifier@190..198 "extruder"
+    Space@198..199 " "
+    ApplyArgument@199..209
+      Apply@199..209
+        ApplyReceiver@199..206
+          Identifier@199..206
+            Identifier@199..206 "MINIMUM"
+        ApplyArgument@206..209
+          Literal@206..209
+            Integer@206..209
+              Integer@206..209 "195"
+    Space@209..210 " "
+    ApplyArgument@210..220
+      Apply@210..220
+        ApplyReceiver@210..217
+          Identifier@210..217
+            Identifier@210..217 "MAXIMUM"
+        ApplyArgument@217..220
+          Literal@217..220
+            Integer@217..220
+              Integer@217..220 "205"
+  Newline@220..221 "\n"
