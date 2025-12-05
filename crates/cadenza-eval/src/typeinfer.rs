@@ -338,41 +338,60 @@ impl Substitution {
 
     /// Applies this substitution to a type.
     pub fn apply(&self, ty: &InferType) -> InferType {
+        self.apply_impl(ty, &mut Vec::new())
+    }
+
+    fn apply_impl(&self, ty: &InferType, visiting: &mut Vec<TypeVar>) -> InferType {
         match ty {
             InferType::Var(v) => {
+                // Prevent infinite recursion by tracking visited variables
+                if visiting.contains(v) {
+                    return ty.clone();
+                }
+                
                 if let Some(t) = self.get(*v) {
-                    // Follow the chain of substitutions
-                    self.apply(t)
+                    visiting.push(*v);
+                    let result = self.apply_impl(t, visiting);
+                    visiting.pop();
+                    result
                 } else {
                     ty.clone()
                 }
             }
             InferType::Fn(args, ret) => {
-                let new_args = args.iter().map(|arg| self.apply(arg)).collect();
-                let new_ret = Box::new(self.apply(ret));
+                let new_args = args.iter().map(|arg| self.apply_impl(arg, visiting)).collect();
+                let new_ret = Box::new(self.apply_impl(ret, visiting));
                 InferType::Fn(new_args, new_ret)
             }
-            InferType::List(elem) => InferType::List(Box::new(self.apply(elem))),
+            InferType::List(elem) => InferType::List(Box::new(self.apply_impl(elem, visiting))),
             InferType::Record(fields) => InferType::Record(
                 fields
                     .iter()
-                    .map(|(name, ty)| (*name, self.apply(ty)))
+                    .map(|(name, ty)| (*name, self.apply_impl(ty, visiting)))
                     .collect(),
             ),
             InferType::Tuple(elems) => {
-                InferType::Tuple(elems.iter().map(|elem| self.apply(elem)).collect())
+                InferType::Tuple(elems.iter().map(|elem| self.apply_impl(elem, visiting)).collect())
             }
             InferType::Union(types) => {
-                InferType::Union(types.iter().map(|ty| self.apply(ty)).collect())
+                InferType::Union(types.iter().map(|ty| self.apply_impl(ty, visiting)).collect())
             }
             InferType::Forall(vars, ty) => {
-                InferType::Forall(vars.clone(), Box::new(self.apply(ty)))
+                // Don't apply substitutions to bound variables
+                // Only apply to free variables in the body
+                let mut filtered_subst = Substitution::new();
+                for (var, subst_ty) in &self.map {
+                    if !vars.contains(var) {
+                        filtered_subst.insert(*var, subst_ty.clone());
+                    }
+                }
+                InferType::Forall(vars.clone(), Box::new(filtered_subst.apply_impl(ty, visiting)))
             }
             InferType::Quantity {
                 value_type,
                 dimension,
             } => InferType::Quantity {
-                value_type: Box::new(self.apply(value_type)),
+                value_type: Box::new(self.apply_impl(value_type, visiting)),
                 dimension: *dimension,
             },
             InferType::Concrete(_) => ty.clone(),
@@ -655,6 +674,99 @@ impl Default for TypeInferencer {
     }
 }
 
+/// Type inference for expressions.
+///
+/// This provides type inference that can be used during evaluation,
+/// including for unevaluated code paths and macro metaprogramming.
+impl TypeInferencer {
+    /// Infers the type of an expression given a type environment.
+    ///
+    /// This generates constraints and solves them to produce a type.
+    /// The expression is not evaluated - this is pure type analysis.
+    pub fn infer_expr(
+        &mut self,
+        expr: &cadenza_syntax::ast::Expr,
+        env: &TypeEnv,
+    ) -> Result<InferType> {
+        use cadenza_syntax::ast::Expr;
+
+        match expr {
+            Expr::Literal(lit) => self.infer_literal(lit),
+            Expr::Ident(ident) => self.infer_ident(ident, env),
+            Expr::Apply(apply) => self.infer_apply(apply, env),
+            _ => {
+                // For other expressions, return Unknown type for now
+                Ok(InferType::Concrete(Type::Unknown))
+            }
+        }
+    }
+
+    fn infer_literal(
+        &mut self,
+        lit: &cadenza_syntax::ast::Literal,
+    ) -> Result<InferType> {
+        use cadenza_syntax::ast::LiteralValue;
+        
+        let ty = match lit.value() {
+            Some(LiteralValue::Integer(_)) => Type::Integer,
+            Some(LiteralValue::Float(_)) => Type::Float,
+            Some(LiteralValue::String(_)) | Some(LiteralValue::StringWithEscape(_)) => Type::String,
+            None => Type::Unknown,
+        };
+        Ok(InferType::Concrete(ty))
+    }
+
+    fn infer_ident(
+        &mut self,
+        ident: &cadenza_syntax::ast::Ident,
+        env: &TypeEnv,
+    ) -> Result<InferType> {
+        let name = InternedString::new(ident.syntax().text().to_string().as_str());
+        
+        if let Some(ty) = env.get(name) {
+            // Instantiate polymorphic types
+            Ok(self.instantiate(ty))
+        } else {
+            // Unknown identifier - return a fresh type variable
+            // In a full implementation, this would be an error
+            Ok(InferType::Var(self.fresh_var()))
+        }
+    }
+
+    fn infer_apply(
+        &mut self,
+        apply: &cadenza_syntax::ast::Apply,
+        env: &TypeEnv,
+    ) -> Result<InferType> {
+        // Infer type of the callee
+        let callee_ty = if let Some(callee) = apply.callee() {
+            self.infer_expr(&callee, env)?
+        } else {
+            return Ok(InferType::Concrete(Type::Unknown));
+        };
+
+        // Infer types of arguments
+        let mut arg_types = Vec::new();
+        for arg in apply.all_arguments() {
+            arg_types.push(self.infer_expr(&arg, env)?);
+        }
+
+        // The result type is a fresh type variable
+        let result_var = self.fresh_var();
+        let result_ty = InferType::Var(result_var);
+
+        // Create a function type for the expected callee type
+        let expected_fn_ty = InferType::Fn(arg_types, Box::new(result_ty.clone()));
+
+        // Unify the callee type with the expected function type
+        let span = apply.span();
+        let subst = self.unify(&callee_ty, &expected_fn_ty, span)?;
+
+        // Apply substitution to get the result type
+        Ok(subst.apply(&result_ty))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,7 +841,7 @@ mod tests {
     #[test]
     fn test_instantiate() {
         let mut inf = TypeInferencer::new();
-        let v = TypeVar::new(0);
+        let v = inf.fresh_var(); // Use fresh_var to create the variable
         let ty = InferType::Forall(
             vec![v],
             Box::new(InferType::Fn(
