@@ -10,7 +10,7 @@ EvalResult {
     diagnostics: [
         Diagnostic {
             kind: AssertionFailed {
-                message: "v == 2\n",
+                message: "Assertion failed: v == 2\n",
             },
             level: Error,
             file: None,

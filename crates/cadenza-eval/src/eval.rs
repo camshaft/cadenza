@@ -2038,8 +2038,8 @@ pub fn builtin_assert() -> BuiltinMacro {
                         }
                     }
                 } else {
-                    // No custom message, just show the condition
-                    condition_text
+                    // No custom message, add descriptive prefix
+                    format!("Assertion failed: {}", condition_text)
                 };
 
                 return Err(
