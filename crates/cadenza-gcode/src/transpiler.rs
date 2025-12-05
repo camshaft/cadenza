@@ -122,8 +122,9 @@ fn transpile_parameter(param: &Parameter) -> Result<String> {
     let unit = match param.letter {
         'X' | 'Y' | 'Z' | 'E' => "millimeter",
         'F' => {
-            // Feedrate is typically in mm/min, convert to mm/s
-            // For now, we'll just note it needs conversion
+            // Feedrate in GCode is typically in mm/min
+            // We keep it as millimeter_per_minute for now
+            // In the future, this could be converted to mm/s if needed
             "millimeter_per_minute"
         }
         'S' => {
