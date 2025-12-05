@@ -1893,10 +1893,11 @@ pub fn builtin_pipeline() -> BuiltinMacro {
                     if let Some(id) = extract_identifier(&callee_expr) {
                         // Check for macro in compiler
                         if ctx.compiler.get_macro(id).is_some() {
-                            // For macros, we need to inject the LHS as an unevaluated expression
-                            // Since we already evaluated it, we need to create a synthetic expression
-                            // However, macros expect unevaluated expressions, so we can't easily
-                            // support piping into macros. For now, return an error.
+                            // Macros expect unevaluated AST expressions to enable compile-time
+                            // transformations and syntax manipulation. The pipeline operator
+                            // fundamentally conflicts with this because it must evaluate the LHS
+                            // value before piping it. Since we can't "un-evaluate" a value back
+                            // into an AST expression, piping into macros is not supported.
                             return Err(Diagnostic::syntax(
                                 "cannot use pipeline operator with macros",
                             ));
@@ -1914,8 +1915,9 @@ pub fn builtin_pipeline() -> BuiltinMacro {
                     let callee = match &callee_expr {
                         Expr::Ident(ident) => eval_ident_no_auto_apply(ident, ctx)?,
                         Expr::Op(op) => {
-                            let text = op.syntax().text();
-                            let id: InternedString = text.to_string().as_str().into();
+                            // Use extract_identifier to get the operator name
+                            let id = extract_identifier(&Expr::Op(op.clone()))
+                                .ok_or_else(|| Diagnostic::syntax("invalid operator"))?;
                             let range = op.syntax().text_range();
                             let span = Span::new(range.start().into(), range.end().into());
                             ctx.env
