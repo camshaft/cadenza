@@ -25,6 +25,7 @@ mod env;
 mod eval;
 mod generated;
 pub mod interner;
+pub mod ir;
 mod map;
 pub mod typeinfer;
 pub mod unit;
@@ -44,6 +45,14 @@ pub use eval::{
     builtin_measure, builtin_mul, builtin_ne, builtin_sub, eval,
 };
 pub use interner::InternedString;
+pub use ir::{
+    optimize::{
+        create_optimization_pipeline, ConstantFolding, DeadCodeElimination, IrOptimizationPass,
+        IrOptimizer, OptLevel,
+    },
+    BinOp, BlockId, FunctionId, IrBlock, IrBuilder, IrConst, IrExport, IrExportKind, IrFunction,
+    IrInstr, IrModule, IrParam, IrTerminator, UnOp, ValueId,
+};
 pub use map::Map;
 pub use typeinfer::{Constraint, InferType, Substitution, TypeEnv, TypeInferencer, TypeVar};
 pub use unit::{DerivedDimension, Dimension, Unit, UnitRegistry};
