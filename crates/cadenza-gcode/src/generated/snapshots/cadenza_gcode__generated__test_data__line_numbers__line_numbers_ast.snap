@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; GCode with line numbers\nN10 G28\nN20 G1 X100 Y50 F3000\nN30 M104 S200\nN40 G90\n"
+---
+[
+    [G28],
+    [G1, [X, 100], [Y, 50], [F, 3000]],
+    [M104, [S, 200]],
+    [G90],
+]

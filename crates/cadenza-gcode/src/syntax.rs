@@ -60,11 +60,34 @@ impl<'src> Parser<'src> {
             } else if ch == Some(';') {
                 self.parse_comment();
                 self.skip_newline();
+            } else if ch == Some('(') {
+                self.parse_parentheses_comment();
+                // Comments might be inline, only skip newline if we're at one
+                if self.peek_char() == Some('\n') || self.peek_char() == Some('\r') {
+                    self.skip_newline();
+                }
+            } else if ch == Some('%') {
+                self.parse_percent_delimiter();
+                self.skip_newline();
+            } else if ch == Some('N') && self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit()) {
+                // Line number - parse and continue with command on same line
+                self.parse_line_number();
+                self.skip_line_whitespace();
+                if self.peek_char().is_some_and(|c| c.is_ascii_alphabetic()) {
+                    self.parse_command();
+                    self.skip_line_whitespace();
+                    if self.peek_char() == Some(';') {
+                        self.parse_comment();
+                    }
+                }
+                self.skip_newline();
             } else if self.peek_char().is_some_and(|c| c.is_ascii_alphabetic()) {
                 self.parse_command();
                 self.skip_line_whitespace();
                 if self.peek_char() == Some(';') {
                     self.parse_comment();
+                } else if self.peek_char() == Some('(') {
+                    self.parse_parentheses_comment();
                 }
                 self.skip_newline();
             } else {
@@ -405,6 +428,76 @@ impl<'src> Parser<'src> {
         } else {
             None
         }
+    }
+
+    fn peek_ahead(&self, offset: usize) -> Option<char> {
+        let pos = self.pos + offset;
+        if pos < self.src.len() {
+            Some(self.src.as_bytes()[pos] as char)
+        } else {
+            None
+        }
+    }
+
+    fn parse_line_number(&mut self) {
+        // Line numbers are in format N123 where 123 is a line number
+        // They're typically used for error recovery but don't affect execution
+        // We'll parse them as comment tokens to preserve them in the CST
+        let start = self.pos;
+
+        // Skip 'N'
+        self.pos += 1;
+
+        // Parse the number
+        while self.pos < self.src.len() {
+            let ch = self.peek_char().unwrap();
+            if ch.is_ascii_digit() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+
+        let text = &self.src[start..self.pos];
+        self.builder.token(Kind::CommentContent.into(), text);
+    }
+
+    fn parse_parentheses_comment(&mut self) {
+        // Parentheses comments are an alternative GCode comment style
+        // Format: (comment text)
+        let start = self.pos;
+
+        // Skip opening parenthesis
+        self.pos += 1;
+
+        // Read until closing parenthesis or end of line
+        while self.pos < self.src.len() {
+            let ch = self.peek_char().unwrap();
+            if ch == ')' {
+                self.pos += 1;
+                break;
+            } else if ch == '\n' || ch == '\r' {
+                // Unclosed comment - stop at newline
+                break;
+            }
+            self.pos += 1;
+        }
+
+        let content = &self.src[start..self.pos];
+        self.builder.token(Kind::CommentContent.into(), content);
+    }
+
+    fn parse_percent_delimiter(&mut self) {
+        // Percent signs (%) are used to delimit programs in some GCode dialects
+        // Format: % on its own line
+        // We'll parse them as comment tokens to preserve them
+        let start = self.pos;
+
+        // Skip '%'
+        self.pos += 1;
+
+        let text = &self.src[start..self.pos];
+        self.builder.token(Kind::CommentContent.into(), text);
     }
 }
 

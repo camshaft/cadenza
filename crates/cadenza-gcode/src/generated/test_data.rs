@@ -118,6 +118,124 @@ mod klipper {
         );
     }
 }
+mod line_numbers {
+    use super::*;
+    #[test]
+    fn cst() {
+        let gcode =
+            "; GCode with line numbers\nN10 G28\nN20 G1 X100 Y50 F3000\nN30 M104 S200\nN40 G90\n";
+        let parse = parse(gcode);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
+
+        s!(
+            "line_numbers_cst",
+            &cst,
+            "; GCode with line numbers\nN10 G28\nN20 G1 X100 Y50 F3000\nN30 M104 S200\nN40 G90\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let gcode =
+            "; GCode with line numbers\nN10 G28\nN20 G1 X100 Y50 F3000\nN30 M104 S200\nN40 G90\n";
+        let parse = parse(gcode);
+        let root = parse.ast();
+        s!(
+            "line_numbers_ast",
+            root,
+            "; GCode with line numbers\nN10 G28\nN20 G1 X100 Y50 F3000\nN30 M104 S200\nN40 G90\n"
+        );
+    }
+}
+mod mixed_features {
+    use super::*;
+    #[test]
+    fn cst() {
+        let gcode = "%\n(3D Print Program)\n; Mixed features test\nN10 G28 (Home)\nN20 G1 X100 Y50 F3000 ; Move\nN30 M104 S200 (Heat extruder)\n%\n";
+        let parse = parse(gcode);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
+
+        s!(
+            "mixed_features_cst",
+            &cst,
+            "%\n(3D Print Program)\n; Mixed features test\nN10 G28 (Home)\nN20 G1 X100 Y50 F3000 ; Move\nN30 M104 S200 (Heat extruder)\n%\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let gcode = "%\n(3D Print Program)\n; Mixed features test\nN10 G28 (Home)\nN20 G1 X100 Y50 F3000 ; Move\nN30 M104 S200 (Heat extruder)\n%\n";
+        let parse = parse(gcode);
+        let root = parse.ast();
+        s!(
+            "mixed_features_ast",
+            root,
+            "%\n(3D Print Program)\n; Mixed features test\nN10 G28 (Home)\nN20 G1 X100 Y50 F3000 ; Move\nN30 M104 S200 (Heat extruder)\n%\n"
+        );
+    }
+}
+mod parentheses_comments {
+    use super::*;
+    #[test]
+    fn cst() {
+        let gcode = "; GCode with parentheses-style comments\n(Program start)\nG28 (Home all axes)\nG1 X100 Y50 (Move to position)\n(Set temperature)\nM104 S200\n";
+        let parse = parse(gcode);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
+
+        s!(
+            "parentheses_comments_cst",
+            &cst,
+            "; GCode with parentheses-style comments\n(Program start)\nG28 (Home all axes)\nG1 X100 Y50 (Move to position)\n(Set temperature)\nM104 S200\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let gcode = "; GCode with parentheses-style comments\n(Program start)\nG28 (Home all axes)\nG1 X100 Y50 (Move to position)\n(Set temperature)\nM104 S200\n";
+        let parse = parse(gcode);
+        let root = parse.ast();
+        s!(
+            "parentheses_comments_ast",
+            root,
+            "; GCode with parentheses-style comments\n(Program start)\nG28 (Home all axes)\nG1 X100 Y50 (Move to position)\n(Set temperature)\nM104 S200\n"
+        );
+    }
+}
+mod percent_delimiters {
+    use super::*;
+    #[test]
+    fn cst() {
+        let gcode = "%\n; Program body\nG28\nG1 X100 Y50\nM104 S200\n%\n";
+        let parse = parse(gcode);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(gcode);
+
+        s!(
+            "percent_delimiters_cst",
+            &cst,
+            "%\n; Program body\nG28\nG1 X100 Y50\nM104 S200\n%\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let gcode = "%\n; Program body\nG28\nG1 X100 Y50\nM104 S200\n%\n";
+        let parse = parse(gcode);
+        let root = parse.ast();
+        s!(
+            "percent_delimiters_ast",
+            root,
+            "%\n; Program body\nG28\nG1 X100 Y50\nM104 S200\n%\n"
+        );
+    }
+}
 mod simple {
     use super::*;
     #[test]

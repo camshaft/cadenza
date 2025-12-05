@@ -1,0 +1,75 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; GCode with line numbers\nN10 G28\nN20 G1 X100 Y50 F3000\nN30 M104 S200\nN40 G90\n"
+---
+Root@0..78
+  CommentContent@0..25 "; GCode with line num ..."
+  Newline@25..26 "\n"
+  CommentContent@26..29 "N10"
+  Space@29..30 " "
+  Apply@30..33
+    ApplyReceiver@30..33
+      Identifier@30..33
+        Identifier@30..33 "G28"
+  Newline@33..34 "\n"
+  CommentContent@34..37 "N20"
+  Space@37..38 " "
+  Apply@38..55
+    ApplyReceiver@38..40
+      Identifier@38..40
+        Identifier@38..40 "G1"
+    Space@40..41 " "
+    ApplyArgument@41..45
+      Apply@41..45
+        ApplyReceiver@41..42
+          Identifier@41..42
+            Identifier@41..42 "X"
+        ApplyArgument@42..45
+          Literal@42..45
+            Integer@42..45
+              Integer@42..45 "100"
+    Space@45..46 " "
+    ApplyArgument@46..49
+      Apply@46..49
+        ApplyReceiver@46..47
+          Identifier@46..47
+            Identifier@46..47 "Y"
+        ApplyArgument@47..49
+          Literal@47..49
+            Integer@47..49
+              Integer@47..49 "50"
+    Space@49..50 " "
+    ApplyArgument@50..55
+      Apply@50..55
+        ApplyReceiver@50..51
+          Identifier@50..51
+            Identifier@50..51 "F"
+        ApplyArgument@51..55
+          Literal@51..55
+            Integer@51..55
+              Integer@51..55 "3000"
+  Newline@55..56 "\n"
+  CommentContent@56..59 "N30"
+  Space@59..60 " "
+  Apply@60..69
+    ApplyReceiver@60..64
+      Identifier@60..64
+        Identifier@60..64 "M104"
+    Space@64..65 " "
+    ApplyArgument@65..69
+      Apply@65..69
+        ApplyReceiver@65..66
+          Identifier@65..66
+            Identifier@65..66 "S"
+        ApplyArgument@66..69
+          Literal@66..69
+            Integer@66..69
+              Integer@66..69 "200"
+  Newline@69..70 "\n"
+  CommentContent@70..73 "N40"
+  Space@73..74 " "
+  Apply@74..77
+    ApplyReceiver@74..77
+      Identifier@74..77
+        Identifier@74..77 "G90"
+  Newline@77..78 "\n"
