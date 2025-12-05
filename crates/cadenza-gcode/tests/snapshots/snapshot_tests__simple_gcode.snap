@@ -1,0 +1,28 @@
+---
+source: crates/cadenza-gcode/tests/snapshot_tests.rs
+expression: cadenza
+---
+# Generated from GCode
+
+# Simple test GCode file
+# Home all axes
+handle_g28 state
+
+# Set absolute positioning
+handle_g90 state
+
+# Heat extruder
+handle_m104 state 200
+
+# Move to starting position
+handle_g1 state 10millimeter 10millimeter 0.2millimeter 3000millimeter_per_minute
+
+# Draw a simple square
+handle_g1 state 100millimeter 10millimeter 1500millimeter_per_minute
+handle_g1 state 100millimeter 100millimeter
+handle_g1 state 10millimeter 100millimeter
+handle_g1 state 10millimeter 10millimeter
+
+# Finish
+handle_g28 state
+handle_m104 state 0

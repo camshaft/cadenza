@@ -68,14 +68,18 @@ pub enum ParameterValue {
     Integer(i64),
     /// Floating point value
     Float(f64),
+    /// Flag (parameter without a value, like X in "G28 X Y")
+    Flag,
 }
 
 impl ParameterValue {
     /// Get the value as a float, converting integers if necessary.
+    /// Flags are treated as 1.0.
     pub fn as_float(&self) -> f64 {
         match self {
             ParameterValue::Integer(i) => *i as f64,
             ParameterValue::Float(f) => *f,
+            ParameterValue::Flag => 1.0,
         }
     }
 }
@@ -85,6 +89,7 @@ impl fmt::Display for ParameterValue {
         match self {
             ParameterValue::Integer(i) => write!(f, "{}", i),
             ParameterValue::Float(fl) => write!(f, "{}", fl),
+            ParameterValue::Flag => write!(f, "true"),
         }
     }
 }

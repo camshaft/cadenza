@@ -117,7 +117,7 @@ fn parse_command_code(token: &str) -> Result<CommandCode> {
     }
 }
 
-/// Parse a parameter (e.g., "X100", "F3000").
+/// Parse a parameter (e.g., "X100", "F3000", or "X" for flags).
 fn parse_parameter(token: &str) -> Result<Parameter> {
     if token.is_empty() {
         return Err(Error::InvalidParameter("Empty parameter".to_string()));
@@ -126,11 +126,12 @@ fn parse_parameter(token: &str) -> Result<Parameter> {
     let letter = token.chars().next().unwrap().to_ascii_uppercase();
     let value_str = &token[1..];
 
+    // If there's no value, treat as a flag
     if value_str.is_empty() {
-        return Err(Error::InvalidParameter(format!(
-            "Parameter '{}' missing value",
-            letter
-        )));
+        return Ok(Parameter {
+            letter,
+            value: ParameterValue::Flag,
+        });
     }
 
     // Try parsing as integer first, then as float
@@ -233,5 +234,22 @@ M104 S200
 "#;
         let program = parse_gcode(gcode).unwrap();
         assert!(program.lines.len() >= 4); // At least comment + 3 commands
+    }
+
+    #[test]
+    fn test_parse_flag_parameters() {
+        let result = parse_line("G28 X Y Z").unwrap();
+        if let Line::Command(cmd) = result {
+            assert_eq!(cmd.code, CommandCode::G(28));
+            assert_eq!(cmd.parameters.len(), 3);
+            assert_eq!(cmd.parameters[0].letter, 'X');
+            assert_eq!(cmd.parameters[0].value, ParameterValue::Flag);
+            assert_eq!(cmd.parameters[1].letter, 'Y');
+            assert_eq!(cmd.parameters[1].value, ParameterValue::Flag);
+            assert_eq!(cmd.parameters[2].letter, 'Z');
+            assert_eq!(cmd.parameters[2].value, ParameterValue::Flag);
+        } else {
+            panic!("Expected Command");
+        }
     }
 }

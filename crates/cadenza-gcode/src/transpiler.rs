@@ -1,7 +1,7 @@
 //! GCode to Cadenza transpiler.
 
 use crate::{
-    ast::{Command, CommandCode, Line, Parameter, Program},
+    ast::{Command, CommandCode, Line, Parameter, ParameterValue, Program},
     error::{Error, Result},
 };
 use std::collections::HashMap;
@@ -113,6 +113,11 @@ fn transpile_command(cmd: &Command, config: &TranspilerConfig) -> Result<String>
 
 /// Transpile a parameter to Cadenza syntax.
 fn transpile_parameter(param: &Parameter) -> Result<String> {
+    // Handle flag parameters - just use true as a boolean
+    if matches!(param.value, ParameterValue::Flag) {
+        return Ok("true".to_string());
+    }
+
     // Determine the appropriate unit based on the parameter letter
     let unit = match param.letter {
         'X' | 'Y' | 'Z' | 'E' => "millimeter",
