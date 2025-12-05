@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let x = 42\ntypeof x"
+---
+[
+    [=, [let, x], 42],
+    [typeof, x],
+]

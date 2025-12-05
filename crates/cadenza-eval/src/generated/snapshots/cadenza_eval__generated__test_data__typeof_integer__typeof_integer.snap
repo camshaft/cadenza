@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let x = 42\ntypeof x"
+---
+EvalResult {
+    values: [
+        42,
+        "integer",
+    ],
+    diagnostics: [],
+}

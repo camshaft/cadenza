@@ -686,6 +686,51 @@ impl TypeEnv {
         }
     }
 
+    /// Builds a type environment from a runtime environment and compiler.
+    ///
+    /// This converts all values in the runtime environment and compiler definitions
+    /// to their inferred types, which is useful for type-checking expressions in macros
+    /// that need to query types.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn my_macro(args: &[Expr], ctx: &mut EvalContext) -> Result<Value> {
+    ///     // Build type environment from runtime environment
+    ///     let type_env = TypeEnv::from_context(ctx.env, ctx.compiler);
+    ///     
+    ///     // Infer type of first argument
+    ///     let arg_type = ctx.compiler.type_inferencer_mut()
+    ///         .infer_expr(&args[0], &type_env)?;
+    ///     
+    ///     // Use the type information...
+    /// }
+    /// ```
+    pub fn from_context(env: &crate::env::Env, compiler: &crate::compiler::Compiler) -> Self {
+        let mut type_env = Self::new();
+        // Add values from runtime environment
+        for (name, value) in env.iter() {
+            type_env.add_value(name, value);
+        }
+        // Add values from compiler definitions (functions, etc.)
+        for (name, value) in compiler.defs() {
+            type_env.add_value(*name, value);
+        }
+        type_env
+    }
+
+    /// Builds a type environment from a runtime environment only.
+    ///
+    /// This is useful for testing or when compiler definitions are not needed.
+    /// For macros, use `from_context` instead to include both runtime and compiler definitions.
+    pub fn from_env(env: &crate::env::Env) -> Self {
+        let mut type_env = Self::new();
+        for (name, value) in env.iter() {
+            type_env.add_value(name, value);
+        }
+        type_env
+    }
+
     /// Adds a value's type to the environment.
     ///
     /// This converts the runtime value's type to an InferType for use in type checking.
@@ -1187,5 +1232,94 @@ mod tests {
         assert_eq!(format!("{}", TypeVar::new(0)), "t0");
         assert_eq!(format!("{}", TypeVar::new(1)), "t1");
         assert_eq!(format!("{}", TypeVar::new(25)), "t25");
+    }
+
+    #[test]
+    fn test_type_env_from_env() {
+        use crate::env::Env;
+        use crate::value::Value;
+
+        let mut env = Env::new();
+        let x: InternedString = "x".into();
+        let y: InternedString = "y".into();
+        env.define(x, Value::Integer(42));
+        env.define(y, Value::String("hello".into()));
+
+        let type_env = TypeEnv::from_env(&env);
+
+        // Check that variables were converted to their types
+        assert_eq!(
+            type_env.get(x),
+            Some(&InferType::Concrete(Type::Integer))
+        );
+        assert_eq!(
+            type_env.get(y),
+            Some(&InferType::Concrete(Type::String))
+        );
+    }
+
+    #[test]
+    fn test_type_env_from_env_with_scopes() {
+        use crate::env::Env;
+        use crate::value::Value;
+
+        let mut env = Env::new();
+        let x: InternedString = "x".into();
+        let y: InternedString = "y".into();
+
+        env.define(x, Value::Integer(1));
+        env.push_scope();
+        env.define(y, Value::String("outer".into()));
+        env.push_scope();
+        // Shadow y in inner scope
+        env.define(y, Value::String("inner".into()));
+
+        let type_env = TypeEnv::from_env(&env);
+
+        // Check that only innermost bindings are included
+        assert_eq!(
+            type_env.get(x),
+            Some(&InferType::Concrete(Type::Integer))
+        );
+        assert_eq!(
+            type_env.get(y),
+            Some(&InferType::Concrete(Type::String))
+        );
+    }
+
+    #[test]
+    fn test_type_env_from_context() {
+        use crate::compiler::Compiler;
+        use crate::env::Env;
+        use crate::value::{BuiltinFn, Type, Value};
+
+        let mut env = Env::new();
+        let mut compiler = Compiler::new();
+
+        let x: InternedString = "x".into();
+        let add: InternedString = "add".into();
+
+        // Add variable to environment
+        env.define(x, Value::Integer(42));
+
+        // Add function to compiler
+        compiler.define_var(
+            add,
+            Value::BuiltinFn(BuiltinFn {
+                name: "add",
+                signature: Type::function(vec![Type::Integer, Type::Integer], Type::Integer),
+                func: |_, _| unreachable!(),
+            }),
+        );
+
+        let type_env = TypeEnv::from_context(&env, &compiler);
+
+        // Check both env and compiler values are included
+        assert_eq!(
+            type_env.get(x),
+            Some(&InferType::Concrete(Type::Integer))
+        );
+        // Function should have a function type
+        assert!(matches!(type_env.get(add), Some(InferType::Fn(_, _))));
     }
 }

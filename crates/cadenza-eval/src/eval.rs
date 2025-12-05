@@ -2050,6 +2050,58 @@ pub fn builtin_assert() -> BuiltinMacro {
     }
 }
 
+/// A builtin macro that returns the inferred type of an expression as a string.
+///
+/// This demonstrates how macros can use the type inference system to query types.
+///
+/// # Example
+///
+/// ```cadenza
+/// let x = 42
+/// typeof x  # returns "integer"
+///
+/// typeof (fn x -> x)  # returns "fn(t0) -> t0" (or similar polymorphic type)
+/// ```
+///
+/// # Arguments
+///
+/// - `expr`: The expression to get the type of (not evaluated)
+///
+/// # Returns
+///
+/// A string representing the inferred type of the expression.
+pub fn builtin_typeof() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "typeof",
+        signature: Type::function(vec![Type::Unknown], Type::String),
+        func: |args, ctx| {
+            // Validate argument count
+            if args.len() != 1 {
+                return Err(Diagnostic::syntax("typeof expects 1 argument: expression"));
+            }
+
+            let expr = &args[0];
+
+            // Build type environment from current runtime environment and compiler
+            let type_env = crate::typeinfer::TypeEnv::from_context(ctx.env, ctx.compiler);
+
+            // Infer the type of the expression
+            let inferred_type = ctx
+                .compiler
+                .type_inferencer_mut()
+                .infer_expr(expr, &type_env)
+                .map_err(|e| {
+                    Diagnostic::syntax(format!("type inference failed: {}", e))
+                        .with_span(expr.span())
+                })?;
+
+            // Convert type to string
+            let type_str = format!("{}", inferred_type);
+            Ok(Value::String(type_str.into()))
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

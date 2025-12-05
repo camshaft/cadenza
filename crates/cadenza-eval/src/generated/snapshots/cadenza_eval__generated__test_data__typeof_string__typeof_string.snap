@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let s = \"hello\"\ntypeof s"
+---
+EvalResult {
+    values: [
+        "hello",
+        "string",
+    ],
+    diagnostics: [],
+}
