@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "fn add x y = x + y\nfn mul x y = x * y\nfn sub x y = x - y\n\n5 |> add 3 |> mul 2\n10 |> sub 3 |> add 5 |> mul 2\n"
+---
+[
+    [=, [[[fn, add], x], y], [+, x, y]],
+    [=, [[[fn, mul], x], y], [*, x, y]],
+    [=, [[[fn, sub], x], y], [-, x, y]],
+    [|>, [|>, 5, [add, 3]], [mul, 2]],
+    [|>, [|>, [|>, 10, [sub, 3]], [add, 5]], [mul, 2]],
+]
