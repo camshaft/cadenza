@@ -16,6 +16,7 @@
 //! - [`EvalContext`]: Consolidated evaluation context for all eval arguments
 //! - [`Eval`]: Trait for evaluatable expressions
 //! - [`eval`]: The main evaluation function
+//! - [`typeinfer`]: Hindley-Milner type inference
 
 mod compiler;
 mod context;
@@ -25,6 +26,7 @@ mod eval;
 mod generated;
 pub mod interner;
 mod map;
+pub mod typeinfer;
 pub mod unit;
 mod value;
 
@@ -43,6 +45,7 @@ pub use eval::{
 };
 pub use interner::InternedString;
 pub use map::Map;
+pub use typeinfer::{Constraint, InferType, Substitution, TypeEnv, TypeInferencer, TypeVar};
 pub use unit::{DerivedDimension, Dimension, Unit, UnitRegistry};
 pub use value::{BuiltinFn, BuiltinMacro, SourceInfo, TrackedValue, Type, UserFunction, Value};
 

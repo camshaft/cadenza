@@ -5,7 +5,8 @@
 //! API to register definitions, emit IR, etc.
 
 use crate::{
-    diagnostic::Diagnostic, interner::InternedString, map::Map, unit::UnitRegistry, value::Value,
+    diagnostic::Diagnostic, interner::InternedString, map::Map, typeinfer::TypeInferencer,
+    unit::UnitRegistry, value::Value,
 };
 
 /// The compiler state that accumulates definitions during evaluation.
@@ -15,7 +16,11 @@ use crate::{
 ///
 /// The compiler also collects diagnostics during evaluation, allowing for
 /// multi-error reporting instead of bailing on the first error.
-#[derive(Debug, Default)]
+///
+/// Additionally, the compiler includes a type inferencer for lazy type checking.
+/// Type checking is not performed during evaluation by default, but can be
+/// triggered on-demand for specific expressions or for LSP integration.
+#[derive(Debug)]
 pub struct Compiler {
     /// Variable and function definitions.
     defs: Map<Value>,
@@ -25,12 +30,26 @@ pub struct Compiler {
     diagnostics: Vec<Diagnostic>,
     /// Unit registry for dimensional analysis.
     units: UnitRegistry,
+    /// Type inferencer for lazy type checking.
+    type_inferencer: TypeInferencer,
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Compiler {
     /// Creates a new empty compiler state.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            defs: Map::default(),
+            macros: Map::default(),
+            diagnostics: Vec::new(),
+            units: UnitRegistry::new(),
+            type_inferencer: TypeInferencer::new(),
+        }
     }
 
     /// Defines a variable or function.
@@ -117,6 +136,22 @@ impl Compiler {
     /// Returns a mutable reference to the unit registry.
     pub fn units_mut(&mut self) -> &mut UnitRegistry {
         &mut self.units
+    }
+
+    /// Returns a reference to the type inferencer.
+    ///
+    /// This allows lazy type checking - types can be inferred on-demand
+    /// for specific expressions without blocking evaluation.
+    pub fn type_inferencer(&self) -> &TypeInferencer {
+        &self.type_inferencer
+    }
+
+    /// Returns a mutable reference to the type inferencer.
+    ///
+    /// This allows macros and other code to perform type inference
+    /// for metaprogramming purposes.
+    pub fn type_inferencer_mut(&mut self) -> &mut TypeInferencer {
+        &mut self.type_inferencer
     }
 }
 
