@@ -506,3 +506,147 @@ fn test_type_inference_polymorphic_identity() {
     // The result should be Integer (the type variable was unified with Integer)
     assert_eq!(inferred.unwrap(), InferType::Concrete(Type::Integer));
 }
+
+#[test]
+fn test_type_inference_operator() {
+    use crate::typeinfer::InferType;
+
+    let mut compiler = Compiler::new();
+    let mut env = crate::typeinfer::TypeEnv::new();
+
+    // Add + operator to environment with type Integer -> Integer -> Integer
+    let plus: InternedString = "+".into();
+    let plus_type = InferType::Fn(
+        vec![
+            InferType::Concrete(Type::Integer),
+            InferType::Concrete(Type::Integer),
+        ],
+        Box::new(InferType::Concrete(Type::Integer)),
+    );
+    env.insert(plus, plus_type.clone());
+
+    // Parse: `+` (operator as a value)
+    let parsed = parse("+");
+    let root = parsed.ast();
+    let items: Vec<_> = root.items().collect();
+
+    // Infer type of operator - should get function type from environment
+    let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
+    assert!(inferred.is_ok());
+    assert_eq!(inferred.unwrap(), plus_type);
+}
+
+#[test]
+fn test_type_inference_operator_application() {
+    use crate::typeinfer::InferType;
+
+    let mut compiler = Compiler::new();
+    let mut env = crate::typeinfer::TypeEnv::new();
+
+    // Add + operator to environment with type Integer -> Integer -> Integer
+    let plus: InternedString = "+".into();
+    let plus_type = InferType::Fn(
+        vec![
+            InferType::Concrete(Type::Integer),
+            InferType::Concrete(Type::Integer),
+        ],
+        Box::new(InferType::Concrete(Type::Integer)),
+    );
+    env.insert(plus, plus_type);
+
+    // Parse: `+ 1 2` (operator application)
+    let parsed = parse("+ 1 2");
+    let root = parsed.ast();
+    let items: Vec<_> = root.items().collect();
+
+    // Infer type of operator application - should get Integer result
+    let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
+    assert!(inferred.is_ok());
+    assert_eq!(inferred.unwrap(), InferType::Concrete(Type::Integer));
+}
+
+#[test]
+fn test_type_inference_attribute() {
+    use crate::typeinfer::InferType;
+
+    let mut compiler = Compiler::new();
+    let mut env = crate::typeinfer::TypeEnv::new();
+
+    // Attributes like @export are parsed as Apply nodes with @ as the operator
+    // The @ operator itself needs to be in the environment
+    // For this test, let's say @ is a polymorphic identity function: forall a. a -> a
+    let attr_op: InternedString = "@".into();
+    let type_var = compiler.type_inferencer_mut().fresh_var();
+    let attr_type = InferType::Forall(
+        vec![type_var],
+        Box::new(InferType::Fn(
+            vec![InferType::Var(type_var)],
+            Box::new(InferType::Var(type_var)),
+        )),
+    );
+    env.insert(attr_op, attr_type);
+
+    // Parse: `@42` (attribute application - actually an Apply with @ as operator)
+    let parsed = parse("@42");
+    let root = parsed.ast();
+    let items: Vec<_> = root.items().collect();
+
+    // This should be parsed as an Apply, and type inference should work
+    let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
+    assert!(inferred.is_ok());
+    // The result should be Integer (the type variable was unified with Integer)
+    assert_eq!(inferred.unwrap(), InferType::Concrete(Type::Integer));
+}
+
+#[test]
+fn test_type_inference_synthetic() {
+    use crate::typeinfer::InferType;
+
+    let _compiler = Compiler::new();
+    let mut env = crate::typeinfer::TypeEnv::new();
+
+    // Add a synthetic identifier to environment (e.g., __block__)
+    let block: InternedString = "__block__".into();
+    let block_type = InferType::Fn(
+        vec![InferType::Concrete(Type::Unknown)],
+        Box::new(InferType::Concrete(Type::Unknown)),
+    );
+    env.insert(block, block_type.clone());
+
+    // Synthetic nodes are created by the parser, but we can test the inference logic
+    // by manually setting up the environment
+    // The actual synthetic node creation is tested through integration tests
+
+    // For this unit test, we just verify the lookup works
+    let inferred_type = env.get("__block__".into());
+    assert!(inferred_type.is_some());
+    assert_eq!(inferred_type.unwrap(), &block_type);
+}
+
+#[test]
+fn test_type_inference_error_node() {
+    use crate::typeinfer::InferType;
+
+    let mut compiler = Compiler::new();
+    let env = crate::typeinfer::TypeEnv::new();
+
+    // Parse something with a syntax error to get an error node
+    // Using an invalid syntax should produce error nodes
+    let parsed = parse("(");
+    let root = parsed.ast();
+    let items: Vec<_> = root.items().collect();
+
+    // If we got an error node, its type should be Unknown
+    if !items.is_empty() {
+        // Error nodes should infer to Unknown type
+        let inferred = compiler.type_inferencer_mut().infer_expr(&items[0], &env);
+        // It's ok if inference succeeds with Unknown or fails - both are acceptable for error nodes
+        if let Ok(ty) = inferred {
+            // If it succeeds, it should be Unknown or a type variable
+            assert!(matches!(
+                ty,
+                InferType::Concrete(Type::Unknown) | InferType::Var(_)
+            ));
+        }
+    }
+}

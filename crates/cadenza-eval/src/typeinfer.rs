@@ -943,8 +943,11 @@ impl TypeInferencer {
             Expr::Literal(lit) => self.infer_literal(lit),
             Expr::Ident(ident) => self.infer_ident(ident, env),
             Expr::Apply(apply) => self.infer_apply(apply, env),
-            _ => {
-                // For other expressions, return Unknown type for now
+            Expr::Op(op) => self.infer_op(op, env),
+            Expr::Attr(attr) => self.infer_attr(attr, env),
+            Expr::Synthetic(syn) => self.infer_synthetic(syn, env),
+            Expr::Error(_) => {
+                // Error nodes represent parsing errors, type is unknown
                 Ok(InferType::Concrete(Type::Unknown))
             }
         }
@@ -1010,6 +1013,49 @@ impl TypeInferencer {
 
         // Apply substitution to get the result type
         Ok(subst.apply(&result_ty))
+    }
+
+    fn infer_op(&mut self, op: &cadenza_syntax::ast::Op, env: &TypeEnv) -> Result<InferType> {
+        // Operators are looked up as identifiers in the environment
+        // At runtime, they evaluate to Symbol values, but for type inference
+        // we look up their registered type (e.g., Integer -> Integer -> Integer for +)
+        let name = InternedString::new(op.syntax().text().to_string().as_str());
+
+        if let Some(ty) = env.get(name) {
+            // Instantiate polymorphic types
+            Ok(self.instantiate(ty))
+        } else {
+            // Unknown operator - return a fresh type variable
+            Ok(InferType::Var(self.fresh_var()))
+        }
+    }
+
+    fn infer_attr(&mut self, attr: &cadenza_syntax::ast::Attr, env: &TypeEnv) -> Result<InferType> {
+        // Attributes evaluate to the type of their value expression
+        if let Some(value_expr) = attr.value() {
+            self.infer_expr(&value_expr, env)
+        } else {
+            // Missing value, return Nil type
+            Ok(InferType::Concrete(Type::Nil))
+        }
+    }
+
+    fn infer_synthetic(
+        &mut self,
+        syn: &cadenza_syntax::ast::Synthetic,
+        env: &TypeEnv,
+    ) -> Result<InferType> {
+        // Synthetic nodes are looked up like identifiers
+        // They represent semantic concepts like __block__, __list__, __record__
+        let name = InternedString::new(syn.identifier());
+
+        if let Some(ty) = env.get(name) {
+            // Instantiate polymorphic types
+            Ok(self.instantiate(ty))
+        } else {
+            // Unknown synthetic node - return a fresh type variable
+            Ok(InferType::Var(self.fresh_var()))
+        }
     }
 }
 

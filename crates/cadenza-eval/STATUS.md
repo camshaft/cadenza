@@ -604,7 +604,7 @@ This section tracks longer-term features described in `/docs/COMPILER_ARCHITECTU
   - [x] Occurs check
   - [x] Type environment for polymorphism
   - [x] Basic expression type inference (literals, identifiers, application)
-  - [ ] Full expression coverage (all language constructs)
+  - [x] Full expression coverage (all language constructs: Op, Attr, Synthetic, Error)
 - [ ] **Lazy type checking**: On-demand type inference for LSP responsiveness
   - [x] Type inferencer integrated with Compiler
   - [ ] API for LSP to request types
