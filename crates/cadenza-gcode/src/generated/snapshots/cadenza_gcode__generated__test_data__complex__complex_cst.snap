@@ -1,0 +1,452 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; RepRap 3D Printer Test GCode\n; Demonstrates various GCode commands\n\n; ===== Initialization =====\nG28                    ; Home all axes\nG90                    ; Set absolute positioning\nG92 E0                 ; Reset extruder position\n\n; ===== Heating =====\nM104 S200              ; Set extruder temp to 200C (non-blocking)\nM140 S60               ; Set bed temp to 60C (non-blocking)\nM109 S200              ; Wait for extruder temp\nM190 S60               ; Wait for bed temp\n\n; ===== First Layer =====\nG1 Z0.2 F3000          ; Move to first layer height\nG1 X20 Y20 F3000       ; Move to start position\nM106 S255              ; Turn fan on full speed\n\n; ===== Drawing Rectangle =====\nG1 X100 Y20 E5 F1500   ; Draw line with extrusion\nG1 X100 Y100 E10       ; Continue line\nG1 X20 Y100 E15        ; Continue line\nG1 X20 Y20 E20         ; Complete rectangle\n\n; ===== Finishing =====\nG1 Z50 F3000           ; Move up\nM107                   ; Turn fan off\nM104 S0                ; Turn off extruder\nM140 S0                ; Turn off bed\nG28 X Y                ; Home X and Y\nM82                    ; Set absolute E coordinates\n"
+---
+Root@0..1124
+  CommentContent@0..30 "; RepRap 3D Printer T ..."
+  Newline@30..31 "\n"
+  CommentContent@31..68 "; Demonstrates variou ..."
+  Newline@68..69 "\n"
+  Newline@69..70 "\n"
+  CommentContent@70..98 "; ===== Initializatio ..."
+  Newline@98..99 "\n"
+  Apply@99..122
+    ApplyReceiver@99..102
+      Identifier@99..102
+        Identifier@99..102 "G28"
+    Space@102..122 "                    "
+  CommentContent@122..137 "; Home all axes"
+  Newline@137..138 "\n"
+  Apply@138..161
+    ApplyReceiver@138..141
+      Identifier@138..141
+        Identifier@138..141 "G90"
+    Space@141..161 "                    "
+  CommentContent@161..187 "; Set absolute positi ..."
+  Newline@187..188 "\n"
+  Apply@188..211
+    ApplyReceiver@188..191
+      Identifier@188..191
+        Identifier@188..191 "G92"
+    Space@191..192 " "
+    ApplyArgument@192..194
+      Apply@192..194
+        ApplyReceiver@192..193
+          Identifier@192..193
+            Identifier@192..193 "E"
+        ApplyArgument@193..194
+          Literal@193..194
+            Integer@193..194
+              Integer@193..194 "0"
+    Space@194..211 "                 "
+  CommentContent@211..236 "; Reset extruder posi ..."
+  Newline@236..237 "\n"
+  Newline@237..238 "\n"
+  CommentContent@238..259 "; ===== Heating ====="
+  Newline@259..260 "\n"
+  Apply@260..283
+    ApplyReceiver@260..264
+      Identifier@260..264
+        Identifier@260..264 "M104"
+    Space@264..265 " "
+    ApplyArgument@265..269
+      Apply@265..269
+        ApplyReceiver@265..266
+          Identifier@265..266
+            Identifier@265..266 "S"
+        ApplyArgument@266..269
+          Literal@266..269
+            Integer@266..269
+              Integer@266..269 "200"
+    Space@269..283 "              "
+  CommentContent@283..325 "; Set extruder temp t ..."
+  Newline@325..326 "\n"
+  Apply@326..349
+    ApplyReceiver@326..330
+      Identifier@326..330
+        Identifier@326..330 "M140"
+    Space@330..331 " "
+    ApplyArgument@331..334
+      Apply@331..334
+        ApplyReceiver@331..332
+          Identifier@331..332
+            Identifier@331..332 "S"
+        ApplyArgument@332..334
+          Literal@332..334
+            Integer@332..334
+              Integer@332..334 "60"
+    Space@334..349 "               "
+  CommentContent@349..385 "; Set bed temp to 60C ..."
+  Newline@385..386 "\n"
+  Apply@386..409
+    ApplyReceiver@386..390
+      Identifier@386..390
+        Identifier@386..390 "M109"
+    Space@390..391 " "
+    ApplyArgument@391..395
+      Apply@391..395
+        ApplyReceiver@391..392
+          Identifier@391..392
+            Identifier@391..392 "S"
+        ApplyArgument@392..395
+          Literal@392..395
+            Integer@392..395
+              Integer@392..395 "200"
+    Space@395..409 "              "
+  CommentContent@409..433 "; Wait for extruder temp"
+  Newline@433..434 "\n"
+  Apply@434..457
+    ApplyReceiver@434..438
+      Identifier@434..438
+        Identifier@434..438 "M190"
+    Space@438..439 " "
+    ApplyArgument@439..442
+      Apply@439..442
+        ApplyReceiver@439..440
+          Identifier@439..440
+            Identifier@439..440 "S"
+        ApplyArgument@440..442
+          Literal@440..442
+            Integer@440..442
+              Integer@440..442 "60"
+    Space@442..457 "               "
+  CommentContent@457..476 "; Wait for bed temp"
+  Newline@476..477 "\n"
+  Newline@477..478 "\n"
+  CommentContent@478..503 "; ===== First Layer = ..."
+  Newline@503..504 "\n"
+  Apply@504..527
+    ApplyReceiver@504..506
+      Identifier@504..506
+        Identifier@504..506 "G1"
+    Space@506..507 " "
+    ApplyArgument@507..511
+      Apply@507..511
+        ApplyReceiver@507..508
+          Identifier@507..508
+            Identifier@507..508 "Z"
+        ApplyArgument@508..511
+          Literal@508..511
+            Float@508..511
+              Float@508..511 "0.2"
+    Space@511..512 " "
+    ApplyArgument@512..517
+      Apply@512..517
+        ApplyReceiver@512..513
+          Identifier@512..513
+            Identifier@512..513 "F"
+        ApplyArgument@513..517
+          Literal@513..517
+            Integer@513..517
+              Integer@513..517 "3000"
+    Space@517..527 "          "
+  CommentContent@527..555 "; Move to first layer ..."
+  Newline@555..556 "\n"
+  Apply@556..579
+    ApplyReceiver@556..558
+      Identifier@556..558
+        Identifier@556..558 "G1"
+    Space@558..559 " "
+    ApplyArgument@559..562
+      Apply@559..562
+        ApplyReceiver@559..560
+          Identifier@559..560
+            Identifier@559..560 "X"
+        ApplyArgument@560..562
+          Literal@560..562
+            Integer@560..562
+              Integer@560..562 "20"
+    Space@562..563 " "
+    ApplyArgument@563..566
+      Apply@563..566
+        ApplyReceiver@563..564
+          Identifier@563..564
+            Identifier@563..564 "Y"
+        ApplyArgument@564..566
+          Literal@564..566
+            Integer@564..566
+              Integer@564..566 "20"
+    Space@566..567 " "
+    ApplyArgument@567..572
+      Apply@567..572
+        ApplyReceiver@567..568
+          Identifier@567..568
+            Identifier@567..568 "F"
+        ApplyArgument@568..572
+          Literal@568..572
+            Integer@568..572
+              Integer@568..572 "3000"
+    Space@572..579 "       "
+  CommentContent@579..603 "; Move to start position"
+  Newline@603..604 "\n"
+  Apply@604..627
+    ApplyReceiver@604..608
+      Identifier@604..608
+        Identifier@604..608 "M106"
+    Space@608..609 " "
+    ApplyArgument@609..613
+      Apply@609..613
+        ApplyReceiver@609..610
+          Identifier@609..610
+            Identifier@609..610 "S"
+        ApplyArgument@610..613
+          Literal@610..613
+            Integer@610..613
+              Integer@610..613 "255"
+    Space@613..627 "              "
+  CommentContent@627..651 "; Turn fan on full speed"
+  Newline@651..652 "\n"
+  Newline@652..653 "\n"
+  CommentContent@653..684 "; ===== Drawing Recta ..."
+  Newline@684..685 "\n"
+  Apply@685..708
+    ApplyReceiver@685..687
+      Identifier@685..687
+        Identifier@685..687 "G1"
+    Space@687..688 " "
+    ApplyArgument@688..692
+      Apply@688..692
+        ApplyReceiver@688..689
+          Identifier@688..689
+            Identifier@688..689 "X"
+        ApplyArgument@689..692
+          Literal@689..692
+            Integer@689..692
+              Integer@689..692 "100"
+    Space@692..693 " "
+    ApplyArgument@693..696
+      Apply@693..696
+        ApplyReceiver@693..694
+          Identifier@693..694
+            Identifier@693..694 "Y"
+        ApplyArgument@694..696
+          Literal@694..696
+            Integer@694..696
+              Integer@694..696 "20"
+    Space@696..697 " "
+    ApplyArgument@697..699
+      Apply@697..699
+        ApplyReceiver@697..698
+          Identifier@697..698
+            Identifier@697..698 "E"
+        ApplyArgument@698..699
+          Literal@698..699
+            Integer@698..699
+              Integer@698..699 "5"
+    Space@699..700 " "
+    ApplyArgument@700..705
+      Apply@700..705
+        ApplyReceiver@700..701
+          Identifier@700..701
+            Identifier@700..701 "F"
+        ApplyArgument@701..705
+          Literal@701..705
+            Integer@701..705
+              Integer@701..705 "1500"
+    Space@705..708 "   "
+  CommentContent@708..734 "; Draw line with extr ..."
+  Newline@734..735 "\n"
+  Apply@735..758
+    ApplyReceiver@735..737
+      Identifier@735..737
+        Identifier@735..737 "G1"
+    Space@737..738 " "
+    ApplyArgument@738..742
+      Apply@738..742
+        ApplyReceiver@738..739
+          Identifier@738..739
+            Identifier@738..739 "X"
+        ApplyArgument@739..742
+          Literal@739..742
+            Integer@739..742
+              Integer@739..742 "100"
+    Space@742..743 " "
+    ApplyArgument@743..747
+      Apply@743..747
+        ApplyReceiver@743..744
+          Identifier@743..744
+            Identifier@743..744 "Y"
+        ApplyArgument@744..747
+          Literal@744..747
+            Integer@744..747
+              Integer@744..747 "100"
+    Space@747..748 " "
+    ApplyArgument@748..751
+      Apply@748..751
+        ApplyReceiver@748..749
+          Identifier@748..749
+            Identifier@748..749 "E"
+        ApplyArgument@749..751
+          Literal@749..751
+            Integer@749..751
+              Integer@749..751 "10"
+    Space@751..758 "       "
+  CommentContent@758..773 "; Continue line"
+  Newline@773..774 "\n"
+  Apply@774..797
+    ApplyReceiver@774..776
+      Identifier@774..776
+        Identifier@774..776 "G1"
+    Space@776..777 " "
+    ApplyArgument@777..780
+      Apply@777..780
+        ApplyReceiver@777..778
+          Identifier@777..778
+            Identifier@777..778 "X"
+        ApplyArgument@778..780
+          Literal@778..780
+            Integer@778..780
+              Integer@778..780 "20"
+    Space@780..781 " "
+    ApplyArgument@781..785
+      Apply@781..785
+        ApplyReceiver@781..782
+          Identifier@781..782
+            Identifier@781..782 "Y"
+        ApplyArgument@782..785
+          Literal@782..785
+            Integer@782..785
+              Integer@782..785 "100"
+    Space@785..786 " "
+    ApplyArgument@786..789
+      Apply@786..789
+        ApplyReceiver@786..787
+          Identifier@786..787
+            Identifier@786..787 "E"
+        ApplyArgument@787..789
+          Literal@787..789
+            Integer@787..789
+              Integer@787..789 "15"
+    Space@789..797 "        "
+  CommentContent@797..812 "; Continue line"
+  Newline@812..813 "\n"
+  Apply@813..836
+    ApplyReceiver@813..815
+      Identifier@813..815
+        Identifier@813..815 "G1"
+    Space@815..816 " "
+    ApplyArgument@816..819
+      Apply@816..819
+        ApplyReceiver@816..817
+          Identifier@816..817
+            Identifier@816..817 "X"
+        ApplyArgument@817..819
+          Literal@817..819
+            Integer@817..819
+              Integer@817..819 "20"
+    Space@819..820 " "
+    ApplyArgument@820..823
+      Apply@820..823
+        ApplyReceiver@820..821
+          Identifier@820..821
+            Identifier@820..821 "Y"
+        ApplyArgument@821..823
+          Literal@821..823
+            Integer@821..823
+              Integer@821..823 "20"
+    Space@823..824 " "
+    ApplyArgument@824..827
+      Apply@824..827
+        ApplyReceiver@824..825
+          Identifier@824..825
+            Identifier@824..825 "E"
+        ApplyArgument@825..827
+          Literal@825..827
+            Integer@825..827
+              Integer@825..827 "20"
+    Space@827..836 "         "
+  CommentContent@836..856 "; Complete rectangle"
+  Newline@856..857 "\n"
+  Newline@857..858 "\n"
+  CommentContent@858..881 "; ===== Finishing ====="
+  Newline@881..882 "\n"
+  Apply@882..905
+    ApplyReceiver@882..884
+      Identifier@882..884
+        Identifier@882..884 "G1"
+    Space@884..885 " "
+    ApplyArgument@885..888
+      Apply@885..888
+        ApplyReceiver@885..886
+          Identifier@885..886
+            Identifier@885..886 "Z"
+        ApplyArgument@886..888
+          Literal@886..888
+            Integer@886..888
+              Integer@886..888 "50"
+    Space@888..889 " "
+    ApplyArgument@889..894
+      Apply@889..894
+        ApplyReceiver@889..890
+          Identifier@889..890
+            Identifier@889..890 "F"
+        ApplyArgument@890..894
+          Literal@890..894
+            Integer@890..894
+              Integer@890..894 "3000"
+    Space@894..905 "           "
+  CommentContent@905..914 "; Move up"
+  Newline@914..915 "\n"
+  Apply@915..938
+    ApplyReceiver@915..919
+      Identifier@915..919
+        Identifier@915..919 "M107"
+    Space@919..938 "                   "
+  CommentContent@938..952 "; Turn fan off"
+  Newline@952..953 "\n"
+  Apply@953..976
+    ApplyReceiver@953..957
+      Identifier@953..957
+        Identifier@953..957 "M104"
+    Space@957..958 " "
+    ApplyArgument@958..960
+      Apply@958..960
+        ApplyReceiver@958..959
+          Identifier@958..959
+            Identifier@958..959 "S"
+        ApplyArgument@959..960
+          Literal@959..960
+            Integer@959..960
+              Integer@959..960 "0"
+    Space@960..976 "                "
+  CommentContent@976..995 "; Turn off extruder"
+  Newline@995..996 "\n"
+  Apply@996..1019
+    ApplyReceiver@996..1000
+      Identifier@996..1000
+        Identifier@996..1000 "M140"
+    Space@1000..1001 " "
+    ApplyArgument@1001..1003
+      Apply@1001..1003
+        ApplyReceiver@1001..1002
+          Identifier@1001..1002
+            Identifier@1001..1002 "S"
+        ApplyArgument@1002..1003
+          Literal@1002..1003
+            Integer@1002..1003
+              Integer@1002..1003 "0"
+    Space@1003..1019 "                "
+  CommentContent@1019..1033 "; Turn off bed"
+  Newline@1033..1034 "\n"
+  Apply@1034..1057
+    ApplyReceiver@1034..1037
+      Identifier@1034..1037
+        Identifier@1034..1037 "G28"
+    Space@1037..1038 " "
+    ApplyArgument@1038..1039
+      Identifier@1038..1039
+        Identifier@1038..1039 "X"
+    Space@1039..1040 " "
+    ApplyArgument@1040..1041
+      Identifier@1040..1041
+        Identifier@1040..1041 "Y"
+    Space@1041..1057 "                "
+  CommentContent@1057..1071 "; Home X and Y"
+  Newline@1071..1072 "\n"
+  Apply@1072..1095
+    ApplyReceiver@1072..1075
+      Identifier@1072..1075
+        Identifier@1072..1075 "M82"
+    Space@1075..1095 "                    "
+  CommentContent@1095..1123 "; Set absolute E coor ..."
+  Newline@1123..1124 "\n"
