@@ -1,32 +1,28 @@
-//! GCode parsing and transpilation to Cadenza.
+//! GCode parser as alternative Cadenza syntax.
 //!
-//! This crate provides functionality to parse GCode files (primarily RepRap flavor)
-//! and transpile them to Cadenza source code. The transpiled code can then be
-//! parsed, type-checked, and executed using Cadenza's interpreter.
+//! This crate treats GCode as an alternative lexer/parser for Cadenza, producing
+//! Cadenza-compatible AST directly that can be evaluated by cadenza-eval.
 //!
 //! # Example
 //!
 //! ```rust
-//! use cadenza_gcode::{parse_gcode, transpile_to_cadenza};
+//! use cadenza_gcode::gcode_parse;
+//! use cadenza_eval::{eval, Compiler, Env};
 //!
-//! let gcode = "G28\nG1 X100 Y50 F3000\nM104 S200\n";
-//! let commands = parse_gcode(gcode).unwrap();
-//! let cadenza_code = transpile_to_cadenza(&commands).unwrap();
+//! let gcode = "G28\nG1 X100 Y50\n";
+//! let parse = gcode_parse(gcode);
+//! let root = parse.ast();
+//!
+//! let mut compiler = Compiler::new();
+//! let mut env = Env::new();
+//! // Register GCode command macros...
+//! let results = eval(&root, &mut env, &mut compiler);
 //! ```
 
-pub mod ast;
 pub mod error;
 pub mod gcode_syntax;
-pub mod handler;
-pub mod interpreter;
-pub mod parser;
-pub mod transpiler;
 
 mod generated;
 
-pub use ast::CommandCode;
 pub use error::{Error, Result};
 pub use gcode_syntax::gcode_parse;
-pub use interpreter::execute_gcode;
-pub use parser::{parse_gcode, parse_gcode_lines};
-pub use transpiler::{TranspilerConfig, transpile_to_cadenza, transpile_with_config};

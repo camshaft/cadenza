@@ -8,20 +8,22 @@ pub fn tests() -> String {
         };
     }
 
-    w!("use crate::{{parse_gcode, transpile_to_cadenza}};");
+    w!("use crate::gcode_parse;");
     w!("use insta::assert_snapshot as s;");
+    w!("");
 
-    // Generate transpile tests for each example
+    // Generate parse and AST snapshot tests for each example
     for Example { name, src } in examples.iter() {
         w!("mod {name} {{");
         w!("    use super::*;");
         w!("    #[test]");
-        w!("    fn transpile() {{");
+        w!("    fn parse_ast() {{");
         w!("        let gcode = {src:?};");
-        w!("        let program = parse_gcode(gcode).expect(\"Failed to parse GCode\");");
-        w!("        let cadenza = transpile_to_cadenza(&program).expect(\"Failed to transpile\");");
-        let snap_name = format!("{name}_transpile");
-        w!("        s!({snap_name:?}, cadenza);");
+        w!("        let parse = gcode_parse(gcode);");
+        w!("        let root = parse.ast();");
+        w!("        let ast_debug = format!(\"{{:?}}\", root);");
+        let snap_name = format!("{name}_parse_ast");
+        w!("        s!({snap_name:?}, ast_debug);");
         w!("    }}");
         w!("}}");
     }

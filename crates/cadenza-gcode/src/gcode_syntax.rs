@@ -104,10 +104,10 @@ impl<'src> GCodeParser<'src> {
         self.parse_command_identifier(parts[0], line_start);
         self.builder.finish_node();
 
-        // Parse parameters as arguments
+        // Parse parameters as key-value pair arguments: [=, key, value]
         for param in &parts[1..] {
             self.builder.start_node(Kind::ApplyArgument.into());
-            self.parse_parameter(param, line_start);
+            self.parse_parameter_as_assignment(param, line_start);
             self.builder.finish_node();
         }
 
@@ -121,7 +121,7 @@ impl<'src> GCodeParser<'src> {
         self.builder.finish_node();
     }
 
-    fn parse_parameter(&mut self, param: &str, _line_start: usize) {
+    fn parse_parameter_as_assignment(&mut self, param: &str, _line_start: usize) {
         if param.is_empty() {
             return;
         }
@@ -129,55 +129,38 @@ impl<'src> GCodeParser<'src> {
         let letter = param.chars().next().unwrap();
         let value_str = &param[1..];
 
-        // If no value, it's a flag (boolean true)
+        // Create an Apply node for assignment: [=, key, value]
+        self.builder.start_node(Kind::Apply.into());
+
+        // The "=" operator as receiver
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        self.builder.start_node(Kind::Identifier.into());
+        self.builder.token(Kind::Identifier.into(), "=");
+        self.builder.finish_node();
+        self.builder.finish_node();
+
+        // The parameter letter as the first argument (key)
+        self.builder.start_node(Kind::ApplyArgument.into());
+        self.builder.start_node(Kind::Identifier.into());
+        self.builder
+            .token(Kind::Identifier.into(), &letter.to_string());
+        self.builder.finish_node();
+        self.builder.finish_node();
+
+        // The value as the second argument
+        self.builder.start_node(Kind::ApplyArgument.into());
         if value_str.is_empty() {
-            // For flags, use integer 1
-            self.builder.start_node(Kind::Literal.into());
-            self.builder.start_node(Kind::Integer.into());
-            self.builder.token(Kind::Integer.into(), "1");
-            self.builder.finish_node(); // Close Integer node
-            self.builder.finish_node(); // Close Literal
-            return;
-        }
-
-        // Parse the numeric value
-        if let Ok(_int_val) = value_str.parse::<i64>() {
-            self.parse_quantity_with_unit(value_str, letter);
-        } else if let Ok(_float_val) = value_str.parse::<f64>() {
-            self.parse_quantity_with_unit(value_str, letter);
-        }
-    }
-
-    fn parse_quantity_with_unit(&mut self, value: &str, letter: char) {
-        // Determine unit based on parameter letter
-        let unit = match letter {
-            'X' | 'Y' | 'Z' | 'E' => Some("millimeter"),
-            'F' => Some("millimeter_per_minute"),
-            _ => None,
-        };
-
-        if let Some(unit_name) = unit {
-            // Create Apply node: unit_name(value)
-            self.builder.start_node(Kind::Apply.into());
-
-            // Unit constructor as receiver
-            self.builder.start_node(Kind::ApplyReceiver.into());
-            // The unit name is an Identifier expression
+            // For flags with no value, use identifier "true"
             self.builder.start_node(Kind::Identifier.into());
-            self.builder.token(Kind::Identifier.into(), unit_name);
+            self.builder.token(Kind::Identifier.into(), "true");
             self.builder.finish_node();
-            self.builder.finish_node(); // Close ApplyReceiver
-
-            // Value as argument
-            self.builder.start_node(Kind::ApplyArgument.into());
-            self.emit_number_literal(value);
-            self.builder.finish_node(); // Close ApplyArgument
-
-            self.builder.finish_node(); // Close Apply
         } else {
-            // Just a plain number
-            self.emit_number_literal(value);
+            // Parse the numeric value without assuming units
+            self.emit_number_literal(value_str);
         }
+        self.builder.finish_node();
+
+        self.builder.finish_node(); // Close Apply for =
     }
 
     fn emit_number_literal(&mut self, value: &str) {
@@ -201,6 +184,7 @@ impl<'src> GCodeParser<'src> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cadenza_eval::{BuiltinMacro, Compiler, Env, Type, Value, eval};
 
     #[test]
     fn test_parse_simple_gcode() {
@@ -221,5 +205,59 @@ mod tests {
 
         let items: Vec<_> = root.items().collect();
         assert_eq!(items.len(), 1);
+
+        // Check the structure: should be [G1, [=, X, 100], [=, Y, 50]]
+        let expr = items.first().unwrap();
+        println!("Parsed expression: {:?}", expr);
+    }
+
+    #[test]
+    fn test_execute_gcode_with_macros() {
+        let gcode = "G28\nG1 X100 Y50\n";
+
+        // Parse GCode directly into Cadenza AST
+        let parse = gcode_parse(gcode);
+        let root = parse.ast();
+
+        let mut compiler = Compiler::new();
+        let mut env = Env::new();
+
+        // Register G28 macro
+        compiler.define_macro(
+            "G28".into(),
+            Value::BuiltinMacro(BuiltinMacro {
+                name: "G28",
+                signature: Type::function(vec![], Type::Nil),
+                func: |_args, _ctx| Ok(Value::Nil),
+            }),
+        );
+
+        // Register G1 macro that accepts key-value pairs
+        compiler.define_macro(
+            "G1".into(),
+            Value::BuiltinMacro(BuiltinMacro {
+                name: "G1",
+                signature: Type::function(vec![Type::Unknown, Type::Unknown], Type::Nil),
+                func: |args, _ctx| {
+                    // Args should be key-value pairs like [=, X, 100], [=, Y, 50]
+                    assert_eq!(args.len(), 2);
+                    Ok(Value::Nil)
+                },
+            }),
+        );
+
+        // Register = operator
+        compiler.define_macro(
+            "=".into(),
+            Value::BuiltinMacro(BuiltinMacro {
+                name: "=",
+                signature: Type::function(vec![Type::Unknown, Type::Unknown], Type::Unknown),
+                func: |_args, _ctx| Ok(Value::Nil),
+            }),
+        );
+
+        // Evaluate - eval doesn't care this came from GCode!
+        let results = eval(&root, &mut env, &mut compiler);
+        assert_eq!(results.len(), 2);
     }
 }
