@@ -1916,10 +1916,9 @@ pub fn builtin_pipeline() -> BuiltinMacro {
                         Expr::Ident(ident) => eval_ident_no_auto_apply(ident, ctx)?,
                         Expr::Op(op) => {
                             // Use extract_identifier to get the operator name
-                            let id = extract_identifier(&Expr::Op(op.clone()))
+                            let id = extract_identifier(&callee_expr)
                                 .ok_or_else(|| Diagnostic::syntax("invalid operator"))?;
-                            let range = op.syntax().text_range();
-                            let span = Span::new(range.start().into(), range.end().into());
+                            let span = op.span();
                             ctx.env
                                 .get(id)
                                 .cloned()
