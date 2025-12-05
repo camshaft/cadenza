@@ -6,12 +6,12 @@
 //! # Example
 //!
 //! ```rust
-//! use cadenza_gcode::gcode_parse;
+//! use cadenza_gcode::parse;
 //! use cadenza_eval::{eval, Compiler, Env};
 //!
 //! let gcode = "G28\nG1 X100 Y50\n";
-//! let parse = gcode_parse(gcode);
-//! let root = parse.ast();
+//! let parse_result = parse(gcode);
+//! let root = parse_result.ast();
 //!
 //! let mut compiler = Compiler::new();
 //! let mut env = Env::new();
@@ -20,9 +20,9 @@
 //! ```
 
 pub mod error;
-pub mod gcode_syntax;
+pub mod syntax;
 
 mod generated;
 
 pub use error::{Error, Result};
-pub use gcode_syntax::gcode_parse;
+pub use syntax::parse;

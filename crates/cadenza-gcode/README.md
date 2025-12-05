@@ -1,107 +1,97 @@
 # cadenza-gcode
 
-GCode parser and transpiler for the Cadenza programming language.
+GCode parser as alternative Cadenza syntax.
 
-## Overview
-
-This crate provides functionality to parse GCode files (primarily RepRap/Marlin flavor) and transpile them to Cadenza source code. The transpiled code can then be parsed, type-checked, and executed using Cadenza's interpreter.
+This crate treats GCode as an alternative lexer/parser for Cadenza, producing Cadenza-compatible AST directly that can be evaluated by `cadenza-eval`. GCode commands become function calls, and parameters become nested Apply nodes with the parameter letter as the receiver.
 
 ## Features
 
-- **GCode Parser**: Parses standard GCode commands (G-codes, M-codes, T-codes)
-- **Extensible**: Support for custom commands via registration
-- **Transpilation**: Converts GCode to idiomatic Cadenza function calls
-- **Units Support**: Automatically adds appropriate unit annotations (millimeter, etc.)
-- **Comment Preservation**: Preserves comments from GCode as Cadenza comments
-
-## Usage
-
-### Basic Parsing
-
-```rust
-use cadenza_gcode::{parse_gcode, transpile_to_cadenza};
-
-let gcode = r#"
-G28              ; Home all axes
-M104 S200        ; Set extruder temp
-G1 X100 Y50 F3000  ; Move to position
-"#;
-
-let program = parse_gcode(gcode)?;
-let cadenza_code = transpile_to_cadenza(&program)?;
-println!("{}", cadenza_code);
-```
-
-Output:
-```cadenza
-# Generated from GCode
-
-# Home all axes
-handle_g28 state
-# Set extruder temp
-handle_m104 state 200
-# Move to position
-handle_g1 state 100millimeter 50millimeter 3000millimeter_per_minute
-```
-
-### Custom Command Handlers
-
-```rust
-use cadenza_gcode::{transpile_with_config, TranspilerConfig, CommandCode};
-
-let mut config = TranspilerConfig::default();
-config.register_handler(
-    CommandCode::G(29),
-    "handle_bed_leveling".to_string()
-);
-
-let cadenza_code = transpile_with_config(&program, &config)?;
-```
-
-## Supported Commands
-
-The transpiler includes built-in support for common RepRap commands:
-
-### G-codes (Motion)
-- G0/G1: Linear move
-- G28: Home axes
-- G90: Absolute positioning
-- G91: Relative positioning
-- G92: Set position
-
-### M-codes (Machine)
-- M104/M109: Set extruder temperature
-- M140/M190: Set bed temperature
-- M106/M107: Fan control
-- M82/M83: Extruder positioning mode
-
-Additional commands can be registered as needed.
+- **Direct AST Construction**: Builds `cadenza_syntax::ast::Root` from GCode using Rowan CST
+- **Zero String Generation**: No intermediate Cadenza code generation or re-parsing
+- **Proper Offset Tracking**: Every byte accounted for with accurate source positions
+- **Comment Preservation**: Comments are included in the CST as trivia
+- **Non-Positional Parameters**: Parameters represented as `[Letter, value]` for flexible handling
 
 ## Architecture
 
-The crate is organized into several modules:
+GCode is parsed directly into Cadenza's AST format:
+- **GCode commands** → Apply nodes (e.g., `G1` becomes a function call)
+- **Parameters** → Apply nodes with letter as receiver (e.g., `X100` → `[X, 100]`)
+- **Flags** → Identifier nodes (e.g., `X` without value → `X` identifier)
+- **Comments** → Comment tokens in CST
 
-- `ast`: Abstract Syntax Tree types for representing GCode
-- `parser`: GCode parsing logic
-- `transpiler`: GCode to Cadenza transpilation
-- `error`: Error types and diagnostics
+## Example
+
+```rust
+use cadenza_gcode::parse;
+use cadenza_eval::{eval, BuiltinMacro, Compiler, Env, Type, Value};
+
+let gcode = "G28\nG1 X100 Y50 F3000\n";
+
+// Parse GCode into Cadenza AST
+let parse_result = parse(gcode);
+let root = parse_result.ast();
+
+let mut compiler = Compiler::new();
+let mut env = Env::new();
+
+// Register G1 macro
+compiler.define_macro("G1".into(), Value::BuiltinMacro(BuiltinMacro {
+    name: "G1",
+    signature: Type::function(vec![Type::Unknown, Type::Unknown, Type::Unknown], Type::Nil),
+    func: |args, ctx| {
+        // Args are [X, 100], [Y, 50], [F, 3000]
+        // Handler can pattern match on parameter names and apply units
+        Ok(Value::Nil)
+    },
+}));
+
+// Register parameter letter macros (X, Y, F, etc.)
+for letter in &["X", "Y", "Z", "E", "F", "S"] {
+    compiler.define_macro((*letter).into(), Value::BuiltinMacro(BuiltinMacro {
+        name: letter,
+        signature: Type::function(vec![Type::Unknown], Type::Unknown),
+        func: |args, ctx| {
+            // Apply units based on context (e.g., X/Y/Z → millimeter, F → millimeter_per_minute)
+            Ok(Value::Nil)
+        },
+    }));
+}
+
+// Evaluate - eval doesn't care this came from GCode!
+let results = eval(&root, &mut env, &mut compiler);
+```
+
+### Input and Output
+
+Input GCode:
+```gcode
+G28              ; Home all axes
+G1 X100 Y50 F3000
+M104 S200
+```
+
+Parsed AST:
+```
+[G28]
+[G1, [X, 100], [Y, 50], [F, 3000]]
+[M104, [S, 200]]
+```
+
+Handler macros receive unevaluated parameter expressions and can:
+- Pattern match on parameter names (X, Y, Z, F, S, etc.)
+- Apply appropriate units based on command context
+- Handle missing/optional parameters
+- Implement custom command semantics
+
+## Benefits
+
+1. **Simpler Architecture**: Direct AST construction, no string manipulation
+2. **Flexible Semantics**: Handler macros control all parameter interpretation
+3. **Non-Positional Parameters**: Letter-value pairs enable robust handling
+4. **Natural Integration**: Full access to Cadenza's type system and dimensional analysis
+5. **Better Errors**: Stack traces point to original GCode source locations
 
 ## Vision
 
-This crate is part of a larger vision to use Cadenza as a firmware platform for 3D printers, similar to Klipper but with the benefits of:
-
-- **Type Safety**: Compile-time validation of printer configurations
-- **Dimensional Analysis**: Automatic checking of units (mm, mm/s, etc.)
-- **Ahead-of-Time Compilation**: Native code generation for performance
-- **Modern Language Features**: Closures, pattern matching, strong typing
-
-See `docs/GCODE_INTERPRETER_ENVIRONMENT.md` in the main repository for more details.
-
-## Future Enhancements
-
-- [ ] Support for more GCode dialects (Marlin-specific, RepRapFirmware, etc.)
-- [ ] Validation against handler signatures
-- [ ] Optimization of transpiled code
-- [ ] Direct interpretation mode (without transpilation)
-- [ ] Streaming support for large files
-- [ ] Better error messages with line numbers
+This is the first step toward using Cadenza as type-safe 3D printer firmware, providing dimensional analysis and compile-time safety for CNC control. See `docs/GCODE_INTERPRETER_ENVIRONMENT.md` for the full vision.

@@ -1,128 +1,67 @@
-# cadenza-gcode Status
+# Status
 
-## Current Status: Initial Implementation Complete ✅
+## Implementation Status
 
-The `cadenza-gcode` crate provides full GCode parsing and transpilation to Cadenza source code.
+### ✅ Completed
 
-## Completed Features
+- **Parser**: GCode lexer/parser producing Cadenza-compatible AST via Rowan CST
+- **Direct AST Construction**: No string generation or re-parsing
+- **Parameter Representation**: `[Letter, value]` structure (e.g., `X100` → `[X, 100]`)
+- **Comment Handling**: Comments preserved in CST as trivia
+- **Offset Tracking**: Accurate source positions for all tokens
+- **Snapshot Tests**: Auto-generated from test-data/*.gcode files
+- **Zero Allocations**: Iterator-based parsing without intermediate collections
 
-### Core Functionality
-- ✅ GCode Parser
-  - Supports G-codes, M-codes, T-codes
-  - Handles comments (semicolon-style)
-  - Handles empty lines
-  - Supports inline comments
-  - Supports flag parameters (e.g., `G28 X Y`)
-  - Extensible to custom command types
-  
-- ✅ GCode to Cadenza Transpiler
-  - Generates Cadenza function calls
-  - Adds unit annotations (millimeter, millimeter_per_minute)
-  - Preserves comments
-  - Configurable command-to-handler mappings
-  - Support for custom handlers
+### 🎯 Architecture
 
-### Supported Commands
+GCode is treated as an alternative syntax for Cadenza:
+- GCode commands → Apply nodes (function calls)
+- Parameters → Apply nodes with letter as receiver
+- Flags (no value) → Identifier nodes
+- Comments → Comment tokens in CST
 
-**G-codes (Motion)**:
-- G0/G1: Linear/rapid move
-- G28: Home axes
-- G90: Absolute positioning
-- G91: Relative positioning
-- G92: Set position
+Example: `G1 X100 Y50` → `[G1, [X, 100], [Y, 50]]`
 
-**M-codes (Machine)**:
-- M82: E absolute positioning
-- M83: E relative positioning
-- M104: Set extruder temperature (non-blocking)
-- M109: Set extruder temperature (blocking)
-- M106: Fan on
-- M107: Fan off
-- M140: Set bed temperature (non-blocking)
-- M190: Set bed temperature (blocking)
+Handler macros receive parameter expressions and can:
+- Pattern match on parameter names
+- Apply units based on command semantics
+- Handle optional parameters
+- Implement custom logic
 
-### Testing
-- ✅ 15 unit tests for parser
-- ✅ 6 unit tests for transpiler
-- ✅ 3 integration tests
-- ✅ 2 snapshot tests with real GCode files
-- ✅ All tests passing
-- ✅ Code formatted and clippy clean
+### 📋 Known Limitations
 
-### Documentation
-- ✅ README with usage guide
-- ✅ Inline documentation for all public APIs
-- ✅ Example: basic transpilation
-- ✅ Example: custom handler registration
+1. **Basic GCode Only**: Currently parses simple command + parameter structure
+2. **No Checksums**: Doesn't validate or parse checksums (`*##` suffix)
+3. **Limited Error Recovery**: Basic error handling, could be more robust
+4. **No Macro Expansion**: GCode macros/variables not yet supported
 
-## Known Limitations
+### 🚀 Future Enhancements
 
-### Parser
-- ⚠️ Does not support parenthesis-style comments `(comment)`
-- ⚠️ Does not support no-space parameter format `G1X100Y50` (some slicers use this)
-- ⚠️ No checksum validation for commands
-- ⚠️ No line number tracking
+1. **Extended GCode Support**:
+   - Checksums and validation
+   - Variable substitution
+   - Conditional execution
+   - Looping constructs
 
-### Transpiler
-- ⚠️ Feedrate conversion (mm/min → mm/s) not implemented
-- ⚠️ No parameter validation against command requirements
-- ⚠️ No optimization of redundant commands
-- ⚠️ State variable name is hardcoded as "state"
+2. **Better Error Messages**:
+   - Detailed diagnostic messages
+   - Suggestions for common mistakes
+   - Context-aware error recovery
 
-### General
-- ⚠️ No streaming/incremental parsing support
-- ⚠️ No direct interpretation mode (only transpilation)
-- ⚠️ Limited error reporting (no line numbers in errors)
+3. **Performance**:
+   - Streaming parser for large files
+   - Incremental re-parsing
 
-## Future Work
+4. **Tooling**:
+   - Formatter for GCode
+   - Linter with configurable rules
+   - Language server protocol support
 
-### Near-term Enhancements
-- [ ] Add parenthesis-style comment support: `(comment)`
-- [ ] Improve parameter format handling: `G1X100Y50`
-- [ ] Add line number tracking for better error messages
-- [ ] Add parameter validation (required vs optional)
-- [ ] Implement feedrate unit conversion
+## Testing
 
-### Medium-term Goals
-- [ ] Add more GCode dialects (Marlin-specific, RepRapFirmware)
-- [ ] Command optimization (remove redundant commands)
-- [ ] Configurable state variable naming
-- [ ] Better error messages with source location
-- [ ] Add checksum validation support
+Tests are auto-generated from `test-data/*.gcode` files via build script.
+Snapshots capture the AST structure for validation.
 
-### Long-term Vision
-- [ ] Direct interpretation mode (parse and execute without transpilation)
-- [ ] Streaming parser for large files
-- [ ] Integration with Cadenza type system for validation
-- [ ] Handler signature validation at transpile time
-- [ ] Generate typed Cadenza modules from GCode
-- [ ] Performance profiling and optimization
+## Vision
 
-## Integration with Cadenza Vision
-
-This crate is the first step toward the larger vision documented in `docs/GCODE_INTERPRETER_ENVIRONMENT.md`:
-
-1. **Phase 1 (Current)**: GCode parser and transpiler ✅
-2. **Phase 2**: Type-checked handler definitions
-3. **Phase 3**: Configuration modules with dimensional analysis
-4. **Phase 4**: Runtime execution with effect system
-5. **Phase 5**: AOT compilation and optimization
-
-See the vision document for the complete roadmap toward using Cadenza as 3D printer firmware.
-
-## Contributing
-
-When adding new features:
-1. Add tests (unit, integration, or snapshot as appropriate)
-2. Update this STATUS.md
-3. Update README.md if public API changes
-4. Ensure `cargo xtask ci` passes
-
-### Adding New Commands
-
-To add support for a new GCode command:
-
-1. Add the command mapping in `transpiler.rs` `TranspilerConfig::default()`
-2. Add test cases in the appropriate test file
-3. Update the README's "Supported Commands" section
-4. Update this STATUS.md
+This is the first step toward using Cadenza as type-safe 3D printer firmware. See `docs/GCODE_INTERPRETER_ENVIRONMENT.md` for the full vision of dimensional analysis and compile-time safety for CNC control.

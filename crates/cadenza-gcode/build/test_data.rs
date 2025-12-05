@@ -8,7 +8,7 @@ pub fn tests() -> String {
         };
     }
 
-    w!("use crate::gcode_parse;");
+    w!("use crate::parse;");
     w!("use insta::assert_snapshot as s;");
     w!("");
 
@@ -19,7 +19,7 @@ pub fn tests() -> String {
         w!("    #[test]");
         w!("    fn parse_ast() {{");
         w!("        let gcode = {src:?};");
-        w!("        let parse = gcode_parse(gcode);");
+        w!("        let parse = parse(gcode);");
         w!("        let root = parse.ast();");
         w!("        let ast_debug = format!(\"{{:?}}\", root);");
         let snap_name = format!("{name}_parse_ast");
