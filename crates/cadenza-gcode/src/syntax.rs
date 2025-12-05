@@ -134,6 +134,9 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_command(&mut self) {
+        // Track the start of this command line for checksum validation
+        let line_start = self.pos;
+
         // Start an Apply node for the command
         self.builder.start_node(Kind::Apply.into());
 
@@ -151,7 +154,7 @@ impl<'src> Parser<'src> {
             }
             // Check for checksum marker
             if ch == Some('*') {
-                self.parse_checksum();
+                self.parse_checksum(line_start);
                 break;
             }
             if self.peek_char().is_some_and(|c| c.is_ascii_alphabetic()) {
@@ -217,19 +220,28 @@ impl<'src> Parser<'src> {
 
         // Check for equals sign (Klipper format: NAME=value)
         if self.peek_char() == Some('=') {
-            self.pos += 1; // Skip the '='
+            let eq_start = self.pos;
+            self.pos += 1; // Move past '='
+            let eq_text = &self.src[eq_start..self.pos];
 
-            // Create Apply node: [NAME, value]
+            // Create Apply node: [=, NAME, value]
             self.builder.start_node(Kind::Apply.into());
 
-            // NAME as receiver
+            // = as receiver
             self.builder.start_node(Kind::ApplyReceiver.into());
+            self.builder.start_node(Kind::Identifier.into());
+            self.builder.token(Kind::Equal.into(), eq_text);
+            self.builder.finish_node();
+            self.builder.finish_node();
+
+            // NAME as first argument
+            self.builder.start_node(Kind::ApplyArgument.into());
             self.builder.start_node(Kind::Identifier.into());
             self.builder.token(Kind::Identifier.into(), letter_text);
             self.builder.finish_node();
             self.builder.finish_node();
 
-            // Parse the value after '='
+            // Parse the value after '=' as second argument
             self.builder.start_node(Kind::ApplyArgument.into());
             self.parse_parameter_value();
             self.builder.finish_node();
@@ -292,16 +304,18 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn parse_checksum(&mut self) {
+    fn parse_checksum(&mut self, line_start: usize) {
         // Parse checksum in format *NN where NN is a number
+        // GCode checksum is XOR of all bytes before the asterisk
         if self.peek_char() != Some('*') {
             return;
         }
 
-        let start = self.pos;
-        self.pos += 1; // Skip '*'
+        let checksum_start = self.pos;
+        self.pos += 1; // Move past '*'
 
         // Parse the checksum number
+        let num_start = self.pos;
         while self.pos < self.src.len() {
             let ch = self.peek_char().unwrap();
             if ch.is_ascii_digit() {
@@ -311,7 +325,35 @@ impl<'src> Parser<'src> {
             }
         }
 
-        let text = &self.src[start..self.pos];
+        let text = &self.src[checksum_start..self.pos];
+
+        // Validate checksum
+        let checksum_str = &self.src[num_start..self.pos];
+        if let Ok(expected_checksum) = checksum_str.parse::<u8>() {
+            // Calculate actual checksum (XOR of all bytes before *)
+            let mut calculated: u8 = 0;
+            for &byte in self.src[line_start..checksum_start].as_bytes() {
+                calculated ^= byte;
+            }
+
+            if calculated != expected_checksum {
+                // Emit error node for invalid checksum
+                self.builder.start_node(Kind::Error.into());
+                self.builder.token(Kind::CommentContent.into(), text);
+                self.builder.finish_node();
+
+                // Add parse error
+                self.errors.push(cadenza_syntax::parse::ParseError {
+                    message: format!(
+                        "Invalid checksum: expected {}, got {}",
+                        calculated, expected_checksum
+                    ),
+                    span: (checksum_start..self.pos).into(),
+                });
+                return;
+            }
+        }
+
         // Emit checksum as a comment token to preserve it in CST
         self.builder.token(Kind::CommentContent.into(), text);
     }
@@ -420,5 +462,44 @@ mod tests {
         // Evaluate - eval doesn't care this came from GCode!
         let results = eval(&root, &mut env, &mut compiler);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_cst_span_coverage() {
+        // Test that CST spans cover all bytes in the source
+        let test_cases = vec![
+            "G28\n",
+            "G1 X100 Y50\n",
+            "G1 X100 Y50*57\n",
+            "SET_PIN PIN=my_led VALUE=1\n",
+            "; comment\nG28\n",
+        ];
+
+        for src in test_cases {
+            let parse_result = parse(src);
+            let cst = parse_result.syntax();
+
+            // Collect all text ranges from CST
+            let mut covered = vec![false; src.len()];
+            for node in cst.descendants_with_tokens() {
+                if let Some(token) = node.as_token() {
+                    let range = token.text_range();
+                    let start: usize = range.start().into();
+                    let end: usize = range.end().into();
+                    for item in &mut covered[start..end] {
+                        *item = true;
+                    }
+                }
+            }
+
+            // Check all bytes are covered
+            for (i, &is_covered) in covered.iter().enumerate() {
+                assert!(
+                    is_covered,
+                    "Byte at position {} not covered in CST for input {:?}",
+                    i, src
+                );
+            }
+        }
     }
 }

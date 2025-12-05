@@ -33,9 +33,8 @@ pub fn tests() -> String {
         w!("        let gcode = {src:?};");
         w!("        let parse = parse(gcode);");
         w!("        let root = parse.ast();");
-        w!("        let ast_debug = format!(\"{{:?}}\", root);");
         let snap_name_ast = format!("{name}_ast");
-        w!("        s!({snap_name_ast:?}, ast_debug, {src:?});");
+        w!("        s!({snap_name_ast:?}, root, {src:?});");
         w!("    }}");
 
         w!("}}");

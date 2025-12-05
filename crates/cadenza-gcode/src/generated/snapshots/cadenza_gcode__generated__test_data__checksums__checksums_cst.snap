@@ -11,7 +11,8 @@ Root@0..116
     ApplyReceiver@74..77
       Identifier@74..77
         Identifier@74..77 "G28"
-    CommentContent@77..80 "*18"
+    Error@77..80
+      CommentContent@77..80 "*18"
   Newline@80..81 "\n"
   Apply@81..95
     ApplyReceiver@81..83
@@ -37,7 +38,8 @@ Root@0..116
           Literal@90..92
             Integer@90..92
               Integer@90..92 "50"
-    CommentContent@92..95 "*57"
+    Error@92..95
+      CommentContent@92..95 "*57"
   Newline@95..96 "\n"
   Apply@96..108
     ApplyReceiver@96..100
@@ -53,11 +55,13 @@ Root@0..116
           Literal@102..105
             Integer@102..105
               Integer@102..105 "200"
-    CommentContent@105..108 "*99"
+    Error@105..108
+      CommentContent@105..108 "*99"
   Newline@108..109 "\n"
   Apply@109..115
     ApplyReceiver@109..112
       Identifier@109..112
         Identifier@109..112 "G90"
-    CommentContent@112..115 "*21"
+    Error@112..115
+      CommentContent@112..115 "*21"
   Newline@115..116 "\n"

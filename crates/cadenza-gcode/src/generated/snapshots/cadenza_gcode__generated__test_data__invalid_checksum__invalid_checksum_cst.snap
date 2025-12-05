@@ -1,0 +1,31 @@
+---
+source: crates/cadenza-gcode/src/generated/test_data.rs
+expression: "; Invalid checksum test\nG28*99\nG1 X100*11\n"
+---
+Root@0..42
+  CommentContent@0..23 "; Invalid checksum test"
+  Newline@23..24 "\n"
+  Apply@24..30
+    ApplyReceiver@24..27
+      Identifier@24..27
+        Identifier@24..27 "G28"
+    Error@27..30
+      CommentContent@27..30 "*99"
+  Newline@30..31 "\n"
+  Apply@31..41
+    ApplyReceiver@31..33
+      Identifier@31..33
+        Identifier@31..33 "G1"
+    Space@33..34 " "
+    ApplyArgument@34..38
+      Apply@34..38
+        ApplyReceiver@34..35
+          Identifier@34..35
+            Identifier@34..35 "X"
+        ApplyArgument@35..38
+          Literal@35..38
+            Integer@35..38
+              Integer@35..38 "100"
+    Error@38..41
+      CommentContent@38..41 "*11"
+  Newline@41..42 "\n"
