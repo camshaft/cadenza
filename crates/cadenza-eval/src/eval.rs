@@ -2004,16 +2004,18 @@ pub fn builtin_assert() -> BuiltinMacro {
 
             // Get the condition expression
             let condition_expr = &args[0];
-            
+
             // Evaluate the condition
             let condition_value = condition_expr.eval(ctx)?;
-            
+
             // Check that condition is a boolean
             let condition_result = match condition_value {
                 Value::Bool(b) => b,
                 _ => {
-                    return Err(Diagnostic::type_error(Type::Bool, condition_value.type_of())
-                        .with_span(get_expr_span(condition_expr)));
+                    return Err(
+                        Diagnostic::type_error(Type::Bool, condition_value.type_of())
+                            .with_span(get_expr_span(condition_expr)),
+                    );
                 }
             };
 
@@ -2022,7 +2024,7 @@ pub fn builtin_assert() -> BuiltinMacro {
                 // Get the condition expression text for error message
                 let syntax = get_expr_syntax(condition_expr);
                 let condition_text = syntax.text().to_string();
-                
+
                 // Build the error message
                 let message = if args.len() == 2 {
                     // Custom message provided
@@ -2037,11 +2039,12 @@ pub fn builtin_assert() -> BuiltinMacro {
                     }
                 } else {
                     // No custom message, just show the condition
-                    format!("{}", condition_text)
+                    condition_text
                 };
 
-                return Err(Diagnostic::assertion_failed(message)
-                    .with_span(get_expr_span(condition_expr)));
+                return Err(
+                    Diagnostic::assertion_failed(message).with_span(get_expr_span(condition_expr))
+                );
             }
 
             // Assertion passed

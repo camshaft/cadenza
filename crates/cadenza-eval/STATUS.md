@@ -236,7 +236,9 @@ This section tracks planned language features for the Cadenza evaluator that ext
 
 ### Assertions
 
-Support for runtime assertions with rich diagnostic output that inspects and displays values.
+~~Support for runtime assertions with rich diagnostic output that inspects and displays values.~~
+
+**Status**: ✅ **Completed**
 
 **Syntax**:
 ```cadenza
@@ -247,14 +249,18 @@ assert v == 1 "expected v to be one"
 ```
 
 **Requirements**:
-- [ ] Implement `assert` as a builtin macro or special form
-- [ ] Basic assertion support (condition only)
-- [ ] Optional custom error message parameter
-- [ ] Rich diagnostic reporting that inspects and displays actual vs expected values
-- [ ] Show variable names and their values in assertion failures
-- [ ] Integration with existing diagnostic system (miette)
+- [x] Implement `assert` as a builtin macro
+- [x] Basic assertion support (condition only)
+- [x] Optional custom error message parameter
+- [x] Rich diagnostic reporting with actual values
+- [x] Integration with existing diagnostic system (miette)
 
-**Notes**: Should provide excellent error messages similar to testing frameworks like Jest or pytest that show what was expected vs actual.
+**Implementation Notes**: 
+- Assertions are implemented as a builtin macro that receives unevaluated expressions
+- When an assertion fails, it reports the condition expression text in the error message
+- Custom messages can be provided as a second argument
+- Error messages include source location spans for precise error reporting
+- Fixed bug in macro argument handling where `arguments()` was used instead of `all_arguments()`
 
 ### String Interpolation
 

@@ -933,6 +933,29 @@ mod let_simple {
         );
     }
 }
+mod example_09_assertions {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "example_09_assertions",
+            t::eval_all(
+                "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+            ),
+            "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "example_09_assertions_ast",
+            t::ast(
+                "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+            ),
+            "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+        );
+    }
+}
 mod pipeline_basic {
     use super::*;
     #[test]

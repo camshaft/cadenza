@@ -1,0 +1,23 @@
+# Assertions - Runtime Checks
+# 
+# The assert macro allows you to verify conditions at runtime
+# and provides detailed error messages when assertions fail.
+
+# Basic assertion - verifies a condition is true
+let x = 5
+assert x > 0
+
+# Assertion with custom error message
+let value = 42
+assert value == 42 "value must be 42"
+
+# Assertions are useful for validating function inputs and outputs
+fn divide a b =
+    assert b != 0 "cannot divide by zero"
+    a / b
+
+divide 10 2
+
+# Assertions help catch errors early in development
+let result = divide 10 2
+assert result == 5 "expected result to be 5"
