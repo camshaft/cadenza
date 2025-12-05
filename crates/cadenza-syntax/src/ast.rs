@@ -1,4 +1,4 @@
-use crate::{SyntaxNode, token::Kind};
+use crate::{SyntaxNode, span::Span, token::Kind};
 use core::fmt;
 
 macro_rules! ast_node {
@@ -25,6 +25,12 @@ macro_rules! ast_node {
 
             pub fn into_syntax(self) -> SyntaxNode {
                 self.0
+            }
+
+            /// Returns the source span of this AST node.
+            pub fn span(&self) -> Span {
+                let range = self.0.text_range();
+                Span::new(range.start().into(), range.end().into())
             }
         }
     };
@@ -311,6 +317,12 @@ impl Op {
     pub fn syntax(&self) -> &SyntaxNode {
         &self.0
     }
+
+    /// Returns the source span of this operator.
+    pub fn span(&self) -> Span {
+        let range = self.0.text_range();
+        Span::new(range.start().into(), range.end().into())
+    }
 }
 
 impl fmt::Debug for Op {
@@ -349,6 +361,12 @@ impl Synthetic {
             .kind()
             .synthetic_identifier()
             .expect("Synthetic node must have a synthetic_identifier")
+    }
+
+    /// Returns the source span of this synthetic node.
+    pub fn span(&self) -> Span {
+        let range = self.0.text_range();
+        Span::new(range.start().into(), range.end().into())
     }
 }
 
@@ -401,5 +419,18 @@ impl Expr {
     /// Cast a SyntaxNode to an Expr (public API).
     pub fn cast_syntax_node(node: &SyntaxNode) -> Option<Self> {
         Self::cast(node.clone())
+    }
+
+    /// Returns the source span of this expression.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Apply(expr) => expr.span(),
+            Self::Attr(expr) => expr.span(),
+            Self::Ident(expr) => expr.span(),
+            Self::Error(expr) => expr.span(),
+            Self::Literal(expr) => expr.span(),
+            Self::Op(expr) => expr.span(),
+            Self::Synthetic(expr) => expr.span(),
+        }
     }
 }

@@ -11,12 +11,15 @@
 use crate::{
     compiler::Compiler,
     context::{Eval, EvalContext},
-    diagnostic::{Diagnostic, Result},
+    diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
     env::Env,
     interner::InternedString,
     value::{BuiltinFn, BuiltinMacro, Type, Value},
 };
-use cadenza_syntax::ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic};
+use cadenza_syntax::{
+    ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic},
+    span::Span,
+};
 
 /// Evaluates a complete source file (Root node).
 ///
@@ -219,7 +222,7 @@ fn eval_ident_no_auto_apply(ident: &Ident, ctx: &mut EvalContext<'_>) -> Result<
         return Ok(Value::UnitConstructor(unit.clone()));
     }
 
-    Err(Diagnostic::undefined_variable(id))
+    Err(Diagnostic::undefined_variable(id).with_span(ident.span()))
 }
 
 impl Eval for Ident {
@@ -259,10 +262,12 @@ impl Eval for Apply {
                 // Look up operator in environment
                 let text = op.syntax().text();
                 let id: InternedString = text.to_string().as_str().into();
+                let range = op.syntax().text_range();
+                let span = Span::new(range.start().into(), range.end().into());
                 ctx.env
                     .get(id)
                     .cloned()
-                    .ok_or_else(|| Diagnostic::undefined_variable(id))?
+                    .ok_or_else(|| Diagnostic::undefined_variable(id).with_span(span))?
             }
             _ => callee_expr.eval(ctx)?,
         };
@@ -599,7 +604,7 @@ pub fn builtin_assign() -> BuiltinMacro {
                         *var = rhs_value.clone();
                         Ok(rhs_value)
                     } else {
-                        Err(Diagnostic::undefined_variable(name))
+                        Err(Diagnostic::undefined_variable(name).with_span(ident.span()))
                     }
                 }
                 _ => {
@@ -644,11 +649,11 @@ fn handle_field_assignment(
     }
 
     // Get the record identifier (first argument)
-    let record_name = match &args[0] {
+    let (record_name, record_span) = match &args[0] {
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
             let id: InternedString = text.to_string().as_str().into();
-            id
+            (id, ident.span())
         }
         _ => {
             return Err(Diagnostic::syntax(
@@ -674,7 +679,7 @@ fn handle_field_assignment(
     let record = ctx
         .env
         .get_mut(record_name)
-        .ok_or_else(|| Diagnostic::undefined_variable(record_name))?;
+        .ok_or_else(|| Diagnostic::undefined_variable(record_name).with_span(record_span))?;
 
     // Update the field in the record
     match record {
@@ -885,11 +890,9 @@ pub fn builtin_record() -> BuiltinMacro {
                         let field_name: InternedString = text.to_string().as_str().into();
 
                         // Look up the variable in the environment
-                        let value = ctx
-                            .env
-                            .get(field_name)
-                            .cloned()
-                            .ok_or_else(|| Diagnostic::undefined_variable(field_name))?;
+                        let value = ctx.env.get(field_name).cloned().ok_or_else(|| {
+                            Diagnostic::undefined_variable(field_name).with_span(ident.span())
+                        })?;
 
                         fields.push((field_name, value));
                     }
@@ -1801,11 +1804,11 @@ pub fn builtin_field_access() -> BuiltinMacro {
             let record_value = args[0].eval(ctx)?;
 
             // Extract the field name from the second argument (must be an identifier)
-            let field_name = match &args[1] {
+            let (field_name, field_span) = match &args[1] {
                 Expr::Ident(ident) => {
                     let text = ident.syntax().text();
                     let id: InternedString = text.to_string().as_str().into();
-                    id
+                    (id, ident.span())
                 }
                 _ => return Err(Diagnostic::syntax("field name must be an identifier")),
             };
@@ -1820,10 +1823,10 @@ pub fn builtin_field_access() -> BuiltinMacro {
                         }
                     }
                     // Field not found
-                    Err(Diagnostic::syntax(format!(
-                        "field '{}' not found in record",
-                        &*field_name
-                    )))
+                    Err(
+                        Diagnostic::syntax(format!("field '{}' not found in record", &*field_name))
+                            .with_span(field_span),
+                    )
                 }
                 other => Err(Diagnostic::type_error(
                     Type::Record(vec![]),

@@ -13,7 +13,12 @@ EvalResult {
             ),
             level: Error,
             file: None,
-            span: None,
+            span: Some(
+                Span {
+                    start: 0,
+                    end: 13,
+                },
+            ),
             stack_trace: [],
         },
     ],
