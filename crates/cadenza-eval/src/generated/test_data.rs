@@ -967,6 +967,29 @@ mod arith_sub {
         s!("arith_sub_ast", t::ast("10 - 3\n"), "10 - 3\n");
     }
 }
+mod pipeline_comprehensive {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "pipeline_comprehensive",
+            t::eval_all(
+                "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+            ),
+            "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "pipeline_comprehensive_ast",
+            t::ast(
+                "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+            ),
+            "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+        );
+    }
+}
 mod error_undefined {
     use super::*;
     #[test]
