@@ -187,12 +187,6 @@ impl Eval for Literal {
     }
 }
 
-/// Helper to extract a Span from an Ident AST node.
-fn span_from_ident(ident: &Ident) -> Span {
-    let range = ident.syntax().text_range();
-    Span::new(range.start().into(), range.end().into())
-}
-
 /// Helper to auto-apply functions when referenced as standalone identifiers.
 ///
 /// If the value is a user function, it is automatically invoked with no arguments.
@@ -228,7 +222,7 @@ fn eval_ident_no_auto_apply(ident: &Ident, ctx: &mut EvalContext<'_>) -> Result<
         return Ok(Value::UnitConstructor(unit.clone()));
     }
 
-    Err(Diagnostic::undefined_variable(id).with_span(span_from_ident(ident)))
+    Err(Diagnostic::undefined_variable(id).with_span(ident.span()))
 }
 
 impl Eval for Ident {
@@ -610,7 +604,7 @@ pub fn builtin_assign() -> BuiltinMacro {
                         *var = rhs_value.clone();
                         Ok(rhs_value)
                     } else {
-                        Err(Diagnostic::undefined_variable(name).with_span(span_from_ident(ident)))
+                        Err(Diagnostic::undefined_variable(name).with_span(ident.span()))
                     }
                 }
                 _ => {
@@ -659,7 +653,7 @@ fn handle_field_assignment(
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
             let id: InternedString = text.to_string().as_str().into();
-            (id, span_from_ident(ident))
+            (id, ident.span())
         }
         _ => {
             return Err(Diagnostic::syntax(
@@ -897,8 +891,7 @@ pub fn builtin_record() -> BuiltinMacro {
 
                         // Look up the variable in the environment
                         let value = ctx.env.get(field_name).cloned().ok_or_else(|| {
-                            Diagnostic::undefined_variable(field_name)
-                                .with_span(span_from_ident(ident))
+                            Diagnostic::undefined_variable(field_name).with_span(ident.span())
                         })?;
 
                         fields.push((field_name, value));
@@ -1815,7 +1808,7 @@ pub fn builtin_field_access() -> BuiltinMacro {
                 Expr::Ident(ident) => {
                     let text = ident.syntax().text();
                     let id: InternedString = text.to_string().as_str().into();
-                    (id, span_from_ident(ident))
+                    (id, ident.span())
                 }
                 _ => return Err(Diagnostic::syntax("field name must be an identifier")),
             };
