@@ -1,7 +1,9 @@
 //! GCode parser implementation.
 
-use crate::ast::{Command, CommandCode, Line, Parameter, ParameterValue, Program};
-use crate::error::{Error, Result};
+use crate::{
+    ast::{Command, CommandCode, Line, Parameter, ParameterValue, Program},
+    error::{Error, Result},
+};
 
 /// Parse a GCode string into a Program.
 pub fn parse_gcode(input: &str) -> Result<Program> {
@@ -31,7 +33,10 @@ fn parse_line(line: &str) -> Result<Line> {
     // Handle inline comments - extract comment part
     let (code_part, _comment) = if let Some(pos) = line.find(';') {
         let (code, cmt) = line.split_at(pos);
-        (code.trim(), Some(cmt.strip_prefix(';').unwrap_or(cmt).trim()))
+        (
+            code.trim(),
+            Some(cmt.strip_prefix(';').unwrap_or(cmt).trim()),
+        )
     } else {
         (line, None)
     };

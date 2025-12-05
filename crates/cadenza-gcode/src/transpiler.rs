@@ -1,7 +1,9 @@
 //! GCode to Cadenza transpiler.
 
-use crate::ast::{Command, CommandCode, Line, Parameter, Program};
-use crate::error::{Error, Result};
+use crate::{
+    ast::{Command, CommandCode, Line, Parameter, Program},
+    error::{Error, Result},
+};
 use std::collections::HashMap;
 
 /// Configuration for transpilation.
