@@ -1236,8 +1236,7 @@ mod tests {
 
     #[test]
     fn test_type_env_from_env() {
-        use crate::env::Env;
-        use crate::value::Value;
+        use crate::{env::Env, value::Value};
 
         let mut env = Env::new();
         let x: InternedString = "x".into();
@@ -1248,20 +1247,13 @@ mod tests {
         let type_env = TypeEnv::from_env(&env);
 
         // Check that variables were converted to their types
-        assert_eq!(
-            type_env.get(x),
-            Some(&InferType::Concrete(Type::Integer))
-        );
-        assert_eq!(
-            type_env.get(y),
-            Some(&InferType::Concrete(Type::String))
-        );
+        assert_eq!(type_env.get(x), Some(&InferType::Concrete(Type::Integer)));
+        assert_eq!(type_env.get(y), Some(&InferType::Concrete(Type::String)));
     }
 
     #[test]
     fn test_type_env_from_env_with_scopes() {
-        use crate::env::Env;
-        use crate::value::Value;
+        use crate::{env::Env, value::Value};
 
         let mut env = Env::new();
         let x: InternedString = "x".into();
@@ -1277,21 +1269,17 @@ mod tests {
         let type_env = TypeEnv::from_env(&env);
 
         // Check that only innermost bindings are included
-        assert_eq!(
-            type_env.get(x),
-            Some(&InferType::Concrete(Type::Integer))
-        );
-        assert_eq!(
-            type_env.get(y),
-            Some(&InferType::Concrete(Type::String))
-        );
+        assert_eq!(type_env.get(x), Some(&InferType::Concrete(Type::Integer)));
+        assert_eq!(type_env.get(y), Some(&InferType::Concrete(Type::String)));
     }
 
     #[test]
     fn test_type_env_from_context() {
-        use crate::compiler::Compiler;
-        use crate::env::Env;
-        use crate::value::{BuiltinFn, Type, Value};
+        use crate::{
+            compiler::Compiler,
+            env::Env,
+            value::{BuiltinFn, Type, Value},
+        };
 
         let mut env = Env::new();
         let mut compiler = Compiler::new();
@@ -1315,10 +1303,7 @@ mod tests {
         let type_env = TypeEnv::from_context(&env, &compiler);
 
         // Check both env and compiler values are included
-        assert_eq!(
-            type_env.get(x),
-            Some(&InferType::Concrete(Type::Integer))
-        );
+        assert_eq!(type_env.get(x), Some(&InferType::Concrete(Type::Integer)));
         // Function should have a function type
         assert!(matches!(type_env.get(add), Some(InferType::Fn(_, _))));
     }

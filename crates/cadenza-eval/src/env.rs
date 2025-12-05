@@ -14,7 +14,7 @@ use crate::{
     map::Map,
     value::Value,
 };
-use std::rc::Rc;
+use std::{collections::HashSet, rc::Rc};
 
 /// A single scope in the environment.
 #[derive(Debug, Clone, Default)]
@@ -228,7 +228,7 @@ impl Env {
     /// This is useful for building a type environment from the current runtime environment.
     pub fn iter(&self) -> impl Iterator<Item = (InternedString, &Value)> {
         // Collect bindings from all scopes, top to bottom, skipping shadowed names
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         let mut bindings = Vec::new();
 
         for scope in self.scopes.iter().rev() {
@@ -246,6 +246,7 @@ impl Env {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn define_and_get() {
@@ -358,7 +359,7 @@ mod tests {
         env.define(y, Value::Integer(2));
 
         // Collect all bindings
-        let bindings: std::collections::HashMap<_, _> = env.iter().collect();
+        let bindings: HashMap<_, _> = env.iter().collect();
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings.get(&x), Some(&&Value::Integer(1)));
         assert_eq!(bindings.get(&y), Some(&&Value::Integer(2)));
@@ -374,7 +375,7 @@ mod tests {
         env.define(x, Value::Integer(2));
 
         // Should only return the innermost binding
-        let bindings: std::collections::HashMap<_, _> = env.iter().collect();
+        let bindings: HashMap<_, _> = env.iter().collect();
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings.get(&x), Some(&&Value::Integer(2)));
     }

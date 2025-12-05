@@ -2097,7 +2097,7 @@ pub fn builtin_typeof() -> BuiltinMacro {
 
             // Convert type to string
             let type_str = format!("{}", inferred_type);
-            Ok(Value::String(type_str.into()))
+            Ok(Value::String(type_str))
         },
     }
 }
