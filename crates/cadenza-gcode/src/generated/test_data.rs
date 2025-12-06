@@ -1,5 +1,4 @@
-use crate::parse;
-use crate::testing::verify_cst_coverage;
+use crate::{parse, testing::verify_cst_coverage};
 use insta::assert_debug_snapshot as s;
 
 mod checksums {

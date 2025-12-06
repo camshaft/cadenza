@@ -2,4 +2,4 @@
 source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"fn foo a b =\\n    let av = a * 2\\n    let bv = b * 3\\n    av * bv\\nfoo 5 7\\n\")"
 ---
-; IR Module
+# IR Module

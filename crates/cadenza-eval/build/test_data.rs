@@ -9,8 +9,7 @@ pub fn tests() -> String {
     }
 
     w!("use crate::testing as t;");
-    w!("use insta::assert_debug_snapshot as s;");
-    w!("use insta::assert_snapshot as ss;");
+    w!("use insta::{{assert_debug_snapshot as s, assert_snapshot as ss}};");
 
     // Generate eval, ast, ir, and wat tests for each example
     for Example { name, src } in examples.iter() {

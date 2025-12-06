@@ -2,4 +2,4 @@
 source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"let x = 42\\ntypeof x\")"
 ---
-; IR Module
+# IR Module

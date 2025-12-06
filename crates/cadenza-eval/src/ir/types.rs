@@ -18,7 +18,7 @@ pub struct ValueId(pub u32);
 
 impl std::fmt::Display for ValueId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "%{}", self.0)
+        write!(f, "v{}", self.0)
     }
 }
 
@@ -38,7 +38,7 @@ pub struct FunctionId(pub u32);
 
 impl std::fmt::Display for FunctionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "@func_{}", self.0)
+        write!(f, "func{}", self.0)
     }
 }
 
@@ -264,7 +264,8 @@ impl std::fmt::Display for IrInstr {
             IrInstr::Const {
                 result, ty, value, ..
             } => {
-                write!(f, "{}: {} = const {}", result, ty, value)
+                // For constants with type annotation: let v0: integer = const 42
+                write!(f, "let {}: {} = const {}", result, ty, value)
             }
             IrInstr::BinOp {
                 result,
@@ -274,7 +275,8 @@ impl std::fmt::Display for IrInstr {
                 rhs,
                 ..
             } => {
-                write!(f, "{}: {} = {} {} {}", result, ty, op, lhs, rhs)
+                // Binary operations tagged with binop: let v2: integer = binop add v0 v1
+                write!(f, "let {}: {} = binop {} {} {}", result, ty, op, lhs, rhs)
             }
             IrInstr::UnOp {
                 result,
@@ -283,7 +285,8 @@ impl std::fmt::Display for IrInstr {
                 operand,
                 ..
             } => {
-                write!(f, "{}: {} = {} {}", result, ty, op, operand)
+                // Unary operations tagged with unop: let v1: integer = unop neg v0
+                write!(f, "let {}: {} = unop {} {}", result, ty, op, operand)
             }
             IrInstr::Call {
                 result,
@@ -292,18 +295,16 @@ impl std::fmt::Display for IrInstr {
                 args,
                 ..
             } => {
+                // Function calls with call prefix
                 if let Some(res) = result {
-                    write!(f, "{}: {} = call {}(", res, ty, func)?;
+                    write!(f, "let {}: {} = call {}", res, ty, func)?;
                 } else {
-                    write!(f, "call {}(", func)?;
+                    write!(f, "call {}", func)?;
                 }
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", arg)?;
+                for arg in args.iter() {
+                    write!(f, " {}", arg)?;
                 }
-                write!(f, ")")
+                Ok(())
             }
             IrInstr::Record {
                 result,
@@ -312,12 +313,13 @@ impl std::fmt::Display for IrInstr {
                 field_values,
                 ..
             } => {
-                write!(f, "{}: {} = record {{ ", result, ty)?;
+                // Records with record prefix
+                write!(f, "let {}: {} = record {{ ", result, ty)?;
                 for (i, (name, value)) in field_names.iter().zip(field_values.iter()).enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}: {}", name, value)?;
+                    write!(f, "{} = {}", name, value)?;
                 }
                 write!(f, " }}")
             }
@@ -328,7 +330,8 @@ impl std::fmt::Display for IrInstr {
                 field,
                 ..
             } => {
-                write!(f, "{}: {} = field {}.{}", result, ty, record, field)
+                // Field access with field prefix: let v2: integer = field v1.field
+                write!(f, "let {}: {} = field {}.{}", result, ty, record, field)
             }
             IrInstr::Tuple {
                 result,
@@ -336,14 +339,15 @@ impl std::fmt::Display for IrInstr {
                 elements,
                 ..
             } => {
-                write!(f, "{}: {} = tuple (", result, ty)?;
+                // Tuples/lists tagged with list
+                write!(f, "let {}: {} = list [", result, ty)?;
                 for (i, elem) in elements.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}", elem)?;
                 }
-                write!(f, ")")
+                write!(f, "]")
             }
             IrInstr::Phi {
                 result,
@@ -351,14 +355,12 @@ impl std::fmt::Display for IrInstr {
                 incoming,
                 ..
             } => {
-                write!(f, "{}: {} = phi [", result, ty)?;
-                for (i, (val, block)) in incoming.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{} from {}", val, block)?;
+                // Phi nodes as function calls: let v3: integer = phi v1 block_1 v2 block_2
+                write!(f, "let {}: {} = phi", result, ty)?;
+                for (val, block) in incoming.iter() {
+                    write!(f, " {} {}", val, block)?;
                 }
-                write!(f, "]")
+                Ok(())
             }
         }
     }
@@ -400,12 +402,15 @@ impl std::fmt::Display for IrTerminator {
                 else_block,
                 ..
             } => {
-                write!(f, "br {}, then: {}, else: {}", cond, then_block, else_block)
+                // Branch as function call with juxtaposition: br cond then_block else_block
+                write!(f, "br {} {} {}", cond, then_block, else_block)
             }
             IrTerminator::Jump { target, .. } => {
+                // Jump as function call: jmp target_block
                 write!(f, "jmp {}", target)
             }
             IrTerminator::Return { value, .. } => {
+                // Return with ret keyword
                 if let Some(val) = value {
                     write!(f, "ret {}", val)
                 } else {
@@ -426,11 +431,13 @@ pub struct IrBlock {
 
 impl std::fmt::Display for IrBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}:", self.id)?;
+        // Block as a call with indented content
+        writeln!(f, "    block {} =", self.id)?;
         for instr in &self.instructions {
-            writeln!(f, "    {}", instr)?;
+            writeln!(f, "        {}", instr)?;
         }
-        writeln!(f, "    {}", self.terminator)
+        // Terminator as the final expression
+        writeln!(f, "        {}", self.terminator)
     }
 }
 
@@ -444,6 +451,7 @@ pub struct IrParam {
 
 impl std::fmt::Display for IrParam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Parameter with type annotation: v0: integer
         write!(f, "{}: {}", self.value_id, self.ty)
     }
 }
@@ -461,20 +469,26 @@ pub struct IrFunction {
 
 impl std::fmt::Display for IrFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "function {}(", self.name)?;
-        for (i, param) in self.params.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{}", param)?;
+        // Type annotation as @t attribute
+        write!(f, "@t")?;
+        for param in &self.params {
+            write!(f, " {}", param.ty)?;
         }
-        writeln!(f, ") -> {} {{", self.return_ty)?;
+        writeln!(f, " -> {}", self.return_ty)?;
 
+        // Function signature with parameter names
+        write!(f, "fn {}", self.name)?;
+        for param in &self.params {
+            write!(f, " {}", param.name)?;
+        }
+        writeln!(f, " =")?;
+
+        // All blocks explicitly named, no inlining
         for block in &self.blocks {
             write!(f, "{}", block)?;
         }
 
-        writeln!(f, "}}")
+        Ok(())
     }
 }
 
@@ -495,10 +509,11 @@ impl std::fmt::Display for IrExport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.kind {
             IrExportKind::Function(func_id) => {
-                write!(f, "export {} as function {}", self.name, func_id)
+                // Export as a comment
+                write!(f, "# export {} as function {}", self.name, func_id)
             }
             IrExportKind::Constant(val_id) => {
-                write!(f, "export {} as constant {}", self.name, val_id)
+                write!(f, "# export {} as constant {}", self.name, val_id)
             }
         }
     }
@@ -529,15 +544,16 @@ impl Default for IrModule {
 
 impl std::fmt::Display for IrModule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "; IR Module")?;
+        writeln!(f, "# IR Module")?;
         writeln!(f)?;
 
         for func in &self.functions {
             writeln!(f, "{}", func)?;
+            writeln!(f)?;
         }
 
         if !self.exports.is_empty() {
-            writeln!(f, "; Exports")?;
+            writeln!(f, "# Exports")?;
             for export in &self.exports {
                 writeln!(f, "{}", export)?;
             }

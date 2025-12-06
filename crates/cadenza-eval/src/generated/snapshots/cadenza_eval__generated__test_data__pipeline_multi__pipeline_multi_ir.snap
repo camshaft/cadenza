@@ -2,22 +2,24 @@
 source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"fn add x y = x + y\\nfn mul x y = x * y\\nfn sub x y = x - y\\n\\n5 |> add 3 |> mul 2\\n10 |> sub 3 |> add 5 |> mul 2\\n\")"
 ---
-; IR Module
+# IR Module
 
-function add(%0: unknown, %1: unknown) -> unknown {
-block_0:
-    %2: unknown = add %0 %1
-    ret %2
-}
+@t unknown unknown -> unknown
+fn add x y =
+    block block_0 =
+        let v2: unknown = binop add v0 v1
+        ret v2
 
-function mul(%0: unknown, %1: unknown) -> unknown {
-block_0:
-    %2: unknown = mul %0 %1
-    ret %2
-}
 
-function sub(%0: unknown, %1: unknown) -> unknown {
-block_0:
-    %2: unknown = sub %0 %1
-    ret %2
-}
+@t unknown unknown -> unknown
+fn mul x y =
+    block block_0 =
+        let v2: unknown = binop mul v0 v1
+        ret v2
+
+
+@t unknown unknown -> unknown
+fn sub x y =
+    block block_0 =
+        let v2: unknown = binop sub v0 v1
+        ret v2
