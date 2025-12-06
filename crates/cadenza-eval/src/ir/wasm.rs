@@ -354,23 +354,29 @@ impl WasmCodegen {
         _operand: ValueId,
         ty: &Type,
     ) -> Result<(), String> {
-        // Note: In a real implementation, we'd first load operand onto the stack
+        // TODO: In a real implementation, we'd first load operand onto the stack
+        // The following code is a placeholder that generates the operation instruction
+        // but doesn't properly load the operand first
 
         match op {
             UnOp::Neg => match ty {
                 Type::Integer => {
-                    // i64.const 0, operand, i64.sub
+                    // TODO: Need to load operand first
+                    // i64.const 0, load operand, i64.sub
                     func.instruction(&Instruction::I64Const(0));
                     // Load operand here
                     func.instruction(&Instruction::I64Sub);
                 }
                 Type::Float => {
+                    // TODO: Need to load operand first
                     func.instruction(&Instruction::F64Neg);
                 }
                 _ => return Err(format!("Neg not supported for type {:?}", ty)),
             },
             UnOp::Not => {
-                // Logical not: i32.eqz
+                // TODO: Logical not implementation is incomplete
+                // i32.eqz expects i32 on stack, but operand might be i64/f64
+                // Need to convert operand to i32 boolean first
                 func.instruction(&Instruction::I32Eqz);
             }
             UnOp::BitNot => {
