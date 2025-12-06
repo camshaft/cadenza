@@ -133,6 +133,9 @@ impl<'src> Parser<'src> {
     }
 
     fn peek_char(&self) -> Option<char> {
+        // Note: This method treats bytes as chars, which is safe because it's only used
+        // to check for ASCII markdown syntax (like #, `, -, etc.). Content is always
+        // handled as &str slices which properly preserve UTF-8.
         if self.pos < self.src.len() {
             Some(self.src.as_bytes()[self.pos] as char)
         } else {
@@ -141,6 +144,7 @@ impl<'src> Parser<'src> {
     }
 
     fn peek_ahead(&self, offset: usize) -> Option<char> {
+        // Note: See peek_char comment about ASCII-only usage
         let pos = self.pos + offset;
         if pos < self.src.len() {
             Some(self.src.as_bytes()[pos] as char)
@@ -515,21 +519,11 @@ mod tests {
         let mut compiler = Compiler::new();
         let mut env = Env::new();
 
-        // Register h1 macro
+        // Register # macro for headings
         compiler.define_macro(
-            "h1".into(),
+            "#".into(),
             Value::BuiltinMacro(BuiltinMacro {
-                name: "h1",
-                signature: Type::function(vec![Type::String], Type::Nil),
-                func: |_args, _ctx| Ok(Value::Nil),
-            }),
-        );
-
-        // Register p macro
-        compiler.define_macro(
-            "p".into(),
-            Value::BuiltinMacro(BuiltinMacro {
-                name: "p",
+                name: "#",
                 signature: Type::function(vec![Type::String], Type::Nil),
                 func: |_args, _ctx| Ok(Value::Nil),
             }),
@@ -537,6 +531,9 @@ mod tests {
 
         // Evaluate - eval doesn't care this came from Markdown!
         let results = eval(&root, &mut env, &mut compiler);
+        // Note: The paragraph "World!" is just a string literal, so results has 2 items:
+        // 1. Result of [#, "Hello"]
+        // 2. The string "World!"
         assert_eq!(results.len(), 2);
     }
 }

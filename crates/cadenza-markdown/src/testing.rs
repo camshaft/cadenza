@@ -2,7 +2,7 @@
 
 use crate::parse;
 
-///Verify that CST spans cover all bytes in the source.
+/// Verify that CST spans cover all bytes in the source.
 ///
 /// This function validates that every byte in the source is covered by at least one token in the CST.
 /// For markdown, CST coverage is complex due to content transformation, so we skip this validation.

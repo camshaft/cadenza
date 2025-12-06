@@ -16,11 +16,13 @@ This crate treats Markdown as an alternative lexer/parser for Cadenza, producing
 ## Architecture
 
 Markdown is parsed directly into Cadenza's AST format:
-- **Headings** → Apply nodes (e.g., `h1 "Title"` becomes `[h1, "Title"]`)
-- **Paragraphs** → Apply nodes (e.g., `p "Text content"`)
-- **Code blocks** → Apply nodes with language and parameters (e.g., `code "cadenza" "let x = 1"` with optional params)
-- **Lists** → Apply nodes (e.g., `ul [item1, item2]`)
-- **Inline elements** → Nested apply nodes for emphasis, code, links
+- **Headings** → Apply nodes (e.g., `#` becomes `[#, "Title"]`, `##` becomes `[##, "Subtitle"]`)
+- **Paragraphs** → String literals (just the text content)
+- **Code blocks** → Apply nodes with fence and content (e.g., `[```, "cadenza", "let x = 1"]`)
+- **Lists** → Apply nodes (e.g., `[-, "item1", "item2"]` where `-` is the list marker)
+- **Inline elements** → Not yet implemented
+
+The markdown syntax itself becomes the function identifier, allowing macro handlers to interpret it flexibly.
 
 ## Example
 
@@ -45,8 +47,8 @@ let mut compiler = Compiler::new();
 let mut env = Env::new();
 
 // Register markdown macros
-compiler.define_macro("h1".into(), Value::BuiltinMacro(BuiltinMacro {
-    name: "h1",
+compiler.define_macro("#".into(), Value::BuiltinMacro(BuiltinMacro {
+    name: "#",
     signature: Type::function(vec![Type::String], Type::Nil),
     func: |args, ctx| {
         // Handler receives heading text
@@ -54,17 +56,8 @@ compiler.define_macro("h1".into(), Value::BuiltinMacro(BuiltinMacro {
     },
 }));
 
-compiler.define_macro("p".into(), Value::BuiltinMacro(BuiltinMacro {
-    name: "p",
-    signature: Type::function(vec![Type::String], Type::Nil),
-    func: |args, ctx| {
-        // Handler receives paragraph text
-        Ok(Value::Nil)
-    },
-}));
-
-compiler.define_macro("code".into(), Value::BuiltinMacro(BuiltinMacro {
-    name: "code",
+compiler.define_macro("```".into(), Value::BuiltinMacro(BuiltinMacro {
+    name: "```",
     signature: Type::function(vec![Type::String, Type::String], Type::Nil),
     func: |args, ctx| {
         // Handler receives language and code content
@@ -96,9 +89,9 @@ You can experiment with different values!
 
 Parsed AST:
 ```
-[h1, "Physics Tutorial"]
+[#, "Physics Tutorial"]
 [p, "The range of a projectile is calculated as:"]
-[code, "cadenza", "let velocity = 20\nlet angle = 45"]
+[```, "cadenza", "let velocity = 20\nlet angle = 45"]
 [p, "You can experiment with different values!"]
 ```
 
@@ -111,7 +104,7 @@ let setup = initialize()
 
 Parsed AST:
 ```
-[code, ["cadenza", "editable", "hidden"], "let setup = initialize()"]
+[```, ["cadenza", "editable", "hidden"], "let setup = initialize()"]
 ```
 
 Handler macros receive the markdown content and can:
