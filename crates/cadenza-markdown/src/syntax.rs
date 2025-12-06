@@ -737,7 +737,7 @@ impl<'src> Parser<'src> {
 
                     // Parse the emphasis content recursively to support nested inline elements
                     self.builder.start_node(Kind::ApplyArgument.into());
-                    self.parse_inline_content(emphasis_content, content_start + content_start);
+                    self.parse_inline_content(emphasis_content, 0);
                     self.builder.finish_node();
 
                     self.builder.finish_node();
