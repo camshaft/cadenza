@@ -709,11 +709,11 @@ The following enhancements were identified during code review and are planned fo
   - [x] Generate `local.get` instructions to load operands before operations
   - [x] Generate `local.set` instructions when values need to be stored
   - [x] Handle the case where a value is used multiple times (must store in local)
-- [ ] **Function calls**
-  - [ ] Load arguments in order using `local.get` or stack values
-  - [ ] Generate `call` instruction with correct function index
-  - [ ] Handle return values on stack
-  - [ ] Test with recursive functions
+- [x] ~~**Function calls**~~ ✅
+  - [x] Load arguments in order using `local.get` or stack values
+  - [x] Generate `call` instruction with correct function index
+  - [x] Handle return values on stack
+  - [x] Test with recursive functions
 - [ ] **Control flow**
   - [ ] Implement branch instruction generation (conditional jumps)
   - [ ] Implement unconditional jump (br) for loops
