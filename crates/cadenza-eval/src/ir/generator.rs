@@ -77,6 +77,24 @@ impl IrGenerator {
         }
     }
 
+    /// Helper to create a fresh type variable for a parameter.
+    fn create_param_type_var(&mut self, name: InternedString, ctx: &mut IrGenContext) {
+        let type_var = self.type_inferencer.fresh_var();
+        let infer_ty = InferType::Var(type_var);
+        ctx.type_env_mut().insert(name, infer_ty);
+    }
+
+    /// Helper to infer a concrete type from an expression.
+    ///
+    /// Returns the concrete type if inference succeeds, otherwise Unknown.
+    fn infer_concrete_type(&mut self, expr: &Expr, ctx: &IrGenContext) -> Type {
+        self.type_inferencer
+            .infer_expr(expr, ctx.type_env())
+            .ok()
+            .and_then(|ty| ty.to_concrete().ok())
+            .unwrap_or(Type::Unknown)
+    }
+
     /// Generate IR for a constant value.
     ///
     /// Converts a Cadenza `Value` to an `IrConst`.
@@ -120,30 +138,18 @@ impl IrGenerator {
         // Create a type environment for inference
         let mut ctx = IrGenContext::new();
 
-        // Infer the function's type by creating a function expression
-        // For now, we'll create type variables for parameters and infer the body type
+        // Create type variables for parameters
         let param_types: Vec<(InternedString, Type)> = func
             .params
             .iter()
             .map(|p| {
-                // Create a fresh type variable for each parameter
-                let type_var = self.type_inferencer.fresh_var();
-                let infer_ty = InferType::Var(type_var);
-                ctx.type_env_mut().insert(*p, infer_ty);
+                self.create_param_type_var(*p, &mut ctx);
                 (*p, Type::Unknown) // We'll compute concrete type later if possible
             })
             .collect();
 
         // Infer the return type by inferring the body expression
-        let body_infer_ty = self
-            .type_inferencer
-            .infer_expr(&func.body, ctx.type_env())
-            .ok();
-
-        // Convert inferred type to concrete type
-        let return_ty = body_infer_ty
-            .and_then(|ty| ty.to_concrete().ok())
-            .unwrap_or(Type::Unknown);
+        let return_ty = self.infer_concrete_type(&func.body, &ctx);
 
         let mut func_builder = self.builder.function(name, param_types.clone(), return_ty);
         // Register the function early so recursive calls can find it
@@ -159,9 +165,8 @@ impl IrGenerator {
         // Bind parameters to their SSA values (v0, v1, ...)
         // Also add them to the type environment
         for (i, param_name) in func.params.iter().enumerate() {
-            let type_var = self.type_inferencer.fresh_var();
-            let infer_ty = InferType::Var(type_var);
-            ctx.bind_var(*param_name, ValueId(i as u32), &infer_ty);
+            self.create_param_type_var(*param_name, &mut ctx);
+            ctx.variables.insert(*param_name, ValueId(i as u32));
         }
 
         // Generate IR for the function body
@@ -304,12 +309,8 @@ impl IrGenerator {
             let rhs = self.gen_expr(&args[1], block, ctx)?;
 
             // Infer the type of the binary operation
-            let inferred_ty = self
-                .type_inferencer
-                .infer_expr(&Expr::Apply(apply.clone()), ctx.type_env())
-                .ok()
-                .and_then(|ty| ty.to_concrete().ok())
-                .unwrap_or(Type::Unknown);
+            // Note: We need to clone Apply to wrap it as Expr for type inference
+            let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
 
             // Emit binary operation with inferred type
             return Ok(block.binop(ir_op, lhs, rhs, inferred_ty, source));
@@ -354,12 +355,8 @@ impl IrGenerator {
             let arg_values = arg_values?;
 
             // Infer the return type of the function call
-            let inferred_ty = self
-                .type_inferencer
-                .infer_expr(&Expr::Apply(apply.clone()), ctx.type_env())
-                .ok()
-                .and_then(|ty| ty.to_concrete().ok())
-                .unwrap_or(Type::Unknown);
+            // Note: We need to clone Apply to wrap it as Expr for type inference
+            let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
 
             // Emit call instruction with inferred return type
             return Ok(block.call(func_id, arg_values, inferred_ty, source));
@@ -398,6 +395,7 @@ impl IrGenerator {
         let value_id = self.gen_expr(value_expr, block, ctx)?;
 
         // Infer the type of the value
+        // Keep as InferType to preserve type variables for polymorphism
         let inferred_ty = self
             .type_inferencer
             .infer_expr(value_expr, ctx.type_env())
