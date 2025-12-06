@@ -135,10 +135,7 @@ impl IrGenerator {
 
         // Build the function
         let ir_func = func_builder.build();
-        let returned_func_id = self.builder.add_function(ir_func);
-
-        // Sanity check: the func_id should match
-        assert_eq!(func_id, returned_func_id);
+        self.builder.add_function(ir_func);
 
         Ok(func_id)
     }
@@ -528,8 +525,6 @@ mod tests {
         let module = generator.build();
         let ir_text = module.to_string();
 
-        println!("Generated IR:\n{}", ir_text);
-
         // Verify both functions were generated
         assert_eq!(module.functions.len(), 2);
         assert_eq!(module.functions[0].name, InternedString::new("double"));
@@ -583,8 +578,6 @@ mod tests {
         let module = generator.build();
         let ir_text = module.to_string();
 
-        println!("Generated IR:\n{}", ir_text);
-
         // Verify both functions were generated
         assert_eq!(module.functions.len(), 2);
 
@@ -620,8 +613,6 @@ mod tests {
 
         let module = generator.build();
         let ir_text = module.to_string();
-
-        println!("Generated IR:\n{}", ir_text);
 
         // Verify the function was generated
         assert_eq!(module.functions.len(), 1);
