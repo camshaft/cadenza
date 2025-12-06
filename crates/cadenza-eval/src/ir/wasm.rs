@@ -809,10 +809,23 @@ pub fn binary_to_wat(binary: &[u8]) -> Result<String, String> {
     wasmprinter::print_bytes(binary).map_err(|e| format!("Failed to convert to WAT: {}", e))
 }
 
+/// Validate a WASM binary using wasmparser's Validator.
+pub fn validate_wasm(binary: &[u8]) -> Result<(), String> {
+    let mut validator = wasmparser::Validator::new();
+    validator
+        .validate_all(binary)
+        .map(|_| ()) // Discard the Types result
+        .map_err(|e| format!("WASM validation failed: {}", e))
+}
+
 /// Generate WAT from IR module.
 pub fn generate_wat(ir: &IrModule) -> Result<String, String> {
     let mut codegen = WasmCodegen::new();
     let binary = codegen.generate(ir)?;
+    
+    // Validate the generated WASM binary
+    validate_wasm(&binary)?;
+    
     binary_to_wat(&binary)
 }
 
