@@ -3,6 +3,6 @@ source: crates/cadenza-markdown/src/generated/test_data.rs
 expression: "# Hello World\n\nThis is a simple paragraph.\n"
 ---
 [
-    [#, "Hello World"],
-    "This is a simple paragraph.",
+    [h1, "Hello World"],
+    [p, "This is a simple paragraph."],
 ]

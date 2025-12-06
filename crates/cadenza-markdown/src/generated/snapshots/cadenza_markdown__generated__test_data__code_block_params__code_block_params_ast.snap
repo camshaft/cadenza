@@ -3,10 +3,10 @@ source: crates/cadenza-markdown/src/generated/test_data.rs
 expression: "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize()\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
 ---
 [
-    [#, "Interactive Example"],
-    "This example shows code with parameters.",
-    [```, "cadenza", "let setup = initialize()\n"],
-    "The code above is hidden and editable.",
-    [```, "javascript", "console.log(\"Hello\");\n"],
-    "Different languages are supported!",
+    [h1, "Interactive Example"],
+    [p, "This example shows code with parameters."],
+    [code, "cadenza", [=, [let, setup], [initialize, Error(Error@128..128)]]],
+    [p, "The code above is hidden and editable."],
+    [code, "javascript", "console.log(\"Hello\");\n"],
+    [p, "Different languages are supported!"],
 ]

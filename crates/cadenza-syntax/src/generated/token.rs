@@ -146,6 +146,15 @@ pub enum Kind {
     SyntheticList,
     SyntheticRecord,
     SyntheticBlock,
+    SyntheticMarkdownH1,
+    SyntheticMarkdownH2,
+    SyntheticMarkdownH3,
+    SyntheticMarkdownH4,
+    SyntheticMarkdownH5,
+    SyntheticMarkdownH6,
+    SyntheticMarkdownParagraph,
+    SyntheticMarkdownList,
+    SyntheticMarkdownCode,
     Eof,
 }
 impl Kind {
@@ -231,6 +240,15 @@ impl Kind {
         Self::SyntheticList,
         Self::SyntheticRecord,
         Self::SyntheticBlock,
+        Self::SyntheticMarkdownH1,
+        Self::SyntheticMarkdownH2,
+        Self::SyntheticMarkdownH3,
+        Self::SyntheticMarkdownH4,
+        Self::SyntheticMarkdownH5,
+        Self::SyntheticMarkdownH6,
+        Self::SyntheticMarkdownParagraph,
+        Self::SyntheticMarkdownList,
+        Self::SyntheticMarkdownCode,
         Self::Eof,
     ];
 
@@ -316,6 +334,15 @@ impl Kind {
         Self::SyntheticList,
         Self::SyntheticRecord,
         Self::SyntheticBlock,
+        Self::SyntheticMarkdownH1,
+        Self::SyntheticMarkdownH2,
+        Self::SyntheticMarkdownH3,
+        Self::SyntheticMarkdownH4,
+        Self::SyntheticMarkdownH5,
+        Self::SyntheticMarkdownH6,
+        Self::SyntheticMarkdownParagraph,
+        Self::SyntheticMarkdownList,
+        Self::SyntheticMarkdownCode,
     ];
 
     pub const fn is_node(self) -> bool {
@@ -381,6 +408,15 @@ impl Kind {
                 | Self::SyntheticList
                 | Self::SyntheticRecord
                 | Self::SyntheticBlock
+                | Self::SyntheticMarkdownH1
+                | Self::SyntheticMarkdownH2
+                | Self::SyntheticMarkdownH3
+                | Self::SyntheticMarkdownH4
+                | Self::SyntheticMarkdownH5
+                | Self::SyntheticMarkdownH6
+                | Self::SyntheticMarkdownParagraph
+                | Self::SyntheticMarkdownList
+                | Self::SyntheticMarkdownCode
         )
     }
 
@@ -455,7 +491,7 @@ impl Kind {
 
     /// Try to convert a u16 discriminant to a Kind
     pub const fn try_from_u16(value: u16) -> Option<Self> {
-        if value < 82 {
+        if value < 91 {
             // SAFETY: value is within valid discriminant range
             Some(unsafe { core::mem::transmute::<u16, Kind>(value) })
         } else {
@@ -547,6 +583,15 @@ impl Kind {
             Self::SyntheticList => "synthetic list",
             Self::SyntheticRecord => "synthetic record",
             Self::SyntheticBlock => "synthetic block",
+            Self::SyntheticMarkdownH1 => "synthetic markdown h1",
+            Self::SyntheticMarkdownH2 => "synthetic markdown h2",
+            Self::SyntheticMarkdownH3 => "synthetic markdown h3",
+            Self::SyntheticMarkdownH4 => "synthetic markdown h4",
+            Self::SyntheticMarkdownH5 => "synthetic markdown h5",
+            Self::SyntheticMarkdownH6 => "synthetic markdown h6",
+            Self::SyntheticMarkdownParagraph => "synthetic markdown paragraph",
+            Self::SyntheticMarkdownList => "synthetic markdown list",
+            Self::SyntheticMarkdownCode => "synthetic markdown code",
             Self::Eof => "eof",
         }
     }
@@ -690,6 +735,15 @@ impl Kind {
             Self::SyntheticList => Some("__list__"),
             Self::SyntheticRecord => Some("__record__"),
             Self::SyntheticBlock => Some("__block__"),
+            Self::SyntheticMarkdownH1 => Some("h1"),
+            Self::SyntheticMarkdownH2 => Some("h2"),
+            Self::SyntheticMarkdownH3 => Some("h3"),
+            Self::SyntheticMarkdownH4 => Some("h4"),
+            Self::SyntheticMarkdownH5 => Some("h5"),
+            Self::SyntheticMarkdownH6 => Some("h6"),
+            Self::SyntheticMarkdownParagraph => Some("p"),
+            Self::SyntheticMarkdownList => Some("ul"),
+            Self::SyntheticMarkdownCode => Some("code"),
             _ => None,
         }
     }

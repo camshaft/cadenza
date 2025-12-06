@@ -3,11 +3,11 @@ source: crates/cadenza-markdown/src/generated/test_data.rs
 expression: "# Shopping List\n\n- Apples\n- Bananas\n- Oranges\n\nSome text after the list.\n"
 ---
 Root@0..73
-  Apply@0..15
-    ApplyReceiver@0..1
-      Identifier@0..1
-        Identifier@0..1 "#"
-    Space@1..2 " "
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..15
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
     ApplyArgument@2..15
       Literal@2..15
         StringContent@2..15
@@ -15,9 +15,9 @@ Root@0..73
   Newline@15..16 "\n"
   Newline@16..17 "\n"
   Apply@17..46
-    ApplyReceiver@17..18
-      Identifier@17..18
-        Identifier@17..18 "-"
+    ApplyReceiver@17..17
+      SyntheticMarkdownList@17..17
+    CommentContent@17..18 "-"
     Space@18..19 " "
     ApplyArgument@19..25
       Literal@19..25
@@ -39,7 +39,11 @@ Root@0..73
           StringContent@38..45 "Oranges"
     Newline@45..46 "\n"
   Newline@46..47 "\n"
-  Literal@47..72
-    StringContent@47..72
-      StringContent@47..72 "Some text after the l ..."
+  Apply@47..72
+    ApplyReceiver@47..47
+      SyntheticMarkdownParagraph@47..47
+    ApplyArgument@47..72
+      Literal@47..72
+        StringContent@47..72
+          StringContent@47..72 "Some text after the l ..."
   Newline@72..73 "\n"

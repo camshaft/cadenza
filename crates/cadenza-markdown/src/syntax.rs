@@ -23,6 +23,8 @@
 use cadenza_syntax::{parse::Parse, token::Kind};
 use rowan::GreenNodeBuilder;
 
+type SyntaxToken = rowan::SyntaxToken<cadenza_syntax::Lang>;
+
 /// Parse Markdown source into a Cadenza-compatible AST.
 pub fn parse(src: &str) -> Parse {
     Parser::new(src).parse()
@@ -187,26 +189,33 @@ impl<'src> Parser<'src> {
             return;
         }
 
-        // Capture the hash markers
+        // Capture the hash markers and emit as trivia
         let hash_text = &self.src[hash_start..self.pos];
+        self.builder.token(Kind::CommentContent.into(), hash_text);
 
-        // Skip the space after #
+        // Skip and emit the space after #
         let space_start = self.pos;
         self.pos += 1;
         let space_text = &self.src[space_start..self.pos];
+        self.builder.token(Kind::Space.into(), space_text);
 
-        // Create Apply node: [###, content] where # count indicates level
+        // Create Apply node with synthetic heading token
         self.builder.start_node(Kind::Apply.into());
 
-        // Hash markers as receiver (identifier)
+        // Use synthetic token based on heading level
         self.builder.start_node(Kind::ApplyReceiver.into());
-        self.builder.start_node(Kind::Identifier.into());
-        self.builder.token(Kind::Identifier.into(), hash_text);
+        let synthetic_kind = match level {
+            1 => Kind::SyntheticMarkdownH1,
+            2 => Kind::SyntheticMarkdownH2,
+            3 => Kind::SyntheticMarkdownH3,
+            4 => Kind::SyntheticMarkdownH4,
+            5 => Kind::SyntheticMarkdownH5,
+            6 => Kind::SyntheticMarkdownH6,
+            _ => Kind::SyntheticMarkdownH1, // fallback
+        };
+        self.builder.start_node(synthetic_kind.into());
         self.builder.finish_node();
         self.builder.finish_node();
-
-        // Emit space as trivia
-        self.builder.token(Kind::Space.into(), space_text);
 
         // Heading text as literal argument
         self.builder.start_node(Kind::ApplyArgument.into());
@@ -243,9 +252,10 @@ impl<'src> Parser<'src> {
         let fence_char = self.peek_char().unwrap();
         let fence_start = self.pos;
 
-        // Skip opening fence (``` or ~~~)
+        // Skip opening fence (``` or ~~~) and emit as trivia
         self.pos += 3;
         let fence_text = &self.src[fence_start..self.pos];
+        self.builder.token(Kind::CommentContent.into(), fence_text);
         
         // Parse language identifier
         let lang_start = self.pos;
@@ -257,12 +267,17 @@ impl<'src> Parser<'src> {
             self.pos += 1;
         }
         let lang_end = self.pos;
+        let language = &self.src[lang_start..lang_end];
 
-        // Skip rest of line (parameters are not supported yet)
+        // Skip rest of line
         while self.pos < self.src.len() && self.peek_char() != Some('\n') && self.peek_char() != Some('\r') {
             self.pos += 1;
         }
         let line_end = self.pos;
+        
+        // Emit language and rest of first line as trivia
+        let first_line_rest = &self.src[lang_start..line_end];
+        self.builder.token(Kind::CommentContent.into(), first_line_rest);
         
         self.skip_newline();
 
@@ -281,6 +296,7 @@ impl<'src> Parser<'src> {
         }
 
         let code_end = self.pos;
+        let code_content = &self.src[code_start..code_end];
 
         // Skip closing fence if present
         let close_fence_start = self.pos;
@@ -295,28 +311,26 @@ impl<'src> Parser<'src> {
         
         let fence_end = self.pos;
         
+        // Emit closing fence and rest of line as trivia
+        let closing_text = &self.src[close_fence_start..fence_end];
+        self.builder.token(Kind::CommentContent.into(), closing_text);
+        
         // Now consume the newline if present
         if self.peek_char().is_some() {
             self.skip_newline();
         }
 
-        // Create Apply node: [```, language, content]
+        // Create Apply node with synthetic code token
         self.builder.start_node(Kind::Apply.into());
 
-        // Fence markers as receiver (identifier)
+        // Use synthetic code token as receiver
         self.builder.start_node(Kind::ApplyReceiver.into());
-        self.builder.start_node(Kind::Identifier.into());
-        self.builder.token(Kind::Identifier.into(), fence_text);
+        self.builder.start_node(Kind::SyntheticMarkdownCode.into());
         self.builder.finish_node();
         self.builder.finish_node();
-
-        // Emit language and rest of first line as trivia
-        let first_line_rest = &self.src[lang_start..line_end];
-        self.builder.token(Kind::CommentContent.into(), first_line_rest);
 
         // Language as first argument
         self.builder.start_node(Kind::ApplyArgument.into());
-        let language = &self.src[lang_start..lang_end];
         self.builder.start_node(Kind::Literal.into());
         self.builder.start_node(Kind::StringContent.into());
         self.builder.token(Kind::StringContent.into(), language);
@@ -325,30 +339,71 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
 
         // Code content as second argument
+        // Special case: if language is empty or "cadenza", parse as Cadenza code
         self.builder.start_node(Kind::ApplyArgument.into());
-        let code_content = &self.src[code_start..code_end];
-        self.builder.start_node(Kind::Literal.into());
-        self.builder.start_node(Kind::StringContent.into());
-        self.builder.token(Kind::StringContent.into(), code_content);
+        if language.is_empty() || language == "cadenza" {
+            // Parse the code content as Cadenza and embed it in the AST
+            let cadenza_parse = cadenza_syntax::parse::parse(code_content);
+            // Get the root node from the parsed Cadenza code
+            let cadenza_root = cadenza_parse.syntax();
+            // Add the parsed Cadenza tree as a child (excluding the Root wrapper)
+            // We add children directly, which will have their own token positions
+            // that map correctly to the code_content portion of the markdown source
+            for child in cadenza_root.children_with_tokens() {
+                self.add_element_with_adjusted_positions(child, code_start);
+            }
+        } else {
+            // Non-Cadenza code: emit as string content
+            self.builder.start_node(Kind::Literal.into());
+            self.builder.start_node(Kind::StringContent.into());
+            self.builder.token(Kind::StringContent.into(), code_content);
+            self.builder.finish_node();
+            self.builder.finish_node();
+        }
         self.builder.finish_node();
-        self.builder.finish_node();
-        self.builder.finish_node();
-
-        // Emit closing fence and rest of line as trivia
-        let closing_text = &self.src[close_fence_start..fence_end];
-        self.builder.token(Kind::CommentContent.into(), closing_text);
 
         self.builder.finish_node();
     }
 
+    // Helper to recursively add elements from another tree with adjusted positions
+    fn add_element_with_adjusted_positions(&mut self, element: rowan::NodeOrToken<cadenza_syntax::SyntaxNode, SyntaxToken>, base_offset: usize) {
+        match element {
+            rowan::NodeOrToken::Node(node) => {
+                self.builder.start_node(node.kind().into());
+                for child in node.children_with_tokens() {
+                    self.add_element_with_adjusted_positions(child, base_offset);
+                }
+                self.builder.finish_node();
+            }
+            rowan::NodeOrToken::Token(token) => {
+                // Get the token text and emit it at the correct position in the markdown source
+                let token_text = token.text();
+                // The token's position in the parsed code needs to be adjusted to the markdown source
+                // by adding base_offset (the position where code_content starts in markdown)
+                let token_range = token.text_range();
+                let adjusted_start = base_offset + usize::from(token_range.start());
+                let adjusted_end = base_offset + usize::from(token_range.end());
+                
+                // Extract the actual text from the markdown source at the adjusted position
+                let actual_text = &self.src[adjusted_start..adjusted_end];
+                self.builder.token(token.kind().into(), actual_text);
+            }
+        }
+    }
+
     fn parse_list(&mut self) {
-        // Start list Apply node: [-, items...] using first list marker as identifier
+        // Start list Apply node with synthetic ul token
         self.builder.start_node(Kind::Apply.into());
 
-        let marker_char = self.peek_char().unwrap(); // - or *
+        let _marker_char = self.peek_char().unwrap(); // - or *
+
+        // Use synthetic list token as receiver
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        self.builder.start_node(Kind::SyntheticMarkdownList.into());
+        self.builder.finish_node();
+        self.builder.finish_node();
 
         // Parse each list item
-        let mut first = true;
         while self.pos < self.src.len() && self.is_list_item() {
             let marker_start = self.pos;
             
@@ -356,28 +411,16 @@ impl<'src> Parser<'src> {
             self.pos += 1;
             let marker_text = &self.src[marker_start..self.pos];
             
+            // Emit marker as trivia
+            self.builder.token(Kind::CommentContent.into(), marker_text);
+            
             // Consume space
             let space_start = self.pos;
             self.pos += 1;
             let space_text = &self.src[space_start..self.pos];
-
-            if first {
-                // First marker becomes the receiver
-                self.builder.start_node(Kind::ApplyReceiver.into());
-                self.builder.start_node(Kind::Identifier.into());
-                self.builder.token(Kind::Identifier.into(), marker_text);
-                self.builder.finish_node();
-                self.builder.finish_node();
-                
-                // Emit space as trivia
-                self.builder.token(Kind::Space.into(), space_text);
-                
-                first = false;
-            } else {
-                // Subsequent markers emitted as trivia
-                self.builder.token(Kind::CommentContent.into(), marker_text);
-                self.builder.token(Kind::Space.into(), space_text);
-            }
+            
+            // Emit space as trivia
+            self.builder.token(Kind::Space.into(), space_text);
 
             // Parse list item content as argument
             self.builder.start_node(Kind::ApplyArgument.into());
@@ -419,7 +462,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_paragraph(&mut self) {
-        // For paragraphs, emit the content directly as StringContent from source
+        // For paragraphs, wrap in an Apply node with synthetic p token
         let content_start = self.pos;
         
         // Read until blank line or special element
@@ -492,12 +535,25 @@ impl<'src> Parser<'src> {
             self.pos = save_pos;
         }
 
-        // Emit paragraph content from source
+        // Wrap paragraph in Apply node with synthetic p token
+        self.builder.start_node(Kind::Apply.into());
+        
+        // Use synthetic paragraph token as receiver
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        self.builder.start_node(Kind::SyntheticMarkdownParagraph.into());
+        self.builder.finish_node();
+        self.builder.finish_node();
+        
+        // Emit paragraph content as argument
+        self.builder.start_node(Kind::ApplyArgument.into());
         let content = &self.src[content_start..self.pos];
         self.builder.start_node(Kind::Literal.into());
         self.builder.start_node(Kind::StringContent.into());
         self.builder.token(Kind::StringContent.into(), content);
         self.builder.finish_node();
+        self.builder.finish_node();
+        self.builder.finish_node();
+        
         self.builder.finish_node();
     }
 

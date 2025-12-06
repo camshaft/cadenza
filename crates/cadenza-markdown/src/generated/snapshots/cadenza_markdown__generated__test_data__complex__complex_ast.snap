@@ -3,16 +3,16 @@ source: crates/cadenza-markdown/src/generated/test_data.rs
 expression: "# Complex Document\n\nThis document has multiple elements.\n\n## Introduction\n\nWelcome to this tutorial. Here's what we'll cover:\n\n- Topic 1\n- Topic 2\n- Topic 3\n\n## Code Examples\n\nHere's a simple example:\n\n```cadenza\nlet x = 42\n```\n\nAnd another one:\n\n```python\nprint(\"Hello, World!\")\n```\n\n## Conclusion\n\nThat's all for now!\n"
 ---
 [
-    [#, "Complex Document"],
-    "This document has multiple elements.",
-    [##, "Introduction"],
-    "Welcome to this tutorial. Here's what we'll cover:",
-    [-, "Topic 1", "Topic 2", "Topic 3"],
-    [##, "Code Examples"],
-    "Here's a simple example:",
-    [```, "cadenza", "let x = 42\n"],
-    "And another one:",
-    [```, "python", "print(\"Hello, World!\")\n"],
-    [##, "Conclusion"],
-    "That's all for now!",
+    [h1, "Complex Document"],
+    [p, "This document has multiple elements."],
+    [h2, "Introduction"],
+    [p, "Welcome to this tutorial. Here's what we'll cover:"],
+    [ul, "Topic 1", "Topic 2", "Topic 3"],
+    [h2, "Code Examples"],
+    [p, "Here's a simple example:"],
+    [code, "cadenza", [=, [let, x], 42]],
+    [p, "And another one:"],
+    [code, "python", "print(\"Hello, World!\")\n"],
+    [h2, "Conclusion"],
+    [p, "That's all for now!"],
 ]
