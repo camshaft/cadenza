@@ -5,13 +5,8 @@
 //! API to register definitions, emit IR, etc.
 
 use crate::{
-    diagnostic::Diagnostic,
-    interner::InternedString,
-    ir::IrGenerator,
-    map::Map,
-    typeinfer::TypeInferencer,
-    unit::UnitRegistry,
-    value::Value,
+    diagnostic::Diagnostic, interner::InternedString, ir::IrGenerator, map::Map,
+    typeinfer::TypeInferencer, unit::UnitRegistry, value::Value,
 };
 
 /// The compiler state that accumulates definitions during evaluation.

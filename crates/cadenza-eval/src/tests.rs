@@ -689,11 +689,7 @@ add 1 2
     let add_name = InternedString::new("add");
     let double_name = InternedString::new("double");
 
-    let func_names: Vec<_> = ir_module
-        .functions
-        .iter()
-        .map(|f| f.name)
-        .collect();
+    let func_names: Vec<_> = ir_module.functions.iter().map(|f| f.name).collect();
     assert!(
         func_names.contains(&add_name),
         "Expected 'add' function in IR"
@@ -752,4 +748,3 @@ fn test_ir_module_can_be_built_multiple_times() {
     assert_eq!(ir_module2.functions.len(), 1);
     assert_eq!(ir_module2.functions[0].name, InternedString::new("bar"));
 }
-
