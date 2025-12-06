@@ -822,10 +822,10 @@ pub fn validate_wasm(binary: &[u8]) -> Result<(), String> {
 pub fn generate_wat(ir: &IrModule) -> Result<String, String> {
     let mut codegen = WasmCodegen::new();
     let binary = codegen.generate(ir)?;
-    
+
     // Validate the generated WASM binary
     validate_wasm(&binary)?;
-    
+
     binary_to_wat(&binary)
 }
 
@@ -1166,7 +1166,7 @@ mod tests {
             0x00, 0x61, 0x73, 0x6d, // magic number "\0asm"
             0x01, 0x00, 0x00, 0x00, // version 1
         ];
-        
+
         let result = validate_wasm(&wasm);
         assert!(result.is_ok(), "Valid WASM module should pass validation");
     }
@@ -1178,14 +1178,20 @@ mod tests {
             0xFF, 0xFF, 0xFF, 0xFF, // invalid magic number
             0x01, 0x00, 0x00, 0x00, // version 1
         ];
-        
+
         let result = validate_wasm(&wasm);
-        assert!(result.is_err(), "Invalid WASM module should fail validation");
-        
+        assert!(
+            result.is_err(),
+            "Invalid WASM module should fail validation"
+        );
+
         // Verify error message contains "validation failed"
         let err_msg = result.unwrap_err();
-        assert!(err_msg.contains("WASM validation failed"), 
-                "Error message should mention validation failure: {}", err_msg);
+        assert!(
+            err_msg.contains("WASM validation failed"),
+            "Error message should mention validation failure: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -1219,6 +1225,10 @@ mod tests {
 
         // generate_wat should validate the WASM and succeed
         let result = generate_wat(&module);
-        assert!(result.is_ok(), "generate_wat should validate and succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "generate_wat should validate and succeed: {:?}",
+            result.err()
+        );
     }
 }
