@@ -86,7 +86,10 @@ impl<'src> Parser<'src> {
                 // Check if this line is all whitespace
                 let line_start = self.pos;
                 self.skip_line_whitespace();
-                if self.peek_char() == Some('\n') || self.peek_char() == Some('\r') || self.peek_char().is_none() {
+                if self.peek_char() == Some('\n')
+                    || self.peek_char() == Some('\r')
+                    || self.peek_char().is_none()
+                {
                     self.skip_newline();
                 } else {
                     // Not a blank line, restore position
@@ -162,13 +165,17 @@ impl<'src> Parser<'src> {
 
     fn is_code_fence(&self) -> bool {
         // Code fences start with ``` or ~~~
-        (self.peek_char() == Some('`') && self.peek_ahead(1) == Some('`') && self.peek_ahead(2) == Some('`'))
-            || (self.peek_char() == Some('~') && self.peek_ahead(1) == Some('~') && self.peek_ahead(2) == Some('~'))
+        (self.peek_char() == Some('`')
+            && self.peek_ahead(1) == Some('`')
+            && self.peek_ahead(2) == Some('`'))
+            || (self.peek_char() == Some('~')
+                && self.peek_ahead(1) == Some('~')
+                && self.peek_ahead(2) == Some('~'))
     }
 
     fn is_list_item(&self) -> bool {
         // List items start with - or * followed by space
-        (self.peek_char() == Some('-') || self.peek_char() == Some('*')) 
+        (self.peek_char() == Some('-') || self.peek_char() == Some('*'))
             && self.peek_ahead(1) == Some(' ')
     }
 
@@ -220,7 +227,7 @@ impl<'src> Parser<'src> {
         // Heading text as literal argument
         self.builder.start_node(Kind::ApplyArgument.into());
         let content_start = self.pos;
-        
+
         // Read until end of line
         while self.pos < self.src.len() {
             let ch = self.peek_char().unwrap();
@@ -233,7 +240,7 @@ impl<'src> Parser<'src> {
         let content = &self.src[content_start..self.pos];
         // Parse inline elements in the heading content
         self.parse_inline_content(content, content_start);
-        
+
         self.builder.finish_node();
 
         self.builder.finish_node();
@@ -252,7 +259,7 @@ impl<'src> Parser<'src> {
         self.pos += 3;
         let fence_text = &self.src[fence_start..self.pos];
         self.builder.token(Kind::CommentContent.into(), fence_text);
-        
+
         // Parse language identifier
         let lang_start = self.pos;
         while self.pos < self.src.len() {
@@ -276,7 +283,7 @@ impl<'src> Parser<'src> {
                 self.pos += 1;
                 continue;
             }
-            
+
             // Found a parameter
             let param_start = self.pos;
             while self.pos < self.src.len() {
@@ -291,26 +298,28 @@ impl<'src> Parser<'src> {
                 parameters.push(&self.src[param_start..param_end]);
             }
         }
-        
+
         let line_end = self.pos;
-        
+
         // Emit language and rest of first line as trivia
         let first_line_rest = &self.src[lang_start..line_end];
-        self.builder.token(Kind::CommentContent.into(), first_line_rest);
-        
+        self.builder
+            .token(Kind::CommentContent.into(), first_line_rest);
+
         self.skip_newline();
 
         // Read code content until closing fence
         let code_start = self.pos;
-        
+
         while self.pos < self.src.len() {
             // Check if we're at the closing fence
-            if self.peek_char() == Some(fence_char) 
-                && self.peek_ahead(1) == Some(fence_char) 
-                && self.peek_ahead(2) == Some(fence_char) {
+            if self.peek_char() == Some(fence_char)
+                && self.peek_ahead(1) == Some(fence_char)
+                && self.peek_ahead(2) == Some(fence_char)
+            {
                 break;
             }
-            
+
             self.pos += 1;
         }
 
@@ -324,16 +333,20 @@ impl<'src> Parser<'src> {
         }
 
         // Skip to end of line (but don't consume newline yet)
-        while self.pos < self.src.len() && self.peek_char() != Some('\n') && self.peek_char() != Some('\r') {
+        while self.pos < self.src.len()
+            && self.peek_char() != Some('\n')
+            && self.peek_char() != Some('\r')
+        {
             self.pos += 1;
         }
-        
+
         let fence_end = self.pos;
-        
+
         // Emit closing fence and rest of line as trivia
         let closing_text = &self.src[close_fence_start..fence_end];
-        self.builder.token(Kind::CommentContent.into(), closing_text);
-        
+        self.builder
+            .token(Kind::CommentContent.into(), closing_text);
+
         // Now consume the newline if present
         if self.peek_char().is_some() {
             self.skip_newline();
@@ -365,21 +378,21 @@ impl<'src> Parser<'src> {
             let cadenza_parse = cadenza_syntax::parse::parse(code_content);
             // Get the root node from the parsed Cadenza code
             let cadenza_root = cadenza_parse.syntax();
-            
+
             // Wrap the Cadenza statements in a synthetic block
             self.builder.start_node(Kind::Apply.into());
             self.builder.start_node(Kind::ApplyReceiver.into());
             self.builder.start_node(Kind::SyntheticBlock.into());
             self.builder.finish_node();
             self.builder.finish_node();
-            
+
             // Add each statement as an argument to the block
             for child in cadenza_root.children_with_tokens() {
                 self.builder.start_node(Kind::ApplyArgument.into());
                 self.add_element_recursive(child);
                 self.builder.finish_node();
             }
-            
+
             self.builder.finish_node(); // End Apply (block)
         } else {
             // Non-Cadenza code: emit as string content
@@ -406,7 +419,10 @@ impl<'src> Parser<'src> {
     }
 
     // Helper to recursively add elements from another parsed tree
-    fn add_element_recursive(&mut self, element: rowan::NodeOrToken<cadenza_syntax::SyntaxNode, SyntaxToken>) {
+    fn add_element_recursive(
+        &mut self,
+        element: rowan::NodeOrToken<cadenza_syntax::SyntaxNode, SyntaxToken>,
+    ) {
         match element {
             rowan::NodeOrToken::Node(node) => {
                 self.builder.start_node(node.kind().into());
@@ -437,26 +453,26 @@ impl<'src> Parser<'src> {
         // Parse each list item
         while self.pos < self.src.len() && self.is_list_item() {
             let marker_start = self.pos;
-            
+
             // Consume marker (- or *)
             self.pos += 1;
             let marker_text = &self.src[marker_start..self.pos];
-            
+
             // Emit marker as trivia
             self.builder.token(Kind::CommentContent.into(), marker_text);
-            
+
             // Consume space
             let space_start = self.pos;
             self.pos += 1;
             let space_text = &self.src[space_start..self.pos];
-            
+
             // Emit space as trivia
             self.builder.token(Kind::Space.into(), space_text);
 
             // Parse list item content as argument
             self.builder.start_node(Kind::ApplyArgument.into());
             let content_start = self.pos;
-            
+
             // Read until end of line
             while self.pos < self.src.len() {
                 let ch = self.peek_char().unwrap();
@@ -479,7 +495,10 @@ impl<'src> Parser<'src> {
             // Check if next line is a list item or blank
             let save_pos = self.pos;
             self.skip_line_whitespace();
-            if self.peek_char() == Some('\n') || self.peek_char() == Some('\r') || !self.is_list_item() {
+            if self.peek_char() == Some('\n')
+                || self.peek_char() == Some('\r')
+                || !self.is_list_item()
+            {
                 self.pos = save_pos;
                 break;
             }
@@ -492,7 +511,7 @@ impl<'src> Parser<'src> {
     fn parse_paragraph(&mut self) {
         // For paragraphs, wrap in an Apply node with synthetic p token
         let content_start = self.pos;
-        
+
         // Read until blank line or special element
         while self.pos < self.src.len() {
             // Check for end conditions at start of line
@@ -540,14 +559,14 @@ impl<'src> Parser<'src> {
                     break;
                 }
             }
-            
+
             if !found_content {
                 // Found blank line or end - restore position and end paragraph
                 // Strip the trailing newline from paragraph by backing up
                 self.pos = save_pos;
                 if self.pos > content_start {
                     // Back up over the newline we just consumed
-                    if self.pos >= 2 && &self.src[self.pos-2..self.pos] == "\r\n" {
+                    if self.pos >= 2 && &self.src[self.pos - 2..self.pos] == "\r\n" {
                         self.pos -= 2;
                     } else if self.pos >= 1 {
                         let prev_char = self.src.as_bytes()[self.pos - 1];
@@ -558,27 +577,28 @@ impl<'src> Parser<'src> {
                 }
                 break;
             }
-            
+
             // Continue with next line
             self.pos = save_pos;
         }
 
         // Wrap paragraph in Apply node with synthetic p token
         self.builder.start_node(Kind::Apply.into());
-        
+
         // Use synthetic paragraph token as receiver
         self.builder.start_node(Kind::ApplyReceiver.into());
-        self.builder.start_node(Kind::SyntheticMarkdownParagraph.into());
+        self.builder
+            .start_node(Kind::SyntheticMarkdownParagraph.into());
         self.builder.finish_node();
         self.builder.finish_node();
-        
+
         // Emit paragraph content as argument
         self.builder.start_node(Kind::ApplyArgument.into());
         let content = &self.src[content_start..self.pos];
         // Parse inline elements in the paragraph content
         self.parse_inline_content(content, content_start);
         self.builder.finish_node();
-        
+
         self.builder.finish_node();
     }
 
@@ -621,7 +641,7 @@ impl<'src> Parser<'src> {
             if bytes[pos] == b'`' {
                 let code_start = pos;
                 pos += 1;
-                
+
                 // Find closing backtick
                 let mut found_close = false;
                 let code_content_start = pos;
@@ -632,21 +652,22 @@ impl<'src> Parser<'src> {
                     }
                     pos += 1;
                 }
-                
+
                 if found_close {
                     let code_content = &content[code_content_start..pos];
-                    
+
                     // Emit opening backtick as trivia
                     self.builder.token(Kind::CommentContent.into(), "`");
-                    
+
                     // Emit inline code as Apply node
                     self.builder.start_node(Kind::ApplyArgument.into());
                     self.builder.start_node(Kind::Apply.into());
                     self.builder.start_node(Kind::ApplyReceiver.into());
-                    self.builder.start_node(Kind::SyntheticMarkdownCodeInline.into());
+                    self.builder
+                        .start_node(Kind::SyntheticMarkdownCodeInline.into());
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     self.builder.start_node(Kind::ApplyArgument.into());
                     self.builder.start_node(Kind::Literal.into());
                     self.builder.start_node(Kind::StringContent.into());
@@ -654,10 +675,10 @@ impl<'src> Parser<'src> {
                     self.builder.finish_node();
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     // Skip closing backtick and emit as trivia
                     pos += 1;
                     self.builder.token(Kind::CommentContent.into(), "`");
@@ -667,60 +688,65 @@ impl<'src> Parser<'src> {
                     pos = code_start;
                 }
             }
-            
+
             // Check for emphasis (** or *)
             if bytes[pos] == b'*' {
                 let star_start = pos;
-                
+
                 // Check if it's bold (**) or italic (*)
                 let is_bold = pos + 1 < bytes.len() && bytes[pos + 1] == b'*';
                 let marker_len = if is_bold { 2 } else { 1 };
                 let marker = if is_bold { "**" } else { "*" };
-                
+
                 pos += marker_len;
-                
+
                 // Find closing marker
                 let content_start = pos;
                 let mut found_close = false;
-                
+
                 while pos < bytes.len() {
-                    if bytes[pos] == b'*' && (!is_bold || (pos + 1 < bytes.len() && bytes[pos + 1] == b'*')) {
+                    if bytes[pos] == b'*'
+                        && (!is_bold || (pos + 1 < bytes.len() && bytes[pos + 1] == b'*'))
+                    {
                         found_close = true;
                         break;
                     }
                     pos += 1;
                 }
-                
+
                 if found_close {
                     let emphasis_content = &content[content_start..pos];
-                    
+
                     // Emit opening marker as trivia
                     self.builder.token(Kind::CommentContent.into(), marker);
-                    
+
                     // Emit emphasis as Apply node
                     self.builder.start_node(Kind::ApplyArgument.into());
                     self.builder.start_node(Kind::Apply.into());
                     self.builder.start_node(Kind::ApplyReceiver.into());
-                    
+
                     if is_bold {
-                        self.builder.start_node(Kind::SyntheticMarkdownStrong.into());
+                        self.builder
+                            .start_node(Kind::SyntheticMarkdownStrong.into());
                     } else {
-                        self.builder.start_node(Kind::SyntheticMarkdownEmphasis.into());
+                        self.builder
+                            .start_node(Kind::SyntheticMarkdownEmphasis.into());
                     }
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     self.builder.start_node(Kind::ApplyArgument.into());
                     self.builder.start_node(Kind::Literal.into());
                     self.builder.start_node(Kind::StringContent.into());
-                    self.builder.token(Kind::StringContent.into(), emphasis_content);
+                    self.builder
+                        .token(Kind::StringContent.into(), emphasis_content);
                     self.builder.finish_node();
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     // Skip closing marker and emit as trivia
                     pos += marker_len;
                     self.builder.token(Kind::CommentContent.into(), marker);
@@ -730,13 +756,13 @@ impl<'src> Parser<'src> {
                     pos = star_start;
                 }
             }
-            
+
             // Regular text - collect until next special character
             let text_start = pos;
             while pos < bytes.len() && bytes[pos] != b'*' && bytes[pos] != b'`' {
                 pos += 1;
             }
-            
+
             if pos > text_start {
                 let text = &content[text_start..pos];
                 self.builder.start_node(Kind::ApplyArgument.into());
@@ -747,10 +773,10 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
                 self.builder.finish_node();
             }
-            
+
             // If we didn't advance (e.g., malformed marker), advance by 1 to avoid infinite loop
             if pos == text_start && pos < bytes.len() {
-                let char = &content[pos..pos+1];
+                let char = &content[pos..pos + 1];
                 self.builder.start_node(Kind::ApplyArgument.into());
                 self.builder.start_node(Kind::Literal.into());
                 self.builder.start_node(Kind::StringContent.into());
@@ -764,6 +790,4 @@ impl<'src> Parser<'src> {
 
         self.builder.finish_node();
     }
-
 }
-
