@@ -13,6 +13,7 @@ rowan.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
 wasm-encoder.workspace = true
+wasmparser.workspace = true
 wasmprinter.workspace = true
 
 [dev-dependencies]
