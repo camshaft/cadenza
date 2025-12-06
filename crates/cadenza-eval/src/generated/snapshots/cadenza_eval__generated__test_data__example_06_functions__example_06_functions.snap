@@ -12,24 +12,5 @@ EvalResult {
         nil,
         101,
     ],
-    diagnostics: [
-        Diagnostic {
-            kind: SyntaxError(
-                "Failed to generate IR for function capture: Undefined variable in IR generation: outer",
-            ),
-            level: Warning,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
-            kind: SyntaxError(
-                "Failed to generate IR for function capture: Undefined variable in IR generation: outer",
-            ),
-            level: Warning,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-    ],
+    diagnostics: [],
 }

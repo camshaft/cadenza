@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"measure millimeter  \\nmeasure inch = millimeter 25.4\\nlet x = 25.4millimeter\\nlet y = 1inch\\nx\\ny\\n\")"
+---
+; IR Module

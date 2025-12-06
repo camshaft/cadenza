@@ -10,8 +10,9 @@ pub fn tests() -> String {
 
     w!("use crate::testing as t;");
     w!("use insta::assert_debug_snapshot as s;");
+    w!("use insta::assert_snapshot as ss;");
 
-    // Generate eval and ast tests for each example
+    // Generate eval, ast, and ir tests for each example
     for Example { name, src } in examples.iter() {
         w!("mod {name} {{");
         w!("    use super::*;");
@@ -23,6 +24,11 @@ pub fn tests() -> String {
         w!("    fn ast() {{");
         let ast_name = format!("{name}_ast");
         w!("        s!({ast_name:?}, t::ast({src:?}), {src:?});");
+        w!("    }}");
+        w!("    #[test]");
+        w!("    fn ir() {{");
+        let ir_name = format!("{name}_ir");
+        w!("        ss!({ir_name:?}, t::ir({src:?}));");
         w!("    }}");
         w!("}}");
     }

@@ -770,18 +770,20 @@ fn handle_function_definition(
         captured_env,
     };
 
-    // Generate IR for the function if it hasn't been generated already
+    // Generate IR for the function if IR generation is enabled and it hasn't been generated already
     // This check prevents duplicate IR generation during hoisting and regular evaluation
     // Do this before moving the value into the compiler
-    if !ctx.compiler.ir_generator().has_function(name) {
-        if let Err(err) = ctx.compiler.generate_ir_for_function(&user_fn_value) {
-            // Record as a warning diagnostic instead of printing to stderr
-            let warning = Diagnostic::syntax(format!(
-                "Failed to generate IR for function {}: {}",
-                name, err
-            ))
-            .set_level(crate::diagnostic::DiagnosticLevel::Warning);
-            ctx.compiler.record_diagnostic(*warning);
+    if let Some(ir_gen) = ctx.compiler.ir_generator() {
+        if !ir_gen.has_function(name) {
+            if let Some(Err(err)) = ctx.compiler.generate_ir_for_function(&user_fn_value) {
+                // Record as a warning diagnostic instead of printing to stderr
+                let warning = Diagnostic::syntax(format!(
+                    "Failed to generate IR for function {}: {}",
+                    name, err
+                ))
+                .set_level(crate::diagnostic::DiagnosticLevel::Warning);
+                ctx.compiler.record_diagnostic(*warning);
+            }
         }
     }
 

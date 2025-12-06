@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"fn triple x = x * 3\\ntriple 7\\n\")"
+---
+; IR Module
+
+function triple(%0: unknown) -> unknown {
+block_0:
+    %1 = const 3
+    %2 = mul %0 %1
+    ret %2
+}

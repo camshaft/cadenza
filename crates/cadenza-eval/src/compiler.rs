@@ -36,7 +36,8 @@ pub struct Compiler {
     /// Type inferencer for lazy type checking.
     type_inferencer: TypeInferencer,
     /// IR generator for code generation.
-    ir_generator: IrGenerator,
+    /// This is optional to avoid paying costs for IR/codegen when only type checking.
+    ir_generator: Option<IrGenerator>,
 }
 
 impl Default for Compiler {
@@ -54,7 +55,19 @@ impl Compiler {
             diagnostics: Vec::new(),
             units: UnitRegistry::new(),
             type_inferencer: TypeInferencer::new(),
-            ir_generator: IrGenerator::new(),
+            ir_generator: None,
+        }
+    }
+
+    /// Creates a new compiler state with IR generation enabled.
+    pub fn with_ir() -> Self {
+        Self {
+            defs: Map::default(),
+            macros: Map::default(),
+            diagnostics: Vec::new(),
+            units: UnitRegistry::new(),
+            type_inferencer: TypeInferencer::new(),
+            ir_generator: Some(IrGenerator::new()),
         }
     }
 
@@ -164,6 +177,7 @@ impl Compiler {
     ///
     /// This should be called when a function is defined to generate its IR representation.
     /// Returns the function ID on success, or an error message on failure.
+    /// Returns `None` if IR generation is disabled.
     ///
     /// # Errors
     ///
@@ -171,32 +185,44 @@ impl Compiler {
     pub fn generate_ir_for_function(
         &mut self,
         func: &crate::value::UserFunction,
-    ) -> Result<crate::ir::FunctionId, String> {
-        self.ir_generator.gen_function(func)
+    ) -> Option<Result<crate::ir::FunctionId, String>> {
+        self.ir_generator
+            .as_mut()
+            .map(|generator| generator.gen_function(func))
     }
 
-    /// Returns a reference to the IR generator.
+    /// Returns a reference to the IR generator, if enabled.
     ///
     /// This allows direct access to the IR generator for advanced use cases.
-    pub fn ir_generator(&self) -> &IrGenerator {
-        &self.ir_generator
+    pub fn ir_generator(&self) -> Option<&IrGenerator> {
+        self.ir_generator.as_ref()
     }
 
-    /// Returns a mutable reference to the IR generator.
+    /// Returns a mutable reference to the IR generator, if enabled.
     ///
     /// This allows direct manipulation of the IR generator.
-    pub fn ir_generator_mut(&mut self) -> &mut IrGenerator {
-        &mut self.ir_generator
+    pub fn ir_generator_mut(&mut self) -> Option<&mut IrGenerator> {
+        self.ir_generator.as_mut()
     }
 
-    /// Builds and returns the generated IR module.
+    /// Builds and returns the generated IR module, if IR generation is enabled.
     ///
     /// This consumes the IR generator and returns the final IR module.
-    /// After calling this, the compiler will have a fresh IR generator.
-    pub fn build_ir_module(&mut self) -> crate::ir::IrModule {
-        let mut new_generator = IrGenerator::new();
-        std::mem::swap(&mut self.ir_generator, &mut new_generator);
-        new_generator.build()
+    /// After calling this, the compiler will have a fresh IR generator if one was present.
+    pub fn build_ir_module(&mut self) -> Option<crate::ir::IrModule> {
+        self.ir_generator.take().map(|generator| generator.build())
+    }
+
+    /// Enables IR generation for this compiler.
+    ///
+    /// This initializes a new IR generator. Any previously generated IR is lost.
+    pub fn enable_ir(&mut self) {
+        self.ir_generator = Some(IrGenerator::new());
+    }
+
+    /// Checks if IR generation is enabled.
+    pub fn is_ir_enabled(&self) -> bool {
+        self.ir_generator.is_some()
     }
 }
 

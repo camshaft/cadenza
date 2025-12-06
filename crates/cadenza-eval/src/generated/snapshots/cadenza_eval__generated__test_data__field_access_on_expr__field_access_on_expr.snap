@@ -7,24 +7,5 @@ EvalResult {
         nil,
         1,
     ],
-    diagnostics: [
-        Diagnostic {
-            kind: SyntaxError(
-                "Failed to generate IR for function make_rec: Function calls not yet supported in IR generation",
-            ),
-            level: Warning,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
-            kind: SyntaxError(
-                "Failed to generate IR for function make_rec: Function calls not yet supported in IR generation",
-            ),
-            level: Warning,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-    ],
+    diagnostics: [],
 }

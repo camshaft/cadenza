@@ -13,24 +13,5 @@ EvalResult {
         5,
         nil,
     ],
-    diagnostics: [
-        Diagnostic {
-            kind: SyntaxError(
-                "Failed to generate IR for function divide: Function calls not yet supported in IR generation",
-            ),
-            level: Warning,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
-            kind: SyntaxError(
-                "Failed to generate IR for function divide: Function calls not yet supported in IR generation",
-            ),
-            level: Warning,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-    ],
+    diagnostics: [],
 }

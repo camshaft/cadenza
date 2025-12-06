@@ -9,24 +9,5 @@ EvalResult {
         20,
         10,
     ],
-    diagnostics: [
-        Diagnostic {
-            kind: SyntaxError(
-                "Failed to generate IR for function capture_fn: Undefined variable in IR generation: x",
-            ),
-            level: Warning,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-        Diagnostic {
-            kind: SyntaxError(
-                "Failed to generate IR for function capture_fn: Undefined variable in IR generation: x",
-            ),
-            level: Warning,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-    ],
+    diagnostics: [],
 }
