@@ -110,9 +110,9 @@ builder.add_function(func);
 - [x] Builder API for constructing IR from typed AST
 - [x] Basic IR generation from AST expressions (literals, identifiers, binary operators)
 - [x] Function generation with parameter bindings
+- [x] Support for function calls (including recursive calls)
 - [ ] Automatic SSA conversion (for mutable variables and control flow)
 - [ ] Type-driven IR generation (using type inference results)
-- [ ] Support for function calls
 - [ ] Support for conditionals (if expressions with control flow)
 - [ ] Support for records and field access
 - [ ] Support for lists/tuples
