@@ -5,6 +5,11 @@ expression: "t::wat(\"# Welcome to Cadenza!\\n# A functional language with units
 (module
   (type (;0;) (func (param i64) (result i64)))
   (func (;0;) (type 0) (param i64) (result i64)
+    (local i64)
+    local.get 0
+    local.get 0
     i64.mul
+    local.set 1
+    local.get 1
   )
 )

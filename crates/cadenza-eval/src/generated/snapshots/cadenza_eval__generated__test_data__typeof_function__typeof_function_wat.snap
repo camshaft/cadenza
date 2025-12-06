@@ -4,5 +4,7 @@ expression: "t::wat(\"fn identity x = x\\ntypeof identity\")"
 ---
 (module
   (type (;0;) (func (param i64) (result i64)))
-  (func (;0;) (type 0) (param i64) (result i64))
+  (func (;0;) (type 0) (param i64) (result i64)
+    local.get 0
+  )
 )

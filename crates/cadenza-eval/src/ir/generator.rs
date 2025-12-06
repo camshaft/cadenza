@@ -616,10 +616,7 @@ mod tests {
 
         // Verify the function was generated
         assert_eq!(module.functions.len(), 1);
-        assert_eq!(
-            module.functions[0].name,
-            InternedString::new("countdown")
-        );
+        assert_eq!(module.functions[0].name, InternedString::new("countdown"));
 
         // Verify the IR contains recursive call
         assert!(ir_text.contains("function countdown"));

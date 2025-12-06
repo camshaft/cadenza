@@ -7,12 +7,27 @@ expression: "t::wat(\"fn add x y = x + y\\nfn mul x y = x * y\\nfn square x = x 
   (type (;1;) (func (param i64 i64) (result i64)))
   (type (;2;) (func (param i64) (result i64)))
   (func (;0;) (type 0) (param i64 i64) (result i64)
+    (local i64)
+    local.get 0
+    local.get 1
     i64.add
+    local.set 2
+    local.get 2
   )
   (func (;1;) (type 1) (param i64 i64) (result i64)
+    (local i64)
+    local.get 0
+    local.get 1
     i64.mul
+    local.set 2
+    local.get 2
   )
   (func (;2;) (type 2) (param i64) (result i64)
+    (local i64)
+    local.get 0
+    local.get 0
     i64.mul
+    local.set 1
+    local.get 1
   )
 )
