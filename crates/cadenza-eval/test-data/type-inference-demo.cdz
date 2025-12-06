@@ -1,0 +1,16 @@
+# Demonstrates type inference improvements in IR generation
+
+# Function with concrete return type
+fn get_answer = 42
+
+# Function with operations on literals
+fn compute = 10 * 5 + 2
+
+# Function using let bindings with literals
+fn with_let =
+    let x = 100
+    let y = 200
+    x
+
+# Call the functions to test
+get_answer

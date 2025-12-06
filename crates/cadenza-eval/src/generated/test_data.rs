@@ -720,6 +720,47 @@ mod block_scope {
         );
     }
 }
+mod type_inference_demo {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "type_inference_demo",
+            t::eval_all(
+                "# Demonstrates type inference improvements in IR generation\n\n# Function with concrete return type\nfn get_answer = 42\n\n# Function with operations on literals\nfn compute = 10 * 5 + 2\n\n# Function using let bindings with literals\nfn with_let =\n    let x = 100\n    let y = 200\n    x\n\n# Call the functions to test\nget_answer\n"
+            ),
+            "# Demonstrates type inference improvements in IR generation\n\n# Function with concrete return type\nfn get_answer = 42\n\n# Function with operations on literals\nfn compute = 10 * 5 + 2\n\n# Function using let bindings with literals\nfn with_let =\n    let x = 100\n    let y = 200\n    x\n\n# Call the functions to test\nget_answer\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "type_inference_demo_ast",
+            t::ast(
+                "# Demonstrates type inference improvements in IR generation\n\n# Function with concrete return type\nfn get_answer = 42\n\n# Function with operations on literals\nfn compute = 10 * 5 + 2\n\n# Function using let bindings with literals\nfn with_let =\n    let x = 100\n    let y = 200\n    x\n\n# Call the functions to test\nget_answer\n"
+            ),
+            "# Demonstrates type inference improvements in IR generation\n\n# Function with concrete return type\nfn get_answer = 42\n\n# Function with operations on literals\nfn compute = 10 * 5 + 2\n\n# Function using let bindings with literals\nfn with_let =\n    let x = 100\n    let y = 200\n    x\n\n# Call the functions to test\nget_answer\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "type_inference_demo_ir",
+            t::ir(
+                "# Demonstrates type inference improvements in IR generation\n\n# Function with concrete return type\nfn get_answer = 42\n\n# Function with operations on literals\nfn compute = 10 * 5 + 2\n\n# Function using let bindings with literals\nfn with_let =\n    let x = 100\n    let y = 200\n    x\n\n# Call the functions to test\nget_answer\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "type_inference_demo_wat",
+            t::wat(
+                "# Demonstrates type inference improvements in IR generation\n\n# Function with concrete return type\nfn get_answer = 42\n\n# Function with operations on literals\nfn compute = 10 * 5 + 2\n\n# Function using let bindings with literals\nfn with_let =\n    let x = 100\n    let y = 200\n    x\n\n# Call the functions to test\nget_answer\n"
+            )
+        );
+    }
+}
 mod measure_base {
     use super::*;
     #[test]

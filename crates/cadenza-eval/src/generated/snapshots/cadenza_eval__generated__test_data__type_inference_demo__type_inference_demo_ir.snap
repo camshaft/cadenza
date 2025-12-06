@@ -1,0 +1,30 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"# Demonstrates type inference improvements in IR generation\\n\\n# Function with concrete return type\\nfn get_answer = 42\\n\\n# Function with operations on literals\\nfn compute = 10 * 5 + 2\\n\\n# Function using let bindings with literals\\nfn with_let =\\n    let x = 100\\n    let y = 200\\n    x\\n\\n# Call the functions to test\\nget_answer\\n\")"
+---
+# IR Module
+
+@t -> integer
+fn get_answer =
+    block block_0 =
+        let v0: integer = const 42
+        ret v0
+
+
+@t -> unknown
+fn compute =
+    block block_0 =
+        let v0: integer = const 10
+        let v1: integer = const 5
+        let v2: unknown = binop mul v0 v1
+        let v3: integer = const 2
+        let v4: unknown = binop add v2 v3
+        ret v4
+
+
+@t -> unknown
+fn with_let =
+    block block_0 =
+        let v0: integer = const 100
+        let v1: integer = const 200
+        ret v0
