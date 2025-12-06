@@ -98,6 +98,11 @@ pub struct FunctionBuilder {
 }
 
 impl FunctionBuilder {
+    /// Get the function ID.
+    pub fn id(&self) -> FunctionId {
+        self.id
+    }
+
     /// Create a new basic block.
     pub fn block(&mut self) -> BlockBuilder {
         let id = BlockId(self.next_block_id);

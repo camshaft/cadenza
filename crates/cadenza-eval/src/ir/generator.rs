@@ -46,6 +46,8 @@ impl IrGenContext {
 /// IR Generator - converts evaluated values to IR.
 pub struct IrGenerator {
     builder: IrBuilder,
+    /// Maps function names to their function IDs for call generation.
+    functions: HashMap<InternedString, FunctionId>,
 }
 
 impl IrGenerator {
@@ -53,6 +55,7 @@ impl IrGenerator {
     pub fn new() -> Self {
         Self {
             builder: IrBuilder::new(),
+            functions: HashMap::new(),
         }
     }
 
@@ -108,6 +111,10 @@ impl IrGenerator {
         let return_ty = Type::Unknown;
 
         let mut func_builder = self.builder.function(name, param_types.clone(), return_ty);
+        
+        // Register the function early so recursive calls can find it
+        let func_id = func_builder.id();
+        self.functions.insert(name, func_id);
 
         // Create the entry block
         let mut block = func_builder.block();
@@ -129,7 +136,10 @@ impl IrGenerator {
 
         // Build the function
         let ir_func = func_builder.build();
-        let func_id = self.builder.add_function(ir_func);
+        let returned_func_id = self.builder.add_function(ir_func);
+
+        // Sanity check: the func_id should match
+        assert_eq!(func_id, returned_func_id);
 
         Ok(func_id)
     }
@@ -241,8 +251,35 @@ impl IrGenerator {
             return Ok(block.binop(ir_op, lhs, rhs, Type::Unknown, source));
         }
 
-        // TODO: Handle function calls
-        Err("Function calls not yet supported in IR generation".to_string())
+        // Handle function calls
+        if let Expr::Ident(ident) = &callee {
+            let func_name_text = ident.syntax().text().to_string();
+            let func_name = InternedString::new(&func_name_text);
+
+            // Look up the function ID
+            let func_id = self
+                .functions
+                .get(&func_name)
+                .copied()
+                .ok_or_else(|| format!("Unknown function in IR generation: {}", func_name))?;
+
+            // Generate IR for arguments
+            let args = apply.all_arguments();
+            let arg_values: Result<Vec<ValueId>, String> = args
+                .iter()
+                .map(|arg| self.gen_expr(arg, block, ctx))
+                .collect();
+            let arg_values = arg_values?;
+
+            // Emit call instruction with type Unknown for now
+            // TODO: Use type inference to determine the actual return type
+            return Ok(block.call(func_id, arg_values, Type::Unknown, source));
+        }
+
+        Err(format!(
+            "Unsupported callee type for IR generation: {:?}",
+            callee
+        ))
     }
 
     /// Map operator string to IR binary operator.
@@ -449,5 +486,154 @@ mod tests {
         assert!(ir_text.contains("mul"));
         assert!(ir_text.contains("add"));
         assert!(ir_text.contains("ret"));
+    }
+
+    #[test]
+    fn test_gen_function_call_simple() {
+        let mut generator = IrGenerator::new();
+
+        // First, create a simple helper function: fn double(x) = x + x
+        let source = "x + x";
+        let parsed = parse(source);
+        let ast = parsed.ast();
+        let body = ast.items().next().expect("No expression in AST");
+
+        let double_func = UserFunction {
+            name: InternedString::new("double"),
+            params: vec![InternedString::new("x")],
+            body,
+            captured_env: Env::new(),
+        };
+
+        let _double_id = generator
+            .gen_function(&double_func)
+            .expect("Failed to generate double function");
+
+        // Now create a function that calls double: fn quadruple(y) = double(double(y))
+        let source2 = "double(double(y))";
+        let parsed2 = parse(source2);
+        let ast2 = parsed2.ast();
+        let body2 = ast2.items().next().expect("No expression in AST");
+
+        let quadruple_func = UserFunction {
+            name: InternedString::new("quadruple"),
+            params: vec![InternedString::new("y")],
+            body: body2,
+            captured_env: Env::new(),
+        };
+
+        let _quadruple_id = generator
+            .gen_function(&quadruple_func)
+            .expect("Failed to generate quadruple function");
+
+        let module = generator.build();
+        let ir_text = module.to_string();
+
+        println!("Generated IR:\n{}", ir_text);
+
+        // Verify both functions were generated
+        assert_eq!(module.functions.len(), 2);
+        assert_eq!(module.functions[0].name, InternedString::new("double"));
+        assert_eq!(module.functions[1].name, InternedString::new("quadruple"));
+
+        // Verify the IR contains expected elements
+        assert!(ir_text.contains("function double"));
+        assert!(ir_text.contains("function quadruple"));
+        assert!(ir_text.contains("call @func_0")); // Call to double
+        assert!(ir_text.contains("ret"));
+    }
+
+    #[test]
+    fn test_gen_function_call_with_args() {
+        let mut generator = IrGenerator::new();
+
+        // Create a function: fn add(a, b) = a + b
+        let source = "a + b";
+        let parsed = parse(source);
+        let ast = parsed.ast();
+        let body = ast.items().next().expect("No expression in AST");
+
+        let add_func = UserFunction {
+            name: InternedString::new("add"),
+            params: vec![InternedString::new("a"), InternedString::new("b")],
+            body,
+            captured_env: Env::new(),
+        };
+
+        let _add_id = generator
+            .gen_function(&add_func)
+            .expect("Failed to generate add function");
+
+        // Create a function that calls add: fn compute(x, y) = add(x * 2, y + 1)
+        let source2 = "add(x * 2, y + 1)";
+        let parsed2 = parse(source2);
+        let ast2 = parsed2.ast();
+        let body2 = ast2.items().next().expect("No expression in AST");
+
+        let compute_func = UserFunction {
+            name: InternedString::new("compute"),
+            params: vec![InternedString::new("x"), InternedString::new("y")],
+            body: body2,
+            captured_env: Env::new(),
+        };
+
+        let _compute_id = generator
+            .gen_function(&compute_func)
+            .expect("Failed to generate compute function");
+
+        let module = generator.build();
+        let ir_text = module.to_string();
+
+        println!("Generated IR:\n{}", ir_text);
+
+        // Verify both functions were generated
+        assert_eq!(module.functions.len(), 2);
+
+        // Verify the IR contains expected elements
+        assert!(ir_text.contains("function add"));
+        assert!(ir_text.contains("function compute"));
+        assert!(ir_text.contains("mul")); // x * 2
+        assert!(ir_text.contains("add")); // y + 1 and a + b
+        assert!(ir_text.contains("call @func_0")); // Call to add
+    }
+
+    #[test]
+    fn test_gen_function_call_recursive() {
+        let mut generator = IrGenerator::new();
+
+        // Create a simple recursive function: fn countdown(n) = countdown(n - 1)
+        // (This is an infinite recursion, but that's fine for IR generation testing)
+        let source = "countdown(n - 1)";
+        let parsed = parse(source);
+        let ast = parsed.ast();
+        let body = ast.items().next().expect("No expression in AST");
+
+        let countdown_func = UserFunction {
+            name: InternedString::new("countdown"),
+            params: vec![InternedString::new("n")],
+            body,
+            captured_env: Env::new(),
+        };
+
+        let _countdown_id = generator
+            .gen_function(&countdown_func)
+            .expect("Failed to generate countdown function");
+
+        let module = generator.build();
+        let ir_text = module.to_string();
+
+        println!("Generated IR:\n{}", ir_text);
+
+        // Verify the function was generated
+        assert_eq!(module.functions.len(), 1);
+        assert_eq!(
+            module.functions[0].name,
+            InternedString::new("countdown")
+        );
+
+        // Verify the IR contains recursive call
+        assert!(ir_text.contains("function countdown"));
+        assert!(ir_text.contains("call @func_0")); // Recursive call to itself
+        assert!(ir_text.contains("sub")); // n - 1
     }
 }
