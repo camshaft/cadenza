@@ -5,11 +5,13 @@
 
 mod builder;
 mod generator;
+mod optimize;
 mod types;
 mod wasm;
 
 pub use builder::*;
 pub use generator::*;
+pub use optimize::*;
 pub use types::*;
 pub use wasm::*;
 
