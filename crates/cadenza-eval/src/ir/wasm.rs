@@ -238,13 +238,49 @@ impl WasmCodegen {
         block: &IrBlock,
         tracker: &ValueLocationTracker,
     ) -> Result<(), String> {
-        // Generate instructions
-        for instr in &block.instructions {
-            self.generate_instruction(func, instr, tracker)?;
-        }
+        // Check for tail call optimization opportunity:
+        // If the last instruction is a Call and the terminator returns its result,
+        // we can use return_call instead of call + return
+        let can_use_tail_call = if let Some(IrInstr::Call {
+            result: Some(call_result),
+            ..
+        }) = block.instructions.last()
+        {
+            matches!(
+                &block.terminator,
+                IrTerminator::Return {
+                    value: Some(ret_value),
+                    ..
+                } if call_result == ret_value
+            )
+        } else {
+            false
+        };
 
-        // Generate terminator
-        self.generate_terminator(func, &block.terminator, tracker)?;
+        if can_use_tail_call {
+            // Process all instructions except the last one
+            for instr in &block.instructions[..block.instructions.len() - 1] {
+                self.generate_instruction(func, instr, tracker)?;
+            }
+
+            // Generate the last Call instruction as a tail call (which includes the return)
+            if let Some(IrInstr::Call {
+                func: func_id,
+                args,
+                ..
+            }) = block.instructions.last()
+            {
+                self.generate_tail_call(func, *func_id, args, tracker)?;
+            }
+        } else {
+            // Generate all instructions normally
+            for instr in &block.instructions {
+                self.generate_instruction(func, instr, tracker)?;
+            }
+
+            // Generate terminator
+            self.generate_terminator(func, &block.terminator, tracker)?;
+        }
 
         Ok(())
     }
@@ -555,6 +591,39 @@ impl WasmCodegen {
                 return Err("Bitwise not not yet implemented".to_string());
             }
         }
+
+        Ok(())
+    }
+
+    /// Generate code for a tail call (return_call instruction).
+    /// This optimizes the pattern of call + return into a single return_call.
+    fn generate_tail_call(
+        &self,
+        func: &mut Function,
+        func_id: super::FunctionId,
+        args: &[ValueId],
+        tracker: &ValueLocationTracker,
+    ) -> Result<(), String> {
+        // Load arguments onto stack in order (same as regular call)
+        for &arg_value_id in args {
+            let arg_local = tracker
+                .get_local(arg_value_id)
+                .ok_or_else(|| format!("No local for argument value {}", arg_value_id))?;
+            func.instruction(&Instruction::LocalGet(arg_local));
+        }
+
+        // Get the WASM function index for this IR function
+        let func_idx = self
+            .function_indices
+            .get(&func_id)
+            .copied()
+            .ok_or_else(|| format!("Unknown function ID in tail call: {:?}", func_id))?;
+
+        // Emit return_call instruction - this performs call + return in one instruction
+        func.instruction(&Instruction::ReturnCall(func_idx));
+
+        // End the function body (needed to close the implicit function block)
+        func.instruction(&Instruction::End);
 
         Ok(())
     }

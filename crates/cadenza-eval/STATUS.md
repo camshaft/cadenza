@@ -714,6 +714,7 @@ The following enhancements were identified during code review and are planned fo
   - [x] Generate `call` instruction with correct function index
   - [x] Handle return values on stack
   - [x] Test with recursive functions
+  - [x] Tail call optimization using `return_call` instruction (important for functional languages)
 - [ ] **Control flow**
   - [ ] Implement branch instruction generation (conditional jumps)
   - [ ] Implement unconditional jump (br) for loops
