@@ -10,21 +10,21 @@ Markdown parser as an alternative syntax frontend for Cadenza, similar to the gc
 
 #### Core Parsing
 - **Headings (h1-h6)**: Parse `#` through `######` syntax
-  - AST representation: `[#, "content"]`, `[##, "content"]`, etc.
-  - Hash count indicates heading level
+  - AST representation: `[h1, "content"]`, `[h2, "content"]`, etc.
+  - Synthetic tokens provide clean identifiers for macros
   
-- **Paragraphs**: Plain text content
-  - AST representation: Just the string content directly (no wrapper)
+- **Paragraphs**: Plain text content wrapped in macro calls  
+  - AST representation: `[p, "content"]`
   - Paragraphs separated by blank lines
   
 - **Unordered Lists**: Items prefixed with `-` or `*`
-  - AST representation: `[-, "item1", "item2", "item3"]`
-  - First list marker becomes the function identifier
+  - AST representation: `[ul, "item1", "item2", "item3"]`
+  - Synthetic token `ul` as the function identifier
   
 - **Code Blocks**: Fenced with ` ``` ` or `~~~`
-  - AST representation: `[```, "language", "code content"]`
+  - Cadenza blocks: `[code, "cadenza", [__block__, [parsed, ast], ...]]` (fully parsed into AST)
+  - Other languages: `[code, "language", "code content"]` (preserved as string)
   - Language identifier extracted from fence line
-  - Code content preserved exactly as written
 
 #### Infrastructure
 - ✅ Build system with snapshot test generation
@@ -37,12 +37,14 @@ Markdown parser as an alternative syntax frontend for Cadenza, similar to the gc
 The markdown parser follows a different strategy than typical Markdown parsers:
 
 1. **Direct AST Construction**: Markdown syntax is parsed directly into Cadenza's AST format using Rowan CST
-2. **Syntax as Identifiers**: Markdown syntax becomes function identifiers:
-   - `#` becomes a function that receives heading content
-   - ` ``` ` becomes a function that receives language and code
-   - `-` becomes a function that receives list items
+2. **Synthetic Tokens as Identifiers**: Markdown elements use synthetic tokens:
+   - Headings use `h1` through `h6` (not `#` symbols)
+   - Paragraphs use `p`
+   - Lists use `ul`
+   - Code blocks use `code`
 3. **Macro-Based Evaluation**: Handler macros registered in the eval context process markdown elements
 4. **Zero String Generation**: No intermediate Cadenza code generation
+5. **Parsed Cadenza Blocks**: Code blocks with language "cadenza" or empty are fully parsed into Cadenza AST
 
 ### 🚧 Partial/Limited Features
 
@@ -71,22 +73,25 @@ The markdown parser follows a different strategy than typical Markdown parsers:
 
 ## Design Decisions
 
-### Why Use Markdown Syntax as Identifiers?
+### Why Use Synthetic Tokens as Identifiers?
 
-Instead of translating `#` to `h1`, we use `#` directly as the function identifier. This approach:
-- Keeps all source bytes accounted for in the CST
-- Preserves the original markdown syntax
-- Allows macro handlers to interpret the syntax flexibly
-- Follows the same pattern as the gcode parser
+Instead of translating `#` to `h1` or using `#` directly, we use synthetic tokens. This approach:
+- Provides clean, semantic identifiers (h1-h6, p, ul, code) for macro definitions
+- Keeps all source bytes accounted for in the CST (markdown syntax emitted as trivia)
+- Allows macro handlers to work with intuitive function names
+- Makes it easy to define macros in Cadenza code
+- Follows best practices for first-class language integration
 
-### Why Skip CST Coverage Validation?
+### CST Coverage for Embedded Cadenza Blocks
 
-Unlike gcode where every source byte directly corresponds to a token, markdown involves:
-- Content transformation (extracting text from between markers)
-- Synthetic structure (implicit paragraph boundaries)
-- Whitespace handling (blank lines as separators)
+When Cadenza code blocks are parsed, the Cadenza AST is embedded into the markdown CST. This creates a challenge: Rowan's GreenNodeBuilder calculates token positions automatically based on sequential ordering and cumulative lengths, but embedded Cadenza tokens have their own position space.
 
-CST coverage validation is not meaningful for this transformation. The AST tests verify correct parsing.
+Current status: CST coverage validation temporarily skipped for files with Cadenza code blocks. A proper solution requires either:
+1. Adding offset support to cadenza-syntax parser (architectural change)
+2. Implementing position remapping when copying Cadenza tokens
+3. Accepting that embedded parsed blocks have independent position spaces
+
+This doesn't affect AST correctness or evaluation - it's purely a source mapping concern for tooling (LSP, formatters).
 
 ### Content Handling
 
@@ -134,8 +139,8 @@ let mut compiler = Compiler::new();
 let mut env = Env::new();
 
 // Register markdown element macros
-compiler.define_macro("#".into(), Value::BuiltinMacro(BuiltinMacro {
-    name: "#",
+compiler.define_macro("h1".into(), Value::BuiltinMacro(BuiltinMacro {
+    name: "h1",
     signature: Type::function(vec![Type::String], Type::Nil),
     func: |args, ctx| {
         // Handle heading content
@@ -143,12 +148,12 @@ compiler.define_macro("#".into(), Value::BuiltinMacro(BuiltinMacro {
     },
 }));
 
-compiler.define_macro("```".into(), Value::BuiltinMacro(BuiltinMacro {
-    name: "```",
-    signature: Type::function(vec![Type::String, Type::String], Type::Nil),
+compiler.define_macro("code".into(), Value::BuiltinMacro(BuiltinMacro {
+    name: "code",
+    signature: Type::function(vec![Type::String, Type::Any], Type::Nil),
     func: |args, ctx| {
         // args[0] = language (e.g., "cadenza")
-        // args[1] = code content
+        // args[1] = code content (parsed AST block for Cadenza, string for others)
         Ok(Value::Nil)
     },
 }));

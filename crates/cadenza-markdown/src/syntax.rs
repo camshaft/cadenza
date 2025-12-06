@@ -342,7 +342,7 @@ impl<'src> Parser<'src> {
         // Special case: if language is empty or "cadenza", parse as Cadenza code
         self.builder.start_node(Kind::ApplyArgument.into());
         if language.is_empty() || language == "cadenza" {
-            // Parse the code content as Cadenza and embed it in the AST
+            // Parse the code content as Cadenza
             let cadenza_parse = cadenza_syntax::parse::parse(code_content);
             // Get the root node from the parsed Cadenza code
             let cadenza_root = cadenza_parse.syntax();
@@ -357,7 +357,7 @@ impl<'src> Parser<'src> {
             // Add each statement as an argument to the block
             for child in cadenza_root.children_with_tokens() {
                 self.builder.start_node(Kind::ApplyArgument.into());
-                self.add_element_with_adjusted_positions(child, code_start);
+                self.add_element_recursive(child);
                 self.builder.finish_node();
             }
             
@@ -375,36 +375,19 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
     }
 
-    // Helper to recursively add elements from another tree with adjusted positions
-    fn add_element_with_adjusted_positions(&mut self, element: rowan::NodeOrToken<cadenza_syntax::SyntaxNode, SyntaxToken>, base_offset: usize) {
+    // Helper to recursively add elements from another parsed tree
+    fn add_element_recursive(&mut self, element: rowan::NodeOrToken<cadenza_syntax::SyntaxNode, SyntaxToken>) {
         match element {
             rowan::NodeOrToken::Node(node) => {
                 self.builder.start_node(node.kind().into());
                 for child in node.children_with_tokens() {
-                    self.add_element_with_adjusted_positions(child, base_offset);
+                    self.add_element_recursive(child);
                 }
                 self.builder.finish_node();
             }
             rowan::NodeOrToken::Token(token) => {
-                // Get the token text and emit it at the correct position in the markdown source
-                let token_range = token.text_range();
-                let adjusted_start = base_offset + usize::from(token_range.start());
-                let adjusted_end = base_offset + usize::from(token_range.end());
-                
-                // Bounds check to prevent panic
-                if adjusted_end > self.src.len() {
-                    eprintln!("WARNING: Token range {}..{} exceeds source length {}",
-                             adjusted_start, adjusted_end, self.src.len());
-                    eprintln!("  Token kind: {:?}, base_offset: {}, token range: {:?}",
-                             token.kind(), base_offset, token_range);
-                    // Use the token's own text as fallback
-                    self.builder.token(token.kind().into(), token.text());
-                    return;
-                }
-                
-                // Extract the actual text from the markdown source at the adjusted position
-                let actual_text = &self.src[adjusted_start..adjusted_end];
-                self.builder.token(token.kind().into(), actual_text);
+                // Just use the token's text content - Rowan will handle positions automatically
+                self.builder.token(token.kind().into(), token.text());
             }
         }
     }
