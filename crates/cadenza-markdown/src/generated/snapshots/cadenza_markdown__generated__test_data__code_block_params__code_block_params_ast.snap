@@ -5,7 +5,7 @@ expression: "# Interactive Example\n\nThis example shows code with parameters.\n
 [
     [h1, "Interactive Example"],
     [p, "This example shows code with parameters."],
-    [code, "cadenza", [=, [let, setup], [initialize, Error(Error@128..128)]]],
+    [code, "cadenza", [__block__, [=, [let, setup], [initialize, Error(Error@128..128)]]]],
     [p, "The code above is hidden and editable."],
     [code, "javascript", "console.log(\"Hello\");\n"],
     [p, "Different languages are supported!"],

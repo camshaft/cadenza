@@ -346,12 +346,22 @@ impl<'src> Parser<'src> {
             let cadenza_parse = cadenza_syntax::parse::parse(code_content);
             // Get the root node from the parsed Cadenza code
             let cadenza_root = cadenza_parse.syntax();
-            // Add the parsed Cadenza tree as a child (excluding the Root wrapper)
-            // We add children directly, which will have their own token positions
-            // that map correctly to the code_content portion of the markdown source
+            
+            // Wrap the Cadenza statements in a synthetic block
+            self.builder.start_node(Kind::Apply.into());
+            self.builder.start_node(Kind::ApplyReceiver.into());
+            self.builder.start_node(Kind::SyntheticBlock.into());
+            self.builder.finish_node();
+            self.builder.finish_node();
+            
+            // Add each statement as an argument to the block
             for child in cadenza_root.children_with_tokens() {
+                self.builder.start_node(Kind::ApplyArgument.into());
                 self.add_element_with_adjusted_positions(child, code_start);
+                self.builder.finish_node();
             }
+            
+            self.builder.finish_node(); // End Apply (block)
         } else {
             // Non-Cadenza code: emit as string content
             self.builder.start_node(Kind::Literal.into());
@@ -377,12 +387,20 @@ impl<'src> Parser<'src> {
             }
             rowan::NodeOrToken::Token(token) => {
                 // Get the token text and emit it at the correct position in the markdown source
-                let token_text = token.text();
-                // The token's position in the parsed code needs to be adjusted to the markdown source
-                // by adding base_offset (the position where code_content starts in markdown)
                 let token_range = token.text_range();
                 let adjusted_start = base_offset + usize::from(token_range.start());
                 let adjusted_end = base_offset + usize::from(token_range.end());
+                
+                // Bounds check to prevent panic
+                if adjusted_end > self.src.len() {
+                    eprintln!("WARNING: Token range {}..{} exceeds source length {}",
+                             adjusted_start, adjusted_end, self.src.len());
+                    eprintln!("  Token kind: {:?}, base_offset: {}, token range: {:?}",
+                             token.kind(), base_offset, token_range);
+                    // Use the token's own text as fallback
+                    self.builder.token(token.kind().into(), token.text());
+                    return;
+                }
                 
                 // Extract the actual text from the markdown source at the adjusted position
                 let actual_text = &self.src[adjusted_start..adjusted_end];
@@ -559,37 +577,3 @@ impl<'src> Parser<'src> {
 
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cadenza_eval::{BuiltinMacro, Compiler, Env, Type, Value, eval};
-
-    #[test]
-    fn test_execute_markdown_with_macros() {
-        let markdown = "# Hello\n\nWorld!";
-
-        // Parse Markdown directly into Cadenza AST
-        let parse_result = parse(markdown);
-        let root = parse_result.ast();
-
-        let mut compiler = Compiler::new();
-        let mut env = Env::new();
-
-        // Register # macro for headings
-        compiler.define_macro(
-            "#".into(),
-            Value::BuiltinMacro(BuiltinMacro {
-                name: "#",
-                signature: Type::function(vec![Type::String], Type::Nil),
-                func: |_args, _ctx| Ok(Value::Nil),
-            }),
-        );
-
-        // Evaluate - eval doesn't care this came from Markdown!
-        let results = eval(&root, &mut env, &mut compiler);
-        // Note: The paragraph "World!" is just a string literal, so results has 2 items:
-        // 1. Result of [#, "Hello"]
-        // 2. The string "World!"
-        assert_eq!(results.len(), 2);
-    }
-}

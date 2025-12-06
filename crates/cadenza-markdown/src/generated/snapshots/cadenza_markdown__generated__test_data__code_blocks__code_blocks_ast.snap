@@ -5,6 +5,6 @@ expression: "# Physics Tutorial\n\nThe range of a projectile is calculated using
 [
     [h1, "Physics Tutorial"],
     [p, "The range of a projectile is calculated using the formula below."],
-    [code, "cadenza", [measure, meter]],
+    [code, "cadenza", [__block__, [measure, meter], [measure, degree], [=, [let, velocity], 20], [=, [let, angle], 45]]],
     [p, "You can experiment with different values to see how they affect the range!"],
 ]

@@ -10,7 +10,7 @@ expression: "# Complex Document\n\nThis document has multiple elements.\n\n## In
     [ul, "Topic 1", "Topic 2", "Topic 3"],
     [h2, "Code Examples"],
     [p, "Here's a simple example:"],
-    [code, "cadenza", [=, [let, x], 42]],
+    [code, "cadenza", [__block__, [=, [let, x], 42]]],
     [p, "And another one:"],
     [code, "python", "print(\"Hello, World!\")\n"],
     [h2, "Conclusion"],
