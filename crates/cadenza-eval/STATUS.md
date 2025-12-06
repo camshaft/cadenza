@@ -729,17 +729,20 @@ The following enhancements were identified during code review and are planned fo
 - [ ] **String constants**
   - [ ] Use WASM GC arrays for string representation
   - [ ] Import/export string handling functions
-  - [ ] Consider WTF-8 encoding for compatibility
+  - [ ] Use UTF-8 encoding (requires validation but better compatibility)
 - [ ] **Quantity/measurement values**
-  - [ ] Represent as structs with value and unit fields
-  - [ ] Or compile-time eliminate units and use raw numbers
-- [ ] **Records and tuples**
+  - [ ] Compile-time eliminate units and use raw numbers
+  - [ ] Dimensional analysis happens at compile time
+  - [ ] Any conversions made explicit by IR passes calling conversion functions
+- [ ] **Records**
   - [ ] Use WASM GC struct types
   - [ ] Generate field access instructions (struct.get)
   - [ ] Generate struct construction (struct.new)
+  - [ ] Note: Tuples should be eliminated to records by IR codegen time
 - [ ] **Lists**
-  - [ ] Use WASM GC array types
+  - [ ] Use WASM GC array types (investigate if growable arrays are possible)
   - [ ] Generate array operations (array.new, array.get, array.set)
+  - [ ] Consider implications for dynamic sizing
 
 **Lower Priority** (optimizations and advanced features):
 - [ ] **Optimization passes**
@@ -747,18 +750,22 @@ The following enhancements were identified during code review and are planned fo
   - [ ] Constant folding
   - [ ] Common subexpression elimination
   - [ ] Inlining small functions
-- [ ] **Export generation**
-  - [ ] Export functions with mangled names
+- [ ] **Export generation and linking model**
+  - [ ] Determine linking strategy: single WASM binary per package vs per-module
+  - [ ] Consider parallelization benefits of small modules
+  - [ ] Export functions (investigate if mangling needed with component model)
   - [ ] Generate getter functions for constant exports
   - [ ] Handle module-level exports
+  - [ ] Plan for hot reloading support
 - [ ] **Better type handling**
   - [ ] Use WASM GC reference types for complex types
   - [ ] Implement runtime type tags for union types
   - [ ] Generate type checking code for dynamic operations
-- [ ] **Debugging support**
+- [ ] **Debugging support** (should be planned early, difficult to add later)
   - [ ] Generate DWARF debug info
   - [ ] Source maps for WAT output
   - [ ] Function name section for better stack traces
+  - [ ] Track derivation of computed const values for better error reporting
 - [ ] **Memory management**
   - [ ] Integrate with WASM GC proposal
   - [ ] Handle reference counting for shared values
@@ -770,6 +777,9 @@ The following enhancements were identified during code review and are planned fo
 - [ ] Test function calls with varying argument counts
 - [ ] Test nested function calls and recursion
 - [ ] Add performance benchmarks
+- [ ] **Differential fuzz testing**: Generate Cadenza programs, compare interpreter vs WASM codegen output
+  - [ ] Add operation limit to interpreter to prevent infinite loops
+  - [ ] Essential for compile-time execution safety
 
 **References**: 
 - WASM spec: https://webassembly.github.io/spec/
