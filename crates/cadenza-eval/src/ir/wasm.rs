@@ -9,9 +9,7 @@
 //! - Reference types
 //! - Component Model (for future interop)
 
-use super::{
-    BinOp, IrBlock, IrConst, IrFunction, IrInstr, IrModule, IrTerminator, UnOp, ValueId,
-};
+use super::{BinOp, IrBlock, IrConst, IrFunction, IrInstr, IrModule, IrTerminator, UnOp, ValueId};
 use crate::Type;
 use std::collections::HashMap;
 use wasm_encoder::*;
@@ -103,9 +101,7 @@ impl WasmCodegen {
 
         // Add to type section
         let type_idx = self.types.len();
-        self.types
-            .ty()
-            .function(param_types, results);
+        self.types.ty().function(param_types, results);
 
         // Add to function section
         self.functions.function(type_idx);
@@ -160,7 +156,9 @@ impl WasmCodegen {
                 // For now, this is a placeholder
                 self.generate_binop(func, *op, *lhs, *rhs, ty)?;
             }
-            IrInstr::UnOp { op, operand, ty, .. } => {
+            IrInstr::UnOp {
+                op, operand, ty, ..
+            } => {
                 self.generate_unop(func, *op, *operand, ty)?;
             }
             IrInstr::Call { func: _, args, .. } => {
@@ -191,7 +189,12 @@ impl WasmCodegen {
     }
 
     /// Generate code for a constant.
-    fn generate_const(&self, func: &mut Function, value: &IrConst, _ty: &Type) -> Result<(), String> {
+    fn generate_const(
+        &self,
+        func: &mut Function,
+        value: &IrConst,
+        _ty: &Type,
+    ) -> Result<(), String> {
         match value {
             IrConst::Nil => {
                 // Nil could be represented as ref.null
@@ -409,7 +412,7 @@ impl WasmCodegen {
     /// Convert an IR type to a WASM value type.
     fn type_to_wasm(&self, ty: &Type) -> Result<ValType, String> {
         match ty {
-            Type::Nil => Ok(ValType::I32), // Represent nil as i32 0
+            Type::Nil => Ok(ValType::I32),  // Represent nil as i32 0
             Type::Bool => Ok(ValType::I32), // Represent bool as i32
             Type::Integer => Ok(ValType::I64),
             Type::Float => Ok(ValType::F64),
@@ -471,8 +474,7 @@ pub fn generate_wat(ir: &IrModule) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::*;
-    use crate::InternedString;
+    use crate::{InternedString, ir::*};
 
     fn dummy_source() -> SourceLocation {
         SourceLocation {
@@ -513,7 +515,11 @@ mod tests {
 
         let mut codegen = WasmCodegen::new();
         let result = codegen.generate(&module);
-        assert!(result.is_ok(), "Failed to generate WASM: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to generate WASM: {:?}",
+            result.err()
+        );
     }
 
     #[test]
