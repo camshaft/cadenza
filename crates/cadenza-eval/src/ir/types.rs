@@ -148,17 +148,19 @@ impl std::fmt::Display for UnOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrInstr {
     /// Load a constant value
-    /// %result = const <value>
+    /// %result: ty = const <value>
     Const {
         result: ValueId,
+        ty: Type,
         value: IrConst,
         source: SourceLocation,
     },
 
     /// Binary operation
-    /// %result = binop <op> %lhs %rhs
+    /// %result: ty = binop <op> %lhs %rhs
     BinOp {
         result: ValueId,
+        ty: Type,
         op: BinOp,
         lhs: ValueId,
         rhs: ValueId,
@@ -166,55 +168,61 @@ pub enum IrInstr {
     },
 
     /// Unary operation
-    /// %result = unop <op> %operand
+    /// %result: ty = unop <op> %operand
     UnOp {
         result: ValueId,
+        ty: Type,
         op: UnOp,
         operand: ValueId,
         source: SourceLocation,
     },
 
     /// Function call
-    /// %result = call <func> (%arg1, %arg2, ...)
+    /// %result: ty = call <func> (%arg1, %arg2, ...)
     Call {
         result: Option<ValueId>, // None for void returns
+        ty: Type,
         func: FunctionId,
         args: Vec<ValueId>,
         source: SourceLocation,
     },
 
     /// Create a record
-    /// %result = record { field1: %val1, field2: %val2, ... }
+    /// %result: ty = record { field1: %val1, field2: %val2, ... }
     /// Field names stored separately from values for efficient cloning
     /// field_values[i] corresponds to field_names[i]
     Record {
         result: ValueId,
+        ty: Type,
         field_names: Arc<[InternedString]>, // Shared across all instances of this record type
         field_values: Vec<ValueId>,         // Parallel array: values[i] is value for names[i]
         source: SourceLocation,
     },
 
     /// Field access
-    /// %result = field %record .field_name
+    /// %result: ty = field %record .field_name
     Field {
         result: ValueId,
+        ty: Type,
         record: ValueId,
         field: InternedString,
         source: SourceLocation,
     },
 
     /// Create a list/tuple
-    /// %result = tuple (%elem1, %elem2, ...)
+    /// %result: ty = tuple (%elem1, %elem2, ...)
     Tuple {
         result: ValueId,
+        ty: Type,
         elements: Vec<ValueId>,
         source: SourceLocation,
     },
 
     /// Phi node for SSA (join point for values from different blocks)
-    /// %result = phi [%val1 from <block1>], [%val2 from <block2>], ...
+    /// %result: ty = phi [%val1 from <block1>], [%val2 from <block2>], ...
     Phi {
         result: ValueId,
+        ty: Type,
         incoming: Vec<(ValueId, BlockId)>,
         source: SourceLocation,
     },
@@ -253,31 +261,39 @@ impl IrInstr {
 impl std::fmt::Display for IrInstr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IrInstr::Const { result, value, .. } => {
-                write!(f, "{} = const {}", result, value)
+            IrInstr::Const {
+                result, ty, value, ..
+            } => {
+                write!(f, "{}: {} = const {}", result, ty, value)
             }
             IrInstr::BinOp {
                 result,
+                ty,
                 op,
                 lhs,
                 rhs,
                 ..
             } => {
-                write!(f, "{} = {} {} {}", result, op, lhs, rhs)
+                write!(f, "{}: {} = {} {} {}", result, ty, op, lhs, rhs)
             }
             IrInstr::UnOp {
                 result,
+                ty,
                 op,
                 operand,
                 ..
             } => {
-                write!(f, "{} = {} {}", result, op, operand)
+                write!(f, "{}: {} = {} {}", result, ty, op, operand)
             }
             IrInstr::Call {
-                result, func, args, ..
+                result,
+                ty,
+                func,
+                args,
+                ..
             } => {
                 if let Some(res) = result {
-                    write!(f, "{} = call {}(", res, func)?;
+                    write!(f, "{}: {} = call {}(", res, ty, func)?;
                 } else {
                     write!(f, "call {}(", func)?;
                 }
@@ -291,11 +307,12 @@ impl std::fmt::Display for IrInstr {
             }
             IrInstr::Record {
                 result,
+                ty,
                 field_names,
                 field_values,
                 ..
             } => {
-                write!(f, "{} = record {{ ", result)?;
+                write!(f, "{}: {} = record {{ ", result, ty)?;
                 for (i, (name, value)) in field_names.iter().zip(field_values.iter()).enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -306,16 +323,20 @@ impl std::fmt::Display for IrInstr {
             }
             IrInstr::Field {
                 result,
+                ty,
                 record,
                 field,
                 ..
             } => {
-                write!(f, "{} = field {}.{}", result, record, field)
+                write!(f, "{}: {} = field {}.{}", result, ty, record, field)
             }
             IrInstr::Tuple {
-                result, elements, ..
+                result,
+                ty,
+                elements,
+                ..
             } => {
-                write!(f, "{} = tuple (", result)?;
+                write!(f, "{}: {} = tuple (", result, ty)?;
                 for (i, elem) in elements.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -325,9 +346,12 @@ impl std::fmt::Display for IrInstr {
                 write!(f, ")")
             }
             IrInstr::Phi {
-                result, incoming, ..
+                result,
+                ty,
+                incoming,
+                ..
             } => {
-                write!(f, "{} = phi [", result)?;
+                write!(f, "{}: {} = phi [", result, ty)?;
                 for (i, (val, block)) in incoming.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

@@ -6,6 +6,6 @@ expression: "t::ir(\"# Welcome to Cadenza!\\n# A functional language with units 
 
 function square(%0: unknown) -> unknown {
 block_0:
-    %1 = mul %0 %0
+    %1: unknown = mul %0 %0
     ret %1
 }
