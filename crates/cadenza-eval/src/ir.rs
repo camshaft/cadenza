@@ -4,9 +4,11 @@
 //! The IR is target-independent and designed for WASM code generation with WasmGC.
 
 mod builder;
+mod generator;
 mod types;
 
 pub use builder::*;
+pub use generator::*;
 pub use types::*;
 
 #[cfg(test)]
