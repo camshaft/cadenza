@@ -295,12 +295,7 @@ impl BlockBuilder {
     }
 
     /// Emit a tuple construction.
-    pub fn tuple(
-        &mut self,
-        elements: Vec<ValueId>,
-        ty: Type,
-        source: SourceLocation,
-    ) -> ValueId {
+    pub fn tuple(&mut self, elements: Vec<ValueId>, ty: Type, source: SourceLocation) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::Tuple {
             result,

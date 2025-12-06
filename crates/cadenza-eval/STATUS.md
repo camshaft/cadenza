@@ -676,7 +676,7 @@ The following enhancements were identified during code review and are planned fo
   - [x] IR types and builder API
   - [x] Basic IR generation from AST (literals, identifiers, binary operators, functions)
   - [x] ~~**Wire up IR generator to evaluator**~~ ✅ (Completed - IR generated during function definition)
-  - [ ] **Typed operators in IR**: Each operator should have type information to avoid losing type inference results
+  - [x] ~~**Typed operators in IR**~~: ✅ Each operator and instruction includes type information to preserve type inference results
   - [ ] Type-driven IR generation (integrate TypeInferencer results)
   - [ ] Support for function calls, conditionals, records, lists
 - [ ] **Monomorphization**: Generate specialized functions for each type usage

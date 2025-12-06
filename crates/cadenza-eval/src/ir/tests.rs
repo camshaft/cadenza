@@ -326,7 +326,13 @@ fn test_builder_add_function() {
 
     let mut block = func_builder.block();
     // Parameters are %0 and %1
-    let result = block.binop(BinOp::Add, ValueId(0), ValueId(1), Type::Integer, dummy_source());
+    let result = block.binop(
+        BinOp::Add,
+        ValueId(0),
+        ValueId(1),
+        Type::Integer,
+        dummy_source(),
+    );
     let (block, next_val) = block.ret(Some(result), dummy_source());
     func_builder.add_block(block, next_val);
 

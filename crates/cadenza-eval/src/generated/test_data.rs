@@ -1,6 +1,5 @@
 use crate::testing as t;
-use insta::assert_debug_snapshot as s;
-use insta::assert_snapshot as ss;
+use insta::{assert_debug_snapshot as s, assert_snapshot as ss};
 mod record_simple {
     use super::*;
     #[test]
