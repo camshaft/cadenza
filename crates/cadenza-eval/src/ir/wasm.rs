@@ -239,22 +239,30 @@ impl WasmCodegen {
         tracker: &ValueLocationTracker,
     ) -> Result<(), String> {
         // Check for tail call optimization opportunity:
-        // If the last instruction is a Call and the terminator returns its result,
+        // If the last instruction is a Call and the terminator returns its result (or both are void),
         // we can use return_call instead of call + return
-        let can_use_tail_call = if let Some(IrInstr::Call {
-            result: Some(call_result),
-            ..
-        }) = block.instructions.last()
-        {
-            matches!(
-                &block.terminator,
-                IrTerminator::Return {
-                    value: Some(ret_value),
-                    ..
-                } if call_result == ret_value
-            )
-        } else {
-            false
+        let can_use_tail_call = match block.instructions.last() {
+            Some(IrInstr::Call {
+                result: Some(call_result),
+                ..
+            }) => {
+                // Non-void call: check if terminator returns the same value
+                matches!(
+                    &block.terminator,
+                    IrTerminator::Return {
+                        value: Some(ret_value),
+                        ..
+                    } if call_result == ret_value
+                )
+            }
+            Some(IrInstr::Call { result: None, .. }) => {
+                // Void call: check if terminator is also void return
+                matches!(
+                    &block.terminator,
+                    IrTerminator::Return { value: None, .. }
+                )
+            }
+            _ => false,
         };
 
         if can_use_tail_call {
