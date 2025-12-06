@@ -1,0 +1,112 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Physics Tutorial\n\nThe range of a projectile is calculated using the formula below.\n\n```cadenza\nmeasure meter\nmeasure degree\nlet velocity = 20\nlet angle = 45\n```\n\nYou can experiment with different values to see how they affect the range!\n"
+---
+Root@0..246
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..18
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..18
+      Literal@2..18
+        StringContent@2..18
+          StringContent@2..18 "Physics Tutorial"
+  Newline@18..19 "\n"
+  Newline@19..20 "\n"
+  Apply@20..84
+    ApplyReceiver@20..20
+      SyntheticMarkdownParagraph@20..20
+    ApplyArgument@20..84
+      Literal@20..84
+        StringContent@20..84
+          StringContent@20..84 "The range of a projec ..."
+  Newline@84..85 "\n"
+  Newline@85..86 "\n"
+  CommentContent@86..89 "```"
+  CommentContent@89..96 "cadenza"
+  Newline@96..97 "\n"
+  CommentContent@97..100 "```"
+  Newline@100..101 "\n"
+  Apply@101..170
+    ApplyReceiver@101..101
+      SyntheticMarkdownCode@101..101
+    ApplyArgument@101..108
+      Literal@101..108
+        StringContent@101..108
+          StringContent@101..108 "cadenza"
+    ApplyArgument@108..170
+      Apply@108..170
+        ApplyReceiver@108..108
+          SyntheticBlock@108..108
+        ApplyArgument@108..122
+          Apply@108..122
+            ApplyReceiver@108..116
+              Identifier@108..115
+                Identifier@108..115 "measure"
+              Space@115..116 " "
+            ApplyArgument@116..122
+              Identifier@116..121
+                Identifier@116..121 "meter"
+              Newline@121..122 "\n"
+        ApplyArgument@122..137
+          Apply@122..137
+            ApplyReceiver@122..130
+              Identifier@122..129
+                Identifier@122..129 "measure"
+              Space@129..130 " "
+            ApplyArgument@130..137
+              Identifier@130..136
+                Identifier@130..136 "degree"
+              Newline@136..137 "\n"
+        ApplyArgument@137..155
+          Apply@137..155
+            ApplyArgument@137..150
+              Apply@137..150
+                ApplyReceiver@137..141
+                  Identifier@137..140
+                    Identifier@137..140 "let"
+                  Space@140..141 " "
+                ApplyArgument@141..150
+                  Identifier@141..149
+                    Identifier@141..149 "velocity"
+                  Space@149..150 " "
+            ApplyReceiver@150..151
+              Equal@150..151
+                Equal@150..151 "="
+            Space@151..152 " "
+            ApplyArgument@152..155
+              Literal@152..154
+                Integer@152..154
+                  Integer@152..154 "20"
+              Newline@154..155 "\n"
+        ApplyArgument@155..170
+          Apply@155..170
+            ApplyArgument@155..165
+              Apply@155..165
+                ApplyReceiver@155..159
+                  Identifier@155..158
+                    Identifier@155..158 "let"
+                  Space@158..159 " "
+                ApplyArgument@159..165
+                  Identifier@159..164
+                    Identifier@159..164 "angle"
+                  Space@164..165 " "
+            ApplyReceiver@165..166
+              Equal@165..166
+                Equal@165..166 "="
+            Space@166..167 " "
+            ApplyArgument@167..170
+              Literal@167..169
+                Integer@167..169
+                  Integer@167..169 "45"
+              Newline@169..170 "\n"
+  Newline@170..171 "\n"
+  Apply@171..245
+    ApplyReceiver@171..171
+      SyntheticMarkdownParagraph@171..171
+    ApplyArgument@171..245
+      Literal@171..245
+        StringContent@171..245
+          StringContent@171..245 "You can experiment wi ..."
+  Newline@245..246 "\n"

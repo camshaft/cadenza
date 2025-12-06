@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Physics Tutorial\n\nThe range of a projectile is calculated using the formula below.\n\n```cadenza\nmeasure meter\nmeasure degree\nlet velocity = 20\nlet angle = 45\n```\n\nYou can experiment with different values to see how they affect the range!\n"
+---
+[
+    [h1, "Physics Tutorial"],
+    [p, "The range of a projectile is calculated using the formula below."],
+    [code, "cadenza", [__block__, [measure, meter], [measure, degree], [=, [let, velocity], 20], [=, [let, angle], 45]]],
+    [p, "You can experiment with different values to see how they affect the range!"],
+]

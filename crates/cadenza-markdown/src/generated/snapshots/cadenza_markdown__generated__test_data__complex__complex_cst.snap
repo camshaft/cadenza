@@ -1,0 +1,173 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Complex Document\n\nThis document has multiple elements.\n\n## Introduction\n\nWelcome to this tutorial. Here's what we'll cover:\n\n- Topic 1\n- Topic 2\n- Topic 3\n\n## Code Examples\n\nHere's a simple example:\n\n```cadenza\nlet x = 42\n```\n\nAnd another one:\n\n```python\nprint(\"Hello, World!\")\n```\n\n## Conclusion\n\nThat's all for now!\n"
+---
+Root@0..333
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..18
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..18
+      Literal@2..18
+        StringContent@2..18
+          StringContent@2..18 "Complex Document"
+  Newline@18..19 "\n"
+  Newline@19..20 "\n"
+  Apply@20..56
+    ApplyReceiver@20..20
+      SyntheticMarkdownParagraph@20..20
+    ApplyArgument@20..56
+      Literal@20..56
+        StringContent@20..56
+          StringContent@20..56 "This document has mul ..."
+  Newline@56..57 "\n"
+  Newline@57..58 "\n"
+  CommentContent@58..60 "##"
+  Space@60..61 " "
+  Apply@61..73
+    ApplyReceiver@61..61
+      SyntheticMarkdownH2@61..61
+    ApplyArgument@61..73
+      Literal@61..73
+        StringContent@61..73
+          StringContent@61..73 "Introduction"
+  Newline@73..74 "\n"
+  Newline@74..75 "\n"
+  Apply@75..125
+    ApplyReceiver@75..75
+      SyntheticMarkdownParagraph@75..75
+    ApplyArgument@75..125
+      Literal@75..125
+        StringContent@75..125
+          StringContent@75..125 "Welcome to this tutor ..."
+  Newline@125..126 "\n"
+  Newline@126..127 "\n"
+  Apply@127..157
+    ApplyReceiver@127..127
+      SyntheticMarkdownList@127..127
+    CommentContent@127..128 "-"
+    Space@128..129 " "
+    ApplyArgument@129..136
+      Literal@129..136
+        StringContent@129..136
+          StringContent@129..136 "Topic 1"
+    Newline@136..137 "\n"
+    CommentContent@137..138 "-"
+    Space@138..139 " "
+    ApplyArgument@139..146
+      Literal@139..146
+        StringContent@139..146
+          StringContent@139..146 "Topic 2"
+    Newline@146..147 "\n"
+    CommentContent@147..148 "-"
+    Space@148..149 " "
+    ApplyArgument@149..156
+      Literal@149..156
+        StringContent@149..156
+          StringContent@149..156 "Topic 3"
+    Newline@156..157 "\n"
+  Newline@157..158 "\n"
+  CommentContent@158..160 "##"
+  Space@160..161 " "
+  Apply@161..174
+    ApplyReceiver@161..161
+      SyntheticMarkdownH2@161..161
+    ApplyArgument@161..174
+      Literal@161..174
+        StringContent@161..174
+          StringContent@161..174 "Code Examples"
+  Newline@174..175 "\n"
+  Newline@175..176 "\n"
+  Apply@176..200
+    ApplyReceiver@176..176
+      SyntheticMarkdownParagraph@176..176
+    ApplyArgument@176..200
+      Literal@176..200
+        StringContent@176..200
+          StringContent@176..200 "Here's a simple example:"
+  Newline@200..201 "\n"
+  Newline@201..202 "\n"
+  CommentContent@202..205 "```"
+  CommentContent@205..212 "cadenza"
+  Newline@212..213 "\n"
+  CommentContent@213..216 "```"
+  Newline@216..217 "\n"
+  Apply@217..235
+    ApplyReceiver@217..217
+      SyntheticMarkdownCode@217..217
+    ApplyArgument@217..224
+      Literal@217..224
+        StringContent@217..224
+          StringContent@217..224 "cadenza"
+    ApplyArgument@224..235
+      Apply@224..235
+        ApplyReceiver@224..224
+          SyntheticBlock@224..224
+        ApplyArgument@224..235
+          Apply@224..235
+            ApplyArgument@224..230
+              Apply@224..230
+                ApplyReceiver@224..228
+                  Identifier@224..227
+                    Identifier@224..227 "let"
+                  Space@227..228 " "
+                ApplyArgument@228..230
+                  Identifier@228..229
+                    Identifier@228..229 "x"
+                  Space@229..230 " "
+            ApplyReceiver@230..231
+              Equal@230..231
+                Equal@230..231 "="
+            Space@231..232 " "
+            ApplyArgument@232..235
+              Literal@232..234
+                Integer@232..234
+                  Integer@232..234 "42"
+              Newline@234..235 "\n"
+  Newline@235..236 "\n"
+  Apply@236..252
+    ApplyReceiver@236..236
+      SyntheticMarkdownParagraph@236..236
+    ApplyArgument@236..252
+      Literal@236..252
+        StringContent@236..252
+          StringContent@236..252 "And another one:"
+  Newline@252..253 "\n"
+  Newline@253..254 "\n"
+  CommentContent@254..257 "```"
+  CommentContent@257..263 "python"
+  Newline@263..264 "\n"
+  CommentContent@264..267 "```"
+  Newline@267..268 "\n"
+  Apply@268..297
+    ApplyReceiver@268..268
+      SyntheticMarkdownCode@268..268
+    ApplyArgument@268..274
+      Literal@268..274
+        StringContent@268..274
+          StringContent@268..274 "python"
+    ApplyArgument@274..297
+      Literal@274..297
+        StringContent@274..297
+          StringContent@274..297 "print(\"Hello, World!\")\n"
+  Newline@297..298 "\n"
+  CommentContent@298..300 "##"
+  Space@300..301 " "
+  Apply@301..311
+    ApplyReceiver@301..301
+      SyntheticMarkdownH2@301..301
+    ApplyArgument@301..311
+      Literal@301..311
+        StringContent@301..311
+          StringContent@301..311 "Conclusion"
+  Newline@311..312 "\n"
+  Newline@312..313 "\n"
+  Apply@313..332
+    ApplyReceiver@313..313
+      SyntheticMarkdownParagraph@313..313
+    ApplyArgument@313..332
+      Literal@313..332
+        StringContent@313..332
+          StringContent@313..332 "That's all for now!"
+  Newline@332..333 "\n"

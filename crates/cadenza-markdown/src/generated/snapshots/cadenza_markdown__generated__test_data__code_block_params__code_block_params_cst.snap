@@ -1,0 +1,96 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
+---
+Root@0..253
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..21
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..21
+      Literal@2..21
+        StringContent@2..21
+          StringContent@2..21 "Interactive Example"
+  Newline@21..22 "\n"
+  Newline@22..23 "\n"
+  Apply@23..63
+    ApplyReceiver@23..23
+      SyntheticMarkdownParagraph@23..23
+    ApplyArgument@23..63
+      Literal@23..63
+        StringContent@23..63
+          StringContent@23..63 "This example shows co ..."
+  Newline@63..64 "\n"
+  Newline@64..65 "\n"
+  CommentContent@65..68 "```"
+  CommentContent@68..91 "cadenza editable hidden"
+  Newline@91..92 "\n"
+  CommentContent@92..95 "```"
+  Newline@95..96 "\n"
+  Apply@96..126
+    ApplyReceiver@96..96
+      SyntheticMarkdownCode@96..96
+    ApplyArgument@96..103
+      Literal@96..103
+        StringContent@96..103
+          StringContent@96..103 "cadenza"
+    ApplyArgument@103..126
+      Apply@103..126
+        ApplyReceiver@103..103
+          SyntheticBlock@103..103
+        ApplyArgument@103..126
+          Apply@103..126
+            ApplyArgument@103..113
+              Apply@103..113
+                ApplyReceiver@103..107
+                  Identifier@103..106
+                    Identifier@103..106 "let"
+                  Space@106..107 " "
+                ApplyArgument@107..113
+                  Identifier@107..112
+                    Identifier@107..112 "setup"
+                  Space@112..113 " "
+            ApplyReceiver@113..114
+              Equal@113..114
+                Equal@113..114 "="
+            Space@114..115 " "
+            ApplyArgument@115..126
+              Identifier@115..125
+                Identifier@115..125 "initialize"
+              Newline@125..126 "\n"
+  Newline@126..127 "\n"
+  Apply@127..165
+    ApplyReceiver@127..127
+      SyntheticMarkdownParagraph@127..127
+    ApplyArgument@127..165
+      Literal@127..165
+        StringContent@127..165
+          StringContent@127..165 "The code above is hid ..."
+  Newline@165..166 "\n"
+  Newline@166..167 "\n"
+  CommentContent@167..170 "```"
+  CommentContent@170..180 "javascript"
+  Newline@180..181 "\n"
+  CommentContent@181..184 "```"
+  Newline@184..185 "\n"
+  Apply@185..217
+    ApplyReceiver@185..185
+      SyntheticMarkdownCode@185..185
+    ApplyArgument@185..195
+      Literal@185..195
+        StringContent@185..195
+          StringContent@185..195 "javascript"
+    ApplyArgument@195..217
+      Literal@195..217
+        StringContent@195..217
+          StringContent@195..217 "console.log(\"Hello\");\n"
+  Newline@217..218 "\n"
+  Apply@218..252
+    ApplyReceiver@218..218
+      SyntheticMarkdownParagraph@218..218
+    ApplyArgument@218..252
+      Literal@218..252
+        StringContent@218..252
+          StringContent@218..252 "Different languages a ..."
+  Newline@252..253 "\n"

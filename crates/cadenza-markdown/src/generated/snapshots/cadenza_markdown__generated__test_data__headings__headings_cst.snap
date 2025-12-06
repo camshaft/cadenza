@@ -1,0 +1,74 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Heading 1\n## Heading 2\n### Heading 3\n#### Heading 4\n##### Heading 5\n###### Heading 6\n\nRegular paragraph after headings.\n"
+---
+Root@0..122
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..11
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..11
+      Literal@2..11
+        StringContent@2..11
+          StringContent@2..11 "Heading 1"
+  Newline@11..12 "\n"
+  CommentContent@12..14 "##"
+  Space@14..15 " "
+  Apply@15..24
+    ApplyReceiver@15..15
+      SyntheticMarkdownH2@15..15
+    ApplyArgument@15..24
+      Literal@15..24
+        StringContent@15..24
+          StringContent@15..24 "Heading 2"
+  Newline@24..25 "\n"
+  CommentContent@25..28 "###"
+  Space@28..29 " "
+  Apply@29..38
+    ApplyReceiver@29..29
+      SyntheticMarkdownH3@29..29
+    ApplyArgument@29..38
+      Literal@29..38
+        StringContent@29..38
+          StringContent@29..38 "Heading 3"
+  Newline@38..39 "\n"
+  CommentContent@39..43 "####"
+  Space@43..44 " "
+  Apply@44..53
+    ApplyReceiver@44..44
+      SyntheticMarkdownH4@44..44
+    ApplyArgument@44..53
+      Literal@44..53
+        StringContent@44..53
+          StringContent@44..53 "Heading 4"
+  Newline@53..54 "\n"
+  CommentContent@54..59 "#####"
+  Space@59..60 " "
+  Apply@60..69
+    ApplyReceiver@60..60
+      SyntheticMarkdownH5@60..60
+    ApplyArgument@60..69
+      Literal@60..69
+        StringContent@60..69
+          StringContent@60..69 "Heading 5"
+  Newline@69..70 "\n"
+  CommentContent@70..76 "######"
+  Space@76..77 " "
+  Apply@77..86
+    ApplyReceiver@77..77
+      SyntheticMarkdownH6@77..77
+    ApplyArgument@77..86
+      Literal@77..86
+        StringContent@77..86
+          StringContent@77..86 "Heading 6"
+  Newline@86..87 "\n"
+  Newline@87..88 "\n"
+  Apply@88..121
+    ApplyReceiver@88..88
+      SyntheticMarkdownParagraph@88..88
+    ApplyArgument@88..121
+      Literal@88..121
+        StringContent@88..121
+          StringContent@88..121 "Regular paragraph aft ..."
+  Newline@121..122 "\n"

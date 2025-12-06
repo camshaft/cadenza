@@ -661,6 +661,16 @@ impl Synthetic {
             s("SyntheticList", "__list__"),
             s("SyntheticRecord", "__record__"),
             s("SyntheticBlock", "__block__"),
+            // Markdown elements
+            s("SyntheticMarkdownH1", "h1"),
+            s("SyntheticMarkdownH2", "h2"),
+            s("SyntheticMarkdownH3", "h3"),
+            s("SyntheticMarkdownH4", "h4"),
+            s("SyntheticMarkdownH5", "h5"),
+            s("SyntheticMarkdownH6", "h6"),
+            s("SyntheticMarkdownParagraph", "p"),
+            s("SyntheticMarkdownList", "ul"),
+            s("SyntheticMarkdownCode", "code"),
         ]
     };
 }

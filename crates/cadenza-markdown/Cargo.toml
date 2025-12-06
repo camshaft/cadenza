@@ -1,0 +1,17 @@
+[package]
+name = "cadenza-markdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build/main.rs"
+
+[dependencies]
+cadenza-eval = { path = "../cadenza-eval" }
+cadenza-syntax = { path = "../cadenza-syntax" }
+rowan.workspace = true
+thiserror.workspace = true
+miette.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
