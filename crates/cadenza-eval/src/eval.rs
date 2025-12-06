@@ -2100,7 +2100,10 @@ pub fn builtin_assert() -> BuiltinMacro {
 pub fn builtin_if() -> BuiltinMacro {
     BuiltinMacro {
         name: "if",
-        signature: Type::function(vec![Type::Bool, Type::Unknown, Type::Unknown], Type::Unknown),
+        signature: Type::function(
+            vec![Type::Bool, Type::Unknown, Type::Unknown],
+            Type::Unknown,
+        ),
         func: |args, ctx| {
             // Validate argument count
             if args.len() != 3 {
@@ -2120,8 +2123,10 @@ pub fn builtin_if() -> BuiltinMacro {
             let condition_result = match condition_value {
                 Value::Bool(b) => b,
                 _ => {
-                    return Err(Diagnostic::type_error(Type::Bool, condition_value.type_of())
-                        .with_span(condition_expr.span()));
+                    return Err(
+                        Diagnostic::type_error(Type::Bool, condition_value.type_of())
+                            .with_span(condition_expr.span()),
+                    );
                 }
             };
 

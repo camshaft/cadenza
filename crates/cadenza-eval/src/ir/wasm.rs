@@ -9,7 +9,9 @@
 //! - Reference types
 //! - Component Model (for future interop)
 
-use super::{BinOp, BlockId, IrBlock, IrConst, IrFunction, IrInstr, IrModule, IrTerminator, UnOp, ValueId};
+use super::{
+    BinOp, BlockId, IrBlock, IrConst, IrFunction, IrInstr, IrModule, IrTerminator, UnOp, ValueId,
+};
 use crate::Type;
 use std::collections::{HashMap, HashSet};
 use wasm_encoder::*;
@@ -229,7 +231,7 @@ impl WasmCodegen {
     }
 
     /// Generate the complete function body with proper control flow.
-    /// 
+    ///
     /// This method analyzes the IR's basic block structure and generates
     /// structured WASM control flow (if/else/block/loop).
     fn generate_function_body(
@@ -245,18 +247,25 @@ impl WasmCodegen {
         }
 
         // Start with the entry block (not in a control structure)
-        self.generate_block_recursive(func, ir_func.entry_block, &blocks, tracker, &mut HashSet::new(), false)?;
-        
+        self.generate_block_recursive(
+            func,
+            ir_func.entry_block,
+            &blocks,
+            tracker,
+            &mut HashSet::new(),
+            false,
+        )?;
+
         Ok(())
     }
 
     /// Generate code for a block and its successors recursively.
-    /// 
+    ///
     /// The `visited` set tracks which blocks have been generated to avoid infinite loops.
     /// The `in_control_structure` flag indicates if this block is nested within an if-else.
-    /// 
+    ///
     /// # Limitations
-    /// 
+    ///
     /// This implementation works for simple control flow patterns (if-then-else where
     /// branches return directly). It has limitations:
     /// - The visited set prevents generating blocks reached through multiple paths,
@@ -350,7 +359,7 @@ impl WasmCodegen {
                 // Try to detect if-then-else-merge pattern for structured control flow
                 // For now, generate a simple if-else structure and recurse into branches
                 // Note: This is a simplified implementation that may not handle all cases
-                
+
                 // Emit if instruction (result type is based on the blocks' return)
                 // For simplicity, use empty type (no result on stack from if)
                 func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
@@ -366,7 +375,7 @@ impl WasmCodegen {
 
                 // End if-else
                 func.instruction(&Instruction::End);
-                
+
                 // If we're at function level (not nested in another control structure),
                 // and both branches returned, we still need to close the function body
                 if !in_control_structure {
@@ -376,7 +385,14 @@ impl WasmCodegen {
             IrTerminator::Jump { target, .. } => {
                 // For now, just recurse into the target block
                 // In a more sophisticated implementation, this would use WASM's br instruction
-                self.generate_block_recursive(func, *target, blocks, tracker, visited, in_control_structure)?;
+                self.generate_block_recursive(
+                    func,
+                    *target,
+                    blocks,
+                    tracker,
+                    visited,
+                    in_control_structure,
+                )?;
             }
         }
 
