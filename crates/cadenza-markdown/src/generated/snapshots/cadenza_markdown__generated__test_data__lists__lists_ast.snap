@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Shopping List\n\n- Apples\n- Bananas\n- Oranges\n\nSome text after the list.\n"
+---
+[
+    [#, "Shopping List"],
+    [-, "Apples", "Bananas", "Oranges"],
+    "Some text after the list.",
+]
