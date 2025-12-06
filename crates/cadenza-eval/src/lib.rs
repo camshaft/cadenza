@@ -25,6 +25,7 @@ mod env;
 mod eval;
 mod generated;
 pub mod interner;
+pub mod ir;
 mod map;
 pub mod typeinfer;
 pub mod unit;
