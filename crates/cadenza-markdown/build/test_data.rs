@@ -8,8 +8,7 @@ pub fn tests() -> String {
         };
     }
 
-    w!("use crate::parse;");
-    w!("use crate::testing::verify_cst_coverage;");
+    w!("use crate::{{parse, testing::verify_cst_coverage}};");
     w!("use insta::assert_debug_snapshot as s;");
     w!("");
 

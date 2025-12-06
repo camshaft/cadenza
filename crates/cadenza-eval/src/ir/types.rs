@@ -475,7 +475,7 @@ impl std::fmt::Display for IrFunction {
             write!(f, " {}", param)?;
         }
         write!(f, " = (")?;
-        
+
         // If there's only one block, inline it
         if self.blocks.len() == 1 {
             writeln!(f)?;
