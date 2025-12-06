@@ -650,3 +650,106 @@ fn test_type_inference_error_node() {
         }
     }
 }
+
+#[test]
+fn test_ir_generation_during_evaluation() {
+    // Test that IR is generated when functions are defined
+    let src = r#"
+fn add x y = x + y
+fn double n = n * 2
+add 1 2
+"#;
+    let parsed = parse(src);
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let results = crate::eval(&parsed.ast(), &mut env, &mut compiler);
+
+    // Check that evaluation succeeded
+    assert!(
+        !compiler.has_errors(),
+        "Evaluation had errors: {:?}",
+        compiler.diagnostics()
+    );
+    assert_eq!(results.len(), 3);
+    // Last result should be the function call: add 1 2 = 3
+    assert_eq!(results[2], Value::Integer(3));
+
+    // Get the IR module
+    let ir_module = compiler.build_ir_module();
+
+    // Verify that IR was generated for both functions
+    assert_eq!(
+        ir_module.functions.len(),
+        2,
+        "Expected 2 functions in IR module"
+    );
+
+    // Check function names
+    let add_name = InternedString::new("add");
+    let double_name = InternedString::new("double");
+
+    let func_names: Vec<_> = ir_module
+        .functions
+        .iter()
+        .map(|f| f.name)
+        .collect();
+    assert!(
+        func_names.contains(&add_name),
+        "Expected 'add' function in IR"
+    );
+    assert!(
+        func_names.contains(&double_name),
+        "Expected 'double' function in IR"
+    );
+
+    // Verify the add function has 2 parameters
+    let add_func = ir_module
+        .functions
+        .iter()
+        .find(|f| f.name == add_name)
+        .expect("add function should exist");
+    assert_eq!(add_func.params.len(), 2, "add should have 2 parameters");
+
+    // Verify the double function has 1 parameter
+    let double_func = ir_module
+        .functions
+        .iter()
+        .find(|f| f.name == double_name)
+        .expect("double function should exist");
+    assert_eq!(
+        double_func.params.len(),
+        1,
+        "double should have 1 parameter"
+    );
+
+    // Print IR for visual inspection
+    println!("Generated IR:\n{}", ir_module);
+}
+
+#[test]
+fn test_ir_module_can_be_built_multiple_times() {
+    // Test that we can build the IR module multiple times (it resets)
+    let src1 = "fn foo x = x + 1";
+    let src2 = "fn bar y = y * 2";
+
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    // First function
+    let parsed1 = parse(src1);
+    crate::eval(&parsed1.ast(), &mut env, &mut compiler);
+
+    let ir_module1 = compiler.build_ir_module();
+    assert_eq!(ir_module1.functions.len(), 1);
+    assert_eq!(ir_module1.functions[0].name, InternedString::new("foo"));
+
+    // Second function (after building first module)
+    let parsed2 = parse(src2);
+    crate::eval(&parsed2.ast(), &mut env, &mut compiler);
+
+    let ir_module2 = compiler.build_ir_module();
+    assert_eq!(ir_module2.functions.len(), 1);
+    assert_eq!(ir_module2.functions[0].name, InternedString::new("bar"));
+}
+

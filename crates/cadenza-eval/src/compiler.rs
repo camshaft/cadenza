@@ -5,8 +5,13 @@
 //! API to register definitions, emit IR, etc.
 
 use crate::{
-    diagnostic::Diagnostic, interner::InternedString, map::Map, typeinfer::TypeInferencer,
-    unit::UnitRegistry, value::Value,
+    diagnostic::Diagnostic,
+    interner::InternedString,
+    ir::IrGenerator,
+    map::Map,
+    typeinfer::TypeInferencer,
+    unit::UnitRegistry,
+    value::Value,
 };
 
 /// The compiler state that accumulates definitions during evaluation.
@@ -20,7 +25,10 @@ use crate::{
 /// Additionally, the compiler includes a type inferencer for lazy type checking.
 /// Type checking is not performed during evaluation by default, but can be
 /// triggered on-demand for specific expressions or for LSP integration.
-#[derive(Debug)]
+///
+/// The compiler also includes an IR generator that converts evaluated functions
+/// into a target-independent intermediate representation suitable for optimization
+/// and code generation.
 pub struct Compiler {
     /// Variable and function definitions.
     defs: Map<Value>,
@@ -32,6 +40,8 @@ pub struct Compiler {
     units: UnitRegistry,
     /// Type inferencer for lazy type checking.
     type_inferencer: TypeInferencer,
+    /// IR generator for code generation.
+    ir_generator: IrGenerator,
 }
 
 impl Default for Compiler {
@@ -49,6 +59,7 @@ impl Compiler {
             diagnostics: Vec::new(),
             units: UnitRegistry::new(),
             type_inferencer: TypeInferencer::new(),
+            ir_generator: IrGenerator::new(),
         }
     }
 
@@ -152,6 +163,45 @@ impl Compiler {
     /// for metaprogramming purposes.
     pub fn type_inferencer_mut(&mut self) -> &mut TypeInferencer {
         &mut self.type_inferencer
+    }
+
+    /// Generates IR for a user function.
+    ///
+    /// This should be called when a function is defined to generate its IR representation.
+    /// Returns the function ID on success, or an error message on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if IR generation fails (e.g., unsupported expressions).
+    pub fn generate_ir_for_function(
+        &mut self,
+        func: &crate::value::UserFunction,
+    ) -> Result<crate::ir::FunctionId, String> {
+        self.ir_generator.gen_function(func)
+    }
+
+    /// Returns a reference to the IR generator.
+    ///
+    /// This allows direct access to the IR generator for advanced use cases.
+    pub fn ir_generator(&self) -> &IrGenerator {
+        &self.ir_generator
+    }
+
+    /// Returns a mutable reference to the IR generator.
+    ///
+    /// This allows direct manipulation of the IR generator.
+    pub fn ir_generator_mut(&mut self) -> &mut IrGenerator {
+        &mut self.ir_generator
+    }
+
+    /// Builds and returns the generated IR module.
+    ///
+    /// This consumes the IR generator and returns the final IR module.
+    /// After calling this, the compiler will have a fresh IR generator.
+    pub fn build_ir_module(&mut self) -> crate::ir::IrModule {
+        let mut new_generator = IrGenerator::new();
+        std::mem::swap(&mut self.ir_generator, &mut new_generator);
+        new_generator.build()
     }
 }
 

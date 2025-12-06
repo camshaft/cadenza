@@ -279,9 +279,23 @@ impl IrGenerator {
         self.builder.build()
     }
 
+    /// Get a reference to the underlying IrBuilder.
+    pub fn builder(&self) -> &IrBuilder {
+        &self.builder
+    }
+
     /// Get a mutable reference to the underlying IrBuilder.
     pub fn builder_mut(&mut self) -> &mut IrBuilder {
         &mut self.builder
+    }
+
+    /// Check if a function with the given name already exists in the IR module.
+    pub fn has_function(&self, name: InternedString) -> bool {
+        self.builder
+            .module()
+            .functions
+            .iter()
+            .any(|f| f.name == name)
     }
 }
 
