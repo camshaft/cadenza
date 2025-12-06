@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"# Test that < errors on non-numeric types\\n\\\"foo\\\" < 5\\n\")"
+---
+(module)

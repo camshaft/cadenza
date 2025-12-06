@@ -12,7 +12,7 @@ pub fn tests() -> String {
     w!("use insta::assert_debug_snapshot as s;");
     w!("use insta::assert_snapshot as ss;");
 
-    // Generate eval, ast, and ir tests for each example
+    // Generate eval, ast, ir, and wat tests for each example
     for Example { name, src } in examples.iter() {
         w!("mod {name} {{");
         w!("    use super::*;");
@@ -29,6 +29,11 @@ pub fn tests() -> String {
         w!("    fn ir() {{");
         let ir_name = format!("{name}_ir");
         w!("        ss!({ir_name:?}, t::ir({src:?}));");
+        w!("    }}");
+        w!("    #[test]");
+        w!("    fn wat() {{");
+        let wat_name = format!("{name}_wat");
+        w!("        ss!({wat_name:?}, t::wat({src:?}));");
         w!("    }}");
         w!("}}");
     }

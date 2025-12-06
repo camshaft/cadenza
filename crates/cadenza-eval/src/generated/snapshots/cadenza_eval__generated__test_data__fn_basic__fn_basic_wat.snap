@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"fn add x y = x + y\\nadd 3 5\\n\")"
+---
+(module
+  (type (;0;) (func (param i64 i64) (result i64)))
+  (func (;0;) (type 0) (param i64 i64) (result i64)
+    i64.add
+  )
+)
