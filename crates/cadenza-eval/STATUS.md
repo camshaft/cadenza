@@ -746,11 +746,12 @@ The following enhancements were identified during code review and are planned fo
   - [ ] Consider implications for dynamic sizing
 
 **Lower Priority** (optimizations and advanced features):
-- [ ] **Optimization passes**
-  - [ ] Dead code elimination
-  - [ ] Constant folding
-  - [ ] Common subexpression elimination
+- [x] **Optimization passes** ✅
+  - [x] Dead code elimination
+  - [x] Constant folding
+  - [x] Common subexpression elimination
   - [ ] Inlining small functions
+  - [x] Configurable optimization pipeline with OptimizationPass trait
 - [ ] **Export generation and linking model**
   - [ ] Determine linking strategy: single WASM binary per package vs per-module
   - [ ] Consider parallelization benefits of small modules
