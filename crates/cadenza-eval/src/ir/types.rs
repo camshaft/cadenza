@@ -72,7 +72,7 @@ impl std::fmt::Display for IrConst {
 }
 
 /// Binary operators.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     // Arithmetic
     Add,
@@ -127,7 +127,7 @@ impl std::fmt::Display for BinOp {
 }
 
 /// Unary operators.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnOp {
     Neg,    // Numeric negation
     Not,    // Logical not

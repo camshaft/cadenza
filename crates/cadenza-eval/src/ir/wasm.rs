@@ -9,9 +9,11 @@
 //! - Reference types
 //! - Component Model (for future interop)
 
-use super::{BinOp, IrBlock, IrConst, IrFunction, IrInstr, IrModule, IrTerminator, UnOp, ValueId};
+use super::{
+    BinOp, BlockId, IrBlock, IrConst, IrFunction, IrInstr, IrModule, IrTerminator, UnOp, ValueId,
+};
 use crate::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wasm_encoder::*;
 
 /// Tracks where SSA values are located in WASM (parameters, locals, or stack).
@@ -221,70 +223,177 @@ impl WasmCodegen {
 
         let mut function = Function::new(local_types);
 
-        // Generate code for the entry block
-        // TODO: Handle multiple blocks and control flow properly
-        for block in &func.blocks {
-            self.generate_block(&mut function, block, &tracker)?;
-        }
+        // Generate code for all blocks with proper control flow
+        self.generate_function_body(&mut function, func, &tracker)?;
 
         self.code.function(&function);
         Ok(())
     }
 
-    /// Generate code for a basic block.
-    fn generate_block(
+    /// Generate the complete function body with proper control flow.
+    ///
+    /// This method analyzes the IR's basic block structure and generates
+    /// structured WASM control flow (if/else/block/loop).
+    fn generate_function_body(
         &self,
         func: &mut Function,
-        block: &IrBlock,
+        ir_func: &IrFunction,
         tracker: &ValueLocationTracker,
     ) -> Result<(), String> {
-        // Check for tail call optimization opportunity:
-        // If the last instruction is a Call and the terminator returns its result (or both are void),
-        // we can use return_call instead of call + return
-        let can_use_tail_call = match block.instructions.last() {
-            Some(IrInstr::Call {
-                result: Some(call_result),
+        // Build a map of block IDs to blocks for quick lookup
+        let mut blocks: HashMap<BlockId, &IrBlock> = HashMap::new();
+        for block in &ir_func.blocks {
+            blocks.insert(block.id, block);
+        }
+
+        // Start with the entry block (not in a control structure)
+        self.generate_block_recursive(
+            func,
+            ir_func.entry_block,
+            &blocks,
+            tracker,
+            &mut HashSet::new(),
+            false,
+        )?;
+
+        Ok(())
+    }
+
+    /// Generate code for a block and its successors recursively.
+    ///
+    /// The `visited` set tracks which blocks have been generated to avoid infinite loops.
+    /// The `in_control_structure` flag indicates if this block is nested within an if-else.
+    ///
+    /// # Limitations
+    ///
+    /// This implementation works for simple control flow patterns (if-then-else where
+    /// branches return directly). It has limitations:
+    /// - The visited set prevents generating blocks reached through multiple paths,
+    ///   which means merge blocks with phi nodes won't work correctly yet.
+    /// - Complex control flow graphs may require block restructuring algorithms
+    ///   (e.g., Relooper) to map to WASM's structured control flow.
+    fn generate_block_recursive(
+        &self,
+        func: &mut Function,
+        block_id: BlockId,
+        blocks: &HashMap<BlockId, &IrBlock>,
+        tracker: &ValueLocationTracker,
+        visited: &mut HashSet<BlockId>,
+        in_control_structure: bool,
+    ) -> Result<(), String> {
+        // Check if we've already generated this block
+        // NOTE: This prevents handling merge blocks with multiple predecessors.
+        // A more sophisticated implementation would need to use br/br_if for jumps.
+        if visited.contains(&block_id) {
+            return Ok(());
+        }
+        visited.insert(block_id);
+
+        let block = blocks
+            .get(&block_id)
+            .ok_or_else(|| format!("Block {} not found", block_id))?;
+
+        // Generate instructions for this block
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            // Check for tail call optimization
+            let is_last_instr = idx == block.instructions.len() - 1;
+            let can_tail_call = is_last_instr
+                && matches!(instr, IrInstr::Call { .. })
+                && matches!(&block.terminator, IrTerminator::Return { .. })
+                && !in_control_structure; // Don't use tail call in nested structures
+
+            if can_tail_call {
+                if let IrInstr::Call {
+                    result,
+                    func: func_id,
+                    args,
+                    ..
+                } = instr
+                {
+                    // Check if return value matches
+                    let ret_value_matches = match &block.terminator {
+                        IrTerminator::Return { value, .. } => {
+                            (result.is_none() && value.is_none())
+                                || (result.is_some() && result.as_ref() == value.as_ref())
+                        }
+                        _ => false,
+                    };
+
+                    if ret_value_matches {
+                        self.generate_tail_call(func, *func_id, args, tracker)?;
+                        return Ok(()); // Tail call ends the block
+                    }
+                }
+            }
+
+            // Generate the instruction normally
+            self.generate_instruction(func, instr, tracker)?;
+        }
+
+        // Generate terminator
+        match &block.terminator {
+            IrTerminator::Return { value, .. } => {
+                if let Some(value_id) = value {
+                    let local_idx = tracker
+                        .get_local(*value_id)
+                        .ok_or_else(|| format!("No local for return value {}", value_id))?;
+                    func.instruction(&Instruction::LocalGet(local_idx));
+                }
+                // Only emit End if we're not in a control structure (if-else)
+                if !in_control_structure {
+                    func.instruction(&Instruction::End);
+                }
+            }
+            IrTerminator::Branch {
+                cond,
+                then_block,
+                else_block,
                 ..
-            }) => {
-                // Non-void call: check if terminator returns the same value
-                matches!(
-                    &block.terminator,
-                    IrTerminator::Return {
-                        value: Some(ret_value),
-                        ..
-                    } if call_result == ret_value
-                )
-            }
-            Some(IrInstr::Call { result: None, .. }) => {
-                // Void call: check if terminator is also void return
-                matches!(&block.terminator, IrTerminator::Return { value: None, .. })
-            }
-            _ => false,
-        };
+            } => {
+                // Load condition
+                let cond_local = tracker
+                    .get_local(*cond)
+                    .ok_or_else(|| format!("No local for branch condition {}", cond))?;
+                func.instruction(&Instruction::LocalGet(cond_local));
 
-        if can_use_tail_call {
-            // Process all instructions except the last one
-            for instr in &block.instructions[..block.instructions.len() - 1] {
-                self.generate_instruction(func, instr, tracker)?;
-            }
+                // Try to detect if-then-else-merge pattern for structured control flow
+                // For now, generate a simple if-else structure and recurse into branches
+                // Note: This is a simplified implementation that may not handle all cases
 
-            // Generate the last Call instruction as a tail call (which includes the return)
-            if let Some(IrInstr::Call {
-                func: func_id,
-                args,
-                ..
-            }) = block.instructions.last()
-            {
-                self.generate_tail_call(func, *func_id, args, tracker)?;
-            }
-        } else {
-            // Generate all instructions normally
-            for instr in &block.instructions {
-                self.generate_instruction(func, instr, tracker)?;
-            }
+                // Emit if instruction (result type is based on the blocks' return)
+                // For simplicity, use empty type (no result on stack from if)
+                func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
 
-            // Generate terminator
-            self.generate_terminator(func, &block.terminator, tracker)?;
+                // Generate then block (nested in control structure)
+                self.generate_block_recursive(func, *then_block, blocks, tracker, visited, true)?;
+
+                // Emit else
+                func.instruction(&Instruction::Else);
+
+                // Generate else block (nested in control structure)
+                self.generate_block_recursive(func, *else_block, blocks, tracker, visited, true)?;
+
+                // End if-else
+                func.instruction(&Instruction::End);
+
+                // If we're at function level (not nested in another control structure),
+                // and both branches returned, we still need to close the function body
+                if !in_control_structure {
+                    func.instruction(&Instruction::End);
+                }
+            }
+            IrTerminator::Jump { target, .. } => {
+                // For now, just recurse into the target block
+                // In a more sophisticated implementation, this would use WASM's br instruction
+                self.generate_block_recursive(
+                    func,
+                    *target,
+                    blocks,
+                    tracker,
+                    visited,
+                    in_control_structure,
+                )?;
+            }
         }
 
         Ok(())
@@ -568,28 +677,38 @@ impl WasmCodegen {
         ty: &Type,
         tracker: &ValueLocationTracker,
     ) -> Result<(), String> {
-        // Load operand from local
-        let operand_local = tracker
-            .get_local(operand)
-            .ok_or_else(|| format!("No local for operand value {}", operand))?;
-        func.instruction(&Instruction::LocalGet(operand_local));
-
         match op {
             UnOp::Neg => match ty {
                 Type::Integer => {
-                    // Integer negation requires emitting "0 - operand", but we've already
-                    // loaded the operand. Need to restructure to load operands in correct order.
-                    // TODO: Refactor to not pre-load operand for operations that need specific order
-                    return Err("Integer negation needs better stack management".to_string());
+                    // Integer negation: compute 0 - operand
+                    func.instruction(&Instruction::I64Const(0));
+                    // Load operand from local
+                    let operand_local = tracker
+                        .get_local(operand)
+                        .ok_or_else(|| format!("No local for operand value {}", operand))?;
+                    func.instruction(&Instruction::LocalGet(operand_local));
+                    // Subtract: 0 - operand
+                    func.instruction(&Instruction::I64Sub);
                 }
                 Type::Float => {
+                    // Float negation has a dedicated instruction
+                    // Load operand from local
+                    let operand_local = tracker
+                        .get_local(operand)
+                        .ok_or_else(|| format!("No local for operand value {}", operand))?;
+                    func.instruction(&Instruction::LocalGet(operand_local));
                     func.instruction(&Instruction::F64Neg);
                 }
                 _ => return Err(format!("Neg not supported for type {:?}", ty)),
             },
             UnOp::Not => {
                 // Logical not: operand == 0
-                // Operand is already on stack as i32 (boolean)
+                // Load operand from local
+                let operand_local = tracker
+                    .get_local(operand)
+                    .ok_or_else(|| format!("No local for operand value {}", operand))?;
+                func.instruction(&Instruction::LocalGet(operand_local));
+                // Operand is on stack as i32 (boolean)
                 func.instruction(&Instruction::I32Eqz);
             }
             UnOp::BitNot => {
@@ -632,34 +751,6 @@ impl WasmCodegen {
         // implicit block still needs to be closed with End
         func.instruction(&Instruction::End);
 
-        Ok(())
-    }
-
-    /// Generate code for a terminator.
-    fn generate_terminator(
-        &self,
-        func: &mut Function,
-        term: &IrTerminator,
-        tracker: &ValueLocationTracker,
-    ) -> Result<(), String> {
-        match term {
-            IrTerminator::Return { value, .. } => {
-                if let Some(value_id) = value {
-                    // Load the return value from its local
-                    let local_idx = tracker
-                        .get_local(*value_id)
-                        .ok_or_else(|| format!("No local for return value {}", value_id))?;
-                    func.instruction(&Instruction::LocalGet(local_idx));
-                }
-                func.instruction(&Instruction::End);
-            }
-            IrTerminator::Branch { .. } => {
-                return Err("Branch not yet implemented".to_string());
-            }
-            IrTerminator::Jump { .. } => {
-                return Err("Jump not yet implemented".to_string());
-            }
-        }
         Ok(())
     }
 
@@ -954,5 +1045,104 @@ mod tests {
 
         // Verify the WAT contains the recursive call
         assert!(wat_text.contains("call 0")); // Recursive call to function 0
+    }
+
+    #[test]
+    fn test_generate_function_with_branch() {
+        // Create a simpler function with conditional that returns directly from each branch
+        // fn sign(x) = if x < 0 then -1 else 1
+        // This avoids phi nodes by having each branch return directly
+
+        let sign_func = IrFunction {
+            id: FunctionId(0),
+            name: InternedString::new("sign"),
+            params: vec![IrParam {
+                name: InternedString::new("x"),
+                value_id: ValueId(0),
+                ty: Type::Integer,
+            }],
+            return_ty: Type::Integer,
+            blocks: vec![
+                // Entry block: compare x < 0
+                IrBlock {
+                    id: BlockId(0),
+                    instructions: vec![
+                        IrInstr::Const {
+                            result: ValueId(1),
+                            ty: Type::Integer,
+                            value: IrConst::Integer(0),
+                            source: dummy_source(),
+                        },
+                        IrInstr::BinOp {
+                            result: ValueId(2),
+                            ty: Type::Integer, // Use operand type for comparison
+                            op: BinOp::Lt,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                            source: dummy_source(),
+                        },
+                    ],
+                    terminator: IrTerminator::Branch {
+                        cond: ValueId(2),
+                        then_block: BlockId(1),
+                        else_block: BlockId(2),
+                        source: dummy_source(),
+                    },
+                },
+                // Then block: return -1
+                IrBlock {
+                    id: BlockId(1),
+                    instructions: vec![IrInstr::Const {
+                        result: ValueId(3),
+                        ty: Type::Integer,
+                        value: IrConst::Integer(-1),
+                        source: dummy_source(),
+                    }],
+                    terminator: IrTerminator::Return {
+                        value: Some(ValueId(3)),
+                        source: dummy_source(),
+                    },
+                },
+                // Else block: return 1
+                IrBlock {
+                    id: BlockId(2),
+                    instructions: vec![IrInstr::Const {
+                        result: ValueId(4),
+                        ty: Type::Integer,
+                        value: IrConst::Integer(1),
+                        source: dummy_source(),
+                    }],
+                    terminator: IrTerminator::Return {
+                        value: Some(ValueId(4)),
+                        source: dummy_source(),
+                    },
+                },
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let module = IrModule {
+            functions: vec![sign_func],
+            exports: vec![],
+        };
+
+        let mut codegen = WasmCodegen::new();
+        let result = codegen.generate(&module);
+        assert!(
+            result.is_ok(),
+            "Failed to generate WASM with branch: {:?}",
+            result.err()
+        );
+
+        // Convert to WAT to verify the structure
+        let binary = result.unwrap();
+        let wat = binary_to_wat(&binary);
+        assert!(wat.is_ok(), "Failed to convert to WAT: {:?}", wat.err());
+
+        let wat_text = wat.unwrap();
+        println!("Generated WAT for function with branch:\n{}", wat_text);
+
+        // Verify the WAT contains conditional structures
+        assert!(wat_text.contains("if")); // WebAssembly if instruction
     }
 }
