@@ -240,7 +240,7 @@ impl<'src> Parser<'src> {
         let content = &self.src[content_start..self.pos];
         // Parse inline elements in the heading content
         self.parse_inline_content(content, content_start);
-        
+
         self.builder.finish_node();
 
         self.builder.finish_node();
@@ -272,13 +272,33 @@ impl<'src> Parser<'src> {
         let lang_end = self.pos;
         let language = &self.src[lang_start..lang_end];
 
-        // Skip rest of line
-        while self.pos < self.src.len()
-            && self.peek_char() != Some('\n')
-            && self.peek_char() != Some('\r')
-        {
-            self.pos += 1;
+        // Parse parameters (space-separated tokens after language)
+        let mut parameters = Vec::new();
+        while self.pos < self.src.len() {
+            let ch = self.peek_char();
+            if ch == Some('\n') || ch == Some('\r') {
+                break;
+            }
+            if ch == Some(' ') || ch == Some('\t') {
+                self.pos += 1;
+                continue;
+            }
+
+            // Found a parameter
+            let param_start = self.pos;
+            while self.pos < self.src.len() {
+                match self.peek_char() {
+                    Some(ch) if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' => break,
+                    Some(_) => self.pos += 1,
+                    None => break,
+                }
+            }
+            let param_end = self.pos;
+            if param_end > param_start {
+                parameters.push(&self.src[param_start..param_end]);
+            }
         }
+
         let line_end = self.pos;
 
         // Emit language and rest of first line as trivia
@@ -383,6 +403,17 @@ impl<'src> Parser<'src> {
             self.builder.finish_node();
         }
         self.builder.finish_node();
+
+        // Add parameters as additional arguments
+        for param in parameters {
+            self.builder.start_node(Kind::ApplyArgument.into());
+            self.builder.start_node(Kind::Literal.into());
+            self.builder.start_node(Kind::StringContent.into());
+            self.builder.token(Kind::StringContent.into(), param);
+            self.builder.finish_node();
+            self.builder.finish_node();
+            self.builder.finish_node();
+        }
 
         self.builder.finish_node();
     }
@@ -567,7 +598,7 @@ impl<'src> Parser<'src> {
         // Parse inline elements in the paragraph content
         self.parse_inline_content(content, content_start);
         self.builder.finish_node();
-        
+
         self.builder.finish_node();
     }
 
@@ -610,7 +641,7 @@ impl<'src> Parser<'src> {
             if bytes[pos] == b'`' {
                 let code_start = pos;
                 pos += 1;
-                
+
                 // Find closing backtick
                 let mut found_close = false;
                 let code_content_start = pos;
@@ -621,21 +652,22 @@ impl<'src> Parser<'src> {
                     }
                     pos += 1;
                 }
-                
+
                 if found_close {
                     let code_content = &content[code_content_start..pos];
-                    
+
                     // Emit opening backtick as trivia
                     self.builder.token(Kind::CommentContent.into(), "`");
-                    
+
                     // Emit inline code as Apply node
                     self.builder.start_node(Kind::ApplyArgument.into());
                     self.builder.start_node(Kind::Apply.into());
                     self.builder.start_node(Kind::ApplyReceiver.into());
-                    self.builder.start_node(Kind::SyntheticMarkdownCodeInline.into());
+                    self.builder
+                        .start_node(Kind::SyntheticMarkdownCodeInline.into());
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     self.builder.start_node(Kind::ApplyArgument.into());
                     self.builder.start_node(Kind::Literal.into());
                     self.builder.start_node(Kind::StringContent.into());
@@ -643,10 +675,10 @@ impl<'src> Parser<'src> {
                     self.builder.finish_node();
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     // Skip closing backtick and emit as trivia
                     pos += 1;
                     self.builder.token(Kind::CommentContent.into(), "`");
@@ -656,60 +688,65 @@ impl<'src> Parser<'src> {
                     pos = code_start;
                 }
             }
-            
+
             // Check for emphasis (** or *)
             if bytes[pos] == b'*' {
                 let star_start = pos;
-                
+
                 // Check if it's bold (**) or italic (*)
                 let is_bold = pos + 1 < bytes.len() && bytes[pos + 1] == b'*';
                 let marker_len = if is_bold { 2 } else { 1 };
                 let marker = if is_bold { "**" } else { "*" };
-                
+
                 pos += marker_len;
-                
+
                 // Find closing marker
                 let content_start = pos;
                 let mut found_close = false;
-                
+
                 while pos < bytes.len() {
-                    if bytes[pos] == b'*' && (!is_bold || (pos + 1 < bytes.len() && bytes[pos + 1] == b'*')) {
+                    if bytes[pos] == b'*'
+                        && (!is_bold || (pos + 1 < bytes.len() && bytes[pos + 1] == b'*'))
+                    {
                         found_close = true;
                         break;
                     }
                     pos += 1;
                 }
-                
+
                 if found_close {
                     let emphasis_content = &content[content_start..pos];
-                    
+
                     // Emit opening marker as trivia
                     self.builder.token(Kind::CommentContent.into(), marker);
-                    
+
                     // Emit emphasis as Apply node
                     self.builder.start_node(Kind::ApplyArgument.into());
                     self.builder.start_node(Kind::Apply.into());
                     self.builder.start_node(Kind::ApplyReceiver.into());
-                    
+
                     if is_bold {
-                        self.builder.start_node(Kind::SyntheticMarkdownStrong.into());
+                        self.builder
+                            .start_node(Kind::SyntheticMarkdownStrong.into());
                     } else {
-                        self.builder.start_node(Kind::SyntheticMarkdownEmphasis.into());
+                        self.builder
+                            .start_node(Kind::SyntheticMarkdownEmphasis.into());
                     }
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     self.builder.start_node(Kind::ApplyArgument.into());
                     self.builder.start_node(Kind::Literal.into());
                     self.builder.start_node(Kind::StringContent.into());
-                    self.builder.token(Kind::StringContent.into(), emphasis_content);
+                    self.builder
+                        .token(Kind::StringContent.into(), emphasis_content);
                     self.builder.finish_node();
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     self.builder.finish_node();
                     self.builder.finish_node();
-                    
+
                     // Skip closing marker and emit as trivia
                     pos += marker_len;
                     self.builder.token(Kind::CommentContent.into(), marker);
@@ -719,13 +756,13 @@ impl<'src> Parser<'src> {
                     pos = star_start;
                 }
             }
-            
+
             // Regular text - collect until next special character
             let text_start = pos;
             while pos < bytes.len() && bytes[pos] != b'*' && bytes[pos] != b'`' {
                 pos += 1;
             }
-            
+
             if pos > text_start {
                 let text = &content[text_start..pos];
                 self.builder.start_node(Kind::ApplyArgument.into());
@@ -736,10 +773,10 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
                 self.builder.finish_node();
             }
-            
+
             // If we didn't advance (e.g., malformed marker), advance by 1 to avoid infinite loop
             if pos == text_start && pos < bytes.len() {
-                let char = &content[pos..pos+1];
+                let char = &content[pos..pos + 1];
                 self.builder.start_node(Kind::ApplyArgument.into());
                 self.builder.start_node(Kind::Literal.into());
                 self.builder.start_node(Kind::StringContent.into());

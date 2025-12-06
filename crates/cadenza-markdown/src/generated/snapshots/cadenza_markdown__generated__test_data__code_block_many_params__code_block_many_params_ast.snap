@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Multiple Parameters\n\nTesting various parameter combinations.\n\n```cadenza editable\nlet x = 42\n```\n\n```javascript readonly lineNumbers theme-dark\nconst result = x * 2;\n```\n\n```python\nprint(\"No parameters\")\n```\n"
+---
+[
+    [h1, "Multiple Parameters"],
+    [p, "Testing various parameter combinations."],
+    [code, "cadenza", [__block__, [=, [let, x], 42]], "editable"],
+    [code, "javascript", "const result = x * 2;\n", "readonly", "lineNumbers", "theme-dark"],
+    [code, "python", "print(\"No parameters\")\n"],
+]

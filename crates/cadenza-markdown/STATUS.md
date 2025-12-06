@@ -21,10 +21,14 @@ Markdown parser as an alternative syntax frontend for Cadenza, similar to the gc
   - AST representation: `[ul, "item1", "item2", "item3"]`
   - Synthetic token `ul` as the function identifier
   
+#### Code Blocks
 - **Code Blocks**: Fenced with ` ``` ` or `~~~`
   - Cadenza blocks: `[code, "cadenza", [__block__, [parsed, ast], ...]]` (fully parsed into AST)
   - Other languages: `[code, "language", "code content"]` (preserved as string)
   - Language identifier extracted from fence line
+  - **Parameters**: Additional space-separated tokens on fence line are passed as extra arguments
+    - Example: ` ```cadenza editable hidden` produces `[code, "cadenza", [...], "editable", "hidden"]`
+    - Parameters can be used by macro handlers to control behavior (visibility, editability, etc.)
 
 #### Infrastructure
 - ✅ Build system with snapshot test generation
@@ -68,9 +72,6 @@ The markdown parser follows a different strategy than typical Markdown parsers:
 6. **Inline Element Precedence**: Inline code (backticks) is parsed first, preventing emphasis markers inside code from being interpreted
 
 ### 🚧 Partial/Limited Features
-
-- **Code Block Parameters**: Fence lines like ` ```cadenza editable hidden` parse the language but ignore extra parameters
-  - TODO: Support passing parameters as additional arguments or metadata
 
 - **Nested Inline Elements**: Inline elements cannot be nested within each other
   - Example: `**bold with `code` inside**` treats the backticks as literal text within the bold span
@@ -178,6 +179,7 @@ compiler.define_macro("code".into(), Value::BuiltinMacro(BuiltinMacro {
     func: |args, ctx| {
         // args[0] = language (e.g., "cadenza")
         // args[1] = code content (parsed AST block for Cadenza, string for others)
+        // args[2..] = optional parameters (e.g., "editable", "hidden")
         Ok(Value::Nil)
     },
 }));
@@ -189,8 +191,8 @@ let results = eval(&root, &mut env, &mut compiler);
 
 ### High Priority
 - [x] Inline emphasis and code support (completed)
+- [x] Code block parameter passing (completed)
 - [ ] Nested inline elements (e.g., code inside emphasis)
-- [ ] Code block parameter passing
 - [ ] Nested list support
 
 ### Medium Priority
