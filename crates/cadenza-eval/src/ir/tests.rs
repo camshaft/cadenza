@@ -7,10 +7,10 @@ use std::sync::Arc;
 #[test]
 fn test_value_id_display() {
     let id = ValueId(0);
-    assert_eq!(id.to_string(), "%0");
+    assert_eq!(id.to_string(), "v0");
 
     let id = ValueId(42);
-    assert_eq!(id.to_string(), "%42");
+    assert_eq!(id.to_string(), "v42");
 }
 
 #[test]
@@ -25,10 +25,10 @@ fn test_block_id_display() {
 #[test]
 fn test_function_id_display() {
     let id = FunctionId(0);
-    assert_eq!(id.to_string(), "@func_0");
+    assert_eq!(id.to_string(), "func0");
 
     let id = FunctionId(10);
-    assert_eq!(id.to_string(), "@func_10");
+    assert_eq!(id.to_string(), "func10");
 }
 
 #[test]
