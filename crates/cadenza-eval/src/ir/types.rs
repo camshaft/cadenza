@@ -65,6 +65,7 @@ impl std::fmt::Display for IrConst {
             IrConst::Integer(i) => write!(f, "{}", i),
             IrConst::Float(fl) => write!(f, "{}", fl),
             IrConst::String(s) => write!(f, "\"{}\"", s),
+            // Note: Using Debug for Dimension since it doesn't implement Display
             IrConst::Quantity { value, dimension } => write!(f, "{}{:?}", value, dimension),
         }
     }

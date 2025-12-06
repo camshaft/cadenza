@@ -116,7 +116,15 @@ impl FunctionBuilder {
 
     /// Build and return the final IR function.
     /// The first block added becomes the entry block.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if no blocks have been added to the function.
     pub fn build(self) -> IrFunction {
+        debug_assert!(
+            !self.blocks.is_empty(),
+            "Function must have at least one block"
+        );
         let entry_block = self.blocks.first().map(|b| b.id).unwrap_or(BlockId(0));
 
         let params = self
