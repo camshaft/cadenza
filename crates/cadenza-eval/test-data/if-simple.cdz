@@ -1,0 +1,24 @@
+# Test simple if expression
+
+# Basic true condition
+let result1 = if true 42 0
+assert result1 == 42
+
+# Basic false condition
+let result2 = if false 42 0
+assert result2 == 0
+
+# If with comparison
+let x = 5
+let result3 = if x > 0 "positive" "negative"
+assert result3 == "positive"
+
+# If with comparison (false case)
+let y = -3
+let result4 = if y > 0 "positive" "negative"
+assert result4 == "negative"
+
+# Nested if expressions
+let z = 10
+let result5 = if z > 5 (if z > 15 "very large" "large") "small"
+assert result5 == "large"

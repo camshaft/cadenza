@@ -955,4 +955,113 @@ mod tests {
         // Verify the WAT contains the recursive call
         assert!(wat_text.contains("call 0")); // Recursive call to function 0
     }
+
+    #[test]
+    fn test_generate_function_with_branch() {
+        // Create a function with conditional: fn abs(x) = if x < 0 then -x else x
+        // This creates three blocks:
+        // block_0: entry block with comparison
+        // block_1: then block (negate x)
+        // block_2: else block (return x)
+        // block_3: merge block (phi and return)
+
+        let abs_func = IrFunction {
+            id: FunctionId(0),
+            name: InternedString::new("abs"),
+            params: vec![IrParam {
+                name: InternedString::new("x"),
+                value_id: ValueId(0),
+                ty: Type::Integer,
+            }],
+            return_ty: Type::Integer,
+            blocks: vec![
+                // Entry block: compare x < 0
+                IrBlock {
+                    id: BlockId(0),
+                    instructions: vec![IrInstr::Const {
+                        result: ValueId(1),
+                        ty: Type::Integer,
+                        value: IrConst::Integer(0),
+                        source: dummy_source(),
+                    }, IrInstr::BinOp {
+                        result: ValueId(2),
+                        ty: Type::Integer,  // Use operand type for comparison instruction selection
+                        op: BinOp::Lt,
+                        lhs: ValueId(0),
+                        rhs: ValueId(1),
+                        source: dummy_source(),
+                    }],
+                    terminator: IrTerminator::Branch {
+                        cond: ValueId(2),
+                        then_block: BlockId(1),
+                        else_block: BlockId(2),
+                        source: dummy_source(),
+                    },
+                },
+                // Then block: negate x
+                IrBlock {
+                    id: BlockId(1),
+                    instructions: vec![IrInstr::UnOp {
+                        result: ValueId(3),
+                        ty: Type::Integer,
+                        op: UnOp::Neg,
+                        operand: ValueId(0),
+                        source: dummy_source(),
+                    }],
+                    terminator: IrTerminator::Jump {
+                        target: BlockId(3),
+                        source: dummy_source(),
+                    },
+                },
+                // Else block: use x as-is
+                IrBlock {
+                    id: BlockId(2),
+                    instructions: vec![],
+                    terminator: IrTerminator::Jump {
+                        target: BlockId(3),
+                        source: dummy_source(),
+                    },
+                },
+                // Merge block: phi node and return
+                IrBlock {
+                    id: BlockId(3),
+                    instructions: vec![IrInstr::Phi {
+                        result: ValueId(4),
+                        ty: Type::Integer,
+                        incoming: vec![(ValueId(3), BlockId(1)), (ValueId(0), BlockId(2))],
+                        source: dummy_source(),
+                    }],
+                    terminator: IrTerminator::Return {
+                        value: Some(ValueId(4)),
+                        source: dummy_source(),
+                    },
+                },
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let module = IrModule {
+            functions: vec![abs_func],
+            exports: vec![],
+        };
+
+        let mut codegen = WasmCodegen::new();
+        let result = codegen.generate(&module);
+        assert!(
+            result.is_ok(),
+            "Failed to generate WASM with branch: {:?}",
+            result.err()
+        );
+
+        // Convert to WAT to verify the structure
+        let binary = result.unwrap();
+        let wat = binary_to_wat(&binary);
+        assert!(wat.is_ok(), "Failed to convert to WAT: {:?}", wat.err());
+
+        let wat_text = wat.unwrap();
+        println!("Generated WAT for function with branch:\n{}", wat_text);
+
+        // Verify the WAT contains conditional structures
+        assert!(wat_text.contains("if")); // WebAssembly if instruction
+    }
 }

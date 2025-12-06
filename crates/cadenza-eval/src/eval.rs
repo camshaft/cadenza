@@ -2068,6 +2068,73 @@ pub fn builtin_assert() -> BuiltinMacro {
     }
 }
 
+/// Creates the `if` builtin macro for conditional expressions.
+///
+/// The `if` macro evaluates a condition and returns one of two branches based on
+/// whether the condition is true or false.
+///
+/// # Syntax
+///
+/// ```cadenza
+/// if condition then_expr else_expr
+/// ```
+///
+/// # Arguments
+///
+/// - `condition`: Expression that evaluates to a boolean
+/// - `then_expr`: Expression to evaluate if condition is true
+/// - `else_expr`: Expression to evaluate if condition is false
+///
+/// # Returns
+///
+/// The value of either `then_expr` or `else_expr` depending on the condition.
+///
+/// # Examples
+///
+/// ```cadenza
+/// let x = 5
+/// if x > 0 x (0 - x)  # returns 5 (the absolute value)
+///
+/// let result = if true "yes" "no"  # returns "yes"
+/// ```
+pub fn builtin_if() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "if",
+        signature: Type::function(vec![Type::Bool, Type::Unknown, Type::Unknown], Type::Unknown),
+        func: |args, ctx| {
+            // Validate argument count
+            if args.len() != 3 {
+                return Err(Diagnostic::syntax(
+                    "if expects 3 arguments: condition then_expr else_expr",
+                ));
+            }
+
+            let condition_expr = &args[0];
+            let then_expr = &args[1];
+            let else_expr = &args[2];
+
+            // Evaluate the condition
+            let condition_value = condition_expr.eval(ctx)?;
+
+            // Check that condition is a boolean
+            let condition_result = match condition_value {
+                Value::Bool(b) => b,
+                _ => {
+                    return Err(Diagnostic::type_error(Type::Bool, condition_value.type_of())
+                        .with_span(condition_expr.span()));
+                }
+            };
+
+            // Evaluate and return the appropriate branch
+            if condition_result {
+                then_expr.eval(ctx)
+            } else {
+                else_expr.eval(ctx)
+            }
+        },
+    }
+}
+
 /// A builtin macro that returns the inferred type of an expression.
 ///
 /// This demonstrates how macros can use the type inference system to query types.

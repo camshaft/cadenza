@@ -2304,6 +2304,47 @@ mod arith_float {
         ss!("arith_float_wat", t::wat("1.5 + 2.5\n"));
     }
 }
+mod if_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "if_simple",
+            t::eval_all(
+                "# Test simple if expression\n\n# Basic true condition\nlet result1 = if true 42 0\nassert result1 == 42\n\n# Basic false condition\nlet result2 = if false 42 0\nassert result2 == 0\n\n# If with comparison\nlet x = 5\nlet result3 = if x > 0 \"positive\" \"negative\"\nassert result3 == \"positive\"\n\n# If with comparison (false case)\nlet y = -3\nlet result4 = if y > 0 \"positive\" \"negative\"\nassert result4 == \"negative\"\n\n# Nested if expressions\nlet z = 10\nlet result5 = if z > 5 (if z > 15 \"very large\" \"large\") \"small\"\nassert result5 == \"large\"\n"
+            ),
+            "# Test simple if expression\n\n# Basic true condition\nlet result1 = if true 42 0\nassert result1 == 42\n\n# Basic false condition\nlet result2 = if false 42 0\nassert result2 == 0\n\n# If with comparison\nlet x = 5\nlet result3 = if x > 0 \"positive\" \"negative\"\nassert result3 == \"positive\"\n\n# If with comparison (false case)\nlet y = -3\nlet result4 = if y > 0 \"positive\" \"negative\"\nassert result4 == \"negative\"\n\n# Nested if expressions\nlet z = 10\nlet result5 = if z > 5 (if z > 15 \"very large\" \"large\") \"small\"\nassert result5 == \"large\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "if_simple_ast",
+            t::ast(
+                "# Test simple if expression\n\n# Basic true condition\nlet result1 = if true 42 0\nassert result1 == 42\n\n# Basic false condition\nlet result2 = if false 42 0\nassert result2 == 0\n\n# If with comparison\nlet x = 5\nlet result3 = if x > 0 \"positive\" \"negative\"\nassert result3 == \"positive\"\n\n# If with comparison (false case)\nlet y = -3\nlet result4 = if y > 0 \"positive\" \"negative\"\nassert result4 == \"negative\"\n\n# Nested if expressions\nlet z = 10\nlet result5 = if z > 5 (if z > 15 \"very large\" \"large\") \"small\"\nassert result5 == \"large\"\n"
+            ),
+            "# Test simple if expression\n\n# Basic true condition\nlet result1 = if true 42 0\nassert result1 == 42\n\n# Basic false condition\nlet result2 = if false 42 0\nassert result2 == 0\n\n# If with comparison\nlet x = 5\nlet result3 = if x > 0 \"positive\" \"negative\"\nassert result3 == \"positive\"\n\n# If with comparison (false case)\nlet y = -3\nlet result4 = if y > 0 \"positive\" \"negative\"\nassert result4 == \"negative\"\n\n# Nested if expressions\nlet z = 10\nlet result5 = if z > 5 (if z > 15 \"very large\" \"large\") \"small\"\nassert result5 == \"large\"\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "if_simple_ir",
+            t::ir(
+                "# Test simple if expression\n\n# Basic true condition\nlet result1 = if true 42 0\nassert result1 == 42\n\n# Basic false condition\nlet result2 = if false 42 0\nassert result2 == 0\n\n# If with comparison\nlet x = 5\nlet result3 = if x > 0 \"positive\" \"negative\"\nassert result3 == \"positive\"\n\n# If with comparison (false case)\nlet y = -3\nlet result4 = if y > 0 \"positive\" \"negative\"\nassert result4 == \"negative\"\n\n# Nested if expressions\nlet z = 10\nlet result5 = if z > 5 (if z > 15 \"very large\" \"large\") \"small\"\nassert result5 == \"large\"\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "if_simple_wat",
+            t::wat(
+                "# Test simple if expression\n\n# Basic true condition\nlet result1 = if true 42 0\nassert result1 == 42\n\n# Basic false condition\nlet result2 = if false 42 0\nassert result2 == 0\n\n# If with comparison\nlet x = 5\nlet result3 = if x > 0 \"positive\" \"negative\"\nassert result3 == \"positive\"\n\n# If with comparison (false case)\nlet y = -3\nlet result4 = if y > 0 \"positive\" \"negative\"\nassert result4 == \"negative\"\n\n# Nested if expressions\nlet z = 10\nlet result5 = if z > 5 (if z > 15 \"very large\" \"large\") \"small\"\nassert result5 == \"large\"\n"
+            )
+        );
+    }
+}
 mod arith_div {
     use super::*;
     #[test]

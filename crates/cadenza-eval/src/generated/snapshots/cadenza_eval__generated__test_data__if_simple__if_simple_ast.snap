@@ -1,0 +1,19 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test simple if expression\n\n# Basic true condition\nlet result1 = if true 42 0\nassert result1 == 42\n\n# Basic false condition\nlet result2 = if false 42 0\nassert result2 == 0\n\n# If with comparison\nlet x = 5\nlet result3 = if x > 0 \"positive\" \"negative\"\nassert result3 == \"positive\"\n\n# If with comparison (false case)\nlet y = -3\nlet result4 = if y > 0 \"positive\" \"negative\"\nassert result4 == \"negative\"\n\n# Nested if expressions\nlet z = 10\nlet result5 = if z > 5 (if z > 15 \"very large\" \"large\") \"small\"\nassert result5 == \"large\"\n"
+---
+[
+    [=, [let, result1], [[[if, true], 42], 0]],
+    [assert, [==, result1, 42]],
+    [=, [let, result2], [[[if, false], 42], 0]],
+    [assert, [==, result2, 0]],
+    [=, [let, x], 5],
+    [=, [let, result3], [[[if, [>, x, 0]], "positive"], "negative"]],
+    [assert, [==, result3, "positive"]],
+    [=, [let, y], [-, 3]],
+    [=, [let, result4], [[[if, [>, y, 0]], "positive"], "negative"]],
+    [assert, [==, result4, "negative"]],
+    [=, [let, z], 10],
+    [=, [let, result5], [[[if, [>, z, 5]], [[[if, [>, z, 15]], "very large"], "large"]], "small"]],
+    [assert, [==, result5, "large"]],
+]
