@@ -107,9 +107,15 @@ builder.add_function(func);
 ## Future Work
 
 ### IR Generation (Phase 5)
-- [ ] Builder API for constructing IR from typed AST
-- [ ] Automatic SSA conversion
-- [ ] Type-driven IR generation
+- [x] Builder API for constructing IR from typed AST
+- [x] Basic IR generation from AST expressions (literals, identifiers, binary operators)
+- [x] Function generation with parameter bindings
+- [ ] Automatic SSA conversion (for mutable variables and control flow)
+- [ ] Type-driven IR generation (using type inference results)
+- [ ] Support for function calls
+- [ ] Support for conditionals (if expressions with control flow)
+- [ ] Support for records and field access
+- [ ] Support for lists/tuples
 
 ### Optimization Passes (Phase 5)
 - [ ] Constant folding
