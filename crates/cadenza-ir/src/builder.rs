@@ -101,7 +101,7 @@ impl FunctionBuilder {
         BlockBuilder {
             id,
             instructions: Vec::new(),
-            start_value_id: self.next_value_id,
+            next_value_id: self.next_value_id,
         }
     }
 
@@ -149,7 +149,7 @@ impl FunctionBuilder {
 pub struct BlockBuilder {
     id: BlockId,
     instructions: Vec<IrInstr>,
-    start_value_id: u32,
+    next_value_id: u32,
 }
 
 impl BlockBuilder {
@@ -158,15 +158,11 @@ impl BlockBuilder {
         self.id
     }
 
-    /// Get the next value ID that would be allocated.
-    fn next_value_id(&self) -> u32 {
-        self.start_value_id + self.instructions.iter().filter_map(|i| i.result_value()).count() as u32
-    }
-
     /// Allocate a new SSA value ID.
     fn alloc_value(&mut self) -> ValueId {
-        let count = self.instructions.iter().filter_map(|i| i.result_value()).count() as u32;
-        ValueId(self.start_value_id + count)
+        let id = ValueId(self.next_value_id);
+        self.next_value_id += 1;
+        id
     }
 
     /// Emit a constant instruction.
@@ -297,7 +293,7 @@ impl BlockBuilder {
     /// Complete the block with a return terminator.
     /// Returns the block and the next value ID to use.
     pub fn ret(self, value: Option<ValueId>, source: SourceLocation) -> (IrBlock, u32) {
-        let next_value_id = self.next_value_id();
+        let next_value_id = self.next_value_id;
         (
             IrBlock {
                 id: self.id,
@@ -317,7 +313,7 @@ impl BlockBuilder {
         else_block: BlockId,
         source: SourceLocation,
     ) -> (IrBlock, u32) {
-        let next_value_id = self.next_value_id();
+        let next_value_id = self.next_value_id;
         (
             IrBlock {
                 id: self.id,
@@ -336,7 +332,7 @@ impl BlockBuilder {
     /// Complete the block with an unconditional jump.
     /// Returns the block and the next value ID to use.
     pub fn jump(self, target: BlockId, source: SourceLocation) -> (IrBlock, u32) {
-        let next_value_id = self.next_value_id();
+        let next_value_id = self.next_value_id;
         (
             IrBlock {
                 id: self.id,
