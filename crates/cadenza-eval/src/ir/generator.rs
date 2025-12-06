@@ -366,34 +366,20 @@ impl IrGenerator {
             return Ok(block.const_val(IrConst::Nil, Type::Nil, self.dummy_source()));
         }
 
-        // Generate IR for each expression in the block
-        let mut last_value = None;
-        for expr in &args {
-            let value = self.gen_expr(expr, block, ctx)?;
-            last_value = Some(value);
-        }
-
-        // Return the last expression's value
-        Ok(last_value.unwrap())
+        // Generate IR for each expression in the block, returning the last value
+        args.iter()
+            .try_fold(None, |_, expr| self.gen_expr(expr, block, ctx).map(Some))?
+            .ok_or_else(|| "Block should have at least one expression".to_string())
     }
 
     /// Generate IR for a list construction
     fn gen_list(
         &mut self,
-        apply: &cadenza_syntax::ast::Apply,
-        block: &mut BlockBuilder,
-        ctx: &mut IrGenContext,
+        _apply: &cadenza_syntax::ast::Apply,
+        _block: &mut BlockBuilder,
+        _ctx: &mut IrGenContext,
         _source: SourceLocation,
     ) -> Result<ValueId, String> {
-        let args = apply.all_arguments();
-
-        // Generate IR for each list element
-        let _element_values: Result<Vec<ValueId>, String> = args
-            .iter()
-            .map(|arg| self.gen_expr(arg, block, ctx))
-            .collect();
-        let _element_values = _element_values?;
-
         // TODO: Add list construction instruction to IR
         // For now, return an error as lists aren't supported in IR yet
         Err("List construction not yet supported in IR".to_string())
