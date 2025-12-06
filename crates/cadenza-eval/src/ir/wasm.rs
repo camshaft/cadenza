@@ -238,13 +238,57 @@ impl WasmCodegen {
         block: &IrBlock,
         tracker: &ValueLocationTracker,
     ) -> Result<(), String> {
-        // Generate instructions
-        for instr in &block.instructions {
-            self.generate_instruction(func, instr, tracker)?;
-        }
+        // Check for tail call optimization opportunity:
+        // If the last instruction is a Call and the terminator returns its result (or both are void),
+        // we can use return_call instead of call + return
+        let can_use_tail_call = match block.instructions.last() {
+            Some(IrInstr::Call {
+                result: Some(call_result),
+                ..
+            }) => {
+                // Non-void call: check if terminator returns the same value
+                matches!(
+                    &block.terminator,
+                    IrTerminator::Return {
+                        value: Some(ret_value),
+                        ..
+                    } if call_result == ret_value
+                )
+            }
+            Some(IrInstr::Call { result: None, .. }) => {
+                // Void call: check if terminator is also void return
+                matches!(
+                    &block.terminator,
+                    IrTerminator::Return { value: None, .. }
+                )
+            }
+            _ => false,
+        };
 
-        // Generate terminator
-        self.generate_terminator(func, &block.terminator, tracker)?;
+        if can_use_tail_call {
+            // Process all instructions except the last one
+            for instr in &block.instructions[..block.instructions.len() - 1] {
+                self.generate_instruction(func, instr, tracker)?;
+            }
+
+            // Generate the last Call instruction as a tail call (which includes the return)
+            if let Some(IrInstr::Call {
+                func: func_id,
+                args,
+                ..
+            }) = block.instructions.last()
+            {
+                self.generate_tail_call(func, *func_id, args, tracker)?;
+            }
+        } else {
+            // Generate all instructions normally
+            for instr in &block.instructions {
+                self.generate_instruction(func, instr, tracker)?;
+            }
+
+            // Generate terminator
+            self.generate_terminator(func, &block.terminator, tracker)?;
+        }
 
         Ok(())
     }
@@ -296,13 +340,37 @@ impl WasmCodegen {
                     .ok_or_else(|| format!("No local for value {}", result))?;
                 func.instruction(&Instruction::LocalSet(local_idx));
             }
-            IrInstr::Call { func: _, args, .. } => {
-                // Load arguments (would need proper stack management)
-                for _arg in args {
-                    // Placeholder: would generate local.get or other load instructions
+            IrInstr::Call {
+                result,
+                func: func_id,
+                args,
+                ..
+            } => {
+                // Load arguments onto stack in order
+                for &arg_value_id in args {
+                    let arg_local = tracker
+                        .get_local(arg_value_id)
+                        .ok_or_else(|| format!("No local for argument value {}", arg_value_id))?;
+                    func.instruction(&Instruction::LocalGet(arg_local));
                 }
-                // Generate call instruction
-                // func.instruction(&Instruction::Call(func_idx));
+
+                // Get the WASM function index for this IR function
+                let func_idx = self
+                    .function_indices
+                    .get(func_id)
+                    .copied()
+                    .ok_or_else(|| format!("Unknown function ID in call: {:?}", func_id))?;
+
+                // Emit call instruction
+                func.instruction(&Instruction::Call(func_idx));
+
+                // Store result if function returns a value
+                if let Some(result_id) = result {
+                    let local_idx = tracker
+                        .get_local(*result_id)
+                        .ok_or_else(|| format!("No local for call result {}", result_id))?;
+                    func.instruction(&Instruction::LocalSet(local_idx));
+                }
             }
             IrInstr::Record { .. } => {
                 // Records would require struct types from GC proposal
@@ -535,6 +603,41 @@ impl WasmCodegen {
         Ok(())
     }
 
+    /// Generate code for a tail call (return_call instruction).
+    /// This optimizes the pattern of call + return into a single return_call.
+    fn generate_tail_call(
+        &self,
+        func: &mut Function,
+        func_id: super::FunctionId,
+        args: &[ValueId],
+        tracker: &ValueLocationTracker,
+    ) -> Result<(), String> {
+        // Load arguments onto stack in order (same as regular call)
+        for &arg_value_id in args {
+            let arg_local = tracker
+                .get_local(arg_value_id)
+                .ok_or_else(|| format!("No local for argument value {}", arg_value_id))?;
+            func.instruction(&Instruction::LocalGet(arg_local));
+        }
+
+        // Get the WASM function index for this IR function
+        let func_idx = self
+            .function_indices
+            .get(&func_id)
+            .copied()
+            .ok_or_else(|| format!("Unknown function ID in tail call: {:?}", func_id))?;
+
+        // Emit return_call instruction - this performs call + return in one instruction
+        func.instruction(&Instruction::ReturnCall(func_idx));
+
+        // End the function body (needed to close the implicit function block)
+        // Note: Even though return_call is a terminating instruction, the function's
+        // implicit block still needs to be closed with End
+        func.instruction(&Instruction::End);
+
+        Ok(())
+    }
+
     /// Generate code for a terminator.
     fn generate_terminator(
         &self,
@@ -684,5 +787,175 @@ mod tests {
         assert_eq!(codegen.type_to_wasm(&Type::Float).unwrap(), ValType::F64);
         assert_eq!(codegen.type_to_wasm(&Type::Bool).unwrap(), ValType::I32);
         assert!(codegen.type_to_wasm(&Type::String).is_err());
+    }
+
+    #[test]
+    fn test_generate_function_with_call() {
+        // Create a helper function: fn add(a, b) = a + b
+        let add_func = IrFunction {
+            id: FunctionId(0),
+            name: InternedString::new("add"),
+            params: vec![
+                IrParam {
+                    name: InternedString::new("a"),
+                    value_id: ValueId(0),
+                    ty: Type::Integer,
+                },
+                IrParam {
+                    name: InternedString::new("b"),
+                    value_id: ValueId(1),
+                    ty: Type::Integer,
+                },
+            ],
+            return_ty: Type::Integer,
+            blocks: vec![IrBlock {
+                id: BlockId(0),
+                instructions: vec![IrInstr::BinOp {
+                    result: ValueId(2),
+                    ty: Type::Integer,
+                    op: BinOp::Add,
+                    lhs: ValueId(0),
+                    rhs: ValueId(1),
+                    source: dummy_source(),
+                }],
+                terminator: IrTerminator::Return {
+                    value: Some(ValueId(2)),
+                    source: dummy_source(),
+                },
+            }],
+            entry_block: BlockId(0),
+        };
+
+        // Create a caller function: fn compute(x) = add(x, 5)
+        let compute_func = IrFunction {
+            id: FunctionId(1),
+            name: InternedString::new("compute"),
+            params: vec![IrParam {
+                name: InternedString::new("x"),
+                value_id: ValueId(0),
+                ty: Type::Integer,
+            }],
+            return_ty: Type::Integer,
+            blocks: vec![IrBlock {
+                id: BlockId(0),
+                instructions: vec![
+                    IrInstr::Const {
+                        result: ValueId(1),
+                        ty: Type::Integer,
+                        value: IrConst::Integer(5),
+                        source: dummy_source(),
+                    },
+                    IrInstr::Call {
+                        result: Some(ValueId(2)),
+                        ty: Type::Integer,
+                        func: FunctionId(0), // Call to add
+                        args: vec![ValueId(0), ValueId(1)],
+                        source: dummy_source(),
+                    },
+                ],
+                terminator: IrTerminator::Return {
+                    value: Some(ValueId(2)),
+                    source: dummy_source(),
+                },
+            }],
+            entry_block: BlockId(0),
+        };
+
+        let module = IrModule {
+            functions: vec![add_func, compute_func],
+            exports: vec![],
+        };
+
+        let mut codegen = WasmCodegen::new();
+        let result = codegen.generate(&module);
+        assert!(
+            result.is_ok(),
+            "Failed to generate WASM with function call: {:?}",
+            result.err()
+        );
+
+        // Convert to WAT to verify the structure
+        let binary = result.unwrap();
+        let wat = binary_to_wat(&binary);
+        assert!(wat.is_ok(), "Failed to convert to WAT: {:?}", wat.err());
+
+        let wat_text = wat.unwrap();
+        println!("Generated WAT:\n{}", wat_text);
+
+        // Verify the WAT contains the expected elements
+        assert!(wat_text.contains("call 0")); // Call to function 0 (add)
+    }
+
+    #[test]
+    fn test_generate_recursive_function() {
+        // Create a recursive factorial function: fn fact(n) = if n <= 1 then 1 else n * fact(n - 1)
+        // For now, just test the structure with a simple recursive call: fn countdown(n) = countdown(n - 1)
+        // (without control flow, this would infinite loop, but we're just testing codegen)
+
+        let countdown_func = IrFunction {
+            id: FunctionId(0),
+            name: InternedString::new("countdown"),
+            params: vec![IrParam {
+                name: InternedString::new("n"),
+                value_id: ValueId(0),
+                ty: Type::Integer,
+            }],
+            return_ty: Type::Integer,
+            blocks: vec![IrBlock {
+                id: BlockId(0),
+                instructions: vec![
+                    IrInstr::Const {
+                        result: ValueId(1),
+                        ty: Type::Integer,
+                        value: IrConst::Integer(1),
+                        source: dummy_source(),
+                    },
+                    IrInstr::BinOp {
+                        result: ValueId(2),
+                        ty: Type::Integer,
+                        op: BinOp::Sub,
+                        lhs: ValueId(0),
+                        rhs: ValueId(1),
+                        source: dummy_source(),
+                    },
+                    IrInstr::Call {
+                        result: Some(ValueId(3)),
+                        ty: Type::Integer,
+                        func: FunctionId(0), // Recursive call to self
+                        args: vec![ValueId(2)],
+                        source: dummy_source(),
+                    },
+                ],
+                terminator: IrTerminator::Return {
+                    value: Some(ValueId(3)),
+                    source: dummy_source(),
+                },
+            }],
+            entry_block: BlockId(0),
+        };
+
+        let module = IrModule {
+            functions: vec![countdown_func],
+            exports: vec![],
+        };
+
+        let mut codegen = WasmCodegen::new();
+        let result = codegen.generate(&module);
+        assert!(
+            result.is_ok(),
+            "Failed to generate WASM with recursive call: {:?}",
+            result.err()
+        );
+
+        // Convert to WAT to verify the structure
+        let binary = result.unwrap();
+        let wat = binary_to_wat(&binary);
+        assert!(wat.is_ok(), "Failed to convert to WAT: {:?}", wat.err());
+
+        let wat_text = wat.unwrap();
+        println!("Generated WAT for recursive function:\n{}", wat_text);
+
+        // Verify the WAT contains the recursive call
+        assert!(wat_text.contains("call 0")); // Recursive call to function 0
     }
 }
