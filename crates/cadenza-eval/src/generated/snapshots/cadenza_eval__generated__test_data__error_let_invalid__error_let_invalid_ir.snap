@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"let 42 = 1\\n\")"
+---
+; IR Module

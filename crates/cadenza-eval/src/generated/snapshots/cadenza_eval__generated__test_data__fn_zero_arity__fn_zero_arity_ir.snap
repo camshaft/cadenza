@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"fn get_value = 42\\nget_value\\n\")"
+---
+; IR Module
+
+function get_value() -> unknown {
+block_0:
+    %0 = const 42
+    ret %0
+}

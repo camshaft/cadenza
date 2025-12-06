@@ -763,15 +763,33 @@ fn handle_function_definition(
     let captured_env = ctx.env.clone();
 
     // Create the user function value
-    let user_fn = Value::UserFunction(crate::value::UserFunction {
+    let user_fn_value = crate::value::UserFunction {
         name,
         params,
         body,
         captured_env,
-    });
+    };
+
+    // Generate IR for the function if IR generation is enabled and it hasn't been generated already
+    // This check prevents duplicate IR generation during hoisting and regular evaluation
+    // Do this before moving the value into the compiler
+    if let Some(ir_gen) = ctx.compiler.ir_generator() {
+        if !ir_gen.has_function(name) {
+            if let Some(Err(err)) = ctx.compiler.generate_ir_for_function(&user_fn_value) {
+                // Record as a warning diagnostic instead of printing to stderr
+                let warning = Diagnostic::syntax(format!(
+                    "Failed to generate IR for function {}: {}",
+                    name, err
+                ))
+                .set_level(crate::diagnostic::DiagnosticLevel::Warning);
+                ctx.compiler.record_diagnostic(*warning);
+            }
+        }
+    }
 
     // Register the function in the compiler (hoisting)
-    ctx.compiler.define_var(name, user_fn);
+    ctx.compiler
+        .define_var(name, Value::UserFunction(user_fn_value));
 
     // Return nil
     Ok(Value::Nil)

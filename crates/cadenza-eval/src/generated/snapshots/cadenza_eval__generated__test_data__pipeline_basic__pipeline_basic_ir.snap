@@ -1,0 +1,18 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"fn add x y = x + y\\nfn double x = x * 2\\n\\n5 |> add 3\\n10 |> double\\n\")"
+---
+; IR Module
+
+function add(%0: unknown, %1: unknown) -> unknown {
+block_0:
+    %2 = add %0 %1
+    ret %2
+}
+
+function double(%0: unknown) -> unknown {
+block_0:
+    %1 = const 2
+    %2 = mul %0 %1
+    ret %2
+}

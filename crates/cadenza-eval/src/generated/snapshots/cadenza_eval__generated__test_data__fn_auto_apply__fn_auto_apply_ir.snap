@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"fn add x y = x + y\\nadd\\n\")"
+---
+; IR Module
+
+function add(%0: unknown, %1: unknown) -> unknown {
+block_0:
+    %2 = add %0 %1
+    ret %2
+}

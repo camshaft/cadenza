@@ -73,6 +73,11 @@ impl IrBuilder {
     pub fn build(self) -> IrModule {
         self.module
     }
+
+    /// Get a reference to the module being built.
+    pub fn module(&self) -> &IrModule {
+        &self.module
+    }
 }
 
 impl Default for IrBuilder {

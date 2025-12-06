@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"measure meter\\nlet x = meter 10\\nlet doubled = x * 2\\nlet halved = x / 2\\ndoubled\\nhalved\\n\")"
+---
+; IR Module

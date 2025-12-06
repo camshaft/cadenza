@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"let foo =\\n    let bar = 1\\n    let baz = 2\\n    bar\\nfoo\\n\")"
+---
+; IR Module

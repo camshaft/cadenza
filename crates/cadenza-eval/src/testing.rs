@@ -49,6 +49,33 @@ pub fn eval_all(src: &str) -> EvalResult {
     }
 }
 
+/// Evaluate a source string with IR generation enabled and return the IR module as a string.
+///
+/// This function evaluates the source with IR generation enabled and returns
+/// the string representation of the generated IR module, making it suitable
+/// for snapshot testing IR generation.
+pub fn ir(src: &str) -> String {
+    let parsed = parse(src);
+
+    // Check for parse errors first
+    if !parsed.errors.is_empty() {
+        return "Parse errors occurred".to_string();
+    }
+
+    let root = parsed.ast();
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::with_ir();
+
+    let _values = crate::eval(&root, &mut env, &mut compiler);
+
+    // Get the IR module
+    if let Some(ir_module) = compiler.build_ir_module() {
+        ir_module.to_string()
+    } else {
+        "No IR generated".to_string()
+    }
+}
+
 /// Parse a source string and return the AST root.
 ///
 /// This function parses the source and returns the AST, making it suitable

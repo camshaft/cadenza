@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"# Test that != errors on type mismatch\\n42 != \\\"world\\\"\\n\")"
+---
+; IR Module

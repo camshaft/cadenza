@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"3.0 * 2.0\\n\")"
+---
+; IR Module

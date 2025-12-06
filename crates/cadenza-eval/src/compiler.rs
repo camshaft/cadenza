@@ -5,8 +5,8 @@
 //! API to register definitions, emit IR, etc.
 
 use crate::{
-    diagnostic::Diagnostic, interner::InternedString, map::Map, typeinfer::TypeInferencer,
-    unit::UnitRegistry, value::Value,
+    diagnostic::Diagnostic, interner::InternedString, ir::IrGenerator, map::Map,
+    typeinfer::TypeInferencer, unit::UnitRegistry, value::Value,
 };
 
 /// The compiler state that accumulates definitions during evaluation.
@@ -20,7 +20,10 @@ use crate::{
 /// Additionally, the compiler includes a type inferencer for lazy type checking.
 /// Type checking is not performed during evaluation by default, but can be
 /// triggered on-demand for specific expressions or for LSP integration.
-#[derive(Debug)]
+///
+/// The compiler also includes an IR generator that converts evaluated functions
+/// into a target-independent intermediate representation suitable for optimization
+/// and code generation.
 pub struct Compiler {
     /// Variable and function definitions.
     defs: Map<Value>,
@@ -32,6 +35,9 @@ pub struct Compiler {
     units: UnitRegistry,
     /// Type inferencer for lazy type checking.
     type_inferencer: TypeInferencer,
+    /// IR generator for code generation.
+    /// This is optional to avoid paying costs for IR/codegen when only type checking.
+    ir_generator: Option<IrGenerator>,
 }
 
 impl Default for Compiler {
@@ -49,6 +55,19 @@ impl Compiler {
             diagnostics: Vec::new(),
             units: UnitRegistry::new(),
             type_inferencer: TypeInferencer::new(),
+            ir_generator: None,
+        }
+    }
+
+    /// Creates a new compiler state with IR generation enabled.
+    pub fn with_ir() -> Self {
+        Self {
+            defs: Map::default(),
+            macros: Map::default(),
+            diagnostics: Vec::new(),
+            units: UnitRegistry::new(),
+            type_inferencer: TypeInferencer::new(),
+            ir_generator: Some(IrGenerator::new()),
         }
     }
 
@@ -152,6 +171,58 @@ impl Compiler {
     /// for metaprogramming purposes.
     pub fn type_inferencer_mut(&mut self) -> &mut TypeInferencer {
         &mut self.type_inferencer
+    }
+
+    /// Generates IR for a user function.
+    ///
+    /// This should be called when a function is defined to generate its IR representation.
+    /// Returns the function ID on success, or an error message on failure.
+    /// Returns `None` if IR generation is disabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if IR generation fails (e.g., unsupported expressions).
+    pub fn generate_ir_for_function(
+        &mut self,
+        func: &crate::value::UserFunction,
+    ) -> Option<Result<crate::ir::FunctionId, String>> {
+        self.ir_generator
+            .as_mut()
+            .map(|generator| generator.gen_function(func))
+    }
+
+    /// Returns a reference to the IR generator, if enabled.
+    ///
+    /// This allows direct access to the IR generator for advanced use cases.
+    pub fn ir_generator(&self) -> Option<&IrGenerator> {
+        self.ir_generator.as_ref()
+    }
+
+    /// Returns a mutable reference to the IR generator, if enabled.
+    ///
+    /// This allows direct manipulation of the IR generator.
+    pub fn ir_generator_mut(&mut self) -> Option<&mut IrGenerator> {
+        self.ir_generator.as_mut()
+    }
+
+    /// Builds and returns the generated IR module, if IR generation is enabled.
+    ///
+    /// This consumes the IR generator and returns the final IR module.
+    /// After calling this, the compiler will have a fresh IR generator if one was present.
+    pub fn build_ir_module(&mut self) -> Option<crate::ir::IrModule> {
+        self.ir_generator.take().map(|generator| generator.build())
+    }
+
+    /// Enables IR generation for this compiler.
+    ///
+    /// This initializes a new IR generator. Any previously generated IR is lost.
+    pub fn enable_ir(&mut self) {
+        self.ir_generator = Some(IrGenerator::new());
+    }
+
+    /// Checks if IR generation is enabled.
+    pub fn is_ir_enabled(&self) -> bool {
+        self.ir_generator.is_some()
     }
 }
 

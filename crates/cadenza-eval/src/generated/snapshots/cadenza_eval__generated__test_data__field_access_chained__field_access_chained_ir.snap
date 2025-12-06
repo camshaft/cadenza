@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"let obj = { a = { b = 42 } }\\nobj.a.b\\n\")"
+---
+; IR Module

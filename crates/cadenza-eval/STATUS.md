@@ -155,11 +155,11 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
 ## Priority Suggestions
 
 ### High Priority (Architectural Foundation)
-- **IR Integration**: Wire up IR generator to evaluator for end-to-end compilation
-  - Integrate IrGenerator with Compiler to generate IR during/after evaluation
-  - Add API to expose generated IR modules
-  - Validate that builder API supports evaluator needs
-  - Enable testing of IR generation with real-world code
+- ~~**IR Integration**: Wire up IR generator to evaluator for end-to-end compilation~~ ✅
+  - [x] Integrate IrGenerator with Compiler to generate IR during/after evaluation
+  - [x] Add API to expose generated IR modules
+  - [x] Validate that builder API supports evaluator needs
+  - [x] Enable testing of IR generation with real-world code
 - Item 10: Move operators to std environment
 - Item 6: Complete source tracking integration
 - **Type System**: Implement HM type inference (see Future Work below)
@@ -675,7 +675,7 @@ The following enhancements were identified during code review and are planned fo
 - [x] **Intermediate representation**: Target-independent IR with optimization passes (basic implementation complete)
   - [x] IR types and builder API
   - [x] Basic IR generation from AST (literals, identifiers, binary operators, functions)
-  - [ ] **Wire up IR generator to evaluator** (High Priority - next PR)
+  - [x] ~~**Wire up IR generator to evaluator**~~ ✅ (Completed - IR generated during function definition)
   - [ ] **Typed operators in IR**: Each operator should have type information to avoid losing type inference results
   - [ ] Type-driven IR generation (integrate TypeInferencer results)
   - [ ] Support for function calls, conditionals, records, lists
