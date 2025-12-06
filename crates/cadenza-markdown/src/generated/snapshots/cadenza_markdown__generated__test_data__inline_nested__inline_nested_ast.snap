@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Nested Inline Elements\n\nThis paragraph has **bold with `code` inside**.\n\nThis one has *italic with `code` inside*.\n\nYou can also have **bold with *italic* inside**.\n\nAnd `code with **bold** inside` should treat markers as literal.\n"
+---
+[
+    [h1, "Nested Inline Elements"],
+    [p, [__list__, "This paragraph has ", [strong, [__list__, "bold with ", [code_inline, "code"], " inside"]], "."]],
+    [p, [__list__, "This one has ", [em, [__list__, "italic with ", [code_inline, "code"], " inside"]], "."]],
+    [p, [__list__, "You can also have ", [strong, [__list__, "bold with ", [em, "italic"], " inside"]], "."]],
+    [p, [__list__, "And ", [code_inline, "code with **bold** inside"], " should treat markers as literal."]],
+]

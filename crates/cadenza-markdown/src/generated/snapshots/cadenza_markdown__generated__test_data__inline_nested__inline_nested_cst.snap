@@ -1,0 +1,177 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Nested Inline Elements\n\nThis paragraph has **bold with `code` inside**.\n\nThis one has *italic with `code` inside*.\n\nYou can also have **bold with *italic* inside**.\n\nAnd `code with **bold** inside` should treat markers as literal.\n"
+---
+Root@0..233
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..24
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..24
+      Literal@2..24
+        StringContent@2..24
+          StringContent@2..24 "Nested Inline Elements"
+  Newline@24..25 "\n"
+  Newline@25..26 "\n"
+  Apply@26..73
+    ApplyReceiver@26..26
+      SyntheticMarkdownParagraph@26..26
+    ApplyArgument@26..73
+      Apply@26..73
+        ApplyReceiver@26..26
+          SyntheticList@26..26
+        ApplyArgument@26..45
+          Literal@26..45
+            StringContent@26..45
+              StringContent@26..45 "This paragraph has "
+        CommentContent@45..47 "**"
+        ApplyArgument@47..70
+          Apply@47..70
+            ApplyReceiver@47..47
+              SyntheticMarkdownStrong@47..47
+            ApplyArgument@47..70
+              Apply@47..70
+                ApplyReceiver@47..47
+                  SyntheticList@47..47
+                ApplyArgument@47..57
+                  Literal@47..57
+                    StringContent@47..57
+                      StringContent@47..57 "bold with "
+                CommentContent@57..58 "`"
+                ApplyArgument@58..62
+                  Apply@58..62
+                    ApplyReceiver@58..58
+                      SyntheticMarkdownCodeInline@58..58
+                    ApplyArgument@58..62
+                      Literal@58..62
+                        StringContent@58..62
+                          StringContent@58..62 "code"
+                CommentContent@62..63 "`"
+                ApplyArgument@63..70
+                  Literal@63..70
+                    StringContent@63..70
+                      StringContent@63..70 " inside"
+        CommentContent@70..72 "**"
+        ApplyArgument@72..73
+          Literal@72..73
+            StringContent@72..73
+              StringContent@72..73 "."
+  Newline@73..74 "\n"
+  Newline@74..75 "\n"
+  Apply@75..116
+    ApplyReceiver@75..75
+      SyntheticMarkdownParagraph@75..75
+    ApplyArgument@75..116
+      Apply@75..116
+        ApplyReceiver@75..75
+          SyntheticList@75..75
+        ApplyArgument@75..88
+          Literal@75..88
+            StringContent@75..88
+              StringContent@75..88 "This one has "
+        CommentContent@88..89 "*"
+        ApplyArgument@89..114
+          Apply@89..114
+            ApplyReceiver@89..89
+              SyntheticMarkdownEmphasis@89..89
+            ApplyArgument@89..114
+              Apply@89..114
+                ApplyReceiver@89..89
+                  SyntheticList@89..89
+                ApplyArgument@89..101
+                  Literal@89..101
+                    StringContent@89..101
+                      StringContent@89..101 "italic with "
+                CommentContent@101..102 "`"
+                ApplyArgument@102..106
+                  Apply@102..106
+                    ApplyReceiver@102..102
+                      SyntheticMarkdownCodeInline@102..102
+                    ApplyArgument@102..106
+                      Literal@102..106
+                        StringContent@102..106
+                          StringContent@102..106 "code"
+                CommentContent@106..107 "`"
+                ApplyArgument@107..114
+                  Literal@107..114
+                    StringContent@107..114
+                      StringContent@107..114 " inside"
+        CommentContent@114..115 "*"
+        ApplyArgument@115..116
+          Literal@115..116
+            StringContent@115..116
+              StringContent@115..116 "."
+  Newline@116..117 "\n"
+  Newline@117..118 "\n"
+  Apply@118..166
+    ApplyReceiver@118..118
+      SyntheticMarkdownParagraph@118..118
+    ApplyArgument@118..166
+      Apply@118..166
+        ApplyReceiver@118..118
+          SyntheticList@118..118
+        ApplyArgument@118..136
+          Literal@118..136
+            StringContent@118..136
+              StringContent@118..136 "You can also have "
+        CommentContent@136..138 "**"
+        ApplyArgument@138..163
+          Apply@138..163
+            ApplyReceiver@138..138
+              SyntheticMarkdownStrong@138..138
+            ApplyArgument@138..163
+              Apply@138..163
+                ApplyReceiver@138..138
+                  SyntheticList@138..138
+                ApplyArgument@138..148
+                  Literal@138..148
+                    StringContent@138..148
+                      StringContent@138..148 "bold with "
+                CommentContent@148..149 "*"
+                ApplyArgument@149..155
+                  Apply@149..155
+                    ApplyReceiver@149..149
+                      SyntheticMarkdownEmphasis@149..149
+                    ApplyArgument@149..155
+                      Literal@149..155
+                        StringContent@149..155
+                          StringContent@149..155 "italic"
+                CommentContent@155..156 "*"
+                ApplyArgument@156..163
+                  Literal@156..163
+                    StringContent@156..163
+                      StringContent@156..163 " inside"
+        CommentContent@163..165 "**"
+        ApplyArgument@165..166
+          Literal@165..166
+            StringContent@165..166
+              StringContent@165..166 "."
+  Newline@166..167 "\n"
+  Newline@167..168 "\n"
+  Apply@168..232
+    ApplyReceiver@168..168
+      SyntheticMarkdownParagraph@168..168
+    ApplyArgument@168..232
+      Apply@168..232
+        ApplyReceiver@168..168
+          SyntheticList@168..168
+        ApplyArgument@168..172
+          Literal@168..172
+            StringContent@168..172
+              StringContent@168..172 "And "
+        CommentContent@172..173 "`"
+        ApplyArgument@173..198
+          Apply@173..198
+            ApplyReceiver@173..173
+              SyntheticMarkdownCodeInline@173..173
+            ApplyArgument@173..198
+              Literal@173..198
+                StringContent@173..198
+                  StringContent@173..198 "code with **bold** in ..."
+        CommentContent@198..199 "`"
+        ApplyArgument@199..232
+          Literal@199..232
+            StringContent@199..232
+              StringContent@199..232 " should treat markers ..."
+  Newline@232..233 "\n"

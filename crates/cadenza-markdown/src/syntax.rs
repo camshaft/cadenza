@@ -735,13 +735,9 @@ impl<'src> Parser<'src> {
                     self.builder.finish_node();
                     self.builder.finish_node();
 
+                    // Parse the emphasis content recursively to support nested inline elements
                     self.builder.start_node(Kind::ApplyArgument.into());
-                    self.builder.start_node(Kind::Literal.into());
-                    self.builder.start_node(Kind::StringContent.into());
-                    self.builder
-                        .token(Kind::StringContent.into(), emphasis_content);
-                    self.builder.finish_node();
-                    self.builder.finish_node();
+                    self.parse_inline_content(emphasis_content, 0);
                     self.builder.finish_node();
 
                     self.builder.finish_node();

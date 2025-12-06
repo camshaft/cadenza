@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Deeply Nested Inline Elements\n\nThis has **bold with *italic with `code` inside* more bold**.\n\nTriple nesting: ***triple emphasis***.\n\nMix it all: **bold *and italic* and `code` together**.\n"
+---
+[
+    [h1, "Deeply Nested Inline Elements"],
+    [p, [__list__, "This has ", [strong, [__list__, "bold with ", [em, [__list__, "italic with ", [code_inline, "code"], " inside"]], " more bold"]], "."]],
+    [p, [__list__, "Triple nesting: ", [strong, [__list__, "*", "triple emphasis"]], "*", "."]],
+    [p, [__list__, "Mix it all: ", [strong, [__list__, "bold ", [em, "and italic"], " and ", [code_inline, "code"], " together"]], "."]],
+]

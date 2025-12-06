@@ -1,5 +1,4 @@
-use crate::parse;
-use crate::testing::verify_cst_coverage;
+use crate::{parse, testing::verify_cst_coverage};
 use insta::assert_debug_snapshot as s;
 
 mod code_block_many_params {
@@ -176,6 +175,35 @@ mod inline_code {
         );
     }
 }
+mod inline_deeply_nested {
+    use super::*;
+    #[test]
+    fn cst() {
+        let markdown = "# Deeply Nested Inline Elements\n\nThis has **bold with *italic with `code` inside* more bold**.\n\nTriple nesting: ***triple emphasis***.\n\nMix it all: **bold *and italic* and `code` together**.\n";
+        let parse = parse(markdown);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(markdown);
+
+        s!(
+            "inline_deeply_nested_cst",
+            &cst,
+            "# Deeply Nested Inline Elements\n\nThis has **bold with *italic with `code` inside* more bold**.\n\nTriple nesting: ***triple emphasis***.\n\nMix it all: **bold *and italic* and `code` together**.\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let markdown = "# Deeply Nested Inline Elements\n\nThis has **bold with *italic with `code` inside* more bold**.\n\nTriple nesting: ***triple emphasis***.\n\nMix it all: **bold *and italic* and `code` together**.\n";
+        let parse = parse(markdown);
+        let root = parse.ast();
+        s!(
+            "inline_deeply_nested_ast",
+            root,
+            "# Deeply Nested Inline Elements\n\nThis has **bold with *italic with `code` inside* more bold**.\n\nTriple nesting: ***triple emphasis***.\n\nMix it all: **bold *and italic* and `code` together**.\n"
+        );
+    }
+}
 mod inline_emphasis {
     use super::*;
     #[test]
@@ -231,6 +259,35 @@ mod inline_mixed {
             "inline_mixed_ast",
             root,
             "# Mixed Inline Elements\n\nThis paragraph has *italic*, **bold**, and `code` all mixed together.\n\nYou can have multiple inline elements in a single paragraph without nesting them.\n"
+        );
+    }
+}
+mod inline_nested {
+    use super::*;
+    #[test]
+    fn cst() {
+        let markdown = "# Nested Inline Elements\n\nThis paragraph has **bold with `code` inside**.\n\nThis one has *italic with `code` inside*.\n\nYou can also have **bold with *italic* inside**.\n\nAnd `code with **bold** inside` should treat markers as literal.\n";
+        let parse = parse(markdown);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(markdown);
+
+        s!(
+            "inline_nested_cst",
+            &cst,
+            "# Nested Inline Elements\n\nThis paragraph has **bold with `code` inside**.\n\nThis one has *italic with `code` inside*.\n\nYou can also have **bold with *italic* inside**.\n\nAnd `code with **bold** inside` should treat markers as literal.\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let markdown = "# Nested Inline Elements\n\nThis paragraph has **bold with `code` inside**.\n\nThis one has *italic with `code` inside*.\n\nYou can also have **bold with *italic* inside**.\n\nAnd `code with **bold** inside` should treat markers as literal.\n";
+        let parse = parse(markdown);
+        let root = parse.ast();
+        s!(
+            "inline_nested_ast",
+            root,
+            "# Nested Inline Elements\n\nThis paragraph has **bold with `code` inside**.\n\nThis one has *italic with `code` inside*.\n\nYou can also have **bold with *italic* inside**.\n\nAnd `code with **bold** inside` should treat markers as literal.\n"
         );
     }
 }
