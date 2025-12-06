@@ -70,11 +70,12 @@ fn dummy_source() -> SourceLocation {
 fn test_const_instr() {
     let instr = IrInstr::Const {
         result: ValueId(0),
+        ty: Type::Integer,
         value: IrConst::Integer(42),
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "%0 = const 42");
+    assert_eq!(instr.to_string(), "%0: integer = const 42");
     assert_eq!(instr.result_value(), Some(ValueId(0)));
 }
 
@@ -82,13 +83,14 @@ fn test_const_instr() {
 fn test_binop_instr() {
     let instr = IrInstr::BinOp {
         result: ValueId(2),
+        ty: Type::Integer,
         op: BinOp::Add,
         lhs: ValueId(0),
         rhs: ValueId(1),
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "%2 = add %0 %1");
+    assert_eq!(instr.to_string(), "%2: integer = add %0 %1");
     assert_eq!(instr.result_value(), Some(ValueId(2)));
 }
 
@@ -96,12 +98,13 @@ fn test_binop_instr() {
 fn test_unop_instr() {
     let instr = IrInstr::UnOp {
         result: ValueId(1),
+        ty: Type::Integer,
         op: UnOp::Neg,
         operand: ValueId(0),
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "%1 = neg %0");
+    assert_eq!(instr.to_string(), "%1: integer = neg %0");
     assert_eq!(instr.result_value(), Some(ValueId(1)));
 }
 
@@ -109,12 +112,13 @@ fn test_unop_instr() {
 fn test_call_instr() {
     let instr = IrInstr::Call {
         result: Some(ValueId(3)),
+        ty: Type::Integer,
         func: FunctionId(0),
         args: vec![ValueId(0), ValueId(1), ValueId(2)],
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "%3 = call @func_0(%0, %1, %2)");
+    assert_eq!(instr.to_string(), "%3: integer = call @func_0(%0, %1, %2)");
     assert_eq!(instr.result_value(), Some(ValueId(3)));
 }
 
@@ -157,16 +161,19 @@ fn test_basic_block() {
         instructions: vec![
             IrInstr::Const {
                 result: ValueId(0),
+                ty: Type::Integer,
                 value: IrConst::Integer(5),
                 source: dummy_source(),
             },
             IrInstr::Const {
                 result: ValueId(1),
+                ty: Type::Integer,
                 value: IrConst::Integer(10),
                 source: dummy_source(),
             },
             IrInstr::BinOp {
                 result: ValueId(2),
+                ty: Type::Integer,
                 op: BinOp::Add,
                 lhs: ValueId(0),
                 rhs: ValueId(1),
@@ -181,9 +188,9 @@ fn test_basic_block() {
 
     let output = block.to_string();
     assert!(output.contains("block_0:"));
-    assert!(output.contains("%0 = const 5"));
-    assert!(output.contains("%1 = const 10"));
-    assert!(output.contains("%2 = add %0 %1"));
+    assert!(output.contains("%0: integer = const 5"));
+    assert!(output.contains("%1: integer = const 10"));
+    assert!(output.contains("%2: integer = add %0 %1"));
     assert!(output.contains("ret %2"));
 }
 
@@ -209,6 +216,7 @@ fn test_function() {
             id: BlockId(0),
             instructions: vec![IrInstr::BinOp {
                 result: ValueId(2),
+                ty: Type::Integer,
                 op: BinOp::Add,
                 lhs: ValueId(0),
                 rhs: ValueId(1),
@@ -228,7 +236,7 @@ fn test_function() {
     assert!(output.contains("%1: integer"));
     assert!(output.contains("-> integer"));
     assert!(output.contains("block_0:"));
-    assert!(output.contains("%2 = add %0 %1"));
+    assert!(output.contains("%2: integer = add %0 %1"));
     assert!(output.contains("ret %2"));
 }
 
@@ -244,6 +252,7 @@ fn test_module() {
                 id: BlockId(0),
                 instructions: vec![IrInstr::Const {
                     result: ValueId(0),
+                    ty: Type::Integer,
                     value: IrConst::Integer(42),
                     source: dummy_source(),
                 }],
@@ -282,7 +291,7 @@ fn test_builder_simple_function() {
         builder.function(InternedString::new("get_answer"), vec![], Type::Integer);
 
     let mut block = func_builder.block();
-    let val = block.const_val(IrConst::Integer(42), dummy_source());
+    let val = block.const_val(IrConst::Integer(42), Type::Integer, dummy_source());
     let (block, next_val) = block.ret(Some(val), dummy_source());
     let entry_id = func_builder.add_block(block, next_val);
 
@@ -317,7 +326,13 @@ fn test_builder_add_function() {
 
     let mut block = func_builder.block();
     // Parameters are %0 and %1
-    let result = block.binop(BinOp::Add, ValueId(0), ValueId(1), dummy_source());
+    let result = block.binop(
+        BinOp::Add,
+        ValueId(0),
+        ValueId(1),
+        Type::Integer,
+        dummy_source(),
+    );
     let (block, next_val) = block.ret(Some(result), dummy_source());
     func_builder.add_block(block, next_val);
 
@@ -337,7 +352,7 @@ fn test_builder_add_function() {
     assert!(output.contains("function add"));
     assert!(output.contains("%0: integer"));
     assert!(output.contains("%1: integer"));
-    assert!(output.contains("%2 = add %0 %1"));
+    assert!(output.contains("%2: integer = add %0 %1"));
 }
 
 #[test]
@@ -363,13 +378,13 @@ fn test_builder_conditional() {
     let else_id = else_block.id();
 
     // Entry block: check if x < 0
-    let zero = entry_block.const_val(IrConst::Integer(0), dummy_source());
-    let cond = entry_block.binop(BinOp::Lt, ValueId(0), zero, dummy_source());
+    let zero = entry_block.const_val(IrConst::Integer(0), Type::Integer, dummy_source());
+    let cond = entry_block.binop(BinOp::Lt, ValueId(0), zero, Type::Bool, dummy_source());
     let (entry_block_inst, next_val) = entry_block.branch(cond, then_id, else_id, dummy_source());
     func_builder.add_block(entry_block_inst, next_val);
 
     // Then block: return -x
-    let neg_x = then_block.unop(UnOp::Neg, ValueId(0), dummy_source());
+    let neg_x = then_block.unop(UnOp::Neg, ValueId(0), Type::Integer, dummy_source());
     let (then_block_inst, next_val) = then_block.ret(Some(neg_x), dummy_source());
     func_builder.add_block(then_block_inst, next_val);
 
@@ -408,9 +423,14 @@ fn test_builder_record_construction() {
     );
 
     let mut block = func_builder.block();
+    let record_ty = Type::Record(vec![
+        (InternedString::new("x"), Type::Integer),
+        (InternedString::new("y"), Type::Integer),
+    ]);
     let record = block.record(
         Arc::from([InternedString::new("x"), InternedString::new("y")]),
         vec![ValueId(0), ValueId(1)],
+        record_ty,
         dummy_source(),
     );
     let (block, next_val) = block.ret(Some(record), dummy_source());

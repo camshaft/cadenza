@@ -175,10 +175,11 @@ impl BlockBuilder {
     }
 
     /// Emit a constant instruction.
-    pub fn const_val(&mut self, value: IrConst, source: SourceLocation) -> ValueId {
+    pub fn const_val(&mut self, value: IrConst, ty: Type, source: SourceLocation) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::Const {
             result,
+            ty,
             value,
             source,
         });
@@ -191,11 +192,13 @@ impl BlockBuilder {
         op: BinOp,
         lhs: ValueId,
         rhs: ValueId,
+        ty: Type,
         source: SourceLocation,
     ) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::BinOp {
             result,
+            ty,
             op,
             lhs,
             rhs,
@@ -205,10 +208,17 @@ impl BlockBuilder {
     }
 
     /// Emit a unary operation.
-    pub fn unop(&mut self, op: UnOp, operand: ValueId, source: SourceLocation) -> ValueId {
+    pub fn unop(
+        &mut self,
+        op: UnOp,
+        operand: ValueId,
+        ty: Type,
+        source: SourceLocation,
+    ) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::UnOp {
             result,
+            ty,
             op,
             operand,
             source,
@@ -221,11 +231,13 @@ impl BlockBuilder {
         &mut self,
         func: FunctionId,
         args: Vec<ValueId>,
+        ty: Type,
         source: SourceLocation,
     ) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::Call {
             result: Some(result),
+            ty,
             func,
             args,
             source,
@@ -237,6 +249,7 @@ impl BlockBuilder {
     pub fn call_void(&mut self, func: FunctionId, args: Vec<ValueId>, source: SourceLocation) {
         self.instructions.push(IrInstr::Call {
             result: None,
+            ty: Type::Nil,
             func,
             args,
             source,
@@ -248,11 +261,13 @@ impl BlockBuilder {
         &mut self,
         field_names: Arc<[InternedString]>,
         field_values: Vec<ValueId>,
+        ty: Type,
         source: SourceLocation,
     ) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::Record {
             result,
+            ty,
             field_names,
             field_values,
             source,
@@ -265,11 +280,13 @@ impl BlockBuilder {
         &mut self,
         record: ValueId,
         field: InternedString,
+        ty: Type,
         source: SourceLocation,
     ) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::Field {
             result,
+            ty,
             record,
             field,
             source,
@@ -278,10 +295,11 @@ impl BlockBuilder {
     }
 
     /// Emit a tuple construction.
-    pub fn tuple(&mut self, elements: Vec<ValueId>, source: SourceLocation) -> ValueId {
+    pub fn tuple(&mut self, elements: Vec<ValueId>, ty: Type, source: SourceLocation) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::Tuple {
             result,
+            ty,
             elements,
             source,
         });
@@ -289,16 +307,21 @@ impl BlockBuilder {
     }
 
     /// Emit a phi node.
-    pub fn phi(&mut self, incoming: Vec<(ValueId, BlockId)>, source: SourceLocation) -> ValueId {
+    pub fn phi(
+        &mut self,
+        incoming: Vec<(ValueId, BlockId)>,
+        ty: Type,
+        source: SourceLocation,
+    ) -> ValueId {
         let result = self.alloc_value();
         self.instructions.push(IrInstr::Phi {
             result,
+            ty,
             incoming,
             source,
         });
         result
     }
-
     /// Complete the block with a return terminator.
     /// Returns the block and the next value ID to use.
     pub fn ret(self, value: Option<ValueId>, source: SourceLocation) -> (IrBlock, u32) {

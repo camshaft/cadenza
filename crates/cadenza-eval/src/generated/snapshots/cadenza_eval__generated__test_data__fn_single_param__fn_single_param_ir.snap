@@ -6,7 +6,7 @@ expression: "t::ir(\"fn triple x = x * 3\\ntriple 7\\n\")"
 
 function triple(%0: unknown) -> unknown {
 block_0:
-    %1 = const 3
-    %2 = mul %0 %1
+    %1: integer = const 3
+    %2: unknown = mul %0 %1
     ret %2
 }

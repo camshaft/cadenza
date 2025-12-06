@@ -167,20 +167,20 @@ impl IrGenerator {
 
         let value = lit.value().ok_or("Missing literal value")?;
 
-        let const_val = match value {
+        let (const_val, ty) = match value {
             LiteralValue::Integer(i) => {
                 let text = i.syntax().text();
                 let value = text.to_string().parse::<i64>().map_err(|e| e.to_string())?;
-                IrConst::Integer(value)
+                (IrConst::Integer(value), Type::Integer)
             }
             LiteralValue::Float(f) => {
                 let text = f.syntax().text();
                 let value = text.to_string().parse::<f64>().map_err(|e| e.to_string())?;
-                IrConst::Float(value)
+                (IrConst::Float(value), Type::Float)
             }
             LiteralValue::String(s) => {
                 let text = s.syntax().text().to_string();
-                IrConst::String(InternedString::new(&text))
+                (IrConst::String(InternedString::new(&text)), Type::String)
             }
             LiteralValue::StringWithEscape(_) => {
                 // For now, treat escaped strings as regular strings
@@ -189,7 +189,7 @@ impl IrGenerator {
             }
         };
 
-        Ok(block.const_val(const_val, source))
+        Ok(block.const_val(const_val, ty, source))
     }
 
     /// Generate IR for an identifier (variable reference).
@@ -236,8 +236,9 @@ impl IrGenerator {
             let lhs = self.gen_expr(&args[0], block, ctx)?;
             let rhs = self.gen_expr(&args[1], block, ctx)?;
 
-            // Emit binary operation
-            return Ok(block.binop(ir_op, lhs, rhs, source));
+            // Emit binary operation with type Unknown for now
+            // TODO: Use type inference to determine the actual type
+            return Ok(block.binop(ir_op, lhs, rhs, Type::Unknown, source));
         }
 
         // TODO: Handle function calls
