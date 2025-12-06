@@ -111,7 +111,6 @@ impl IrGenerator {
         let return_ty = Type::Unknown;
 
         let mut func_builder = self.builder.function(name, param_types.clone(), return_ty);
-        
         // Register the function early so recursive calls can find it
         let func_id = func_builder.id();
         self.functions.insert(name, func_id);
