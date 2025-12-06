@@ -8,7 +8,7 @@ use std::sync::Arc;
 fn test_value_id_display() {
     let id = ValueId(0);
     assert_eq!(id.to_string(), "%0");
-    
+
     let id = ValueId(42);
     assert_eq!(id.to_string(), "%42");
 }
@@ -17,7 +17,7 @@ fn test_value_id_display() {
 fn test_block_id_display() {
     let id = BlockId(0);
     assert_eq!(id.to_string(), "block_0");
-    
+
     let id = BlockId(5);
     assert_eq!(id.to_string(), "block_5");
 }
@@ -26,7 +26,7 @@ fn test_block_id_display() {
 fn test_function_id_display() {
     let id = FunctionId(0);
     assert_eq!(id.to_string(), "@func_0");
-    
+
     let id = FunctionId(10);
     assert_eq!(id.to_string(), "@func_10");
 }
@@ -37,7 +37,7 @@ fn test_const_display() {
     assert_eq!(IrConst::Bool(true).to_string(), "true");
     assert_eq!(IrConst::Bool(false).to_string(), "false");
     assert_eq!(IrConst::Integer(42).to_string(), "42");
-    assert_eq!(IrConst::Float(3.14).to_string(), "3.14");
+    assert_eq!(IrConst::Float(3.15).to_string(), "3.15");
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn test_const_instr() {
         value: IrConst::Integer(42),
         source: dummy_source(),
     };
-    
+
     assert_eq!(instr.to_string(), "%0 = const 42");
     assert_eq!(instr.result_value(), Some(ValueId(0)));
 }
@@ -87,7 +87,7 @@ fn test_binop_instr() {
         rhs: ValueId(1),
         source: dummy_source(),
     };
-    
+
     assert_eq!(instr.to_string(), "%2 = add %0 %1");
     assert_eq!(instr.result_value(), Some(ValueId(2)));
 }
@@ -100,7 +100,7 @@ fn test_unop_instr() {
         operand: ValueId(0),
         source: dummy_source(),
     };
-    
+
     assert_eq!(instr.to_string(), "%1 = neg %0");
     assert_eq!(instr.result_value(), Some(ValueId(1)));
 }
@@ -113,7 +113,7 @@ fn test_call_instr() {
         args: vec![ValueId(0), ValueId(1), ValueId(2)],
         source: dummy_source(),
     };
-    
+
     assert_eq!(instr.to_string(), "%3 = call @func_0(%0, %1, %2)");
     assert_eq!(instr.result_value(), Some(ValueId(3)));
 }
@@ -124,7 +124,7 @@ fn test_return_terminator() {
         value: Some(ValueId(5)),
         source: dummy_source(),
     };
-    
+
     assert_eq!(term.to_string(), "ret %5");
 }
 
@@ -136,7 +136,7 @@ fn test_branch_terminator() {
         else_block: BlockId(2),
         source: dummy_source(),
     };
-    
+
     assert_eq!(term.to_string(), "br %0, then: block_1, else: block_2");
 }
 
@@ -146,7 +146,7 @@ fn test_jump_terminator() {
         target: BlockId(3),
         source: dummy_source(),
     };
-    
+
     assert_eq!(term.to_string(), "jmp block_3");
 }
 
@@ -178,7 +178,7 @@ fn test_basic_block() {
             source: dummy_source(),
         },
     };
-    
+
     let output = block.to_string();
     assert!(output.contains("block_0:"));
     assert!(output.contains("%0 = const 5"));
@@ -221,7 +221,7 @@ fn test_function() {
         }],
         entry_block: BlockId(0),
     };
-    
+
     let output = func.to_string();
     assert!(output.contains("function add_numbers"));
     assert!(output.contains("%0: integer"));
@@ -259,7 +259,7 @@ fn test_module() {
             kind: IrExportKind::Function(FunctionId(0)),
         }],
     };
-    
+
     let output = module.to_string();
     assert!(output.contains("; IR Module"));
     assert!(output.contains("function main"));
@@ -278,11 +278,8 @@ fn test_builder_simple_function() {
     let mut builder = IrBuilder::new();
 
     // Build a function that returns 42
-    let mut func_builder = builder.function(
-        InternedString::new("get_answer"),
-        vec![],
-        Type::Integer,
-    );
+    let mut func_builder =
+        builder.function(InternedString::new("get_answer"), vec![], Type::Integer);
 
     let mut block = func_builder.block();
     let val = block.const_val(IrConst::Integer(42), dummy_source());
@@ -358,10 +355,10 @@ fn test_builder_conditional() {
     // Create block IDs ahead of time
     let mut entry_block = func_builder.block();
     let _entry_id = entry_block.id();
-    
+
     let mut then_block = func_builder.block();
     let then_id = then_block.id();
-    
+
     let else_block = func_builder.block();
     let else_id = else_block.id();
 

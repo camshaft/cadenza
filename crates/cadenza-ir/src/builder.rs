@@ -32,7 +32,7 @@ impl IrBuilder {
     ) -> FunctionBuilder {
         let id = FunctionId(self.next_function_id);
         self.next_function_id += 1;
-        
+
         let param_count = params.len() as u32;
 
         FunctionBuilder {
@@ -117,11 +117,7 @@ impl FunctionBuilder {
     /// Build and return the final IR function.
     /// The first block added becomes the entry block.
     pub fn build(self) -> IrFunction {
-        let entry_block = self
-            .blocks
-            .first()
-            .map(|b| b.id)
-            .unwrap_or(BlockId(0));
+        let entry_block = self.blocks.first().map(|b| b.id).unwrap_or(BlockId(0));
 
         let params = self
             .params

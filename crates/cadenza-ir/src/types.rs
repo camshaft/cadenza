@@ -51,7 +51,10 @@ pub enum IrConst {
     Float(f64),
     String(InternedString),
     /// Quantity with dimension (e.g., 5.0 meters)
-    Quantity { value: f64, dimension: Dimension },
+    Quantity {
+        value: f64,
+        dimension: Dimension,
+    },
 }
 
 impl std::fmt::Display for IrConst {
@@ -253,12 +256,19 @@ impl std::fmt::Display for IrInstr {
                 write!(f, "{} = const {}", result, value)
             }
             IrInstr::BinOp {
-                result, op, lhs, rhs, ..
+                result,
+                op,
+                lhs,
+                rhs,
+                ..
             } => {
                 write!(f, "{} = {} {} {}", result, op, lhs, rhs)
             }
             IrInstr::UnOp {
-                result, op, operand, ..
+                result,
+                op,
+                operand,
+                ..
             } => {
                 write!(f, "{} = {} {}", result, op, operand)
             }
@@ -294,7 +304,10 @@ impl std::fmt::Display for IrInstr {
                 write!(f, " }}")
             }
             IrInstr::Field {
-                result, record, field, ..
+                result,
+                record,
+                field,
+                ..
             } => {
                 write!(f, "{} = field {}.{}", result, record, field)
             }
