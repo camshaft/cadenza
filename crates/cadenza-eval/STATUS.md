@@ -684,6 +684,103 @@ The following enhancements were identified during code review and are planned fo
 - [ ] **Native targets**: Emit Rust code (primary), Cranelift/LLVM (optional)
 - [ ] **Dead code elimination**: Remove unused specializations
 
+#### WASM Code Generation
+
+**Status**: Initial implementation merged with basic WAT output generation. Critical next step is proper value management.
+
+**Current State**:
+- [x] Basic WASM codegen infrastructure with wasm-encoder
+- [x] WAT snapshot testing for all test-data files
+- [x] Function type signatures and declarations
+- [x] Simple constant generation (integers, floats, booleans)
+- [x] Binary operations (arithmetic, comparison) - instruction generation only
+- [x] Module structure with proper section ordering
+
+**Critical Issues** (blocking correct WASM output):
+1. **Value Location Tracking**: WASM codegen doesn't track where SSA values are stored
+   - IR uses ValueId for SSA values, but WASM needs to know if value is in:
+     - Function parameter (use `local.get $param_idx`)
+     - Local variable (use `local.get $local_idx`)
+     - On the stack (already available)
+   - Current code generates operations without loading operands first
+   - Example: `fn add x y = x + y` generates just `i64.add` without `local.get 0` and `local.get 1`
+
+**High Priority Tasks** (in order):
+- [ ] **Value location tracking and local management**
+  - [ ] Design data structure to map ValueId → LocalIndex or StackPosition
+  - [ ] Track function parameters as locals 0..N
+  - [ ] Allocate locals for SSA values (one local per ValueId that needs storage)
+  - [ ] Implement strategy: parameters as locals, results pushed to stack
+  - [ ] Generate `local.get` instructions to load operands before operations
+  - [ ] Generate `local.set` instructions when values need to be stored
+  - [ ] Handle the case where a value is used multiple times (must store in local)
+- [ ] **Function calls**
+  - [ ] Load arguments in order using `local.get` or stack values
+  - [ ] Generate `call` instruction with correct function index
+  - [ ] Handle return values on stack
+  - [ ] Test with recursive functions
+- [ ] **Control flow**
+  - [ ] Implement branch instruction generation (conditional jumps)
+  - [ ] Implement unconditional jump (br) for loops
+  - [ ] Handle block nesting for structured control flow
+  - [ ] Generate proper WASM blocks and loops
+  - [ ] Map IR basic blocks to WASM control structures
+- [ ] **Unary operations**
+  - [ ] Fix negation to properly load operand first
+  - [ ] Fix logical not with proper type conversions
+  - [ ] Implement bitwise not
+
+**Medium Priority** (after basic codegen works):
+- [ ] **String constants**
+  - [ ] Use WASM GC arrays for string representation
+  - [ ] Import/export string handling functions
+  - [ ] Consider WTF-8 encoding for compatibility
+- [ ] **Quantity/measurement values**
+  - [ ] Represent as structs with value and unit fields
+  - [ ] Or compile-time eliminate units and use raw numbers
+- [ ] **Records and tuples**
+  - [ ] Use WASM GC struct types
+  - [ ] Generate field access instructions (struct.get)
+  - [ ] Generate struct construction (struct.new)
+- [ ] **Lists**
+  - [ ] Use WASM GC array types
+  - [ ] Generate array operations (array.new, array.get, array.set)
+
+**Lower Priority** (optimizations and advanced features):
+- [ ] **Optimization passes**
+  - [ ] Dead code elimination
+  - [ ] Constant folding
+  - [ ] Common subexpression elimination
+  - [ ] Inlining small functions
+- [ ] **Export generation**
+  - [ ] Export functions with mangled names
+  - [ ] Generate getter functions for constant exports
+  - [ ] Handle module-level exports
+- [ ] **Better type handling**
+  - [ ] Use WASM GC reference types for complex types
+  - [ ] Implement runtime type tags for union types
+  - [ ] Generate type checking code for dynamic operations
+- [ ] **Debugging support**
+  - [ ] Generate DWARF debug info
+  - [ ] Source maps for WAT output
+  - [ ] Function name section for better stack traces
+- [ ] **Memory management**
+  - [ ] Integrate with WASM GC proposal
+  - [ ] Handle reference counting for shared values
+  - [ ] Optimize struct layout for cache efficiency
+
+**Testing Strategy**:
+- [ ] Add focused unit tests for value location tracking
+- [ ] Validate WAT output with wasmparser
+- [ ] Test function calls with varying argument counts
+- [ ] Test nested function calls and recursion
+- [ ] Add performance benchmarks
+
+**References**: 
+- WASM spec: https://webassembly.github.io/spec/
+- WASM GC proposal: https://github.com/WebAssembly/gc
+- wasm-encoder docs: https://docs.rs/wasm-encoder/
+
 **References**: COMPILER_ARCHITECTURE.md "Compilation Targets", "Monomorphization"
 
 ### LSP Integration (Phase 6)
