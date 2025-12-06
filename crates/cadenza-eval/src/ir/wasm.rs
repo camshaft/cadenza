@@ -14,6 +14,51 @@ use crate::Type;
 use std::collections::HashMap;
 use wasm_encoder::*;
 
+/// Tracks where SSA values are located in WASM (parameters, locals, or stack).
+struct ValueLocationTracker {
+    /// Maps SSA ValueId to WASM local index.
+    /// Function parameters are locals 0..N, other values get locals N+1..
+    value_to_local: HashMap<ValueId, u32>,
+    /// Next available local index for allocating new locals.
+    next_local_idx: u32,
+}
+
+impl ValueLocationTracker {
+    /// Create a new tracker for a function with the given parameters.
+    fn new(params: &[super::IrParam]) -> Self {
+        let num_params = params.len() as u32;
+        let mut value_to_local = HashMap::new();
+
+        // Map parameter ValueIds to their local indices
+        for (idx, param) in params.iter().enumerate() {
+            value_to_local.insert(param.value_id, idx as u32);
+        }
+
+        Self {
+            value_to_local,
+            next_local_idx: num_params,
+        }
+    }
+
+    /// Allocate a local for a ValueId if it doesn't already have one.
+    /// Returns the local index.
+    fn allocate_local(&mut self, value_id: ValueId) -> u32 {
+        if let Some(&local_idx) = self.value_to_local.get(&value_id) {
+            local_idx
+        } else {
+            let local_idx = self.next_local_idx;
+            self.next_local_idx += 1;
+            self.value_to_local.insert(value_id, local_idx);
+            local_idx
+        }
+    }
+
+    /// Get the local index for a ValueId. Returns None if the value isn't in a local.
+    fn get_local(&self, value_id: ValueId) -> Option<u32> {
+        self.value_to_local.get(&value_id).copied()
+    }
+}
+
 /// WASM code generator for IR.
 pub struct WasmCodegen {
     /// The WASM module being built.
@@ -116,13 +161,70 @@ impl WasmCodegen {
 
     /// Add a function's code (body).
     fn add_function_code(&mut self, func: &IrFunction) -> Result<(), String> {
-        let mut function = Function::new(vec![]); // No locals for now
+        // Create a value location tracker for this function
+        let mut tracker = ValueLocationTracker::new(&func.params);
+
+        // First pass: analyze which values need locals
+        // For now, we'll allocate a local for every SSA value (simple but correct)
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                if let Some(result) = instr.result_value() {
+                    tracker.allocate_local(result);
+                }
+            }
+        }
+
+        // Determine local types for non-parameter locals
+        let mut local_types = vec![];
+        // We need to know the type of each allocated local
+        // For now, we'll collect them from instructions
+        let mut value_types: HashMap<ValueId, &Type> = HashMap::new();
+        for param in &func.params {
+            value_types.insert(param.value_id, &param.ty);
+        }
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                if let Some(result) = instr.result_value() {
+                    let ty = match instr {
+                        IrInstr::Const { ty, .. }
+                        | IrInstr::BinOp { ty, .. }
+                        | IrInstr::UnOp { ty, .. }
+                        | IrInstr::Call { ty, .. }
+                        | IrInstr::Record { ty, .. }
+                        | IrInstr::Field { ty, .. }
+                        | IrInstr::Tuple { ty, .. }
+                        | IrInstr::Phi { ty, .. } => ty,
+                    };
+                    value_types.insert(result, ty);
+                }
+            }
+        }
+
+        // Build the locals list (excluding parameters)
+        // Create a reverse mapping for efficient lookup
+        let mut local_to_value: HashMap<u32, ValueId> = HashMap::new();
+        for (&value_id, &local_idx) in &tracker.value_to_local {
+            local_to_value.insert(local_idx, value_id);
+        }
+
+        for local_idx in func.params.len() as u32..tracker.next_local_idx {
+            let value_id = local_to_value
+                .get(&local_idx)
+                .ok_or_else(|| format!("Local {} has no corresponding ValueId", local_idx))?;
+
+            let ty = value_types
+                .get(value_id)
+                .ok_or_else(|| format!("No type found for value {}", value_id))?;
+            let wasm_ty = self.type_to_wasm(ty)?;
+            local_types.push((1, wasm_ty));
+        }
+
+        let mut function = Function::new(local_types);
 
         // Generate code for the entry block
-        // For simplicity, we'll generate a linear sequence first
         // TODO: Handle multiple blocks and control flow properly
         for block in &func.blocks {
-            self.generate_block(&mut function, block)?;
+            self.generate_block(&mut function, block, &tracker)?;
         }
 
         self.code.function(&function);
@@ -130,36 +232,69 @@ impl WasmCodegen {
     }
 
     /// Generate code for a basic block.
-    fn generate_block(&self, func: &mut Function, block: &IrBlock) -> Result<(), String> {
+    fn generate_block(
+        &self,
+        func: &mut Function,
+        block: &IrBlock,
+        tracker: &ValueLocationTracker,
+    ) -> Result<(), String> {
         // Generate instructions
         for instr in &block.instructions {
-            self.generate_instruction(func, instr)?;
+            self.generate_instruction(func, instr, tracker)?;
         }
 
         // Generate terminator
-        self.generate_terminator(func, &block.terminator)?;
+        self.generate_terminator(func, &block.terminator, tracker)?;
 
         Ok(())
     }
 
     /// Generate code for an IR instruction.
-    fn generate_instruction(&self, func: &mut Function, instr: &IrInstr) -> Result<(), String> {
+    fn generate_instruction(
+        &self,
+        func: &mut Function,
+        instr: &IrInstr,
+        tracker: &ValueLocationTracker,
+    ) -> Result<(), String> {
         match instr {
-            IrInstr::Const { value, ty, .. } => {
+            IrInstr::Const {
+                result, value, ty, ..
+            } => {
+                // Generate the constant and store it in the result local
                 self.generate_const(func, value, ty)?;
+                let local_idx = tracker
+                    .get_local(*result)
+                    .ok_or_else(|| format!("No local for value {}", result))?;
+                func.instruction(&Instruction::LocalSet(local_idx));
             }
             IrInstr::BinOp {
-                op, lhs, rhs, ty, ..
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+                ..
             } => {
-                // Note: In a proper implementation, we'd need to track the stack
-                // and generate appropriate local.get instructions for lhs/rhs
-                // For now, this is a placeholder
-                self.generate_binop(func, *op, *lhs, *rhs, ty)?;
+                self.generate_binop(func, *op, *lhs, *rhs, ty, tracker)?;
+                // Store result in local
+                let local_idx = tracker
+                    .get_local(*result)
+                    .ok_or_else(|| format!("No local for value {}", result))?;
+                func.instruction(&Instruction::LocalSet(local_idx));
             }
             IrInstr::UnOp {
-                op, operand, ty, ..
+                result,
+                op,
+                operand,
+                ty,
+                ..
             } => {
-                self.generate_unop(func, *op, *operand, ty)?;
+                self.generate_unop(func, *op, *operand, ty, tracker)?;
+                // Store result in local
+                let local_idx = tracker
+                    .get_local(*result)
+                    .ok_or_else(|| format!("No local for value {}", result))?;
+                func.instruction(&Instruction::LocalSet(local_idx));
             }
             IrInstr::Call { func: _, args, .. } => {
                 // Load arguments (would need proper stack management)
@@ -226,12 +361,22 @@ impl WasmCodegen {
         &self,
         func: &mut Function,
         op: BinOp,
-        _lhs: ValueId,
-        _rhs: ValueId,
+        lhs: ValueId,
+        rhs: ValueId,
         ty: &Type,
+        tracker: &ValueLocationTracker,
     ) -> Result<(), String> {
-        // Note: In a real implementation, we'd first load lhs and rhs onto the stack
-        // For now, we just generate the operation instruction
+        // Load LHS from local
+        let lhs_local = tracker
+            .get_local(lhs)
+            .ok_or_else(|| format!("No local for LHS value {}", lhs))?;
+        func.instruction(&Instruction::LocalGet(lhs_local));
+
+        // Load RHS from local
+        let rhs_local = tracker
+            .get_local(rhs)
+            .ok_or_else(|| format!("No local for RHS value {}", rhs))?;
+        func.instruction(&Instruction::LocalGet(rhs_local));
 
         // For unknown types, default to integer operations
         let effective_ty = if matches!(ty, Type::Unknown) {
@@ -354,32 +499,32 @@ impl WasmCodegen {
         &self,
         func: &mut Function,
         op: UnOp,
-        _operand: ValueId,
+        operand: ValueId,
         ty: &Type,
+        tracker: &ValueLocationTracker,
     ) -> Result<(), String> {
-        // TODO: In a real implementation, we'd first load operand onto the stack
-        // The following code is a placeholder that generates the operation instruction
-        // but doesn't properly load the operand first
+        // Load operand from local
+        let operand_local = tracker
+            .get_local(operand)
+            .ok_or_else(|| format!("No local for operand value {}", operand))?;
+        func.instruction(&Instruction::LocalGet(operand_local));
 
         match op {
             UnOp::Neg => match ty {
                 Type::Integer => {
-                    // TODO: Need to load operand first
-                    // i64.const 0, load operand, i64.sub
-                    func.instruction(&Instruction::I64Const(0));
-                    // Load operand here
-                    func.instruction(&Instruction::I64Sub);
+                    // Integer negation requires emitting "0 - operand", but we've already
+                    // loaded the operand. Need to restructure to load operands in correct order.
+                    // TODO: Refactor to not pre-load operand for operations that need specific order
+                    return Err("Integer negation needs better stack management".to_string());
                 }
                 Type::Float => {
-                    // TODO: Need to load operand first
                     func.instruction(&Instruction::F64Neg);
                 }
                 _ => return Err(format!("Neg not supported for type {:?}", ty)),
             },
             UnOp::Not => {
-                // TODO: Logical not implementation is incomplete
-                // i32.eqz expects i32 on stack, but operand might be i64/f64
-                // Need to convert operand to i32 boolean first
+                // Logical not: operand == 0
+                // Operand is already on stack as i32 (boolean)
                 func.instruction(&Instruction::I32Eqz);
             }
             UnOp::BitNot => {
@@ -391,11 +536,20 @@ impl WasmCodegen {
     }
 
     /// Generate code for a terminator.
-    fn generate_terminator(&self, func: &mut Function, term: &IrTerminator) -> Result<(), String> {
+    fn generate_terminator(
+        &self,
+        func: &mut Function,
+        term: &IrTerminator,
+        tracker: &ValueLocationTracker,
+    ) -> Result<(), String> {
         match term {
             IrTerminator::Return { value, .. } => {
-                if value.is_some() {
-                    // Load the return value (would need proper stack management)
+                if let Some(value_id) = value {
+                    // Load the return value from its local
+                    let local_idx = tracker
+                        .get_local(*value_id)
+                        .ok_or_else(|| format!("No local for return value {}", value_id))?;
+                    func.instruction(&Instruction::LocalGet(local_idx));
                 }
                 func.instruction(&Instruction::End);
             }
