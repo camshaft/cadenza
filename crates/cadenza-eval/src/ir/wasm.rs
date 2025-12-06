@@ -1158,4 +1158,67 @@ mod tests {
         // Verify the WAT contains conditional structures
         assert!(wat_text.contains("if")); // WebAssembly if instruction
     }
+
+    #[test]
+    fn test_validate_wasm_valid_module() {
+        // Create a minimal valid WASM module
+        let wasm = vec![
+            0x00, 0x61, 0x73, 0x6d, // magic number "\0asm"
+            0x01, 0x00, 0x00, 0x00, // version 1
+        ];
+        
+        let result = validate_wasm(&wasm);
+        assert!(result.is_ok(), "Valid WASM module should pass validation");
+    }
+
+    #[test]
+    fn test_validate_wasm_invalid_module() {
+        // Create an invalid WASM module (wrong magic number)
+        let wasm = vec![
+            0xFF, 0xFF, 0xFF, 0xFF, // invalid magic number
+            0x01, 0x00, 0x00, 0x00, // version 1
+        ];
+        
+        let result = validate_wasm(&wasm);
+        assert!(result.is_err(), "Invalid WASM module should fail validation");
+        
+        // Verify error message contains "validation failed"
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("WASM validation failed"), 
+                "Error message should mention validation failure: {}", err_msg);
+    }
+
+    #[test]
+    fn test_generate_wat_validates_wasm() {
+        // Create a simple function that returns 42
+        let func = IrFunction {
+            id: FunctionId(0),
+            name: InternedString::new("test_func"),
+            params: vec![],
+            return_ty: Type::Integer,
+            blocks: vec![IrBlock {
+                id: BlockId(0),
+                instructions: vec![IrInstr::Const {
+                    result: ValueId(0),
+                    ty: Type::Integer,
+                    value: IrConst::Integer(42),
+                    source: dummy_source(),
+                }],
+                terminator: IrTerminator::Return {
+                    value: Some(ValueId(0)),
+                    source: dummy_source(),
+                },
+            }],
+            entry_block: BlockId(0),
+        };
+
+        let module = IrModule {
+            functions: vec![func],
+            exports: vec![],
+        };
+
+        // generate_wat should validate the WASM and succeed
+        let result = generate_wat(&module);
+        assert!(result.is_ok(), "generate_wat should validate and succeed: {:?}", result.err());
+    }
 }
