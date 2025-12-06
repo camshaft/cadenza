@@ -1,0 +1,79 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Mixed Inline Elements\n\nThis paragraph has *italic*, **bold**, and `code` all mixed together.\n\nYou can have multiple inline elements in a single paragraph without nesting them.\n"
+---
+Root@0..178
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..23
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..23
+      Literal@2..23
+        StringContent@2..23
+          StringContent@2..23 "Mixed Inline Elements"
+  Newline@23..24 "\n"
+  Newline@24..25 "\n"
+  Apply@25..94
+    ApplyReceiver@25..25
+      SyntheticMarkdownParagraph@25..25
+    ApplyArgument@25..94
+      Apply@25..94
+        ApplyReceiver@25..25
+          SyntheticList@25..25
+        ApplyArgument@25..44
+          Literal@25..44
+            StringContent@25..44
+              StringContent@25..44 "This paragraph has "
+        CommentContent@44..45 "*"
+        ApplyArgument@45..51
+          Apply@45..51
+            ApplyReceiver@45..45
+              SyntheticMarkdownEmphasis@45..45
+            ApplyArgument@45..51
+              Literal@45..51
+                StringContent@45..51
+                  StringContent@45..51 "italic"
+        CommentContent@51..52 "*"
+        ApplyArgument@52..54
+          Literal@52..54
+            StringContent@52..54
+              StringContent@52..54 ", "
+        CommentContent@54..56 "**"
+        ApplyArgument@56..60
+          Apply@56..60
+            ApplyReceiver@56..56
+              SyntheticMarkdownStrong@56..56
+            ApplyArgument@56..60
+              Literal@56..60
+                StringContent@56..60
+                  StringContent@56..60 "bold"
+        CommentContent@60..62 "**"
+        ApplyArgument@62..68
+          Literal@62..68
+            StringContent@62..68
+              StringContent@62..68 ", and "
+        CommentContent@68..69 "`"
+        ApplyArgument@69..73
+          Apply@69..73
+            ApplyReceiver@69..69
+              SyntheticMarkdownCodeInline@69..69
+            ApplyArgument@69..73
+              Literal@69..73
+                StringContent@69..73
+                  StringContent@69..73 "code"
+        CommentContent@73..74 "`"
+        ApplyArgument@74..94
+          Literal@74..94
+            StringContent@74..94
+              StringContent@74..94 " all mixed together."
+  Newline@94..95 "\n"
+  Newline@95..96 "\n"
+  Apply@96..177
+    ApplyReceiver@96..96
+      SyntheticMarkdownParagraph@96..96
+    ApplyArgument@96..177
+      Literal@96..177
+        StringContent@96..177
+          StringContent@96..177 "You can have multiple ..."
+  Newline@177..178 "\n"

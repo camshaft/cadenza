@@ -155,6 +155,9 @@ pub enum Kind {
     SyntheticMarkdownParagraph,
     SyntheticMarkdownList,
     SyntheticMarkdownCode,
+    SyntheticMarkdownEmphasis,
+    SyntheticMarkdownStrong,
+    SyntheticMarkdownCodeInline,
     Eof,
 }
 impl Kind {
@@ -249,6 +252,9 @@ impl Kind {
         Self::SyntheticMarkdownParagraph,
         Self::SyntheticMarkdownList,
         Self::SyntheticMarkdownCode,
+        Self::SyntheticMarkdownEmphasis,
+        Self::SyntheticMarkdownStrong,
+        Self::SyntheticMarkdownCodeInline,
         Self::Eof,
     ];
 
@@ -343,6 +349,9 @@ impl Kind {
         Self::SyntheticMarkdownParagraph,
         Self::SyntheticMarkdownList,
         Self::SyntheticMarkdownCode,
+        Self::SyntheticMarkdownEmphasis,
+        Self::SyntheticMarkdownStrong,
+        Self::SyntheticMarkdownCodeInline,
     ];
 
     pub const fn is_node(self) -> bool {
@@ -417,6 +426,9 @@ impl Kind {
                 | Self::SyntheticMarkdownParagraph
                 | Self::SyntheticMarkdownList
                 | Self::SyntheticMarkdownCode
+                | Self::SyntheticMarkdownEmphasis
+                | Self::SyntheticMarkdownStrong
+                | Self::SyntheticMarkdownCodeInline
         )
     }
 
@@ -491,7 +503,7 @@ impl Kind {
 
     /// Try to convert a u16 discriminant to a Kind
     pub const fn try_from_u16(value: u16) -> Option<Self> {
-        if value < 91 {
+        if value < 94 {
             // SAFETY: value is within valid discriminant range
             Some(unsafe { core::mem::transmute::<u16, Kind>(value) })
         } else {
@@ -592,6 +604,9 @@ impl Kind {
             Self::SyntheticMarkdownParagraph => "synthetic markdown paragraph",
             Self::SyntheticMarkdownList => "synthetic markdown list",
             Self::SyntheticMarkdownCode => "synthetic markdown code",
+            Self::SyntheticMarkdownEmphasis => "synthetic markdown emphasis",
+            Self::SyntheticMarkdownStrong => "synthetic markdown strong",
+            Self::SyntheticMarkdownCodeInline => "synthetic markdown code inline",
             Self::Eof => "eof",
         }
     }
@@ -744,6 +759,9 @@ impl Kind {
             Self::SyntheticMarkdownParagraph => Some("p"),
             Self::SyntheticMarkdownList => Some("ul"),
             Self::SyntheticMarkdownCode => Some("code"),
+            Self::SyntheticMarkdownEmphasis => Some("em"),
+            Self::SyntheticMarkdownStrong => Some("strong"),
+            Self::SyntheticMarkdownCodeInline => Some("code_inline"),
             _ => None,
         }
     }

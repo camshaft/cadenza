@@ -1,0 +1,69 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Inline Code\n\nThis paragraph has `inline code` in it.\n\nYou can use `code` in the middle of a sentence.\n"
+---
+Root@0..104
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..13
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..13
+      Literal@2..13
+        StringContent@2..13
+          StringContent@2..13 "Inline Code"
+  Newline@13..14 "\n"
+  Newline@14..15 "\n"
+  Apply@15..54
+    ApplyReceiver@15..15
+      SyntheticMarkdownParagraph@15..15
+    ApplyArgument@15..54
+      Apply@15..54
+        ApplyReceiver@15..15
+          SyntheticList@15..15
+        ApplyArgument@15..34
+          Literal@15..34
+            StringContent@15..34
+              StringContent@15..34 "This paragraph has "
+        CommentContent@34..35 "`"
+        ApplyArgument@35..46
+          Apply@35..46
+            ApplyReceiver@35..35
+              SyntheticMarkdownCodeInline@35..35
+            ApplyArgument@35..46
+              Literal@35..46
+                StringContent@35..46
+                  StringContent@35..46 "inline code"
+        CommentContent@46..47 "`"
+        ApplyArgument@47..54
+          Literal@47..54
+            StringContent@47..54
+              StringContent@47..54 " in it."
+  Newline@54..55 "\n"
+  Newline@55..56 "\n"
+  Apply@56..103
+    ApplyReceiver@56..56
+      SyntheticMarkdownParagraph@56..56
+    ApplyArgument@56..103
+      Apply@56..103
+        ApplyReceiver@56..56
+          SyntheticList@56..56
+        ApplyArgument@56..68
+          Literal@56..68
+            StringContent@56..68
+              StringContent@56..68 "You can use "
+        CommentContent@68..69 "`"
+        ApplyArgument@69..73
+          Apply@69..73
+            ApplyReceiver@69..69
+              SyntheticMarkdownCodeInline@69..69
+            ApplyArgument@69..73
+              Literal@69..73
+                StringContent@69..73
+                  StringContent@69..73 "code"
+        CommentContent@73..74 "`"
+        ApplyArgument@74..103
+          Literal@74..103
+            StringContent@74..103
+              StringContent@74..103 " in the middle of a s ..."
+  Newline@103..104 "\n"

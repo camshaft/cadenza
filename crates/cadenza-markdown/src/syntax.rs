@@ -238,13 +238,9 @@ impl<'src> Parser<'src> {
         }
 
         let content = &self.src[content_start..self.pos];
-        // Emit content directly from source
-        self.builder.start_node(Kind::Literal.into());
-        self.builder.start_node(Kind::StringContent.into());
-        self.builder.token(Kind::StringContent.into(), content);
-        self.builder.finish_node();
-        self.builder.finish_node();
-
+        // Parse inline elements in the heading content
+        self.parse_inline_content(content, content_start);
+        
         self.builder.finish_node();
 
         self.builder.finish_node();
@@ -456,11 +452,8 @@ impl<'src> Parser<'src> {
             }
 
             let content = &self.src[content_start..self.pos];
-            self.builder.start_node(Kind::Literal.into());
-            self.builder.start_node(Kind::StringContent.into());
-            self.builder.token(Kind::StringContent.into(), content);
-            self.builder.finish_node();
-            self.builder.finish_node();
+            // Parse inline elements in list item content
+            self.parse_inline_content(content, content_start);
             self.builder.finish_node();
 
             // Skip newline
@@ -571,12 +564,192 @@ impl<'src> Parser<'src> {
         // Emit paragraph content as argument
         self.builder.start_node(Kind::ApplyArgument.into());
         let content = &self.src[content_start..self.pos];
-        self.builder.start_node(Kind::Literal.into());
-        self.builder.start_node(Kind::StringContent.into());
-        self.builder.token(Kind::StringContent.into(), content);
+        // Parse inline elements in the paragraph content
+        self.parse_inline_content(content, content_start);
+        self.builder.finish_node();
+        
+        self.builder.finish_node();
+    }
+
+    /// Parse inline elements within a text content range.
+    /// Returns the content as either a simple string or a list of mixed inline elements.
+    fn parse_inline_content(&mut self, content: &str, content_start: usize) {
+        // Check if there are any inline elements in the content
+        if !self.has_inline_elements(content) {
+            // No inline elements, just emit as string
+            self.builder.start_node(Kind::Literal.into());
+            self.builder.start_node(Kind::StringContent.into());
+            self.builder.token(Kind::StringContent.into(), content);
+            self.builder.finish_node();
+            self.builder.finish_node();
+        } else {
+            // Has inline elements, parse them
+            self.parse_inline_elements(content, content_start);
+        }
+    }
+
+    /// Check if content has any inline elements
+    fn has_inline_elements(&self, content: &str) -> bool {
+        content.contains('*') || content.contains('`')
+    }
+
+    /// Parse inline elements and emit as a list structure
+    fn parse_inline_elements(&mut self, content: &str, _base_offset: usize) {
+        // Emit as a synthetic list to hold mixed content
+        self.builder.start_node(Kind::Apply.into());
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        self.builder.start_node(Kind::SyntheticList.into());
         self.builder.finish_node();
         self.builder.finish_node();
-        self.builder.finish_node();
+
+        let mut pos = 0;
+        let bytes = content.as_bytes();
+
+        while pos < bytes.len() {
+            // Check for inline code first (highest priority)
+            if bytes[pos] == b'`' {
+                let code_start = pos;
+                pos += 1;
+                
+                // Find closing backtick
+                let mut found_close = false;
+                let code_content_start = pos;
+                while pos < bytes.len() {
+                    if bytes[pos] == b'`' {
+                        found_close = true;
+                        break;
+                    }
+                    pos += 1;
+                }
+                
+                if found_close {
+                    let code_content = &content[code_content_start..pos];
+                    
+                    // Emit opening backtick as trivia
+                    self.builder.token(Kind::CommentContent.into(), "`");
+                    
+                    // Emit inline code as Apply node
+                    self.builder.start_node(Kind::ApplyArgument.into());
+                    self.builder.start_node(Kind::Apply.into());
+                    self.builder.start_node(Kind::ApplyReceiver.into());
+                    self.builder.start_node(Kind::SyntheticMarkdownCodeInline.into());
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    
+                    self.builder.start_node(Kind::ApplyArgument.into());
+                    self.builder.start_node(Kind::Literal.into());
+                    self.builder.start_node(Kind::StringContent.into());
+                    self.builder.token(Kind::StringContent.into(), code_content);
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    
+                    // Skip closing backtick and emit as trivia
+                    pos += 1;
+                    self.builder.token(Kind::CommentContent.into(), "`");
+                    continue;
+                } else {
+                    // No closing backtick, treat as regular text
+                    pos = code_start;
+                }
+            }
+            
+            // Check for emphasis (** or *)
+            if bytes[pos] == b'*' {
+                let star_start = pos;
+                
+                // Check if it's bold (**) or italic (*)
+                let is_bold = pos + 1 < bytes.len() && bytes[pos + 1] == b'*';
+                let marker_len = if is_bold { 2 } else { 1 };
+                let marker = if is_bold { "**" } else { "*" };
+                
+                pos += marker_len;
+                
+                // Find closing marker
+                let content_start = pos;
+                let mut found_close = false;
+                
+                while pos < bytes.len() {
+                    if bytes[pos] == b'*' && (!is_bold || (pos + 1 < bytes.len() && bytes[pos + 1] == b'*')) {
+                        found_close = true;
+                        break;
+                    }
+                    pos += 1;
+                }
+                
+                if found_close {
+                    let emphasis_content = &content[content_start..pos];
+                    
+                    // Emit opening marker as trivia
+                    self.builder.token(Kind::CommentContent.into(), marker);
+                    
+                    // Emit emphasis as Apply node
+                    self.builder.start_node(Kind::ApplyArgument.into());
+                    self.builder.start_node(Kind::Apply.into());
+                    self.builder.start_node(Kind::ApplyReceiver.into());
+                    
+                    if is_bold {
+                        self.builder.start_node(Kind::SyntheticMarkdownStrong.into());
+                    } else {
+                        self.builder.start_node(Kind::SyntheticMarkdownEmphasis.into());
+                    }
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    
+                    self.builder.start_node(Kind::ApplyArgument.into());
+                    self.builder.start_node(Kind::Literal.into());
+                    self.builder.start_node(Kind::StringContent.into());
+                    self.builder.token(Kind::StringContent.into(), emphasis_content);
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    
+                    // Skip closing marker and emit as trivia
+                    pos += marker_len;
+                    self.builder.token(Kind::CommentContent.into(), marker);
+                    continue;
+                } else {
+                    // No closing marker, treat as regular text
+                    pos = star_start;
+                }
+            }
+            
+            // Regular text - collect until next special character
+            let text_start = pos;
+            while pos < bytes.len() && bytes[pos] != b'*' && bytes[pos] != b'`' {
+                pos += 1;
+            }
+            
+            if pos > text_start {
+                let text = &content[text_start..pos];
+                self.builder.start_node(Kind::ApplyArgument.into());
+                self.builder.start_node(Kind::Literal.into());
+                self.builder.start_node(Kind::StringContent.into());
+                self.builder.token(Kind::StringContent.into(), text);
+                self.builder.finish_node();
+                self.builder.finish_node();
+                self.builder.finish_node();
+            }
+            
+            // If we didn't advance (e.g., malformed marker), advance by 1 to avoid infinite loop
+            if pos == text_start && pos < bytes.len() {
+                let char = &content[pos..pos+1];
+                self.builder.start_node(Kind::ApplyArgument.into());
+                self.builder.start_node(Kind::Literal.into());
+                self.builder.start_node(Kind::StringContent.into());
+                self.builder.token(Kind::StringContent.into(), char);
+                self.builder.finish_node();
+                self.builder.finish_node();
+                self.builder.finish_node();
+                pos += 1;
+            }
+        }
 
         self.builder.finish_node();
     }
