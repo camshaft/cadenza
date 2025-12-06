@@ -715,16 +715,46 @@ The following enhancements were identified during code review and are planned fo
   - [x] Handle return values on stack
   - [x] Test with recursive functions
   - [x] Tail call optimization using `return_call` instruction (important for functional languages)
-- [ ] **Control flow**
-  - [ ] Implement branch instruction generation (conditional jumps)
+- [ ] **Control flow** 🔨 **IN PROGRESS**
+  - [x] Add `if` special form to the language (evaluator level)
+  - [x] Add test file with if expressions (if-simple.cdz)
+  - [x] Add WASM test with Branch/Jump terminators (test_generate_function_with_branch)
+  - [ ] Implement structured control flow codegen for WASM
+    - [ ] Recognize if-then-else-merge pattern in IR blocks
+    - [ ] Generate WASM `if-else-end` instructions for conditional branches
+    - [ ] Handle phi nodes by ensuring correct values on stack
+    - [ ] Map arbitrary basic block graphs to structured control flow (harder - may need block restructuring)
+  - [ ] Implement IR generation for `if` expressions
+    - [ ] Refactor IR generator to work with multiple blocks
+    - [ ] Generate Branch terminators from `if` macro applications
+    - [ ] Create then/else/merge blocks with proper phi nodes
   - [ ] Implement unconditional jump (br) for loops
-  - [ ] Handle block nesting for structured control flow
-  - [ ] Generate proper WASM blocks and loops
-  - [ ] Map IR basic blocks to WASM control structures
+  - [ ] Generate proper WASM blocks and loops for complex control flow
 - [ ] **Unary operations**
   - [ ] Fix negation to properly load operand first
   - [ ] Fix logical not with proper type conversions
   - [ ] Implement bitwise not
+
+**Architectural Notes on Control Flow**:
+
+WebAssembly uses structured control flow (if/else/block/loop) rather than arbitrary jumps.
+To map IR's basic block graph to WASM's structured control flow:
+
+1. **Simple patterns** (if-then-else-merge with phi):
+   - Recognize the pattern: entry → branch → (then, else) → merge (phi) → return
+   - Generate: `if (result_type) ... else ... end`
+   - Handle phi by ensuring correct value is on stack from each branch
+
+2. **General case** (arbitrary control flow graph):
+   - May need to restructure the control flow graph (Relooper algorithm or similar)
+   - Use WASM's `block` and `br` (break) instructions for forward jumps
+   - Use `loop` instruction for backward jumps
+   - Each phi node needs special handling to ensure values flow correctly
+
+3. **Implementation approach**:
+   - Start with simple if-then-else patterns (most common case)
+   - Add support for loops and more complex patterns as needed
+   - Consider using a separate CFG analysis pass before codegen
 
 **Medium Priority** (after basic codegen works):
 - [ ] **String constants**

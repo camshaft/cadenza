@@ -653,11 +653,34 @@ impl WasmCodegen {
                 }
                 func.instruction(&Instruction::End);
             }
-            IrTerminator::Branch { .. } => {
-                return Err("Branch not yet implemented".to_string());
+            IrTerminator::Branch { cond, then_block, else_block, .. } => {
+                // Load the condition value
+                let cond_local = tracker
+                    .get_local(*cond)
+                    .ok_or_else(|| format!("No local for branch condition {}", cond))?;
+                func.instruction(&Instruction::LocalGet(cond_local));
+                
+                // Note: For now, we'll return an error since we need to handle
+                // the then/else blocks which requires restructuring the codegen.
+                // A proper implementation would:
+                // 1. Emit: if (condition type)
+                // 2. Generate code for then_block
+                // 3. Emit: else
+                // 4. Generate code for else_block
+                // 5. Emit: end
+                // This requires access to the full function's blocks, not just the current block.
+                return Err(format!(
+                    "Branch terminator requires structured control flow codegen (then: {:?}, else: {:?})",
+                    then_block, else_block
+                ));
             }
-            IrTerminator::Jump { .. } => {
-                return Err("Jump not yet implemented".to_string());
+            IrTerminator::Jump { target, .. } => {
+                // Unconditional jumps in structured control flow typically use `br` instruction
+                // However, we need to know the depth of the target block in the control structure
+                return Err(format!(
+                    "Jump terminator requires structured control flow codegen (target: {:?})",
+                    target
+                ));
             }
         }
         Ok(())
