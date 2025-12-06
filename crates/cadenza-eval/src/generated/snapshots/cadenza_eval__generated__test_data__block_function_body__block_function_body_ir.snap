@@ -3,3 +3,13 @@ source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"fn foo a b =\\n    let av = a * 2\\n    let bv = b * 3\\n    av * bv\\nfoo 5 7\\n\")"
 ---
 # IR Module
+
+@t unknown unknown -> unknown
+fn foo a b =
+    block block_0 =
+        let v2: integer = const 2
+        let v3: unknown = binop mul v0 v2
+        let v4: integer = const 3
+        let v5: unknown = binop mul v1 v4
+        let v6: unknown = binop mul v3 v5
+        ret v6
