@@ -2068,6 +2068,108 @@ pub fn builtin_assert() -> BuiltinMacro {
     }
 }
 
+/// Creates the `match` builtin macro for pattern matching on booleans.
+///
+/// The `match` macro evaluates an expression and matches it against boolean patterns.
+/// Currently supports matching on boolean values.
+///
+/// # Syntax
+///
+/// ```cadenza
+/// match expr
+///     true -> expr1
+///     false -> expr2
+/// ```
+///
+/// # Arguments
+///
+/// - First argument: The expression to match on
+/// - Second argument: Block containing pattern arms (arrow expressions)
+///
+/// # Returns
+///
+/// The value of the matched arm's expression.
+///
+/// # Examples
+///
+/// ```cadenza
+/// let x = 5
+/// match x > 0
+///     true -> "positive"
+///     false -> "negative"
+/// ```
+pub fn builtin_match() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "match",
+        signature: Type::function(vec![Type::Unknown], Type::Unknown),
+        func: |args, ctx| {
+            // Validate argument count: need match expression and at least one arm
+            if args.len() < 2 {
+                return Err(Diagnostic::syntax(
+                    "match expects at least 2 arguments: match_expr and pattern arms",
+                ));
+            }
+
+            // First argument is the expression to match on
+            let match_expr = &args[0];
+            let match_value = match_expr.eval(ctx)?;
+
+            // Check that the match value is a boolean
+            let match_bool = match match_value {
+                Value::Bool(b) => b,
+                _ => {
+                    return Err(Diagnostic::type_error(Type::Bool, match_value.type_of())
+                        .with_span(match_expr.span()));
+                }
+            };
+
+            // Remaining arguments are pattern arms
+            // Each arm should be an arrow expression: pattern -> result
+            for arm in &args[1..] {
+                // Each arm should be an arrow expression: pattern -> result
+                if let Expr::Apply(apply) = arm {
+                    // Check if the callee is the -> operator
+                    if let Some(Expr::Op(op)) = apply.callee() {
+                        if op.syntax().text() == "->" {
+                            let arm_args = apply.all_arguments();
+                            if arm_args.len() == 2 {
+                                let pattern = &arm_args[0];
+                                let result_expr = &arm_args[1];
+
+                                // Check if pattern is a boolean literal
+                                if let Expr::Ident(ident) = pattern {
+                                    let pattern_text = ident.syntax().text().to_string();
+                                    let matches = match pattern_text.as_str() {
+                                        "true" => match_bool,
+                                        "false" => !match_bool,
+                                        _ => {
+                                            return Err(Diagnostic::syntax(format!(
+                                                "match pattern must be 'true' or 'false', got '{}'",
+                                                pattern_text
+                                            ))
+                                            .with_span(pattern.span()));
+                                        }
+                                    };
+
+                                    if matches {
+                                        return result_expr.eval(ctx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // No pattern matched
+            Err(
+                Diagnostic::syntax("match expression did not match any pattern")
+                    .with_span(match_expr.span()),
+            )
+        },
+    }
+}
+
 /// A builtin macro that returns the inferred type of an expression.
 ///
 /// This demonstrates how macros can use the type inference system to query types.
