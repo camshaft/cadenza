@@ -48,7 +48,7 @@ impl<'src> Parser<'src> {
     fn parse(mut self) -> Parse {
         self.builder.start_node(Kind::Root.into());
 
-        while self.pos < self.src.len() {
+        loop {
             self.skip_blank_lines();
             if self.pos >= self.src.len() {
                 break;
@@ -218,7 +218,13 @@ impl<'src> Parser<'src> {
         }
 
         let content = &self.src[content_start..self.pos];
-        self.parse_string_content(content);
+        // Emit content directly from source
+        self.builder.start_node(Kind::Literal.into());
+        self.builder.start_node(Kind::StringContent.into());
+        self.builder.token(Kind::StringContent.into(), content);
+        self.builder.finish_node();
+        self.builder.finish_node();
+        
         self.builder.finish_node();
 
         self.builder.finish_node();
@@ -239,15 +245,14 @@ impl<'src> Parser<'src> {
         
         // Parse language identifier
         let lang_start = self.pos;
-        let mut language = String::new();
         while self.pos < self.src.len() {
             let ch = self.peek_char().unwrap();
             if ch == ' ' || ch == '\n' || ch == '\r' {
                 break;
             }
-            language.push(ch);
             self.pos += 1;
         }
+        let lang_end = self.pos;
 
         // Skip rest of line (parameters are not supported yet)
         while self.pos < self.src.len() && self.peek_char() != Some('\n') && self.peek_char() != Some('\r') {
@@ -259,7 +264,6 @@ impl<'src> Parser<'src> {
 
         // Read code content until closing fence
         let code_start = self.pos;
-        let mut code_content = String::new();
         
         while self.pos < self.src.len() {
             // Check if we're at the closing fence
@@ -269,7 +273,6 @@ impl<'src> Parser<'src> {
                 break;
             }
             
-            code_content.push(self.peek_char().unwrap());
             self.pos += 1;
         }
 
@@ -281,12 +284,14 @@ impl<'src> Parser<'src> {
             self.pos += 3;
         }
 
-        // Skip to end of line
+        // Skip to end of line (but don't consume newline yet)
         while self.pos < self.src.len() && self.peek_char() != Some('\n') && self.peek_char() != Some('\r') {
             self.pos += 1;
         }
+        
         let fence_end = self.pos;
         
+        // Now consume the newline if present
         if self.peek_char().is_some() {
             self.skip_newline();
         }
@@ -307,12 +312,22 @@ impl<'src> Parser<'src> {
 
         // Language as first argument
         self.builder.start_node(Kind::ApplyArgument.into());
-        self.parse_string_content(&language);
+        let language = &self.src[lang_start..lang_end];
+        self.builder.start_node(Kind::Literal.into());
+        self.builder.start_node(Kind::StringContent.into());
+        self.builder.token(Kind::StringContent.into(), language);
+        self.builder.finish_node();
+        self.builder.finish_node();
         self.builder.finish_node();
 
-        // Code content as second argument (already consumed, passed as string)
+        // Code content as second argument
         self.builder.start_node(Kind::ApplyArgument.into());
-        self.parse_string_content(&code_content);
+        let code_content = &self.src[code_start..code_end];
+        self.builder.start_node(Kind::Literal.into());
+        self.builder.start_node(Kind::StringContent.into());
+        self.builder.token(Kind::StringContent.into(), code_content);
+        self.builder.finish_node();
+        self.builder.finish_node();
         self.builder.finish_node();
 
         // Emit closing fence and rest of line as trivia
@@ -374,7 +389,11 @@ impl<'src> Parser<'src> {
             }
 
             let content = &self.src[content_start..self.pos];
-            self.parse_string_content(content);
+            self.builder.start_node(Kind::Literal.into());
+            self.builder.start_node(Kind::StringContent.into());
+            self.builder.token(Kind::StringContent.into(), content);
+            self.builder.finish_node();
+            self.builder.finish_node();
             self.builder.finish_node();
 
             // Skip newline
@@ -396,26 +415,22 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_paragraph(&mut self) {
-        // For paragraphs, just emit the content directly as StringContent
-        // No Apply node wrapper since paragraphs don't have markdown syntax
-        let mut content = String::new();
+        // For paragraphs, emit the content directly as StringContent from source
+        let content_start = self.pos;
         
         // Read until blank line or special element
         while self.pos < self.src.len() {
-            // Check for end conditions
+            // Check for end conditions at start of line
             if self.is_heading() || self.is_code_fence() {
                 break;
             }
 
-            let _line_start = self.pos;
-            
             // Read the line
             while self.pos < self.src.len() {
                 let ch = self.peek_char().unwrap();
                 if ch == '\n' || ch == '\r' {
                     break;
                 }
-                content.push(ch);
                 self.pos += 1;
             }
 
@@ -424,50 +439,64 @@ impl<'src> Parser<'src> {
                 break;
             }
 
-            // Add newline to content
-            let _newline_start = self.pos;
+            // Consume newline
             if self.peek_char() == Some('\r') {
-                content.push('\r');
                 self.pos += 1;
                 if self.peek_char() == Some('\n') {
-                    content.push('\n');
                     self.pos += 1;
                 }
             } else if self.peek_char() == Some('\n') {
-                content.push('\n');
                 self.pos += 1;
             }
 
             // Check if next line is blank (paragraph break)
             let save_pos = self.pos;
-            self.skip_line_whitespace();
-            if self.peek_char() == Some('\n') || self.peek_char() == Some('\r') || self.peek_char().is_none() {
-                // Blank line - end of paragraph
-                // Remove trailing newline from content
-                if content.ends_with("\r\n") {
-                    content.truncate(content.len() - 2);
-                } else if content.ends_with('\n') || content.ends_with('\r') {
-                    content.truncate(content.len() - 1);
+            let mut found_content = false;
+            while self.pos < self.src.len() {
+                let ch = self.peek_char().unwrap();
+                if ch == ' ' || ch == '\t' {
+                    self.pos += 1;
+                } else if ch == '\n' || ch == '\r' {
+                    // Blank line - end of paragraph
+                    break;
+                } else {
+                    // Non-whitespace content - continue paragraph
+                    found_content = true;
+                    break;
                 }
+            }
+            
+            if !found_content {
+                // Found blank line or end - restore position and end paragraph
+                // Strip the trailing newline from paragraph by backing up
                 self.pos = save_pos;
+                if self.pos > content_start {
+                    // Back up over the newline we just consumed
+                    if self.pos >= 2 && &self.src[self.pos-2..self.pos] == "\r\n" {
+                        self.pos -= 2;
+                    } else if self.pos >= 1 {
+                        let prev_char = self.src.as_bytes()[self.pos - 1];
+                        if prev_char == b'\n' || prev_char == b'\r' {
+                            self.pos -= 1;
+                        }
+                    }
+                }
                 break;
             }
+            
+            // Continue with next line
             self.pos = save_pos;
         }
 
-        // Emit paragraph content directly
-        self.parse_string_content(&content);
-    }
-
-    fn parse_string_content(&mut self, content: &str) {
-        // Create a string content node without quotes
-        // Just pass the raw content as StringContent
+        // Emit paragraph content from source
+        let content = &self.src[content_start..self.pos];
         self.builder.start_node(Kind::Literal.into());
         self.builder.start_node(Kind::StringContent.into());
         self.builder.token(Kind::StringContent.into(), content);
         self.builder.finish_node();
         self.builder.finish_node();
     }
+
 }
 
 #[cfg(test)]

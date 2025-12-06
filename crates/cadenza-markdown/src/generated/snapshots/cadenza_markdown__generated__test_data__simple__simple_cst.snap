@@ -1,0 +1,20 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Hello World\n\nThis is a simple paragraph.\n"
+---
+Root@0..43
+  Apply@0..13
+    ApplyReceiver@0..1
+      Identifier@0..1
+        Identifier@0..1 "#"
+    Space@1..2 " "
+    ApplyArgument@2..13
+      Literal@2..13
+        StringContent@2..13
+          StringContent@2..13 "Hello World"
+  Newline@13..14 "\n"
+  Newline@14..15 "\n"
+  Literal@15..42
+    StringContent@15..42
+      StringContent@15..42 "This is a simple para ..."
+  Newline@42..43 "\n"

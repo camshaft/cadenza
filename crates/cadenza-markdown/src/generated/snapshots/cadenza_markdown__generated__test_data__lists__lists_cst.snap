@@ -1,0 +1,45 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Shopping List\n\n- Apples\n- Bananas\n- Oranges\n\nSome text after the list.\n"
+---
+Root@0..73
+  Apply@0..15
+    ApplyReceiver@0..1
+      Identifier@0..1
+        Identifier@0..1 "#"
+    Space@1..2 " "
+    ApplyArgument@2..15
+      Literal@2..15
+        StringContent@2..15
+          StringContent@2..15 "Shopping List"
+  Newline@15..16 "\n"
+  Newline@16..17 "\n"
+  Apply@17..46
+    ApplyReceiver@17..18
+      Identifier@17..18
+        Identifier@17..18 "-"
+    Space@18..19 " "
+    ApplyArgument@19..25
+      Literal@19..25
+        StringContent@19..25
+          StringContent@19..25 "Apples"
+    Newline@25..26 "\n"
+    CommentContent@26..27 "-"
+    Space@27..28 " "
+    ApplyArgument@28..35
+      Literal@28..35
+        StringContent@28..35
+          StringContent@28..35 "Bananas"
+    Newline@35..36 "\n"
+    CommentContent@36..37 "-"
+    Space@37..38 " "
+    ApplyArgument@38..45
+      Literal@38..45
+        StringContent@38..45
+          StringContent@38..45 "Oranges"
+    Newline@45..46 "\n"
+  Newline@46..47 "\n"
+  Literal@47..72
+    StringContent@47..72
+      StringContent@47..72 "Some text after the l ..."
+  Newline@72..73 "\n"

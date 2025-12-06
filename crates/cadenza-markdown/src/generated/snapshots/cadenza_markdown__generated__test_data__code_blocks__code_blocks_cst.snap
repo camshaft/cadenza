@@ -1,0 +1,42 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Physics Tutorial\n\nThe range of a projectile is calculated using the formula below.\n\n```cadenza\nmeasure meter\nmeasure degree\nlet velocity = 20\nlet angle = 45\n```\n\nYou can experiment with different values to see how they affect the range!\n"
+---
+Root@0..246
+  Apply@0..18
+    ApplyReceiver@0..1
+      Identifier@0..1
+        Identifier@0..1 "#"
+    Space@1..2 " "
+    ApplyArgument@2..18
+      Literal@2..18
+        StringContent@2..18
+          StringContent@2..18 "Physics Tutorial"
+  Newline@18..19 "\n"
+  Newline@19..20 "\n"
+  Literal@20..84
+    StringContent@20..84
+      StringContent@20..84 "The range of a projec ..."
+  Newline@84..85 "\n"
+  Newline@85..86 "\n"
+  Newline@86..87 "\n"
+  Newline@87..88 "\n"
+  Apply@88..170
+    ApplyReceiver@88..91
+      Identifier@88..91
+        Identifier@88..91 "```"
+    CommentContent@91..98 "cadenza"
+    ApplyArgument@98..105
+      Literal@98..105
+        StringContent@98..105
+          StringContent@98..105 "cadenza"
+    ApplyArgument@105..167
+      Literal@105..167
+        StringContent@105..167
+          StringContent@105..167 "measure meter\nmeasure ..."
+    CommentContent@167..170 "```"
+  Newline@170..171 "\n"
+  Literal@171..245
+    StringContent@171..245
+      StringContent@171..245 "You can experiment wi ..."
+  Newline@245..246 "\n"

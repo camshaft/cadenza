@@ -1,0 +1,132 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Complex Document\n\nThis document has multiple elements.\n\n## Introduction\n\nWelcome to this tutorial. Here's what we'll cover:\n\n- Topic 1\n- Topic 2\n- Topic 3\n\n## Code Examples\n\nHere's a simple example:\n\n```cadenza\nlet x = 42\n```\n\nAnd another one:\n\n```python\nprint(\"Hello, World!\")\n```\n\n## Conclusion\n\nThat's all for now!\n"
+---
+Root@0..333
+  Apply@0..18
+    ApplyReceiver@0..1
+      Identifier@0..1
+        Identifier@0..1 "#"
+    Space@1..2 " "
+    ApplyArgument@2..18
+      Literal@2..18
+        StringContent@2..18
+          StringContent@2..18 "Complex Document"
+  Newline@18..19 "\n"
+  Newline@19..20 "\n"
+  Literal@20..56
+    StringContent@20..56
+      StringContent@20..56 "This document has mul ..."
+  Newline@56..57 "\n"
+  Newline@57..58 "\n"
+  Apply@58..73
+    ApplyReceiver@58..60
+      Identifier@58..60
+        Identifier@58..60 "##"
+    Space@60..61 " "
+    ApplyArgument@61..73
+      Literal@61..73
+        StringContent@61..73
+          StringContent@61..73 "Introduction"
+  Newline@73..74 "\n"
+  Newline@74..75 "\n"
+  Literal@75..125
+    StringContent@75..125
+      StringContent@75..125 "Welcome to this tutor ..."
+  Newline@125..126 "\n"
+  Newline@126..127 "\n"
+  Apply@127..157
+    ApplyReceiver@127..128
+      Identifier@127..128
+        Identifier@127..128 "-"
+    Space@128..129 " "
+    ApplyArgument@129..136
+      Literal@129..136
+        StringContent@129..136
+          StringContent@129..136 "Topic 1"
+    Newline@136..137 "\n"
+    CommentContent@137..138 "-"
+    Space@138..139 " "
+    ApplyArgument@139..146
+      Literal@139..146
+        StringContent@139..146
+          StringContent@139..146 "Topic 2"
+    Newline@146..147 "\n"
+    CommentContent@147..148 "-"
+    Space@148..149 " "
+    ApplyArgument@149..156
+      Literal@149..156
+        StringContent@149..156
+          StringContent@149..156 "Topic 3"
+    Newline@156..157 "\n"
+  Newline@157..158 "\n"
+  Apply@158..174
+    ApplyReceiver@158..160
+      Identifier@158..160
+        Identifier@158..160 "##"
+    Space@160..161 " "
+    ApplyArgument@161..174
+      Literal@161..174
+        StringContent@161..174
+          StringContent@161..174 "Code Examples"
+  Newline@174..175 "\n"
+  Newline@175..176 "\n"
+  Literal@176..200
+    StringContent@176..200
+      StringContent@176..200 "Here's a simple example:"
+  Newline@200..201 "\n"
+  Newline@201..202 "\n"
+  Newline@202..203 "\n"
+  Newline@203..204 "\n"
+  Apply@204..235
+    ApplyReceiver@204..207
+      Identifier@204..207
+        Identifier@204..207 "```"
+    CommentContent@207..214 "cadenza"
+    ApplyArgument@214..221
+      Literal@214..221
+        StringContent@214..221
+          StringContent@214..221 "cadenza"
+    ApplyArgument@221..232
+      Literal@221..232
+        StringContent@221..232
+          StringContent@221..232 "let x = 42\n"
+    CommentContent@232..235 "```"
+  Newline@235..236 "\n"
+  Literal@236..252
+    StringContent@236..252
+      StringContent@236..252 "And another one:"
+  Newline@252..253 "\n"
+  Newline@253..254 "\n"
+  Newline@254..255 "\n"
+  Newline@255..256 "\n"
+  Apply@256..297
+    ApplyReceiver@256..259
+      Identifier@256..259
+        Identifier@256..259 "```"
+    CommentContent@259..265 "python"
+    ApplyArgument@265..271
+      Literal@265..271
+        StringContent@265..271
+          StringContent@265..271 "python"
+    ApplyArgument@271..294
+      Literal@271..294
+        StringContent@271..294
+          StringContent@271..294 "print(\"Hello, World!\")\n"
+    CommentContent@294..297 "```"
+  Newline@297..298 "\n"
+  Apply@298..311
+    ApplyReceiver@298..300
+      Identifier@298..300
+        Identifier@298..300 "##"
+    Space@300..301 " "
+    ApplyArgument@301..311
+      Literal@301..311
+        StringContent@301..311
+          StringContent@301..311 "Conclusion"
+  Newline@311..312 "\n"
+  Newline@312..313 "\n"
+  Literal@313..332
+    StringContent@313..332
+      StringContent@313..332 "That's all for now!"
+  Newline@332..333 "\n"

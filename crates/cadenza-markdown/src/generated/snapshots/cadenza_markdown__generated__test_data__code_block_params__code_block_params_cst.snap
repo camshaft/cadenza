@@ -1,0 +1,64 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize()\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
+---
+Root@0..255
+  Apply@0..21
+    ApplyReceiver@0..1
+      Identifier@0..1
+        Identifier@0..1 "#"
+    Space@1..2 " "
+    ApplyArgument@2..21
+      Literal@2..21
+        StringContent@2..21
+          StringContent@2..21 "Interactive Example"
+  Newline@21..22 "\n"
+  Newline@22..23 "\n"
+  Literal@23..63
+    StringContent@23..63
+      StringContent@23..63 "This example shows co ..."
+  Newline@63..64 "\n"
+  Newline@64..65 "\n"
+  Newline@65..66 "\n"
+  Newline@66..67 "\n"
+  Apply@67..128
+    ApplyReceiver@67..70
+      Identifier@67..70
+        Identifier@67..70 "```"
+    CommentContent@70..93 "cadenza editable hidden"
+    ApplyArgument@93..100
+      Literal@93..100
+        StringContent@93..100
+          StringContent@93..100 "cadenza"
+    ApplyArgument@100..125
+      Literal@100..125
+        StringContent@100..125
+          StringContent@100..125 "let setup = initializ ..."
+    CommentContent@125..128 "```"
+  Newline@128..129 "\n"
+  Literal@129..167
+    StringContent@129..167
+      StringContent@129..167 "The code above is hid ..."
+  Newline@167..168 "\n"
+  Newline@168..169 "\n"
+  Newline@169..170 "\n"
+  Newline@170..171 "\n"
+  Apply@171..219
+    ApplyReceiver@171..174
+      Identifier@171..174
+        Identifier@171..174 "```"
+    CommentContent@174..184 "javascript"
+    ApplyArgument@184..194
+      Literal@184..194
+        StringContent@184..194
+          StringContent@184..194 "javascript"
+    ApplyArgument@194..216
+      Literal@194..216
+        StringContent@194..216
+          StringContent@194..216 "console.log(\"Hello\");\n"
+    CommentContent@216..219 "```"
+  Newline@219..220 "\n"
+  Literal@220..254
+    StringContent@220..254
+      StringContent@220..254 "Different languages a ..."
+  Newline@254..255 "\n"
