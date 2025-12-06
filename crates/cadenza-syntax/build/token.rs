@@ -671,6 +671,10 @@ impl Synthetic {
             s("SyntheticMarkdownParagraph", "p"),
             s("SyntheticMarkdownList", "ul"),
             s("SyntheticMarkdownCode", "code"),
+            // Markdown inline elements
+            s("SyntheticMarkdownEmphasis", "em"),
+            s("SyntheticMarkdownStrong", "strong"),
+            s("SyntheticMarkdownCodeInline", "code_inline"),
         ]
     };
 }

@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Inline Code\n\nThis paragraph has `inline code` in it.\n\nYou can use `code` in the middle of a sentence.\n"
+---
+[
+    [h1, "Inline Code"],
+    [p, [__list__, "This paragraph has ", [code_inline, "inline code"], " in it."]],
+    [p, [__list__, "You can use ", [code_inline, "code"], " in the middle of a sentence."]],
+]
