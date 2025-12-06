@@ -55,6 +55,13 @@ Markdown parser as an alternative syntax frontend for Cadenza, similar to the gc
   - Content with inline elements is wrapped in a list structure
   - Plain text without inline elements remains as simple string: `[p, "plain text"]`
 
+- **Nested Inline Elements**: Inline elements can be nested within each other
+  - Example: `**bold with `code` inside**` produces `[strong, [__list__, "bold with ", [code_inline, "code"], " inside"]]`
+  - Example: `**bold with *italic* inside**` produces `[strong, [__list__, "bold with ", [em, "italic"], " inside"]]`
+  - Supports arbitrary nesting depth (e.g., bold → italic → code)
+  - Inline code content is always literal (emphasis markers inside code are not interpreted)
+  - The parser recursively processes content within emphasis/strong spans
+
 ### Implementation Approach
 
 The markdown parser follows a different strategy than typical Markdown parsers:
@@ -70,13 +77,11 @@ The markdown parser follows a different strategy than typical Markdown parsers:
 4. **Zero String Generation**: No intermediate Cadenza code generation
 5. **Parsed Cadenza Blocks**: Code blocks with language "cadenza" or empty are fully parsed into Cadenza AST
 6. **Inline Element Precedence**: Inline code (backticks) is parsed first, preventing emphasis markers inside code from being interpreted
+7. **Recursive Inline Parsing**: Inline elements support arbitrary nesting through recursive parsing
 
 ### 🚧 Partial/Limited Features
 
-- **Nested Inline Elements**: Inline elements cannot be nested within each other
-  - Example: `**bold with `code` inside**` treats the backticks as literal text within the bold span
-  - This is a known limitation of the current parser implementation
-  - To use both, place them adjacent rather than nested: `**bold** and `code`
+None currently.
 
 ### ❌ Not Yet Implemented
 
@@ -132,7 +137,13 @@ Located in `test-data/`:
 - `lists.md`: Unordered list with multiple items
 - `code-blocks.md`: Code fence with language specification
 - `code-block-params.md`: Code fences with language and parameters
+- `code-block-many-params.md`: Code fences with multiple parameters
 - `complex.md`: Multiple element types combined
+- `inline-code.md`: Inline code spans with backticks
+- `inline-emphasis.md`: Inline emphasis (italic and bold)
+- `inline-mixed.md`: Multiple inline elements in paragraphs
+- `inline-nested.md`: Nested inline elements (code inside emphasis, etc.)
+- `inline-deeply-nested.md`: Deep nesting of inline elements
 
 ### Snapshot Tests
 
@@ -192,7 +203,7 @@ let results = eval(&root, &mut env, &mut compiler);
 ### High Priority
 - [x] Inline emphasis and code support (completed)
 - [x] Code block parameter passing (completed)
-- [ ] Nested inline elements (e.g., code inside emphasis)
+- [x] Nested inline elements (completed)
 - [ ] Nested list support
 
 ### Medium Priority

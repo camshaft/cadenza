@@ -1,0 +1,176 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Deeply Nested Inline Elements\n\nThis has **bold with *italic with `code` inside* more bold**.\n\nTriple nesting: ***triple emphasis***.\n\nMix it all: **bold *and italic* and `code` together**.\n"
+---
+Root@0..191
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..31
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..31
+      Literal@2..31
+        StringContent@2..31
+          StringContent@2..31 "Deeply Nested Inline  ..."
+  Newline@31..32 "\n"
+  Newline@32..33 "\n"
+  Apply@33..94
+    ApplyReceiver@33..33
+      SyntheticMarkdownParagraph@33..33
+    ApplyArgument@33..94
+      Apply@33..94
+        ApplyReceiver@33..33
+          SyntheticList@33..33
+        ApplyArgument@33..42
+          Literal@33..42
+            StringContent@33..42
+              StringContent@33..42 "This has "
+        CommentContent@42..44 "**"
+        ApplyArgument@44..91
+          Apply@44..91
+            ApplyReceiver@44..44
+              SyntheticMarkdownStrong@44..44
+            ApplyArgument@44..91
+              Apply@44..91
+                ApplyReceiver@44..44
+                  SyntheticList@44..44
+                ApplyArgument@44..54
+                  Literal@44..54
+                    StringContent@44..54
+                      StringContent@44..54 "bold with "
+                CommentContent@54..55 "*"
+                ApplyArgument@55..80
+                  Apply@55..80
+                    ApplyReceiver@55..55
+                      SyntheticMarkdownEmphasis@55..55
+                    ApplyArgument@55..80
+                      Apply@55..80
+                        ApplyReceiver@55..55
+                          SyntheticList@55..55
+                        ApplyArgument@55..67
+                          Literal@55..67
+                            StringContent@55..67
+                              StringContent@55..67 "italic with "
+                        CommentContent@67..68 "`"
+                        ApplyArgument@68..72
+                          Apply@68..72
+                            ApplyReceiver@68..68
+                              SyntheticMarkdownCodeInline@68..68
+                            ApplyArgument@68..72
+                              Literal@68..72
+                                StringContent@68..72
+                                  StringContent@68..72 "code"
+                        CommentContent@72..73 "`"
+                        ApplyArgument@73..80
+                          Literal@73..80
+                            StringContent@73..80
+                              StringContent@73..80 " inside"
+                CommentContent@80..81 "*"
+                ApplyArgument@81..91
+                  Literal@81..91
+                    StringContent@81..91
+                      StringContent@81..91 " more bold"
+        CommentContent@91..93 "**"
+        ApplyArgument@93..94
+          Literal@93..94
+            StringContent@93..94
+              StringContent@93..94 "."
+  Newline@94..95 "\n"
+  Newline@95..96 "\n"
+  Apply@96..134
+    ApplyReceiver@96..96
+      SyntheticMarkdownParagraph@96..96
+    ApplyArgument@96..134
+      Apply@96..134
+        ApplyReceiver@96..96
+          SyntheticList@96..96
+        ApplyArgument@96..112
+          Literal@96..112
+            StringContent@96..112
+              StringContent@96..112 "Triple nesting: "
+        CommentContent@112..114 "**"
+        ApplyArgument@114..130
+          Apply@114..130
+            ApplyReceiver@114..114
+              SyntheticMarkdownStrong@114..114
+            ApplyArgument@114..130
+              Apply@114..130
+                ApplyReceiver@114..114
+                  SyntheticList@114..114
+                ApplyArgument@114..115
+                  Literal@114..115
+                    StringContent@114..115
+                      StringContent@114..115 "*"
+                ApplyArgument@115..130
+                  Literal@115..130
+                    StringContent@115..130
+                      StringContent@115..130 "triple emphasis"
+        CommentContent@130..132 "**"
+        ApplyArgument@132..133
+          Literal@132..133
+            StringContent@132..133
+              StringContent@132..133 "*"
+        ApplyArgument@133..134
+          Literal@133..134
+            StringContent@133..134
+              StringContent@133..134 "."
+  Newline@134..135 "\n"
+  Newline@135..136 "\n"
+  Apply@136..190
+    ApplyReceiver@136..136
+      SyntheticMarkdownParagraph@136..136
+    ApplyArgument@136..190
+      Apply@136..190
+        ApplyReceiver@136..136
+          SyntheticList@136..136
+        ApplyArgument@136..148
+          Literal@136..148
+            StringContent@136..148
+              StringContent@136..148 "Mix it all: "
+        CommentContent@148..150 "**"
+        ApplyArgument@150..187
+          Apply@150..187
+            ApplyReceiver@150..150
+              SyntheticMarkdownStrong@150..150
+            ApplyArgument@150..187
+              Apply@150..187
+                ApplyReceiver@150..150
+                  SyntheticList@150..150
+                ApplyArgument@150..155
+                  Literal@150..155
+                    StringContent@150..155
+                      StringContent@150..155 "bold "
+                CommentContent@155..156 "*"
+                ApplyArgument@156..166
+                  Apply@156..166
+                    ApplyReceiver@156..156
+                      SyntheticMarkdownEmphasis@156..156
+                    ApplyArgument@156..166
+                      Literal@156..166
+                        StringContent@156..166
+                          StringContent@156..166 "and italic"
+                CommentContent@166..167 "*"
+                ApplyArgument@167..172
+                  Literal@167..172
+                    StringContent@167..172
+                      StringContent@167..172 " and "
+                CommentContent@172..173 "`"
+                ApplyArgument@173..177
+                  Apply@173..177
+                    ApplyReceiver@173..173
+                      SyntheticMarkdownCodeInline@173..173
+                    ApplyArgument@173..177
+                      Literal@173..177
+                        StringContent@173..177
+                          StringContent@173..177 "code"
+                CommentContent@177..178 "`"
+                ApplyArgument@178..187
+                  Literal@178..187
+                    StringContent@178..187
+                      StringContent@178..187 " together"
+        CommentContent@187..189 "**"
+        ApplyArgument@189..190
+          Literal@189..190
+            StringContent@189..190
+              StringContent@189..190 "."
+  Newline@190..191 "\n"
