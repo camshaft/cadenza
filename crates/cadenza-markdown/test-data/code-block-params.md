@@ -3,7 +3,7 @@
 This example shows code with parameters.
 
 ```cadenza editable hidden
-let setup = initialize()
+let setup = initialize
 ```
 
 The code above is hidden and editable.

@@ -6,7 +6,7 @@ mod code_block_params {
     use super::*;
     #[test]
     fn cst() {
-        let markdown = "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize()\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n";
+        let markdown = "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n";
         let parse = parse(markdown);
         let cst = parse.syntax();
 
@@ -16,18 +16,18 @@ mod code_block_params {
         s!(
             "code_block_params_cst",
             &cst,
-            "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize()\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
+            "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
         );
     }
     #[test]
     fn ast() {
-        let markdown = "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize()\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n";
+        let markdown = "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n";
         let parse = parse(markdown);
         let root = parse.ast();
         s!(
             "code_block_params_ast",
             root,
-            "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize()\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
+            "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
         );
     }
 }

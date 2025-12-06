@@ -1,8 +1,8 @@
 ---
 source: crates/cadenza-markdown/src/generated/test_data.rs
-expression: "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize()\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
+expression: "# Interactive Example\n\nThis example shows code with parameters.\n\n```cadenza editable hidden\nlet setup = initialize\n```\n\nThe code above is hidden and editable.\n\n```javascript\nconsole.log(\"Hello\");\n```\n\nDifferent languages are supported!\n"
 ---
-Root@0..255
+Root@0..253
   CommentContent@0..1 "#"
   Space@1..2 " "
   Apply@2..21
@@ -28,19 +28,19 @@ Root@0..255
   Newline@91..92 "\n"
   CommentContent@92..95 "```"
   Newline@95..96 "\n"
-  Apply@96..128
+  Apply@96..126
     ApplyReceiver@96..96
       SyntheticMarkdownCode@96..96
     ApplyArgument@96..103
       Literal@96..103
         StringContent@96..103
           StringContent@96..103 "cadenza"
-    ApplyArgument@103..128
-      Apply@103..128
+    ApplyArgument@103..126
+      Apply@103..126
         ApplyReceiver@103..103
           SyntheticBlock@103..103
-        ApplyArgument@103..128
-          Apply@103..128
+        ApplyArgument@103..126
+          Apply@103..126
             ApplyArgument@103..113
               Apply@103..113
                 ApplyReceiver@103..107
@@ -55,48 +55,42 @@ Root@0..255
               Equal@113..114
                 Equal@113..114 "="
             Space@114..115 " "
-            ApplyArgument@115..128
-              Apply@115..128
-                ApplyReceiver@115..125
-                  Identifier@115..125
-                    Identifier@115..125 "initialize"
-                ApplyArgument@125..128
-                  LParen@125..126 "("
-                  RParen@126..127 ")"
-                  Newline@127..128 "\n"
-                  Error@128..128
-  Newline@128..129 "\n"
-  Apply@129..167
-    ApplyReceiver@129..129
-      SyntheticMarkdownParagraph@129..129
-    ApplyArgument@129..167
-      Literal@129..167
-        StringContent@129..167
-          StringContent@129..167 "The code above is hid ..."
-  Newline@167..168 "\n"
-  Newline@168..169 "\n"
-  CommentContent@169..172 "```"
-  CommentContent@172..182 "javascript"
-  Newline@182..183 "\n"
-  CommentContent@183..186 "```"
-  Newline@186..187 "\n"
-  Apply@187..219
-    ApplyReceiver@187..187
-      SyntheticMarkdownCode@187..187
-    ApplyArgument@187..197
-      Literal@187..197
-        StringContent@187..197
-          StringContent@187..197 "javascript"
-    ApplyArgument@197..219
-      Literal@197..219
-        StringContent@197..219
-          StringContent@197..219 "console.log(\"Hello\");\n"
-  Newline@219..220 "\n"
-  Apply@220..254
-    ApplyReceiver@220..220
-      SyntheticMarkdownParagraph@220..220
-    ApplyArgument@220..254
-      Literal@220..254
-        StringContent@220..254
-          StringContent@220..254 "Different languages a ..."
-  Newline@254..255 "\n"
+            ApplyArgument@115..126
+              Identifier@115..125
+                Identifier@115..125 "initialize"
+              Newline@125..126 "\n"
+  Newline@126..127 "\n"
+  Apply@127..165
+    ApplyReceiver@127..127
+      SyntheticMarkdownParagraph@127..127
+    ApplyArgument@127..165
+      Literal@127..165
+        StringContent@127..165
+          StringContent@127..165 "The code above is hid ..."
+  Newline@165..166 "\n"
+  Newline@166..167 "\n"
+  CommentContent@167..170 "```"
+  CommentContent@170..180 "javascript"
+  Newline@180..181 "\n"
+  CommentContent@181..184 "```"
+  Newline@184..185 "\n"
+  Apply@185..217
+    ApplyReceiver@185..185
+      SyntheticMarkdownCode@185..185
+    ApplyArgument@185..195
+      Literal@185..195
+        StringContent@185..195
+          StringContent@185..195 "javascript"
+    ApplyArgument@195..217
+      Literal@195..217
+        StringContent@195..217
+          StringContent@195..217 "console.log(\"Hello\");\n"
+  Newline@217..218 "\n"
+  Apply@218..252
+    ApplyReceiver@218..218
+      SyntheticMarkdownParagraph@218..218
+    ApplyArgument@218..252
+      Literal@218..252
+        StringContent@218..252
+          StringContent@218..252 "Different languages a ..."
+  Newline@252..253 "\n"
