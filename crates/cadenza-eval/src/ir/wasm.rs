@@ -257,10 +257,7 @@ impl WasmCodegen {
             }
             Some(IrInstr::Call { result: None, .. }) => {
                 // Void call: check if terminator is also void return
-                matches!(
-                    &block.terminator,
-                    IrTerminator::Return { value: None, .. }
-                )
+                matches!(&block.terminator, IrTerminator::Return { value: None, .. })
             }
             _ => false,
         };

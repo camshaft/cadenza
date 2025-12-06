@@ -235,13 +235,17 @@ impl IrGenerator {
                             let lhs_text = lhs_ident.syntax().text().to_string();
                             if lhs_text == "let" {
                                 // This is a let binding: let name = value
-                                return self.gen_let_binding(lhs_apply, &args[1], block, ctx, source);
+                                return self
+                                    .gen_let_binding(lhs_apply, &args[1], block, ctx, source);
                             }
                         }
                     }
                 }
                 // Regular assignment (not let) - not supported in IR yet
-                return Err("Assignment operator (without let) not yet supported in IR generation".to_string());
+                return Err(
+                    "Assignment operator (without let) not yet supported in IR generation"
+                        .to_string(),
+                );
             }
 
             // Get the operator
@@ -281,7 +285,7 @@ impl IrGenerator {
 
         if let Some(func_name) = func_name_opt {
             let func_name_str: &str = &func_name;
-            
+
             // Check if this is a known macro
             if func_name_str == "__block__" {
                 return self.gen_block(apply, block, ctx);
@@ -737,4 +741,3 @@ mod tests {
         assert!(ir_text.contains("binop sub")); // n - 1
     }
 }
-
