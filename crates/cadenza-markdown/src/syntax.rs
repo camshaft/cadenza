@@ -287,11 +287,11 @@ impl<'src> Parser<'src> {
             // Found a parameter
             let param_start = self.pos;
             while self.pos < self.src.len() {
-                let ch = self.peek_char().unwrap();
-                if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
-                    break;
+                match self.peek_char() {
+                    Some(ch) if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' => break,
+                    Some(_) => self.pos += 1,
+                    None => break,
                 }
-                self.pos += 1;
             }
             let param_end = self.pos;
             if param_end > param_start {
