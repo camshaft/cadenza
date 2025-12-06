@@ -1,0 +1,13 @@
+[package]
+name = "cadenza-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cadenza-eval = { path = "../cadenza-eval" }
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
