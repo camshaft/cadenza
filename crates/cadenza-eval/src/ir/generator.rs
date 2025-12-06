@@ -77,7 +77,7 @@ impl IrGenerator {
                 if let Some((dim, _power)) = dimension.numerator.first() {
                     Some(IrConst::Quantity {
                         value: *value,
-                        dimension: dim.clone(),
+                        dimension: *dim,
                     })
                 } else {
                     // No base dimension, treat as plain float
@@ -311,8 +311,8 @@ mod tests {
             Some(IrConst::Integer(42))
         );
         assert_eq!(
-            generator.value_to_const(&Value::Float(3.14)),
-            Some(IrConst::Float(3.14))
+            generator.value_to_const(&Value::Float(2.5)),
+            Some(IrConst::Float(2.5))
         );
 
         let s = String::from("hello");
@@ -340,7 +340,9 @@ mod tests {
             captured_env: Env::new(),
         };
 
-        let func_id = generator.gen_function(&func).expect("Failed to generate IR");
+        let func_id = generator
+            .gen_function(&func)
+            .expect("Failed to generate IR");
 
         // Build the module and check the output
         let module = generator.build();
@@ -377,7 +379,9 @@ mod tests {
             captured_env: Env::new(),
         };
 
-        let _func_id = generator.gen_function(&func).expect("Failed to generate IR");
+        let _func_id = generator
+            .gen_function(&func)
+            .expect("Failed to generate IR");
 
         let module = generator.build();
         let ir_text = module.to_string();
@@ -412,7 +416,9 @@ mod tests {
             captured_env: Env::new(),
         };
 
-        let _func_id = generator.gen_function(&func).expect("Failed to generate IR");
+        let _func_id = generator
+            .gen_function(&func)
+            .expect("Failed to generate IR");
 
         let module = generator.build();
         let ir_text = module.to_string();

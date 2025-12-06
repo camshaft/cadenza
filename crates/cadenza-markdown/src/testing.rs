@@ -20,7 +20,7 @@ pub fn verify_cst_coverage(src: &str) {
     if src.contains("```cadenza") || src.contains("```\n") {
         return;
     }
-    
+
     let parse_result = parse(src);
     let cst = parse_result.syntax();
 
