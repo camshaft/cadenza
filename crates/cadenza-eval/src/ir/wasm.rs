@@ -201,13 +201,15 @@ impl WasmCodegen {
         }
 
         // Build the locals list (excluding parameters)
+        // Create a reverse mapping for efficient lookup
+        let mut local_to_value: HashMap<u32, ValueId> = HashMap::new();
+        for (&value_id, &local_idx) in &tracker.value_to_local {
+            local_to_value.insert(local_idx, value_id);
+        }
+
         for local_idx in func.params.len() as u32..tracker.next_local_idx {
-            // Find the ValueId that corresponds to this local
-            let value_id = tracker
-                .value_to_local
-                .iter()
-                .find(|&(_, &idx)| idx == local_idx)
-                .map(|(vid, _)| vid)
+            let value_id = local_to_value
+                .get(&local_idx)
                 .ok_or_else(|| format!("Local {} has no corresponding ValueId", local_idx))?;
 
             let ty = value_types
@@ -510,19 +512,9 @@ impl WasmCodegen {
         match op {
             UnOp::Neg => match ty {
                 Type::Integer => {
-                    // For i64 negation: 0 - operand
-                    // We already have operand on stack, need to put 0 first
-                    // Actually, we need to do: load 0, load operand, subtract
-                    // Let's use a different approach: const 0, operand (already loaded), sub
-                    // But operand is already on stack, so we need to do it differently
-                    // Option 1: local.get operand, i64.const 0, swap, i64.sub (no swap in WASM)
-                    // Option 2: i64.const 0, local.get operand, i64.sub
-                    // Since we already loaded operand, let's pop it and do it right
-                    // Actually, simpler: just emit the right sequence
-                    // Let me reconsider: we need "0 - operand" which is "i64.const 0, operand, i64.sub"
-                    // But we already pushed operand, so we're in wrong order.
-                    // Solution: Don't load operand yet, let the caller handle the load order
-                    // For now, let's just emit neg for float and handle int specially
+                    // Integer negation requires emitting "0 - operand", but we've already
+                    // loaded the operand. Need to restructure to load operands in correct order.
+                    // TODO: Refactor to not pre-load operand for operations that need specific order
                     return Err("Integer negation needs better stack management".to_string());
                 }
                 Type::Float => {
