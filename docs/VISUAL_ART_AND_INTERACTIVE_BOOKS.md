@@ -191,8 +191,11 @@ Change the velocity and angle above to see how it affects the range!
 ## Implementation Considerations
 
 ### Document Format
-- **Markdown-based** with code fences for Cadenza
-- **Math notation** via KaTeX or MathJax
+- **Markdown front-end syntax**: Similar to GCode, translate Markdown to Cadenza CST/AST
+- **Macro-based processing**: Macros in eval context process markdown into executable
+- **Mode switching**: Switch parsing modes mid-document for Cadenza syntax
+- **Code fence arguments**: Pass arguments to control handling (editable, hidden, output format)
+- **Math notation**: Use Cadenza for formulas instead of MathJax (type-safe math expressions)
 - **Custom directives** for interactive elements
 
 ### Execution Model
@@ -200,6 +203,12 @@ Change the velocity and angle above to see how it affects the range!
 - State carries forward between blocks
 - Errors shown inline, don't break document
 - Results rendered based on type (table, plot, 3D, etc.)
+
+**Code Fence Options** (via arguments):
+- Execute in own environment and make editable
+- Don't render in document (execute to define variables only)
+- Return value rendered as markdown, SVG, or interactive widget
+- Control whether output is shown, cached, or hidden
 
 ### Interactivity
 - **Sliders** for numeric parameters
@@ -223,6 +232,12 @@ Change the velocity and angle above to see how it affects the range!
 - **Notebook format** (like Jupyter .ipynb)
 
 ## Use Cases
+
+### Queueing Theory Book (Real-World Example)
+- Interactive book at https://camshaft.github.io/kew/
+- Currently uses JavaScript + WASM binary (separate and not cohesive)
+- Goal: Tight integration where everything is Cadenza
+- Simulations, visualizations, and explanations in one unified system
 
 ### Physics Textbook
 - Interactive simulations

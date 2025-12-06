@@ -220,7 +220,7 @@ plot sin 0 (2 * pi)
 
 Encode code in URL for sharing:
 ```
-https://play.cadenza.dev/?code=<base64-encoded-code>
+https://camshaft.github.io/cadenza/?code=<base64-encoded-code>
 ```
 
 **Considerations**:

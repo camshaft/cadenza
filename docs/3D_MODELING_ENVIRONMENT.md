@@ -10,8 +10,9 @@ Key capabilities:
 3. **Dimensional Analysis**: Proper unit handling (millimeters, inches, etc.)
 4. **Library Precompilation**: Performance-critical geometry operations compiled to native
 5. **Interactive Preview**: Live updates as code changes
-6. **Export to Standard Formats**: STL, OBJ, STEP, etc.
+6. **Export to Standard Formats**: STL, OBJ, STEP, 3MF, etc.
 7. **Compiler Explorer**: Web-based interactive environment for learning and experimentation
+8. **Shareable Parametric Templates**: Share model code that acts as customizable templates (e.g., snowflake generators with RNG seed)
 
 ## Goals
 
@@ -38,8 +39,10 @@ Key capabilities:
 4. **Rich Geometry Library**
    - Primitives: cube, sphere, cylinder, cone, polyhedron
    - 2D shapes: circle, square, polygon
+   - Paths: splines, linear points, bezier curves
    - Extrusion and revolution
    - Boolean operations (CSG)
+   - Signed Distance Functions (SDF) for advanced modeling
    - Transformations: translate, rotate, scale, mirror
    - Modifiers: fillet, chamfer, offset, shell
 
@@ -399,6 +402,7 @@ let bracket_complete = bracket true true
 4. **Import Functions**
    - Load STL files
    - Load OBJ files
+   - Import SVG as 2D paths (represented same as native 2D path functions)
    - Reference external models
 
 ## Implementation Challenges

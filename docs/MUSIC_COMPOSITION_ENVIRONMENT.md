@@ -38,13 +38,23 @@ Key capabilities:
    - REPL for live coding and parameter tweaking
    - Hot-reload of composition changes
    - Visual feedback (waveforms, spectrograms, parameter graphs)
+   - Inspection of any value or state for better understanding
    - Undo/redo for experimentation
 
 5. **Musical Units and Types**
    - Time: beats, measures, seconds, samples
-   - Pitch: Hz, MIDI notes, note names (C4, A440)
+   - Pitch: Hz, MIDI notes, note names (C4, A440), modes, intervals
+   - Progressive refinement: interval → mode → tonic → tuning → frequency
    - Amplitude: dB, linear gain, MIDI velocity
-   - Type safety for musical operations
+   - Bitwidth integer types for MIDI (7-bit, 14-bit values)
+   - Type safety for musical operations with dimensional analysis
+
+6. **Advanced Audio Routing**
+   - Logical groups for DSP outputs (e.g., "lead", "drums")
+   - Per-group DSP chains
+   - Spatial audio: place signals in polar coordinates
+   - Virtual space rendering (implementation-dependent positioning)
+   - Subrenderings: cache complex waveforms for reuse as wavetables
 
 ### Secondary Goals
 

@@ -855,6 +855,15 @@ All backends consume the same IR. The IR is designed to be:
 /// Intermediate Representation for Cadenza
 /// This is a typed, SSA-like IR suitable for optimization and code generation
 
+/// Source location for tracking origins of IR nodes
+/// Used to generate source maps for JavaScript and accurate stack traces
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceLocation {
+    pub file: InternedString,
+    pub line: u32,
+    pub column: u32,
+}
+
 /// A unique identifier for values in SSA form
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ValueId(u32);
@@ -874,6 +883,7 @@ pub enum IrInstr {
     Const {
         result: ValueId,
         value: IrConst,
+        source: SourceLocation,  // Track file name and line number
     },
     
     /// Binary operation
@@ -883,6 +893,7 @@ pub enum IrInstr {
         op: BinOp,
         lhs: ValueId,
         rhs: ValueId,
+        source: SourceLocation,
     },
     
     /// Unary operation
@@ -891,6 +902,7 @@ pub enum IrInstr {
         result: ValueId,
         op: UnOp,
         operand: ValueId,
+        source: SourceLocation,
     },
     
     /// Function call
@@ -899,13 +911,17 @@ pub enum IrInstr {
         result: Option<ValueId>,  // None for void returns
         func: FunctionId,
         args: Vec<ValueId>,
+        source: SourceLocation,
     },
     
     /// Create a record
     /// %result = record { field1: %val1, field2: %val2, ... }
+    /// Field names stored separately from values for efficient cloning
     Record {
         result: ValueId,
-        fields: Vec<(InternedString, ValueId)>,
+        field_names: Arc<[InternedString]>,  // Shared, interned field names
+        field_values: Vec<ValueId>,           // Values parallel to names
+        source: SourceLocation,
     },
     
     /// Field access
@@ -914,6 +930,7 @@ pub enum IrInstr {
         result: ValueId,
         record: ValueId,
         field: InternedString,
+        source: SourceLocation,
     },
     
     /// Create a list/tuple
@@ -921,6 +938,7 @@ pub enum IrInstr {
     Tuple {
         result: ValueId,
         elements: Vec<ValueId>,
+        source: SourceLocation,
     },
     
     /// Conditional branch
@@ -929,18 +947,21 @@ pub enum IrInstr {
         cond: ValueId,
         then_block: BlockId,
         else_block: BlockId,
+        source: SourceLocation,
     },
     
     /// Unconditional jump
     /// jmp <target_block>
     Jump {
         target: BlockId,
+        source: SourceLocation,
     },
     
     /// Return from function
     /// ret %value
     Return {
         value: Option<ValueId>,  // None for void functions
+        source: SourceLocation,
     },
     
     /// Phi node for SSA (join point for values from different blocks)
@@ -948,6 +969,7 @@ pub enum IrInstr {
     Phi {
         result: ValueId,
         incoming: Vec<(ValueId, BlockId)>,
+        source: SourceLocation,
     },
 }
 
@@ -1080,6 +1102,25 @@ function @__main() -> Integer {
     ret %1
 }
 ```
+
+#### Source Tracking for Debugging
+
+All IR nodes include `SourceLocation` to track the original source file and line number. This enables:
+
+**JavaScript Source Maps**:
+- Generate accurate source maps during JS/TS compilation
+- Debuggers show original Cadenza code, not generated JavaScript
+- Stack traces reference Cadenza source locations
+
+**Rust Debugging** (future):
+- May require proc macro assistance for line number mapping
+- Preserve source information in generated Rust code
+- Enable better error messages and debugging experience
+
+**Stack Trace Accuracy**:
+- Runtime errors show exact Cadenza source location
+- Error messages reference original code, not IR or target language
+- Improved developer experience across all backends
 
 #### Optimization Pipeline
 

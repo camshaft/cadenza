@@ -20,24 +20,34 @@ Key capabilities:
    - Immediate evaluation of expressions
    - History and recall of previous results
    - Tab completion for functions and units
+   - Spotlight-style overlay interface (customizable key combo, Esc to hide, persistent sessions)
 
 2. **Dimensional Analysis Excellence**
    - Automatic unit inference and checking
-   - Natural unit conversions (e.g., "459174794 bytes/second to Gbps")
+   - Natural unit conversions using pipeline syntax: `100meter |> to feet`
    - Support common units: length, mass, time, energy, data, etc.
    - Derived units computed automatically
+   - Type coercion safe with rational numbers (no precision loss)
 
-3. **Discoverability**
+3. **Data Exploration**
+   - Import datasets (CSV, Parquet, etc.)
+   - Query and filter data
+   - Generate graphs and visualizations
+   - Interactive parameters with inline widgets (`@param` macro)
+   - Real-time parameter adjustment
+
+4. **Discoverability**
    - List available functions
    - Show function signatures and documentation
    - Example-driven help system
    - Suggest related functions
 
-4. **Scripting Support**
+5. **Scripting Support**
    - Save calculations to files
    - Load and execute scripts
    - Share calculations with others
    - Version control friendly
+   - Switch between scratch spaces/sessions
 
 ### Secondary Goals
 
@@ -278,19 +288,17 @@ sin, cos, tan, asin, acos, atan, atan2
 
 **Challenge**: Natural syntax for unit conversions.
 
-**Options**:
+**Solution**: Use pipeline syntax with `to` macro. It's intuitive and reads naturally.
+
 ```cadenza
-# Infix "to" operator (readable)
+# Pipeline with to macro (recommended)
+100meter |> to feet
+
+# Also supports infix for readability
 100 meters to feet
-
-# Function call (explicit)
-convert 100meters feet
-
-# Type coercion (implicit, dangerous?)
-let x : feet = 100 meters
 ```
 
-**Recommendation**: Support `to` as an operator. It's intuitive and reads naturally.
+Type coercion is safe with rational numbers (no precision loss), so implicit conversion can be allowed.
 
 ### 4. History and State Management
 
