@@ -225,6 +225,25 @@ impl IrGenerator {
         if let Expr::Op(op) = &callee {
             let op_text = op.syntax().text().to_string();
 
+            // Check if this is the assignment operator with a let pattern
+            if op_text == "=" {
+                let args = apply.all_arguments();
+                if args.len() == 2 {
+                    // Check if LHS is [let, name] pattern
+                    if let Expr::Apply(lhs_apply) = &args[0] {
+                        if let Some(Expr::Ident(lhs_ident)) = lhs_apply.callee() {
+                            let lhs_text = lhs_ident.syntax().text().to_string();
+                            if lhs_text == "let" {
+                                // This is a let binding: let name = value
+                                return self.gen_let_binding(lhs_apply, &args[1], block, ctx, source);
+                            }
+                        }
+                    }
+                }
+                // Regular assignment (not let) - not supported in IR yet
+                return Err("Assignment operator (without let) not yet supported in IR generation".to_string());
+            }
+
             // Get the operator
             let ir_op = self.map_operator(&op_text)?;
 
@@ -247,10 +266,28 @@ impl IrGenerator {
             return Ok(block.binop(ir_op, lhs, rhs, Type::Unknown, source));
         }
 
-        // Handle function calls
-        if let Expr::Ident(ident) = &callee {
-            let func_name_text = ident.syntax().text().to_string();
-            let func_name = InternedString::new(&func_name_text);
+        // Handle macro and function calls by identifier or synthetic
+        let func_name_opt = match &callee {
+            Expr::Ident(ident) => {
+                let text = ident.syntax().text().to_string();
+                Some(InternedString::new(&text))
+            }
+            Expr::Synthetic(syn) => {
+                let id = syn.identifier();
+                Some(InternedString::new(id))
+            }
+            _ => None,
+        };
+
+        if let Some(func_name) = func_name_opt {
+            let func_name_str: &str = &func_name;
+            
+            // Check if this is a known macro
+            if func_name_str == "__block__" {
+                return self.gen_block(apply, block, ctx);
+            } else if func_name_str == "__list__" {
+                return self.gen_list(apply, block, ctx, source);
+            }
 
             // Look up the function ID
             let func_id = self
@@ -276,6 +313,86 @@ impl IrGenerator {
             "Unsupported callee type for IR generation: {:?}",
             callee
         ))
+    }
+
+    /// Generate IR for a let binding: let name = value
+    fn gen_let_binding(
+        &mut self,
+        lhs_apply: &cadenza_syntax::ast::Apply,
+        value_expr: &Expr,
+        block: &mut BlockBuilder,
+        ctx: &mut IrGenContext,
+        _source: SourceLocation,
+    ) -> Result<ValueId, String> {
+        // Extract the variable name from [let, name]
+        let args = lhs_apply.all_arguments();
+        if args.is_empty() {
+            return Err("let requires a variable name".to_string());
+        }
+
+        let var_name = match &args[0] {
+            Expr::Ident(ident) => {
+                let text = ident.syntax().text().to_string();
+                InternedString::new(&text)
+            }
+            _ => return Err("let requires an identifier as variable name".to_string()),
+        };
+
+        // Generate IR for the value expression
+        let value_id = self.gen_expr(value_expr, block, ctx)?;
+
+        // Bind the variable in the context
+        ctx.bind_var(var_name, value_id);
+
+        // Return the value (let expressions evaluate to their value)
+        Ok(value_id)
+    }
+
+    /// Generate IR for a block expression
+    fn gen_block(
+        &mut self,
+        apply: &cadenza_syntax::ast::Apply,
+        block: &mut BlockBuilder,
+        ctx: &mut IrGenContext,
+    ) -> Result<ValueId, String> {
+        let args = apply.all_arguments();
+
+        if args.is_empty() {
+            // Empty block returns nil
+            return Ok(block.const_val(IrConst::Nil, Type::Nil, self.dummy_source()));
+        }
+
+        // Generate IR for each expression in the block
+        let mut last_value = None;
+        for expr in &args {
+            let value = self.gen_expr(expr, block, ctx)?;
+            last_value = Some(value);
+        }
+
+        // Return the last expression's value
+        Ok(last_value.unwrap())
+    }
+
+    /// Generate IR for a list construction
+    fn gen_list(
+        &mut self,
+        apply: &cadenza_syntax::ast::Apply,
+        block: &mut BlockBuilder,
+        ctx: &mut IrGenContext,
+        _source: SourceLocation,
+    ) -> Result<ValueId, String> {
+        let args = apply.all_arguments();
+
+        // Generate IR for each list element
+        let _element_values: Result<Vec<ValueId>, String> = args
+            .iter()
+            .map(|arg| self.gen_expr(arg, block, ctx))
+            .collect();
+        let _element_values = _element_values?;
+
+        // TODO: Add list construction instruction to IR
+        // For now, return an error as lists aren't supported in IR yet
+        Err("List construction not yet supported in IR".to_string())
     }
 
     /// Map operator string to IR binary operator.
@@ -620,3 +737,4 @@ mod tests {
         assert!(ir_text.contains("binop sub")); // n - 1
     }
 }
+
