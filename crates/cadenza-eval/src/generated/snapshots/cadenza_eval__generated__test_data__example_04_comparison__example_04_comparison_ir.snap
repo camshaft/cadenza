@@ -2,4 +2,4 @@
 source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"# Comparison Operators\\n# Compare numbers with ==, !=, <, >, <=, >=\\n\\n# Equality\\n5 == 5\\n5 != 3\\n\\n# Ordering\\n10 > 5\\n3 < 7\\n5 <= 5\\n10 >= 10\\n\")"
 ---
-; IR Module
+# IR Module

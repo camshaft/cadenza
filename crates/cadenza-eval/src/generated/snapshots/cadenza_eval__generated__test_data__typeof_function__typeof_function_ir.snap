@@ -2,9 +2,8 @@
 source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"fn identity x = x\\ntypeof identity\")"
 ---
-; IR Module
+# IR Module
 
-function identity(%0: unknown) -> unknown {
-block_0:
-    ret %0
-}
+fn identity v0: unknown = (
+    v0
+)

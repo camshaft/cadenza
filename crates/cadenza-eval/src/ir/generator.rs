@@ -121,7 +121,7 @@ impl IrGenerator {
         // Create a context for SSA variable tracking
         let mut ctx = IrGenContext::new();
 
-        // Bind parameters to their SSA values (%0, %1, ...)
+        // Bind parameters to their SSA values (v0, v1, ...)
         for (i, param_name) in func.params.iter().enumerate() {
             ctx.bind_var(*param_name, ValueId(i as u32));
         }
@@ -405,9 +405,8 @@ mod tests {
         assert_eq!(func_id, module.functions[0].id);
 
         // Verify the IR contains expected elements
-        assert!(ir_text.contains("function add"));
-        assert!(ir_text.contains("add %0 %1"));
-        assert!(ir_text.contains("ret"));
+        assert!(ir_text.contains("fn add"));
+        assert!(ir_text.contains("add v0 v1"));
     }
 
     #[test]
@@ -442,9 +441,8 @@ mod tests {
         assert_eq!(module.functions[0].params.len(), 0);
 
         // Verify the IR contains expected elements
-        assert!(ir_text.contains("function get_answer"));
-        assert!(ir_text.contains("const 42"));
-        assert!(ir_text.contains("ret"));
+        assert!(ir_text.contains("fn get_answer"));
+        assert!(ir_text.contains("= 42"));
     }
 
     #[test]
@@ -478,10 +476,9 @@ mod tests {
         assert_eq!(module.functions[0].name, InternedString::new("calc"));
 
         // Verify the IR contains expected operations
-        assert!(ir_text.contains("function calc"));
+        assert!(ir_text.contains("fn calc"));
         assert!(ir_text.contains("mul"));
         assert!(ir_text.contains("add"));
-        assert!(ir_text.contains("ret"));
     }
 
     #[test]
@@ -531,10 +528,9 @@ mod tests {
         assert_eq!(module.functions[1].name, InternedString::new("quadruple"));
 
         // Verify the IR contains expected elements
-        assert!(ir_text.contains("function double"));
-        assert!(ir_text.contains("function quadruple"));
-        assert!(ir_text.contains("call @func_0")); // Call to double
-        assert!(ir_text.contains("ret"));
+        assert!(ir_text.contains("fn double"));
+        assert!(ir_text.contains("fn quadruple"));
+        assert!(ir_text.contains("func0")); // Call to double
     }
 
     #[test]
@@ -582,11 +578,11 @@ mod tests {
         assert_eq!(module.functions.len(), 2);
 
         // Verify the IR contains expected elements
-        assert!(ir_text.contains("function add"));
-        assert!(ir_text.contains("function compute"));
+        assert!(ir_text.contains("fn add"));
+        assert!(ir_text.contains("fn compute"));
         assert!(ir_text.contains("mul")); // x * 2
         assert!(ir_text.contains("add")); // y + 1 and a + b
-        assert!(ir_text.contains("call @func_0")); // Call to add
+        assert!(ir_text.contains("func0")); // Call to add
     }
 
     #[test]
@@ -622,8 +618,8 @@ mod tests {
         );
 
         // Verify the IR contains recursive call
-        assert!(ir_text.contains("function countdown"));
-        assert!(ir_text.contains("call @func_0")); // Recursive call to itself
+        assert!(ir_text.contains("fn countdown"));
+        assert!(ir_text.contains("func0")); // Recursive call to itself
         assert!(ir_text.contains("sub")); // n - 1
     }
 }

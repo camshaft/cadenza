@@ -2,10 +2,9 @@
 source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"fn add x y = x + y\\nadd 3 5\\n\")"
 ---
-; IR Module
+# IR Module
 
-function add(%0: unknown, %1: unknown) -> unknown {
-block_0:
-    %2: unknown = add %0 %1
-    ret %2
-}
+fn add v0: unknown v1: unknown = (
+    let v2: unknown = add v0 v1
+    v2
+)

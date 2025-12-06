@@ -90,7 +90,7 @@ fn test_binop_instr() {
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "let v2: integer = add(v0, v1)");
+    assert_eq!(instr.to_string(), "let v2: integer = add v0 v1");
     assert_eq!(instr.result_value(), Some(ValueId(2)));
 }
 
@@ -104,7 +104,7 @@ fn test_unop_instr() {
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "let v1: integer = neg(v0)");
+    assert_eq!(instr.to_string(), "let v1: integer = neg v0");
     assert_eq!(instr.result_value(), Some(ValueId(1)));
 }
 
@@ -118,7 +118,7 @@ fn test_call_instr() {
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "let v3: integer = func0(v0, v1, v2)");
+    assert_eq!(instr.to_string(), "let v3: integer = func0 v0 v1 v2");
     assert_eq!(instr.result_value(), Some(ValueId(3)));
 }
 
@@ -141,7 +141,7 @@ fn test_branch_terminator() {
         source: dummy_source(),
     };
 
-    assert_eq!(term.to_string(), "br(v0, block_1, block_2)");
+    assert_eq!(term.to_string(), "br v0 block_1 block_2");
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn test_jump_terminator() {
         source: dummy_source(),
     };
 
-    assert_eq!(term.to_string(), "jmp(block_3)");
+    assert_eq!(term.to_string(), "jmp block_3");
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn test_basic_block() {
     assert!(output.contains("# block_0:"));
     assert!(output.contains("let v0: integer = 5"));
     assert!(output.contains("let v1: integer = 10"));
-    assert!(output.contains("let v2: integer = add(v0, v1)"));
+    assert!(output.contains("let v2: integer = add v0 v1"));
     assert!(output.contains("v2"));
 }
 
@@ -234,7 +234,7 @@ fn test_function() {
     assert!(output.contains("fn add_numbers"));
     assert!(output.contains("v0: integer"));
     assert!(output.contains("v1: integer"));
-    assert!(output.contains("let v2: integer = add(v0, v1)"));
+    assert!(output.contains("let v2: integer = add v0 v1"));
     assert!(output.contains("v2"));
 }
 
@@ -350,7 +350,7 @@ fn test_builder_add_function() {
     assert!(output.contains("fn add"));
     assert!(output.contains("v0: integer"));
     assert!(output.contains("v1: integer"));
-    assert!(output.contains("let v2: integer = add(v0, v1)"));
+    assert!(output.contains("let v2: integer = add v0 v1"));
 }
 
 #[test]
@@ -399,8 +399,8 @@ fn test_builder_conditional() {
 
     // Verify the structure
     assert!(output.contains("fn abs"));
-    assert!(output.contains("br(v"));
-    assert!(output.contains("neg(v0)"));
+    assert!(output.contains("br v"));
+    assert!(output.contains("neg v0"));
     assert!(output.contains("v0"));
 }
 

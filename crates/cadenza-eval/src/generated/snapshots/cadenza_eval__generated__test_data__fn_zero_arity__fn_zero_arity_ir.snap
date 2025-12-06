@@ -2,10 +2,9 @@
 source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"fn get_value = 42\\nget_value\\n\")"
 ---
-; IR Module
+# IR Module
 
-function get_value() -> unknown {
-block_0:
-    %0: integer = const 42
-    ret %0
-}
+fn get_value = (
+    let v0: integer = 42
+    v0
+)

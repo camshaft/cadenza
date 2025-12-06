@@ -275,8 +275,8 @@ impl std::fmt::Display for IrInstr {
                 rhs,
                 ..
             } => {
-                // Binary operations as function calls: let v2: integer = add(v0, v1)
-                write!(f, "let {}: {} = {}({}, {})", result, ty, op, lhs, rhs)
+                // Binary operations as function calls with juxtaposition: let v2: integer = add v0 v1
+                write!(f, "let {}: {} = {} {} {}", result, ty, op, lhs, rhs)
             }
             IrInstr::UnOp {
                 result,
@@ -285,8 +285,8 @@ impl std::fmt::Display for IrInstr {
                 operand,
                 ..
             } => {
-                // Unary operations as function calls: let v1: integer = neg(v0)
-                write!(f, "let {}: {} = {}({})", result, ty, op, operand)
+                // Unary operations as function calls: let v1: integer = neg v0
+                write!(f, "let {}: {} = {} {}", result, ty, op, operand)
             }
             IrInstr::Call {
                 result,
@@ -295,19 +295,16 @@ impl std::fmt::Display for IrInstr {
                 args,
                 ..
             } => {
-                // Function calls
+                // Function calls with juxtaposition
                 if let Some(res) = result {
-                    write!(f, "let {}: {} = {}(", res, ty, func)?;
+                    write!(f, "let {}: {} = {}", res, ty, func)?;
                 } else {
-                    write!(f, "{}(", func)?;
+                    write!(f, "{}", func)?;
                 }
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", arg)?;
+                for arg in args.iter() {
+                    write!(f, " {}", arg)?;
                 }
-                write!(f, ")")
+                Ok(())
             }
             IrInstr::Record {
                 result,
@@ -358,15 +355,12 @@ impl std::fmt::Display for IrInstr {
                 incoming,
                 ..
             } => {
-                // Phi nodes as function calls: let v3: integer = phi(v1, block_1, v2, block_2)
-                write!(f, "let {}: {} = phi(", result, ty)?;
-                for (i, (val, block)) in incoming.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}, {}", val, block)?;
+                // Phi nodes as function calls: let v3: integer = phi v1 block_1 v2 block_2
+                write!(f, "let {}: {} = phi", result, ty)?;
+                for (val, block) in incoming.iter() {
+                    write!(f, " {} {}", val, block)?;
                 }
-                write!(f, ")")
+                Ok(())
             }
         }
     }
@@ -408,12 +402,12 @@ impl std::fmt::Display for IrTerminator {
                 else_block,
                 ..
             } => {
-                // Branch as function call: br(cond, then_block, else_block)
-                write!(f, "br({}, {}, {})", cond, then_block, else_block)
+                // Branch as function call with juxtaposition: br cond then_block else_block
+                write!(f, "br {} {} {}", cond, then_block, else_block)
             }
             IrTerminator::Jump { target, .. } => {
-                // Jump as function call: jmp(target_block)
-                write!(f, "jmp({})", target)
+                // Jump as function call: jmp target_block
+                write!(f, "jmp {}", target)
             }
             IrTerminator::Return { value, .. } => {
                 // Return as function call or just the value

@@ -2,4 +2,4 @@
 source: crates/cadenza-eval/src/generated/test_data.rs
 expression: "t::ir(\"# Units of Measure\\n# Define and use physical units\\n\\n# Define base units\\nmeasure meter\\nmeasure second\\n\\n# Use base units\\n10meter\\n5second\\n\\n# Derived units\\nmeasure kilometer = meter 1000\\n2kilometer\\n\\n# Convert between units\\nlet distance = 5000meter\\nlet km = 5kilometer\\ndistance\\nkm\\n\\n# Unit arithmetic\\nlet speed = 100meter / 10second\\nspeed\\n\")"
 ---
-; IR Module
+# IR Module
