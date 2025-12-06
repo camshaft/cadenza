@@ -12,6 +12,8 @@ miette.workspace = true
 rowan.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
+wasm-encoder.workspace = true
+wasmprinter.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

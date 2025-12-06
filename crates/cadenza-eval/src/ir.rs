@@ -6,10 +6,12 @@
 mod builder;
 mod generator;
 mod types;
+mod wasm;
 
 pub use builder::*;
 pub use generator::*;
 pub use types::*;
+pub use wasm::*;
 
 #[cfg(test)]
 mod tests;

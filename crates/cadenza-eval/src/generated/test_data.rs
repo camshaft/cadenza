@@ -23,6 +23,10 @@ mod record_simple {
     fn ir() {
         ss!("record_simple_ir", t::ir("{ a = 1, b = 2 }\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("record_simple_wat", t::wat("{ a = 1, b = 2 }\n"));
+    }
 }
 mod cmp_gt {
     use super::*;
@@ -37,6 +41,10 @@ mod cmp_gt {
     #[test]
     fn ir() {
         ss!("cmp_gt_ir", t::ir("2 > 1\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("cmp_gt_wat", t::wat("2 > 1\n"));
     }
 }
 mod fn_basic {
@@ -61,6 +69,10 @@ mod fn_basic {
     fn ir() {
         ss!("fn_basic_ir", t::ir("fn add x y = x + y\nadd 3 5\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("fn_basic_wat", t::wat("fn add x y = x + y\nadd 3 5\n"));
+    }
 }
 mod fn_auto_apply {
     use super::*;
@@ -84,6 +96,10 @@ mod fn_auto_apply {
     fn ir() {
         ss!("fn_auto_apply_ir", t::ir("fn add x y = x + y\nadd\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("fn_auto_apply_wat", t::wat("fn add x y = x + y\nadd\n"));
+    }
 }
 mod lit_int {
     use super::*;
@@ -98,6 +114,10 @@ mod lit_int {
     #[test]
     fn ir() {
         ss!("lit_int_ir", t::ir("42\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("lit_int_wat", t::wat("42\n"));
     }
 }
 mod typeof_string {
@@ -122,6 +142,10 @@ mod typeof_string {
     fn ir() {
         ss!("typeof_string_ir", t::ir("let s = \"hello\"\ntypeof s"));
     }
+    #[test]
+    fn wat() {
+        ss!("typeof_string_wat", t::wat("let s = \"hello\"\ntypeof s"));
+    }
 }
 mod assert_fail {
     use super::*;
@@ -145,6 +169,10 @@ mod assert_fail {
     fn ir() {
         ss!("assert_fail_ir", t::ir("let v = 1\nassert v == 2\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("assert_fail_wat", t::wat("let v = 1\nassert v == 2\n"));
+    }
 }
 mod error_divzero {
     use super::*;
@@ -160,6 +188,10 @@ mod error_divzero {
     fn ir() {
         ss!("error_divzero_ir", t::ir("1 / 0\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("error_divzero_wat", t::wat("1 / 0\n"));
+    }
 }
 mod cmp_eq {
     use super::*;
@@ -174,6 +206,10 @@ mod cmp_eq {
     #[test]
     fn ir() {
         ss!("cmp_eq_ir", t::ir("1 == 1\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("cmp_eq_wat", t::wat("1 == 1\n"));
     }
 }
 mod pipeline_multi {
@@ -207,6 +243,15 @@ mod pipeline_multi {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "pipeline_multi_wat",
+            t::wat(
+                "fn add x y = x + y\nfn mul x y = x * y\nfn sub x y = x - y\n\n5 |> add 3 |> mul 2\n10 |> sub 3 |> add 5 |> mul 2\n"
+            )
+        );
+    }
 }
 mod field_access_chained {
     use super::*;
@@ -231,6 +276,13 @@ mod field_access_chained {
         ss!(
             "field_access_chained_ir",
             t::ir("let obj = { a = { b = 42 } }\nobj.a.b\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_access_chained_wat",
+            t::wat("let obj = { a = { b = 42 } }\nobj.a.b\n")
         );
     }
 }
@@ -261,6 +313,15 @@ mod measure_incompatible {
         ss!(
             "measure_incompatible_ir",
             t::ir(
+                "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\ndistance + time\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_incompatible_wat",
+            t::wat(
                 "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\ndistance + time\n"
             )
         );
@@ -297,6 +358,15 @@ mod example_08_lists {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_08_lists_wat",
+            t::wat(
+                "# Lists\n# Collection of values in square brackets\n\n# Empty list\n[]\n\n# Simple list of integers\n[1, 2, 3, 4, 5]\n\n# Assign to variable\nlet numbers = [10, 20, 30]\nnumbers\n\n# List with expressions\nlet x = 5\nlet y = 10\n[x, y, x + y, x * y]\n\n# Nested lists\n[[1, 2], [3, 4], [5, 6]]\n\n# List with computed values\nlet a = 100\nlet b = 200\n[[a, a * 2], [b, b / 2]]\n"
+            )
+        );
+    }
 }
 mod lit_float {
     use super::*;
@@ -311,6 +381,10 @@ mod lit_float {
     #[test]
     fn ir() {
         ss!("lit_float_ir", t::ir("3.14\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("lit_float_wat", t::wat("3.14\n"));
     }
 }
 mod example_03_arithmetic {
@@ -340,6 +414,15 @@ mod example_03_arithmetic {
         ss!(
             "example_03_arithmetic_ir",
             t::ir(
+                "# Arithmetic Operations\n# Basic math with integers and floats\n\n# Addition and subtraction\n1 + 2\n10 - 3\n\n# Multiplication and division\n4 * 5\n20 / 4\n\n# Operator precedence\n2 + 3 * 4\n(2 + 3) * 4\n\n# Floating point\n3.14 * 2.0\n10.5 / 2.0\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_03_arithmetic_wat",
+            t::wat(
                 "# Arithmetic Operations\n# Basic math with integers and floats\n\n# Addition and subtraction\n1 + 2\n10 - 3\n\n# Multiplication and division\n4 * 5\n20 / 4\n\n# Operator precedence\n2 + 3 * 4\n(2 + 3) * 4\n\n# Floating point\n3.14 * 2.0\n10.5 / 2.0\n"
             )
         );
@@ -376,6 +459,15 @@ mod measure_unit_arithmetic {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_unit_arithmetic_wat",
+            t::wat(
+                "measure millimeter\nmeasure meter = millimeter 1000\nlet x = millimeter 500\nlet y = meter 1\nlet sum = x + y\nsum\n"
+            )
+        );
+    }
 }
 mod error_cmp_type_mismatch_ne {
     use super::*;
@@ -400,6 +492,13 @@ mod error_cmp_type_mismatch_ne {
         ss!(
             "error_cmp_type_mismatch_ne_ir",
             t::ir("# Test that != errors on type mismatch\n42 != \"world\"\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "error_cmp_type_mismatch_ne_wat",
+            t::wat("# Test that != errors on type mismatch\n42 != \"world\"\n")
         );
     }
 }
@@ -428,6 +527,13 @@ mod field_assign_simple {
             t::ir("let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_assign_simple_wat",
+            t::wat("let point = { x = 10, y = 20 }\npoint.x = 30\npoint.x\n")
+        );
+    }
 }
 mod arith_mul {
     use super::*;
@@ -442,6 +548,10 @@ mod arith_mul {
     #[test]
     fn ir() {
         ss!("arith_mul_ir", t::ir("4 * 5\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("arith_mul_wat", t::wat("4 * 5\n"));
     }
 }
 mod block_simple {
@@ -467,6 +577,13 @@ mod block_simple {
         ss!(
             "block_simple_ir",
             t::ir("let foo =\n    let bar = 1\n    let baz = 2\n    bar\nfoo\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "block_simple_wat",
+            t::wat("let foo =\n    let bar = 1\n    let baz = 2\n    bar\nfoo\n")
         );
     }
 }
@@ -495,6 +612,13 @@ mod record_with_variables {
             t::ir("let x = 1\nlet y = 2\n{ a = x, b = y }\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "record_with_variables_wat",
+            t::wat("let x = 1\nlet y = 2\n{ a = x, b = y }\n")
+        );
+    }
 }
 mod error_let_invalid {
     use super::*;
@@ -517,6 +641,10 @@ mod error_let_invalid {
     #[test]
     fn ir() {
         ss!("error_let_invalid_ir", t::ir("let 42 = 1\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("error_let_invalid_wat", t::wat("let 42 = 1\n"));
     }
 }
 mod measure_quantity {
@@ -542,6 +670,13 @@ mod measure_quantity {
         ss!(
             "measure_quantity_ir",
             t::ir("measure meter\nlet x = meter 5\nx\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_quantity_wat",
+            t::wat("measure meter\nlet x = meter 5\nx\n")
         );
     }
 }
@@ -576,6 +711,15 @@ mod block_scope {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "block_scope_wat",
+            t::wat(
+                "let outer = 100\nlet result =\n    let inner = 200\n    inner + outer\nresult\n"
+            )
+        );
+    }
 }
 mod measure_base {
     use super::*;
@@ -599,6 +743,10 @@ mod measure_base {
     fn ir() {
         ss!("measure_base_ir", t::ir("measure meter\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("measure_base_wat", t::wat("measure meter\n"));
+    }
 }
 mod typeof_integer {
     use super::*;
@@ -621,6 +769,10 @@ mod typeof_integer {
     #[test]
     fn ir() {
         ss!("typeof_integer_ir", t::ir("let x = 42\ntypeof x"));
+    }
+    #[test]
+    fn wat() {
+        ss!("typeof_integer_wat", t::wat("let x = 42\ntypeof x"));
     }
 }
 mod error_cmp_type_mismatch_lt {
@@ -648,6 +800,13 @@ mod error_cmp_type_mismatch_lt {
             t::ir("# Test that < errors on non-numeric types\n\"foo\" < 5\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "error_cmp_type_mismatch_lt_wat",
+            t::wat("# Test that < errors on non-numeric types\n\"foo\" < 5\n")
+        );
+    }
 }
 mod arith_float_mul {
     use super::*;
@@ -662,6 +821,10 @@ mod arith_float_mul {
     #[test]
     fn ir() {
         ss!("arith_float_mul_ir", t::ir("3.0 * 2.0\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("arith_float_mul_wat", t::wat("3.0 * 2.0\n"));
     }
 }
 mod arith_precedence {
@@ -682,6 +845,10 @@ mod arith_precedence {
     fn ir() {
         ss!("arith_precedence_ir", t::ir("2 + 3 * 4\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("arith_precedence_wat", t::wat("2 + 3 * 4\n"));
+    }
 }
 mod cmp_le {
     use super::*;
@@ -696,6 +863,10 @@ mod cmp_le {
     #[test]
     fn ir() {
         ss!("cmp_le_ir", t::ir("1 <= 1\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("cmp_le_wat", t::wat("1 <= 1\n"));
     }
 }
 mod block_function_body {
@@ -725,6 +896,13 @@ mod block_function_body {
             t::ir("fn foo a b =\n    let av = a * 2\n    let bv = b * 3\n    av * bv\nfoo 5 7\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "block_function_body_wat",
+            t::wat("fn foo a b =\n    let av = a * 2\n    let bv = b * 3\n    av * bv\nfoo 5 7\n")
+        );
+    }
 }
 mod record_shorthand {
     use super::*;
@@ -749,6 +927,13 @@ mod record_shorthand {
         ss!(
             "record_shorthand_ir",
             t::ir("let x = 1\nlet y = 2\n{ x, y }\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "record_shorthand_wat",
+            t::wat("let x = 1\nlet y = 2\n{ x, y }\n")
         );
     }
 }
@@ -777,6 +962,13 @@ mod field_access_missing_field {
             t::ir("let point = { x = 10, y = 20 }\npoint.z\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_access_missing_field_wat",
+            t::wat("let point = { x = 10, y = 20 }\npoint.z\n")
+        );
+    }
 }
 mod arith_add {
     use super::*;
@@ -791,6 +983,10 @@ mod arith_add {
     #[test]
     fn ir() {
         ss!("arith_add_ir", t::ir("1 + 2\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("arith_add_wat", t::wat("1 + 2\n"));
     }
 }
 mod assert_pass {
@@ -814,6 +1010,10 @@ mod assert_pass {
     #[test]
     fn ir() {
         ss!("assert_pass_ir", t::ir("let v = 1\nassert v == 1\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("assert_pass_wat", t::wat("let v = 1\nassert v == 1\n"));
     }
 }
 mod typeof_function {
@@ -841,6 +1041,13 @@ mod typeof_function {
             t::ir("fn identity x = x\ntypeof identity")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "typeof_function_wat",
+            t::wat("fn identity x = x\ntypeof identity")
+        );
+    }
 }
 mod cmp_ge {
     use super::*;
@@ -855,6 +1062,10 @@ mod cmp_ge {
     #[test]
     fn ir() {
         ss!("cmp_ge_ir", t::ir("1 >= 1\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("cmp_ge_wat", t::wat("1 >= 1\n"));
     }
 }
 mod field_assign_type_mismatch {
@@ -882,6 +1093,13 @@ mod field_assign_type_mismatch {
             t::ir("let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_assign_type_mismatch_wat",
+            t::wat("let point = { x = 10, y = 20 }\npoint.x = \"foo\"\n")
+        );
+    }
 }
 mod record_empty {
     use super::*;
@@ -896,6 +1114,10 @@ mod record_empty {
     #[test]
     fn ir() {
         ss!("record_empty_ir", t::ir("{}\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("record_empty_wat", t::wat("{}\n"));
     }
 }
 mod example_02_literals {
@@ -929,6 +1151,15 @@ mod example_02_literals {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_02_literals_wat",
+            t::wat(
+                "# Literal Values\n# Different types of literals\n\n# Integers\n42\n-17\n0\n\n# Floating point\n3.14159\n-2.5\n1.0\n\n# Strings\n\"hello\"\n\"world\"\n\"hello world\"\n"
+            )
+        );
+    }
 }
 mod error_cmp_type_mismatch_gt {
     use super::*;
@@ -953,6 +1184,13 @@ mod error_cmp_type_mismatch_gt {
         ss!(
             "error_cmp_type_mismatch_gt_ir",
             t::ir("# Test that > errors on type mismatch\n100 > \"baz\"\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "error_cmp_type_mismatch_gt_wat",
+            t::wat("# Test that > errors on type mismatch\n100 > \"baz\"\n")
         );
     }
 }
@@ -981,6 +1219,13 @@ mod field_access_on_expr {
             t::ir("fn make_rec x = { x }\n(make_rec 1).x\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_access_on_expr_wat",
+            t::wat("fn make_rec x = { x }\n(make_rec 1).x\n")
+        );
+    }
 }
 mod arith_left_assoc {
     use super::*;
@@ -1003,6 +1248,10 @@ mod arith_left_assoc {
     #[test]
     fn ir() {
         ss!("arith_left_assoc_ir", t::ir("10 - 5 - 2\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("arith_left_assoc_wat", t::wat("10 - 5 - 2\n"));
     }
 }
 mod field_access_simple {
@@ -1028,6 +1277,13 @@ mod field_access_simple {
         ss!(
             "field_access_simple_ir",
             t::ir("let point = { x = 10, y = 20 }\npoint.x\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_access_simple_wat",
+            t::wat("let point = { x = 10, y = 20 }\npoint.x\n")
         );
     }
 }
@@ -1056,6 +1312,13 @@ mod fn_closure {
             t::ir("let x = 10\nfn capture_fn = x\nlet x = 20\ncapture_fn\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "fn_closure_wat",
+            t::wat("let x = 10\nfn capture_fn = x\nlet x = 20\ncapture_fn\n")
+        );
+    }
 }
 mod cmp_lt {
     use super::*;
@@ -1071,6 +1334,10 @@ mod cmp_lt {
     fn ir() {
         ss!("cmp_lt_ir", t::ir("1 < 2\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("cmp_lt_wat", t::wat("1 < 2\n"));
+    }
 }
 mod arith_mixed_rev {
     use super::*;
@@ -1085,6 +1352,10 @@ mod arith_mixed_rev {
     #[test]
     fn ir() {
         ss!("arith_mixed_rev_ir", t::ir("2.5 + 1\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("arith_mixed_rev_wat", t::wat("2.5 + 1\n"));
     }
 }
 mod measure_scalar_ops {
@@ -1118,6 +1389,15 @@ mod measure_scalar_ops {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_scalar_ops_wat",
+            t::wat(
+                "measure meter\nlet x = meter 10\nlet doubled = x * 2\nlet halved = x / 2\ndoubled\nhalved\n"
+            )
+        );
+    }
 }
 mod field_access_in_expr {
     use super::*;
@@ -1144,6 +1424,13 @@ mod field_access_in_expr {
             t::ir("let point = { x = 10, y = 20 }\npoint.x + point.y\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_access_in_expr_wat",
+            t::wat("let point = { x = 10, y = 20 }\npoint.x + point.y\n")
+        );
+    }
 }
 mod cmp_ne {
     use super::*;
@@ -1158,6 +1445,10 @@ mod cmp_ne {
     #[test]
     fn ir() {
         ss!("cmp_ne_ir", t::ir("1 != 2\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("cmp_ne_wat", t::wat("1 != 2\n"));
     }
 }
 mod fn_single_param {
@@ -1183,6 +1474,13 @@ mod fn_single_param {
         ss!(
             "fn_single_param_ir",
             t::ir("fn triple x = x * 3\ntriple 7\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "fn_single_param_wat",
+            t::wat("fn triple x = x * 3\ntriple 7\n")
         );
     }
 }
@@ -1211,6 +1509,13 @@ mod field_access_on_non_record {
             t::ir("let x = 42\nx.field\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_access_on_non_record_wat",
+            t::wat("let x = 42\nx.field\n")
+        );
+    }
 }
 mod fn_zero_arity {
     use super::*;
@@ -1233,6 +1538,13 @@ mod fn_zero_arity {
     #[test]
     fn ir() {
         ss!("fn_zero_arity_ir", t::ir("fn get_value = 42\nget_value\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "fn_zero_arity_wat",
+            t::wat("fn get_value = 42\nget_value\n")
+        );
     }
 }
 mod example_06_functions {
@@ -1262,6 +1574,15 @@ mod example_06_functions {
         ss!(
             "example_06_functions_ir",
             t::ir(
+                "# Functions\n# Define and call functions\n\n# Simple function\nfn double x = x * 2\ndouble 5\n\n# Multi-parameter function\nfn add x y = x + y\nadd 3 7\n\n# Function with closure\nlet outer = 100\nfn capture = outer + 1\ncapture\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_06_functions_wat",
+            t::wat(
                 "# Functions\n# Define and call functions\n\n# Simple function\nfn double x = x * 2\ndouble 5\n\n# Multi-parameter function\nfn add x y = x + y\nadd 3 7\n\n# Function with closure\nlet outer = 100\nfn capture = outer + 1\ncapture\n"
             )
         );
@@ -1298,6 +1619,15 @@ mod example_05_variables {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_05_variables_wat",
+            t::wat(
+                "# Variables with let\n# Define and use variables\n\n# Simple binding\nlet x = 42\nx\n\n# Multiple bindings\nlet a = 1\nlet b = 2\na + b\n\n# Using expressions\nlet result = 10 * 5 + 3\nresult\n\n# Variable reassignment\nlet counter = 0\nlet counter = counter + 1\nlet counter = counter + 1\ncounter\n"
+            )
+        );
+    }
 }
 mod let_simple {
     use super::*;
@@ -1320,6 +1650,10 @@ mod let_simple {
     #[test]
     fn ir() {
         ss!("let_simple_ir", t::ir("let x = 42\nx\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("let_simple_wat", t::wat("let x = 42\nx\n"));
     }
 }
 mod example_09_assertions {
@@ -1353,6 +1687,15 @@ mod example_09_assertions {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_09_assertions_wat",
+            t::wat(
+                "# Assertions - Runtime Checks\n# \n# The assert macro allows you to verify conditions at runtime\n# and provides detailed error messages when assertions fail.\n\n# Basic assertion - verifies a condition is true\nlet x = 5\nassert x > 0\n\n# Assertion with custom error message\nlet value = 42\nassert value == 42 \"value must be 42\"\n\n# Assertions are useful for validating function inputs and outputs\nfn divide a b =\n    assert b != 0 \"cannot divide by zero\"\n    a / b\n\ndivide 10 2\n\n# Assertions help catch errors early in development\nlet result = divide 10 2\nassert result == 5 \"expected result to be 5\"\n"
+            )
+        );
+    }
 }
 mod pipeline_basic {
     use super::*;
@@ -1379,6 +1722,13 @@ mod pipeline_basic {
             t::ir("fn add x y = x + y\nfn double x = x * 2\n\n5 |> add 3\n10 |> double\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "pipeline_basic_wat",
+            t::wat("fn add x y = x + y\nfn double x = x * 2\n\n5 |> add 3\n10 |> double\n")
+        );
+    }
 }
 mod record_nested {
     use super::*;
@@ -1401,6 +1751,10 @@ mod record_nested {
     #[test]
     fn ir() {
         ss!("record_nested_ir", t::ir("{ a = { b = 1 } }\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("record_nested_wat", t::wat("{ a = { b = 1 } }\n"));
     }
 }
 mod measure_velocity {
@@ -1434,6 +1788,15 @@ mod measure_velocity {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_velocity_wat",
+            t::wat(
+                "measure meter\nmeasure second\nlet distance = meter 100\nlet time = second 10\nlet velocity = distance / time\nvelocity\n"
+            )
+        );
+    }
 }
 mod arith_sub {
     use super::*;
@@ -1448,6 +1811,10 @@ mod arith_sub {
     #[test]
     fn ir() {
         ss!("arith_sub_ir", t::ir("10 - 3\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("arith_sub_wat", t::wat("10 - 3\n"));
     }
 }
 mod pipeline_comprehensive {
@@ -1481,6 +1848,15 @@ mod pipeline_comprehensive {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "pipeline_comprehensive_wat",
+            t::wat(
+                "fn add x y = x + y\nfn mul x y = x * y\nfn square x = x * x\n\n5 |> square\n10 |> add 5\n2 |> square |> add 3\n1 |> add 2 |> mul 3 |> square\n"
+            )
+        );
+    }
 }
 mod error_undefined {
     use super::*;
@@ -1504,6 +1880,10 @@ mod error_undefined {
     fn ir() {
         ss!("error_undefined_ir", t::ir("undefined_var\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("error_undefined_wat", t::wat("undefined_var\n"));
+    }
 }
 mod lit_string {
     use super::*;
@@ -1526,6 +1906,10 @@ mod lit_string {
     #[test]
     fn ir() {
         ss!("lit_string_ir", t::ir("\"hello world\"\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("lit_string_wat", t::wat("\"hello world\"\n"));
     }
 }
 mod measure_multiply {
@@ -1553,6 +1937,13 @@ mod measure_multiply {
             t::ir("measure inch\nmeasure foot = inch 12\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_multiply_wat",
+            t::wat("measure inch\nmeasure foot = inch 12\n")
+        );
+    }
 }
 mod arith_mixed {
     use super::*;
@@ -1567,6 +1958,10 @@ mod arith_mixed {
     #[test]
     fn ir() {
         ss!("arith_mixed_ir", t::ir("1 + 2.5\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("arith_mixed_wat", t::wat("1 + 2.5\n"));
     }
 }
 mod measure_conversion {
@@ -1600,6 +1995,15 @@ mod measure_conversion {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_conversion_wat",
+            t::wat(
+                "measure millimeter  \nmeasure inch = millimeter 25.4\nlet x = 25.4millimeter\nlet y = 1inch\nx\ny\n"
+            )
+        );
+    }
 }
 mod let_reassign {
     use super::*;
@@ -1623,6 +2027,10 @@ mod let_reassign {
     fn ir() {
         ss!("let_reassign_ir", t::ir("let x = 1\nx = 2\nx\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("let_reassign_wat", t::wat("let x = 1\nx = 2\nx\n"));
+    }
 }
 mod op_assign {
     use super::*;
@@ -1645,6 +2053,10 @@ mod op_assign {
     #[test]
     fn ir() {
         ss!("op_assign_ir", t::ir("let add_op = +\nadd_op 1 2\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("op_assign_wat", t::wat("let add_op = +\nadd_op 1 2\n"));
     }
 }
 mod example_01_welcome {
@@ -1678,6 +2090,15 @@ mod example_01_welcome {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_01_welcome_wat",
+            t::wat(
+                "# Welcome to Cadenza!\n# A functional language with units of measure\n\n# Try some basic expressions\n42\n3.14159\n1 + 2 * 3\n\n# Define variables\nlet name = \"Cadenza\"\nlet version = 0.1\n\n# Create functions\nfn square x = x * x\nsquare 5\n"
+            )
+        );
+    }
 }
 mod assert_fail_with_message {
     use super::*;
@@ -1702,6 +2123,13 @@ mod assert_fail_with_message {
         ss!(
             "assert_fail_with_message_ir",
             t::ir("let v = 1\nassert v == 2 \"v should be 2\"\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "assert_fail_with_message_wat",
+            t::wat("let v = 1\nassert v == 2 \"v should be 2\"\n")
         );
     }
 }
@@ -1730,6 +2158,13 @@ mod measure_dimension_mismatch {
             t::ir("measure meter\n1meter * 2meter + 3meter\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_dimension_mismatch_wat",
+            t::wat("measure meter\n1meter * 2meter + 3meter\n")
+        );
+    }
 }
 mod let_multi {
     use super::*;
@@ -1752,6 +2187,10 @@ mod let_multi {
     #[test]
     fn ir() {
         ss!("let_multi_ir", t::ir("let x = 1\nlet y = 2\nx + y\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("let_multi_wat", t::wat("let x = 1\nlet y = 2\nx + y\n"));
     }
 }
 mod assert_with_message {
@@ -1779,6 +2218,13 @@ mod assert_with_message {
             t::ir("let v = 1\nassert v == 1 \"expected v to be one\"\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "assert_with_message_wat",
+            t::wat("let v = 1\nassert v == 1 \"expected v to be one\"\n")
+        );
+    }
 }
 mod let_expr {
     use super::*;
@@ -1801,6 +2247,10 @@ mod let_expr {
     #[test]
     fn ir() {
         ss!("let_expr_ir", t::ir("let x = 1 + 2\nx\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("let_expr_wat", t::wat("let x = 1 + 2\nx\n"));
     }
 }
 mod op_override {
@@ -1828,6 +2278,13 @@ mod op_override {
             t::ir("let my_buggy_add = *\nlet + = my_buggy_add\n1 + 2\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "op_override_wat",
+            t::wat("let my_buggy_add = *\nlet + = my_buggy_add\n1 + 2\n")
+        );
+    }
 }
 mod arith_float {
     use super::*;
@@ -1843,6 +2300,10 @@ mod arith_float {
     fn ir() {
         ss!("arith_float_ir", t::ir("1.5 + 2.5\n"));
     }
+    #[test]
+    fn wat() {
+        ss!("arith_float_wat", t::wat("1.5 + 2.5\n"));
+    }
 }
 mod arith_div {
     use super::*;
@@ -1857,6 +2318,10 @@ mod arith_div {
     #[test]
     fn ir() {
         ss!("arith_div_ir", t::ir("20 / 4\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("arith_div_wat", t::wat("20 / 4\n"));
     }
 }
 mod error_cmp_type_mismatch_gte {
@@ -1882,6 +2347,13 @@ mod error_cmp_type_mismatch_gte {
         ss!(
             "error_cmp_type_mismatch_gte_ir",
             t::ir("# Test that >= errors on type mismatch\n200 >= \"qux\"\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "error_cmp_type_mismatch_gte_wat",
+            t::wat("# Test that >= errors on type mismatch\n200 >= \"qux\"\n")
         );
     }
 }
@@ -1910,6 +2382,13 @@ mod measure_suffix {
             t::ir("measure meter\nlet x = 25.4meter\nx\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "measure_suffix_wat",
+            t::wat("measure meter\nlet x = 25.4meter\nx\n")
+        );
+    }
 }
 mod field_assign_with_expr {
     use super::*;
@@ -1936,6 +2415,13 @@ mod field_assign_with_expr {
             t::ir("let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_assign_with_expr_wat",
+            t::wat("let point = { x = 10, y = 20 }\npoint.x = point.x + 5\npoint\n")
+        );
+    }
 }
 mod error_cmp_type_mismatch_lte {
     use super::*;
@@ -1960,6 +2446,13 @@ mod error_cmp_type_mismatch_lte {
         ss!(
             "error_cmp_type_mismatch_lte_ir",
             t::ir("# Test that <= errors on type mismatch\n\"bar\" <= 10\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "error_cmp_type_mismatch_lte_wat",
+            t::wat("# Test that <= errors on type mismatch\n\"bar\" <= 10\n")
         );
     }
 }
@@ -1994,6 +2487,15 @@ mod block_nested {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "block_nested_wat",
+            t::wat(
+                "let foo =\n    let bar =\n        let baz =\n            1\n        baz\n    bar\nfoo\n"
+            )
+        );
+    }
 }
 mod fn_hoisting {
     use super::*;
@@ -2018,6 +2520,13 @@ mod fn_hoisting {
         ss!(
             "fn_hoisting_ir",
             t::ir("add 2 3\nfn add x y = x + y\nadd 2 3\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "fn_hoisting_wat",
+            t::wat("add 2 3\nfn add x y = x + y\nadd 2 3\n")
         );
     }
 }
@@ -2048,6 +2557,15 @@ mod example_07_measures {
         ss!(
             "example_07_measures_ir",
             t::ir(
+                "# Units of Measure\n# Define and use physical units\n\n# Define base units\nmeasure meter\nmeasure second\n\n# Use base units\n10meter\n5second\n\n# Derived units\nmeasure kilometer = meter 1000\n2kilometer\n\n# Convert between units\nlet distance = 5000meter\nlet km = 5kilometer\ndistance\nkm\n\n# Unit arithmetic\nlet speed = 100meter / 10second\nspeed\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_07_measures_wat",
+            t::wat(
                 "# Units of Measure\n# Define and use physical units\n\n# Define base units\nmeasure meter\nmeasure second\n\n# Use base units\n10meter\n5second\n\n# Derived units\nmeasure kilometer = meter 1000\n2kilometer\n\n# Convert between units\nlet distance = 5000meter\nlet km = 5kilometer\ndistance\nkm\n\n# Unit arithmetic\nlet speed = 100meter / 10second\nspeed\n"
             )
         );
@@ -2084,6 +2602,15 @@ mod example_04_comparison {
             )
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "example_04_comparison_wat",
+            t::wat(
+                "# Comparison Operators\n# Compare numbers with ==, !=, <, >, <=, >=\n\n# Equality\n5 == 5\n5 != 3\n\n# Ordering\n10 > 5\n3 < 7\n5 <= 5\n10 >= 10\n"
+            )
+        );
+    }
 }
 mod field_assign_missing_field {
     use super::*;
@@ -2110,6 +2637,13 @@ mod field_assign_missing_field {
             t::ir("let point = { x = 10, y = 20 }\npoint.z = 30\n")
         );
     }
+    #[test]
+    fn wat() {
+        ss!(
+            "field_assign_missing_field_wat",
+            t::wat("let point = { x = 10, y = 20 }\npoint.z = 30\n")
+        );
+    }
 }
 mod multi_expr {
     use super::*;
@@ -2124,6 +2658,10 @@ mod multi_expr {
     #[test]
     fn ir() {
         ss!("multi_expr_ir", t::ir("1\n2\n3\n"));
+    }
+    #[test]
+    fn wat() {
+        ss!("multi_expr_wat", t::wat("1\n2\n3\n"));
     }
 }
 mod error_cmp_type_mismatch_eq {
@@ -2149,6 +2687,13 @@ mod error_cmp_type_mismatch_eq {
         ss!(
             "error_cmp_type_mismatch_eq_ir",
             t::ir("# Test that == errors on type mismatch\n1 == \"hello\"\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "error_cmp_type_mismatch_eq_wat",
+            t::wat("# Test that == errors on type mismatch\n1 == \"hello\"\n")
         );
     }
 }

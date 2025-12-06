@@ -84,3 +84,34 @@ pub fn ast(src: &str) -> cadenza_syntax::ast::Root {
     let parsed = parse(src);
     parsed.ast()
 }
+
+/// Evaluate a source string with IR generation enabled and return the WAT output.
+///
+/// This function evaluates the source with IR generation enabled, generates
+/// WebAssembly binary, and converts it to WAT (WebAssembly Text format) for
+/// snapshot testing.
+pub fn wat(src: &str) -> String {
+    let parsed = parse(src);
+
+    // Check for parse errors first
+    if !parsed.errors.is_empty() {
+        return "Parse errors occurred".to_string();
+    }
+
+    let root = parsed.ast();
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::with_ir();
+
+    let _values = crate::eval(&root, &mut env, &mut compiler);
+
+    // Get the IR module
+    if let Some(ir_module) = compiler.build_ir_module() {
+        // Generate WAT from IR
+        match crate::ir::generate_wat(&ir_module) {
+            Ok(wat) => wat,
+            Err(e) => format!("WAT generation error: {}", e),
+        }
+    } else {
+        "No IR generated".to_string()
+    }
+}
