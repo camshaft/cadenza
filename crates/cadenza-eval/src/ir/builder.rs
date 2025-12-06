@@ -4,8 +4,8 @@
 //! functions, and basic blocks. It handles automatic ID assignment and provides
 //! methods for emitting instructions.
 
-use crate::*;
-use cadenza_eval::{InternedString, Type};
+use super::types::*;
+use crate::{InternedString, Type};
 use std::sync::Arc;
 
 /// Builder for constructing IR modules.

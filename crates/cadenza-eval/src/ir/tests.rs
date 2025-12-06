@@ -1,7 +1,7 @@
 //! Tests for the IR types and basic construction.
 
-use crate::*;
-use cadenza_eval::{InternedString, Type};
+use super::*;
+use crate::{InternedString, Type};
 use std::sync::Arc;
 
 #[test]

@@ -1,6 +1,6 @@
 //! Core types for the Cadenza IR.
 
-use cadenza_eval::{Dimension, InternedString, Type};
+use crate::{Dimension, InternedString, Type};
 use std::sync::Arc;
 
 /// Source location for tracking origins of IR nodes.

@@ -1,15 +1,25 @@
-# Cadenza IR
+# IR Module
 
 The Intermediate Representation (IR) for the Cadenza compiler.
 
 ## Overview
 
-This crate provides a typed, SSA-like (Single Static Assignment) IR that serves as a target-independent intermediate representation for the Cadenza compiler. The IR is designed to:
+This module provides a typed, SSA-like (Single Static Assignment) IR that serves as a target-independent intermediate representation for the Cadenza compiler. The IR is designed to:
 
 - Be easy to generate from the typed AST
 - Support optimization passes
-- Enable code generation to multiple backends
+- Target WebAssembly with WasmGC for memory management
 - Preserve source location information for debugging
+
+## Target Architecture
+
+The IR targets **WebAssembly with WasmGC**, which provides:
+- Automatic memory management via garbage collection
+- Native browser execution
+- AOT/JIT compilation for native execution via wasmtime
+- Simplified backend - no need to manage allocations manually
+
+This greatly simplifies the compiler architecture compared to targeting multiple backends directly.
 
 ## IR Design
 
@@ -75,38 +85,26 @@ fn add_one x = x + 1
 The IR types can be constructed programmatically:
 
 ```rust
-use cadenza_ir::*;
-use cadenza_eval::{InternedString, Type};
+use crate::ir::*;
 
 // Create a simple function that returns 42
-let func = IrFunction {
-    id: FunctionId(0),
-    name: InternedString::new("get_answer"),
-    params: vec![],
-    return_ty: Type::Integer,
-    blocks: vec![
-        IrBlock {
-            id: BlockId(0),
-            instructions: vec![
-                IrInstr::Const {
-                    result: ValueId(0),
-                    value: IrConst::Integer(42),
-                    source: SourceLocation { /* ... */ },
-                }
-            ],
-            terminator: IrTerminator::Return {
-                value: Some(ValueId(0)),
-                source: SourceLocation { /* ... */ },
-            },
-        }
-    ],
-    entry_block: BlockId(0),
-};
+let mut builder = IrBuilder::new();
+let mut func_builder = builder.function(
+    InternedString::new("get_answer"),
+    vec![],
+    Type::Integer,
+);
+
+let mut block = func_builder.block();
+let val = block.const_val(IrConst::Integer(42), source);
+let (block, next_val) = block.ret(Some(val), source);
+func_builder.add_block(block, next_val);
+
+let func = func_builder.build();
+builder.add_function(func);
 ```
 
 ## Future Work
-
-This crate currently provides the IR data structures. Future work includes:
 
 ### IR Generation (Phase 5)
 - [ ] Builder API for constructing IR from typed AST
@@ -121,11 +119,8 @@ This crate currently provides the IR data structures. Future work includes:
 - [ ] Configurable optimization pipeline
 
 ### Code Generation (Phase 5)
-- [ ] TypeScript backend
-- [ ] JavaScript backend
-- [ ] Rust backend (emit Rust code)
-- [ ] WASM backend (optional)
-- [ ] LLVM backend (optional)
+- [ ] WASM backend with WasmGC
+- [ ] Native execution via wasmtime (AOT/JIT)
 
 ### Analysis and Validation
 - [ ] IR verification (type checking, SSA validation)
@@ -137,5 +132,5 @@ This crate currently provides the IR data structures. Future work includes:
 See `/docs/COMPILER_ARCHITECTURE.md` for detailed information about:
 - The multi-phase compilation pipeline
 - How IR fits into the overall architecture
-- Code generation targets and their tradeoffs
+- Code generation strategy
 - Optimization strategies
