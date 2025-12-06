@@ -631,6 +631,8 @@ impl WasmCodegen {
         func.instruction(&Instruction::ReturnCall(func_idx));
 
         // End the function body (needed to close the implicit function block)
+        // Note: Even though return_call is a terminating instruction, the function's
+        // implicit block still needs to be closed with End
         func.instruction(&Instruction::End);
 
         Ok(())
