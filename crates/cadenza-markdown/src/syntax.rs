@@ -265,10 +265,33 @@ impl<'src> Parser<'src> {
         let lang_end = self.pos;
         let language = &self.src[lang_start..lang_end];
 
-        // Skip rest of line
-        while self.pos < self.src.len() && self.peek_char() != Some('\n') && self.peek_char() != Some('\r') {
-            self.pos += 1;
+        // Parse parameters (space-separated tokens after language)
+        let mut parameters = Vec::new();
+        while self.pos < self.src.len() {
+            let ch = self.peek_char();
+            if ch == Some('\n') || ch == Some('\r') {
+                break;
+            }
+            if ch == Some(' ') || ch == Some('\t') {
+                self.pos += 1;
+                continue;
+            }
+            
+            // Found a parameter
+            let param_start = self.pos;
+            while self.pos < self.src.len() {
+                let ch = self.peek_char().unwrap();
+                if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+                    break;
+                }
+                self.pos += 1;
+            }
+            let param_end = self.pos;
+            if param_end > param_start {
+                parameters.push(&self.src[param_start..param_end]);
+            }
         }
+        
         let line_end = self.pos;
         
         // Emit language and rest of first line as trivia
@@ -367,6 +390,17 @@ impl<'src> Parser<'src> {
             self.builder.finish_node();
         }
         self.builder.finish_node();
+
+        // Add parameters as additional arguments
+        for param in parameters {
+            self.builder.start_node(Kind::ApplyArgument.into());
+            self.builder.start_node(Kind::Literal.into());
+            self.builder.start_node(Kind::StringContent.into());
+            self.builder.token(Kind::StringContent.into(), param);
+            self.builder.finish_node();
+            self.builder.finish_node();
+            self.builder.finish_node();
+        }
 
         self.builder.finish_node();
     }

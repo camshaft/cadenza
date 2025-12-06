@@ -2,6 +2,35 @@ use crate::parse;
 use crate::testing::verify_cst_coverage;
 use insta::assert_debug_snapshot as s;
 
+mod code_block_many_params {
+    use super::*;
+    #[test]
+    fn cst() {
+        let markdown = "# Multiple Parameters\n\nTesting various parameter combinations.\n\n```cadenza editable\nlet x = 42\n```\n\n```javascript readonly lineNumbers theme-dark\nconst result = x * 2;\n```\n\n```python\nprint(\"No parameters\")\n```\n";
+        let parse = parse(markdown);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(markdown);
+
+        s!(
+            "code_block_many_params_cst",
+            &cst,
+            "# Multiple Parameters\n\nTesting various parameter combinations.\n\n```cadenza editable\nlet x = 42\n```\n\n```javascript readonly lineNumbers theme-dark\nconst result = x * 2;\n```\n\n```python\nprint(\"No parameters\")\n```\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let markdown = "# Multiple Parameters\n\nTesting various parameter combinations.\n\n```cadenza editable\nlet x = 42\n```\n\n```javascript readonly lineNumbers theme-dark\nconst result = x * 2;\n```\n\n```python\nprint(\"No parameters\")\n```\n";
+        let parse = parse(markdown);
+        let root = parse.ast();
+        s!(
+            "code_block_many_params_ast",
+            root,
+            "# Multiple Parameters\n\nTesting various parameter combinations.\n\n```cadenza editable\nlet x = 42\n```\n\n```javascript readonly lineNumbers theme-dark\nconst result = x * 2;\n```\n\n```python\nprint(\"No parameters\")\n```\n"
+        );
+    }
+}
 mod code_block_params {
     use super::*;
     #[test]
