@@ -445,9 +445,9 @@ impl<'src> Parser<'src> {
         // Line numbers are in format N123 [command]
         // Parse as Apply node: [N, 123, [command]] if command is present
         // This allows the N macro to set up environment before executing the command
-        
+
         let n_start = self.pos;
-        
+
         // Start Apply node: [N, number, [command]]
         // This wraps the command as an argument, allowing N macro to control environment
         self.builder.start_node(Kind::Apply.into());
@@ -455,7 +455,7 @@ impl<'src> Parser<'src> {
         // 'N' as receiver - extract from source
         self.pos += 1; // Move past 'N'
         let n_text = &self.src[n_start..self.pos];
-        
+
         self.builder.start_node(Kind::ApplyReceiver.into());
         self.builder.start_node(Kind::Identifier.into());
         self.builder.token(Kind::Identifier.into(), n_text);
@@ -474,7 +474,7 @@ impl<'src> Parser<'src> {
             self.builder.start_node(Kind::ApplyArgument.into());
             self.parse_command();
             self.builder.finish_node();
-            
+
             // Handle any trailing comments
             self.skip_line_whitespace();
             if self.peek_char() == Some(';') {
