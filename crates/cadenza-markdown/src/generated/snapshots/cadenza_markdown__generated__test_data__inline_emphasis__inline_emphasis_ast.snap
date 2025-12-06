@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Inline Formatting\n\nThis paragraph has *italic* text and **bold** text.\n\nYou can also have *multiple* words in **emphasis**.\n"
+---
+[
+    [h1, "Inline Formatting"],
+    [p, [__list__, "This paragraph has ", [em, "italic"], " text and ", [strong, "bold"], " text."]],
+    [p, [__list__, "You can also have ", [em, "multiple"], " words in ", [strong, "emphasis"], "."]],
+]

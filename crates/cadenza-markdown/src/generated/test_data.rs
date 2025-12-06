@@ -118,6 +118,93 @@ mod headings {
         );
     }
 }
+mod inline_code {
+    use super::*;
+    #[test]
+    fn cst() {
+        let markdown = "# Inline Code\n\nThis paragraph has `inline code` in it.\n\nYou can use `code` in the middle of a sentence.\n";
+        let parse = parse(markdown);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(markdown);
+
+        s!(
+            "inline_code_cst",
+            &cst,
+            "# Inline Code\n\nThis paragraph has `inline code` in it.\n\nYou can use `code` in the middle of a sentence.\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let markdown = "# Inline Code\n\nThis paragraph has `inline code` in it.\n\nYou can use `code` in the middle of a sentence.\n";
+        let parse = parse(markdown);
+        let root = parse.ast();
+        s!(
+            "inline_code_ast",
+            root,
+            "# Inline Code\n\nThis paragraph has `inline code` in it.\n\nYou can use `code` in the middle of a sentence.\n"
+        );
+    }
+}
+mod inline_emphasis {
+    use super::*;
+    #[test]
+    fn cst() {
+        let markdown = "# Inline Formatting\n\nThis paragraph has *italic* text and **bold** text.\n\nYou can also have *multiple* words in **emphasis**.\n";
+        let parse = parse(markdown);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(markdown);
+
+        s!(
+            "inline_emphasis_cst",
+            &cst,
+            "# Inline Formatting\n\nThis paragraph has *italic* text and **bold** text.\n\nYou can also have *multiple* words in **emphasis**.\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let markdown = "# Inline Formatting\n\nThis paragraph has *italic* text and **bold** text.\n\nYou can also have *multiple* words in **emphasis**.\n";
+        let parse = parse(markdown);
+        let root = parse.ast();
+        s!(
+            "inline_emphasis_ast",
+            root,
+            "# Inline Formatting\n\nThis paragraph has *italic* text and **bold** text.\n\nYou can also have *multiple* words in **emphasis**.\n"
+        );
+    }
+}
+mod inline_mixed {
+    use super::*;
+    #[test]
+    fn cst() {
+        let markdown = "# Mixed Inline Elements\n\nThis paragraph has *italic*, **bold**, and `code` all mixed together.\n\nYou can have multiple inline elements in a single paragraph without nesting them.\n";
+        let parse = parse(markdown);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(markdown);
+
+        s!(
+            "inline_mixed_cst",
+            &cst,
+            "# Mixed Inline Elements\n\nThis paragraph has *italic*, **bold**, and `code` all mixed together.\n\nYou can have multiple inline elements in a single paragraph without nesting them.\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let markdown = "# Mixed Inline Elements\n\nThis paragraph has *italic*, **bold**, and `code` all mixed together.\n\nYou can have multiple inline elements in a single paragraph without nesting them.\n";
+        let parse = parse(markdown);
+        let root = parse.ast();
+        s!(
+            "inline_mixed_ast",
+            root,
+            "# Mixed Inline Elements\n\nThis paragraph has *italic*, **bold**, and `code` all mixed together.\n\nYou can have multiple inline elements in a single paragraph without nesting them.\n"
+        );
+    }
+}
 mod lists {
     use super::*;
     #[test]

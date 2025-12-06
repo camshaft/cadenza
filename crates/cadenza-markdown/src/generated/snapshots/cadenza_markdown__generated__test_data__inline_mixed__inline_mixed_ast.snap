@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Mixed Inline Elements\n\nThis paragraph has *italic*, **bold**, and `code` all mixed together.\n\nYou can have multiple inline elements in a single paragraph without nesting them.\n"
+---
+[
+    [h1, "Mixed Inline Elements"],
+    [p, [__list__, "This paragraph has ", [em, "italic"], ", ", [strong, "bold"], ", and ", [code_inline, "code"], " all mixed together."]],
+    [p, "You can have multiple inline elements in a single paragraph without nesting them."],
+]

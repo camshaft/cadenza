@@ -1,0 +1,97 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Inline Formatting\n\nThis paragraph has *italic* text and **bold** text.\n\nYou can also have *multiple* words in **emphasis**.\n"
+---
+Root@0..126
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..19
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..19
+      Literal@2..19
+        StringContent@2..19
+          StringContent@2..19 "Inline Formatting"
+  Newline@19..20 "\n"
+  Newline@20..21 "\n"
+  Apply@21..72
+    ApplyReceiver@21..21
+      SyntheticMarkdownParagraph@21..21
+    ApplyArgument@21..72
+      Apply@21..72
+        ApplyReceiver@21..21
+          SyntheticList@21..21
+        ApplyArgument@21..40
+          Literal@21..40
+            StringContent@21..40
+              StringContent@21..40 "This paragraph has "
+        CommentContent@40..41 "*"
+        ApplyArgument@41..47
+          Apply@41..47
+            ApplyReceiver@41..41
+              SyntheticMarkdownEmphasis@41..41
+            ApplyArgument@41..47
+              Literal@41..47
+                StringContent@41..47
+                  StringContent@41..47 "italic"
+        CommentContent@47..48 "*"
+        ApplyArgument@48..58
+          Literal@48..58
+            StringContent@48..58
+              StringContent@48..58 " text and "
+        CommentContent@58..60 "**"
+        ApplyArgument@60..64
+          Apply@60..64
+            ApplyReceiver@60..60
+              SyntheticMarkdownStrong@60..60
+            ApplyArgument@60..64
+              Literal@60..64
+                StringContent@60..64
+                  StringContent@60..64 "bold"
+        CommentContent@64..66 "**"
+        ApplyArgument@66..72
+          Literal@66..72
+            StringContent@66..72
+              StringContent@66..72 " text."
+  Newline@72..73 "\n"
+  Newline@73..74 "\n"
+  Apply@74..125
+    ApplyReceiver@74..74
+      SyntheticMarkdownParagraph@74..74
+    ApplyArgument@74..125
+      Apply@74..125
+        ApplyReceiver@74..74
+          SyntheticList@74..74
+        ApplyArgument@74..92
+          Literal@74..92
+            StringContent@74..92
+              StringContent@74..92 "You can also have "
+        CommentContent@92..93 "*"
+        ApplyArgument@93..101
+          Apply@93..101
+            ApplyReceiver@93..93
+              SyntheticMarkdownEmphasis@93..93
+            ApplyArgument@93..101
+              Literal@93..101
+                StringContent@93..101
+                  StringContent@93..101 "multiple"
+        CommentContent@101..102 "*"
+        ApplyArgument@102..112
+          Literal@102..112
+            StringContent@102..112
+              StringContent@102..112 " words in "
+        CommentContent@112..114 "**"
+        ApplyArgument@114..122
+          Apply@114..122
+            ApplyReceiver@114..114
+              SyntheticMarkdownStrong@114..114
+            ApplyArgument@114..122
+              Literal@114..122
+                StringContent@114..122
+                  StringContent@114..122 "emphasis"
+        CommentContent@122..124 "**"
+        ApplyArgument@124..125
+          Literal@124..125
+            StringContent@124..125
+              StringContent@124..125 "."
+  Newline@125..126 "\n"

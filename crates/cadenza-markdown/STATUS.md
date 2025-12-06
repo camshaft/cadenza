@@ -32,6 +32,25 @@ Markdown parser as an alternative syntax frontend for Cadenza, similar to the gc
 - ✅ CST and AST snapshot tests
 - ✅ Integration with cadenza-eval
 
+#### Inline Elements
+- **Emphasis**: `*italic*` syntax
+  - AST representation: `[em, "content"]`
+  - Synthetic token `em` as the function identifier
+  
+- **Strong**: `**bold**` syntax
+  - AST representation: `[strong, "content"]`
+  - Synthetic token `strong` as the function identifier
+  
+- **Inline Code**: `` `code` `` syntax
+  - AST representation: `[code_inline, "content"]`
+  - Synthetic token `code_inline` as the function identifier
+  - Takes precedence over emphasis to prevent parsing inside code spans
+  
+- **Mixed Inline Elements**: Multiple inline elements in a single paragraph
+  - AST representation: `[p, [__list__, "text", [em, "italic"], " more text", [strong, "bold"]]]`
+  - Content with inline elements is wrapped in a list structure
+  - Plain text without inline elements remains as simple string: `[p, "plain text"]`
+
 ### Implementation Approach
 
 The markdown parser follows a different strategy than typical Markdown parsers:
@@ -42,20 +61,25 @@ The markdown parser follows a different strategy than typical Markdown parsers:
    - Paragraphs use `p`
    - Lists use `ul`
    - Code blocks use `code`
+   - Inline emphasis uses `em`, `strong`, and `code_inline`
 3. **Macro-Based Evaluation**: Handler macros registered in the eval context process markdown elements
 4. **Zero String Generation**: No intermediate Cadenza code generation
 5. **Parsed Cadenza Blocks**: Code blocks with language "cadenza" or empty are fully parsed into Cadenza AST
+6. **Inline Element Precedence**: Inline code (backticks) is parsed first, preventing emphasis markers inside code from being interpreted
 
 ### 🚧 Partial/Limited Features
 
 - **Code Block Parameters**: Fence lines like ` ```cadenza editable hidden` parse the language but ignore extra parameters
   - TODO: Support passing parameters as additional arguments or metadata
 
+- **Nested Inline Elements**: Inline elements cannot be nested within each other
+  - Example: `**bold with `code` inside**` treats the backticks as literal text within the bold span
+  - This is a known limitation of the current parser implementation
+  - To use both, place them adjacent rather than nested: `**bold** and `code`
+
 ### ❌ Not Yet Implemented
 
 #### Inline Elements
-- **Emphasis**: `*italic*` and `**bold**` 
-- **Code**: `` `inline code` ``
 - **Links**: `[text](url)`
 - **Images**: `![alt](url)`
 
@@ -164,7 +188,8 @@ let results = eval(&root, &mut env, &mut compiler);
 ## Future Work
 
 ### High Priority
-- [ ] Inline emphasis and code support
+- [x] Inline emphasis and code support (completed)
+- [ ] Nested inline elements (e.g., code inside emphasis)
 - [ ] Code block parameter passing
 - [ ] Nested list support
 
