@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Recursive function test with explicit recursion\nfn double x = x * 2\nfn quad x = double (double x)\n"
+---
+[
+    [=, [[fn, double], x], [*, x, 2]],
+    [=, [[fn, quad], x], [double, [double, x]]],
+]

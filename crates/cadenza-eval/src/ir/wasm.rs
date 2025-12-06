@@ -296,13 +296,35 @@ impl WasmCodegen {
                     .ok_or_else(|| format!("No local for value {}", result))?;
                 func.instruction(&Instruction::LocalSet(local_idx));
             }
-            IrInstr::Call { func: _, args, .. } => {
-                // Load arguments (would need proper stack management)
-                for _arg in args {
-                    // Placeholder: would generate local.get or other load instructions
+            IrInstr::Call {
+                result,
+                func: func_id,
+                args,
+                ..
+            } => {
+                // Load arguments onto the stack in order
+                for arg in args {
+                    let arg_local = tracker
+                        .get_local(*arg)
+                        .ok_or_else(|| format!("No local for argument value {}", arg))?;
+                    func.instruction(&Instruction::LocalGet(arg_local));
                 }
+
+                // Look up the WASM function index for this IR function ID
+                let func_idx = self.function_indices.get(func_id).copied().ok_or_else(|| {
+                    format!("Unknown function ID {:?} in call instruction", func_id)
+                })?;
+
                 // Generate call instruction
-                // func.instruction(&Instruction::Call(func_idx));
+                func.instruction(&Instruction::Call(func_idx));
+
+                // Store result in local if there is one
+                if let Some(result_value) = result {
+                    let result_local = tracker
+                        .get_local(*result_value)
+                        .ok_or_else(|| format!("No local for result value {}", result_value))?;
+                    func.instruction(&Instruction::LocalSet(result_local));
+                }
             }
             IrInstr::Record { .. } => {
                 // Records would require struct types from GC proposal

@@ -1,0 +1,3 @@
+# Recursive function test with explicit recursion
+fn double x = x * 2
+fn quad x = double (double x)

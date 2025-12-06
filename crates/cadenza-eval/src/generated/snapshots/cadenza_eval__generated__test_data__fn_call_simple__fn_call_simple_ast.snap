@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Simple function call test\nfn double x = x * 2\nfn quadruple y = double (double y)\n"
+---
+[
+    [=, [[fn, double], x], [*, x, 2]],
+    [=, [[fn, quadruple], y], [double, [double, y]]],
+]

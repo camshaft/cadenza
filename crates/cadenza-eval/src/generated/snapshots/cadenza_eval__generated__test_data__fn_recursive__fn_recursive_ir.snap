@@ -1,0 +1,20 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"# Recursive function test with explicit recursion\\nfn double x = x * 2\\nfn quad x = double (double x)\\n\")"
+---
+# IR Module
+
+@t unknown -> unknown
+fn double x =
+    block block_0 =
+        let v1: integer = const 2
+        let v2: unknown = binop mul v0 v1
+        ret v2
+
+
+@t unknown -> unknown
+fn quad x =
+    block block_0 =
+        let v1: unknown = call func0 v0
+        let v2: unknown = call func0 v1
+        ret v2

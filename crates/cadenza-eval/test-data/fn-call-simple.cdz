@@ -1,0 +1,3 @@
+# Simple function call test
+fn double x = x * 2
+fn quadruple y = double (double y)

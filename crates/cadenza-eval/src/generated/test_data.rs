@@ -619,6 +619,47 @@ mod record_with_variables {
         );
     }
 }
+mod fn_call_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_call_simple",
+            t::eval_all(
+                "# Simple function call test\nfn double x = x * 2\nfn quadruple y = double (double y)\n"
+            ),
+            "# Simple function call test\nfn double x = x * 2\nfn quadruple y = double (double y)\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "fn_call_simple_ast",
+            t::ast(
+                "# Simple function call test\nfn double x = x * 2\nfn quadruple y = double (double y)\n"
+            ),
+            "# Simple function call test\nfn double x = x * 2\nfn quadruple y = double (double y)\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "fn_call_simple_ir",
+            t::ir(
+                "# Simple function call test\nfn double x = x * 2\nfn quadruple y = double (double y)\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "fn_call_simple_wat",
+            t::wat(
+                "# Simple function call test\nfn double x = x * 2\nfn quadruple y = double (double y)\n"
+            )
+        );
+    }
+}
 mod error_let_invalid {
     use super::*;
     #[test]
@@ -1653,6 +1694,47 @@ mod let_simple {
     #[test]
     fn wat() {
         ss!("let_simple_wat", t::wat("let x = 42\nx\n"));
+    }
+}
+mod fn_recursive {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_recursive",
+            t::eval_all(
+                "# Recursive function test with explicit recursion\nfn double x = x * 2\nfn quad x = double (double x)\n"
+            ),
+            "# Recursive function test with explicit recursion\nfn double x = x * 2\nfn quad x = double (double x)\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "fn_recursive_ast",
+            t::ast(
+                "# Recursive function test with explicit recursion\nfn double x = x * 2\nfn quad x = double (double x)\n"
+            ),
+            "# Recursive function test with explicit recursion\nfn double x = x * 2\nfn quad x = double (double x)\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "fn_recursive_ir",
+            t::ir(
+                "# Recursive function test with explicit recursion\nfn double x = x * 2\nfn quad x = double (double x)\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "fn_recursive_wat",
+            t::wat(
+                "# Recursive function test with explicit recursion\nfn double x = x * 2\nfn quad x = double (double x)\n"
+            )
+        );
     }
 }
 mod example_09_assertions {
