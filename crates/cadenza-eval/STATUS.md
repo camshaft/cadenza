@@ -695,25 +695,20 @@ The following enhancements were identified during code review and are planned fo
 - [x] Simple constant generation (integers, floats, booleans)
 - [x] Binary operations (arithmetic, comparison) - instruction generation only
 - [x] Module structure with proper section ordering
+- [x] ~~Value location tracking with local management~~ ✅ (Completed - all 89 WAT tests pass)
 
 **Critical Issues** (blocking correct WASM output):
-1. **Value Location Tracking**: WASM codegen doesn't track where SSA values are stored
-   - IR uses ValueId for SSA values, but WASM needs to know if value is in:
-     - Function parameter (use `local.get $param_idx`)
-     - Local variable (use `local.get $local_idx`)
-     - On the stack (already available)
-   - Current code generates operations without loading operands first
-   - Example: `fn add x y = x + y` generates just `i64.add` without `local.get 0` and `local.get 1`
+1. ~~**Value Location Tracking**~~: ✅ **FIXED** - WASM codegen now properly tracks SSA values as WASM locals and generates correct `local.get`/`local.set` instructions.
 
 **High Priority Tasks** (in order):
-- [ ] **Value location tracking and local management**
-  - [ ] Design data structure to map ValueId → LocalIndex or StackPosition
-  - [ ] Track function parameters as locals 0..N
-  - [ ] Allocate locals for SSA values (one local per ValueId that needs storage)
-  - [ ] Implement strategy: parameters as locals, results pushed to stack
-  - [ ] Generate `local.get` instructions to load operands before operations
-  - [ ] Generate `local.set` instructions when values need to be stored
-  - [ ] Handle the case where a value is used multiple times (must store in local)
+- [x] ~~**Value location tracking and local management**~~  ✅
+  - [x] Design data structure to map ValueId → LocalIndex or StackPosition
+  - [x] Track function parameters as locals 0..N
+  - [x] Allocate locals for SSA values (one local per ValueId that needs storage)
+  - [x] Implement strategy: parameters as locals, results pushed to stack
+  - [x] Generate `local.get` instructions to load operands before operations
+  - [x] Generate `local.set` instructions when values need to be stored
+  - [x] Handle the case where a value is used multiple times (must store in local)
 - [ ] **Function calls**
   - [ ] Load arguments in order using `local.get` or stack values
   - [ ] Generate `call` instruction with correct function index

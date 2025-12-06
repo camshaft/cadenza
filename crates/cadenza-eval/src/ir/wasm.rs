@@ -19,8 +19,6 @@ struct ValueLocationTracker {
     /// Maps SSA ValueId to WASM local index.
     /// Function parameters are locals 0..N, other values get locals N+1..
     value_to_local: HashMap<ValueId, u32>,
-    /// Number of function parameters (these occupy locals 0..N).
-    num_params: u32,
     /// Next available local index for allocating new locals.
     next_local_idx: u32,
 }
@@ -30,19 +28,18 @@ impl ValueLocationTracker {
     fn new(params: &[super::IrParam]) -> Self {
         let num_params = params.len() as u32;
         let mut value_to_local = HashMap::new();
-        
+
         // Map parameter ValueIds to their local indices
         for (idx, param) in params.iter().enumerate() {
             value_to_local.insert(param.value_id, idx as u32);
         }
-        
+
         Self {
             value_to_local,
-            num_params,
             next_local_idx: num_params,
         }
     }
-    
+
     /// Allocate a local for a ValueId if it doesn't already have one.
     /// Returns the local index.
     fn allocate_local(&mut self, value_id: ValueId) -> u32 {
@@ -55,15 +52,10 @@ impl ValueLocationTracker {
             local_idx
         }
     }
-    
+
     /// Get the local index for a ValueId. Returns None if the value isn't in a local.
     fn get_local(&self, value_id: ValueId) -> Option<u32> {
         self.value_to_local.get(&value_id).copied()
-    }
-    
-    /// Get the number of non-parameter locals allocated.
-    fn num_locals(&self) -> u32 {
-        self.next_local_idx - self.num_params
     }
 }
 
@@ -171,7 +163,7 @@ impl WasmCodegen {
     fn add_function_code(&mut self, func: &IrFunction) -> Result<(), String> {
         // Create a value location tracker for this function
         let mut tracker = ValueLocationTracker::new(&func.params);
-        
+
         // First pass: analyze which values need locals
         // For now, we'll allocate a local for every SSA value (simple but correct)
         for block in &func.blocks {
@@ -181,7 +173,7 @@ impl WasmCodegen {
                 }
             }
         }
-        
+
         // Determine local types for non-parameter locals
         let mut local_types = vec![];
         // We need to know the type of each allocated local
@@ -207,7 +199,7 @@ impl WasmCodegen {
                 }
             }
         }
-        
+
         // Build the locals list (excluding parameters)
         for local_idx in func.params.len() as u32..tracker.next_local_idx {
             // Find the ValueId that corresponds to this local
@@ -217,22 +209,22 @@ impl WasmCodegen {
                 .find(|&(_, &idx)| idx == local_idx)
                 .map(|(vid, _)| vid)
                 .ok_or_else(|| format!("Local {} has no corresponding ValueId", local_idx))?;
-            
+
             let ty = value_types
                 .get(value_id)
                 .ok_or_else(|| format!("No type found for value {}", value_id))?;
             let wasm_ty = self.type_to_wasm(ty)?;
             local_types.push((1, wasm_ty));
         }
-        
+
         let mut function = Function::new(local_types);
-        
+
         // Generate code for the entry block
         // TODO: Handle multiple blocks and control flow properly
         for block in &func.blocks {
             self.generate_block(&mut function, block, &tracker)?;
         }
-        
+
         self.code.function(&function);
         Ok(())
     }
@@ -377,7 +369,7 @@ impl WasmCodegen {
             .get_local(lhs)
             .ok_or_else(|| format!("No local for LHS value {}", lhs))?;
         func.instruction(&Instruction::LocalGet(lhs_local));
-        
+
         // Load RHS from local
         let rhs_local = tracker
             .get_local(rhs)
