@@ -719,9 +719,9 @@ The following enhancements were identified during code review and are planned fo
   - [x] Add `if` special form to the language (evaluator level)
   - [x] Add test file with if expressions (if-simple.cdz)
   - [x] Add WASM test with Branch/Jump terminators (test_generate_function_with_branch)
-  - [ ] Implement structured control flow codegen for WASM
-    - [ ] Recognize if-then-else-merge pattern in IR blocks
-    - [ ] Generate WASM `if-else-end` instructions for conditional branches
+  - [x] Implement structured control flow codegen for WASM (simple if-else pattern)
+    - [x] Generate WASM `if-else-end` instructions for conditional branches
+    - [x] Handle blocks that return directly from each branch (no phi nodes)
     - [ ] Handle phi nodes by ensuring correct values on stack
     - [ ] Map arbitrary basic block graphs to structured control flow (harder - may need block restructuring)
   - [ ] Implement IR generation for `if` expressions
@@ -730,9 +730,9 @@ The following enhancements were identified during code review and are planned fo
     - [ ] Create then/else/merge blocks with proper phi nodes
   - [ ] Implement unconditional jump (br) for loops
   - [ ] Generate proper WASM blocks and loops for complex control flow
-- [ ] **Unary operations**
-  - [ ] Fix negation to properly load operand first
-  - [ ] Fix logical not with proper type conversions
+- [x] **Unary operations**
+  - [x] Fix negation to properly load operand first (uses 0 - operand pattern)
+  - [x] Fix logical not with proper type conversions
   - [ ] Implement bitwise not
 
 **Architectural Notes on Control Flow**:

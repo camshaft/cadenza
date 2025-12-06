@@ -254,6 +254,15 @@ impl WasmCodegen {
     /// 
     /// The `visited` set tracks which blocks have been generated to avoid infinite loops.
     /// The `in_control_structure` flag indicates if this block is nested within an if-else.
+    /// 
+    /// # Limitations
+    /// 
+    /// This implementation works for simple control flow patterns (if-then-else where
+    /// branches return directly). It has limitations:
+    /// - The visited set prevents generating blocks reached through multiple paths,
+    ///   which means merge blocks with phi nodes won't work correctly yet.
+    /// - Complex control flow graphs may require block restructuring algorithms
+    ///   (e.g., Relooper) to map to WASM's structured control flow.
     fn generate_block_recursive(
         &self,
         func: &mut Function,
@@ -264,6 +273,8 @@ impl WasmCodegen {
         in_control_structure: bool,
     ) -> Result<(), String> {
         // Check if we've already generated this block
+        // NOTE: This prevents handling merge blocks with multiple predecessors.
+        // A more sophisticated implementation would need to use br/br_if for jumps.
         if visited.contains(&block_id) {
             return Ok(());
         }
@@ -356,7 +367,8 @@ impl WasmCodegen {
                 // End if-else
                 func.instruction(&Instruction::End);
                 
-                // If we're not in a control structure, we need to close the function
+                // If we're at function level (not nested in another control structure),
+                // and both branches returned, we still need to close the function body
                 if !in_control_structure {
                     func.instruction(&Instruction::End);
                 }
@@ -366,66 +378,6 @@ impl WasmCodegen {
                 // In a more sophisticated implementation, this would use WASM's br instruction
                 self.generate_block_recursive(func, *target, blocks, tracker, visited, in_control_structure)?;
             }
-        }
-
-        Ok(())
-    }
-
-    /// Generate code for a basic block (old implementation, kept for reference).
-    #[allow(dead_code)]
-    fn generate_block(
-        &self,
-        func: &mut Function,
-        block: &IrBlock,
-        tracker: &ValueLocationTracker,
-    ) -> Result<(), String> {
-        // Check for tail call optimization opportunity:
-        // If the last instruction is a Call and the terminator returns its result (or both are void),
-        // we can use return_call instead of call + return
-        let can_use_tail_call = match block.instructions.last() {
-            Some(IrInstr::Call {
-                result: Some(call_result),
-                ..
-            }) => {
-                // Non-void call: check if terminator returns the same value
-                matches!(
-                    &block.terminator,
-                    IrTerminator::Return {
-                        value: Some(ret_value),
-                        ..
-                    } if call_result == ret_value
-                )
-            }
-            Some(IrInstr::Call { result: None, .. }) => {
-                // Void call: check if terminator is also void return
-                matches!(&block.terminator, IrTerminator::Return { value: None, .. })
-            }
-            _ => false,
-        };
-
-        if can_use_tail_call {
-            // Process all instructions except the last one
-            for instr in &block.instructions[..block.instructions.len() - 1] {
-                self.generate_instruction(func, instr, tracker)?;
-            }
-
-            // Generate the last Call instruction as a tail call (which includes the return)
-            if let Some(IrInstr::Call {
-                func: func_id,
-                args,
-                ..
-            }) = block.instructions.last()
-            {
-                self.generate_tail_call(func, *func_id, args, tracker)?;
-            }
-        } else {
-            // Generate all instructions normally
-            for instr in &block.instructions {
-                self.generate_instruction(func, instr, tracker)?;
-            }
-
-            // Generate terminator
-            self.generate_terminator(func, &block.terminator, tracker)?;
         }
 
         Ok(())
@@ -783,57 +735,6 @@ impl WasmCodegen {
         // implicit block still needs to be closed with End
         func.instruction(&Instruction::End);
 
-        Ok(())
-    }
-
-    /// Generate code for a terminator.
-    fn generate_terminator(
-        &self,
-        func: &mut Function,
-        term: &IrTerminator,
-        tracker: &ValueLocationTracker,
-    ) -> Result<(), String> {
-        match term {
-            IrTerminator::Return { value, .. } => {
-                if let Some(value_id) = value {
-                    // Load the return value from its local
-                    let local_idx = tracker
-                        .get_local(*value_id)
-                        .ok_or_else(|| format!("No local for return value {}", value_id))?;
-                    func.instruction(&Instruction::LocalGet(local_idx));
-                }
-                func.instruction(&Instruction::End);
-            }
-            IrTerminator::Branch { cond, then_block, else_block, .. } => {
-                // Load the condition value
-                let cond_local = tracker
-                    .get_local(*cond)
-                    .ok_or_else(|| format!("No local for branch condition {}", cond))?;
-                func.instruction(&Instruction::LocalGet(cond_local));
-                
-                // Note: For now, we'll return an error since we need to handle
-                // the then/else blocks which requires restructuring the codegen.
-                // A proper implementation would:
-                // 1. Emit: if (condition type)
-                // 2. Generate code for then_block
-                // 3. Emit: else
-                // 4. Generate code for else_block
-                // 5. Emit: end
-                // This requires access to the full function's blocks, not just the current block.
-                return Err(format!(
-                    "Branch terminator requires structured control flow codegen (then: {:?}, else: {:?})",
-                    then_block, else_block
-                ));
-            }
-            IrTerminator::Jump { target, .. } => {
-                // Unconditional jumps in structured control flow typically use `br` instruction
-                // However, we need to know the depth of the target block in the control structure
-                return Err(format!(
-                    "Jump terminator requires structured control flow codegen (target: {:?})",
-                    target
-                ));
-            }
-        }
         Ok(())
     }
 
