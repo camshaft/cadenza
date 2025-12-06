@@ -264,8 +264,8 @@ impl std::fmt::Display for IrInstr {
             IrInstr::Const {
                 result, ty, value, ..
             } => {
-                // For constants with type annotation: let v0: integer = 42
-                write!(f, "let {}: {} = {}", result, ty, value)
+                // For constants with type annotation: let v0: integer = const 42
+                write!(f, "let {}: {} = const {}", result, ty, value)
             }
             IrInstr::BinOp {
                 result,
@@ -275,8 +275,8 @@ impl std::fmt::Display for IrInstr {
                 rhs,
                 ..
             } => {
-                // Binary operations as function calls with juxtaposition: let v2: integer = add v0 v1
-                write!(f, "let {}: {} = {} {} {}", result, ty, op, lhs, rhs)
+                // Binary operations tagged with binop: let v2: integer = binop add v0 v1
+                write!(f, "let {}: {} = binop {} {} {}", result, ty, op, lhs, rhs)
             }
             IrInstr::UnOp {
                 result,
@@ -285,8 +285,8 @@ impl std::fmt::Display for IrInstr {
                 operand,
                 ..
             } => {
-                // Unary operations as function calls: let v1: integer = neg v0
-                write!(f, "let {}: {} = {} {}", result, ty, op, operand)
+                // Unary operations tagged with unop: let v1: integer = unop neg v0
+                write!(f, "let {}: {} = unop {} {}", result, ty, op, operand)
             }
             IrInstr::Call {
                 result,
@@ -295,11 +295,11 @@ impl std::fmt::Display for IrInstr {
                 args,
                 ..
             } => {
-                // Function calls with juxtaposition
+                // Function calls with call prefix
                 if let Some(res) = result {
-                    write!(f, "let {}: {} = {}", res, ty, func)?;
+                    write!(f, "let {}: {} = call {}", res, ty, func)?;
                 } else {
-                    write!(f, "{}", func)?;
+                    write!(f, "call {}", func)?;
                 }
                 for arg in args.iter() {
                     write!(f, " {}", arg)?;
@@ -313,8 +313,8 @@ impl std::fmt::Display for IrInstr {
                 field_values,
                 ..
             } => {
-                // Records use the { field = value } syntax
-                write!(f, "let {}: {} = {{ ", result, ty)?;
+                // Records with record prefix
+                write!(f, "let {}: {} = record {{ ", result, ty)?;
                 for (i, (name, value)) in field_names.iter().zip(field_values.iter()).enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -330,8 +330,8 @@ impl std::fmt::Display for IrInstr {
                 field,
                 ..
             } => {
-                // Field access: let v2: integer = v1.field
-                write!(f, "let {}: {} = {}.{}", result, ty, record, field)
+                // Field access with field prefix: let v2: integer = field v1.field
+                write!(f, "let {}: {} = field {}.{}", result, ty, record, field)
             }
             IrInstr::Tuple {
                 result,
@@ -339,8 +339,8 @@ impl std::fmt::Display for IrInstr {
                 elements,
                 ..
             } => {
-                // Tuples/lists use the [ ] syntax
-                write!(f, "let {}: {} = [", result, ty)?;
+                // Tuples/lists tagged with list
+                write!(f, "let {}: {} = list [", result, ty)?;
                 for (i, elem) in elements.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -410,11 +410,11 @@ impl std::fmt::Display for IrTerminator {
                 write!(f, "jmp {}", target)
             }
             IrTerminator::Return { value, .. } => {
-                // Return as function call or just the value
+                // Return with ret keyword
                 if let Some(val) = value {
-                    write!(f, "{}", val)
+                    write!(f, "ret {}", val)
                 } else {
-                    write!(f, "nil")
+                    write!(f, "ret")
                 }
             }
         }
@@ -431,13 +431,13 @@ pub struct IrBlock {
 
 impl std::fmt::Display for IrBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Block label as a comment
-        writeln!(f, "# {}:", self.id)?;
+        // Block as a call with indented content
+        writeln!(f, "    block {} =", self.id)?;
         for instr in &self.instructions {
-            writeln!(f, "    {}", instr)?;
+            writeln!(f, "        {}", instr)?;
         }
         // Terminator as the final expression
-        writeln!(f, "    {}", self.terminator)
+        writeln!(f, "        {}", self.terminator)
     }
 }
 
@@ -469,29 +469,26 @@ pub struct IrFunction {
 
 impl std::fmt::Display for IrFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Use Cadenza fn syntax
+        // Type annotation as @t attribute
+        write!(f, "@t")?;
+        for param in &self.params {
+            write!(f, " {}", param.ty)?;
+        }
+        writeln!(f, " -> {}", self.return_ty)?;
+
+        // Function signature with parameter names
         write!(f, "fn {}", self.name)?;
         for param in &self.params {
-            write!(f, " {}", param)?;
+            write!(f, " {}", param.name)?;
         }
-        write!(f, " = (")?;
+        writeln!(f, " =")?;
 
-        // If there's only one block, inline it
-        if self.blocks.len() == 1 {
-            writeln!(f)?;
-            for instr in &self.blocks[0].instructions {
-                writeln!(f, "    {}", instr)?;
-            }
-            writeln!(f, "    {}", self.blocks[0].terminator)?;
-            write!(f, ")")
-        } else {
-            // Multiple blocks - show them all
-            writeln!(f)?;
-            for block in &self.blocks {
-                write!(f, "{}", block)?;
-            }
-            write!(f, ")")
+        // All blocks explicitly named, no inlining
+        for block in &self.blocks {
+            write!(f, "{}", block)?;
         }
+
+        Ok(())
     }
 }
 

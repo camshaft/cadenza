@@ -4,7 +4,8 @@ expression: "t::ir(\"fn add x y = x + y\\nadd\\n\")"
 ---
 # IR Module
 
-fn add v0: unknown v1: unknown = (
-    let v2: unknown = add v0 v1
-    v2
-)
+@t unknown unknown -> unknown
+fn add x y =
+    block block_0 =
+        let v2: unknown = binop add v0 v1
+        ret v2

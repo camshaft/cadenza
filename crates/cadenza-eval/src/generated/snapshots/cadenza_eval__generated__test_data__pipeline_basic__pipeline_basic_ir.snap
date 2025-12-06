@@ -4,13 +4,16 @@ expression: "t::ir(\"fn add x y = x + y\\nfn double x = x * 2\\n\\n5 |> add 3\\n
 ---
 # IR Module
 
-fn add v0: unknown v1: unknown = (
-    let v2: unknown = add v0 v1
-    v2
-)
+@t unknown unknown -> unknown
+fn add x y =
+    block block_0 =
+        let v2: unknown = binop add v0 v1
+        ret v2
 
-fn double v0: unknown = (
-    let v1: integer = 2
-    let v2: unknown = mul v0 v1
-    v2
-)
+
+@t unknown -> unknown
+fn double x =
+    block block_0 =
+        let v1: integer = const 2
+        let v2: unknown = binop mul v0 v1
+        ret v2

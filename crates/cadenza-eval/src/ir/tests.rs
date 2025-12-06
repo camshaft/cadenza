@@ -75,7 +75,7 @@ fn test_const_instr() {
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "let v0: integer = 42");
+    assert_eq!(instr.to_string(), "let v0: integer = const 42");
     assert_eq!(instr.result_value(), Some(ValueId(0)));
 }
 
@@ -90,7 +90,7 @@ fn test_binop_instr() {
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "let v2: integer = add v0 v1");
+    assert_eq!(instr.to_string(), "let v2: integer = binop add v0 v1");
     assert_eq!(instr.result_value(), Some(ValueId(2)));
 }
 
@@ -104,7 +104,7 @@ fn test_unop_instr() {
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "let v1: integer = neg v0");
+    assert_eq!(instr.to_string(), "let v1: integer = unop neg v0");
     assert_eq!(instr.result_value(), Some(ValueId(1)));
 }
 
@@ -118,7 +118,7 @@ fn test_call_instr() {
         source: dummy_source(),
     };
 
-    assert_eq!(instr.to_string(), "let v3: integer = func0 v0 v1 v2");
+    assert_eq!(instr.to_string(), "let v3: integer = call func0 v0 v1 v2");
     assert_eq!(instr.result_value(), Some(ValueId(3)));
 }
 
@@ -129,7 +129,7 @@ fn test_return_terminator() {
         source: dummy_source(),
     };
 
-    assert_eq!(term.to_string(), "v5");
+    assert_eq!(term.to_string(), "ret v5");
 }
 
 #[test]
@@ -187,11 +187,11 @@ fn test_basic_block() {
     };
 
     let output = block.to_string();
-    assert!(output.contains("# block_0:"));
-    assert!(output.contains("let v0: integer = 5"));
-    assert!(output.contains("let v1: integer = 10"));
-    assert!(output.contains("let v2: integer = add v0 v1"));
-    assert!(output.contains("v2"));
+    assert!(output.contains("block block_0 ="));
+    assert!(output.contains("let v0: integer = const 5"));
+    assert!(output.contains("let v1: integer = const 10"));
+    assert!(output.contains("let v2: integer = binop add v0 v1"));
+    assert!(output.contains("ret v2"));
 }
 
 #[test]
@@ -231,11 +231,11 @@ fn test_function() {
     };
 
     let output = func.to_string();
-    assert!(output.contains("fn add_numbers"));
-    assert!(output.contains("v0: integer"));
-    assert!(output.contains("v1: integer"));
-    assert!(output.contains("let v2: integer = add v0 v1"));
-    assert!(output.contains("v2"));
+    assert!(output.contains("@t integer integer -> integer"));
+    assert!(output.contains("fn add_numbers a b"));
+    assert!(output.contains("block block_0 ="));
+    assert!(output.contains("let v2: integer = binop add v0 v1"));
+    assert!(output.contains("ret v2"));
 }
 
 #[test]
@@ -347,10 +347,9 @@ fn test_builder_add_function() {
 
     let module = builder.build();
     let output = module.to_string();
+    assert!(output.contains("@t integer integer -> integer"));
     assert!(output.contains("fn add"));
-    assert!(output.contains("v0: integer"));
-    assert!(output.contains("v1: integer"));
-    assert!(output.contains("let v2: integer = add v0 v1"));
+    assert!(output.contains("let v2: integer = binop add v0 v1"));
 }
 
 #[test]
@@ -398,10 +397,11 @@ fn test_builder_conditional() {
     let output = module.to_string();
 
     // Verify the structure
+    assert!(output.contains("@t integer -> integer"));
     assert!(output.contains("fn abs"));
     assert!(output.contains("br v"));
-    assert!(output.contains("neg v0"));
-    assert!(output.contains("v0"));
+    assert!(output.contains("unop neg v0"));
+    assert!(output.contains("ret v0"));
 }
 
 #[test]
@@ -439,5 +439,5 @@ fn test_builder_record_construction() {
 
     let module = builder.build();
     let output = module.to_string();
-    assert!(output.contains("{ x = v0, y = v1 }"));
+    assert!(output.contains("record { x = v0, y = v1 }"));
 }

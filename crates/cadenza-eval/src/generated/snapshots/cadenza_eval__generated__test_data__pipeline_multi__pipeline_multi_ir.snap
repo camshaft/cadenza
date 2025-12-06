@@ -4,17 +4,22 @@ expression: "t::ir(\"fn add x y = x + y\\nfn mul x y = x * y\\nfn sub x y = x - 
 ---
 # IR Module
 
-fn add v0: unknown v1: unknown = (
-    let v2: unknown = add v0 v1
-    v2
-)
+@t unknown unknown -> unknown
+fn add x y =
+    block block_0 =
+        let v2: unknown = binop add v0 v1
+        ret v2
 
-fn mul v0: unknown v1: unknown = (
-    let v2: unknown = mul v0 v1
-    v2
-)
 
-fn sub v0: unknown v1: unknown = (
-    let v2: unknown = sub v0 v1
-    v2
-)
+@t unknown unknown -> unknown
+fn mul x y =
+    block block_0 =
+        let v2: unknown = binop mul v0 v1
+        ret v2
+
+
+@t unknown unknown -> unknown
+fn sub x y =
+    block block_0 =
+        let v2: unknown = binop sub v0 v1
+        ret v2

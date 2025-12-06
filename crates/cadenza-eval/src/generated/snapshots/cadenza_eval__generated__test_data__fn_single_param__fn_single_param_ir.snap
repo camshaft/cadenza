@@ -4,8 +4,9 @@ expression: "t::ir(\"fn triple x = x * 3\\ntriple 7\\n\")"
 ---
 # IR Module
 
-fn triple v0: unknown = (
-    let v1: integer = 3
-    let v2: unknown = mul v0 v1
-    v2
-)
+@t unknown -> unknown
+fn triple x =
+    block block_0 =
+        let v1: integer = const 3
+        let v2: unknown = binop mul v0 v1
+        ret v2

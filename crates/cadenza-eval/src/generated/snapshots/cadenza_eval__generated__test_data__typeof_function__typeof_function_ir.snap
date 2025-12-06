@@ -4,6 +4,7 @@ expression: "t::ir(\"fn identity x = x\\ntypeof identity\")"
 ---
 # IR Module
 
-fn identity v0: unknown = (
-    v0
-)
+@t unknown -> unknown
+fn identity x =
+    block block_0 =
+        ret v0

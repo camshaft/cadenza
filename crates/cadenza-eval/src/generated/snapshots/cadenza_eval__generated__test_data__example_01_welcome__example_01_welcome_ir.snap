@@ -4,7 +4,8 @@ expression: "t::ir(\"# Welcome to Cadenza!\\n# A functional language with units 
 ---
 # IR Module
 
-fn square v0: unknown = (
-    let v1: unknown = mul v0 v0
-    v1
-)
+@t unknown -> unknown
+fn square x =
+    block block_0 =
+        let v1: unknown = binop mul v0 v0
+        ret v1

@@ -406,7 +406,7 @@ mod tests {
 
         // Verify the IR contains expected elements
         assert!(ir_text.contains("fn add"));
-        assert!(ir_text.contains("add v0 v1"));
+        assert!(ir_text.contains("binop add v0 v1"));
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
 
         // Verify the IR contains expected elements
         assert!(ir_text.contains("fn get_answer"));
-        assert!(ir_text.contains("= 42"));
+        assert!(ir_text.contains("const 42"));
     }
 
     #[test]
@@ -530,7 +530,7 @@ mod tests {
         // Verify the IR contains expected elements
         assert!(ir_text.contains("fn double"));
         assert!(ir_text.contains("fn quadruple"));
-        assert!(ir_text.contains("func0")); // Call to double
+        assert!(ir_text.contains("call func0")); // Call to double
     }
 
     #[test]
@@ -580,9 +580,9 @@ mod tests {
         // Verify the IR contains expected elements
         assert!(ir_text.contains("fn add"));
         assert!(ir_text.contains("fn compute"));
-        assert!(ir_text.contains("mul")); // x * 2
-        assert!(ir_text.contains("add")); // y + 1 and a + b
-        assert!(ir_text.contains("func0")); // Call to add
+        assert!(ir_text.contains("binop mul")); // x * 2
+        assert!(ir_text.contains("binop add")); // y + 1 and a + b
+        assert!(ir_text.contains("call func0")); // Call to add
     }
 
     #[test]
@@ -616,7 +616,7 @@ mod tests {
 
         // Verify the IR contains recursive call
         assert!(ir_text.contains("fn countdown"));
-        assert!(ir_text.contains("func0")); // Recursive call to itself
-        assert!(ir_text.contains("sub")); // n - 1
+        assert!(ir_text.contains("call func0")); // Recursive call to itself
+        assert!(ir_text.contains("binop sub")); // n - 1
     }
 }
