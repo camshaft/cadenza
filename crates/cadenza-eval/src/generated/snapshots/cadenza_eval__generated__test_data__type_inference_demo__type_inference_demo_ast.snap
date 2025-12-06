@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Demonstrates type inference improvements in IR generation\n\n# Function with concrete return type\nfn get_answer = 42\n\n# Function with operations on literals\nfn compute = 10 * 5 + 2\n\n# Function using let bindings with literals\nfn with_let =\n    let x = 100\n    let y = 200\n    x\n\n# Call the functions to test\nget_answer\n"
+---
+[
+    [=, [fn, get_answer], 42],
+    [=, [fn, compute], [+, [*, 10, 5], 2]],
+    [=, [fn, with_let], [__block__, [=, [let, x], 100], [=, [let, y], 200], x]],
+    get_answer,
+]

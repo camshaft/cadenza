@@ -4,7 +4,7 @@ expression: "t::ir(\"fn get_value = 42\\nget_value\\n\")"
 ---
 # IR Module
 
-@t -> unknown
+@t -> integer
 fn get_value =
     block block_0 =
         let v0: integer = const 42

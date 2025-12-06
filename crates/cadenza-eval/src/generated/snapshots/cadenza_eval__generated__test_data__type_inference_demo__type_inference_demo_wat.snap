@@ -1,0 +1,41 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"# Demonstrates type inference improvements in IR generation\\n\\n# Function with concrete return type\\nfn get_answer = 42\\n\\n# Function with operations on literals\\nfn compute = 10 * 5 + 2\\n\\n# Function using let bindings with literals\\nfn with_let =\\n    let x = 100\\n    let y = 200\\n    x\\n\\n# Call the functions to test\\nget_answer\\n\")"
+---
+(module
+  (type (;0;) (func (result i64)))
+  (type (;1;) (func (result i64)))
+  (type (;2;) (func (result i64)))
+  (func (;0;) (type 0) (result i64)
+    (local i64)
+    i64.const 42
+    local.set 0
+    local.get 0
+  )
+  (func (;1;) (type 1) (result i64)
+    (local i64 i64 i64 i64 i64)
+    i64.const 10
+    local.set 0
+    i64.const 5
+    local.set 1
+    local.get 0
+    local.get 1
+    i64.mul
+    local.set 2
+    i64.const 2
+    local.set 3
+    local.get 2
+    local.get 3
+    i64.add
+    local.set 4
+    local.get 4
+  )
+  (func (;2;) (type 2) (result i64)
+    (local i64 i64)
+    i64.const 100
+    local.set 0
+    i64.const 200
+    local.set 1
+    local.get 0
+  )
+)
