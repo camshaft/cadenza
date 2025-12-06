@@ -814,7 +814,7 @@ pub fn validate_wasm(binary: &[u8]) -> Result<(), String> {
     let mut validator = wasmparser::Validator::new();
     validator
         .validate_all(binary)
-        .map(|_| ()) // Discard the Types result
+        .map(|_| ()) // validate_all returns Types struct with type info, but we only need to know if validation passed
         .map_err(|e| format!("WASM validation failed: {}", e))
 }
 
