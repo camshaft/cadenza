@@ -81,7 +81,7 @@ The markdown parser follows a different strategy than typical Markdown parsers:
 
 ### 🚧 Partial/Limited Features
 
-None currently.
+- **Triple emphasis markers**: The `***text***` syntax is parsed as strong with a literal asterisk at the start and end (`[strong, [__list__, "*", "text"]], "*"`), rather than nested strong+emphasis. Users can explicitly nest using `**_text_**` or `_**text**_` instead.
 
 ### ❌ Not Yet Implemented
 
