@@ -117,9 +117,7 @@ fn fold_constants_in_function(func: &mut IrFunction) -> bool {
     for block in &mut func.blocks {
         for instr in &mut block.instructions {
             match instr {
-                IrInstr::Const {
-                    result, value, ..
-                } => {
+                IrInstr::Const { result, value, .. } => {
                     const_values.insert(*result, value.clone());
                 }
                 IrInstr::BinOp {
@@ -135,7 +133,7 @@ fn fold_constants_in_function(func: &mut IrFunction) -> bool {
                     let ty_copy = ty.clone();
                     let op_copy = *op;
                     let source_copy = *source;
-                    
+
                     // Try to fold binary operations with constant operands
                     if let (Some(lhs_const), Some(rhs_const)) =
                         (const_values.get(lhs), const_values.get(rhs))
@@ -165,7 +163,7 @@ fn fold_constants_in_function(func: &mut IrFunction) -> bool {
                     let ty_copy = ty.clone();
                     let op_copy = *op;
                     let source_copy = *source;
-                    
+
                     // Try to fold unary operations with constant operands
                     if let Some(operand_const) = const_values.get(operand) {
                         if let Some(folded) = fold_unop(op_copy, operand_const) {
@@ -373,10 +371,15 @@ fn eliminate_dead_code_in_function(func: &mut IrFunction) -> bool {
     for block in &mut func.blocks {
         let original_len = block.instructions.len();
         block.instructions.retain(|instr| {
+            // Always keep call instructions (they might have side effects)
+            if matches!(instr, IrInstr::Call { .. }) {
+                return true;
+            }
+
             // Keep instructions that don't produce values or produce used values
             match instr.result_value() {
                 Some(result) => used_values.contains(&result),
-                None => true, // Keep void instructions (like void calls)
+                None => true, // Keep void instructions
             }
         });
         if block.instructions.len() < original_len {
@@ -551,11 +554,7 @@ mod tests {
         let mut builder = crate::ir::IrBuilder::new();
 
         // Build: fn test() { let v0 = 2; let v1 = 3; let v2 = v0 + v1; ret v2 }
-        let mut func_builder = builder.function(
-            InternedString::new("test"),
-            vec![],
-            Type::Integer,
-        );
+        let mut func_builder = builder.function(InternedString::new("test"), vec![], Type::Integer);
 
         let mut block_builder = func_builder.block();
         let v0 = block_builder.const_val(IrConst::Integer(2), Type::Integer, dummy_source());
@@ -575,14 +574,21 @@ mod tests {
 
         // The add should be folded to a constant 5
         let block = &module.functions[0].blocks[0];
-        let has_add = block.instructions.iter().any(|instr| {
-            matches!(instr, IrInstr::BinOp { .. })
-        });
+        let has_add = block
+            .instructions
+            .iter()
+            .any(|instr| matches!(instr, IrInstr::BinOp { .. }));
         assert!(!has_add, "BinOp should have been folded");
 
         // Should have a const instruction with value 5
         let has_const_5 = block.instructions.iter().any(|instr| {
-            matches!(instr, IrInstr::Const { value: IrConst::Integer(5), .. })
+            matches!(
+                instr,
+                IrInstr::Const {
+                    value: IrConst::Integer(5),
+                    ..
+                }
+            )
         });
         assert!(has_const_5, "Should have const 5");
     }
@@ -592,11 +598,7 @@ mod tests {
         let mut module = IrModule::new();
         let mut builder = crate::ir::IrBuilder::new();
 
-        let mut func_builder = builder.function(
-            InternedString::new("test"),
-            vec![],
-            Type::Float,
-        );
+        let mut func_builder = builder.function(InternedString::new("test"), vec![], Type::Float);
 
         let mut block_builder = func_builder.block();
         let v0 = block_builder.const_val(IrConst::Float(2.5), Type::Float, dummy_source());
@@ -625,11 +627,7 @@ mod tests {
         let mut module = IrModule::new();
         let mut builder = crate::ir::IrBuilder::new();
 
-        let mut func_builder = builder.function(
-            InternedString::new("test"),
-            vec![],
-            Type::Bool,
-        );
+        let mut func_builder = builder.function(InternedString::new("test"), vec![], Type::Bool);
 
         let mut block_builder = func_builder.block();
         let v0 = block_builder.const_val(IrConst::Integer(5), Type::Integer, dummy_source());
@@ -646,7 +644,13 @@ mod tests {
 
         let block = &module.functions[0].blocks[0];
         let has_const_true = block.instructions.iter().any(|instr| {
-            matches!(instr, IrInstr::Const { value: IrConst::Bool(true), .. })
+            matches!(
+                instr,
+                IrInstr::Const {
+                    value: IrConst::Bool(true),
+                    ..
+                }
+            )
         });
         assert!(has_const_true, "5 > 3 should be folded to true");
     }
@@ -658,11 +662,7 @@ mod tests {
 
         // Build: fn test() { let v0 = 1; let v1 = 2; let v2 = 3; ret v2 }
         // v0 and v1 are unused
-        let mut func_builder = builder.function(
-            InternedString::new("test"),
-            vec![],
-            Type::Integer,
-        );
+        let mut func_builder = builder.function(InternedString::new("test"), vec![], Type::Integer);
 
         let mut block_builder = func_builder.block();
         let _v0 = block_builder.const_val(IrConst::Integer(1), Type::Integer, dummy_source());
@@ -681,7 +681,11 @@ mod tests {
 
         // Should only have one instruction left (the const 3)
         let block = &module.functions[0].blocks[0];
-        assert_eq!(block.instructions.len(), 1, "Should have removed unused instructions");
+        assert_eq!(
+            block.instructions.len(),
+            1,
+            "Should have removed unused instructions"
+        );
     }
 
     #[test]
@@ -714,7 +718,11 @@ mod tests {
 
         // The second add should still exist but the return should reference v1
         let block = &module.functions[0].blocks[0];
-        if let IrTerminator::Return { value: Some(ret_val), .. } = &block.terminator {
+        if let IrTerminator::Return {
+            value: Some(ret_val),
+            ..
+        } = &block.terminator
+        {
             assert_eq!(*ret_val, v1, "Return should use v1 instead of v2");
         } else {
             panic!("Expected return terminator");
@@ -727,11 +735,7 @@ mod tests {
         let mut builder = crate::ir::IrBuilder::new();
 
         // Build a function with constant folding and dead code opportunities
-        let mut func_builder = builder.function(
-            InternedString::new("test"),
-            vec![],
-            Type::Integer,
-        );
+        let mut func_builder = builder.function(InternedString::new("test"), vec![], Type::Integer);
 
         let mut block_builder = func_builder.block();
         let v0 = block_builder.const_val(IrConst::Integer(2), Type::Integer, dummy_source());
@@ -752,6 +756,9 @@ mod tests {
 
         // After optimization: should have const 5 and return it, no other instructions
         let block = &module.functions[0].blocks[0];
-        assert!(block.instructions.len() <= 1, "Most instructions should be eliminated");
+        assert!(
+            block.instructions.len() <= 1,
+            "Most instructions should be eliminated"
+        );
     }
 }

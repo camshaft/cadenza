@@ -104,6 +104,34 @@ let func = func_builder.build();
 builder.add_function(func);
 ```
 
+### Optimization Passes
+
+The IR includes an optimization framework with several implemented passes:
+
+```rust
+use crate::ir::*;
+
+// Build your IR module
+let mut module = build_ir_module();
+
+// Create a pipeline with the default optimization passes
+let mut pipeline = OptimizationPipeline::default_pipeline();
+
+// Run optimizations (up to 10 iterations)
+let num_changes = pipeline.run(&mut module, 10);
+
+// Or create a custom pipeline
+let mut custom_pipeline = OptimizationPipeline::new();
+custom_pipeline.add_pass(Box::new(ConstantFoldingPass));
+custom_pipeline.add_pass(Box::new(DeadCodeEliminationPass));
+custom_pipeline.run(&mut module, 5);
+```
+
+The default pipeline includes:
+- **Constant Folding**: Evaluates operations on constant values at compile time (e.g., `2 + 3` → `5`)
+- **Dead Code Elimination**: Removes instructions that produce unused values
+- **Common Subexpression Elimination**: Detects and eliminates redundant computations
+
 ## Future Work
 
 ### IR Generation (Phase 5)
@@ -118,11 +146,11 @@ builder.add_function(func);
 - [ ] Support for lists/tuples
 
 ### Optimization Passes (Phase 5)
-- [ ] Constant folding
-- [ ] Dead code elimination
-- [ ] Common subexpression elimination
+- [x] Constant folding
+- [x] Dead code elimination
+- [x] Common subexpression elimination
 - [ ] Function inlining
-- [ ] Configurable optimization pipeline
+- [x] Configurable optimization pipeline
 
 ### Code Generation (Phase 5)
 - [ ] WASM backend with WasmGC
