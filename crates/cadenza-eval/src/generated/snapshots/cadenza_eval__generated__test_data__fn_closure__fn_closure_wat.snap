@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"let x = 10\\nfn capture_fn = x\\nlet x = 20\\ncapture_fn\\n\")"
+---
+(module)

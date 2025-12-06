@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"fn get_value = 42\\nget_value\\n\")"
+---
+(module
+  (type (;0;) (func (result i64)))
+  (func (;0;) (type 0) (result i64)
+    i64.const 42
+  )
+)

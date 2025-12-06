@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"2 > 1\\n\")"
+---
+(module)

@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"measure meter\\nmeasure second\\nlet distance = meter 100\\nlet time = second 10\\nlet velocity = distance / time\\nvelocity\\n\")"
+---
+(module)

@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"let v = 1\\nassert v == 1 \\\"expected v to be one\\\"\\n\")"
+---
+(module)
