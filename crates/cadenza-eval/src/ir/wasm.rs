@@ -309,17 +309,17 @@ impl WasmCodegen {
                         .ok_or_else(|| format!("No local for argument value {}", arg_value_id))?;
                     func.instruction(&Instruction::LocalGet(arg_local));
                 }
-                
+
                 // Get the WASM function index for this IR function
                 let func_idx = self
                     .function_indices
                     .get(func_id)
                     .copied()
                     .ok_or_else(|| format!("Unknown function ID in call: {:?}", func_id))?;
-                
+
                 // Emit call instruction
                 func.instruction(&Instruction::Call(func_idx));
-                
+
                 // Store result if function returns a value
                 if let Some(result_id) = result {
                     let local_idx = tracker
@@ -812,7 +812,7 @@ mod tests {
         // Create a recursive factorial function: fn fact(n) = if n <= 1 then 1 else n * fact(n - 1)
         // For now, just test the structure with a simple recursive call: fn countdown(n) = countdown(n - 1)
         // (without control flow, this would infinite loop, but we're just testing codegen)
-        
+
         let countdown_func = IrFunction {
             id: FunctionId(0),
             name: InternedString::new("countdown"),
