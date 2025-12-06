@@ -191,7 +191,7 @@ Change the velocity and angle above to see how it affects the range!
 ## Implementation Considerations
 
 ### Document Format
-- **Markdown front-end syntax**: Similar to GCode, translate Markdown to Cadenza CST/AST
+- **Markdown front-end syntax**: Similar to specialized parsers, translate Markdown to Cadenza CST/AST
 - **Macro-based processing**: Macros in eval context process markdown into executable
 - **Mode switching**: Switch parsing modes mid-document for Cadenza syntax
 - **Code fence arguments**: Pass arguments to control handling (editable, hidden, output format)

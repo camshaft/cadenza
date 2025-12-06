@@ -292,7 +292,7 @@ sin, cos, tan, asin, acos, atan, atan2
 
 ```cadenza
 # Pipeline with to macro (recommended)
-100meter |> to feet
+100 meter |> to feet
 
 # Also supports infix for readability
 100 meters to feet

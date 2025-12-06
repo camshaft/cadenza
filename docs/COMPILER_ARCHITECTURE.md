@@ -917,10 +917,11 @@ pub enum IrInstr {
     /// Create a record
     /// %result = record { field1: %val1, field2: %val2, ... }
     /// Field names stored separately from values for efficient cloning
+    /// field_values[i] corresponds to field_names[i]
     Record {
         result: ValueId,
-        field_names: Arc<[InternedString]>,  // Shared, interned field names
-        field_values: Vec<ValueId>,           // Values parallel to names
+        field_names: Arc<[InternedString]>,  // Shared across all instances of this record type
+        field_values: Vec<ValueId>,           // Parallel array: values[i] is value for names[i]
         source: SourceLocation,
     },
     
