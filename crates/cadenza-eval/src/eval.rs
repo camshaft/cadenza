@@ -2068,74 +2068,104 @@ pub fn builtin_assert() -> BuiltinMacro {
     }
 }
 
-/// Creates the `if` builtin macro for conditional expressions.
+/// Creates the `match` builtin macro for pattern matching on booleans.
 ///
-/// The `if` macro evaluates a condition and returns one of two branches based on
-/// whether the condition is true or false.
+/// The `match` macro evaluates an expression and matches it against boolean patterns.
+/// Currently supports matching on boolean values.
 ///
 /// # Syntax
 ///
 /// ```cadenza
-/// if condition then_expr else_expr
+/// match expr
+///     true -> expr1
+///     false -> expr2
 /// ```
 ///
 /// # Arguments
 ///
-/// - `condition`: Expression that evaluates to a boolean
-/// - `then_expr`: Expression to evaluate if condition is true
-/// - `else_expr`: Expression to evaluate if condition is false
+/// - First argument: The expression to match on
+/// - Second argument: Block containing pattern arms (arrow expressions)
 ///
 /// # Returns
 ///
-/// The value of either `then_expr` or `else_expr` depending on the condition.
+/// The value of the matched arm's expression.
 ///
 /// # Examples
 ///
 /// ```cadenza
 /// let x = 5
-/// if x > 0 x (0 - x)  # returns 5 (the absolute value)
-///
-/// let result = if true "yes" "no"  # returns "yes"
+/// match x > 0
+///     true -> "positive"
+///     false -> "negative"
 /// ```
-pub fn builtin_if() -> BuiltinMacro {
+pub fn builtin_match() -> BuiltinMacro {
     BuiltinMacro {
-        name: "if",
-        signature: Type::function(
-            vec![Type::Bool, Type::Unknown, Type::Unknown],
-            Type::Unknown,
-        ),
+        name: "match",
+        signature: Type::function(vec![Type::Unknown], Type::Unknown),
         func: |args, ctx| {
-            // Validate argument count
-            if args.len() != 3 {
+            // Validate argument count: need match expression and at least one arm
+            if args.len() < 2 {
                 return Err(Diagnostic::syntax(
-                    "if expects 3 arguments: condition then_expr else_expr",
+                    "match expects at least 2 arguments: match_expr and pattern arms",
                 ));
             }
 
-            let condition_expr = &args[0];
-            let then_expr = &args[1];
-            let else_expr = &args[2];
+            // First argument is the expression to match on
+            let match_expr = &args[0];
+            let match_value = match_expr.eval(ctx)?;
 
-            // Evaluate the condition
-            let condition_value = condition_expr.eval(ctx)?;
-
-            // Check that condition is a boolean
-            let condition_result = match condition_value {
+            // Check that the match value is a boolean
+            let match_bool = match match_value {
                 Value::Bool(b) => b,
                 _ => {
-                    return Err(
-                        Diagnostic::type_error(Type::Bool, condition_value.type_of())
-                            .with_span(condition_expr.span()),
-                    );
+                    return Err(Diagnostic::type_error(Type::Bool, match_value.type_of())
+                        .with_span(match_expr.span()));
                 }
             };
 
-            // Evaluate and return the appropriate branch
-            if condition_result {
-                then_expr.eval(ctx)
-            } else {
-                else_expr.eval(ctx)
+            // Remaining arguments are pattern arms
+            // Each arm should be an arrow expression: pattern -> result
+            for arm in &args[1..] {
+                // Each arm should be an arrow expression: pattern -> result
+                if let Expr::Apply(apply) = arm {
+                    // Check if the callee is the -> operator
+                    if let Some(Expr::Op(op)) = apply.callee() {
+                        if op.syntax().text() == "->" {
+                            let arm_args = apply.all_arguments();
+                            if arm_args.len() == 2 {
+                                let pattern = &arm_args[0];
+                                let result_expr = &arm_args[1];
+
+                                // Check if pattern is a boolean literal
+                                if let Expr::Ident(ident) = pattern {
+                                    let pattern_text = ident.syntax().text().to_string();
+                                    let matches = match pattern_text.as_str() {
+                                        "true" => match_bool,
+                                        "false" => !match_bool,
+                                        _ => {
+                                            return Err(Diagnostic::syntax(format!(
+                                                "match pattern must be 'true' or 'false', got '{}'",
+                                                pattern_text
+                                            ))
+                                            .with_span(pattern.span()));
+                                        }
+                                    };
+
+                                    if matches {
+                                        return result_expr.eval(ctx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
+
+            // No pattern matched
+            Err(
+                Diagnostic::syntax("match expression did not match any pattern")
+                    .with_span(match_expr.span()),
+            )
         },
     }
 }

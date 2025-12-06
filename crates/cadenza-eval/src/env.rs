@@ -6,8 +6,8 @@
 use crate::{
     eval::{
         builtin_add, builtin_assert, builtin_assign, builtin_block, builtin_div, builtin_eq,
-        builtin_field_access, builtin_fn, builtin_gt, builtin_gte, builtin_if, builtin_let,
-        builtin_list, builtin_lt, builtin_lte, builtin_measure, builtin_mul, builtin_ne,
+        builtin_field_access, builtin_fn, builtin_gt, builtin_gte, builtin_let, builtin_list,
+        builtin_lt, builtin_lte, builtin_match, builtin_measure, builtin_mul, builtin_ne,
         builtin_pipeline, builtin_record, builtin_sub, builtin_typeof,
     },
     interner::InternedString,
@@ -96,7 +96,7 @@ impl Env {
     /// - `let` - Variable declaration macro
     /// - `=` - Assignment macro
     /// - `fn` - Function definition macro
-    /// - `if` - Conditional expression macro
+    /// - `match` - Pattern matching macro for booleans
     /// - `assert` - Assertion macro for runtime checks
     /// - `typeof` - Type query macro (returns type as string)
     /// - `measure` - Unit definition macro for dimensional analysis
@@ -113,7 +113,7 @@ impl Env {
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
         let fn_id: InternedString = "fn".into();
-        let if_id: InternedString = "if".into();
+        let match_id: InternedString = "match".into();
         let assert_id: InternedString = "assert".into();
         let typeof_id: InternedString = "typeof".into();
         let measure_id: InternedString = "measure".into();
@@ -125,7 +125,7 @@ impl Env {
         self.define(let_id, Value::BuiltinMacro(builtin_let()));
         self.define(assign_id, Value::BuiltinMacro(builtin_assign()));
         self.define(fn_id, Value::BuiltinMacro(builtin_fn()));
-        self.define(if_id, Value::BuiltinMacro(builtin_if()));
+        self.define(match_id, Value::BuiltinMacro(builtin_match()));
         self.define(assert_id, Value::BuiltinMacro(builtin_assert()));
         self.define(typeof_id, Value::BuiltinMacro(builtin_typeof()));
         self.define(measure_id, Value::BuiltinMacro(builtin_measure()));

@@ -1,24 +1,24 @@
-# Test simple if expression
+# Test match expression
 
-# Basic true condition
-let result1 = if true 42 0
+# Basic true pattern - single line syntax
+let result1 = (match true (true -> 42) (false -> 0))
 assert result1 == 42
 
-# Basic false condition
-let result2 = if false 42 0
+# Basic false pattern
+let result2 = (match false (true -> 42) (false -> 0))
 assert result2 == 0
 
-# If with comparison
+# Match with comparison
 let x = 5
-let result3 = if x > 0 "positive" "negative"
+let result3 = (match x > 0 (true -> "positive") (false -> "negative"))
 assert result3 == "positive"
 
-# If with comparison (false case)
+# Match with comparison (false case)
 let y = -3
-let result4 = if y > 0 "positive" "negative"
+let result4 = (match y > 0 (true -> "positive") (false -> "negative"))
 assert result4 == "negative"
 
-# Nested if expressions
+# Nested match expressions
 let z = 10
-let result5 = if z > 5 (if z > 15 "very large" "large") "small"
+let result5 = (match z > 5 (true -> (match z > 15 (true -> "very large") (false -> "large"))) (false -> "small"))
 assert result5 == "large"
