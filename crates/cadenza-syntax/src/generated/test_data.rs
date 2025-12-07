@@ -2729,6 +2729,46 @@ mod invalid_parse {
             );
         }
     }
+    mod index_trailing_comma {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_index_trailing_comma_cst",
+                t::cst_no_assert("arr[1,]\n"),
+                "arr[1,]\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_index_trailing_comma_ast",
+                t::ast_no_assert("arr[1,]\n"),
+                "arr[1,]\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_index_trailing_comma_lex",
+                t::lex("arr[1,]\n"),
+                "arr[1,]\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("arr[1,]\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_index_trailing_comma_errors",
+                errors,
+                "arr[1,]\n"
+            );
+        }
+    }
     mod error_trailing_operator {
         use super::*;
         #[test]

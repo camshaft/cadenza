@@ -289,6 +289,16 @@ impl Tokens {
         w!("    }}");
         w!("");
 
+        // Generate array_index_binding_power method
+        // Array indexing should have the same precedence as path access (highest)
+        let (path_left, _path_right) = InfixBindingPower::PathAccess.binding_power();
+        w!("    /// Returns the left binding power for array indexing");
+        w!("    /// Array indexing has the same precedence as path access (::)");
+        w!("    pub const fn array_index_binding_power() -> u8 {{");
+        w!("        {path_left}");
+        w!("    }}");
+        w!("");
+
         // Generate is_infix method
         w!("    /// Returns true if this token kind has infix binding power");
         w!("    pub const fn is_infix(self) -> bool {{");

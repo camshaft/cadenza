@@ -734,6 +734,12 @@ impl Kind {
         (6, 7)
     }
 
+    /// Returns the left binding power for array indexing
+    /// Array indexing has the same precedence as path access (::)
+    pub const fn array_index_binding_power() -> u8 {
+        32
+    }
+
     /// Returns true if this token kind has infix binding power
     pub const fn is_infix(self) -> bool {
         self.infix_binding_power().is_some()

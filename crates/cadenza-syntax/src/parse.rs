@@ -134,7 +134,7 @@ impl<'src> Parser<'src> {
                 // Only treat as indexing if there's no whitespace before '['
                 if !has_whitespace_before {
                     // Array indexing binding power (same as PathAccess)
-                    let l_bp = 34;
+                    let l_bp = Kind::array_index_binding_power();
 
                     if l_bp < min_bp {
                         marker.finish(self);
