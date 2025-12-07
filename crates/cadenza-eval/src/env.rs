@@ -5,9 +5,9 @@
 
 use crate::{
     eval::{
-        builtin_add, builtin_div, builtin_eq, builtin_field_access, builtin_fn, builtin_gt,
-        builtin_gte, builtin_index, builtin_lt, builtin_lte, builtin_match, builtin_measure,
-        builtin_mul, builtin_ne, builtin_pipeline, builtin_record, builtin_sub,
+        builtin_add, builtin_div, builtin_eq, builtin_gt,
+        builtin_gte, builtin_lt, builtin_lte, builtin_mul,
+        builtin_ne, builtin_sub,
     },
     interner::InternedString,
     map::Map,
@@ -130,8 +130,11 @@ impl Env {
             assign_id,
             Value::SpecialForm(special_form::assign_form::get()),
         );
-        self.define(fn_id, Value::BuiltinMacro(builtin_fn()));
-        self.define(match_id, Value::BuiltinMacro(builtin_match()));
+        self.define(fn_id, Value::SpecialForm(special_form::fn_form::get()));
+        self.define(
+            match_id,
+            Value::SpecialForm(special_form::match_form::get()),
+        );
         self.define(
             assert_id,
             Value::SpecialForm(special_form::assert_form::get()),
@@ -140,15 +143,27 @@ impl Env {
             typeof_id,
             Value::SpecialForm(special_form::typeof_form::get()),
         );
-        self.define(measure_id, Value::BuiltinMacro(builtin_measure()));
-        self.define(pipeline_id, Value::BuiltinMacro(builtin_pipeline()));
+        self.define(
+            measure_id,
+            Value::SpecialForm(special_form::measure_form::get()),
+        );
+        self.define(
+            pipeline_id,
+            Value::SpecialForm(special_form::pipeline_form::get()),
+        );
         self.define(
             block_id,
             Value::SpecialForm(special_form::block_form::get()),
         );
         self.define(list_id, Value::SpecialForm(special_form::list_form::get()));
-        self.define(record_id, Value::BuiltinMacro(builtin_record()));
-        self.define(index_id, Value::BuiltinMacro(builtin_index()));
+        self.define(
+            record_id,
+            Value::SpecialForm(special_form::record_form::get()),
+        );
+        self.define(
+            index_id,
+            Value::SpecialForm(special_form::index_form::get()),
+        );
 
         // Arithmetic operators
         let add_id: InternedString = "+".into();
@@ -184,7 +199,10 @@ impl Env {
 
         // Field access operator
         let dot_id: InternedString = ".".into();
-        self.define(dot_id, Value::BuiltinMacro(builtin_field_access()));
+        self.define(
+            dot_id,
+            Value::SpecialForm(special_form::field_access_form::get()),
+        );
     }
 
     /// Pushes a new empty scope onto the stack.
