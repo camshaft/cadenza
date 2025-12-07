@@ -238,8 +238,8 @@ impl IrGenerator {
                 (IrConst::Float(value), Type::Float)
             }
             LiteralValue::String(s) => {
-                let text = s.syntax().text().to_string();
-                (IrConst::String(InternedString::new(&text)), Type::String)
+                let text = s.syntax().text().interned();
+                (IrConst::String(text), Type::String)
             }
             LiteralValue::StringWithEscape(_) => {
                 // For now, treat escaped strings as regular strings
@@ -259,8 +259,7 @@ impl IrGenerator {
         ident: &cadenza_syntax::ast::Ident,
         ctx: &IrGenContext,
     ) -> Result<ValueId> {
-        let text = ident.syntax().text().to_string();
-        let name = InternedString::new(&text);
+        let name = ident.syntax().text().interned();
         ctx.lookup_var(name).ok_or_else(|| {
             Diagnostic::syntax(format!("Undefined variable in IR generation: {}", name))
         })
@@ -323,7 +322,7 @@ impl IrGenerator {
 
         // Handle binary operators
         if let Expr::Op(op) = &callee {
-            let op_text = op.syntax().text().to_string();
+            let op_text = op.syntax().text();
 
             // Check if this is the assignment operator with a let pattern
             if op_text == "=" {
@@ -332,7 +331,7 @@ impl IrGenerator {
                     // Check if LHS is [let, name] pattern
                     if let Expr::Apply(lhs_apply) = &args[0] {
                         if let Some(Expr::Ident(lhs_ident)) = lhs_apply.callee() {
-                            let lhs_text = lhs_ident.syntax().text().to_string();
+                            let lhs_text = lhs_ident.syntax().text();
                             if lhs_text == "let" {
                                 // This is a let binding: let name = value
                                 return self
@@ -375,8 +374,8 @@ impl IrGenerator {
         // Handle macro and function calls by identifier or synthetic
         let func_name_opt = match &callee {
             Expr::Ident(ident) => {
-                let text = ident.syntax().text().to_string();
-                Some(InternedString::new(&text))
+                let name = ident.syntax().text().interned();
+                Some(name)
             }
             Expr::Synthetic(syn) => {
                 let id = syn.identifier();
@@ -438,10 +437,7 @@ impl IrGenerator {
         }
 
         let var_name = match &args[0] {
-            Expr::Ident(ident) => {
-                let text = ident.syntax().text().to_string();
-                InternedString::new(&text)
-            }
+            Expr::Ident(ident) => ident.syntax().text().interned(),
             _ => {
                 return Err(Diagnostic::syntax(
                     "let requires an identifier as variable name",

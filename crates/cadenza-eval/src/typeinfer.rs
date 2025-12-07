@@ -1015,7 +1015,7 @@ impl TypeInferencer {
         ident: &cadenza_syntax::ast::Ident,
         env: &TypeEnv,
     ) -> Result<InferType> {
-        let name = InternedString::new(ident.syntax().text().to_string().as_str());
+        let name = ident.syntax().text().interned();
 
         if let Some(ty) = env.get(name) {
             // Instantiate polymorphic types
@@ -1064,7 +1064,7 @@ impl TypeInferencer {
         // Operators are looked up as identifiers in the environment
         // At runtime, they evaluate to Symbol values, but for type inference
         // we look up their registered type (e.g., Integer -> Integer -> Integer for +)
-        let name = InternedString::new(op.syntax().text().to_string().as_str());
+        let name = op.syntax().text().interned();
 
         if let Some(ty) = env.get(name) {
             // Instantiate polymorphic types

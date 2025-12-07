@@ -430,7 +430,8 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
             }
             cadenza_tree::SyntaxElement::Token(token) => {
-                self.builder.token(token.kind().into(), token.text().as_str());
+                self.builder
+                    .token(token.kind().into(), token.text().as_str());
             }
         }
     }

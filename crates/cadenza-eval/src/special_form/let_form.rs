@@ -101,10 +101,7 @@ fn ir_let(
 
     // Extract the variable name from the identifier
     let var_name = match &args[0] {
-        Expr::Ident(ident) => {
-            let text = ident.syntax().text().to_string();
-            InternedString::new(&text)
-        }
+        Expr::Ident(ident) => ident.syntax().text().interned(),
         _ => {
             return Err(Diagnostic::syntax(
                 "let requires an identifier as variable name",

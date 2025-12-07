@@ -78,14 +78,14 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
                         // Check if pattern is a boolean literal
                         if let Expr::Ident(ident) = pattern {
-                            let pattern_text = ident.syntax().text().to_string();
+                            let pattern_text = ident.syntax().text();
                             let matches = match pattern_text.as_str() {
                                 "true" => match_bool,
                                 "false" => !match_bool,
                                 _ => {
                                     return Err(Diagnostic::syntax(format!(
                                         "match pattern must be 'true' or 'false', got '{}'",
-                                        pattern_text
+                                        pattern_text.as_str()
                                     ))
                                     .with_span(pattern.span()));
                                 }

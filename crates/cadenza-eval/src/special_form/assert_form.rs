@@ -68,7 +68,7 @@ fn eval_assert(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     // If condition is false, create assertion failure
     if !condition_result {
         // Get the condition expression text for error message
-        let condition_text = condition_expr.syntax().text().to_string();
+        let condition_text = condition_expr.syntax().text();
 
         // Build the error message
         let message = if args.len() == 2 {
@@ -76,7 +76,7 @@ fn eval_assert(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
             let msg_expr = &args[1];
             let msg_value = msg_expr.eval(ctx)?;
             match msg_value {
-                Value::String(s) => format!("{}\n  condition: {}", s, condition_text),
+                Value::String(s) => format!("{}\n  condition: {}", s, condition_text.as_str()),
                 _ => {
                     return Err(Diagnostic::type_error(Type::String, msg_value.type_of())
                         .with_span(msg_expr.span()));
@@ -84,7 +84,7 @@ fn eval_assert(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
             }
         } else {
             // No custom message, add descriptive prefix
-            format!("Assertion failed: {}", condition_text)
+            format!("Assertion failed: {}", condition_text.as_str())
         };
 
         return Err(Diagnostic::assertion_failed(message).with_span(condition_expr.span()));

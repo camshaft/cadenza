@@ -17,7 +17,8 @@ impl SyntaxText {
     }
 
     /// Create text from a string slice by interning it.
-    pub fn from_str(s: &str) -> Self {
+    #[inline]
+    fn new_interned(s: &str) -> Self {
         Self(InternedString::new(s))
     }
 
@@ -40,7 +41,7 @@ impl SyntaxText {
     pub fn to_cow(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.as_str())
     }
-    
+
     /// Get the underlying interned string.
     pub fn interned(&self) -> InternedString {
         self.0
@@ -69,13 +70,13 @@ impl fmt::Debug for SyntaxText {
 
 impl From<&str> for SyntaxText {
     fn from(s: &str) -> Self {
-        Self::from_str(s)
+        Self::new_interned(s)
     }
 }
 
 impl From<String> for SyntaxText {
     fn from(s: String) -> Self {
-        Self::from_str(&s)
+        Self::new_interned(&s)
     }
 }
 
