@@ -27,12 +27,22 @@ fn eval_and(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         return Err(Diagnostic::arity(2, args.len()));
     }
 
+    // Evaluate left operand first
     let lhs = args[0].eval(ctx)?;
-    let rhs = args[1].eval(ctx)?;
 
-    match (&lhs, &rhs) {
-        (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
-        (Value::Bool(_), _) => Err(Diagnostic::type_error(Type::Bool, rhs.type_of())),
+    match lhs {
+        Value::Bool(false) => {
+            // Short-circuit: if left is false, don't evaluate right
+            Ok(Value::Bool(false))
+        }
+        Value::Bool(true) => {
+            // Left is true, need to evaluate right
+            let rhs = args[1].eval(ctx)?;
+            match rhs {
+                Value::Bool(b) => Ok(Value::Bool(b)),
+                _ => Err(Diagnostic::type_error(Type::Bool, rhs.type_of())),
+            }
+        }
         _ => Err(Diagnostic::type_error(Type::Bool, lhs.type_of())),
     }
 }
