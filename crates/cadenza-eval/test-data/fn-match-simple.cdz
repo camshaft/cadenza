@@ -1,0 +1,14 @@
+# Test function with match expression
+
+# Function that returns different values based on boolean condition
+fn sign_bool x =
+    match x
+        (true -> 1)
+        (false -> -1)
+
+# Test the function
+let result1 = sign_bool true
+assert result1 == 1
+
+let result2 = sign_bool false
+assert result2 == -1

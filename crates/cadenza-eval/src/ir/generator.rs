@@ -7,7 +7,8 @@
 //! we work with Values rather than AST nodes, making the transformation simpler.
 
 use super::{
-    BinOp as IrBinOp, BlockBuilder, FunctionId, IrBuilder, IrConst, SourceLocation, ValueId,
+    BinOp as IrBinOp, BlockBuilder, BlockId, FunctionBuilder, FunctionId, IrBuilder, IrConst,
+    SourceLocation, ValueId,
 };
 use crate::{
     interner::InternedString,
@@ -151,13 +152,10 @@ impl IrGenerator {
         // Infer the return type by inferring the body expression
         let return_ty = self.infer_concrete_type(&func.body, &ctx);
 
-        let mut func_builder = self.builder.function(name, param_types.clone(), return_ty);
+        let mut func_builder = self.builder.function(name, param_types.clone(), return_ty.clone());
         // Register the function early so recursive calls can find it
         let func_id = func_builder.id();
         self.functions.insert(name, func_id);
-
-        // Create the entry block
-        let mut block = func_builder.block();
 
         // Reset context for IR generation (parameters get bound as SSA values)
         let mut ctx = IrGenContext::new();
@@ -169,18 +167,178 @@ impl IrGenerator {
             ctx.variables.insert(*param_name, ValueId(i as u32));
         }
 
-        // Generate IR for the function body
-        let result = self.gen_expr(&func.body, &mut block, &mut ctx)?;
-
-        // Return the result
-        let (block_inst, next_val) = block.ret(Some(result), self.dummy_source());
-        func_builder.add_block(block_inst, next_val);
+        // Check if the body is a control flow expression (match)
+        if self.is_control_flow_expr(&func.body) {
+            // Generate multi-block control flow
+            self.gen_function_with_control_flow(&mut func_builder, &func.body, &mut ctx, return_ty)?;
+        } else {
+            // Simple single-block generation
+            let mut block = func_builder.block();
+            let result = self.gen_expr(&func.body, &mut block, &mut ctx)?;
+            let (block_inst, next_val) = block.ret(Some(result), self.dummy_source());
+            func_builder.add_block(block_inst, next_val);
+        }
 
         // Build the function
         let ir_func = func_builder.build();
         self.builder.add_function(ir_func);
 
         Ok(func_id)
+    }
+
+    /// Check if an expression requires control flow (multiple blocks).
+    fn is_control_flow_expr(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Apply(apply) => {
+                if let Some(callee) = apply.callee() {
+                    match callee {
+                        Expr::Ident(ident) => {
+                            let text = ident.syntax().text().to_string();
+                            if text == "match" {
+                                return true;
+                            }
+                        }
+                        Expr::Synthetic(syn) => {
+                            // If it's a __block__, check the expressions inside
+                            if syn.identifier() == "__block__" {
+                                for arg in apply.all_arguments() {
+                                    if self.is_control_flow_expr(&arg) {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Generate IR for a function body that contains control flow.
+    fn gen_function_with_control_flow(
+        &mut self,
+        func_builder: &mut FunctionBuilder,
+        body: &Expr,
+        ctx: &mut IrGenContext,
+        _return_ty: Type,
+    ) -> Result<(), String> {
+        // For now, only support match expressions at the top level (or inside __block__)
+        if let Expr::Apply(apply) = body {
+            if let Some(Expr::Ident(ident)) = apply.callee() {
+                let text = ident.syntax().text().to_string();
+                if text == "match" {
+                    return self.gen_match_control_flow(func_builder, apply, ctx, _return_ty);
+                }
+            } else if let Some(Expr::Synthetic(syn)) = apply.callee() {
+                // If it's a __block__, find the match expression inside
+                if syn.identifier() == "__block__" {
+                    for arg in apply.all_arguments() {
+                        if let Expr::Apply(inner_apply) = arg {
+                            if let Some(Expr::Ident(inner_ident)) = inner_apply.callee() {
+                                if inner_ident.syntax().text().to_string() == "match" {
+                                    return self.gen_match_control_flow(func_builder, &inner_apply, ctx, _return_ty);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Err("Unsupported control flow expression in function body".to_string())
+    }
+
+    /// Generate IR for a match expression with control flow.
+    ///
+    /// Creates the following structure:
+    /// - Entry block: evaluate condition, branch
+    /// - Then block: evaluate true case, return
+    /// - Else block: evaluate false case, return
+    fn gen_match_control_flow(
+        &mut self,
+        func_builder: &mut FunctionBuilder,
+        apply: &cadenza_syntax::ast::Apply,
+        ctx: &mut IrGenContext,
+        _return_ty: Type,
+    ) -> Result<(), String> {
+        let args = apply.all_arguments();
+        
+        // Match expects: condition, (true -> then_expr), (false -> else_expr)
+        if args.len() < 3 {
+            return Err("match requires at least 3 arguments: condition and two arms".to_string());
+        }
+
+        let cond_expr = &args[0];
+        
+        // Parse the arms - each should be (true/false -> expr)
+        // Clone the expressions we need to avoid lifetime issues
+        let mut true_expr: Option<Expr> = None;
+        let mut false_expr: Option<Expr> = None;
+        
+        for arm in &args[1..] {
+            if let Expr::Apply(arm_apply) = arm {
+                if let Some(Expr::Op(op)) = arm_apply.callee() {
+                    if op.syntax().text() == "->" {
+                        let arm_args = arm_apply.all_arguments();
+                        if arm_args.len() == 2 {
+                            if let Expr::Ident(pattern_ident) = &arm_args[0] {
+                                let pattern = pattern_ident.syntax().text().to_string();
+                                match pattern.as_str() {
+                                    "true" => true_expr = Some(arm_args[1].clone()),
+                                    "false" => false_expr = Some(arm_args[1].clone()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        let true_expr = true_expr.ok_or("match missing true arm")?;
+        let false_expr = false_expr.ok_or("match missing false arm")?;
+
+        // Create entry block and evaluate condition
+        let mut entry_block = func_builder.block();
+        let cond_value = self.gen_expr(cond_expr, &mut entry_block, ctx)?;
+        
+        // Allocate block IDs for then and else blocks
+        let then_block_id = BlockId(func_builder.next_block_id);
+        let else_block_id = BlockId(func_builder.next_block_id + 1);
+        
+        // Complete entry block with branch
+        let (entry_block_ir, next_val) = entry_block.branch(
+            cond_value,
+            then_block_id,
+            else_block_id,
+            self.dummy_source(),
+        );
+        func_builder.add_block(entry_block_ir, next_val);
+        
+        // Create then block
+        let mut then_block = func_builder.block();
+        let then_value = self.gen_expr(&true_expr, &mut then_block, ctx)?;
+        
+        // Then block returns directly
+        let (then_block_ir, next_val) = then_block.ret(Some(then_value), self.dummy_source());
+        func_builder.add_block(then_block_ir, next_val);
+        
+        // Create else block
+        let mut else_block = func_builder.block();
+        let else_value = self.gen_expr(&false_expr, &mut else_block, ctx)?;
+        
+        // Else block also returns directly
+        let (else_block_ir, _next_val) = else_block.ret(Some(else_value), self.dummy_source());
+        func_builder.add_block(else_block_ir, _next_val);
+        
+        // Note: We're not creating a merge block with phi nodes yet.
+        // That would be needed if we want to use the result of the match expression
+        // in further computation. For now, each branch returns directly.
+        
+        Ok(())
     }
 
     /// Generate IR for an expression.
@@ -296,6 +454,21 @@ impl IrGenerator {
 
             // Get arguments
             let args = apply.all_arguments();
+            
+            // Check if this is a unary minus (negation)
+            if op_text == "-" && args.len() == 1 {
+                // Generate IR for the operand
+                let operand = self.gen_expr(&args[0], block, ctx)?;
+                
+                // For negation, assume the result type is Integer if we can't infer better
+                // TODO: Improve type inference for unary operations
+                let inferred_ty = Type::Integer;
+                
+                // Emit unary negation
+                use super::UnOp;
+                return Ok(block.unop(UnOp::Neg, operand, inferred_ty, source));
+            }
+            
             if args.len() != 2 {
                 return Err(format!(
                     "Binary operator {} expects 2 arguments, got {}",
@@ -337,6 +510,10 @@ impl IrGenerator {
                 return self.gen_block(apply, block, ctx);
             } else if func_name_str == "__list__" {
                 return self.gen_list(apply, block, ctx, source);
+            } else if func_name_str == "match" {
+                // Match expressions require control flow which isn't supported
+                // in the current single-block expression generation
+                return Err("match expressions not yet supported in IR generation - requires multi-block control flow".to_string());
             }
 
             // Look up the function ID

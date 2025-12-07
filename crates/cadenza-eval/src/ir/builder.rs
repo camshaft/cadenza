@@ -93,7 +93,7 @@ pub struct FunctionBuilder {
     params: Vec<(InternedString, Type)>,
     return_ty: Type,
     blocks: Vec<IrBlock>,
-    next_block_id: u32,
+    pub(crate) next_block_id: u32,
     next_value_id: u32,
 }
 
