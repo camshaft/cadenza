@@ -1,0 +1,41 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "get_array[0]\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 9,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 9,
+            end: 10,
+        },
+        kind: LBracket,
+    },
+    Token {
+        span: Span {
+            start: 10,
+            end: 11,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 11,
+            end: 12,
+        },
+        kind: RBracket,
+    },
+    Token {
+        span: Span {
+            start: 12,
+            end: 13,
+        },
+        kind: Newline,
+    },
+]

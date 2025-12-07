@@ -17,6 +17,7 @@ The parser implements most core syntax features:
 - Prefix operators (`@`, `!`, `~`, `$`, `...`)
 - Postfix operators (`?`, `|?`)
 - Array literals (`[1, 2, 3]`)
+- Array indexing (`arr[0]`) with whitespace-based disambiguation from array literals
 - Record literals with field assignments (`{ x = 1 }`)
 - Parenthesized expressions
 - Indentation-based blocks
@@ -31,11 +32,10 @@ The parser implements most core syntax features:
   - Invalid tokens at expression start create error nodes (closing delimiters, unexpected punctuation)
   - Trailing operators properly handled (e.g., `a +` creates error for missing RHS)
   - Multi-line error recovery works between statements
-  - 15 comprehensive negative test files in `invalid-parse/`
+  - 16 comprehensive negative test files in `invalid-parse/`
   - Note: Operators can be used as values (e.g., `+` alone is valid), following keyword-less design
 
 ❌ **Not Implemented:**
-- Array indexing (`arr[0]`) - can use whitespace to distinguish from array literals
 - Quote/unquote operators - not high priority, can use `quote` and `unquote` as identifiers
 - Tuples vs grouping distinction
 - Prefix negation (`-x`) - intentionally removed due to ambiguity
@@ -109,18 +109,27 @@ The parser implements most core syntax features:
 
 ---
 
-### 4. Array Indexing ❌ NOT IMPLEMENTED
+### 4. Array Indexing ✅ COMPLETE
 
-**Status:** No postfix bracket handling.
+**Status:** Fully implemented with whitespace-based disambiguation.
 
-**What's Needed:**
-1. Add `LBracket` as postfix operator in binding power system
-2. Parse expression inside brackets as index
-3. Represent as `Apply(__index__, [array, index])`
-4. Handle chained indexing: `arr[0][1]`
-5. Handle complex expressions: `arr[i + 1]`
+**Working:**
+- Simple indexing: `arr[0]` → `[__index__, arr, 0]`
+- Variable indexing: `arr[i]` → `[__index__, arr, i]`
+- Complex expressions: `arr[i + 1]` → `[__index__, arr, [+, i, 1]]`
+- Chained indexing: `matrix[0][1]` → `[__index__, [__index__, matrix, 0], 1]`
+- After function calls: `get_array[0]` → `[__index__, [get_array], 0]`
+- Array literal indexing: `[1, 2, 3][0]` → `[__index__, [__list__, 1, 2, 3], 0]`
+- Whitespace distinction: `arr[0]` (indexing) vs `arr [0]` (function application)
 
-**Design Solution:** Use whitespace to distinguish - `arr[0]` (no space) is indexing, `arr [0]` (with space) is function application with array literal.
+**Implementation:**
+- `LBracket` detected before skipping trivia to determine intent
+- No whitespace before `[` → array indexing with binding power 34
+- Whitespace before `[` → function application with array literal
+- Represented as `Apply(__index__, [array, index])`
+- Uses `BracketMarker` to handle bracket matching and error recovery
+
+**Test Files:** `index-*.cdz` in test-data/
 
 **References:** `PARSER_ISSUES.md` Issue 4
 
@@ -423,7 +432,7 @@ let middle = ?substring 0 $0 10  # With holes
 Based on dependencies, design decisions, and common usage:
 
 1. ~~**Error Recovery Improvements**~~ ✅ **COMPLETE** - Comprehensive error handling with 16 negative tests
-2. **Array Indexing** - Use whitespace to distinguish from literals
+2. ~~**Array Indexing**~~ ✅ **COMPLETE** - Whitespace-based disambiguation working with 7 test cases
 3. **Tuples** - Foundation for destructuring
 4. **If/Else or Cond** - Decide between parser specialization vs match-style
 5. **Functions/Closures** - Implement with decided syntax (bare arrow for closures, curried params)
@@ -442,11 +451,11 @@ Based on dependencies, design decisions, and common usage:
 - ✅ **String Interpolation:** JS-style `${name}`, reserves `:` for type annotations, escape with `\${`
 - ✅ **For Loop Syntax:** `for x <- collection` (using `<-` instead of `in`)
 - ✅ **Records:** All working, marker propagation issue resolved
+- ✅ **Array Indexing:** Whitespace-based disambiguation works perfectly
 
 **Still Needed:**
 - ⚠️ **If/Else:** Parser specialization vs `cond` match-style syntax
 - ⚠️ **Partial Application:** Need alternative symbol to `&`
-- ⚠️ **Array Indexing:** Confirm whitespace-based disambiguation works
 - ⚠️ **Quote/Unquote:** Low priority - can use `quote`/`unquote` identifiers
 
 ## Technical Debt
@@ -476,14 +485,15 @@ Based on dependencies, design decisions, and common usage:
 
 ## Test Coverage
 
-**Test Data Files:** 330+ tests in `test-data/` directory
+**Test Data Files:** 337+ tests in `test-data/` directory
 
 **Coverage:**
 - ✅ Lexer: All tokens tested
 - ✅ Operators: All implemented operators tested
 - ✅ Arrays: Comprehensive tests including nested, trailing commas, expressions
+- ✅ Array Indexing: 7 tests covering simple, variable, expression, chained, and whitespace disambiguation
 - ✅ Records: All working - empty, shorthand, field assignments, nested, expressions
-- ⚠️ Error cases: 8 negative tests in `invalid-parse/` (could expand)
+- ✅ Error cases: 16 negative tests in `invalid-parse/`
 - ❌ Missing features: No tests for unimplemented features
 
 ## References

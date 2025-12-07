@@ -6,7 +6,7 @@
 use crate::{
     eval::{
         builtin_add, builtin_div, builtin_eq, builtin_field_access, builtin_fn, builtin_gt,
-        builtin_gte, builtin_lt, builtin_lte, builtin_match, builtin_measure, builtin_mul,
+        builtin_gte, builtin_index, builtin_lt, builtin_lte, builtin_match, builtin_measure, builtin_mul,
         builtin_ne, builtin_pipeline, builtin_record, builtin_sub,
     },
     interner::InternedString,
@@ -80,6 +80,7 @@ impl Env {
     /// - `__block__` - Block expression macro (automatically emitted by parser)
     /// - `__list__` - List literal macro (automatically emitted by parser)
     /// - `__record__` - Record literal macro (automatically emitted by parser)
+    /// - `__index__` - Array indexing macro (automatically emitted by parser)
     /// - Arithmetic operators: `+`, `-`, `*`, `/`
     /// - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
     ///
@@ -104,6 +105,7 @@ impl Env {
     /// - `__block__` - Block expression macro (automatically emitted by parser)
     /// - `__list__` - List literal macro (automatically emitted by parser)
     /// - `__record__` - Record literal macro (automatically emitted by parser)
+    /// - `__index__` - Array indexing macro (automatically emitted by parser)
     /// - Arithmetic operators: `+`, `-`, `*`, `/`
     /// - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
     ///
@@ -121,6 +123,7 @@ impl Env {
         let block_id: InternedString = "__block__".into();
         let list_id: InternedString = "__list__".into();
         let record_id: InternedString = "__record__".into();
+        let index_id: InternedString = "__index__".into();
 
         self.define(let_id, Value::SpecialForm(special_form::let_form::get()));
         self.define(
@@ -145,6 +148,7 @@ impl Env {
         );
         self.define(list_id, Value::SpecialForm(special_form::list_form::get()));
         self.define(record_id, Value::BuiltinMacro(builtin_record()));
+        self.define(index_id, Value::BuiltinMacro(builtin_index()));
 
         // Arithmetic operators
         let add_id: InternedString = "+".into();

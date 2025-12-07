@@ -528,6 +528,21 @@ mod lit_float {
         s!("lit_float_ast", t::ast("3.14"), "3.14");
     }
 }
+mod index_variable {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("index_variable_lex", t::lex("arr[i]\n"), "arr[i]\n");
+    }
+    #[test]
+    fn cst() {
+        s!("index_variable_cst", t::cst("arr[i]\n"), "arr[i]\n");
+    }
+    #[test]
+    fn ast() {
+        s!("index_variable_ast", t::ast("arr[i]\n"), "arr[i]\n");
+    }
+}
 mod ap_nested {
     use super::*;
     #[test]
@@ -1002,6 +1017,33 @@ mod ident_utf8_greek {
         s!("ident_utf8_greek_ast", t::ast("αβγ\n"), "αβγ\n");
     }
 }
+mod index_vs_apply {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "index_vs_apply_lex",
+            t::lex("arr[0]\narr [0]\n"),
+            "arr[0]\narr [0]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "index_vs_apply_cst",
+            t::cst("arr[0]\narr [0]\n"),
+            "arr[0]\narr [0]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "index_vs_apply_ast",
+            t::ast("arr[0]\narr [0]\n"),
+            "arr[0]\narr [0]\n"
+        );
+    }
+}
 mod record_empty {
     use super::*;
     #[test]
@@ -1015,6 +1057,33 @@ mod record_empty {
     #[test]
     fn ast() {
         s!("record_empty_ast", t::ast("{}\n"), "{}\n");
+    }
+}
+mod index_after_call {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "index_after_call_lex",
+            t::lex("get_array[0]\n"),
+            "get_array[0]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "index_after_call_cst",
+            t::cst("get_array[0]\n"),
+            "get_array[0]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "index_after_call_ast",
+            t::ast("get_array[0]\n"),
+            "get_array[0]\n"
+        );
     }
 }
 mod op_spread_in_list {
@@ -1096,6 +1165,21 @@ mod op_field_after_call {
             t::ast("(get_point x).field\n"),
             "(get_point x).field\n"
         );
+    }
+}
+mod index_expr {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("index_expr_lex", t::lex("arr[i + 1]\n"), "arr[i + 1]\n");
+    }
+    #[test]
+    fn cst() {
+        s!("index_expr_cst", t::cst("arr[i + 1]\n"), "arr[i + 1]\n");
+    }
+    #[test]
+    fn ast() {
+        s!("index_expr_ast", t::ast("arr[i + 1]\n"), "arr[i + 1]\n");
     }
 }
 mod ident_utf8_chinese {
@@ -1473,6 +1557,21 @@ mod op_pipe_then_try {
         );
     }
 }
+mod index_simple {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!("index_simple_lex", t::lex("arr[0]\n"), "arr[0]\n");
+    }
+    #[test]
+    fn cst() {
+        s!("index_simple_cst", t::cst("arr[0]\n"), "arr[0]\n");
+    }
+    #[test]
+    fn ast() {
+        s!("index_simple_ast", t::ast("arr[0]\n"), "arr[0]\n");
+    }
+}
 mod ident_utf8_mixed_greek {
     use super::*;
     #[test]
@@ -1566,6 +1665,33 @@ mod op_pipe {
             "op_pipe_ast",
             t::ast("foo 1 + 2\n|> bar 3\n|> baz 4 * 5\n"),
             "foo 1 + 2\n|> bar 3\n|> baz 4 * 5\n"
+        );
+    }
+}
+mod index_chained {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "index_chained_lex",
+            t::lex("matrix[0][1]\n"),
+            "matrix[0][1]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "index_chained_cst",
+            t::cst("matrix[0][1]\n"),
+            "matrix[0][1]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "index_chained_ast",
+            t::ast("matrix[0][1]\n"),
+            "matrix[0][1]\n"
         );
     }
 }
@@ -2094,6 +2220,33 @@ mod array_nested {
         );
     }
 }
+mod index_literal {
+    use super::*;
+    #[test]
+    fn lex() {
+        s!(
+            "index_literal_lex",
+            t::lex("[1, 2, 3][0]\n"),
+            "[1, 2, 3][0]\n"
+        );
+    }
+    #[test]
+    fn cst() {
+        s!(
+            "index_literal_cst",
+            t::cst("[1, 2, 3][0]\n"),
+            "[1, 2, 3][0]\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "index_literal_ast",
+            t::ast("[1, 2, 3][0]\n"),
+            "[1, 2, 3][0]\n"
+        );
+    }
+}
 mod ws_paren {
     use super::*;
     #[test]
@@ -2573,6 +2726,46 @@ mod invalid_parse {
                 "invalid_parse_record_missing_brace_comma_errors",
                 errors,
                 "{ a = 1,\nfoo\n"
+            );
+        }
+    }
+    mod index_trailing_comma {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_index_trailing_comma_cst",
+                t::cst_no_assert("arr[1,]\n"),
+                "arr[1,]\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_index_trailing_comma_ast",
+                t::ast_no_assert("arr[1,]\n"),
+                "arr[1,]\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_index_trailing_comma_lex",
+                t::lex("arr[1,]\n"),
+                "arr[1,]\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("arr[1,]\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_index_trailing_comma_errors",
+                errors,
+                "arr[1,]\n"
             );
         }
     }

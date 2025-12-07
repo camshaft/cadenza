@@ -11,7 +11,7 @@
 use crate::{
     compiler::Compiler,
     context::{Eval, EvalContext},
-    diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
+    diagnostic::{BoxedDiagnosticExt, Diagnostic, DiagnosticKind, Result},
     env::Env,
     interner::InternedString,
     value::{BuiltinFn, BuiltinMacro, Type, Value},
@@ -454,7 +454,7 @@ impl Eval for Synthetic {
         let ident = self.identifier();
 
         match ident {
-            "__list__" | "__record__" | "__block__" => {
+            "__list__" | "__record__" | "__block__" | "__index__" => {
                 // These should not appear as standalone expressions
                 // They're always wrapped in Apply nodes
                 Ok(Value::Nil)
@@ -993,6 +993,82 @@ pub fn builtin_record() -> BuiltinMacro {
 
             // Return the record value
             Ok(Value::Record(fields))
+        },
+    }
+}
+
+/// Creates the `__index__` builtin macro for array indexing.
+///
+/// The `__index__` macro evaluates the array and index expressions, then performs array indexing.
+/// It is automatically used by the parser when encountering array indexing syntax `arr[index]`.
+///
+/// Examples:
+/// ```ignore
+/// arr[0]           // Gets the first element of arr
+/// matrix[1][2]     // Gets element at row 1, column 2
+/// [1, 2, 3][0]     // Gets the first element: 1
+/// ```
+///
+/// The parser transforms `arr[0]` into: `[__index__, arr, 0]`
+pub fn builtin_index() -> BuiltinMacro {
+    BuiltinMacro {
+        name: "__index__",
+        signature: Type::function(
+            vec![Type::list(Type::Unknown), Type::Integer],
+            Type::Unknown,
+        ),
+        func: |args, ctx| {
+            if args.len() != 2 {
+                return Err(Diagnostic::syntax(
+                    "index operation requires exactly 2 arguments (array and index)",
+                ));
+            }
+
+            // Evaluate the array expression
+            let array_value = args[0].eval(ctx)?;
+
+            // Evaluate the index expression
+            let index_value = args[1].eval(ctx)?;
+
+            // Extract the index as an integer
+            let index = match index_value {
+                Value::Integer(i) => i,
+                _ => {
+                    return Err(Box::new(Diagnostic::new(
+                        DiagnosticKind::TypeError {
+                            expected: Type::Integer,
+                            actual: index_value.type_of(),
+                        },
+                        None,
+                    )));
+                }
+            };
+
+            // Extract the array
+            match array_value {
+                Value::List(ref elements) => {
+                    // Handle negative indexing (from the end)
+                    let len = elements.len() as i64;
+                    let actual_index = if index < 0 { len + index } else { index };
+
+                    // Check bounds
+                    if actual_index < 0 || actual_index >= len {
+                        return Err(Diagnostic::syntax(format!(
+                            "index out of bounds: index {} is out of range for list of length {}",
+                            index, len
+                        )));
+                    }
+
+                    Ok(elements[actual_index as usize].clone())
+                }
+                _ => Err(Box::new(Diagnostic::new(
+                    DiagnosticKind::TypeError {
+                        expected: Type::list(Type::Unknown),
+                        actual: array_value.type_of(),
+                    },
+                    None,
+                ))),
+            }
         },
     }
 }

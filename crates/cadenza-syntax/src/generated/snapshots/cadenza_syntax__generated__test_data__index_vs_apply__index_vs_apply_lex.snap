@@ -1,0 +1,83 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "arr[0]\narr [0]\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 3,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 3,
+            end: 4,
+        },
+        kind: LBracket,
+    },
+    Token {
+        span: Span {
+            start: 4,
+            end: 5,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 5,
+            end: 6,
+        },
+        kind: RBracket,
+    },
+    Token {
+        span: Span {
+            start: 6,
+            end: 7,
+        },
+        kind: Newline,
+    },
+    Token {
+        span: Span {
+            start: 7,
+            end: 10,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 10,
+            end: 11,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 11,
+            end: 12,
+        },
+        kind: LBracket,
+    },
+    Token {
+        span: Span {
+            start: 12,
+            end: 13,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 13,
+            end: 14,
+        },
+        kind: RBracket,
+    },
+    Token {
+        span: Span {
+            start: 14,
+            end: 15,
+        },
+        kind: Newline,
+    },
+]
