@@ -12,15 +12,21 @@
 //!
 //! ## Integration Pattern
 //!
-//! Currently, special forms must be manually integrated in two places:
+//! Special forms are registered in the evaluator environment in `Env::register_standard_builtins()`.
+//! During IR generation, the IR generator dynamically looks up special forms from the environment
+//! rather than using hardcoded mappings. This makes the system more maintainable and extensible:
+//!
 //! 1. **Environment Registration**: Register the special form in `Env::register_standard_builtins()`
 //!    so it can be looked up and called during evaluation.
-//! 2. **IR Generator Integration**: Add explicit handling in `IrGenerator::gen_apply()` to detect
-//!    the special form by name and call its IR generation logic.
+//! 2. **Dynamic Lookup**: The IR generator (`IrGenerator`) receives an `Env` reference and looks up
+//!    special forms dynamically by name during IR generation.
+//! 3. **Automatic Dispatch**: When an application is encountered, the IR generator checks if the
+//!    callee is a special form in the environment and automatically dispatches to its `ir_fn`.
 //!
-//! This dual registration is temporary and follows the existing pattern for built-in macros like
-//! `__block__` and `__list__`. Future refactoring could introduce a special form registry that
-//! both the environment and IR generator use.
+//! This architecture means adding a new special form only requires:
+//! - Creating the special form module with `eval_fn` and `ir_fn`
+//! - Registering it in `Env::register_standard_builtins()`
+//! - No changes needed to the IR generator!
 
 pub mod add_form;
 pub mod and_form;

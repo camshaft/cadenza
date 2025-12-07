@@ -185,10 +185,11 @@ impl Compiler {
     pub fn generate_ir_for_function(
         &mut self,
         func: &crate::value::UserFunction,
+        env: &crate::env::Env,
     ) -> Option<crate::diagnostic::Result<crate::ir::FunctionId>> {
         self.ir_generator
             .as_mut()
-            .map(|generator| generator.gen_function(func))
+            .map(|generator| generator.gen_function(func, env))
     }
 
     /// Returns a reference to the IR generator, if enabled.

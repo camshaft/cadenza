@@ -12,6 +12,7 @@ use super::{
 };
 use crate::{
     diagnostic::{Diagnostic, Result},
+    env::Env,
     interner::InternedString,
     special_form,
     typeinfer::{InferType, TypeEnv, TypeInferencer},
@@ -23,19 +24,22 @@ use std::collections::HashMap;
 /// Context for IR generation from AST.
 ///
 /// Tracks SSA values, variable bindings, and types during IR generation.
-pub struct IrGenContext {
+pub struct IrGenContext<'a> {
     /// Maps variable names to their SSA value IDs.
     variables: HashMap<InternedString, ValueId>,
     /// Type environment for type inference.
     type_env: TypeEnv,
+    /// Reference to the evaluator environment for looking up special forms.
+    env: &'a Env,
 }
 
-impl IrGenContext {
+impl<'a> IrGenContext<'a> {
     /// Create a new IR generation context.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(env: &'a Env) -> Self {
         Self {
             variables: HashMap::new(),
             type_env: TypeEnv::new(),
+            env,
         }
     }
 
@@ -58,6 +62,11 @@ impl IrGenContext {
     /// Get a mutable reference to the type environment.
     pub fn type_env_mut(&mut self) -> &mut TypeEnv {
         &mut self.type_env
+    }
+
+    /// Get a reference to the evaluator environment.
+    pub fn env(&self) -> &Env {
+        self.env
     }
 }
 
@@ -199,11 +208,11 @@ impl IrGenerator {
     ///
     /// Converts a UserFunction value to an IR function.
     /// Returns the function ID on success.
-    pub fn gen_function(&mut self, func: &UserFunction) -> Result<FunctionId> {
+    pub fn gen_function(&mut self, func: &UserFunction, env: &Env) -> Result<FunctionId> {
         let name = func.name;
 
         // Create a type environment for inference
-        let mut ctx = IrGenContext::new();
+        let mut ctx = IrGenContext::new(env);
 
         // Create type variables for parameters
         let param_types: Vec<(InternedString, Type)> = func
@@ -227,7 +236,7 @@ impl IrGenerator {
         let entry_block = func_builder.block();
 
         // Reset context for IR generation (parameters get bound as SSA values)
-        let mut ctx = IrGenContext::new();
+        let mut ctx = IrGenContext::new(env);
 
         // Bind parameters to their SSA values (v0, v1, ...)
         // Also add them to the type environment
@@ -359,7 +368,7 @@ impl IrGenerator {
     /// Try to generate IR for a special form by name.
     ///
     /// Returns Some(result) if the name matches a known special form, None otherwise.
-    /// This allows dispatching to the special form's IR generation function.
+    /// This dynamically looks up the special form from the environment.
     fn try_gen_special_form(
         &mut self,
         name: &str,
@@ -370,50 +379,31 @@ impl IrGenerator {
     ) -> Option<Result<ValueId>> {
         let args = apply.all_arguments();
 
-        // Create a mutable closure for generating sub-expressions
-        let mut gen_expr_adapter =
-            |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
-                self.gen_expr(expr, block, ctx)
-            };
+        // Look up the name in the environment
+        let name_interned: InternedString = name.into();
+        let value = ctx.env().get(name_interned)?;
 
-        // Dispatch to the appropriate special form
-        let special_form = match name {
-            "let" => special_form::let_form::get(),
-            "=" => special_form::assign_form::get(),
-            "fn" => special_form::fn_form::get(),
-            "__block__" => special_form::block_form::get(),
-            "__list__" => special_form::list_form::get(),
-            "__record__" => special_form::record_form::get(),
-            "__index__" => special_form::index_form::get(),
-            "match" => special_form::match_form::get(),
-            "assert" => special_form::assert_form::get(),
-            "typeof" => special_form::typeof_form::get(),
-            "measure" => special_form::measure_form::get(),
-            "|>" => special_form::pipeline_form::get(),
-            "." => special_form::field_access_form::get(),
-            "+" => special_form::add_form::get(),
-            "-" => special_form::sub_form::get(),
-            "*" => special_form::mul_form::get(),
-            "/" => special_form::div_form::get(),
-            "==" => special_form::eq_form::get(),
-            "!=" => special_form::ne_form::get(),
-            "<" => special_form::lt_form::get(),
-            "<=" => special_form::le_form::get(),
-            ">" => special_form::gt_form::get(),
-            ">=" => special_form::ge_form::get(),
-            "&&" => special_form::and_form::get(),
-            "||" => special_form::or_form::get(),
-            _ => return None, // Not a special form
-        };
+        // Check if it's a special form
+        if let Value::SpecialForm(special_form) = value {
+            // Create a mutable closure for generating sub-expressions
+            let mut gen_expr_adapter =
+                |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+                    self.gen_expr(expr, block, ctx)
+                };
 
-        // Call the special form's IR generation function
-        Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
+            // Call the special form's IR generation function
+            Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
+        } else {
+            // Not a special form
+            None
+        }
     }
 
     /// Try to generate IR for a special form by name (state-based version).
     ///
     /// Returns Some(result) if the name matches a known special form, None otherwise.
     /// This version supports multi-block generation through IrGenState.
+    /// Dynamically looks up the special form from the environment.
     fn try_gen_special_form_with_state(
         &mut self,
         name: &str,
@@ -424,56 +414,37 @@ impl IrGenerator {
     ) -> Option<Result<ValueId>> {
         let args = apply.all_arguments();
 
-        // Only "match" needs multi-block support for now
-        // Other special forms can use the legacy single-block API
-        if name == "match" {
-            // Create a mutable closure for generating sub-expressions with state
+        // Look up the name in the environment
+        let name_interned: InternedString = name.into();
+        let value = ctx.env().get(name_interned)?;
+
+        // Check if it's a special form
+        if let Value::SpecialForm(special_form) = value {
+            // Special handling for "match" which needs multi-block support
+            if name == "match" {
+                // Create a mutable closure for generating sub-expressions with state
+                let mut gen_expr_adapter =
+                    |expr: &Expr, state: &mut IrGenState, ctx: &mut IrGenContext| {
+                        self.gen_expr_with_state(expr, state, ctx)
+                    };
+                
+                return Some(special_form::match_form::ir_match_with_state(
+                    &args, state, ctx, source, &mut gen_expr_adapter,
+                ));
+            }
+
+            // For other special forms, use the single-block API
+            let block = state.current_block();
             let mut gen_expr_adapter =
-                |expr: &Expr, state: &mut IrGenState, ctx: &mut IrGenContext| {
-                    self.gen_expr_with_state(expr, state, ctx)
+                |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+                    self.gen_expr(expr, block, ctx)
                 };
-            
-            return Some(special_form::match_form::ir_match_with_state(
-                &args, state, ctx, source, &mut gen_expr_adapter,
-            ));
+
+            Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
+        } else {
+            // Not a special form
+            None
         }
-
-        // For other special forms, use the single-block API
-        let block = state.current_block();
-        let mut gen_expr_adapter =
-            |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
-                self.gen_expr(expr, block, ctx)
-            };
-
-        let special_form = match name {
-            "let" => special_form::let_form::get(),
-            "=" => special_form::assign_form::get(),
-            "fn" => special_form::fn_form::get(),
-            "__block__" => special_form::block_form::get(),
-            "__list__" => special_form::list_form::get(),
-            "__record__" => special_form::record_form::get(),
-            "__index__" => special_form::index_form::get(),
-            "assert" => special_form::assert_form::get(),
-            "typeof" => special_form::typeof_form::get(),
-            "measure" => special_form::measure_form::get(),
-            "|>" => special_form::pipeline_form::get(),
-            "." => special_form::field_access_form::get(),
-            "+" => special_form::add_form::get(),
-            "-" => special_form::sub_form::get(),
-            "*" => special_form::mul_form::get(),
-            "/" => special_form::div_form::get(),
-            "==" => special_form::eq_form::get(),
-            "!=" => special_form::ne_form::get(),
-            "<" => special_form::lt_form::get(),
-            "<=" => special_form::le_form::get(),
-            ">" => special_form::gt_form::get(),
-            ">=" => special_form::ge_form::get(),
-            "&&" => special_form::and_form::get(),
-            "||" => special_form::or_form::get(),
-            _ => return None, // Not a special form
-        };
-
-        Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
     }
 
     /// Generate IR for an application using IrGenState (state-based version).
@@ -754,6 +725,7 @@ mod tests {
     #[test]
     fn test_gen_function_simple() {
         let mut generator = IrGenerator::new();
+        let env = Env::with_standard_builtins();
 
         // Create a simple function: fn add(a, b) = a + b
         let source = "a + b";
@@ -769,7 +741,7 @@ mod tests {
         };
 
         let func_id = generator
-            .gen_function(&func)
+            .gen_function(&func, &env)
             .expect("Failed to generate IR");
 
         // Build the module and check the output
@@ -792,6 +764,7 @@ mod tests {
     #[test]
     fn test_gen_function_with_literal() {
         let mut generator = IrGenerator::new();
+        let env = Env::with_standard_builtins();
 
         // Create a function that returns a constant: fn get_answer() = 42
         let source = "42";
@@ -807,7 +780,7 @@ mod tests {
         };
 
         let _func_id = generator
-            .gen_function(&func)
+            .gen_function(&func, &env)
             .expect("Failed to generate IR");
 
         let module = generator.build();
@@ -828,6 +801,7 @@ mod tests {
     #[test]
     fn test_gen_function_complex() {
         let mut generator = IrGenerator::new();
+        let env = Env::with_standard_builtins();
 
         // Create a more complex function: fn calc(x, y) = x * 2 + y
         let source = "x * 2 + y";
@@ -843,7 +817,7 @@ mod tests {
         };
 
         let _func_id = generator
-            .gen_function(&func)
+            .gen_function(&func, &env)
             .expect("Failed to generate IR");
 
         let module = generator.build();
@@ -864,6 +838,7 @@ mod tests {
     #[test]
     fn test_gen_function_call_simple() {
         let mut generator = IrGenerator::new();
+        let env = Env::with_standard_builtins();
 
         // First, create a simple helper function: fn double(x) = x + x
         let source = "x + x";
@@ -879,7 +854,7 @@ mod tests {
         };
 
         let _double_id = generator
-            .gen_function(&double_func)
+            .gen_function(&double_func, &env)
             .expect("Failed to generate double function");
 
         // Now create a function that calls double: fn quadruple(y) = double(double(y))
@@ -896,7 +871,7 @@ mod tests {
         };
 
         let _quadruple_id = generator
-            .gen_function(&quadruple_func)
+            .gen_function(&quadruple_func, &env)
             .expect("Failed to generate quadruple function");
 
         let module = generator.build();
@@ -916,6 +891,7 @@ mod tests {
     #[test]
     fn test_gen_function_call_with_args() {
         let mut generator = IrGenerator::new();
+        let env = Env::with_standard_builtins();
 
         // Create a function: fn add(a, b) = a + b
         let source = "a + b";
@@ -931,7 +907,7 @@ mod tests {
         };
 
         let _add_id = generator
-            .gen_function(&add_func)
+            .gen_function(&add_func, &env)
             .expect("Failed to generate add function");
 
         // Create a function that calls add: fn compute(x, y) = add(x * 2, y + 1)
@@ -948,7 +924,7 @@ mod tests {
         };
 
         let _compute_id = generator
-            .gen_function(&compute_func)
+            .gen_function(&compute_func, &env)
             .expect("Failed to generate compute function");
 
         let module = generator.build();
@@ -968,6 +944,7 @@ mod tests {
     #[test]
     fn test_gen_function_call_recursive() {
         let mut generator = IrGenerator::new();
+        let env = Env::with_standard_builtins();
 
         // Create a simple recursive function: fn countdown(n) = countdown(n - 1)
         // (This is an infinite recursion, but that's fine for IR generation testing)
@@ -984,7 +961,7 @@ mod tests {
         };
 
         let _countdown_id = generator
-            .gen_function(&countdown_func)
+            .gen_function(&countdown_func, &env)
             .expect("Failed to generate countdown function");
 
         let module = generator.build();
@@ -1003,6 +980,7 @@ mod tests {
     #[test]
     fn test_gen_function_with_match() {
         let mut generator = IrGenerator::new();
+        let env = Env::with_standard_builtins();
 
         // Create a function with a match expression: fn sign(x) = match x > 0 (true -> 1) (false -> 0)
         let source = "match x > 0 (true -> 1) (false -> 0)";
@@ -1018,7 +996,7 @@ mod tests {
         };
 
         let func_id = generator
-            .gen_function(&func)
+            .gen_function(&func, &env)
             .expect("Failed to generate IR");
 
         // Build the module and check the output

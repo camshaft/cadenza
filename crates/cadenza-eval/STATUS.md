@@ -197,11 +197,13 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    5. Update `IrGenerator::try_gen_special_form()` to dispatch to special form IR generation
    6. Move tests from old location to new module
 
-   **Future Improvement:**
-   - [ ] Look up special forms from the evaluator environment rather than hardcoding the mapping in `try_gen_special_form()`
-     - This would make it easier to maintain and extend the language
-     - It would make IR generation more consistent with the interpreter
-     - The current approach hardcodes operator names in `try_gen_special_form()`, which requires updating both the environment registration and the IR generator dispatch when adding new operators
+   - [x] **Use evaluator environment for special form lookup in IR generation** ✅
+     - Special forms are now dynamically looked up from the evaluator environment instead of hardcoded in `try_gen_special_form()`
+     - `IrGenContext` now holds a reference to `Env` for dynamic lookups
+     - `IrGenerator::gen_function()` accepts an `Env` parameter which is passed through the IR generation pipeline
+     - Removed hardcoded match statements mapping names to special forms
+     - The IR generator is now "dumb" and delegates to special forms for AST traversal
+     - This makes it easier to extend the language and keeps IR generation consistent with evaluation
 
 
 
