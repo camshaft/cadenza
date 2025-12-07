@@ -539,6 +539,8 @@ pub fn builtin_let() -> BuiltinMacro {
     }
 }
 
+/// **DEPRECATED**: Use `special_form::assign_form` instead.
+///
 /// Creates the `=` operator that assigns values or delegates to macros.
 ///
 /// The `=` operator takes two arguments:
@@ -555,6 +557,8 @@ pub fn builtin_let() -> BuiltinMacro {
 /// - `fn add x y = x + y` - Delegates to `fn` with `[add, x, y, x + y]`
 /// - `measure inch = millimeter 25.4` - Delegates to `measure` with `[inch, millimeter 25.4]`
 /// - `x = 50` - Direct reassignment to existing variable `x`
+#[deprecated(note = "Use special_form::assign_form instead")]
+#[allow(dead_code)]
 pub fn builtin_assign() -> BuiltinMacro {
     BuiltinMacro {
         name: "=",

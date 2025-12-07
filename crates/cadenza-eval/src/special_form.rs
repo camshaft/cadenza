@@ -23,6 +23,7 @@
 //! both the environment and IR generator use.
 
 pub mod assert_form;
+pub mod assign_form;
 pub mod block_form;
 pub mod let_form;
 pub mod list_form;

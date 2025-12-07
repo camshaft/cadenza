@@ -5,9 +5,9 @@
 
 use crate::{
     eval::{
-        builtin_add, builtin_assign, builtin_div, builtin_eq, builtin_field_access, builtin_fn,
-        builtin_gt, builtin_gte, builtin_lt, builtin_lte, builtin_match, builtin_measure,
-        builtin_mul, builtin_ne, builtin_pipeline, builtin_record, builtin_sub,
+        builtin_add, builtin_div, builtin_eq, builtin_field_access, builtin_fn, builtin_gt,
+        builtin_gte, builtin_lt, builtin_lte, builtin_match, builtin_measure, builtin_mul,
+        builtin_ne, builtin_pipeline, builtin_record, builtin_sub,
     },
     interner::InternedString,
     map::Map,
@@ -123,7 +123,10 @@ impl Env {
         let record_id: InternedString = "__record__".into();
 
         self.define(let_id, Value::SpecialForm(special_form::let_form::get()));
-        self.define(assign_id, Value::BuiltinMacro(builtin_assign()));
+        self.define(
+            assign_id,
+            Value::SpecialForm(special_form::assign_form::get()),
+        );
         self.define(fn_id, Value::BuiltinMacro(builtin_fn()));
         self.define(match_id, Value::BuiltinMacro(builtin_match()));
         self.define(
@@ -336,8 +339,8 @@ mod tests {
             "Expected `let` to be registered as a SpecialForm"
         );
         assert!(
-            matches!(env.get(assign_id), Some(Value::BuiltinMacro(_))),
-            "Expected `=` to be registered as a BuiltinMacro"
+            matches!(env.get(assign_id), Some(Value::SpecialForm(_))),
+            "Expected `=` to be registered as a SpecialForm"
         );
     }
 
@@ -362,8 +365,8 @@ mod tests {
             "Expected `let` to be registered as a SpecialForm"
         );
         assert!(
-            matches!(env.get(assign_id), Some(Value::BuiltinMacro(_))),
-            "Expected `=` to be registered as a BuiltinMacro"
+            matches!(env.get(assign_id), Some(Value::SpecialForm(_))),
+            "Expected `=` to be registered as a SpecialForm"
         );
     }
 
