@@ -1,5 +1,5 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "t::wat(\"# Test function with match that generates phi nodes\\n\\nfn abs x =\\n    match x > 0\\n        (true -> x)\\n        (false -> 0 - x)\\n\\nabs 5\\nabs (-3)\\n\")"
+expression: "t::wat(\"# Test function with match that generates phi nodes\\n\\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\\n\\nabs 5\\nabs (-3)\\n\")"
 ---
-(module)
+WAT generation error: WASM validation failed: type mismatch: expected i64, found i32 (at offset 0x2f)

@@ -1,5 +1,21 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "t::ir(\"# Test function with match that generates phi nodes\\n\\nfn abs x =\\n    match x > 0\\n        (true -> x)\\n        (false -> 0 - x)\\n\\nabs 5\\nabs (-3)\\n\")"
+expression: "t::ir(\"# Test function with match that generates phi nodes\\n\\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\\n\\nabs 5\\nabs (-3)\\n\")"
 ---
 # IR Module
+
+@t unknown -> unknown
+fn abs x =
+    block block_0 =
+        let v1: integer = const 0
+        let v2: unknown = binop gt v0 v1
+        br v2 block_1 block_2
+    block block_1 =
+        jmp block_3
+    block block_2 =
+        let v3: integer = const 0
+        let v4: unknown = binop sub v3 v0
+        jmp block_3
+    block block_3 =
+        let v5: unknown = phi v0 block_1 v4 block_2
+        ret v5

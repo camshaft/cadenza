@@ -1,9 +1,9 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "# Test function with match that generates phi nodes\n\nfn abs x =\n    match x > 0\n        (true -> x)\n        (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+expression: "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
 ---
 [
-    [=, [[fn, abs], x], [__block__, [[[match, [>, x, 0]], [->, true, x]], [->, false, [-, 0, x]]]]],
+    [=, [[fn, abs], x], [[[match, [>, x, 0]], [->, true, x]], [->, false, [-, 0, x]]]],
     [abs, 5],
     [abs, [-, 3]],
 ]

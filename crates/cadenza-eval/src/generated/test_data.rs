@@ -2733,9 +2733,9 @@ mod fn_match_phi {
         s!(
             "fn_match_phi",
             t::eval_all(
-                "# Test function with match that generates phi nodes\n\nfn abs x =\n    match x > 0\n        (true -> x)\n        (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
             ),
-            "# Test function with match that generates phi nodes\n\nfn abs x =\n    match x > 0\n        (true -> x)\n        (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+            "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
         );
     }
     #[test]
@@ -2743,9 +2743,9 @@ mod fn_match_phi {
         s!(
             "fn_match_phi_ast",
             t::ast(
-                "# Test function with match that generates phi nodes\n\nfn abs x =\n    match x > 0\n        (true -> x)\n        (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
             ),
-            "# Test function with match that generates phi nodes\n\nfn abs x =\n    match x > 0\n        (true -> x)\n        (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+            "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
         );
     }
     #[test]
@@ -2753,7 +2753,7 @@ mod fn_match_phi {
         ss!(
             "fn_match_phi_ir",
             t::ir(
-                "# Test function with match that generates phi nodes\n\nfn abs x =\n    match x > 0\n        (true -> x)\n        (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
             )
         );
     }
@@ -2762,7 +2762,7 @@ mod fn_match_phi {
         ss!(
             "fn_match_phi_wat",
             t::wat(
-                "# Test function with match that generates phi nodes\n\nfn abs x =\n    match x > 0\n        (true -> x)\n        (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
             )
         );
     }
