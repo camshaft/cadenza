@@ -144,7 +144,7 @@ impl Eval for Expr {
                 // Operators as values (for higher-order usage)
                 // Use SyntaxText directly without allocating a String
                 let text = op.syntax().text();
-                let id: InternedString = text.to_string().as_str().into();
+                let id: InternedString = text.interned();
                 Ok(Value::Symbol(id))
             }
             Expr::Synthetic(syn) => syn.eval(ctx),
@@ -162,21 +162,19 @@ impl Eval for Literal {
         match value {
             LiteralValue::Integer(int_val) => {
                 let text = int_val.syntax().text();
-                let text_str = text.to_string();
                 // Remove underscores for parsing
-                let clean = text_str.replace('_', "");
+                let clean = text.as_str().replace('_', "");
                 let n: i64 = clean
                     .parse()
-                    .map_err(|_| Diagnostic::syntax(format!("invalid integer: {text_str}")))?;
+                    .map_err(|_| Diagnostic::syntax(format!("invalid integer: {}", text.as_str())))?;
                 Ok(Value::Integer(n))
             }
             LiteralValue::Float(float_val) => {
                 let text = float_val.syntax().text();
-                let text_str = text.to_string();
-                let clean = text_str.replace('_', "");
+                let clean = text.as_str().replace('_', "");
                 let n: f64 = clean
                     .parse()
-                    .map_err(|_| Diagnostic::syntax(format!("invalid float: {text_str}")))?;
+                    .map_err(|_| Diagnostic::syntax(format!("invalid float: {}", text.as_str())))?;
                 Ok(Value::Float(n))
             }
             LiteralValue::String(str_val) => {
@@ -209,7 +207,7 @@ fn maybe_auto_apply(value: Value, ctx: &mut EvalContext<'_>) -> Result<Value> {
 /// Used when the identifier is being used as a callee in an application.
 pub fn eval_ident_no_auto_apply(ident: &Ident, ctx: &mut EvalContext<'_>) -> Result<Value> {
     let text = ident.syntax().text();
-    let id: InternedString = text.to_string().as_str().into();
+    let id: InternedString = text.interned();
 
     // First check the local environment
     if let Some(value) = ctx.env.get(id) {
@@ -266,7 +264,7 @@ impl Eval for Apply {
             Expr::Op(op) => {
                 // Look up operator in environment
                 let text = op.syntax().text();
-                let id: InternedString = text.to_string().as_str().into();
+                let id: InternedString = text.interned();
                 let range = op.syntax().text_range();
                 let span = Span::new(range.start().into(), range.end().into());
                 ctx.env
@@ -293,18 +291,15 @@ impl Eval for Apply {
 
 /// Extracts an identifier from an expression if it is an Ident or Op node.
 /// Returns None for other expression types.
-///
-/// TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
-/// AsRef<str> directly, so we need to allocate a String. See STATUS.md item #12.
 pub fn extract_identifier(expr: &Expr) -> Option<InternedString> {
     match expr {
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
-            Some(text.to_string().as_str().into())
+            Some(text.interned())
         }
         Expr::Op(op) => {
             let text = op.syntax().text();
-            Some(text.to_string().as_str().into())
+            Some(text.interned())
         }
         Expr::Synthetic(syn) => {
             // Synthetic nodes provide their identifier directly
