@@ -9,8 +9,10 @@
 //! - [`parse`]: Parses source into a concrete syntax tree (CST)
 //! - [`ast`]: Converts to abstract syntax tree (AST)
 //! - [`eval`]: Evaluates the source code
+//! - LSP functions for language server protocol support
 
 use cadenza_eval::{Compiler, Env, Value};
+use cadenza_lsp::{core as lsp_core, lsp_types};
 use cadenza_syntax::{lexer::Lexer, parse, token::Kind};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -446,6 +448,142 @@ pub fn eval_source(source: &str) -> JsValue {
 pub fn get_token_kinds() -> JsValue {
     let kinds: Vec<String> = Kind::ALL.iter().map(|k| format!("{:?}", k)).collect();
     serde_wasm_bindgen::to_value(&kinds).expect("Failed to serialize token kinds")
+}
+
+/// LSP diagnostic information.
+#[derive(Serialize)]
+pub struct LspDiagnostic {
+    /// Start line number (0-based).
+    pub start_line: u32,
+    /// Start character position (0-based).
+    pub start_character: u32,
+    /// End line number (0-based).
+    pub end_line: u32,
+    /// End character position (0-based).
+    pub end_character: u32,
+    /// Diagnostic message.
+    pub message: String,
+    /// Severity: "error", "warning", "info", or "hint".
+    pub severity: String,
+}
+
+/// Get diagnostics for the given source code.
+///
+/// Returns an array of diagnostic objects with position information and messages.
+#[wasm_bindgen]
+pub fn lsp_diagnostics(source: &str) -> JsValue {
+    let diagnostics = lsp_core::parse_to_diagnostics(source);
+
+    let lsp_diagnostics: Vec<LspDiagnostic> = diagnostics
+        .into_iter()
+        .map(|d| LspDiagnostic {
+            start_line: d.range.start.line,
+            start_character: d.range.start.character,
+            end_line: d.range.end.line,
+            end_character: d.range.end.character,
+            message: d.message,
+            severity: match d.severity {
+                Some(s) => match s {
+                    lsp_types::DiagnosticSeverity::ERROR => "error",
+                    lsp_types::DiagnosticSeverity::WARNING => "warning",
+                    lsp_types::DiagnosticSeverity::INFORMATION => "info",
+                    lsp_types::DiagnosticSeverity::HINT => "hint",
+                    _ => "error",
+                }
+                .to_string(),
+                None => "error".to_string(),
+            },
+        })
+        .collect();
+
+    serde_wasm_bindgen::to_value(&lsp_diagnostics).expect("Failed to serialize diagnostics")
+}
+
+/// Hover information.
+#[derive(Serialize)]
+pub struct LspHoverInfo {
+    /// The hover content/text.
+    pub content: String,
+    /// Whether hover info was found.
+    pub found: bool,
+}
+
+/// Get hover information for a position in the source code.
+///
+/// Returns hover information if available at the given position.
+#[wasm_bindgen]
+pub fn lsp_hover(source: &str, line: u32, character: u32) -> JsValue {
+    let position = lsp_types::Position::new(line, character);
+    let offset = lsp_core::position_to_offset(source, position);
+
+    // Find the word boundaries around the offset
+    let start = source[..offset]
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let end = source[offset..]
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|i| offset + i)
+        .unwrap_or(source.len());
+
+    let hover_info = if start < end {
+        let word = &source[start..end];
+        if !word.is_empty() {
+            LspHoverInfo {
+                content: format!("Symbol: `{}`\n\nType information coming soon!", word),
+                found: true,
+            }
+        } else {
+            LspHoverInfo {
+                content: String::new(),
+                found: false,
+            }
+        }
+    } else {
+        LspHoverInfo {
+            content: String::new(),
+            found: false,
+        }
+    };
+
+    serde_wasm_bindgen::to_value(&hover_info).expect("Failed to serialize hover info")
+}
+
+/// Completion item.
+#[derive(Serialize)]
+pub struct LspCompletionItem {
+    /// The label of this completion item.
+    pub label: String,
+    /// The kind of this completion item.
+    pub kind: String,
+    /// A human-readable string with additional information.
+    pub detail: Option<String>,
+}
+
+/// Get completion items for a position in the source code.
+///
+/// Returns an array of completion items.
+#[wasm_bindgen]
+pub fn lsp_completions(source: &str, line: u32, character: u32) -> JsValue {
+    // For now, return basic keyword completions
+    let _position = lsp_types::Position::new(line, character);
+    let _offset = lsp_core::position_to_offset(source, _position);
+
+    let items = vec![
+        LspCompletionItem {
+            label: "let".to_string(),
+            kind: "keyword".to_string(),
+            detail: Some("Variable binding".to_string()),
+        },
+        LspCompletionItem {
+            label: "fn".to_string(),
+            kind: "keyword".to_string(),
+            detail: Some("Function definition".to_string()),
+        },
+    ];
+
+    serde_wasm_bindgen::to_value(&items).expect("Failed to serialize completion items")
 }
 
 #[cfg(test)]

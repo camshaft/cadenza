@@ -1,27 +1,21 @@
 [package]
-name = "cadenza-web"
+name = "cadenza"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = false
-
-[package.metadata.wasm-pack.profile.dev]
-wasm-opt = false
-
 [dependencies]
 cadenza-eval = { path = "../cadenza-eval" }
 cadenza-syntax = { path = "../cadenza-syntax" }
 cadenza-lsp = { path = "../cadenza-lsp" }
+clap.workspace = true
+tower-lsp.workspace = true
+lsp-types.workspace = true
+tokio = { workspace = true, features = ["full"] }
 rowan.workspace = true
-wasm-bindgen.workspace = true
 serde.workspace = true
-serde-wasm-bindgen.workspace = true
-
-[dev-dependencies]
-wasm-bindgen-test = "0.3"
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

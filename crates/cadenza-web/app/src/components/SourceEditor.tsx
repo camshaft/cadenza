@@ -1,9 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
-import Editor, { loader } from '@monaco-editor/react';
+import Editor, { loader, type OnMount } from '@monaco-editor/react';
+import {
+  CADENZA_LANGUAGE_ID,
+  registerCadenzaLanguage,
+  setupDiagnostics,
+  setupHover,
+  setupCompletions,
+} from '../lib/monaco-cadenza';
+import type { CadenzaWasm } from '../types/cadenza';
 
 interface SourceEditorProps {
   value: string;
   onChange: (value: string) => void;
+  wasm?: CadenzaWasm;
 }
 
 // Fallback textarea editor for when Monaco fails to load
@@ -22,10 +31,11 @@ function FallbackEditor({ value, onChange }: SourceEditorProps) {
 // Timeout in ms for Monaco to load before falling back
 const MONACO_LOAD_TIMEOUT = 10000;
 
-export function SourceEditor({ value, onChange }: SourceEditorProps) {
+export function SourceEditor({ value, onChange, wasm }: SourceEditorProps) {
   const [loadState, setLoadState] = useState<'loading' | 'loaded' | 'error'>('loading');
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const cleanupRef = useRef<Array<() => void>>([]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -61,16 +71,48 @@ export function SourceEditor({ value, onChange }: SourceEditorProps) {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
       }
+      // Cleanup LSP features
+      cleanupRef.current.forEach((cleanup) => cleanup());
+      cleanupRef.current = [];
     };
   }, []);
 
-  const handleEditorDidMount = () => {
+  const handleEditorDidMount: OnMount = (editor, _monaco) => {
     // Editor mounted successfully - clear timeout and mark as loaded
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
     }
     if (mountedRef.current) {
       setLoadState('loaded');
+    }
+
+    // Register Cadenza language
+    try {
+      registerCadenzaLanguage();
+    } catch (error) {
+      console.error('Failed to register Cadenza language:', error);
+    }
+
+    // Set up LSP features if WASM is available
+    if (wasm) {
+      try {
+        const model = editor.getModel();
+        if (model) {
+          // Set up diagnostics
+          const cleanupDiag = setupDiagnostics(wasm, model);
+          cleanupRef.current.push(cleanupDiag);
+
+          // Set up hover provider
+          const hoverDisposable = setupHover(wasm);
+          cleanupRef.current.push(() => hoverDisposable.dispose());
+
+          // Set up completion provider
+          const completionDisposable = setupCompletions(wasm);
+          cleanupRef.current.push(() => completionDisposable.dispose());
+        }
+      } catch (error) {
+        console.error('Failed to set up LSP features:', error);
+      }
     }
   };
 
@@ -92,7 +134,7 @@ export function SourceEditor({ value, onChange }: SourceEditorProps) {
     <div className="h-full">
       <Editor
         height="100%"
-        defaultLanguage="plaintext"
+        defaultLanguage={CADENZA_LANGUAGE_ID}
         theme="vs-dark"
         value={value}
         onChange={(value) => onChange(value ?? '')}
