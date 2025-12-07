@@ -23,7 +23,7 @@ use std::{borrow::Cow, path::PathBuf};
 struct CadenzaHelper;
 
 impl CadenzaHelper {
-    fn new(_env: Env) -> Self {
+    fn new() -> Self {
         Self
     }
 }
@@ -187,7 +187,7 @@ pub fn start_repl(load_file: Option<PathBuf>) -> Result<()> {
     }
 
     // Create readline editor with helper
-    let helper = CadenzaHelper::new(env.clone());
+    let helper = CadenzaHelper::new();
     let mut rl = Editor::new()?;
     rl.set_helper(Some(helper));
 
@@ -271,7 +271,16 @@ fn format_value(value: &Value) -> String {
         Value::Nil => "nil".to_string(),
         Value::Integer(n) => n.to_string(),
         Value::Float(f) => f.to_string(),
-        Value::String(s) => format!("\"{}\"", s),
+        Value::String(s) => {
+            // Properly escape string contents
+            let escaped = s
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t");
+            format!("\"{}\"", escaped)
+        }
         Value::Bool(b) => b.to_string(),
         Value::Symbol(s) => format!(":{}", s),
         Value::List(items) => {
