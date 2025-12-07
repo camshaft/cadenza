@@ -7,3 +7,6 @@
 pub mod core;
 
 pub use core::{offset_to_position, parse_to_diagnostics, position_to_offset};
+
+// Re-export lsp_types for consumers
+pub use lsp_types;

@@ -4,7 +4,6 @@
 //! by editors and IDEs to provide intelligent code editing features.
 
 mod backend;
-mod core;
 
 use anyhow::Result;
 use tower_lsp::{LspService, Server};
@@ -15,10 +14,10 @@ pub async fn start_server() -> Result<()> {
     let stdout = tokio::io::stdout();
 
     let (service, socket) = LspService::new(backend::CadenzaLspBackend::new);
-    
+
     tracing::info!("Starting Cadenza LSP server");
-    
+
     Server::new(stdin, stdout, socket).serve(service).await;
-    
+
     Ok(())
 }

@@ -5,7 +5,7 @@ use lsp_types::*;
 /// Convert cadenza parse errors to LSP diagnostics.
 pub fn parse_to_diagnostics(source: &str) -> Vec<Diagnostic> {
     let parsed = cadenza_syntax::parse::parse(source);
-    
+
     parsed
         .errors
         .iter()
@@ -32,12 +32,12 @@ pub fn parse_to_diagnostics(source: &str) -> Vec<Diagnostic> {
 pub fn offset_to_position(text: &str, offset: usize) -> Position {
     let mut line = 0;
     let mut character = 0;
-    
+
     for (i, ch) in text.char_indices() {
         if i >= offset {
             break;
         }
-        
+
         if ch == '\n' {
             line += 1;
             character = 0;
@@ -45,7 +45,7 @@ pub fn offset_to_position(text: &str, offset: usize) -> Position {
             character += 1;
         }
     }
-    
+
     Position::new(line, character)
 }
 
@@ -53,12 +53,12 @@ pub fn offset_to_position(text: &str, offset: usize) -> Position {
 pub fn position_to_offset(text: &str, position: Position) -> usize {
     let mut current_line = 0;
     let mut current_char = 0;
-    
+
     for (i, ch) in text.char_indices() {
         if current_line == position.line && current_char == position.character {
             return i;
         }
-        
+
         if ch == '\n' {
             current_line += 1;
             current_char = 0;
@@ -66,7 +66,7 @@ pub fn position_to_offset(text: &str, position: Position) -> usize {
             current_char += 1;
         }
     }
-    
+
     text.len()
 }
 
@@ -94,9 +94,13 @@ mod tests {
 
     #[test]
     fn test_parse_to_diagnostics() {
-        let source = "1 + + 2";
+        // Test with unclosed parenthesis which should produce an error
+        let source = "(1 + 2";
         let diagnostics = parse_to_diagnostics(source);
-        assert!(!diagnostics.is_empty());
+        assert!(
+            !diagnostics.is_empty(),
+            "Expected parse error for unclosed parenthesis"
+        );
         assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::ERROR));
     }
 }

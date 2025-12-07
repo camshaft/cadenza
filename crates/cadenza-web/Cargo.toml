@@ -17,10 +17,11 @@ wasm-opt = false
 [dependencies]
 cadenza-eval = { path = "../cadenza-eval" }
 cadenza-syntax = { path = "../cadenza-syntax" }
+cadenza-lsp = { path = "../cadenza-lsp" }
 rowan.workspace = true
-wasm-bindgen = "0.2"
-serde = { workspace = true }
-serde-wasm-bindgen = "0.6"
+wasm-bindgen.workspace = true
+serde.workspace = true
+serde-wasm-bindgen.workspace = true
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

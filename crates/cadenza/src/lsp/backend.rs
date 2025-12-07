@@ -3,9 +3,7 @@
 use cadenza_lsp::core;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::*;
-use tower_lsp::{Client, LanguageServer};
+use tower_lsp::{Client, LanguageServer, jsonrpc::Result, lsp_types::*};
 
 /// The main LSP backend for Cadenza.
 pub struct CadenzaLspBackend {
@@ -37,7 +35,7 @@ impl CadenzaLspBackend {
                 data: d.data,
             })
             .collect();
-        
+
         self.client
             .publish_diagnostics(uri, diagnostics, None)
             .await;
@@ -80,22 +78,31 @@ impl LanguageServer for CadenzaLspBackend {
         let uri = params.text_document.uri;
         let text = params.text_document.text;
 
-        self.documents.write().await.insert(uri.clone(), text.clone());
+        self.documents
+            .write()
+            .await
+            .insert(uri.clone(), text.clone());
         self.publish_diagnostics(uri, &text).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        
+
         if let Some(change) = params.content_changes.into_iter().next() {
             let text = change.text;
-            self.documents.write().await.insert(uri.clone(), text.clone());
+            self.documents
+                .write()
+                .await
+                .insert(uri.clone(), text.clone());
             self.publish_diagnostics(uri, &text).await;
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.documents.write().await.remove(&params.text_document.uri);
+        self.documents
+            .write()
+            .await
+            .remove(&params.text_document.uri);
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -110,13 +117,13 @@ impl LanguageServer for CadenzaLspBackend {
 
         // For now, just show a simple hover with the word at the position
         let offset = core::position_to_offset(text, position);
-        
+
         // Find the word boundaries around the offset
         let start = text[..offset]
             .rfind(|c: char| !c.is_alphanumeric() && c != '_')
             .map(|i| i + 1)
             .unwrap_or(0);
-        
+
         let end = text[offset..]
             .find(|c: char| !c.is_alphanumeric() && c != '_')
             .map(|i| offset + i)
@@ -127,7 +134,7 @@ impl LanguageServer for CadenzaLspBackend {
         }
 
         let word = &text[start..end];
-        
+
         if word.is_empty() {
             return Ok(None);
         }
