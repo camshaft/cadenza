@@ -1,13 +1,13 @@
 //! The `=` special form for variable assignment and macro delegation.
 
 use crate::{
+    Eval,
     context::EvalContext,
     diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
     interner::InternedString,
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
     value::{Type, Value},
-    Eval,
 };
 use cadenza_syntax::ast::{Apply, Expr};
 use std::sync::OnceLock;
@@ -147,7 +147,9 @@ fn extract_identifier(expr: &Expr) -> Option<InternedString> {
         }
         Expr::Apply(apply) => {
             // Recursive case: try to extract from the callee
-            apply.callee().and_then(|callee| extract_identifier(&callee))
+            apply
+                .callee()
+                .and_then(|callee| extract_identifier(&callee))
         }
         _ => None,
     }
@@ -292,11 +294,15 @@ mod tests {
         // Verify the record field was updated
         let rec_id: InternedString = "rec".into();
         let x_id: InternedString = "x".into();
-        
+
         if let Some(Value::Record(fields)) = env.get(rec_id) {
             let x_field = fields.iter().find(|(k, _)| *k == x_id);
             assert!(x_field.is_some(), "Field 'x' not found in record");
-            assert_eq!(x_field.unwrap().1, Value::Integer(42), "Field 'x' has wrong value");
+            assert_eq!(
+                x_field.unwrap().1,
+                Value::Integer(42),
+                "Field 'x' has wrong value"
+            );
         } else {
             panic!("Expected record value");
         }
