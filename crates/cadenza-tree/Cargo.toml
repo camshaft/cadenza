@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+hashbrown.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]

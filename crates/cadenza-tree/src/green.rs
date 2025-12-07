@@ -5,14 +5,25 @@
 //! - Interned: identical subtrees share the same memory
 //! - Efficient: uses arena allocation and avoids unnecessary copies
 //!
-//! Nodes and tokens are stored in an arena and referenced by index.
+//! Implementation follows Rowan 0.16 patterns including:
+//! - hashbrown with FxHasher for fast lookups
+//! - Raw entry API for manual hash computation
+//! - Hash propagation from children to parents
+//! - Pointer equality for deduplication
 
 use crate::{SyntaxKind, SyntaxText};
-use rustc_hash::FxHashMap;
+use hashbrown::hash_map::RawEntryMut;
+use rustc_hash::FxHasher;
 use std::{
     fmt,
+    hash::{BuildHasherDefault, Hash, Hasher},
     sync::{Arc, Mutex, OnceLock},
 };
+
+type HashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
+#[derive(Debug)]
+struct NoHash<T>(T);
 
 /// A node in the green tree.
 ///
@@ -175,10 +186,16 @@ impl From<GreenToken> for GreenElement {
 /// Builder for constructing green trees.
 ///
 /// This provides an API similar to Rowan's GreenNodeBuilder for easy migration.
+/// 
+/// Implementation matches Rowan 0.16: uses a flat children vector and a separate
+/// parents stack to track node boundaries. Children are stored with their hashes
+/// for efficient parent hash computation.
 pub struct GreenNodeBuilder {
-    stack: Vec<(SyntaxKind, Vec<GreenElement>)>,
+    /// Stack of parent nodes, each storing (kind, first_child_index)
+    parents: Vec<(SyntaxKind, usize)>,
+    /// Flat list of all children elements with their hashes
+    children: Vec<(u64, GreenElement)>,
     cache: &'static Cache,
-    root: Option<GreenNode>,
 }
 
 /// A checkpoint in the builder that allows starting nodes at previous positions.
@@ -187,81 +204,60 @@ pub struct GreenNodeBuilder {
 /// wrap previously parsed content in a new node.
 #[derive(Debug, Clone, Copy)]
 pub struct Checkpoint {
-    /// The number of children in the parent node when the checkpoint was taken.
-    children_count: usize,
-    /// The stack depth when the checkpoint was taken (for validation and debugging).
-    stack_depth: usize,
+    /// The position in the children vector when the checkpoint was taken.
+    children_index: usize,
 }
 
 impl GreenNodeBuilder {
     /// Create a new builder.
     pub fn new() -> Self {
         Self {
-            stack: Vec::new(),
+            parents: Vec::new(),
+            children: Vec::new(),
             cache: cache(),
-            root: None,
         }
     }
 
     /// Create a checkpoint at the current position.
     ///
     /// This allows you to start a node at this position later using `start_node_at`.
-    /// The checkpoint records the current number of children in the current node
-    /// and the current stack depth (for debugging).
+    /// The checkpoint records the current position in the children vector.
     pub fn checkpoint(&self) -> Checkpoint {
-        let children_count = self
-            .stack
-            .last()
-            .map(|(_, children)| children.len())
-            .unwrap_or(0);
-        let stack_depth = self.stack.len();
         Checkpoint {
-            children_count,
-            stack_depth,
+            children_index: self.children.len(),
         }
     }
 
     /// Start a new node with the given kind.
     pub fn start_node(&mut self, kind: SyntaxKind) {
-        self.stack.push((kind, Vec::new()));
+        let first_child = self.children.len();
+        self.parents.push((kind, first_child));
     }
 
     /// Start a new node at a previous checkpoint.
     ///
-    /// This moves all children added since the checkpoint into the new node.
+    /// This wraps all children added since the checkpoint into the new node.
     /// This is useful for implementing left-associative parsing where you
     /// wrap previously parsed content.
     pub fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
-        // Detect checkpoint/stack mismatches (helps debug the 25 failing tests)
-        #[cfg(debug_assertions)]
-        {
-            let current_len = self.stack.last().map(|(_, c)| c.len()).unwrap_or(0);
-            if checkpoint.children_count > current_len {
-                eprintln!(
-                    "WARNING: Checkpoint mismatch - expected {} children but found {}. \
-                     Stack depth when checkpoint taken: {}, current: {}. \
-                     Clamping to prevent panic, but tree structure may be incorrect.",
-                    checkpoint.children_count,
-                    current_len,
-                    checkpoint.stack_depth,
-                    self.stack.len()
-                );
-            }
+        let checkpoint_pos = checkpoint.children_index;
+        
+        // Validate checkpoint is still valid
+        assert!(
+            checkpoint_pos <= self.children.len(),
+            "checkpoint no longer valid, was finish_node called early?"
+        );
+        
+        // Validate checkpoint is not before current parent's first child
+        if let Some(&(_, first_child)) = self.parents.last() {
+            assert!(
+                checkpoint_pos >= first_child,
+                "checkpoint no longer valid, was an unmatched start_node_at called?"
+            );
         }
         
-        // Work on the current stack top (where children have been added)
-        let (_, current_children) = self.stack.last_mut().expect("no current node");
-        
-        // Clamp the checkpoint position to the actual number of children
-        // This handles cases where the checkpoint was taken at a different time/level
-        // and the actual children count has changed
-        let safe_position = checkpoint.children_count.min(current_children.len());
-        
-        // Split children from the checkpoint position
-        let children_to_move = current_children.split_off(safe_position);
-
-        // Start a new node and move the children into it
-        self.stack.push((kind, children_to_move));
+        // Push new parent starting at the checkpoint position
+        self.parents.push((kind, checkpoint_pos));
     }
 
     /// Add a token to the current node, interning the text.
@@ -269,42 +265,33 @@ impl GreenNodeBuilder {
     /// This is more efficient than the generic `token` when you have a string slice,
     /// as it avoids allocation if the token is already cached.
     pub fn token(&mut self, kind: SyntaxKind, text: &str) {
-        let token = self.cache.token(kind, text);
-        self.add_element(GreenElement::Token(token));
+        let (hash, token) = self.cache.token(kind, text);
+        self.children.push((hash, GreenElement::Token(token)));
     }
 
     /// Finish the current node and return to the parent.
     pub fn finish_node(&mut self) {
-        let (kind, children) = self.stack.pop().expect("no node to finish");
-        let node = self.cache.node(kind, children);
-
-        if self.stack.is_empty() {
-            // This is the root node
-            self.root = Some(node);
-        } else {
-            // Add to parent
-            self.add_element(GreenElement::Node(node));
-        }
-    }
-
-    fn add_element(&mut self, element: GreenElement) {
-        if let Some((_, children)) = self.stack.last_mut() {
-            children.push(element);
-        } else {
-            panic!("tried to add element with no current node");
-        }
+        let (kind, first_child) = self.parents.pop().expect("no node to finish");
+        
+        // Create the node with hash
+        let (hash, node) = self.cache.node(kind, &mut self.children, first_child);
+        
+        // Add the finished node back to children
+        self.children.push((hash, GreenElement::Node(node)));
     }
 
     /// Finish building and return the root node.
     ///
-    /// # Panics
-    /// Panics if there are unfinished nodes or no root was created.
-    pub fn finish(self) -> GreenNode {
-        assert!(
-            self.stack.is_empty(),
-            "unfinished nodes remain in builder"
-        );
-        self.root.expect("no root node was created")
+    /// This consumes the builder and returns the root node.
+    /// The builder must have exactly one child (the root) when this is called.
+    pub fn finish(mut self) -> GreenNode {
+        assert!(self.parents.is_empty(), "unfinished nodes remain");
+        assert_eq!(self.children.len(), 1, "expected exactly one root node");
+        
+        match self.children.pop().unwrap().1 {
+            GreenElement::Node(node) => node,
+            GreenElement::Token(_) => panic!("root must be a node, not a token"),
+        }
     }
 }
 
@@ -317,66 +304,153 @@ impl Default for GreenNodeBuilder {
 /// Cache for interning green nodes and tokens.
 ///
 /// This ensures that identical subtrees and tokens share the same memory.
+/// Implementation follows Rowan's optimizations:
+/// - Uses hashbrown's raw entry API for manual hash control
+/// - Propagates hashes from children to parents
+/// - Skips caching for large nodes (>3 children) 
+/// - Uses pointer equality for deduplication
 struct Cache {
-    nodes: Mutex<FxHashMap<(SyntaxKind, Box<[GreenElement]>), GreenNode>>,
-    tokens: Mutex<FxHashMap<(SyntaxKind, crate::interner::InternedString), GreenToken>>,
+    nodes: Mutex<HashMap<NoHash<GreenNode>, ()>>,
+    tokens: Mutex<HashMap<NoHash<GreenToken>, ()>>,
+}
+
+/// Compute hash for a token
+fn token_hash(kind: SyntaxKind, text: &str) -> u64 {
+    let mut h = FxHasher::default();
+    kind.hash(&mut h);
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// Get element ID for pointer equality comparison
+fn element_id(elem: &GreenElement) -> *const () {
+    match elem {
+        GreenElement::Node(node) => Arc::as_ptr(&node.inner) as *const (),
+        GreenElement::Token(token) => Arc::as_ptr(&token.inner) as *const (),
+    }
 }
 
 impl Cache {
     fn new() -> Self {
         Self {
-            nodes: Mutex::new(FxHashMap::default()),
-            tokens: Mutex::new(FxHashMap::default()),
+            nodes: Mutex::new(HashMap::default()),
+            tokens: Mutex::new(HashMap::default()),
         }
     }
 
-    fn token(&self, kind: SyntaxKind, text: &str) -> GreenToken {
-        // Intern the string first
-        let interned = crate::interner::InternedString::new(text);
+    fn token(&self, kind: SyntaxKind, text: &str) -> (u64, GreenToken) {
+        let hash = token_hash(kind, text);
         
         let mut cache = self.tokens.lock().unwrap();
+        let entry = cache.raw_entry_mut().from_hash(hash, |token| {
+            token.0.kind() == kind && token.0.text().as_str() == text
+        });
         
-        // Use entry API to avoid double lookup and fix race condition
-        use std::collections::hash_map::Entry;
-        match cache.entry((kind, interned)) {
-            Entry::Occupied(e) => e.get().clone(),
-            Entry::Vacant(e) => {
-                // Create token with interned text
+        let token = match entry {
+            RawEntryMut::Occupied(entry) => entry.key().0.clone(),
+            RawEntryMut::Vacant(entry) => {
+                // Intern the text
+                let interned = crate::interner::InternedString::new(text);
                 let token = GreenToken {
                     inner: Arc::new(GreenTokenData {
                         kind,
                         text: SyntaxText::new(interned),
                     }),
                 };
-                e.insert(token.clone());
+                entry.insert_with_hasher(hash, NoHash(token.clone()), (), |t| {
+                    token_hash(t.0.kind(), t.0.text().as_str())
+                });
                 token
             }
-        }
+        };
+        
+        (hash, token)
     }
 
-    fn node(&self, kind: SyntaxKind, children: Vec<GreenElement>) -> GreenNode {
-        let children: Box<[GreenElement]> = children.into();
-
-        let mut cache = self.nodes.lock().unwrap();
-        
-        // Check if already cached
-        if let Some(node) = cache.get(&(kind, children.clone())) {
-            return node.clone();
-        }
-
-        // Not found, create new node
-        let width = children.iter().map(|c| c.text_len()).sum();
-        let node = GreenNode {
-            inner: Arc::new(GreenNodeData {
-                kind,
-                children: children.clone(),
-                width,
-            }),
+    fn node(
+        &self,
+        kind: SyntaxKind,
+        children: &mut Vec<(u64, GreenElement)>,
+        first_child: usize,
+    ) -> (u64, GreenNode) {
+        let build_node = |children: &mut Vec<(u64, GreenElement)>| {
+            let node_children: Vec<GreenElement> = 
+                children.drain(first_child..).map(|(_, elem)| elem).collect();
+            let width = node_children.iter().map(|c| c.text_len()).sum();
+            GreenNode {
+                inner: Arc::new(GreenNodeData {
+                    kind,
+                    children: node_children.into(),
+                    width,
+                }),
+            }
         };
 
-        // Insert into cache (still holding the lock)
-        cache.insert((kind, children), node.clone());
-        node
+        let children_ref = &children[first_child..];
+        
+        // Skip caching for large nodes (>3 children) - Rowan optimization
+        if children_ref.len() > 3 {
+            let node = build_node(children);
+            return (0, node);
+        }
+
+        // Compute hash from children hashes
+        let hash = {
+            let mut h = FxHasher::default();
+            kind.hash(&mut h);
+            for &(child_hash, _) in children_ref {
+                if child_hash == 0 {
+                    // Child wasn't cached, so don't cache this node either
+                    let node = build_node(children);
+                    return (0, node);
+                }
+                child_hash.hash(&mut h);
+            }
+            h.finish()
+        };
+
+        // Use raw entry API with pointer equality for deduplication
+        let mut cache = self.nodes.lock().unwrap();
+        let entry = cache.raw_entry_mut().from_hash(hash, |node| {
+            node.0.kind() == kind 
+                && node.0.children().len() == children_ref.len()
+                && node.0.children()
+                    .iter()
+                    .map(element_id)
+                    .eq(children_ref.iter().map(|(_, elem)| element_id(elem)))
+        });
+
+        let node = match entry {
+            RawEntryMut::Occupied(entry) => {
+                // Reuse existing node, discard children
+                drop(children.drain(first_child..));
+                entry.key().0.clone()
+            }
+            RawEntryMut::Vacant(entry) => {
+                let node = build_node(children);
+                entry.insert_with_hasher(hash, NoHash(node.clone()), (), |n| {
+                    // Recompute hash for insertion
+                    let mut h = FxHasher::default();
+                    n.0.kind().hash(&mut h);
+                    for child in n.0.children() {
+                        // This is inefficient but only happens on insertion
+                        let child_hash = match child {
+                            GreenElement::Node(n) => {
+                                let mut h2 = FxHasher::default();
+                                n.kind().hash(&mut h2);
+                                h2.finish()
+                            }
+                            GreenElement::Token(t) => token_hash(t.kind(), t.text().as_str()),
+                        };
+                        child_hash.hash(&mut h);
+                    }
+                    h.finish()
+                });
+                node
+            }
+        };
+
+        (hash, node)
     }
 }
 
