@@ -49,6 +49,7 @@ pub use eval::{
 pub use interner::InternedString;
 pub use map::Map;
 pub use special_form::{BuiltinSpecialForm, SpecialForm};
+pub use special_forms::special_form_let;
 pub use typeinfer::{Constraint, InferType, Substitution, TypeEnv, TypeInferencer, TypeVar};
 pub use unit::{DerivedDimension, Dimension, Unit, UnitRegistry};
 pub use value::{BuiltinFn, BuiltinMacro, SourceInfo, TrackedValue, Type, UserFunction, Value};

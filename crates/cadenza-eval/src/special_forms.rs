@@ -121,3 +121,41 @@ fn ir_let(
     // Return the value ID
     Ok(value_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Compiler, Env};
+    use cadenza_syntax::parse::parse;
+
+    #[test]
+    fn test_special_form_let_eval() {
+        // Create an environment with the special form AND the = operator
+        let mut env = Env::with_standard_builtins();  // This registers all builtins including =
+        
+        // Replace the let macro with our special form
+        let let_id: InternedString = "let".into();
+        env.define(let_id, Value::SpecialForm(std::rc::Rc::new(special_form_let())));
+
+        // Create a compiler
+        let mut compiler = Compiler::new();
+
+        // Parse and evaluate "let x = 42"
+        let input = "let x = 42";
+        let parsed = parse(input);
+        let root = parsed.ast();
+        
+        let results = crate::eval(&root, &mut env, &mut compiler);
+
+        eprintln!("Results: {:?}", results);
+        eprintln!("Diagnostics: {:?}", compiler.diagnostics());
+
+        assert!(!results.is_empty(), "Expected at least one result");
+        let value = &results[0];
+        assert_eq!(*value, Value::Integer(42));
+
+        // Verify the variable was bound
+        let x_id: InternedString = "x".into();
+        assert_eq!(env.get(x_id), Some(&Value::Integer(42)));
+    }
+}
