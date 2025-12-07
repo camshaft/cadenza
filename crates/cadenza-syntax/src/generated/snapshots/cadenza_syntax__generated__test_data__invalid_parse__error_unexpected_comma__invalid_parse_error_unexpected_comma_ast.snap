@@ -3,5 +3,7 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: ",\n"
 ---
 [
-    Error(Error@0..1),
+    Error(Error@0..1
+      Comma@0..1 ","
+    ),
 ]

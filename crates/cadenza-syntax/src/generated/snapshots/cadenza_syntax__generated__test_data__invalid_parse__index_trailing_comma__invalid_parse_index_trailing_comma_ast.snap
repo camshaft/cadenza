@@ -4,6 +4,10 @@ expression: "arr[1,]\n"
 ---
 [
     [__index__, arr, 1],
-    Error(Error@5..6),
-    Error(Error@6..7),
+    Error(Error@5..6
+      Comma@5..6 ","
+    ),
+    Error(Error@6..7
+      RBracket@6..7 "]"
+    ),
 ]
