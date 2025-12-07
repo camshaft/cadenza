@@ -7,7 +7,8 @@
 //! we work with Values rather than AST nodes, making the transformation simpler.
 
 use super::{
-    BinOp as IrBinOp, BlockBuilder, FunctionId, IrBuilder, IrConst, SourceLocation, ValueId,
+    BinOp as IrBinOp, BlockBuilder, BlockId, FunctionBuilder, FunctionId, IrBlock, IrBuilder,
+    IrConst, SourceLocation, ValueId,
 };
 use crate::{
     diagnostic::{Diagnostic, Result},
@@ -57,6 +58,70 @@ impl IrGenContext {
     /// Get a mutable reference to the type environment.
     pub fn type_env_mut(&mut self) -> &mut TypeEnv {
         &mut self.type_env
+    }
+}
+
+/// State for IR generation with support for multiple basic blocks.
+///
+/// This structure manages the function builder and tracks completed blocks
+/// during IR generation. It allows special forms to create and manage
+/// multiple basic blocks for control flow.
+pub struct IrGenState<'a> {
+    /// The function builder that owns all blocks.
+    func_builder: &'a mut FunctionBuilder,
+    /// The current block being built.
+    pub(crate) current_block: Option<BlockBuilder>,
+}
+
+impl<'a> IrGenState<'a> {
+    /// Create a new IR generation state with an initial block.
+    fn new(func_builder: &'a mut FunctionBuilder, initial_block: BlockBuilder) -> Self {
+        Self {
+            func_builder,
+            current_block: Some(initial_block),
+        }
+    }
+
+    /// Get a mutable reference to the current block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is no current block (e.g., after it has been terminated).
+    pub fn current_block(&mut self) -> &mut BlockBuilder {
+        self.current_block
+            .as_mut()
+            .expect("No current block available")
+    }
+
+    /// Create a new block and return its ID.
+    ///
+    /// The new block is not set as the current block.
+    pub fn create_block(&mut self) -> (BlockId, BlockBuilder) {
+        let block = self.func_builder.block();
+        let id = block.id();
+        (id, block)
+    }
+
+    /// Allocate a block ID without creating the block yet.
+    ///
+    /// This is useful for control flow where you need block IDs before the blocks are ready.
+    pub fn alloc_block_id(&mut self) -> BlockId {
+        self.func_builder.alloc_block_id()
+    }
+
+    /// Create a block with a specific ID.
+    ///
+    /// The block ID must have been allocated with `alloc_block_id`.
+    pub fn create_block_with_id(&mut self, id: BlockId) -> BlockBuilder {
+        self.func_builder.block_with_id(id)
+    }
+
+    /// Complete the current block with a terminator and add it to the function.
+    ///
+    /// After calling this, there is no current block.
+    pub fn complete_current_block(&mut self, block: IrBlock, next_value_id: u32) {
+        self.func_builder.add_block(block, next_value_id);
+        self.current_block = None;
     }
 }
 
@@ -159,7 +224,7 @@ impl IrGenerator {
         self.functions.insert(name, func_id);
 
         // Create the entry block
-        let mut block = func_builder.block();
+        let entry_block = func_builder.block();
 
         // Reset context for IR generation (parameters get bound as SSA values)
         let mut ctx = IrGenContext::new();
@@ -171,12 +236,16 @@ impl IrGenerator {
             ctx.variables.insert(*param_name, ValueId(i as u32));
         }
 
-        // Generate IR for the function body
-        let result = self.gen_expr(&func.body, &mut block, &mut ctx)?;
+        // Create state for multi-block generation
+        let mut state = IrGenState::new(&mut func_builder, entry_block);
 
-        // Return the result
+        // Generate IR for the function body
+        let result = self.gen_expr_with_state(&func.body, &mut state, &mut ctx)?;
+
+        // Complete the current block with a return
+        let block = state.current_block.take().expect("No current block");
         let (block_inst, next_val) = block.ret(Some(result), self.dummy_source());
-        func_builder.add_block(block_inst, next_val);
+        state.complete_current_block(block_inst, next_val);
 
         // Build the function
         let ir_func = func_builder.build();
@@ -185,7 +254,29 @@ impl IrGenerator {
         Ok(func_id)
     }
 
-    /// Generate IR for an expression.
+    /// Generate IR for an expression using IrGenState for multi-block support.
+    ///
+    /// Returns the SSA value ID for the result of the expression.
+    fn gen_expr_with_state(
+        &mut self,
+        expr: &Expr,
+        state: &mut IrGenState,
+        ctx: &mut IrGenContext,
+    ) -> Result<ValueId> {
+        let source = self.dummy_source();
+
+        match expr {
+            Expr::Literal(lit) => self.gen_literal(lit, state.current_block(), source),
+            Expr::Ident(ident) => self.gen_ident(ident, ctx),
+            Expr::Apply(apply) => self.gen_apply_with_state(apply, state, ctx, source),
+            _ => Err(Diagnostic::syntax(format!(
+                "Unsupported expression type for IR generation: {:?}",
+                expr
+            ))),
+        }
+    }
+
+    /// Generate IR for an expression (legacy single-block API).
     ///
     /// Returns the SSA value ID for the result of the expression.
     fn gen_expr(
@@ -317,6 +408,163 @@ impl IrGenerator {
 
         // Call the special form's IR generation function
         Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
+    }
+
+    /// Try to generate IR for a special form by name (state-based version).
+    ///
+    /// Returns Some(result) if the name matches a known special form, None otherwise.
+    /// This version supports multi-block generation through IrGenState.
+    fn try_gen_special_form_with_state(
+        &mut self,
+        name: &str,
+        apply: &cadenza_syntax::ast::Apply,
+        state: &mut IrGenState,
+        ctx: &mut IrGenContext,
+        source: SourceLocation,
+    ) -> Option<Result<ValueId>> {
+        let args = apply.all_arguments();
+
+        // Only "match" needs multi-block support for now
+        // Other special forms can use the legacy single-block API
+        if name == "match" {
+            // Create a mutable closure for generating sub-expressions with state
+            let mut gen_expr_adapter =
+                |expr: &Expr, state: &mut IrGenState, ctx: &mut IrGenContext| {
+                    self.gen_expr_with_state(expr, state, ctx)
+                };
+            
+            return Some(special_form::match_form::ir_match_with_state(
+                &args, state, ctx, source, &mut gen_expr_adapter,
+            ));
+        }
+
+        // For other special forms, use the single-block API
+        let block = state.current_block();
+        let mut gen_expr_adapter =
+            |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+                self.gen_expr(expr, block, ctx)
+            };
+
+        let special_form = match name {
+            "let" => special_form::let_form::get(),
+            "=" => special_form::assign_form::get(),
+            "fn" => special_form::fn_form::get(),
+            "__block__" => special_form::block_form::get(),
+            "__list__" => special_form::list_form::get(),
+            "__record__" => special_form::record_form::get(),
+            "__index__" => special_form::index_form::get(),
+            "assert" => special_form::assert_form::get(),
+            "typeof" => special_form::typeof_form::get(),
+            "measure" => special_form::measure_form::get(),
+            "|>" => special_form::pipeline_form::get(),
+            "." => special_form::field_access_form::get(),
+            "+" => special_form::add_form::get(),
+            "-" => special_form::sub_form::get(),
+            "*" => special_form::mul_form::get(),
+            "/" => special_form::div_form::get(),
+            "==" => special_form::eq_form::get(),
+            "!=" => special_form::ne_form::get(),
+            "<" => special_form::lt_form::get(),
+            "<=" => special_form::le_form::get(),
+            ">" => special_form::gt_form::get(),
+            ">=" => special_form::ge_form::get(),
+            "&&" => special_form::and_form::get(),
+            "||" => special_form::or_form::get(),
+            _ => return None, // Not a special form
+        };
+
+        Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
+    }
+
+    /// Generate IR for an application using IrGenState (state-based version).
+    fn gen_apply_with_state(
+        &mut self,
+        apply: &cadenza_syntax::ast::Apply,
+        state: &mut IrGenState,
+        ctx: &mut IrGenContext,
+        source: SourceLocation,
+    ) -> Result<ValueId> {
+        // Check if this is an operator application
+        let callee = apply
+            .callee()
+            .ok_or_else(|| Diagnostic::syntax("Missing callee in application"))?;
+
+        // Extract the name/operator from the callee
+        let name_opt = match &callee {
+            Expr::Ident(ident) => {
+                let text = ident.syntax().text().interned();
+                Some(text.to_string())
+            }
+            Expr::Synthetic(syn) => {
+                let id = syn.identifier();
+                Some(id.to_string())
+            }
+            Expr::Op(op) => {
+                let text = op.syntax().text().interned();
+                Some(text.to_string())
+            }
+            _ => None,
+        };
+
+        if let Some(name) = name_opt {
+            // Try to dispatch to a special form's IR generation
+            if let Some(result) = self.try_gen_special_form_with_state(&name, apply, state, ctx, source) {
+                return result;
+            }
+
+            // If it's an operator and not a special form, handle with hardcoded logic
+            if let Expr::Op(_) = &callee {
+                // Get the operator
+                let ir_op = self.map_operator(&name)?;
+
+                // Get arguments
+                let args = apply.all_arguments();
+                if args.len() != 2 {
+                    return Err(Diagnostic::syntax(format!(
+                        "Binary operator {} expects 2 arguments, got {}",
+                        name,
+                        args.len()
+                    )));
+                }
+
+                // Generate IR for operands
+                let lhs = self.gen_expr_with_state(&args[0], state, ctx)?;
+                let rhs = self.gen_expr_with_state(&args[1], state, ctx)?;
+
+                // Infer the type of the binary operation
+                let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
+
+                // Emit binary operation with inferred type
+                let block = state.current_block();
+                return Ok(block.binop(ir_op, lhs, rhs, inferred_ty, source));
+            }
+
+            // Not an operator - try to look up as a function
+            let func_name = InternedString::new(&name);
+            let func_id = self.functions.get(&func_name).copied().ok_or_else(|| {
+                Diagnostic::syntax(format!("Unknown function in IR generation: {}", func_name))
+            })?;
+
+            // Generate IR for arguments
+            let args = apply.all_arguments();
+            let arg_values: Result<Vec<ValueId>> = args
+                .iter()
+                .map(|arg| self.gen_expr_with_state(arg, state, ctx))
+                .collect();
+            let arg_values = arg_values?;
+
+            // Infer the return type of the function call
+            let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
+
+            // Emit call instruction with inferred return type
+            let block = state.current_block();
+            return Ok(block.call(func_id, arg_values, inferred_ty, source));
+        }
+
+        Err(Diagnostic::syntax(format!(
+            "Unsupported callee type for IR generation: {:?}",
+            callee
+        )))
     }
 
     /// Generate IR for an application (function call or operator).
@@ -750,5 +998,48 @@ mod tests {
         assert!(ir_text.contains("fn countdown"));
         assert!(ir_text.contains("call func0")); // Recursive call to itself
         assert!(ir_text.contains("binop sub")); // n - 1
+    }
+
+    #[test]
+    fn test_gen_function_with_match() {
+        let mut generator = IrGenerator::new();
+
+        // Create a function with a match expression: fn sign(x) = match x > 0 (true -> 1) (false -> 0)
+        let source = "match x > 0 (true -> 1) (false -> 0)";
+        let parsed = parse(source);
+        let ast = parsed.ast();
+        let body = ast.items().next().expect("No expression in AST");
+
+        let func = UserFunction {
+            name: InternedString::new("sign"),
+            params: vec![InternedString::new("x")],
+            body,
+            captured_env: Env::new(),
+        };
+
+        let func_id = generator
+            .gen_function(&func)
+            .expect("Failed to generate IR");
+
+        // Build the module and check the output
+        let module = generator.build();
+        let ir_text = module.to_string();
+
+        println!("Generated IR for match:\n{}", ir_text);
+
+        // Verify the function was generated
+        assert_eq!(module.functions.len(), 1);
+        assert_eq!(module.functions[0].name, InternedString::new("sign"));
+        assert_eq!(module.functions[0].params.len(), 1);
+        assert_eq!(func_id, module.functions[0].id);
+
+        // Verify the IR contains expected elements for control flow
+        assert!(ir_text.contains("fn sign"), "Should have sign function");
+        assert!(ir_text.contains("br "), "Should have branch instruction");
+        assert!(ir_text.contains("block_1"), "Should have then block");
+        assert!(ir_text.contains("block_2"), "Should have else block");
+        assert!(ir_text.contains("block_3"), "Should have merge block");
+        assert!(ir_text.contains("phi"), "Should have phi node");
+        assert!(ir_text.contains("jmp"), "Should have jump instructions");
     }
 }
