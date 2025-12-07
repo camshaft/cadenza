@@ -136,10 +136,6 @@ impl IrGenerator {
     pub fn gen_function(&mut self, func: &UserFunction) -> Result<FunctionId, String> {
         let name = func.name;
 
-        // Debug: Check if body is a control flow expression
-        eprintln!("IR Gen: Generating function {}", name);
-        eprintln!("IR Gen: Body is control flow? {}", self.is_control_flow_expr(&func.body));
-
         // Create a type environment for inference
         let mut ctx = IrGenContext::new();
 
@@ -174,11 +170,9 @@ impl IrGenerator {
         // Check if the body is a control flow expression (match)
         if self.is_control_flow_expr(&func.body) {
             // Generate multi-block control flow
-            eprintln!("IR Gen: Using multi-block control flow");
             self.gen_function_with_control_flow(&mut func_builder, &func.body, &mut ctx, return_ty)?;
         } else {
             // Simple single-block generation
-            eprintln!("IR Gen: Using single-block generation");
             let mut block = func_builder.block();
             let result = self.gen_expr(&func.body, &mut block, &mut ctx)?;
             let (block_inst, next_val) = block.ret(Some(result), self.dummy_source());
@@ -231,24 +225,20 @@ impl IrGenerator {
         ctx: &mut IrGenContext,
         _return_ty: Type,
     ) -> Result<(), String> {
-        eprintln!("IR Gen: gen_function_with_control_flow called");
         // For now, only support match expressions at the top level (or inside __block__)
         if let Expr::Apply(apply) = body {
             if let Some(Expr::Ident(ident)) = apply.callee() {
                 let text = ident.syntax().text().to_string();
-                eprintln!("IR Gen: Found Ident callee: {}", text);
                 if text == "match" {
                     return self.gen_match_control_flow(func_builder, apply, ctx, _return_ty);
                 }
             } else if let Some(Expr::Synthetic(syn)) = apply.callee() {
-                eprintln!("IR Gen: Found Synthetic callee: {}", syn.identifier());
                 // If it's a __block__, find the match expression inside
                 if syn.identifier() == "__block__" {
                     for arg in apply.all_arguments() {
                         if let Expr::Apply(inner_apply) = arg {
                             if let Some(Expr::Ident(inner_ident)) = inner_apply.callee() {
                                 if inner_ident.syntax().text().to_string() == "match" {
-                                    eprintln!("IR Gen: Found match inside __block__");
                                     return self.gen_match_control_flow(func_builder, &inner_apply, ctx, _return_ty);
                                 }
                             }
@@ -258,7 +248,6 @@ impl IrGenerator {
             }
         }
         
-        eprintln!("IR Gen: No match expression found");
         Err("Unsupported control flow expression in function body".to_string())
     }
 
@@ -275,19 +264,14 @@ impl IrGenerator {
         ctx: &mut IrGenContext,
         _return_ty: Type,
     ) -> Result<(), String> {
-        eprintln!("IR Gen: gen_match_control_flow called");
         let args = apply.all_arguments();
-        
-        eprintln!("IR Gen: match has {} arguments", args.len());
         
         // Match expects: condition, (true -> then_expr), (false -> else_expr)
         if args.len() < 3 {
-            eprintln!("IR Gen: Not enough arguments for match");
             return Err("match requires at least 3 arguments: condition and two arms".to_string());
         }
 
         let cond_expr = &args[0];
-        eprintln!("IR Gen: Condition expr: {:?}", cond_expr);
         
         // Parse the arms - each should be (true/false -> expr)
         // Clone the expressions we need to avoid lifetime issues
@@ -295,25 +279,16 @@ impl IrGenerator {
         let mut false_expr: Option<Expr> = None;
         
         for arm in &args[1..] {
-            eprintln!("IR Gen: Processing arm");
             if let Expr::Apply(arm_apply) = arm {
                 if let Some(Expr::Op(op)) = arm_apply.callee() {
-                    eprintln!("IR Gen: Arm is Apply with Op: {}", op.syntax().text());
                     if op.syntax().text() == "->" {
                         let arm_args = arm_apply.all_arguments();
                         if arm_args.len() == 2 {
                             if let Expr::Ident(pattern_ident) = &arm_args[0] {
                                 let pattern = pattern_ident.syntax().text().to_string();
-                                eprintln!("IR Gen: Pattern: {}", pattern);
                                 match pattern.as_str() {
-                                    "true" => {
-                                        true_expr = Some(arm_args[1].clone());
-                                        eprintln!("IR Gen: Found true arm");
-                                    }
-                                    "false" => {
-                                        false_expr = Some(arm_args[1].clone());
-                                        eprintln!("IR Gen: Found false arm");
-                                    }
+                                    "true" => true_expr = Some(arm_args[1].clone()),
+                                    "false" => false_expr = Some(arm_args[1].clone()),
                                     _ => {}
                                 }
                             }
@@ -322,8 +297,6 @@ impl IrGenerator {
                 }
             }
         }
-        
-        eprintln!("IR Gen: true_expr present: {}, false_expr present: {}", true_expr.is_some(), false_expr.is_some());
         
         let true_expr = true_expr.ok_or("match missing true arm")?;
         let false_expr = false_expr.ok_or("match missing false arm")?;
@@ -481,6 +454,21 @@ impl IrGenerator {
 
             // Get arguments
             let args = apply.all_arguments();
+            
+            // Check if this is a unary minus (negation)
+            if op_text == "-" && args.len() == 1 {
+                // Generate IR for the operand
+                let operand = self.gen_expr(&args[0], block, ctx)?;
+                
+                // For negation, assume the result type is Integer if we can't infer better
+                // TODO: Improve type inference for unary operations
+                let inferred_ty = Type::Integer;
+                
+                // Emit unary negation
+                use super::UnOp;
+                return Ok(block.unop(UnOp::Neg, operand, inferred_ty, source));
+            }
+            
             if args.len() != 2 {
                 return Err(format!(
                     "Binary operator {} expects 2 arguments, got {}",
