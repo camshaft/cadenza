@@ -1,5 +1,12 @@
 // TypeScript types for cadenza-web WASM module outputs
 
+export type Syntax = 'cadenza' | 'markdown' | 'sql' | 'gcode';
+
+export interface SyntaxInfo {
+  id: Syntax;
+  name: string;
+}
+
 export interface Token {
   kind: string;
   start: number;
@@ -94,10 +101,11 @@ export interface LspCompletionItem {
 // WASM module interface (will be loaded dynamically)
 export interface CadenzaWasm {
   lex: (source: string) => LexResult;
-  parse_source: (source: string) => ParseResult;
-  ast: (source: string) => AstResult;
-  eval_source: (source: string) => EvalResult;
+  parse_source: (source: string, syntax: Syntax) => ParseResult;
+  ast: (source: string, syntax: Syntax) => AstResult;
+  eval_source: (source: string, syntax: Syntax) => EvalResult;
   get_token_kinds: () => string[];
+  get_syntaxes: () => SyntaxInfo[];
   lsp_diagnostics: (source: string) => LspDiagnostic[];
   lsp_hover: (source: string, line: number, character: number) => LspHoverInfo;
   lsp_completions: (source: string, line: number, character: number) => LspCompletionItem[];

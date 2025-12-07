@@ -13,10 +13,53 @@
 
 use cadenza_eval::{Compiler, Env, Value};
 use cadenza_lsp::{core as lsp_core, lsp_types};
-use cadenza_syntax::{lexer::Lexer, parse, token::Kind};
+use cadenza_syntax::{lexer::Lexer, token::Kind};
 use cadenza_tree::SyntaxElement;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+
+/// Available syntax types for parsing source code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Syntax {
+    /// Default Cadenza syntax (S-expression-like)
+    Cadenza,
+    /// Markdown syntax
+    Markdown,
+    /// SQL syntax
+    Sql,
+    /// GCode syntax
+    Gcode,
+}
+
+impl Syntax {
+    /// Get all available syntax types.
+    pub const ALL: &'static [Syntax] = &[
+        Syntax::Cadenza,
+        Syntax::Markdown,
+        Syntax::Sql,
+        Syntax::Gcode,
+    ];
+
+    /// Get the human-readable name of this syntax.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Syntax::Cadenza => "Cadenza",
+            Syntax::Markdown => "Markdown",
+            Syntax::Sql => "SQL",
+            Syntax::Gcode => "GCode",
+        }
+    }
+}
+
+/// Syntax information for the UI.
+#[derive(Serialize)]
+pub struct SyntaxInfo {
+    /// The syntax ID (for use in code).
+    pub id: String,
+    /// The human-readable name.
+    pub name: String,
+}
 
 /// Token information returned from lexing.
 #[derive(Serialize)]
@@ -163,6 +206,32 @@ pub fn lex(source: &str) -> JsValue {
     serde_wasm_bindgen::to_value(&result).expect("Failed to serialize LexResult")
 }
 
+/// Get list of available syntax types.
+///
+/// Returns an array of syntax objects with `id` and `name` fields.
+#[wasm_bindgen]
+pub fn get_syntaxes() -> JsValue {
+    let syntaxes: Vec<SyntaxInfo> = Syntax::ALL
+        .iter()
+        .map(|s| SyntaxInfo {
+            id: format!("{:?}", s).to_lowercase(),
+            name: s.name().to_string(),
+        })
+        .collect();
+
+    serde_wasm_bindgen::to_value(&syntaxes).expect("Failed to serialize syntaxes")
+}
+
+/// Parse source code with the specified syntax.
+fn parse_with_syntax(source: &str, syntax: Syntax) -> cadenza_syntax::parse::Parse {
+    match syntax {
+        Syntax::Cadenza => cadenza_syntax::parse::parse(source),
+        Syntax::Markdown => cadenza_markdown::parse(source),
+        Syntax::Sql => cadenza_sql::parse(source),
+        Syntax::Gcode => cadenza_gcode::parse(source),
+    }
+}
+
 /// Converts a SyntaxNode to our CstNode format.
 fn syntax_node_to_cst(node: &cadenza_syntax::SyntaxNode) -> CstNode {
     let kind = format!("{:?}", node.kind());
@@ -211,9 +280,16 @@ fn syntax_node_to_cst(node: &cadenza_syntax::SyntaxNode) -> CstNode {
 /// - `tree`: The CST as a nested object with `kind`, `start`, `end`, `text`, `children`
 /// - `errors`: Array of parse errors with `start`, `end`, `message`
 /// - `success`: true if no errors
+///
+/// # Parameters
+/// - `source`: The source code to parse
+/// - `syntax`: The syntax to use (serialized as JSON string: "cadenza", "markdown", "sql", or "gcode")
 #[wasm_bindgen]
-pub fn parse_source(source: &str) -> JsValue {
-    let parsed = parse::parse(source);
+pub fn parse_source(source: &str, syntax: JsValue) -> JsValue {
+    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax)
+        .unwrap_or(Syntax::Cadenza);
+    
+    let parsed = parse_with_syntax(source, syntax);
 
     let tree = syntax_node_to_cst(&parsed.syntax());
     let errors: Vec<ParseError> = parsed
@@ -350,9 +426,16 @@ fn expr_to_ast(expr: &cadenza_syntax::ast::Expr) -> AstNode {
 /// - `nodes`: Array of top-level AST nodes
 /// - `errors`: Array of parse errors
 /// - `success`: true if no errors
+///
+/// # Parameters
+/// - `source`: The source code to parse
+/// - `syntax`: The syntax to use (serialized as JSON string: "cadenza", "markdown", "sql", or "gcode")
 #[wasm_bindgen]
-pub fn ast(source: &str) -> JsValue {
-    let parsed = parse::parse(source);
+pub fn ast(source: &str, syntax: JsValue) -> JsValue {
+    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax)
+        .unwrap_or(Syntax::Cadenza);
+    
+    let parsed = parse_with_syntax(source, syntax);
 
     let errors: Vec<ParseError> = parsed
         .errors
@@ -392,9 +475,16 @@ fn value_to_eval_value(value: &Value) -> EvalValue {
 /// - `values`: Array of evaluation results with `type` and `display`
 /// - `diagnostics`: Array of diagnostics with `level`, `message`, `start`, `end`
 /// - `success`: true if no errors
+///
+/// # Parameters
+/// - `source`: The source code to evaluate
+/// - `syntax`: The syntax to use (serialized as JSON string: "cadenza", "markdown", "sql", or "gcode")
 #[wasm_bindgen]
-pub fn eval_source(source: &str) -> JsValue {
-    let parsed = parse::parse(source);
+pub fn eval_source(source: &str, syntax: JsValue) -> JsValue {
+    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax)
+        .unwrap_or(Syntax::Cadenza);
+    
+    let parsed = parse_with_syntax(source, syntax);
 
     // Collect parse errors as diagnostics
     let mut diagnostics: Vec<EvalDiagnostic> = parsed
@@ -600,14 +690,14 @@ mod tests {
     #[test]
     fn test_parse_basic() {
         let source = "1 + 2";
-        let parsed = parse::parse(source);
+        let parsed = parse_with_syntax(source, Syntax::Cadenza);
         assert!(parsed.errors.is_empty());
     }
 
     #[test]
     fn test_eval_basic() {
         let source = "1 + 2";
-        let parsed = parse::parse(source);
+        let parsed = parse_with_syntax(source, Syntax::Cadenza);
         let root = parsed.ast();
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
@@ -621,7 +711,7 @@ mod tests {
     fn test_eval_with_standard_builtins() {
         // Test that Env::with_standard_builtins() works correctly
         let source = "let x = 42\nx";
-        let parsed = parse::parse(source);
+        let parsed = parse_with_syntax(source, Syntax::Cadenza);
         let root = parsed.ast();
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
@@ -639,7 +729,7 @@ mod tests {
     fn test_eval_let_with_expression() {
         // Test let with a complex expression on RHS
         let source = "let x = 1 + 2\nx";
-        let parsed = parse::parse(source);
+        let parsed = parse_with_syntax(source, Syntax::Cadenza);
         let root = parsed.ast();
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
