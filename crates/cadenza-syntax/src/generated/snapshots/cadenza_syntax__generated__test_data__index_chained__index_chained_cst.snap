@@ -3,30 +3,26 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "matrix[0][1]\n"
 ---
 Root@0..13
-  Apply@0..13
-    ApplyReceiver@0..9
+  Apply@0..12
+    ApplyArgument@0..9
       Apply@0..9
-        ApplyReceiver@0..6
+        ApplyArgument@0..6
           Identifier@0..6
             Identifier@0..6 "matrix"
+        ApplyReceiver@6..6
+          SyntheticIndex@6..6
         ApplyArgument@6..9
-          Apply@6..9
-            LBracket@6..7 "["
-            ApplyReceiver@7..7
-              SyntheticList@7..7
-            ApplyArgument@7..8
-              Literal@7..8
-                Integer@7..8
-                  Integer@7..8 "0"
-            RBracket@8..9 "]"
-    ApplyArgument@9..13
-      Apply@9..12
-        LBracket@9..10 "["
-        ApplyReceiver@10..10
-          SyntheticList@10..10
-        ApplyArgument@10..11
-          Literal@10..11
-            Integer@10..11
-              Integer@10..11 "1"
-        RBracket@11..12 "]"
-      Newline@12..13 "\n"
+          LBracket@6..7 "["
+          Literal@7..8
+            Integer@7..8
+              Integer@7..8 "0"
+          RBracket@8..9 "]"
+    ApplyReceiver@9..9
+      SyntheticIndex@9..9
+    ApplyArgument@9..12
+      LBracket@9..10 "["
+      Literal@10..11
+        Integer@10..11
+          Integer@10..11 "1"
+      RBracket@11..12 "]"
+  Newline@12..13 "\n"

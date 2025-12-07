@@ -3,5 +3,5 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "[1, 2, 3][0]\n"
 ---
 [
-    [[__list__, 1, 2, 3], [__list__, 0]],
+    [__index__, [__list__, 1, 2, 3], 0],
 ]

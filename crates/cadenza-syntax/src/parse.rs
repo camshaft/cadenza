@@ -127,15 +127,9 @@ impl<'src> Parser<'src> {
                 }
 
                 // Check if there's whitespace immediately before '['
-                // We determine this by checking if there's trivia between the last consumed token and '['
-                let has_whitespace_before = if let Some(token) = self.tokens.peek() {
-                    // If whitespace.span.end != token.span.start, there's a gap (whitespace)
-                    self.whitespace.span.end != token.span.start
-                        || (self.whitespace.span.end == token.span.start
-                            && self.whitespace.span.start != self.whitespace.span.end)
-                } else {
-                    false
-                };
+                // The whitespace tracker contains the span of the most recent whitespace
+                // If the span is non-empty, there was whitespace consumed
+                let has_whitespace_before = self.whitespace.span.start != self.whitespace.span.end;
 
                 // Only treat as indexing if there's no whitespace before '['
                 if !has_whitespace_before {

@@ -3,28 +3,26 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "arr[i + 1]\n"
 ---
 Root@0..11
-  Apply@0..11
-    ApplyReceiver@0..3
+  Apply@0..10
+    ApplyArgument@0..3
       Identifier@0..3
         Identifier@0..3 "arr"
-    ApplyArgument@3..11
-      Apply@3..10
-        LBracket@3..4 "["
-        ApplyReceiver@4..4
-          SyntheticList@4..4
-        ApplyArgument@4..9
-          Apply@4..9
-            ApplyArgument@4..6
-              Identifier@4..5
-                Identifier@4..5 "i"
-              Space@5..6 " "
-            ApplyReceiver@6..7
-              Plus@6..7
-                Plus@6..7 "+"
-            Space@7..8 " "
-            ApplyArgument@8..9
-              Literal@8..9
-                Integer@8..9
-                  Integer@8..9 "1"
-        RBracket@9..10 "]"
-      Newline@10..11 "\n"
+    ApplyReceiver@3..3
+      SyntheticIndex@3..3
+    ApplyArgument@3..10
+      LBracket@3..4 "["
+      Apply@4..9
+        ApplyArgument@4..6
+          Identifier@4..5
+            Identifier@4..5 "i"
+          Space@5..6 " "
+        ApplyReceiver@6..7
+          Plus@6..7
+            Plus@6..7 "+"
+        Space@7..8 " "
+        ApplyArgument@8..9
+          Literal@8..9
+            Integer@8..9
+              Integer@8..9 "1"
+      RBracket@9..10 "]"
+  Newline@10..11 "\n"

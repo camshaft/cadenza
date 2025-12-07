@@ -3,8 +3,8 @@ source: crates/cadenza-syntax/src/generated/test_data.rs
 expression: "[1, 2, 3][0]\n"
 ---
 Root@0..13
-  Apply@0..13
-    ApplyReceiver@0..9
+  Apply@0..12
+    ApplyArgument@0..9
       Apply@0..9
         LBracket@0..1 "["
         ApplyReceiver@1..1
@@ -26,14 +26,12 @@ Root@0..13
             Integer@7..8
               Integer@7..8 "3"
         RBracket@8..9 "]"
-    ApplyArgument@9..13
-      Apply@9..12
-        LBracket@9..10 "["
-        ApplyReceiver@10..10
-          SyntheticList@10..10
-        ApplyArgument@10..11
-          Literal@10..11
-            Integer@10..11
-              Integer@10..11 "0"
-        RBracket@11..12 "]"
-      Newline@12..13 "\n"
+    ApplyReceiver@9..9
+      SyntheticIndex@9..9
+    ApplyArgument@9..12
+      LBracket@9..10 "["
+      Literal@10..11
+        Integer@10..11
+          Integer@10..11 "0"
+      RBracket@11..12 "]"
+  Newline@12..13 "\n"
