@@ -21,6 +21,33 @@ use cadenza_syntax::{
     span::Span,
 };
 
+/// Helper function to intern a string from rowan's SyntaxText efficiently.
+///
+/// This function optimizes the interning process for the common case where
+/// text is stored as a single contiguous chunk (e.g., simple identifiers).
+///
+/// Previously we used `.to_string().as_str().into()` which allocates a String
+/// then immediately copies it into the interner. Now we build the string once
+/// and intern it directly.
+#[inline]
+fn intern_syntax_text(text: &rowan::SyntaxText) -> InternedString {
+    // Count chunks to determine if we have a simple case
+    let mut count = 0;
+    text.for_each_chunk(|_| count += 1);
+
+    if count == 1 {
+        // Fast path: single chunk - intern directly from the chunk
+        let mut result = None;
+        text.for_each_chunk(|chunk| result = Some(InternedString::new(chunk)));
+        result.unwrap()
+    } else {
+        // Slow path: multiple chunks - concatenate into a string first
+        let mut concatenated = String::new();
+        text.for_each_chunk(|chunk| concatenated.push_str(chunk));
+        InternedString::new(&concatenated)
+    }
+}
+
 /// Evaluates a complete source file (Root node).
 ///
 /// Each top-level expression is evaluated in order. The results are
@@ -137,9 +164,8 @@ impl Eval for Expr {
             Expr::Attr(attr) => attr.eval(ctx),
             Expr::Op(op) => {
                 // Operators as values (for higher-order usage)
-                // Use SyntaxText directly without allocating a String
                 let text = op.syntax().text();
-                let id: InternedString = text.to_string().as_str().into();
+                let id = intern_syntax_text(&text);
                 Ok(Value::Symbol(id))
             }
             Expr::Synthetic(syn) => syn.eval(ctx),
@@ -204,7 +230,7 @@ fn maybe_auto_apply(value: Value, ctx: &mut EvalContext<'_>) -> Result<Value> {
 /// Used when the identifier is being used as a callee in an application.
 fn eval_ident_no_auto_apply(ident: &Ident, ctx: &mut EvalContext<'_>) -> Result<Value> {
     let text = ident.syntax().text();
-    let id: InternedString = text.to_string().as_str().into();
+    let id = intern_syntax_text(&text);
 
     // First check the local environment
     if let Some(value) = ctx.env.get(id) {
@@ -261,7 +287,7 @@ impl Eval for Apply {
             Expr::Op(op) => {
                 // Look up operator in environment
                 let text = op.syntax().text();
-                let id: InternedString = text.to_string().as_str().into();
+                let id = intern_syntax_text(&text);
                 let range = op.syntax().text_range();
                 let span = Span::new(range.start().into(), range.end().into());
                 ctx.env
@@ -290,16 +316,16 @@ impl Eval for Apply {
 /// Returns None for other expression types.
 ///
 /// TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
-/// AsRef<str> directly, so we need to allocate a String. See STATUS.md item #12.
+/// AsRef<str> directly. We now use intern_syntax_text helper to avoid allocation.
 fn extract_identifier(expr: &Expr) -> Option<InternedString> {
     match expr {
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
-            Some(text.to_string().as_str().into())
+            Some(intern_syntax_text(&text))
         }
         Expr::Op(op) => {
             let text = op.syntax().text();
-            Some(text.to_string().as_str().into())
+            Some(intern_syntax_text(&text))
         }
         Expr::Synthetic(syn) => {
             // Synthetic nodes provide their identifier directly
@@ -508,7 +534,7 @@ pub fn builtin_let() -> BuiltinMacro {
 
             // Get the identifier name
             let text = ident.syntax().text();
-            let name: InternedString = text.to_string().as_str().into();
+            let name = intern_syntax_text(&text);
 
             // Second argument is the value expression
             let value_expr = &args[1];
@@ -595,7 +621,7 @@ pub fn builtin_assign() -> BuiltinMacro {
             match lhs_expr {
                 Expr::Ident(ident) => {
                     let text = ident.syntax().text();
-                    let name: InternedString = text.to_string().as_str().into();
+                    let name = intern_syntax_text(&text);
 
                     let rhs_value = rhs_expr.eval(ctx)?;
 
@@ -652,7 +678,7 @@ fn handle_field_assignment(
     let (record_name, record_span) = match &args[0] {
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
-            let id: InternedString = text.to_string().as_str().into();
+            let id = intern_syntax_text(&text);
             (id, ident.span())
         }
         _ => {
@@ -666,7 +692,7 @@ fn handle_field_assignment(
     let field_name = match &args[1] {
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
-            let id: InternedString = text.to_string().as_str().into();
+            let id = intern_syntax_text(&text);
             id
         }
         _ => return Err(Diagnostic::syntax("field name must be an identifier")),
@@ -739,7 +765,7 @@ fn handle_function_definition(
         }
     };
     let name_text = name_ident.syntax().text();
-    let name: InternedString = name_text.to_string().as_str().into();
+    let name = intern_syntax_text(&name_text);
 
     // Remaining arguments are parameters
     let mut params = Vec::new();
@@ -747,7 +773,7 @@ fn handle_function_definition(
         match arg {
             Expr::Ident(ident) => {
                 let param_text = ident.syntax().text();
-                let param_name: InternedString = param_text.to_string().as_str().into();
+                let param_name = intern_syntax_text(&param_text);
                 params.push(param_name);
             }
             _ => {
@@ -905,7 +931,7 @@ pub fn builtin_record() -> BuiltinMacro {
                     // Shorthand syntax: { x, y } where x and y are identifiers
                     Expr::Ident(ident) => {
                         let text = ident.syntax().text();
-                        let field_name: InternedString = text.to_string().as_str().into();
+                        let field_name = intern_syntax_text(&text);
 
                         // Look up the variable in the environment
                         let value = ctx.env.get(field_name).cloned().ok_or_else(|| {
@@ -928,7 +954,7 @@ pub fn builtin_record() -> BuiltinMacro {
                         let field_name = match &all_args[0] {
                             Expr::Ident(ident) => {
                                 let text = ident.syntax().text();
-                                text.to_string().as_str().into()
+                                intern_syntax_text(&text)
                             }
                             _ => {
                                 return Err(Diagnostic::syntax(
@@ -1029,7 +1055,7 @@ pub fn builtin_measure() -> BuiltinMacro {
                 match &args[0] {
                     Expr::Ident(ident) => {
                         let text = ident.syntax().text();
-                        let name: InternedString = text.to_string().as_str().into();
+                        let name = intern_syntax_text(&text);
                         let unit = Unit::base(name);
                         ctx.compiler.units_mut().register(unit);
                         return Ok(Value::Nil);
@@ -1049,7 +1075,7 @@ pub fn builtin_measure() -> BuiltinMacro {
                 let name = match &args[0] {
                     Expr::Ident(ident) => {
                         let text = ident.syntax().text();
-                        let name: InternedString = text.to_string().as_str().into();
+                        let name = intern_syntax_text(&text);
                         name
                     }
                     _ => {
@@ -1079,7 +1105,7 @@ pub fn builtin_measure() -> BuiltinMacro {
                         let base_unit_name = match base_expr {
                             Some(Expr::Ident(ident)) => {
                                 let text = ident.syntax().text();
-                                let name: InternedString = text.to_string().as_str().into();
+                                let name = intern_syntax_text(&text);
                                 name
                             }
                             _ => {
@@ -1825,7 +1851,7 @@ pub fn builtin_field_access() -> BuiltinMacro {
             let (field_name, field_span) = match &args[1] {
                 Expr::Ident(ident) => {
                     let text = ident.syntax().text();
-                    let id: InternedString = text.to_string().as_str().into();
+                    let id = intern_syntax_text(&text);
                     (id, ident.span())
                 }
                 _ => return Err(Diagnostic::syntax("field name must be an identifier")),

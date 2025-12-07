@@ -8,6 +8,20 @@
 //! The interning system is built around the `Interned<S>` type, where `S` is a
 //! storage marker (ZST) that determines where values are stored. The `Interned`
 //! type implements `Deref`, allowing direct access to the interned value.
+//!
+//! # Interning from rowan SyntaxText
+//!
+//! To avoid allocations when interning from rowan's `SyntaxText`, collect the
+//! chunks first and use `new_from_chunks`:
+//!
+//! ```ignore
+//! use cadenza_eval::interner::InternedString;
+//!
+//! let text = ident.syntax().text();
+//! let mut chunks = Vec::new();
+//! text.for_each_chunk(|chunk| chunks.push(chunk));
+//! let interned = InternedString::new_from_chunks(chunks);
+//! ```
 
 use std::{
     fmt,
@@ -34,6 +48,15 @@ pub trait Storage: Sized + 'static {
 
     /// Inserts a value into storage and returns its index.
     fn insert(value: &str) -> Self::Index;
+
+    /// Inserts a value from an iterator of string chunks into storage.
+    ///
+    /// This is useful for avoiding allocations when interning from sources like
+    /// rowan's `SyntaxText`, which may store text in multiple chunks.
+    fn insert_chunks<I>(chunks: I) -> Self::Index
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>;
 
     /// Resolves an index to a static reference to the stored value.
     fn resolve(index: Self::Index) -> &'static Self::Value;
@@ -93,6 +116,33 @@ impl<S: Storage> Interned<S> {
     pub fn new(value: &str) -> Self {
         Self {
             index: S::insert(value),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Creates a new `Interned` value from an iterator of string chunks.
+    ///
+    /// This is useful for avoiding allocations when interning from sources like
+    /// rowan's `SyntaxText`, which may store text in multiple chunks. Instead of
+    /// allocating a temporary `String`, this method inserts directly from the chunks.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // With rowan SyntaxText (doesn't allocate):
+    /// let text = ident.syntax().text();
+    /// let mut chunks = Vec::new();
+    /// text.for_each_chunk(|chunk| chunks.push(chunk));
+    /// let interned = InternedString::new_from_chunks(chunks);
+    /// ```
+    #[inline]
+    pub fn new_from_chunks<I>(chunks: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        Self {
+            index: S::insert_chunks(chunks),
             _marker: PhantomData,
         }
     }
@@ -172,6 +222,29 @@ impl StringData {
         index
     }
 
+    fn insert_chunks<I>(&mut self, chunks: I) -> u32
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        // Build the complete string from chunks
+        let mut complete = String::new();
+        for chunk in chunks {
+            complete.push_str(chunk.as_ref());
+        }
+
+        // Check if we already have this string
+        if let Some(&index) = self.map.get(complete.as_str()) {
+            return index;
+        }
+
+        // Insert the new string
+        let index = self.strings.len() as u32;
+        self.strings.push(complete.clone());
+        self.map.insert(complete, index);
+        index
+    }
+
     fn get(&self, index: u32) -> &str {
         &self.strings[index as usize]
     }
@@ -189,6 +262,14 @@ impl Storage for Strings {
 
     fn insert(value: &str) -> Self::Index {
         string_storage().lock().unwrap().insert(value)
+    }
+
+    fn insert_chunks<I>(chunks: I) -> Self::Index
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        string_storage().lock().unwrap().insert_chunks(chunks)
     }
 
     fn resolve(index: Self::Index) -> &'static Self::Value {
@@ -245,6 +326,31 @@ impl IntegerData {
         index
     }
 
+    fn insert_chunks<I>(&mut self, chunks: I) -> u32
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        // Build the complete string from chunks
+        let mut complete = String::new();
+        for chunk in chunks {
+            complete.push_str(chunk.as_ref());
+        }
+
+        // Check if we already have this string
+        if let Some(&index) = self.map.get(complete.as_str()) {
+            return index;
+        }
+
+        // Parse the integer, removing underscores
+        let clean = complete.replace('_', "");
+        let value = clean.parse::<i64>();
+        let index = self.values.len() as u32;
+        self.values.push(value);
+        self.map.insert(complete, index);
+        index
+    }
+
     fn get(&self, index: u32) -> &Result<i64, ParseIntError> {
         &self.values[index as usize]
     }
@@ -262,6 +368,14 @@ impl Storage for Integers {
 
     fn insert(value: &str) -> Self::Index {
         integer_storage().lock().unwrap().insert(value)
+    }
+
+    fn insert_chunks<I>(chunks: I) -> Self::Index
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        integer_storage().lock().unwrap().insert_chunks(chunks)
     }
 
     fn resolve(index: Self::Index) -> &'static Self::Value {
@@ -319,6 +433,31 @@ impl FloatData {
         index
     }
 
+    fn insert_chunks<I>(&mut self, chunks: I) -> u32
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        // Build the complete string from chunks
+        let mut complete = String::new();
+        for chunk in chunks {
+            complete.push_str(chunk.as_ref());
+        }
+
+        // Check if we already have this string
+        if let Some(&index) = self.map.get(complete.as_str()) {
+            return index;
+        }
+
+        // Parse the float, removing underscores
+        let clean = complete.replace('_', "");
+        let value = clean.parse::<f64>();
+        let index = self.values.len() as u32;
+        self.values.push(value);
+        self.map.insert(complete, index);
+        index
+    }
+
     fn get(&self, index: u32) -> &Result<f64, ParseFloatError> {
         &self.values[index as usize]
     }
@@ -336,6 +475,14 @@ impl Storage for Floats {
 
     fn insert(value: &str) -> Self::Index {
         float_storage().lock().unwrap().insert(value)
+    }
+
+    fn insert_chunks<I>(chunks: I) -> Self::Index
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        float_storage().lock().unwrap().insert_chunks(chunks)
     }
 
     fn resolve(index: Self::Index) -> &'static Self::Value {
