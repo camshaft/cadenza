@@ -146,6 +146,7 @@ pub enum Kind {
     SyntheticList,
     SyntheticRecord,
     SyntheticBlock,
+    SyntheticIndex,
     SyntheticMarkdownH1,
     SyntheticMarkdownH2,
     SyntheticMarkdownH3,
@@ -243,6 +244,7 @@ impl Kind {
         Self::SyntheticList,
         Self::SyntheticRecord,
         Self::SyntheticBlock,
+        Self::SyntheticIndex,
         Self::SyntheticMarkdownH1,
         Self::SyntheticMarkdownH2,
         Self::SyntheticMarkdownH3,
@@ -340,6 +342,7 @@ impl Kind {
         Self::SyntheticList,
         Self::SyntheticRecord,
         Self::SyntheticBlock,
+        Self::SyntheticIndex,
         Self::SyntheticMarkdownH1,
         Self::SyntheticMarkdownH2,
         Self::SyntheticMarkdownH3,
@@ -417,6 +420,7 @@ impl Kind {
                 | Self::SyntheticList
                 | Self::SyntheticRecord
                 | Self::SyntheticBlock
+                | Self::SyntheticIndex
                 | Self::SyntheticMarkdownH1
                 | Self::SyntheticMarkdownH2
                 | Self::SyntheticMarkdownH3
@@ -503,7 +507,7 @@ impl Kind {
 
     /// Try to convert a u16 discriminant to a Kind
     pub const fn try_from_u16(value: u16) -> Option<Self> {
-        if value < 94 {
+        if value < 95 {
             // SAFETY: value is within valid discriminant range
             Some(unsafe { core::mem::transmute::<u16, Kind>(value) })
         } else {
@@ -595,6 +599,7 @@ impl Kind {
             Self::SyntheticList => "synthetic list",
             Self::SyntheticRecord => "synthetic record",
             Self::SyntheticBlock => "synthetic block",
+            Self::SyntheticIndex => "synthetic index",
             Self::SyntheticMarkdownH1 => "synthetic markdown h1",
             Self::SyntheticMarkdownH2 => "synthetic markdown h2",
             Self::SyntheticMarkdownH3 => "synthetic markdown h3",
@@ -729,6 +734,12 @@ impl Kind {
         (6, 7)
     }
 
+    /// Returns the left binding power for array indexing
+    /// Array indexing has the same precedence as path access (::)
+    pub const fn array_index_binding_power() -> u8 {
+        32
+    }
+
     /// Returns true if this token kind has infix binding power
     pub const fn is_infix(self) -> bool {
         self.infix_binding_power().is_some()
@@ -750,6 +761,7 @@ impl Kind {
             Self::SyntheticList => Some("__list__"),
             Self::SyntheticRecord => Some("__record__"),
             Self::SyntheticBlock => Some("__block__"),
+            Self::SyntheticIndex => Some("__index__"),
             Self::SyntheticMarkdownH1 => Some("h1"),
             Self::SyntheticMarkdownH2 => Some("h2"),
             Self::SyntheticMarkdownH3 => Some("h3"),

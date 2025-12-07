@@ -289,6 +289,16 @@ impl Tokens {
         w!("    }}");
         w!("");
 
+        // Generate array_index_binding_power method
+        // Array indexing should have the same precedence as path access (highest)
+        let (path_left, _path_right) = InfixBindingPower::PathAccess.binding_power();
+        w!("    /// Returns the left binding power for array indexing");
+        w!("    /// Array indexing has the same precedence as path access (::)");
+        w!("    pub const fn array_index_binding_power() -> u8 {{");
+        w!("        {path_left}");
+        w!("    }}");
+        w!("");
+
         // Generate is_infix method
         w!("    /// Returns true if this token kind has infix binding power");
         w!("    pub const fn is_infix(self) -> bool {{");
@@ -436,6 +446,10 @@ enum PostfixBindingPower {
     PipeTry = 0,
     /// Try operator: ? (lower than FieldAccess=30 so field resolves first)
     Try = 29,
+    /// Array indexing: arr[0] (highest precedence, same as PathAccess)
+    /// Note: This is handled specially in the parser, not through the binding power system
+    #[allow(dead_code)]
+    ArrayIndex = 34,
 }
 
 struct Punctuation {
@@ -661,6 +675,7 @@ impl Synthetic {
             s("SyntheticList", "__list__"),
             s("SyntheticRecord", "__record__"),
             s("SyntheticBlock", "__block__"),
+            s("SyntheticIndex", "__index__"),
             // Markdown elements
             s("SyntheticMarkdownH1", "h1"),
             s("SyntheticMarkdownH2", "h2"),

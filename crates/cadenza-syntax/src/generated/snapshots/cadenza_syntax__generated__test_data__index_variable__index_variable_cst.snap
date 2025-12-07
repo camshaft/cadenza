@@ -1,0 +1,17 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "arr[i]\n"
+---
+Root@0..7
+  Apply@0..6
+    ApplyArgument@0..3
+      Identifier@0..3
+        Identifier@0..3 "arr"
+    ApplyReceiver@3..3
+      SyntheticIndex@3..3
+    ApplyArgument@3..6
+      LBracket@3..4 "["
+      Identifier@4..5
+        Identifier@4..5 "i"
+      RBracket@5..6 "]"
+  Newline@6..7 "\n"

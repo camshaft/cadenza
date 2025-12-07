@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "[1, 2, 3][0]\n"
+---
+[
+    [__index__, [__list__, 1, 2, 3], 0],
+]
