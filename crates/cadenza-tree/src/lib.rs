@@ -18,18 +18,18 @@
 //! This design minimizes allocations and enables efficient structural sharing.
 
 mod green;
+pub mod interner;
+mod metadata;
 mod red;
 mod syntax_kind;
 mod text;
-mod metadata;
-pub mod interner;
 
-pub use green::{GreenNode, GreenNodeBuilder, GreenToken, Checkpoint};
-pub use red::{SyntaxNode, SyntaxToken, SyntaxElement, NodeOrToken};
+pub use green::{Checkpoint, GreenNode, GreenNodeBuilder, GreenToken};
+pub use interner::{Interned, InternedString, Storage, Strings};
+pub use metadata::{NodeMetadata, SourceFile};
+pub use red::{NodeOrToken, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use syntax_kind::SyntaxKind;
 pub use text::SyntaxText;
-pub use metadata::{NodeMetadata, SourceFile};
-pub use interner::{InternedString, Interned, Storage, Strings};
 
 /// Language trait that must be implemented by users of this tree.
 ///

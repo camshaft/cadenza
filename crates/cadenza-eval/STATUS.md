@@ -152,7 +152,7 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Unified with extract_identifier helper
    - [PR #21](https://github.com/camshaft/cadenza/pull/21#discussion_r2575603972)
 
-22. **Refactor Built-in Macros to Special Forms** (In Progress)
+22. ~~**Refactor Built-in Macros to Special Forms**~~ ✅ (Completed)
    - [x] Create BuiltinSpecialForm struct with eval_fn and ir_fn
    - [x] Add Value::SpecialForm variant using &'static BuiltinSpecialForm
    - [x] Organize special forms as submodules (one module per form)
@@ -171,29 +171,38 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
      - [x] `|>` - Pipeline operator
      - [x] `.` - Field access (implemented as `__index__` special form)
    - [x] Remove deprecated `builtin_*` BuiltinMacro functions from eval.rs
-   - [ ] **Wire up special form IR generation to IR generator**
-     - [ ] Modify IrGenerator::gen_apply to detect special forms and call their ir_fn
-     - [ ] Remove hardcoded __block__ and __list__ handling in favor of special form dispatch
-     - [ ] Test IR generation for all special forms
-   - [ ] **Migrate builtin operators to special forms**
-     - [ ] `+` - Addition operator
-     - [ ] `-` - Subtraction operator
-     - [ ] `*` - Multiplication operator
-     - [ ] `/` - Division operator
-     - [ ] `==` - Equality operator
-     - [ ] `!=` - Inequality operator
-     - [ ] `<` - Less than operator
-     - [ ] `<=` - Less than or equal operator
-     - [ ] `>` - Greater than operator
-     - [ ] `>=` - Greater than or equal operator
+   - [x] **Wire up special form IR generation to IR generator**
+     - [x] Modify IrGenerator::gen_apply to detect special forms and call their ir_fn
+     - [x] Remove hardcoded __block__ and __list__ handling in favor of special form dispatch
+     - [x] Test IR generation for all special forms
+   - [x] **Migrate builtin operators to special forms**
+     - [x] `+` - Addition operator
+     - [x] `-` - Subtraction operator
+     - [x] `*` - Multiplication operator
+     - [x] `/` - Division operator
+     - [x] `==` - Equality operator
+     - [x] `!=` - Inequality operator
+     - [x] `<` - Less than operator
+     - [x] `<=` - Less than or equal operator
+     - [x] `>` - Greater than operator
+     - [x] `>=` - Greater than or equal operator
+     - [x] `&&` - Logical AND operator (with short-circuit evaluation)
+     - [x] `||` - Logical OR operator (with short-circuit evaluation)
    
    **Migration Pattern Used:**
    1. Create `special_form/<name>.rs` module
    2. Implement `get() -> &'static BuiltinSpecialForm` using OnceLock
    3. Implement `eval_fn` and `ir_fn` functions
-   4. Update `Env::register_standard_builtins()` to use SpecialForm
-   5. Update IR generator for IR generation support
+   4. Update `Env::register_standard_builtins()` to use SpecialForm for evaluation
+   5. Update `IrGenerator::try_gen_special_form()` to dispatch to special form IR generation
    6. Move tests from old location to new module
+
+   **Future Improvement:**
+   - [ ] Look up special forms from the evaluator environment rather than hardcoding the mapping in `try_gen_special_form()`
+     - This would make it easier to maintain and extend the language
+     - It would make IR generation more consistent with the interpreter
+     - The current approach hardcodes operator names in `try_gen_special_form()`, which requires updating both the environment registration and the IR generator dispatch when adding new operators
+
 
 
 ## Priority Suggestions

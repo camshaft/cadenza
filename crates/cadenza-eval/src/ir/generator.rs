@@ -238,8 +238,8 @@ impl IrGenerator {
                 (IrConst::Float(value), Type::Float)
             }
             LiteralValue::String(s) => {
-                let text = s.syntax().text().to_string();
-                (IrConst::String(InternedString::new(&text)), Type::String)
+                let text = s.syntax().text().interned();
+                (IrConst::String(text), Type::String)
             }
             LiteralValue::StringWithEscape(_) => {
                 // For now, treat escaped strings as regular strings
@@ -259,8 +259,7 @@ impl IrGenerator {
         ident: &cadenza_syntax::ast::Ident,
         ctx: &IrGenContext,
     ) -> Result<ValueId> {
-        let text = ident.syntax().text().to_string();
-        let name = InternedString::new(&text);
+        let name = ident.syntax().text().interned();
         ctx.lookup_var(name).ok_or_else(|| {
             Diagnostic::syntax(format!("Undefined variable in IR generation: {}", name))
         })
@@ -336,16 +335,16 @@ impl IrGenerator {
         // Extract the name/operator from the callee
         let name_opt = match &callee {
             Expr::Ident(ident) => {
-                let text = ident.syntax().text().to_string();
-                Some(text)
+                let text = ident.syntax().text().interned();
+                Some(text.to_string())
             }
             Expr::Synthetic(syn) => {
                 let id = syn.identifier();
                 Some(id.to_string())
             }
             Expr::Op(op) => {
-                let text = op.syntax().text().to_string();
-                Some(text)
+                let text = op.syntax().text().interned();
+                Some(text.to_string())
             }
             _ => None,
         };

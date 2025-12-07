@@ -3,7 +3,7 @@
 //! The red tree provides convenient, typed access to the green tree.
 //! It calculates absolute positions and provides iteration over children.
 
-use crate::{green::*, Language, SyntaxText};
+use crate::{Language, SyntaxText, green::*};
 use std::{fmt, hash::Hash, marker::PhantomData, sync::Arc};
 
 /// A node in the red tree.
@@ -75,13 +75,13 @@ impl<L: Language> SyntaxNode<L> {
         if let Some(single_token) = self.single_token_text() {
             return single_token;
         }
-        
+
         // Slow path: concatenate multiple tokens
         let mut text = String::new();
         self.collect_text(&mut text);
-        SyntaxText::from_str(&text)
+        text.into()
     }
-    
+
     /// Check if this node has exactly one token and return its text if so.
     fn single_token_text(&self) -> Option<SyntaxText> {
         let children = self.green.children();
@@ -137,7 +137,7 @@ impl<L: Language> SyntaxNode<L> {
         let mut stack = vec![SyntaxElement::Node(self.clone())];
         std::iter::from_fn(move || {
             let element = stack.pop()?;
-            
+
             // Add children in reverse order so they're processed in the correct order
             if let SyntaxElement::Node(ref node) = element {
                 // Collect children into a temporary vector and extend in reverse
@@ -145,7 +145,7 @@ impl<L: Language> SyntaxNode<L> {
                 let children: Vec<_> = node.children_with_tokens().collect();
                 stack.extend(children.into_iter().rev());
             }
-            
+
             Some(element)
         })
     }
@@ -233,13 +233,18 @@ fn fmt_node<L: Language>(
     if !is_first {
         write!(f, "{:indent$}", "", indent = indent * 2)?;
     }
-    
+
     write!(f, "{:?}@", node.kind())?;
-    write!(f, "{}..{}", node.text_range().start().into(), node.text_range().end().into())?;
-    
+    write!(
+        f,
+        "{}..{}",
+        node.text_range().start().into(),
+        node.text_range().end().into()
+    )?;
+
     // Check if this node has any children
     let has_children = !node.green.children().is_empty();
-    
+
     if has_children {
         writeln!(f)?;
         for child in node.children_with_tokens() {
@@ -250,7 +255,12 @@ fn fmt_node<L: Language>(
                 SyntaxElement::Token(token) => {
                     write!(f, "{:indent$}", "", indent = (indent + 1) * 2)?;
                     write!(f, "{:?}@", token.kind())?;
-                    write!(f, "{}..{}", token.text_range().start().into(), token.text_range().end().into())?;
+                    write!(
+                        f,
+                        "{}..{}",
+                        token.text_range().start().into(),
+                        token.text_range().end().into()
+                    )?;
                     write!(f, " {:?}", token.text().as_str())?;
                     writeln!(f)?;
                 }
@@ -260,7 +270,7 @@ fn fmt_node<L: Language>(
         // Empty node but not the root - still need newline
         writeln!(f)?;
     }
-    
+
     Ok(())
 }
 
