@@ -129,6 +129,10 @@ impl<L: Language> SyntaxNode<L> {
     }
 
     /// Iterate over all descendant elements (nodes and tokens) in pre-order.
+    ///
+    /// Note: This collects children into a temporary Vec to reverse them for
+    /// correct traversal order. For very large trees, consider using a custom
+    /// traversal if this becomes a bottleneck.
     pub fn descendants_with_tokens(&self) -> impl Iterator<Item = SyntaxElement<L>> {
         let mut stack = vec![SyntaxElement::Node(self.clone())];
         std::iter::from_fn(move || {
@@ -137,7 +141,7 @@ impl<L: Language> SyntaxNode<L> {
             // Add children in reverse order so they're processed in the correct order
             if let SyntaxElement::Node(ref node) = element {
                 // Collect children into a temporary vector and extend in reverse
-                // This is more efficient than collecting and reversing
+                // This is necessary because we're using a stack (LIFO)
                 let children: Vec<_> = node.children_with_tokens().collect();
                 stack.extend(children.into_iter().rev());
             }

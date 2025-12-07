@@ -4,6 +4,9 @@
 ///
 /// This is a simple wrapper around a u16 that provides type safety.
 /// User-defined token kinds are converted to/from this type via the Language trait.
+///
+/// Note: Value 0 is allowed, as enum variants start at 0 by default.
+/// For example, if your token enum starts with `At`, it will have discriminant 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SyntaxKind(pub u16);
 
