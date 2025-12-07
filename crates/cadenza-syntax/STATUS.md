@@ -17,7 +17,7 @@ The parser implements most core syntax features:
 - Prefix operators (`@`, `!`, `~`, `$`, `...`)
 - Postfix operators (`?`, `|?`)
 - Array literals (`[1, 2, 3]`)
-- Record literals - **shorthand only** (`{ x, y }`)
+- Record literals with field assignments (`{ x = 1 }`)
 - Parenthesized expressions
 - Indentation-based blocks
 - Apply nodes for function application
@@ -25,20 +25,22 @@ The parser implements most core syntax features:
 - Generated binding power system
 
 ⚠️ **Partially Complete:**
-- **Records**: Shorthand syntax works (`{ x, y }`), but field assignments (`{ x = 1 }`) fail due to parser marker propagation issue
-- **Error Recovery**: Basic error nodes exist but recovery is weak
+- **Error Recovery**: Basic error nodes exist with limited recovery. Specific gaps:
+  - Dedented expressions inside delimiters are handled (e.g., `foo [\nbar` creates error + recovers)
+  - Missing delimiters detected but could have better recovery strategies
+  - No recovery for double operators or trailing operators
 
 ❌ **Not Implemented:**
-- Array indexing (`arr[0]`)
-- Quote/unquote operators (syntax not finalized)
+- Array indexing (`arr[0]`) - can use whitespace to distinguish from array literals
+- Quote/unquote operators - not high priority, can use `quote` and `unquote` as identifiers
 - Tuples vs grouping distinction
 - Prefix negation (`-x`) - intentionally removed due to ambiguity
 - Match expressions
 - If/else expressions
-- Function/closure syntax
+- Function/closure syntax - bare arrow syntax preferred for closures
 - Loops (while, for, loop)
-- Partial function application (`&foo arg`)
-- String interpolation
+- Partial function application - `&` conflicts with bitwise AND, needs different symbol
+- String interpolation - use JS-style `${name}` to reserve `:` for type annotations
 
 ## Detailed Status by Feature
 
@@ -60,20 +62,23 @@ The parser implements most core syntax features:
 
 ---
 
-### 2. Quote/Unquote ❌ NOT IMPLEMENTED
+### 2. Quote/Unquote ❌ NOT IMPLEMENTED (LOW PRIORITY)
 
-**Status:** Infrastructure missing, syntax not finalized.
+**Status:** Not implemented. **Not high priority** - can use `quote` and `unquote` as regular identifiers for now.
 
-**Design Decision Needed:**
-- Current tokens: `'` (SingleQuote), `~` (Tilde)
-- Single quote conflicts with potential character literals
+**Approach:**
+- Use identifiers: `quote expr` / `unquote expr` work with current parser
+- No special syntax needed initially
+- Can revisit specialized syntax later if needed
+
+**If specialized syntax is desired later:**
 - Alternative syntaxes to consider:
   - Backtick for quote: `` `expr ``
-  - Dollar for unquote: `$expr`
-  - Keyword-like: `quote expr` / `unquote expr`
+  - Different prefix characters
+  - Keep as keywords
 
-**What's Needed:**
-1. Finalize syntax decision
+**What Would Be Needed:**
+1. Decide on syntax (if not using identifiers)
 2. Add as prefix operators in parser
 3. Represent as `Apply(__quote__, [expr])` and `Apply(__unquote__, [expr])`
 4. Handle nested quotes and unquotes
@@ -111,40 +116,27 @@ The parser implements most core syntax features:
 4. Handle chained indexing: `arr[0][1]`
 5. Handle complex expressions: `arr[i + 1]`
 
-**Design Challenge:** Distinguish `[` as array literal prefix vs indexing postfix
+**Design Solution:** Use whitespace to distinguish - `arr[0]` (no space) is indexing, `arr [0]` (with space) is function application with array literal.
 
 **References:** `PARSER_ISSUES.md` Issue 4
 
 ---
 
-### 5. Record Creation ⚠️ PARTIAL
+### 5. Record Creation ✅ COMPLETE
 
-**Status:** Shorthand works, field assignments blocked.
+**Status:** Fully implemented with field assignments working.
 
 **Working:**
 - Empty records: `{}`
 - Shorthand fields: `{ x, y }` → `[__record__, x, y]`
-
-**Not Working:**
-- Field assignments: `{ x = 1 }` - **BLOCKED**
+- Field assignments: `{ x = 1 }` → `[__record__, [=, x, 1]]`
 - Mixed shorthand and assignments: `{ x, y = 10 }`
-- Nested records with assignments
+- Nested records: `{ a = { b = 1 } }`
+- Field expressions: `{ a = 2 + 2 }`
 
-**Root Cause:** Parser marker propagation issue with low binding power operators inside delimiters.
+**Note:** The parser marker propagation issue has been resolved. Records with low binding power operators now work correctly.
 
-When parsing `{ x = 1 }`:
-1. Parser enters `parse_record` with `BraceMarker`
-2. Parses field with `CommaMarker(BraceMarker)`
-3. Sees `=` operator (binding power 5,4)
-4. Creates new `WhitespaceMarker` for RHS, **loses delimiter context**
-5. After parsing `1`, sees `}` on same line
-6. Whitespace marker says "continue" 
-7. Juxtaposition (BP 6) >= 4, tries to consume `}` as argument
-8. Error: closing brace consumed incorrectly
-
-**Solution:** Propagate parent delimiter markers through recursive parsing so child contexts know when to stop.
-
-**Workaround:** Shorthand expansion (`{ x }` → `{ x = x }`) deferred to macro expansion time.
+**Test Files:** `record-*.cdz` in test-data/
 
 **References:** `PARSER_ISSUES.md` Issue 5
 
@@ -157,9 +149,11 @@ When parsing `{ x = 1 }`:
 **Working:**
 - Simple access: `point.x`
 - Chained access: `obj.field.subfield`
-- After function calls: `get_point().x`
-- With indexing: `arr[0].name`
+- After function calls: `get_point.x` (functions auto-apply with 0 args)
+- With indexing: `arr[0].name` (once indexing is implemented)
 - In expressions: `point.x + point.y`
+
+**Note:** Function calls don't use `()` - zero-arity functions are auto-applied. Use `(get_point).x` if you need to reference the function itself.
 
 **Representation:** `Apply(., [record, field])`
 
@@ -182,7 +176,7 @@ When parsing `{ x = 1 }`:
 4. Represent as `Apply(__tuple__, [elements...])`
 5. Empty tuple: `()` → `Apply(__tuple__, [])`
 
-**Design Decision:** Should `()` be empty tuple or unit type?
+**Design Decision:** Treat `()` as empty tuple/unit type, same as Rust.
 
 **References:** `PARSER_ISSUES.md` Issue 7
 
@@ -216,22 +210,30 @@ match x
 
 **Status:** No conditional expression support.
 
-**What's Needed:**
-1. Recognize `if condition then consequent else alternative` pattern
-2. Support indented bodies after `then` and `else`
-3. Represent as `Apply(if, [condition, consequent, alternative])`
-4. Support `elif` chains by nesting
-5. Handle if without else (if language design permits)
+**Design Challenge:** How to support `if`/`else` without parser specialization? Current parser has no keywords, only identifiers and punctuation.
 
-**Syntax Examples:**
+**Alternatives:**
+
+1. **Match-style cond expression:**
+```cadenza
+cond
+    expr1 -> result1
+    expr2 -> result2
+    true -> "base case"
+```
+This fits naturally with the current parser design.
+
+2. **Traditional if/else (requires parser changes):**
 ```cadenza
 if x > 0 then "positive" else "negative"
-
-if condition then
-    do_something
-else
-    do_other
 ```
+This requires special handling of `if`, `then`, `else` tokens, breaking the no-keywords principle.
+
+**What's Needed:**
+1. Decide between `cond` (no parser changes) vs `if/then/else` (parser specialization)
+2. If using `if/then/else`: Recognize the pattern and parse as special form
+3. Support indented bodies
+4. Represent as `Apply(if, [condition, consequent, alternative])` or `Apply(cond, [arms...])`
 
 **References:** `PARSER_ISSUES.md` Issue 9
 
@@ -241,26 +243,33 @@ else
 
 **Status:** No function definition syntax.
 
-**Design Decisions Needed:**
+**Design Decisions:**
 
 **Functions (hoisted):**
 - Named, can be called before definition
-- Syntax: `fn name params -> body`
+- Syntax: `fn name params -> body` (name comes after `fn`)
+- Parameters are curried: `fn add x y -> x + y`
 - Enables mutual recursion
 
 **Closures (not hoisted):**
 - Anonymous, bound to variables via `let`
 - Must be defined before use
-- Several syntax options:
-  - Bare arrow: `x -> x + 1`
-  - Backslash: `\x -> x + 1` (Haskell-like)
-  - Pipes: `|x| x + 1` (Rust-like)
-  - `fn` keyword: `fn x -> x + 1`
+- **Preferred syntax:** Bare arrow `x -> x + 1`
+- Alternative: `\x -> x + 1` (Haskell-like)
+- Rust-style `|x| x + 1` not chosen
+
+**Examples:**
+```cadenza
+# Function (hoisted)
+fn add x y -> x + y
+
+# Closure (not hoisted)
+let double = x -> x * 2
+let add5 = y -> add y 5
+```
 
 **Open Questions:**
-1. Closure syntax choice
-2. Function name position (`fn double x` vs `double = fn x`)
-3. Parameter syntax (curried `fn add x y` vs tuple `fn add (x, y)`)
+- How to make bare arrow syntax work without parser ambiguity?
 
 **References:** `PARSER_ISSUES.md` Issue 10
 
@@ -279,7 +288,7 @@ else
 
 **Design Implications:** Supporting loops implies supporting mutability.
 
-**Syntax Examples:**
+**Preferred Syntax:**
 ```cadenza
 loop
     do_something
@@ -288,8 +297,11 @@ loop
 while condition
     do_something
 
-for x in collection
+for x <- collection
     process x
+```
+
+**Note:** Using `<-` instead of `in` for the for-loop syntax.
 ```
 
 **References:** `PARSER_ISSUES.md` Issue 11
@@ -300,20 +312,26 @@ for x in collection
 
 **Status:** No partial application support.
 
+**Design Conflict:** `&` conflicts with bitwise AND (infix) and potential reference operator. **Need alternative symbol.**
+
+**Possible Alternatives:**
+- `@` prefix (but conflicts with attribute operator)
+- `%` prefix
+- `#` prefix
+- Different syntax entirely
+
 **What's Needed:**
-1. Add `&` as prefix operator for partial application
+1. Choose non-conflicting symbol
 2. Parse function name and following arguments
 3. Handle `$0`, `$1`, `$2` as positional placeholders
-4. Represent as `Apply(&, [fn, arg1, arg2, ...])`
+4. Represent as `Apply(symbol, [fn, arg1, arg2, ...])`
 5. Handle holes for argument reordering
 
-**Design Conflict:** `&` also used for bitwise AND (infix) and potential reference operator.
-
-**Syntax Examples:**
+**Syntax Examples (using hypothetical symbol):**
 ```cadenza
-let f = &add          # Capture function
-let add5 = &add 5     # Partial application
-let middle = &substring 0 $0 10  # With holes
+let f = ?add          # Capture function
+let add5 = ?add 5     # Partial application
+let middle = ?substring 0 $0 10  # With holes
 ```
 
 **References:** `PARSER_ISSUES.md` Issue 12
@@ -322,22 +340,25 @@ let middle = &substring 0 $0 10  # With holes
 
 ### 13. Error Recovery ⚠️ PARTIAL
 
-**Status:** Basic error nodes exist, recovery is weak.
+**Status:** Basic error nodes exist with functional recovery for common cases.
 
-**Issues:**
-1. `parse_primary()` has catch-all that accepts invalid tokens
-2. Missing synchronization strategy after errors
-3. Limited negative test coverage
-4. Errors in delimited contexts don't propagate correctly
+**Working:**
+- Dedented expressions in delimiters: `foo [\nbar` correctly creates error + recovers with `bar` as separate expression
+- Missing delimiters detected: `{ a = 1` emits "expected }" error
+- Invalid tokens at expression start create error nodes
+
+**Gaps:**
+- Limited synchronization after complex errors
+- Could improve recovery for double operators (e.g., `a + + b`)
+- Could improve recovery for trailing operators (e.g., `a +`)
+- Limited negative test coverage (8 test files in `invalid-parse/`)
 
 **What's Needed:**
-1. Restrict valid primary tokens (identifiers, literals, delimiters, prefix ops)
-2. Create Error nodes for unexpected tokens
-3. Implement synchronization (skip to newline, delimiter, etc.)
-4. Add comprehensive negative tests
-5. Fix marker propagation to handle dedented expressions in delimiters
+1. Add more comprehensive negative tests
+2. Improve synchronization strategies for complex error cases
+3. Better error messages with suggestions
 
-**Example Issue:** `foo [\nbar` where `bar` is at root indentation should not become an argument of `foo`.
+**Current Test Files:** `invalid-parse/*.cdz` - covers array/record delimiter errors, sparse entries, double commas
 
 **References:** `PARSER_ISSUES.md` Issue 13
 
@@ -347,21 +368,32 @@ let middle = &substring 0 $0 10  # With holes
 
 **Status:** Basic strings work, no interpolation or heredoc support.
 
+**Design Decisions:**
+- Use JS-style `${name}` for interpolation (reserves `:` for type annotations like `let v: integer = 1`)
+- Use `\${` for escaping literal `${`
+- No prefix needed - just embed `${expr}` in regular strings
+
 **What's Needed:**
-1. Add `:` prefix for interpolated strings: `:"hello ${name}"`
-2. Parse `${expr}` within strings, switch to expression parsing
-3. Multi-line heredoc strings:
+1. Parse `${expr}` within strings, switch to expression parsing
+2. Multi-line heredoc strings:
    - Detect newline after opening quote
    - Strip common leading indentation
    - Emit `StringLine` tokens
-4. New token types: `InterpolatedStringStart`, `InterpolationStart`, `InterpolationEnd`, `StringLine`
-5. Represent as `Apply(__interp__, [part1, expr1, part2, expr2, ...])`
+3. New token types: `InterpolationStart` (`${`), `InterpolationEnd` (`}`)
+4. Represent as `Apply(__interp__, [part1, expr1, part2, expr2, ...])`
+
+**Syntax Examples:**
+```cadenza
+"hello ${name}"
+"result: ${a + b}"
+"multi-line:
+    value = ${x}
+    done"
+```
 
 **Open Questions:**
-1. Interpolation syntax: `:"..."` vs `$"..."` vs `f"..."` vs `` `...` ``
-2. Escape syntax: `\${` vs `$${`
-3. Expression restrictions in `${}`
-4. Indentation stripping algorithm for multi-line
+- Expression restrictions in `${}`? (probably allow any expression)
+- Indentation stripping algorithm for multi-line
 
 **References:** `PARSER_ISSUES.md` Issue 14
 
@@ -369,45 +401,47 @@ let middle = &substring 0 $0 10  # With holes
 
 ## Implementation Priority
 
-Based on dependencies and common usage:
+Based on dependencies, design decisions, and common usage:
 
-1. **Error Recovery** ⚠️ - Critical for usability
-2. **Fix Record Field Assignments** ⚠️ - Core data structure
-3. **Array Indexing** - Basic data structure access
-4. **Tuples** - Foundation for destructuring
-5. **If/Else** - Basic control flow
-6. **Functions/Closures** - Core language feature (needs design decision)
-7. **String Interpolation** - Common feature
-8. **Quote/Unquote** - Metaprogramming (needs design decision)
-9. **Loops** - Control flow
-10. **Match** - Pattern matching (most complex)
-11. **Partial Application** - Advanced feature
+1. **Error Recovery Improvements** ⚠️ - Add more negative tests, better messages
+2. **Array Indexing** - Use whitespace to distinguish from literals
+3. **Tuples** - Foundation for destructuring
+4. **If/Else or Cond** - Decide between parser specialization vs match-style
+5. **Functions/Closures** - Implement with decided syntax (bare arrow for closures, curried params)
+6. **String Interpolation** - JS-style `${expr}`, no prefix needed
+7. **Loops** - with `for x <- collection` syntax
+8. **Match** - Pattern matching (most complex)
+9. **Quote/Unquote** - Low priority, can use identifiers
+10. **Partial Application** - Need to choose non-conflicting symbol
 
-## Design Decisions Needed
+## Design Decisions Status
 
-Several features are blocked on design decisions:
+**Decided:**
+- ✅ **Closure Syntax:** Bare arrow `x -> x + 1` (preferred if can make it work)
+- ✅ **Function Syntax:** Name after `fn`, curried params: `fn add x y -> x + y`
+- ✅ **Tuple/Unit:** `()` is empty tuple/unit, same as Rust
+- ✅ **String Interpolation:** JS-style `${name}`, reserves `:` for type annotations, escape with `\${`
+- ✅ **For Loop Syntax:** `for x <- collection` (using `<-` instead of `in`)
+- ✅ **Records:** All working, marker propagation issue resolved
 
-1. **Quote/Unquote Syntax:** `'` vs `` ` `` vs `quote`
-2. **Closure Syntax:** `->` vs `\` vs `|x|` vs `fn`
-3. **Function Syntax:** Name position and parameter style
-4. **Partial Application:** Conflict with `&` operator
-5. **Tuple vs Unit:** What is `()`?
-6. **String Interpolation:** Which prefix syntax?
+**Still Needed:**
+- ⚠️ **If/Else:** Parser specialization vs `cond` match-style syntax
+- ⚠️ **Partial Application:** Need alternative symbol to `&`
+- ⚠️ **Array Indexing:** Confirm whitespace-based disambiguation works
+- ⚠️ **Quote/Unquote:** Low priority - can use `quote`/`unquote` identifiers
 
 ## Technical Debt
 
-### Parser Marker Propagation Issue
+### ~~Parser Marker Propagation Issue~~ ✅ RESOLVED
 
-**Impact:** Blocks record field assignments and potentially other features.
+**Previous Impact:** Blocked record field assignments and arrays with low binding power operators.
 
-**Root Cause:** When parsing RHS of low binding power operators inside delimiters, the parser creates a new `WhitespaceMarker` that doesn't know about the outer delimiter context.
+**Resolution:** The marker propagation issue has been fixed. Records with field assignments now work correctly, including nested records and expressions.
 
-**Solution:** Refactor `parse_expression_bp` to accept and propagate parent delimiter markers through recursive calls. Child markers should compose with parent markers to check both whitespace rules AND delimiter boundaries.
-
-**Affected Features:**
-- Record field assignments (primary blocker)
-- Arrays with assignment operators (e.g., `[x = 1]`)
-- Any low binding power operator inside delimiters
+**Verified Working:**
+- `{ x = 1 }` ✅
+- `{ a = { b = 1 } }` ✅
+- `{ a = 2 + 2 }` ✅
 
 ### Prefix Negation Ambiguity
 
@@ -428,10 +462,10 @@ Several features are blocked on design decisions:
 **Coverage:**
 - ✅ Lexer: All tokens tested
 - ✅ Operators: All implemented operators tested
-- ✅ Arrays: Comprehensive tests
-- ✅ Records: Shorthand tested, assignments fail
-- ⚠️ Error cases: Limited negative tests in `invalid-parse/`
-- ❌ Missing features: No tests (can't test what doesn't exist)
+- ✅ Arrays: Comprehensive tests including nested, trailing commas, expressions
+- ✅ Records: All working - empty, shorthand, field assignments, nested, expressions
+- ⚠️ Error cases: 8 negative tests in `invalid-parse/` (could expand)
+- ❌ Missing features: No tests for unimplemented features
 
 ## References
 
