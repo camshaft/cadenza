@@ -10,7 +10,9 @@ use super::{
     BinOp as IrBinOp, BlockBuilder, FunctionId, IrBuilder, IrConst, SourceLocation, ValueId,
 };
 use crate::{
+    diagnostic::{Diagnostic, Result},
     interner::InternedString,
+    special_form,
     typeinfer::{InferType, TypeEnv, TypeInferencer},
     value::{Type, UserFunction, Value},
 };
@@ -132,7 +134,7 @@ impl IrGenerator {
     ///
     /// Converts a UserFunction value to an IR function.
     /// Returns the function ID on success.
-    pub fn gen_function(&mut self, func: &UserFunction) -> Result<FunctionId, String> {
+    pub fn gen_function(&mut self, func: &UserFunction) -> Result<FunctionId> {
         let name = func.name;
 
         // Create a type environment for inference
@@ -191,17 +193,17 @@ impl IrGenerator {
         expr: &Expr,
         block: &mut BlockBuilder,
         ctx: &mut IrGenContext,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId> {
         let source = self.dummy_source();
 
         match expr {
             Expr::Literal(lit) => self.gen_literal(lit, block, source),
             Expr::Ident(ident) => self.gen_ident(ident, ctx),
             Expr::Apply(apply) => self.gen_apply(apply, block, ctx, source),
-            _ => Err(format!(
+            _ => Err(Diagnostic::syntax(format!(
                 "Unsupported expression type for IR generation: {:?}",
                 expr
-            )),
+            ))),
         }
     }
 
@@ -211,20 +213,28 @@ impl IrGenerator {
         lit: &cadenza_syntax::ast::Literal,
         block: &mut BlockBuilder,
         source: SourceLocation,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId> {
         use cadenza_syntax::ast::LiteralValue;
 
-        let value = lit.value().ok_or("Missing literal value")?;
+        let value = lit
+            .value()
+            .ok_or_else(|| Diagnostic::syntax("Missing literal value"))?;
 
         let (const_val, ty) = match value {
             LiteralValue::Integer(i) => {
                 let text = i.syntax().text();
-                let value = text.to_string().parse::<i64>().map_err(|e| e.to_string())?;
+                let value = text
+                    .to_string()
+                    .parse::<i64>()
+                    .map_err(|e| Diagnostic::syntax(format!("Invalid integer literal: {}", e)))?;
                 (IrConst::Integer(value), Type::Integer)
             }
             LiteralValue::Float(f) => {
                 let text = f.syntax().text();
-                let value = text.to_string().parse::<f64>().map_err(|e| e.to_string())?;
+                let value = text
+                    .to_string()
+                    .parse::<f64>()
+                    .map_err(|e| Diagnostic::syntax(format!("Invalid float literal: {}", e)))?;
                 (IrConst::Float(value), Type::Float)
             }
             LiteralValue::String(s) => {
@@ -234,7 +244,9 @@ impl IrGenerator {
             LiteralValue::StringWithEscape(_) => {
                 // For now, treat escaped strings as regular strings
                 // TODO: Properly handle escape sequences
-                return Err("String with escapes not yet supported in IR generation".to_string());
+                return Err(Diagnostic::syntax(
+                    "String with escapes not yet supported in IR generation",
+                ));
             }
         };
 
@@ -246,11 +258,54 @@ impl IrGenerator {
         &mut self,
         ident: &cadenza_syntax::ast::Ident,
         ctx: &IrGenContext,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId> {
         let text = ident.syntax().text().to_string();
         let name = InternedString::new(&text);
-        ctx.lookup_var(name)
-            .ok_or_else(|| format!("Undefined variable in IR generation: {}", name))
+        ctx.lookup_var(name).ok_or_else(|| {
+            Diagnostic::syntax(format!("Undefined variable in IR generation: {}", name))
+        })
+    }
+
+    /// Try to generate IR for a special form by name.
+    ///
+    /// Returns Some(result) if the name matches a known special form, None otherwise.
+    /// This allows dispatching to the special form's IR generation function.
+    fn try_gen_special_form(
+        &mut self,
+        name: &str,
+        apply: &cadenza_syntax::ast::Apply,
+        block: &mut BlockBuilder,
+        ctx: &mut IrGenContext,
+        source: SourceLocation,
+    ) -> Option<Result<ValueId>> {
+        let args = apply.all_arguments();
+
+        // Create a mutable closure for generating sub-expressions
+        let mut gen_expr_adapter =
+            |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+                self.gen_expr(expr, block, ctx)
+            };
+
+        // Dispatch to the appropriate special form
+        let special_form = match name {
+            "let" => special_form::let_form::get(),
+            "=" => special_form::assign_form::get(),
+            "fn" => special_form::fn_form::get(),
+            "__block__" => special_form::block_form::get(),
+            "__list__" => special_form::list_form::get(),
+            "__record__" => special_form::record_form::get(),
+            "__index__" => special_form::index_form::get(),
+            "match" => special_form::match_form::get(),
+            "assert" => special_form::assert_form::get(),
+            "typeof" => special_form::typeof_form::get(),
+            "measure" => special_form::measure_form::get(),
+            "|>" => special_form::pipeline_form::get(),
+            "." => special_form::field_access_form::get(),
+            _ => return None, // Not a special form
+        };
+
+        // Call the special form's IR generation function
+        Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
     }
 
     /// Generate IR for an application (function call or operator).
@@ -260,9 +315,11 @@ impl IrGenerator {
         block: &mut BlockBuilder,
         ctx: &mut IrGenContext,
         source: SourceLocation,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId> {
         // Check if this is an operator application
-        let callee = apply.callee().ok_or("Missing callee in application")?;
+        let callee = apply
+            .callee()
+            .ok_or_else(|| Diagnostic::syntax("Missing callee in application"))?;
 
         // Handle binary operators
         if let Expr::Op(op) = &callee {
@@ -285,10 +342,9 @@ impl IrGenerator {
                     }
                 }
                 // Regular assignment (not let) - not supported in IR yet
-                return Err(
-                    "Assignment operator (without let) not yet supported in IR generation"
-                        .to_string(),
-                );
+                return Err(Diagnostic::syntax(
+                    "Assignment operator (without let) not yet supported in IR generation",
+                ));
             }
 
             // Get the operator
@@ -297,11 +353,11 @@ impl IrGenerator {
             // Get arguments
             let args = apply.all_arguments();
             if args.len() != 2 {
-                return Err(format!(
+                return Err(Diagnostic::syntax(format!(
                     "Binary operator {} expects 2 arguments, got {}",
                     op_text,
                     args.len()
-                ));
+                )));
             }
 
             // Generate IR for operands
@@ -332,23 +388,21 @@ impl IrGenerator {
         if let Some(func_name) = func_name_opt {
             let func_name_str: &str = &func_name;
 
-            // Check if this is a known macro
-            if func_name_str == "__block__" {
-                return self.gen_block(apply, block, ctx);
-            } else if func_name_str == "__list__" {
-                return self.gen_list(apply, block, ctx, source);
+            // Try to dispatch to a special form's IR generation
+            if let Some(result) =
+                self.try_gen_special_form(func_name_str, apply, block, ctx, source)
+            {
+                return result;
             }
 
             // Look up the function ID
-            let func_id = self
-                .functions
-                .get(&func_name)
-                .copied()
-                .ok_or_else(|| format!("Unknown function in IR generation: {}", func_name))?;
+            let func_id = self.functions.get(&func_name).copied().ok_or_else(|| {
+                Diagnostic::syntax(format!("Unknown function in IR generation: {}", func_name))
+            })?;
 
             // Generate IR for arguments
             let args = apply.all_arguments();
-            let arg_values: Result<Vec<ValueId>, String> = args
+            let arg_values: Result<Vec<ValueId>> = args
                 .iter()
                 .map(|arg| self.gen_expr(arg, block, ctx))
                 .collect();
@@ -362,10 +416,10 @@ impl IrGenerator {
             return Ok(block.call(func_id, arg_values, inferred_ty, source));
         }
 
-        Err(format!(
+        Err(Diagnostic::syntax(format!(
             "Unsupported callee type for IR generation: {:?}",
             callee
-        ))
+        )))
     }
 
     /// Generate IR for a let binding: let name = value
@@ -376,11 +430,11 @@ impl IrGenerator {
         block: &mut BlockBuilder,
         ctx: &mut IrGenContext,
         _source: SourceLocation,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId> {
         // Extract the variable name from [let, name]
         let args = lhs_apply.all_arguments();
         if args.is_empty() {
-            return Err("let requires a variable name".to_string());
+            return Err(Diagnostic::syntax("let requires a variable name"));
         }
 
         let var_name = match &args[0] {
@@ -388,7 +442,11 @@ impl IrGenerator {
                 let text = ident.syntax().text().to_string();
                 InternedString::new(&text)
             }
-            _ => return Err("let requires an identifier as variable name".to_string()),
+            _ => {
+                return Err(Diagnostic::syntax(
+                    "let requires an identifier as variable name",
+                ));
+            }
         };
 
         // Generate IR for the value expression
@@ -408,41 +466,8 @@ impl IrGenerator {
         Ok(value_id)
     }
 
-    /// Generate IR for a block expression
-    fn gen_block(
-        &mut self,
-        apply: &cadenza_syntax::ast::Apply,
-        block: &mut BlockBuilder,
-        ctx: &mut IrGenContext,
-    ) -> Result<ValueId, String> {
-        let args = apply.all_arguments();
-
-        if args.is_empty() {
-            // Empty block returns nil
-            return Ok(block.const_val(IrConst::Nil, Type::Nil, self.dummy_source()));
-        }
-
-        // Generate IR for each expression in the block, returning the last value
-        args.iter()
-            .try_fold(None, |_, expr| self.gen_expr(expr, block, ctx).map(Some))?
-            .ok_or_else(|| "Block should have at least one expression".to_string())
-    }
-
-    /// Generate IR for a list construction
-    fn gen_list(
-        &mut self,
-        _apply: &cadenza_syntax::ast::Apply,
-        _block: &mut BlockBuilder,
-        _ctx: &mut IrGenContext,
-        _source: SourceLocation,
-    ) -> Result<ValueId, String> {
-        // TODO: Add list construction instruction to IR
-        // For now, return an error as lists aren't supported in IR yet
-        Err("List construction not yet supported in IR".to_string())
-    }
-
     /// Map operator string to IR binary operator.
-    fn map_operator(&self, op: &str) -> Result<IrBinOp, String> {
+    fn map_operator(&self, op: &str) -> Result<IrBinOp> {
         match op {
             "+" => Ok(IrBinOp::Add),
             "-" => Ok(IrBinOp::Sub),
@@ -457,7 +482,7 @@ impl IrGenerator {
             ">=" => Ok(IrBinOp::Ge),
             "&&" => Ok(IrBinOp::And),
             "||" => Ok(IrBinOp::Or),
-            _ => Err(format!("Unsupported operator: {}", op)),
+            _ => Err(Diagnostic::syntax(format!("Unsupported operator: {}", op))),
         }
     }
 

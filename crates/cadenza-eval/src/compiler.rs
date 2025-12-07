@@ -185,7 +185,7 @@ impl Compiler {
     pub fn generate_ir_for_function(
         &mut self,
         func: &crate::value::UserFunction,
-    ) -> Option<Result<crate::ir::FunctionId, String>> {
+    ) -> Option<crate::diagnostic::Result<crate::ir::FunctionId>> {
         self.ir_generator
             .as_mut()
             .map(|generator| generator.gen_function(func))

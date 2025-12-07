@@ -158,26 +158,41 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Organize special forms as submodules (one module per form)
    - [x] Update to use Result<ValueId> for IR generation (consistent with eval)
    - [x] Implement let_form as example with OnceLock pattern
-   - [ ] Migrate remaining 11 builtins to special forms:
-     - [ ] `=` - Assignment operator
-     - [ ] `fn` - Function definition
-     - [ ] `__block__` - Block expressions
-     - [ ] `__list__` - List literals
-     - [ ] `__record__` - Record literals
-     - [ ] `match` - Pattern matching
-     - [ ] `assert` - Runtime assertions
-     - [ ] `typeof` - Type queries
-     - [ ] `measure` - Unit definitions
-     - [ ] `|>` - Pipeline operator
-     - [ ] `.` - Field access
-   - [ ] Deprecate and remove BuiltinMacro once migration complete
+   - [x] Migrate 11 builtins to special forms (evaluation only):
+     - [x] `=` - Assignment operator
+     - [x] `fn` - Function definition
+     - [x] `__block__` - Block expressions
+     - [x] `__list__` - List literals
+     - [x] `__record__` - Record literals
+     - [x] `match` - Pattern matching
+     - [x] `assert` - Runtime assertions
+     - [x] `typeof` - Type queries
+     - [x] `measure` - Unit definitions
+     - [x] `|>` - Pipeline operator
+     - [x] `.` - Field access (implemented as `__index__` special form)
+   - [x] Remove deprecated `builtin_*` BuiltinMacro functions from eval.rs
+   - [ ] **Wire up special form IR generation to IR generator**
+     - [ ] Modify IrGenerator::gen_apply to detect special forms and call their ir_fn
+     - [ ] Remove hardcoded __block__ and __list__ handling in favor of special form dispatch
+     - [ ] Test IR generation for all special forms
+   - [ ] **Migrate builtin operators to special forms**
+     - [ ] `+` - Addition operator
+     - [ ] `-` - Subtraction operator
+     - [ ] `*` - Multiplication operator
+     - [ ] `/` - Division operator
+     - [ ] `==` - Equality operator
+     - [ ] `!=` - Inequality operator
+     - [ ] `<` - Less than operator
+     - [ ] `<=` - Less than or equal operator
+     - [ ] `>` - Greater than operator
+     - [ ] `>=` - Greater than or equal operator
    
-   **Pattern for each migration:**
+   **Migration Pattern Used:**
    1. Create `special_form/<name>.rs` module
    2. Implement `get() -> &'static BuiltinSpecialForm` using OnceLock
    3. Implement `eval_fn` and `ir_fn` functions
    4. Update `Env::register_standard_builtins()` to use SpecialForm
-   5. Update IR generator if needed for IR generation support
+   5. Update IR generator for IR generation support
    6. Move tests from old location to new module
 
 
