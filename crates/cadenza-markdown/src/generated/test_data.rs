@@ -88,6 +88,35 @@ mod code_blocks {
         );
     }
 }
+mod code_blocks_sql {
+    use super::*;
+    #[test]
+    fn cst() {
+        let markdown = "# Database Tutorial\n\nLearn SQL with interactive examples!\n\n```sql\nSELECT * FROM users WHERE age > 18\n```\n\nYou can modify the query above to see different results.\n\n```sql\nINSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')\n```\n";
+        let parse = parse(markdown);
+        let cst = parse.syntax();
+
+        // Verify CST span coverage and token text accuracy
+        verify_cst_coverage(markdown);
+
+        s!(
+            "code_blocks_sql_cst",
+            &cst,
+            "# Database Tutorial\n\nLearn SQL with interactive examples!\n\n```sql\nSELECT * FROM users WHERE age > 18\n```\n\nYou can modify the query above to see different results.\n\n```sql\nINSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')\n```\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        let markdown = "# Database Tutorial\n\nLearn SQL with interactive examples!\n\n```sql\nSELECT * FROM users WHERE age > 18\n```\n\nYou can modify the query above to see different results.\n\n```sql\nINSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')\n```\n";
+        let parse = parse(markdown);
+        let root = parse.ast();
+        s!(
+            "code_blocks_sql_ast",
+            root,
+            "# Database Tutorial\n\nLearn SQL with interactive examples!\n\n```sql\nSELECT * FROM users WHERE age > 18\n```\n\nYou can modify the query above to see different results.\n\n```sql\nINSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')\n```\n"
+        );
+    }
+}
 mod complex {
     use super::*;
     #[test]

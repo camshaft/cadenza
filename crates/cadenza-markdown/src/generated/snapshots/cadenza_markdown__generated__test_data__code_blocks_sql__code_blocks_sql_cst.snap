@@ -1,0 +1,153 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Database Tutorial\n\nLearn SQL with interactive examples!\n\n```sql\nSELECT * FROM users WHERE age > 18\n```\n\nYou can modify the query above to see different results.\n\n```sql\nINSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')\n```\n"
+---
+Root@0..250
+  CommentContent@0..1 "#"
+  Space@1..2 " "
+  Apply@2..19
+    ApplyReceiver@2..2
+      SyntheticMarkdownH1@2..2
+    ApplyArgument@2..19
+      Literal@2..19
+        StringContent@2..19
+          StringContent@2..19 "Database Tutorial"
+  Newline@19..20 "\n"
+  Newline@20..21 "\n"
+  Apply@21..57
+    ApplyReceiver@21..21
+      SyntheticMarkdownParagraph@21..21
+    ApplyArgument@21..57
+      Literal@21..57
+        StringContent@21..57
+          StringContent@21..57 "Learn SQL with interactive examples!"
+  Newline@57..58 "\n"
+  Newline@58..59 "\n"
+  CommentContent@59..62 "```"
+  CommentContent@62..65 "sql"
+  Newline@65..66 "\n"
+  CommentContent@66..69 "```"
+  Newline@69..70 "\n"
+  Apply@70..108
+    ApplyReceiver@70..70
+      SyntheticMarkdownCode@70..70
+    ApplyArgument@70..73
+      Literal@70..73
+        StringContent@70..73
+          StringContent@70..73 "sql"
+    ApplyArgument@73..108
+      Apply@73..108
+        ApplyReceiver@73..73
+          SyntheticBlock@73..73
+        ApplyArgument@73..108
+          Apply@73..108
+            ApplyReceiver@73..79
+              Identifier@73..79
+                Identifier@73..79 "SELECT"
+            Space@79..80 " "
+            ApplyArgument@80..82
+              Identifier@80..81
+                Star@80..81 "*"
+              Space@81..82 " "
+            ApplyArgument@82..86
+              Identifier@82..86
+                Identifier@82..86 "FROM"
+            Space@86..87 " "
+            ApplyArgument@87..93
+              Identifier@87..92
+                Identifier@87..92 "users"
+              Space@92..93 " "
+            ApplyArgument@93..98
+              Identifier@93..98
+                Identifier@93..98 "WHERE"
+            Space@98..99 " "
+            ApplyArgument@99..107
+              Apply@99..107
+                ApplyArgument@99..103
+                  Identifier@99..102
+                    Identifier@99..102 "age"
+                  Space@102..103 " "
+                ApplyReceiver@103..104
+                  Identifier@103..104
+                    Greater@103..104 ">"
+                Space@104..105 " "
+                ApplyArgument@105..107
+                  Literal@105..107
+                    Integer@105..107
+                      Integer@105..107 "18"
+            Newline@107..108 "\n"
+  Newline@108..109 "\n"
+  Apply@109..165
+    ApplyReceiver@109..109
+      SyntheticMarkdownParagraph@109..109
+    ApplyArgument@109..165
+      Literal@109..165
+        StringContent@109..165
+          StringContent@109..165 "You can modify the query above to see different results."
+  Newline@165..166 "\n"
+  Newline@166..167 "\n"
+  CommentContent@167..170 "```"
+  CommentContent@170..173 "sql"
+  Newline@173..174 "\n"
+  CommentContent@174..177 "```"
+  Newline@177..178 "\n"
+  Apply@178..250
+    ApplyReceiver@178..178
+      SyntheticMarkdownCode@178..178
+    ApplyArgument@178..181
+      Literal@178..181
+        StringContent@178..181
+          StringContent@178..181 "sql"
+    ApplyArgument@181..250
+      Apply@181..250
+        ApplyReceiver@181..181
+          SyntheticBlock@181..181
+        ApplyArgument@181..250
+          Apply@181..250
+            ApplyReceiver@181..187
+              Identifier@181..187
+                Identifier@181..187 "INSERT"
+            Space@187..188 " "
+            ApplyArgument@188..192
+              Identifier@188..192
+                Identifier@188..192 "INTO"
+            Space@192..193 " "
+            ApplyArgument@193..198
+              Identifier@193..198
+                Identifier@193..198 "users"
+            Space@198..199 " "
+            ApplyArgument@199..212
+              Apply@199..212
+                LParen@199..200 "("
+                ApplyReceiver@200..200
+                  SyntheticList@200..200
+                ApplyArgument@200..204
+                  Identifier@200..204
+                    Identifier@200..204 "name"
+                Comma@204..205 ","
+                Space@205..206 " "
+                ApplyArgument@206..211
+                  Identifier@206..211
+                    Identifier@206..211 "email"
+                RParen@211..212 ")"
+            Space@212..213 " "
+            ApplyArgument@213..219
+              Identifier@213..219
+                Identifier@213..219 "VALUES"
+            Space@219..220 " "
+            ApplyArgument@220..250
+              Apply@220..250
+                LParen@220..221 "("
+                ApplyReceiver@221..221
+                  SyntheticList@221..221
+                ApplyArgument@221..228
+                  Literal@221..228
+                    StringContent@221..228
+                      StringContent@221..228 "'Alice'"
+                Comma@228..229 ","
+                Space@229..230 " "
+                ApplyArgument@230..249
+                  Literal@230..249
+                    StringContent@230..249
+                      StringContent@230..249 "'alice@example.com'"
+                RParen@249..250 ")"

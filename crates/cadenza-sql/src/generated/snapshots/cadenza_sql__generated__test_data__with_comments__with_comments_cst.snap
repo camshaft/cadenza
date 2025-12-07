@@ -1,0 +1,68 @@
+---
+source: crates/cadenza-sql/src/generated/test_data.rs
+expression: "-- This is a comment\nSELECT * FROM users;\n\n/* This is a block comment */\nSELECT id, name FROM users WHERE age > 21;\n"
+---
+Root@0..116
+  CommentContent@0..20 "-- This is a comment"
+  Newline@20..21 "\n"
+  Apply@21..40
+    ApplyReceiver@21..27
+      Identifier@21..27
+        Identifier@21..27 "SELECT"
+    Space@27..28 " "
+    ApplyArgument@28..30
+      Identifier@28..29
+        Star@28..29 "*"
+      Space@29..30 " "
+    ApplyArgument@30..34
+      Identifier@30..34
+        Identifier@30..34 "FROM"
+    Space@34..35 " "
+    ApplyArgument@35..40
+      Identifier@35..40
+        Identifier@35..40 "users"
+  Semicolon@40..41 ";"
+  Newline@41..43 "\n\n"
+  CommentContent@43..72 "/* This is a block comment */"
+  Newline@72..73 "\n"
+  Apply@73..114
+    ApplyReceiver@73..79
+      Identifier@73..79
+        Identifier@73..79 "SELECT"
+    Space@79..80 " "
+    ApplyArgument@80..89
+      Identifier@80..82
+        Identifier@80..82 "id"
+      Comma@82..83 ","
+      Space@83..84 " "
+      Identifier@84..88
+        Identifier@84..88 "name"
+      Space@88..89 " "
+    ApplyArgument@89..93
+      Identifier@89..93
+        Identifier@89..93 "FROM"
+    Space@93..94 " "
+    ApplyArgument@94..100
+      Identifier@94..99
+        Identifier@94..99 "users"
+      Space@99..100 " "
+    ApplyArgument@100..105
+      Identifier@100..105
+        Identifier@100..105 "WHERE"
+    Space@105..106 " "
+    ApplyArgument@106..114
+      Apply@106..114
+        ApplyArgument@106..110
+          Identifier@106..109
+            Identifier@106..109 "age"
+          Space@109..110 " "
+        ApplyReceiver@110..111
+          Identifier@110..111
+            Greater@110..111 ">"
+        Space@111..112 " "
+        ApplyArgument@112..114
+          Literal@112..114
+            Integer@112..114
+              Integer@112..114 "21"
+  Semicolon@114..115 ";"
+  Newline@115..116 "\n"

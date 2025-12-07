@@ -1,0 +1,23 @@
+---
+source: crates/cadenza-sql/src/generated/test_data.rs
+expression: "SELECT * FROM users;\n"
+---
+Root@0..21
+  Apply@0..19
+    ApplyReceiver@0..6
+      Identifier@0..6
+        Identifier@0..6 "SELECT"
+    Space@6..7 " "
+    ApplyArgument@7..9
+      Identifier@7..8
+        Star@7..8 "*"
+      Space@8..9 " "
+    ApplyArgument@9..13
+      Identifier@9..13
+        Identifier@9..13 "FROM"
+    Space@13..14 " "
+    ApplyArgument@14..19
+      Identifier@14..19
+        Identifier@14..19 "users"
+  Semicolon@19..20 ";"
+  Newline@20..21 "\n"

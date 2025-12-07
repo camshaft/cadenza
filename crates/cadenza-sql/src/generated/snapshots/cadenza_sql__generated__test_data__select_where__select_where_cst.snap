@@ -1,0 +1,50 @@
+---
+source: crates/cadenza-sql/src/generated/test_data.rs
+expression: "SELECT id, name, email FROM users WHERE age > 18;\n"
+---
+Root@0..50
+  Apply@0..48
+    ApplyReceiver@0..6
+      Identifier@0..6
+        Identifier@0..6 "SELECT"
+    Space@6..7 " "
+    ApplyArgument@7..23
+      Identifier@7..9
+        Identifier@7..9 "id"
+      Comma@9..10 ","
+      Space@10..11 " "
+      Identifier@11..15
+        Identifier@11..15 "name"
+      Comma@15..16 ","
+      Space@16..17 " "
+      Identifier@17..22
+        Identifier@17..22 "email"
+      Space@22..23 " "
+    ApplyArgument@23..27
+      Identifier@23..27
+        Identifier@23..27 "FROM"
+    Space@27..28 " "
+    ApplyArgument@28..34
+      Identifier@28..33
+        Identifier@28..33 "users"
+      Space@33..34 " "
+    ApplyArgument@34..39
+      Identifier@34..39
+        Identifier@34..39 "WHERE"
+    Space@39..40 " "
+    ApplyArgument@40..48
+      Apply@40..48
+        ApplyArgument@40..44
+          Identifier@40..43
+            Identifier@40..43 "age"
+          Space@43..44 " "
+        ApplyReceiver@44..45
+          Identifier@44..45
+            Greater@44..45 ">"
+        Space@45..46 " "
+        ApplyArgument@46..48
+          Literal@46..48
+            Integer@46..48
+              Integer@46..48 "18"
+  Semicolon@48..49 ";"
+  Newline@49..50 "\n"

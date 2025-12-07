@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-markdown/src/generated/test_data.rs
+expression: "# Database Tutorial\n\nLearn SQL with interactive examples!\n\n```sql\nSELECT * FROM users WHERE age > 18\n```\n\nYou can modify the query above to see different results.\n\n```sql\nINSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')\n```\n"
+---
+[
+    [h1, "Database Tutorial"],
+    [p, "Learn SQL with interactive examples!"],
+    [code, "sql", [__block__, [SELECT, *, FROM, users, WHERE, [>, age, 18]]]],
+    [p, "You can modify the query above to see different results."],
+    [code, "sql", [__block__, [INSERT, INTO, users, [__list__, name, email], VALUES, [__list__, "'Alice'", "'alice@example.com'"]]]],
+]
