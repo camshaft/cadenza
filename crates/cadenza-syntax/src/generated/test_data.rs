@@ -2220,46 +2220,6 @@ mod invalid_parse {
             );
         }
     }
-    mod error_double_operator {
-        use super::*;
-        #[test]
-        fn cst() {
-            s!(
-                "invalid_parse_error_double_operator_cst",
-                t::cst_no_assert("a + + b\n"),
-                "a + + b\n"
-            );
-        }
-        #[test]
-        fn ast() {
-            s!(
-                "invalid_parse_error_double_operator_ast",
-                t::ast_no_assert("a + + b\n"),
-                "a + + b\n"
-            );
-        }
-        #[test]
-        fn lex() {
-            s!(
-                "invalid_parse_error_double_operator_lex",
-                t::lex("a + + b\n"),
-                "a + + b\n"
-            );
-        }
-        #[test]
-        fn errors() {
-            let errors = t::parse_errors("a + + b\n");
-            assert!(
-                !errors.is_empty(),
-                "expected parse errors for invalid input"
-            );
-            s!(
-                "invalid_parse_error_double_operator_errors",
-                errors,
-                "a + + b\n"
-            );
-        }
-    }
     mod record_missing_brace_simple {
         use super::*;
         #[test]

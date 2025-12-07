@@ -286,12 +286,9 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
             }
             _ => {
-                // Unknown/unexpected token - try to recover
-                self.builder.start_node(Kind::Error.into());
-                let token_name = self.current().display_name();
-                self.error(&format!("unexpected token {}", token_name));
+                // Other tokens (including operators) are allowed as primaries
+                // This allows operators to be used as values in this keyword-less language
                 self.bump();
-                self.builder.finish_node();
             }
         }
     }
