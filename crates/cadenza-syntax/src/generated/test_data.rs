@@ -2220,6 +2220,46 @@ mod invalid_parse {
             );
         }
     }
+    mod error_double_operator {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_error_double_operator_cst",
+                t::cst_no_assert("a + + b\n"),
+                "a + + b\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_error_double_operator_ast",
+                t::ast_no_assert("a + + b\n"),
+                "a + + b\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_error_double_operator_lex",
+                t::lex("a + + b\n"),
+                "a + + b\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("a + + b\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_error_double_operator_errors",
+                errors,
+                "a + + b\n"
+            );
+        }
+    }
     mod record_missing_brace_simple {
         use super::*;
         #[test]
@@ -2300,6 +2340,86 @@ mod invalid_parse {
             );
         }
     }
+    mod error_unexpected_rparen {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_error_unexpected_rparen_cst",
+                t::cst_no_assert(")\n"),
+                ")\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_error_unexpected_rparen_ast",
+                t::ast_no_assert(")\n"),
+                ")\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_error_unexpected_rparen_lex",
+                t::lex(")\n"),
+                ")\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors(")\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_error_unexpected_rparen_errors",
+                errors,
+                ")\n"
+            );
+        }
+    }
+    mod error_unexpected_rbrace {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_error_unexpected_rbrace_cst",
+                t::cst_no_assert("}\n"),
+                "}\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_error_unexpected_rbrace_ast",
+                t::ast_no_assert("}\n"),
+                "}\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_error_unexpected_rbrace_lex",
+                t::lex("}\n"),
+                "}\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("}\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_error_unexpected_rbrace_errors",
+                errors,
+                "}\n"
+            );
+        }
+    }
     mod array_dedent_recovery {
         use super::*;
         #[test]
@@ -2340,6 +2460,42 @@ mod invalid_parse {
             );
         }
     }
+    mod error_unexpected_comma {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_error_unexpected_comma_cst",
+                t::cst_no_assert(",\n"),
+                ",\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_error_unexpected_comma_ast",
+                t::ast_no_assert(",\n"),
+                ",\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_error_unexpected_comma_lex",
+                t::lex(",\n"),
+                ",\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors(",\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!("invalid_parse_error_unexpected_comma_errors", errors, ",\n");
+        }
+    }
     mod record_double_comma {
         use super::*;
         #[test]
@@ -2377,6 +2533,46 @@ mod invalid_parse {
                 "invalid_parse_record_double_comma_errors",
                 errors,
                 "{ a = 1,, b = 2 }\n"
+            );
+        }
+    }
+    mod error_recovery_multiple {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_error_recovery_multiple_cst",
+                t::cst_no_assert("let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"),
+                "let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_error_recovery_multiple_ast",
+                t::ast_no_assert("let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"),
+                "let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_error_recovery_multiple_lex",
+                t::lex("let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"),
+                "let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("let a = 1\n)\nlet b = 2\n]\nlet c = 3\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_error_recovery_multiple_errors",
+                errors,
+                "let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"
             );
         }
     }
@@ -2420,6 +2616,46 @@ mod invalid_parse {
             );
         }
     }
+    mod error_trailing_operator {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_error_trailing_operator_cst",
+                t::cst_no_assert("a +\n"),
+                "a +\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_error_trailing_operator_ast",
+                t::ast_no_assert("a +\n"),
+                "a +\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_error_trailing_operator_lex",
+                t::lex("a +\n"),
+                "a +\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("a +\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_error_trailing_operator_errors",
+                errors,
+                "a +\n"
+            );
+        }
+    }
     mod array_leading_comma {
         use super::*;
         #[test]
@@ -2457,6 +2693,86 @@ mod invalid_parse {
                 "invalid_parse_array_leading_comma_errors",
                 errors,
                 "[, a, b]\n"
+            );
+        }
+    }
+    mod error_recovery_next_line {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_error_recovery_next_line_cst",
+                t::cst_no_assert("let x = )\nlet y = 5\n"),
+                "let x = )\nlet y = 5\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_error_recovery_next_line_ast",
+                t::ast_no_assert("let x = )\nlet y = 5\n"),
+                "let x = )\nlet y = 5\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_error_recovery_next_line_lex",
+                t::lex("let x = )\nlet y = 5\n"),
+                "let x = )\nlet y = 5\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("let x = )\nlet y = 5\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_error_recovery_next_line_errors",
+                errors,
+                "let x = )\nlet y = 5\n"
+            );
+        }
+    }
+    mod error_unexpected_rbracket {
+        use super::*;
+        #[test]
+        fn cst() {
+            s!(
+                "invalid_parse_error_unexpected_rbracket_cst",
+                t::cst_no_assert("]\n"),
+                "]\n"
+            );
+        }
+        #[test]
+        fn ast() {
+            s!(
+                "invalid_parse_error_unexpected_rbracket_ast",
+                t::ast_no_assert("]\n"),
+                "]\n"
+            );
+        }
+        #[test]
+        fn lex() {
+            s!(
+                "invalid_parse_error_unexpected_rbracket_lex",
+                t::lex("]\n"),
+                "]\n"
+            );
+        }
+        #[test]
+        fn errors() {
+            let errors = t::parse_errors("]\n");
+            assert!(
+                !errors.is_empty(),
+                "expected parse errors for invalid input"
+            );
+            s!(
+                "invalid_parse_error_unexpected_rbracket_errors",
+                errors,
+                "]\n"
             );
         }
     }

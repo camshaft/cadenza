@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "}\n"
+---
+[
+    ParseError {
+        span: Span {
+            start: 0,
+            end: 1,
+        },
+        message: "expected expression, found }",
+    },
+]

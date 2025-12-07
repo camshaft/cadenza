@@ -1,0 +1,71 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"
+---
+Root@0..34
+  Apply@0..10
+    ApplyArgument@0..6
+      Apply@0..6
+        ApplyReceiver@0..4
+          Identifier@0..3
+            Identifier@0..3 "let"
+          Space@3..4 " "
+        ApplyArgument@4..6
+          Identifier@4..5
+            Identifier@4..5 "a"
+          Space@5..6 " "
+    ApplyReceiver@6..7
+      Equal@6..7
+        Equal@6..7 "="
+    Space@7..8 " "
+    ApplyArgument@8..10
+      Literal@8..9
+        Integer@8..9
+          Integer@8..9 "1"
+      Newline@9..10 "\n"
+  Error@10..11
+    RParen@10..11 ")"
+  Newline@11..12 "\n"
+  Apply@12..22
+    ApplyArgument@12..18
+      Apply@12..18
+        ApplyReceiver@12..16
+          Identifier@12..15
+            Identifier@12..15 "let"
+          Space@15..16 " "
+        ApplyArgument@16..18
+          Identifier@16..17
+            Identifier@16..17 "b"
+          Space@17..18 " "
+    ApplyReceiver@18..19
+      Equal@18..19
+        Equal@18..19 "="
+    Space@19..20 " "
+    ApplyArgument@20..22
+      Literal@20..21
+        Integer@20..21
+          Integer@20..21 "2"
+      Newline@21..22 "\n"
+  Error@22..23
+    RBracket@22..23 "]"
+  Newline@23..24 "\n"
+  Apply@24..34
+    ApplyArgument@24..30
+      Apply@24..30
+        ApplyReceiver@24..28
+          Identifier@24..27
+            Identifier@24..27 "let"
+          Space@27..28 " "
+        ApplyArgument@28..30
+          Identifier@28..29
+            Identifier@28..29 "c"
+          Space@29..30 " "
+    ApplyReceiver@30..31
+      Equal@30..31
+        Equal@30..31 "="
+    Space@31..32 " "
+    ApplyArgument@32..34
+      Literal@32..33
+        Integer@32..33
+          Integer@32..33 "3"
+      Newline@33..34 "\n"

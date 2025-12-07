@@ -1,0 +1,13 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "a +\n"
+---
+[
+    ParseError {
+        span: Span {
+            start: 0,
+            end: 0,
+        },
+        message: "unexpected end of file",
+    },
+]

@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let x = )\nlet y = 5\n"
+---
+[
+    [=, [let, x], Error(Error@8..9)],
+    [=, [let, y], 5],
+]

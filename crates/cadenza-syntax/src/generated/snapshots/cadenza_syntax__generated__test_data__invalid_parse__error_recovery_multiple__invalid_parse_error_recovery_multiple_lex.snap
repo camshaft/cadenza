@@ -1,0 +1,202 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"
+---
+[
+    Token {
+        span: Span {
+            start: 0,
+            end: 3,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 3,
+            end: 4,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 4,
+            end: 5,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 5,
+            end: 6,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 6,
+            end: 7,
+        },
+        kind: Equal,
+    },
+    Token {
+        span: Span {
+            start: 7,
+            end: 8,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 8,
+            end: 9,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 9,
+            end: 10,
+        },
+        kind: Newline,
+    },
+    Token {
+        span: Span {
+            start: 10,
+            end: 11,
+        },
+        kind: RParen,
+    },
+    Token {
+        span: Span {
+            start: 11,
+            end: 12,
+        },
+        kind: Newline,
+    },
+    Token {
+        span: Span {
+            start: 12,
+            end: 15,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 15,
+            end: 16,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 16,
+            end: 17,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 17,
+            end: 18,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 18,
+            end: 19,
+        },
+        kind: Equal,
+    },
+    Token {
+        span: Span {
+            start: 19,
+            end: 20,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 20,
+            end: 21,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 21,
+            end: 22,
+        },
+        kind: Newline,
+    },
+    Token {
+        span: Span {
+            start: 22,
+            end: 23,
+        },
+        kind: RBracket,
+    },
+    Token {
+        span: Span {
+            start: 23,
+            end: 24,
+        },
+        kind: Newline,
+    },
+    Token {
+        span: Span {
+            start: 24,
+            end: 27,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 27,
+            end: 28,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 28,
+            end: 29,
+        },
+        kind: Identifier,
+    },
+    Token {
+        span: Span {
+            start: 29,
+            end: 30,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 30,
+            end: 31,
+        },
+        kind: Equal,
+    },
+    Token {
+        span: Span {
+            start: 31,
+            end: 32,
+        },
+        kind: Space,
+    },
+    Token {
+        span: Span {
+            start: 32,
+            end: 33,
+        },
+        kind: Integer,
+    },
+    Token {
+        span: Span {
+            start: 33,
+            end: 34,
+        },
+        kind: Newline,
+    },
+]
