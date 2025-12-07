@@ -224,8 +224,8 @@ impl StringData {
 
         // Insert the new string
         let index = self.strings.len() as u32;
-        self.strings.push(complete.clone());
-        self.map.insert(complete, index);
+        self.map.insert(complete.clone(), index);
+        self.strings.push(complete);
         index
     }
 
