@@ -189,8 +189,7 @@ pub struct GreenNodeBuilder {
 pub struct Checkpoint {
     /// The number of children in the parent node when the checkpoint was taken.
     children_count: usize,
-    /// The stack depth when the checkpoint was taken (for validation/debugging).
-    #[allow(dead_code)]
+    /// The stack depth when the checkpoint was taken (for validation and debugging).
     stack_depth: usize,
 }
 
@@ -233,6 +232,23 @@ impl GreenNodeBuilder {
     /// This is useful for implementing left-associative parsing where you
     /// wrap previously parsed content.
     pub fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
+        // Detect checkpoint/stack mismatches (helps debug the 25 failing tests)
+        #[cfg(debug_assertions)]
+        {
+            let current_len = self.stack.last().map(|(_, c)| c.len()).unwrap_or(0);
+            if checkpoint.children_count > current_len {
+                eprintln!(
+                    "WARNING: Checkpoint mismatch - expected {} children but found {}. \
+                     Stack depth when checkpoint taken: {}, current: {}. \
+                     Clamping to prevent panic, but tree structure may be incorrect.",
+                    checkpoint.children_count,
+                    current_len,
+                    checkpoint.stack_depth,
+                    self.stack.len()
+                );
+            }
+        }
+        
         // Work on the current stack top (where children have been added)
         let (_, current_children) = self.stack.last_mut().expect("no current node");
         
