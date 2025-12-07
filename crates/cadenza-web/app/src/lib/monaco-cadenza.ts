@@ -13,8 +13,9 @@ export function registerCadenzaLanguage() {
   // Set up language configuration
   monaco.languages.setLanguageConfiguration(CADENZA_LANGUAGE_ID, {
     comments: {
-      lineComment: '//',
-      blockComment: ['/*', '*/'],
+      // Cadenza uses # for line comments (not //)
+      lineComment: '#',
+      // No block comments in Cadenza
     },
     brackets: [
       ['{', '}'],
@@ -38,16 +39,28 @@ export function registerCadenzaLanguage() {
   });
 
   // Set up syntax highlighting
+  // TODO: These keywords and operators should be generated from the Rust code
+  // to stay in sync with the actual language definition. Consider:
+  // - Generating from the special form registry in cadenza-eval
+  // - Extracting operators from parser binding power definitions
+  // - Using build.rs to codegen this TypeScript/JSON file
   monaco.languages.setMonarchTokensProvider(CADENZA_LANGUAGE_ID, {
+    // TODO: This keyword list should be populated from the special form registry
+    // Current special forms: let, =, fn, match, assert, typeof, measure, |>, __block__, __list__, __record__, __index__
+    // And boolean constants: true, false
     keywords: [
-      'let', 'fn', 'if', 'else', 'match', 'for', 'while', 'return',
-      'true', 'false', 'nil',
+      'let', 'fn', 'match', 'assert', 'typeof', 'measure',
+      'true', 'false',
+      // Note: 'if', 'else', 'for', 'while', 'return' are listed but not yet implemented in the language
     ],
+    // TODO: This operator list should be generated from parser operator definitions
+    // to ensure it stays in sync with the actual grammar
     operators: [
       '=', '>', '<', '!', '~', '?', ':',
       '==', '<=', '>=', '!=', '&&', '||',
       '+', '-', '*', '/', '&', '|', '^', '%',
       '<<', '>>', '>>>', '+=', '-=', '*=', '/=',
+      '|>', // pipeline operator
     ],
     symbols: /[=><!~?:&|+\-*\/\^%]+/,
     tokenizer: {
@@ -82,14 +95,12 @@ export function registerCadenzaLanguage() {
       
       whitespace: [
         [/[ \t\r\n]+/, ''],
-        [/\/\/.*$/, 'comment'],
-        [/\/\*/, 'comment', '@comment'],
+        // Cadenza uses # for line comments
+        [/#.*$/, 'comment'],
       ],
       
       comment: [
-        [/[^\/*]+/, 'comment'],
-        [/\*\//, 'comment', '@pop'],
-        [/[\/*]/, 'comment']
+        // No block comments in Cadenza
       ],
       
       string: [
