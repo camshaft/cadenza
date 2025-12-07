@@ -23,6 +23,7 @@
 //! both the environment and IR generator use.
 
 pub mod add_form;
+pub mod and_form;
 pub mod assert_form;
 pub mod assign_form;
 pub mod block_form;
@@ -41,6 +42,7 @@ pub mod match_form;
 pub mod measure_form;
 pub mod mul_form;
 pub mod ne_form;
+pub mod or_form;
 pub mod pipeline_form;
 pub mod record_form;
 pub mod sub_form;

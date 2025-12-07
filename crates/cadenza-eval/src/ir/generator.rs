@@ -311,6 +311,8 @@ impl IrGenerator {
             "<=" => special_form::le_form::get(),
             ">" => special_form::gt_form::get(),
             ">=" => special_form::ge_form::get(),
+            "&&" => special_form::and_form::get(),
+            "||" => special_form::or_form::get(),
             _ => return None, // Not a special form
         };
 
