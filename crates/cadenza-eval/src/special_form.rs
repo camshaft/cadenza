@@ -22,6 +22,7 @@
 //! `__block__` and `__list__`. Future refactoring could introduce a special form registry that
 //! both the environment and IR generator use.
 
+pub mod add_form;
 pub mod assert_form;
 pub mod assign_form;
 pub mod block_form;

@@ -301,6 +301,7 @@ impl IrGenerator {
             "measure" => special_form::measure_form::get(),
             "|>" => special_form::pipeline_form::get(),
             "." => special_form::field_access_form::get(),
+            "+" => special_form::add_form::get(),
             _ => return None, // Not a special form
         };
 
