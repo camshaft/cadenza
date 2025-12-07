@@ -287,7 +287,7 @@ impl Default for GreenNodeBuilder {
 /// This ensures that identical subtrees and tokens share the same memory.
 struct Cache {
     nodes: Mutex<FxHashMap<(SyntaxKind, Box<[GreenElement]>), GreenNode>>,
-    tokens: Mutex<FxHashMap<(SyntaxKind, String), GreenToken>>,
+    tokens: Mutex<FxHashMap<(SyntaxKind, crate::interner::InternedString), GreenToken>>,
 }
 
 impl Cache {
@@ -299,19 +299,21 @@ impl Cache {
     }
 
     fn token(&self, kind: SyntaxKind, text: &str) -> GreenToken {
+        // Intern the string first
+        let interned = crate::interner::InternedString::new(text);
+        
         let mut cache = self.tokens.lock().unwrap();
         
-        // Use entry API to avoid double lookup
+        // Use entry API to avoid double lookup and fix race condition
         use std::collections::hash_map::Entry;
-        match cache.entry((kind, text.to_string())) {
+        match cache.entry((kind, interned)) {
             Entry::Occupied(e) => e.get().clone(),
             Entry::Vacant(e) => {
-                // Create interned token
-                let text_arc: Arc<str> = Arc::from(text);
+                // Create token with interned text
                 let token = GreenToken {
                     inner: Arc::new(GreenTokenData {
                         kind,
-                        text: SyntaxText::interned(text_arc),
+                        text: SyntaxText::new(interned),
                     }),
                 };
                 e.insert(token.clone());

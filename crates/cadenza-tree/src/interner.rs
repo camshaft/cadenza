@@ -8,11 +8,6 @@
 //! The interning system is built around the `Interned<S>` type, where `S` is a
 //! storage marker (ZST) that determines where values are stored. The `Interned`
 //! type implements `Deref`, allowing direct access to the interned value.
-//!
-//! String interning is now provided by cadenza-tree for consistency across the codebase.
-
-// Re-export string interning from cadenza-tree
-pub use cadenza_tree::interner::{Interned, InternedString, Storage, Strings};
 
 use std::{
     fmt,
@@ -23,10 +18,190 @@ use std::{
 };
 
 // =============================================================================
-// Storage Trait (re-exported from cadenza-tree)
+// Storage Trait
 // =============================================================================
 
-// String storage is provided by cadenza-tree
+/// A trait for intern storage, parameterized by a ZST marker type.
+///
+/// Storage implementations determine where interned values are stored.
+/// The storage must provide static lifetime references for `Deref` to work.
+pub trait Storage: Sized + 'static {
+    /// The index type for referencing stored values.
+    type Index: Copy;
+
+    /// The value type stored in this storage.
+    type Value: 'static + ?Sized;
+
+    /// Inserts a value into storage and returns its index.
+    fn insert(value: &str) -> Self::Index;
+
+    /// Resolves an index to a static reference to the stored value.
+    fn resolve(index: Self::Index) -> &'static Self::Value;
+}
+
+// =============================================================================
+// Interned: The main interning type
+// =============================================================================
+
+/// An interned value that is parameterized over its storage.
+///
+/// `Interned<S>` represents a value that has been interned into storage `S`.
+/// It implements `Deref` to provide direct access to the stored value.
+///
+/// # Type Parameters
+///
+/// - `S`: The storage type (a ZST marker) that determines where values are stored.
+pub struct Interned<S: Storage> {
+    index: S::Index,
+    _marker: PhantomData<S>,
+}
+
+// Manual implementations to avoid requiring S::Index bounds
+impl<S: Storage> Clone for Interned<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: Storage> Copy for Interned<S> {}
+
+impl<S: Storage> PartialEq for Interned<S>
+where
+    S::Index: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
+
+impl<S: Storage> Eq for Interned<S> where S::Index: Eq {}
+
+impl<S: Storage> std::hash::Hash for Interned<S>
+where
+    S::Index: std::hash::Hash,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+    }
+}
+
+impl<S: Storage> Interned<S> {
+    /// Creates a new `Interned` value from a string.
+    ///
+    /// The string is inserted into the storage if not already present.
+    #[inline]
+    pub fn new(value: &str) -> Self {
+        Self {
+            index: S::insert(value),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns the raw index of this interned value.
+    #[inline]
+    pub fn index(self) -> S::Index {
+        self.index
+    }
+}
+
+impl<S: Storage> From<&str> for Interned<S> {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<S: Storage> Deref for Interned<S> {
+    type Target = S::Value;
+
+    fn deref(&self) -> &Self::Target {
+        S::resolve(self.index)
+    }
+}
+
+impl<S: Storage> fmt::Debug for Interned<S>
+where
+    S::Value: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<S: Storage> fmt::Display for Interned<S>
+where
+    S::Value: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&**self, f)
+    }
+}
+
+// =============================================================================
+// String Storage
+// =============================================================================
+
+/// Storage for interned strings.
+///
+/// This type is `Send + Sync` since the underlying storage is a static `OnceLock`
+/// protected by a `Mutex`, making it safe to share across threads.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Strings;
+
+/// Internal storage data for strings.
+struct StringData {
+    map: rustc_hash::FxHashMap<String, u32>,
+    strings: Vec<String>,
+}
+
+impl StringData {
+    fn new() -> Self {
+        Self {
+            map: rustc_hash::FxHashMap::default(),
+            strings: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, s: &str) -> u32 {
+        if let Some(&index) = self.map.get(s) {
+            return index;
+        }
+        let index = self.strings.len() as u32;
+        let owned = s.to_string();
+        self.strings.push(owned.clone());
+        self.map.insert(owned, index);
+        index
+    }
+
+    fn get(&self, index: u32) -> &str {
+        &self.strings[index as usize]
+    }
+}
+
+static STRING_STORAGE: OnceLock<std::sync::Mutex<StringData>> = OnceLock::new();
+
+fn string_storage() -> &'static std::sync::Mutex<StringData> {
+    STRING_STORAGE.get_or_init(|| std::sync::Mutex::new(StringData::new()))
+}
+
+impl Storage for Strings {
+    type Index = u32;
+    type Value = str;
+
+    fn insert(value: &str) -> Self::Index {
+        string_storage().lock().unwrap().insert(value)
+    }
+
+    fn resolve(index: Self::Index) -> &'static Self::Value {
+        // SAFETY: Strings are never removed from storage, so the reference is valid
+        // for the lifetime of the program.
+        let storage = string_storage().lock().unwrap();
+        let s = storage.get(index);
+        unsafe { std::mem::transmute::<&str, &'static str>(s) }
+    }
+}
+
+/// Type alias for interned strings.
+pub type InternedString = Interned<Strings>;
 
 // =============================================================================
 // Integer Storage

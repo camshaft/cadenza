@@ -22,12 +22,14 @@ mod red;
 mod syntax_kind;
 mod text;
 mod metadata;
+pub mod interner;
 
 pub use green::{GreenNode, GreenNodeBuilder, GreenToken, Checkpoint};
 pub use red::{SyntaxNode, SyntaxToken, SyntaxElement, NodeOrToken};
 pub use syntax_kind::SyntaxKind;
 pub use text::SyntaxText;
 pub use metadata::{NodeMetadata, SourceFile};
+pub use interner::{InternedString, Interned, Storage, Strings};
 
 /// Language trait that must be implemented by users of this tree.
 ///

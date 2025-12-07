@@ -69,10 +69,28 @@ impl<L: Language> SyntaxNode<L> {
     /// Get the text of this node.
     ///
     /// This is computed by concatenating all descendant tokens.
+    /// Optimized to avoid allocation when there's only one token.
     pub fn text(&self) -> SyntaxText {
+        // Fast path: if this node has exactly one token child, return it directly
+        if let Some(single_token) = self.single_token_text() {
+            return single_token;
+        }
+        
+        // Slow path: concatenate multiple tokens
         let mut text = String::new();
         self.collect_text(&mut text);
-        SyntaxText::owned(text)
+        SyntaxText::from_str(&text)
+    }
+    
+    /// Check if this node has exactly one token and return its text if so.
+    fn single_token_text(&self) -> Option<SyntaxText> {
+        let children = self.green.children();
+        if children.len() == 1 {
+            if let GreenElement::Token(token) = &children[0] {
+                return Some(*token.text());
+            }
+        }
+        None
     }
 
     fn collect_text(&self, buf: &mut String) {

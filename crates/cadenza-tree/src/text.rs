@@ -1,44 +1,29 @@
 //! Efficient text representation for syntax nodes.
 
-use std::{borrow::Cow, fmt, ops::Deref, sync::Arc};
+use crate::interner::InternedString;
+use std::{borrow::Cow, fmt, ops::Deref};
 
 /// Text of a syntax node.
 ///
-/// This is similar to Rowan's SyntaxText but simpler. It represents the text
-/// of a node as either a borrowed str, an owned String, or an Arc<str> for interning.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SyntaxText(TextInner);
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-enum TextInner {
-    Borrowed(&'static str),
-    Owned(String),
-    Interned(Arc<str>),
-}
+/// This uses interned strings for efficient comparison and cloning.
+/// String comparisons are O(1) via index comparison.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SyntaxText(InternedString);
 
 impl SyntaxText {
-    /// Create text from a borrowed static string.
-    pub fn borrowed(s: &'static str) -> Self {
-        Self(TextInner::Borrowed(s))
+    /// Create text from an interned string.
+    pub fn new(s: InternedString) -> Self {
+        Self(s)
     }
 
-    /// Create text from an owned string.
-    pub fn owned(s: String) -> Self {
-        Self(TextInner::Owned(s))
-    }
-
-    /// Create text from an interned Arc<str>.
-    pub fn interned(s: Arc<str>) -> Self {
-        Self(TextInner::Interned(s))
+    /// Create text from a string slice by interning it.
+    pub fn from_str(s: &str) -> Self {
+        Self(InternedString::new(s))
     }
 
     /// Get the text as a string slice.
     pub fn as_str(&self) -> &str {
-        match &self.0 {
-            TextInner::Borrowed(s) => s,
-            TextInner::Owned(s) => s,
-            TextInner::Interned(s) => s.as_ref(),
-        }
+        &self.0
     }
 
     /// Get the length of the text in bytes.
@@ -54,6 +39,11 @@ impl SyntaxText {
     /// Convert to a Cow for flexible ownership.
     pub fn to_cow(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.as_str())
+    }
+    
+    /// Get the underlying interned string.
+    pub fn interned(&self) -> InternedString {
+        self.0
     }
 }
 
@@ -77,21 +67,21 @@ impl fmt::Debug for SyntaxText {
     }
 }
 
-impl From<&'static str> for SyntaxText {
-    fn from(s: &'static str) -> Self {
-        Self::borrowed(s)
+impl From<&str> for SyntaxText {
+    fn from(s: &str) -> Self {
+        Self::from_str(s)
     }
 }
 
 impl From<String> for SyntaxText {
     fn from(s: String) -> Self {
-        Self::owned(s)
+        Self::from_str(&s)
     }
 }
 
-impl From<Arc<str>> for SyntaxText {
-    fn from(s: Arc<str>) -> Self {
-        Self::interned(s)
+impl From<InternedString> for SyntaxText {
+    fn from(s: InternedString) -> Self {
+        Self::new(s)
     }
 }
 
