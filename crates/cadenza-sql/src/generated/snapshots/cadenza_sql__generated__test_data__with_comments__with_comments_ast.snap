@@ -4,5 +4,5 @@ expression: "-- This is a comment\nSELECT * FROM users;\n\n/* This is a block co
 ---
 [
     [SELECT, *, FROM, users],
-    [SELECT, id, FROM, users, WHERE, age],
+    [SELECT, id, FROM, users, WHERE, [>, age, 21]],
 ]

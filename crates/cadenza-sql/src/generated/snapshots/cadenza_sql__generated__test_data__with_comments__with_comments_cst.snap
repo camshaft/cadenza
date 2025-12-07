@@ -51,13 +51,18 @@ Root@0..116
         Identifier@100..105 "WHERE"
     Space@105..106 " "
     ApplyArgument@106..114
-      Identifier@106..109
-        Identifier@106..109 "age"
-      Space@109..110 " "
-      Greater@110..111 ">"
-      Space@111..112 " "
-      Literal@112..114
-        Integer@112..114
-          Integer@112..114 "21"
+      Apply@106..114
+        ApplyArgument@106..110
+          Identifier@106..109
+            Identifier@106..109 "age"
+          Space@109..110 " "
+        ApplyReceiver@110..111
+          Identifier@110..111
+            Greater@110..111 ">"
+        Space@111..112 " "
+        ApplyArgument@112..114
+          Literal@112..114
+            Integer@112..114
+              Integer@112..114 "21"
   Semicolon@114..115 ";"
   Newline@115..116 "\n"

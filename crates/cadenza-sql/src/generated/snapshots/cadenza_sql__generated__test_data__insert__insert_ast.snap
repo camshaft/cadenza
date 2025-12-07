@@ -3,5 +3,5 @@ source: crates/cadenza-sql/src/generated/test_data.rs
 expression: "INSERT INTO users (name, email, age) VALUES ('John', 'john@example.com', 25);\n"
 ---
 [
-    [INSERT, INTO, users, name, VALUES, "'John'"],
+    [INSERT, INTO, users, [__list__, name, email, age], VALUES, [__list__, "'John'", "'john@example.com'", 25]],
 ]

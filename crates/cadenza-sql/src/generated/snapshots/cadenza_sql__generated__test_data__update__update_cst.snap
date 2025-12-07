@@ -17,27 +17,37 @@ Root@0..47
         Identifier@13..16 "SET"
     Space@16..17 " "
     ApplyArgument@17..26
-      Identifier@17..20
-        Identifier@17..20 "age"
-      Space@20..21 " "
-      Equal@21..22 "="
-      Space@22..23 " "
-      Literal@23..25
-        Integer@23..25
-          Integer@23..25 "26"
+      Apply@17..25
+        ApplyArgument@17..21
+          Identifier@17..20
+            Identifier@17..20 "age"
+          Space@20..21 " "
+        ApplyReceiver@21..22
+          Identifier@21..22
+            Equal@21..22 "="
+        Space@22..23 " "
+        ApplyArgument@23..25
+          Literal@23..25
+            Integer@23..25
+              Integer@23..25 "26"
       Space@25..26 " "
     ApplyArgument@26..31
       Identifier@26..31
         Identifier@26..31 "WHERE"
     Space@31..32 " "
     ApplyArgument@32..45
-      Identifier@32..36
-        Identifier@32..36 "name"
-      Space@36..37 " "
-      Equal@37..38 "="
-      Space@38..39 " "
-      Literal@39..45
-        StringContent@39..45
-          StringContent@39..45 "'John'"
+      Apply@32..45
+        ApplyArgument@32..37
+          Identifier@32..36
+            Identifier@32..36 "name"
+          Space@36..37 " "
+        ApplyReceiver@37..38
+          Identifier@37..38
+            Equal@37..38 "="
+        Space@38..39 " "
+        ApplyArgument@39..45
+          Literal@39..45
+            StringContent@39..45
+              StringContent@39..45 "'John'"
   Semicolon@45..46 ";"
   Newline@46..47 "\n"

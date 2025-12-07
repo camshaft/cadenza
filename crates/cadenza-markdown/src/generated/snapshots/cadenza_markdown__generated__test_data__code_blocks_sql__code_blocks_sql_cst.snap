@@ -2,7 +2,7 @@
 source: crates/cadenza-markdown/src/generated/test_data.rs
 expression: "# Database Tutorial\n\nLearn SQL with interactive examples!\n\n```sql\nSELECT * FROM users WHERE age > 18\n```\n\nYou can modify the query above to see different results.\n\n```sql\nINSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')\n```\n"
 ---
-Root@0..251
+Root@0..250
   CommentContent@0..1 "#"
   Space@1..2 " "
   Apply@2..19
@@ -62,14 +62,19 @@ Root@0..251
                 Identifier@93..98 "WHERE"
             Space@98..99 " "
             ApplyArgument@99..107
-              Identifier@99..102
-                Identifier@99..102 "age"
-              Space@102..103 " "
-              Greater@103..104 ">"
-              Space@104..105 " "
-              Literal@105..107
-                Integer@105..107
-                  Integer@105..107 "18"
+              Apply@99..107
+                ApplyArgument@99..103
+                  Identifier@99..102
+                    Identifier@99..102 "age"
+                  Space@102..103 " "
+                ApplyReceiver@103..104
+                  Identifier@103..104
+                    Greater@103..104 ">"
+                Space@104..105 " "
+                ApplyArgument@105..107
+                  Literal@105..107
+                    Integer@105..107
+                      Integer@105..107 "18"
             Newline@107..108 "\n"
   Newline@108..109 "\n"
   Apply@109..165
@@ -86,15 +91,15 @@ Root@0..251
   Newline@173..174 "\n"
   CommentContent@174..177 "```"
   Newline@177..178 "\n"
-  Apply@178..251
+  Apply@178..250
     ApplyReceiver@178..178
       SyntheticMarkdownCode@178..178
     ApplyArgument@178..181
       Literal@178..181
         StringContent@178..181
           StringContent@178..181 "sql"
-    ApplyArgument@181..251
-      Apply@181..251
+    ApplyArgument@181..250
+      Apply@181..250
         ApplyReceiver@181..181
           SyntheticBlock@181..181
         ApplyArgument@181..250
@@ -112,29 +117,37 @@ Root@0..251
                 Identifier@193..198 "users"
             Space@198..199 " "
             ApplyArgument@199..212
-              LParen@199..200 "("
-              Identifier@200..204
-                Identifier@200..204 "name"
-              Comma@204..205 ","
-              Space@205..206 " "
-              Identifier@206..211
-                Identifier@206..211 "email"
-              RParen@211..212 ")"
+              Apply@199..212
+                LParen@199..200 "("
+                ApplyReceiver@200..200
+                  SyntheticList@200..200
+                ApplyArgument@200..204
+                  Identifier@200..204
+                    Identifier@200..204 "name"
+                Comma@204..205 ","
+                Space@205..206 " "
+                ApplyArgument@206..211
+                  Identifier@206..211
+                    Identifier@206..211 "email"
+                RParen@211..212 ")"
             Space@212..213 " "
             ApplyArgument@213..219
               Identifier@213..219
                 Identifier@213..219 "VALUES"
             Space@219..220 " "
             ApplyArgument@220..250
-              LParen@220..221 "("
-              Literal@221..228
-                StringContent@221..228
-                  StringContent@221..228 "'Alice'"
-              Comma@228..229 ","
-              Space@229..230 " "
-              Literal@230..249
-                StringContent@230..249
-                  StringContent@230..249 "'alice@example.com'"
-              RParen@249..250 ")"
-        ApplyArgument@250..251
-          Newline@250..251 "\n"
+              Apply@220..250
+                LParen@220..221 "("
+                ApplyReceiver@221..221
+                  SyntheticList@221..221
+                ApplyArgument@221..228
+                  Literal@221..228
+                    StringContent@221..228
+                      StringContent@221..228 "'Alice'"
+                Comma@228..229 ","
+                Space@229..230 " "
+                ApplyArgument@230..249
+                  Literal@230..249
+                    StringContent@230..249
+                      StringContent@230..249 "'alice@example.com'"
+                RParen@249..250 ")"

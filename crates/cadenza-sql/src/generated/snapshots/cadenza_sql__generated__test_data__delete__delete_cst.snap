@@ -21,13 +21,18 @@ Root@0..34
         Identifier@18..23 "WHERE"
     Space@23..24 " "
     ApplyArgument@24..32
-      Identifier@24..27
-        Identifier@24..27 "age"
-      Space@27..28 " "
-      Less@28..29 "<"
-      Space@29..30 " "
-      Literal@30..32
-        Integer@30..32
-          Integer@30..32 "18"
+      Apply@24..32
+        ApplyArgument@24..28
+          Identifier@24..27
+            Identifier@24..27 "age"
+          Space@27..28 " "
+        ApplyReceiver@28..29
+          Identifier@28..29
+            Less@28..29 "<"
+        Space@29..30 " "
+        ApplyArgument@30..32
+          Literal@30..32
+            Integer@30..32
+              Integer@30..32 "18"
   Semicolon@32..33 ";"
   Newline@33..34 "\n"

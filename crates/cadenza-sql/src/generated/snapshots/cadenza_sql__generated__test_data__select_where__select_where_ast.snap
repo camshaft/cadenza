@@ -3,5 +3,5 @@ source: crates/cadenza-sql/src/generated/test_data.rs
 expression: "SELECT id, name, email FROM users WHERE age > 18;\n"
 ---
 [
-    [SELECT, id, FROM, users, WHERE, age],
+    [SELECT, id, FROM, users, WHERE, [>, age, 18]],
 ]

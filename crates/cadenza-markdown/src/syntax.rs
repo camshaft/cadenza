@@ -406,9 +406,9 @@ impl<'src> Parser<'src> {
             self.builder.finish_node();
 
             // Add each statement as an argument to the block
-            for child in sql_root.children_with_tokens() {
+            for child in sql_root.children() {
                 self.builder.start_node(Kind::ApplyArgument.into());
-                self.add_element_recursive(child);
+                self.add_element_recursive(child.into());
                 self.builder.finish_node();
             }
 

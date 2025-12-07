@@ -3,5 +3,5 @@ source: crates/cadenza-sql/src/generated/test_data.rs
 expression: "CREATE TABLE users (\n    id INTEGER PRIMARY KEY,\n    name TEXT NOT NULL,\n    email TEXT UNIQUE,\n    age INTEGER\n);\n"
 ---
 [
-    [CREATE, TABLE, users, id],
+    [CREATE, TABLE, users, [__list__, id, name, email, age]],
 ]

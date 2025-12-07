@@ -525,11 +525,44 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_expression(&mut self) {
-        // Parse a basic expression (identifier, number, string, or operator)
+        // Take checkpoint before parsing - this allows us to wrap in Apply if we find an operator
+        let checkpoint = self.builder.checkpoint();
+        
+        // Parse the primary expression (left side)
+        self.parse_primary_expression();
+
+        self.skip_whitespace_and_comments();
+
+        // Check for binary operators
+        let op_ch = self.peek_char();
+        if op_ch == Some('=') || op_ch == Some('>') || op_ch == Some('<') || op_ch == Some('!')
+        {
+            // This is a binary operation - wrap in Apply node starting at checkpoint
+            self.builder.start_node_at(checkpoint, Kind::Apply.into());
+
+            // Wrap the already-parsed left side as first argument
+            self.builder.start_node_at(checkpoint, Kind::ApplyArgument.into());
+            self.builder.finish_node();
+
+            // Parse operator as receiver
+            self.parse_operator_as_receiver();
+
+            self.skip_whitespace_and_comments();
+
+            // Parse right side as second argument
+            self.builder.start_node(Kind::ApplyArgument.into());
+            self.parse_primary_expression();
+            self.builder.finish_node();
+
+            self.builder.finish_node(); // End Apply
+        }
+    }
+    
+    fn parse_primary_expression(&mut self) {
+        // Parse a primary expression without checking for binary operators
         let ch = self.peek_char();
 
         if ch == Some('*') {
-            // Wildcard
             let start = self.pos;
             self.pos += 1;
             let text = &self.src[start..self.pos];
@@ -537,88 +570,90 @@ impl<'src> Parser<'src> {
             self.builder.token(Kind::Star.into(), text);
             self.builder.finish_node();
         } else if ch == Some('\'') || ch == Some('"') {
-            // String literal
             self.parse_string();
-        } else if ch.is_some_and(|c| c.is_ascii_digit()) {
-            // Number
+        } else if ch.is_some_and(|c| c.is_ascii_digit() || c == '-') {
             self.parse_number();
         } else if ch.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
-            // Check if this is a binary operator expression
             self.parse_identifier();
-
-            self.skip_whitespace_and_comments();
-
-            // Check for binary operators
-            let op_ch = self.peek_char();
-            if op_ch == Some('=') || op_ch == Some('>') || op_ch == Some('<') || op_ch == Some('!')
-            {
-                // This is a binary operation
-                // We already parsed the left side, now parse operator and right side
-                self.parse_operator();
-                self.skip_whitespace_and_comments();
-                self.parse_expression();
-            }
         } else if ch == Some('(') {
-            // Parenthesized expression or subquery
             self.parse_parenthesized_list();
-        } else {
-            // Unknown, skip
-            if ch.is_some() {
-                self.pos += 1;
-            }
         }
     }
-
-    fn parse_operator(&mut self) {
+    
+    fn parse_operator_as_receiver(&mut self) {
+        // Parse operator and wrap as ApplyReceiver
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        
         let start = self.pos;
-
-        // Handle multi-character operators
         let ch = self.peek_char();
+        
         if ch == Some('=') {
             self.pos += 1;
             let text = &self.src[start..self.pos];
+            self.builder.start_node(Kind::Identifier.into());
             self.builder.token(Kind::Equal.into(), text);
+            self.builder.finish_node();
         } else if ch == Some('>') {
             self.pos += 1;
             if self.peek_char() == Some('=') {
                 self.pos += 1;
             }
             let text = &self.src[start..self.pos];
+            self.builder.start_node(Kind::Identifier.into());
             self.builder.token(Kind::Greater.into(), text);
+            self.builder.finish_node();
         } else if ch == Some('<') {
             self.pos += 1;
             if self.peek_char() == Some('=') || self.peek_char() == Some('>') {
                 self.pos += 1;
             }
             let text = &self.src[start..self.pos];
+            self.builder.start_node(Kind::Identifier.into());
             self.builder.token(Kind::Less.into(), text);
+            self.builder.finish_node();
         } else if ch == Some('!') {
             self.pos += 1;
             if self.peek_char() == Some('=') {
                 self.pos += 1;
             }
             let text = &self.src[start..self.pos];
+            self.builder.start_node(Kind::Identifier.into());
             self.builder.token(Kind::Bang.into(), text);
+            self.builder.finish_node();
         }
+        
+        self.builder.finish_node(); // End ApplyReceiver
     }
 
     fn parse_parenthesized_list(&mut self) {
-        // Parse (...)
+        // Parse (...) as an Apply node with synthetic list receiver
+        // Similar to how Cadenza parses arrays
         let start = self.pos;
         if self.peek_char() != Some('(') {
             return;
         }
 
+        // Create Apply node for the list
+        self.builder.start_node(Kind::Apply.into());
+
         self.pos += 1;
         let lparen = &self.src[start..self.pos];
         self.builder.token(Kind::LParen.into(), lparen);
 
+        // Create synthetic receiver for the list
+        self.builder.start_node(Kind::ApplyReceiver.into());
+        self.builder.start_node(Kind::SyntheticList.into());
+        self.builder.finish_node();
+        self.builder.finish_node();
+
         self.skip_whitespace_and_comments();
 
-        // Parse contents - keep consuming until we hit )
+        // Parse contents as arguments
         while self.pos < self.src.len() && self.peek_char() != Some(')') {
-            // Parse everything until comma or )
+            // Each item becomes an ApplyArgument
+            self.builder.start_node(Kind::ApplyArgument.into());
             self.parse_list_item();
+            self.builder.finish_node();
 
             self.skip_whitespace_and_comments();
 
@@ -637,31 +672,47 @@ impl<'src> Parser<'src> {
             let rparen = &self.src[rparen_start..self.pos];
             self.builder.token(Kind::RParen.into(), rparen);
         }
+
+        self.builder.finish_node(); // End Apply
     }
 
     fn parse_list_item(&mut self) {
-        // Parse a list item - everything until comma or closing paren
-        // This handles complex column definitions like "id INTEGER PRIMARY KEY"
-        while self.pos < self.src.len() {
-            let ch = self.peek_char();
-            if ch == Some(',') || ch == Some(')') {
-                break;
-            } else if ch == Some('(') {
-                // Nested parentheses
-                self.parse_parenthesized_list();
-            } else if ch == Some('\'') || ch == Some('"') {
-                self.parse_string();
-            } else if ch.is_some_and(|c| c.is_ascii_digit()) {
-                self.parse_number();
-            } else if ch.is_some_and(|c| c.is_ascii_whitespace()) {
-                self.skip_whitespace_and_comments();
-            } else if ch.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+        // Parse a single list item - can be an expression, identifier, or keyword
+        // For CREATE TABLE: "id INTEGER PRIMARY KEY" - multiple keywords/identifiers
+        // For INSERT VALUES: "'Alice'" - a string
+        // For column lists: "name" - an identifier
+        
+        let ch = self.peek_char();
+        
+        if ch == Some('\'') || ch == Some('"') {
+            // String literal
+            self.parse_string();
+        } else if ch.is_some_and(|c| c.is_ascii_digit() || c == '-') {
+            // Number
+            self.parse_number();
+        } else if ch.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+            // Identifier or keyword - parse all consecutive identifiers
+            // This handles "id INTEGER PRIMARY KEY" in CREATE TABLE
+            loop {
                 self.parse_identifier();
                 self.skip_whitespace_and_comments();
-            } else {
-                // Unknown character, skip it
-                self.pos += 1;
+                
+                // Check if there's another identifier following
+                let next_ch = self.peek_char();
+                if next_ch.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+                    // Continue parsing identifiers
+                    continue;
+                } else if next_ch == Some(',') || next_ch == Some(')') || next_ch.is_none() {
+                    // End of this list item
+                    break;
+                } else {
+                    // Unknown - stop here
+                    break;
+                }
             }
+        } else if ch == Some('(') {
+            // Nested parentheses
+            self.parse_parenthesized_list();
         }
     }
 
