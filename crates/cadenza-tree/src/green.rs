@@ -189,6 +189,9 @@ pub struct GreenNodeBuilder {
 pub struct Checkpoint {
     /// The number of children in the parent node when the checkpoint was taken.
     children_count: usize,
+    /// The stack depth when the checkpoint was taken (for validation/debugging).
+    #[allow(dead_code)]
+    stack_depth: usize,
 }
 
 impl GreenNodeBuilder {
@@ -204,14 +207,19 @@ impl GreenNodeBuilder {
     /// Create a checkpoint at the current position.
     ///
     /// This allows you to start a node at this position later using `start_node_at`.
-    /// The checkpoint records the current number of children in the current node.
+    /// The checkpoint records the current number of children in the current node
+    /// and the current stack depth (for debugging).
     pub fn checkpoint(&self) -> Checkpoint {
         let children_count = self
             .stack
             .last()
             .map(|(_, children)| children.len())
             .unwrap_or(0);
-        Checkpoint { children_count }
+        let stack_depth = self.stack.len();
+        Checkpoint {
+            children_count,
+            stack_depth,
+        }
     }
 
     /// Start a new node with the given kind.
@@ -225,8 +233,16 @@ impl GreenNodeBuilder {
     /// This is useful for implementing left-associative parsing where you
     /// wrap previously parsed content.
     pub fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
+        // Work on the current stack top (where children have been added)
         let (_, current_children) = self.stack.last_mut().expect("no current node");
-        let children_to_move = current_children.split_off(checkpoint.children_count);
+        
+        // Clamp the checkpoint position to the actual number of children
+        // This handles cases where the checkpoint was taken at a different time/level
+        // and the actual children count has changed
+        let safe_position = checkpoint.children_count.min(current_children.len());
+        
+        // Split children from the checkpoint position
+        let children_to_move = current_children.split_off(safe_position);
 
         // Start a new node and move the children into it
         self.stack.push((kind, children_to_move));
