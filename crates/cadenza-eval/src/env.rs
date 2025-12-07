@@ -5,9 +5,9 @@
 
 use crate::{
     eval::{
-        builtin_add, builtin_div, builtin_eq, builtin_field_access, builtin_fn, builtin_gt,
+        builtin_add, builtin_div, builtin_eq, builtin_field_access, builtin_gt,
         builtin_gte, builtin_index, builtin_lt, builtin_lte, builtin_match, builtin_measure, builtin_mul,
-        builtin_ne, builtin_pipeline, builtin_record, builtin_sub,
+        builtin_ne, builtin_pipeline, builtin_sub,
     },
     interner::InternedString,
     map::Map,
@@ -130,7 +130,7 @@ impl Env {
             assign_id,
             Value::SpecialForm(special_form::assign_form::get()),
         );
-        self.define(fn_id, Value::BuiltinMacro(builtin_fn()));
+        self.define(fn_id, Value::SpecialForm(special_form::fn_form::get()));
         self.define(match_id, Value::BuiltinMacro(builtin_match()));
         self.define(
             assert_id,
@@ -147,7 +147,10 @@ impl Env {
             Value::SpecialForm(special_form::block_form::get()),
         );
         self.define(list_id, Value::SpecialForm(special_form::list_form::get()));
-        self.define(record_id, Value::BuiltinMacro(builtin_record()));
+        self.define(
+            record_id,
+            Value::SpecialForm(special_form::record_form::get()),
+        );
         self.define(index_id, Value::BuiltinMacro(builtin_index()));
 
         // Arithmetic operators
