@@ -70,6 +70,27 @@ export interface Example {
   source: string;
 }
 
+// LSP types
+export interface LspDiagnostic {
+  start_line: number;
+  start_character: number;
+  end_line: number;
+  end_character: number;
+  message: string;
+  severity: 'error' | 'warning' | 'info' | 'hint';
+}
+
+export interface LspHoverInfo {
+  content: string;
+  found: boolean;
+}
+
+export interface LspCompletionItem {
+  label: string;
+  kind: string;
+  detail: string | null;
+}
+
 // WASM module interface (will be loaded dynamically)
 export interface CadenzaWasm {
   lex: (source: string) => LexResult;
@@ -77,4 +98,7 @@ export interface CadenzaWasm {
   ast: (source: string) => AstResult;
   eval_source: (source: string) => EvalResult;
   get_token_kinds: () => string[];
+  lsp_diagnostics: (source: string) => LspDiagnostic[];
+  lsp_hover: (source: string, line: number, character: number) => LspHoverInfo;
+  lsp_completions: (source: string, line: number, character: number) => LspCompletionItem[];
 }

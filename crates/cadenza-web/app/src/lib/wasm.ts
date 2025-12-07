@@ -1,7 +1,7 @@
 // WASM bindings for cadenza-web
 // This module loads the actual WASM module built by wasm-pack
 
-import type { LexResult, ParseResult, AstResult, EvalResult, CadenzaWasm } from '../types/cadenza';
+import type { LexResult, ParseResult, AstResult, EvalResult, CadenzaWasm, LspDiagnostic, LspHoverInfo, LspCompletionItem } from '../types/cadenza';
 
 // The WASM module will be loaded from the pkg directory
 let wasmModule: typeof import('../../pkg/cadenza_web') | null = null;
@@ -42,6 +42,15 @@ function createWasmBindings(module: typeof import('../../pkg/cadenza_web')): Cad
     },
     get_token_kinds: (): string[] => {
       return module.get_token_kinds() as string[];
+    },
+    lsp_diagnostics: (source: string): LspDiagnostic[] => {
+      return module.lsp_diagnostics(source) as LspDiagnostic[];
+    },
+    lsp_hover: (source: string, line: number, character: number): LspHoverInfo => {
+      return module.lsp_hover(source, line, character) as LspHoverInfo;
+    },
+    lsp_completions: (source: string, line: number, character: number): LspCompletionItem[] => {
+      return module.lsp_completions(source, line, character) as LspCompletionItem[];
     },
   };
 }
@@ -179,4 +188,19 @@ export const mockWasm: CadenzaWasm = {
     'LParen', 'RParen', 'LBracket', 'RBracket', 'LBrace', 'RBrace',
     'Comma', 'Dot', 'Colon', 'Semicolon', 'Space', 'Newline',
   ],
+  lsp_diagnostics: (source: string): LspDiagnostic[] => {
+    // Mock: return empty diagnostics
+    return [];
+  },
+  lsp_hover: (source: string, line: number, character: number): LspHoverInfo => {
+    // Mock: return no hover info
+    return { content: '', found: false };
+  },
+  lsp_completions: (source: string, line: number, character: number): LspCompletionItem[] => {
+    // Mock: return basic completions
+    return [
+      { label: 'let', kind: 'keyword', detail: 'Variable binding' },
+      { label: 'fn', kind: 'keyword', detail: 'Function definition' },
+    ];
+  },
 };
