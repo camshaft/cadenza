@@ -423,7 +423,11 @@ impl IrGenerator {
 
         // Check if it's a special form
         if let Value::SpecialForm(special_form) = value {
-            // Special handling for "match" which needs multi-block support
+            // TODO: The hardcoded check for "match" is a temporary solution.
+            // A better approach would be to extend the SpecialForm trait with a method
+            // indicating whether the form needs multi-block generation, or to unify
+            // the single-block and multi-block APIs so all special forms can use IrGenState.
+            // For now, "match" is the only special form that needs multi-block support.
             if name == "match" {
                 // Create a mutable closure for generating sub-expressions with state
                 let mut gen_expr_adapter =
