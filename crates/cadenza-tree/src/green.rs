@@ -186,7 +186,7 @@ impl From<GreenToken> for GreenElement {
 /// Builder for constructing green trees.
 ///
 /// This provides an API similar to Rowan's GreenNodeBuilder for easy migration.
-/// 
+///
 /// Implementation matches Rowan 0.16: uses a flat children vector and a separate
 /// parents stack to track node boundaries. Children are stored with their hashes
 /// for efficient parent hash computation.
@@ -241,13 +241,13 @@ impl GreenNodeBuilder {
     /// wrap previously parsed content.
     pub fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
         let checkpoint_pos = checkpoint.children_index;
-        
+
         // Validate checkpoint is still valid
         assert!(
             checkpoint_pos <= self.children.len(),
             "checkpoint no longer valid, was finish_node called early?"
         );
-        
+
         // Validate checkpoint is not before current parent's first child
         if let Some(&(_, first_child)) = self.parents.last() {
             assert!(
@@ -255,7 +255,7 @@ impl GreenNodeBuilder {
                 "checkpoint no longer valid, was an unmatched start_node_at called?"
             );
         }
-        
+
         // Push new parent starting at the checkpoint position
         self.parents.push((kind, checkpoint_pos));
     }
@@ -272,10 +272,10 @@ impl GreenNodeBuilder {
     /// Finish the current node and return to the parent.
     pub fn finish_node(&mut self) {
         let (kind, first_child) = self.parents.pop().expect("no node to finish");
-        
+
         // Create the node with hash
         let (hash, node) = self.cache.node(kind, &mut self.children, first_child);
-        
+
         // Add the finished node back to children
         self.children.push((hash, GreenElement::Node(node)));
     }
@@ -287,7 +287,7 @@ impl GreenNodeBuilder {
     pub fn finish(mut self) -> GreenNode {
         assert!(self.parents.is_empty(), "unfinished nodes remain");
         assert_eq!(self.children.len(), 1, "expected exactly one root node");
-        
+
         match self.children.pop().unwrap().1 {
             GreenElement::Node(node) => node,
             GreenElement::Token(_) => panic!("root must be a node, not a token"),
@@ -307,7 +307,7 @@ impl Default for GreenNodeBuilder {
 /// Implementation follows Rowan's optimizations:
 /// - Uses hashbrown's raw entry API for manual hash control
 /// - Propagates hashes from children to parents
-/// - Skips caching for large nodes (>3 children) 
+/// - Skips caching for large nodes (>3 children)
 /// - Uses pointer equality for deduplication
 struct Cache {
     nodes: Mutex<HashMap<NoHash<GreenNode>, ()>>,
@@ -340,12 +340,12 @@ impl Cache {
 
     fn token(&self, kind: SyntaxKind, text: &str) -> (u64, GreenToken) {
         let hash = token_hash(kind, text);
-        
+
         let mut cache = self.tokens.lock().unwrap();
         let entry = cache.raw_entry_mut().from_hash(hash, |token| {
             token.0.kind() == kind && token.0.text().as_str() == text
         });
-        
+
         let token = match entry {
             RawEntryMut::Occupied(entry) => entry.key().0.clone(),
             RawEntryMut::Vacant(entry) => {
@@ -363,7 +363,7 @@ impl Cache {
                 token
             }
         };
-        
+
         (hash, token)
     }
 
@@ -374,8 +374,10 @@ impl Cache {
         first_child: usize,
     ) -> (u64, GreenNode) {
         let build_node = |children: &mut Vec<(u64, GreenElement)>| {
-            let node_children: Vec<GreenElement> = 
-                children.drain(first_child..).map(|(_, elem)| elem).collect();
+            let node_children: Vec<GreenElement> = children
+                .drain(first_child..)
+                .map(|(_, elem)| elem)
+                .collect();
             let width = node_children.iter().map(|c| c.text_len()).sum();
             GreenNode {
                 inner: Arc::new(GreenNodeData {
@@ -387,7 +389,7 @@ impl Cache {
         };
 
         let children_ref = &children[first_child..];
-        
+
         // Skip caching for large nodes (>3 children) - Rowan optimization
         if children_ref.len() > 3 {
             let node = build_node(children);
@@ -412,9 +414,11 @@ impl Cache {
         // Use raw entry API with pointer equality for deduplication
         let mut cache = self.nodes.lock().unwrap();
         let entry = cache.raw_entry_mut().from_hash(hash, |node| {
-            node.0.kind() == kind 
+            node.0.kind() == kind
                 && node.0.children().len() == children_ref.len()
-                && node.0.children()
+                && node
+                    .0
+                    .children()
                     .iter()
                     .map(element_id)
                     .eq(children_ref.iter().map(|(_, elem)| element_id(elem)))

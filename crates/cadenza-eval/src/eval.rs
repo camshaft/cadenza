@@ -164,9 +164,9 @@ impl Eval for Literal {
                 let text = int_val.syntax().text();
                 // Remove underscores for parsing
                 let clean = text.as_str().replace('_', "");
-                let n: i64 = clean
-                    .parse()
-                    .map_err(|_| Diagnostic::syntax(format!("invalid integer: {}", text.as_str())))?;
+                let n: i64 = clean.parse().map_err(|_| {
+                    Diagnostic::syntax(format!("invalid integer: {}", text.as_str()))
+                })?;
                 Ok(Value::Integer(n))
             }
             LiteralValue::Float(float_val) => {
