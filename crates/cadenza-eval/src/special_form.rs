@@ -30,6 +30,8 @@ pub mod fn_form;
 pub mod index_form;
 pub mod let_form;
 pub mod list_form;
+pub mod match_form;
+pub mod measure_form;
 pub mod pipeline_form;
 pub mod record_form;
 pub mod typeof_form;

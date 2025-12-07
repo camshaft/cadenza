@@ -6,7 +6,7 @@
 use crate::{
     eval::{
         builtin_add, builtin_div, builtin_eq, builtin_gt,
-        builtin_gte, builtin_lt, builtin_lte, builtin_match, builtin_measure, builtin_mul,
+        builtin_gte, builtin_lt, builtin_lte, builtin_mul,
         builtin_ne, builtin_sub,
     },
     interner::InternedString,
@@ -131,7 +131,10 @@ impl Env {
             Value::SpecialForm(special_form::assign_form::get()),
         );
         self.define(fn_id, Value::SpecialForm(special_form::fn_form::get()));
-        self.define(match_id, Value::BuiltinMacro(builtin_match()));
+        self.define(
+            match_id,
+            Value::SpecialForm(special_form::match_form::get()),
+        );
         self.define(
             assert_id,
             Value::SpecialForm(special_form::assert_form::get()),
@@ -140,7 +143,10 @@ impl Env {
             typeof_id,
             Value::SpecialForm(special_form::typeof_form::get()),
         );
-        self.define(measure_id, Value::BuiltinMacro(builtin_measure()));
+        self.define(
+            measure_id,
+            Value::SpecialForm(special_form::measure_form::get()),
+        );
         self.define(
             pipeline_id,
             Value::SpecialForm(special_form::pipeline_form::get()),
