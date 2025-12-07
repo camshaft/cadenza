@@ -22,7 +22,11 @@
 //! `__block__` and `__list__`. Future refactoring could introduce a special form registry that
 //! both the environment and IR generator use.
 
+pub mod assert_form;
+pub mod block_form;
 pub mod let_form;
+pub mod list_form;
+pub mod typeof_form;
 
 use crate::{
     context::EvalContext,
@@ -31,6 +35,18 @@ use crate::{
     value::{Type, Value},
 };
 use cadenza_syntax::ast::Expr;
+
+/// Type alias for special form evaluation functions.
+pub type SpecialFormEvalFn = fn(&[Expr], &mut EvalContext<'_>) -> Result<Value>;
+
+/// Type alias for special form IR generation functions.
+pub type SpecialFormIrFn = fn(
+    &[Expr],
+    &mut BlockBuilder,
+    &mut IrGenContext,
+    SourceLocation,
+    &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> Result<ValueId>,
+) -> Result<ValueId>;
 
 /// A special form implementation with function pointers.
 ///
@@ -42,15 +58,9 @@ pub struct BuiltinSpecialForm {
     /// The type signature of this special form.
     pub signature: Type,
     /// The evaluation function (receives unevaluated AST expressions).
-    pub eval_fn: fn(&[Expr], &mut EvalContext<'_>) -> Result<Value>,
+    pub eval_fn: SpecialFormEvalFn,
     /// The IR generation function (generates IR from AST expressions).
-    pub ir_fn: fn(
-        &[Expr],
-        &mut BlockBuilder,
-        &mut IrGenContext,
-        SourceLocation,
-        &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> Result<ValueId>,
-    ) -> Result<ValueId>,
+    pub ir_fn: SpecialFormIrFn,
 }
 
 impl BuiltinSpecialForm {
