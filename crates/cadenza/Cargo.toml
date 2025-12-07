@@ -18,3 +18,5 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+rustyline.workspace = true
+dirs.workspace = true

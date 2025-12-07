@@ -286,9 +286,8 @@ fn syntax_node_to_cst(node: &cadenza_syntax::SyntaxNode) -> CstNode {
 /// - `syntax`: The syntax to use (serialized as JSON string: "cadenza", "markdown", "sql", or "gcode")
 #[wasm_bindgen]
 pub fn parse_source(source: &str, syntax: JsValue) -> JsValue {
-    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax)
-        .unwrap_or(Syntax::Cadenza);
-    
+    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax).unwrap_or(Syntax::Cadenza);
+
     let parsed = parse_with_syntax(source, syntax);
 
     let tree = syntax_node_to_cst(&parsed.syntax());
@@ -432,9 +431,8 @@ fn expr_to_ast(expr: &cadenza_syntax::ast::Expr) -> AstNode {
 /// - `syntax`: The syntax to use (serialized as JSON string: "cadenza", "markdown", "sql", or "gcode")
 #[wasm_bindgen]
 pub fn ast(source: &str, syntax: JsValue) -> JsValue {
-    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax)
-        .unwrap_or(Syntax::Cadenza);
-    
+    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax).unwrap_or(Syntax::Cadenza);
+
     let parsed = parse_with_syntax(source, syntax);
 
     let errors: Vec<ParseError> = parsed
@@ -481,9 +479,8 @@ fn value_to_eval_value(value: &Value) -> EvalValue {
 /// - `syntax`: The syntax to use (serialized as JSON string: "cadenza", "markdown", "sql", or "gcode")
 #[wasm_bindgen]
 pub fn eval_source(source: &str, syntax: JsValue) -> JsValue {
-    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax)
-        .unwrap_or(Syntax::Cadenza);
-    
+    let syntax: Syntax = serde_wasm_bindgen::from_value(syntax).unwrap_or(Syntax::Cadenza);
+
     let parsed = parse_with_syntax(source, syntax);
 
     // Collect parse errors as diagnostics
