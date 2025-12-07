@@ -20,7 +20,7 @@ Root@0..270
     ApplyArgument@23..62
       Literal@23..62
         StringContent@23..62
-          StringContent@23..62 "Testing various param ..."
+          StringContent@23..62 "Testing various parameter combinations."
   Newline@62..63 "\n"
   Newline@63..64 "\n"
   CommentContent@64..67 "```"
@@ -66,7 +66,7 @@ Root@0..270
           StringContent@106..114 "editable"
   Newline@114..115 "\n"
   CommentContent@115..118 "```"
-  CommentContent@118..160 "javascript readonly l ..."
+  CommentContent@118..160 "javascript readonly lineNumbers theme-dark"
   Newline@160..161 "\n"
   CommentContent@161..164 "```"
   Newline@164..165 "\n"

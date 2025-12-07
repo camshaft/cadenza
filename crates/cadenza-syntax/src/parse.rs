@@ -5,7 +5,7 @@ use crate::{
     span::Span,
     token::{Kind, Token},
 };
-use rowan::{GreenNode, GreenNodeBuilder};
+use cadenza_tree::{GreenNode, GreenNodeBuilder};
 
 #[derive(Debug)]
 pub struct ParseError {
@@ -20,7 +20,7 @@ pub struct Parse {
 
 impl Parse {
     pub fn syntax(&self) -> SyntaxNode {
-        rowan::SyntaxNode::new_root(self.green.clone())
+        cadenza_tree::SyntaxNode::new_root(self.green.clone())
     }
 
     pub fn ast(&self) -> crate::ast::Root {
@@ -35,7 +35,7 @@ pub fn parse(src: &str) -> Parse {
 struct Parser<'src> {
     src: &'src str,
     tokens: Peek2<Lexer<'src>>,
-    builder: GreenNodeBuilder<'static>,
+    builder: GreenNodeBuilder,
     errors: Vec<ParseError>,
     whitespace: Whitespace,
 }

@@ -13,7 +13,6 @@ clap.workspace = true
 tower-lsp.workspace = true
 lsp-types.workspace = true
 tokio = { workspace = true, features = ["full"] }
-rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

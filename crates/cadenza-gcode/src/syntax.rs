@@ -1,12 +1,12 @@
 //! GCode lexer and parser that produces Cadenza-compatible AST.
 //!
 //! This module treats GCode as an alternative syntax for Cadenza. It lexes and parses
-//! GCode into a Rowan CST that can be directly evaluated by the Cadenza eval crate.
+//! GCode into a CST that can be directly evaluated by the Cadenza eval crate.
 //!
 //! # Architecture
 //!
 //! - **Lexer**: Tokenizes GCode (G1, X100, comments, etc.)
-//! - **Parser**: Builds Rowan GreenNode CST using cadenza-syntax token kinds
+//! - **Parser**: Builds GreenNode CST using cadenza-syntax token kinds
 //! - **AST**: GCode commands become Apply nodes, parameters become Apply nodes with letter as receiver
 //!
 //! # Example
@@ -21,7 +21,7 @@
 //! ```
 
 use cadenza_syntax::{parse::Parse, token::Kind};
-use rowan::GreenNodeBuilder;
+use cadenza_tree::GreenNodeBuilder;
 
 /// Parse GCode source into a Cadenza-compatible AST.
 pub fn parse(src: &str) -> Parse {
@@ -31,7 +31,7 @@ pub fn parse(src: &str) -> Parse {
 struct Parser<'src> {
     src: &'src str,
     pos: usize,
-    builder: GreenNodeBuilder<'static>,
+    builder: GreenNodeBuilder,
     errors: Vec<cadenza_syntax::parse::ParseError>,
 }
 

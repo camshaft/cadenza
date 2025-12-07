@@ -28,8 +28,8 @@ impl Kind {
     }
 }
 
-impl From<Kind> for rowan::SyntaxKind {
+impl From<Kind> for cadenza_tree::SyntaxKind {
     fn from(kind: Kind) -> Self {
-        Self(kind as u16)
+        Self::new(kind as u16)
     }
 }

@@ -11,7 +11,7 @@ Root@0..191
     ApplyArgument@2..31
       Literal@2..31
         StringContent@2..31
-          StringContent@2..31 "Deeply Nested Inline  ..."
+          StringContent@2..31 "Deeply Nested Inline Elements"
   Newline@31..32 "\n"
   Newline@32..33 "\n"
   Apply@33..94

@@ -168,10 +168,10 @@ Root@0..233
             ApplyArgument@173..198
               Literal@173..198
                 StringContent@173..198
-                  StringContent@173..198 "code with **bold** in ..."
+                  StringContent@173..198 "code with **bold** inside"
         CommentContent@198..199 "`"
         ApplyArgument@199..232
           Literal@199..232
             StringContent@199..232
-              StringContent@199..232 " should treat markers ..."
+              StringContent@199..232 " should treat markers as literal."
   Newline@232..233 "\n"

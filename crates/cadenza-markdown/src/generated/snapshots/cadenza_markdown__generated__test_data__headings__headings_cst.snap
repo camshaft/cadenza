@@ -70,5 +70,5 @@ Root@0..122
     ApplyArgument@88..121
       Literal@88..121
         StringContent@88..121
-          StringContent@88..121 "Regular paragraph aft ..."
+          StringContent@88..121 "Regular paragraph after headings."
   Newline@121..122 "\n"

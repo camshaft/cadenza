@@ -1,15 +1,13 @@
 [package]
-name = "cadenza-syntax"
+name = "cadenza-tree"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-build = "build/main.rs"
 
 [dependencies]
-cadenza-tree = { version = "0.1.0", path = "../cadenza-tree" }
-serde.workspace = true
+hashbrown.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
-bolero.workspace = true
 insta.workspace = true

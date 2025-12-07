@@ -3,7 +3,7 @@ source: crates/cadenza-gcode/src/generated/test_data.rs
 expression: "; GCode with parentheses-style comments\n(Program start)\nG28 (Home all axes)\nG1 X100 Y50 (Move to position)\n(Set temperature)\nM104 S200\n"
 ---
 Root@0..135
-  CommentContent@0..39 "; GCode with parenthe ..."
+  CommentContent@0..39 "; GCode with parentheses-style comments"
   Newline@39..40 "\n"
   CommentContent@40..55 "(Program start)"
   Newline@55..56 "\n"

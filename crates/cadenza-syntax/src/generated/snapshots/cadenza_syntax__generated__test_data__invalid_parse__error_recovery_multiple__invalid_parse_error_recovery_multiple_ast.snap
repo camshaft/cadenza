@@ -4,8 +4,12 @@ expression: "let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"
 ---
 [
     [=, [let, a], 1],
-    Error(Error@10..11),
+    Error(Error@10..11
+      RParen@10..11 ")"
+    ),
     [=, [let, b], 2],
-    Error(Error@22..23),
+    Error(Error@22..23
+      RBracket@22..23 "]"
+    ),
     [=, [let, c], 3],
 ]
