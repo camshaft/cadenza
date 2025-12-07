@@ -55,7 +55,8 @@ fn eval_typeof(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         .type_inferencer_mut()
         .infer_expr(expr, &type_env)
         .map_err(|e| {
-            Diagnostic::syntax(format!("type inference failed: {}", e)).with_span(expr.span())
+            Diagnostic::syntax(format!("Type inference failed for expression: {}", e))
+                .with_span(expr.span())
         })?;
 
     // Convert to concrete type, or use Unknown if it has type variables

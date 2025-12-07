@@ -74,7 +74,7 @@ fn ir_block(
 ) -> Result<ValueId> {
     if args.is_empty() {
         // Return nil for empty blocks
-        return Ok(block.const_val(crate::ir::IrConst::Nil, crate::Type::Nil, source));
+        return Ok(block.const_val(crate::ir::IrConst::Nil, Type::Nil, source));
     }
 
     // Generate IR for each expression in sequence, returning the last value
