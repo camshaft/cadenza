@@ -103,6 +103,34 @@ impl FunctionBuilder {
         self.id
     }
 
+    /// Get the next block ID that will be allocated.
+    pub(crate) fn next_block_id(&self) -> u32 {
+        self.next_block_id
+    }
+
+    /// Allocate a new block ID.
+    pub(crate) fn alloc_block_id(&mut self) -> BlockId {
+        let id = BlockId(self.next_block_id);
+        self.next_block_id += 1;
+        id
+    }
+
+    /// Get the next value ID that will be allocated.
+    pub(crate) fn next_value_id(&self) -> u32 {
+        self.next_value_id
+    }
+
+    /// Create a block with a specific pre-allocated ID.
+    ///
+    /// The block ID should have been allocated with `alloc_block_id`.
+    pub(crate) fn block_with_id(&self, id: BlockId) -> BlockBuilder {
+        BlockBuilder {
+            id,
+            instructions: Vec::new(),
+            next_value_id: self.next_value_id,
+        }
+    }
+
     /// Create a new basic block.
     pub fn block(&mut self) -> BlockBuilder {
         let id = BlockId(self.next_block_id);

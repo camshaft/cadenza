@@ -768,7 +768,7 @@ The following enhancements were identified during code review and are planned fo
   - [x] Handle return values on stack
   - [x] Test with recursive functions
   - [x] Tail call optimization using `return_call` instruction (important for functional languages)
-- [ ] **Control flow** 🔨 **IN PROGRESS**
+- [x] **Control flow** ✅ **COMPLETED** (Basic IR generation for match/if)
   - [x] Add `if` special form to the language (evaluator level)
   - [x] Add test file with if expressions (if-simple.cdz)
   - [x] Add WASM test with Branch/Jump terminators (test_generate_function_with_branch)
@@ -777,12 +777,18 @@ The following enhancements were identified during code review and are planned fo
     - [x] Handle blocks that return directly from each branch (no phi nodes)
     - [ ] Handle phi nodes by ensuring correct values on stack
     - [ ] Map arbitrary basic block graphs to structured control flow (harder - may need block restructuring)
-  - [ ] Implement IR generation for `if` expressions
-    - [ ] Refactor IR generator to work with multiple blocks
-    - [ ] Generate Branch terminators from `if` macro applications
-    - [ ] Create then/else/merge blocks with proper phi nodes
+  - [x] **Implement IR generation for `match` expressions** ✅ **COMPLETED**
+    - [x] Refactor IR generator to work with multiple blocks
+    - [x] Generate Branch terminators from `match` applications
+    - [x] Create then/else/merge blocks with proper phi nodes
+    - [x] Added `IrGenState` wrapper to manage multiple blocks during generation
+    - [x] Fixed value ID allocation by completing blocks before creating new ones
+    - [x] All tests passing with correct SSA-form IR
   - [ ] Implement unconditional jump (br) for loops
   - [ ] Generate proper WASM blocks and loops for complex control flow
+  - [ ] **Future Enhancement**: Short-circuit evaluation for `&&` and `||` operators
+    - Currently generate simple And/Or binops that evaluate both sides
+    - Could use branches for true short-circuit semantics
 - [x] **Unary operations**
   - [x] Fix negation to properly load operand first (uses 0 - operand pattern)
   - [x] Fix logical not with proper type conversions

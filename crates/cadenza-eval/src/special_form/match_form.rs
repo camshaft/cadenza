@@ -116,8 +116,115 @@ fn ir_match(
     _gen_expr: &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> Result<ValueId>,
 ) -> Result<ValueId> {
     Err(Diagnostic::syntax(
-        "match special form IR generation not yet implemented",
+        "match special form IR generation not yet implemented (use ir_match_with_state instead)",
     ))
+}
+
+/// IR generation for match with multi-block support.
+///
+/// Generates control flow with branches for boolean pattern matching.
+pub fn ir_match_with_state(
+    args: &[Expr],
+    state: &mut crate::ir::IrGenState,
+    ctx: &mut IrGenContext,
+    source: SourceLocation,
+    gen_expr: &mut dyn FnMut(&Expr, &mut crate::ir::IrGenState, &mut IrGenContext) -> Result<ValueId>,
+) -> Result<ValueId> {
+    // Validate argument count: need match expression and at least one arm
+    if args.len() < 2 {
+        return Err(Diagnostic::syntax(
+            "match expects at least 2 arguments: match_expr and pattern arms",
+        ));
+    }
+
+    // First argument is the expression to match on (must be boolean)
+    let match_expr = &args[0];
+    
+    // Parse the arms to find the then and else branches
+    // Each arm should be: pattern -> result
+    let mut then_expr = None;
+    let mut else_expr = None;
+
+    for arm in &args[1..] {
+        if let Expr::Apply(apply) = arm {
+            if let Some(Expr::Op(op)) = apply.callee() {
+                if op.syntax().text() == "->" {
+                    let arm_args = apply.all_arguments();
+                    if arm_args.len() == 2 {
+                        let pattern = &arm_args[0];
+                        let result_expr = &arm_args[1];
+
+                        if let Expr::Ident(ident) = pattern {
+                            let pattern_text = ident.syntax().text();
+                            match pattern_text.as_str() {
+                                "true" => then_expr = Some(result_expr.clone()),
+                                "false" => else_expr = Some(result_expr.clone()),
+                                _ => {
+                                    return Err(Diagnostic::syntax(format!(
+                                        "match pattern must be 'true' or 'false', got '{}'",
+                                        pattern_text.as_str()
+                                    ))
+                                    .with_span(pattern.span()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let then_expr = then_expr.ok_or_else(|| {
+        Diagnostic::syntax("match expression missing 'true' pattern")
+    })?;
+    let else_expr = else_expr.ok_or_else(|| {
+        Diagnostic::syntax("match expression missing 'false' pattern")
+    })?;
+
+    // Generate the condition in the entry block
+    let cond = gen_expr(match_expr, state, ctx)?;
+
+    // Allocate block IDs for then, else, and merge blocks
+    let then_block_id = state.alloc_block_id();
+    let else_block_id = state.alloc_block_id();
+    let merge_block_id = state.alloc_block_id();
+
+    // Complete the entry block with a branch instruction
+    let current = state.current_block.take().expect("No entry block available for branch instruction");
+    let (entry_block, next_val) = current.branch(cond, then_block_id, else_block_id, source);
+    state.complete_current_block(entry_block, next_val);
+
+    // Now create the then block (gets fresh value IDs after entry block)
+    let then_block = state.create_block_with_id(then_block_id);
+    state.current_block = Some(then_block);
+    let then_value = gen_expr(&then_expr, state, ctx)?;
+    let then_block = state.current_block.take().expect("Current block missing after generating then branch");
+    let (then_block_complete, then_next_val) = then_block.jump(merge_block_id, source);
+    state.complete_current_block(then_block_complete, then_next_val);
+
+    // Create the else block (gets fresh value IDs after then block)
+    let else_block = state.create_block_with_id(else_block_id);
+    state.current_block = Some(else_block);
+    let else_value = gen_expr(&else_expr, state, ctx)?;
+    let else_block = state.current_block.take().expect("Current block missing after generating else branch");
+    let (else_block_complete, else_next_val) = else_block.jump(merge_block_id, source);
+    state.complete_current_block(else_block_complete, else_next_val);
+
+    // Create the merge block with phi node
+    let merge_block = state.create_block_with_id(merge_block_id);
+    let mut merge = merge_block;
+    let incoming = vec![(then_value, then_block_id), (else_value, else_block_id)];
+    
+    // Infer the type from one of the branches (they should have the same type)
+    // For now, use Unknown - proper type inference would check both branches
+    let result_ty = Type::Unknown;
+    
+    let result = merge.phi(incoming, result_ty, source);
+    
+    // Set merge block as current block
+    state.current_block = Some(merge);
+
+    Ok(result)
 }
 
 #[cfg(test)]
