@@ -252,7 +252,17 @@ pub enum Value {
     /// A built-in macro implemented in Rust.
     /// Macros receive unevaluated AST expressions and return values directly.
     /// This unified type replaces both the old BuiltinMacro and BuiltinSpecialForm.
+    ///
+    /// DEPRECATED: Use SpecialForm instead. This is kept for backward compatibility.
     BuiltinMacro(BuiltinMacro),
+
+    /// A special form that provides both evaluation and IR generation.
+    ///
+    /// Special forms are built-in language constructs that define the base layer
+    /// for interacting with the evaluator, type system, and IR builder.
+    /// Unlike macros (syntax tree to syntax tree), special forms provide both
+    /// evaluation semantics and IR generation logic.
+    SpecialForm(std::rc::Rc<dyn crate::special_form::SpecialForm>),
 
     /// A user-defined function with parameter names and body expression.
     UserFunction(UserFunction),
@@ -368,6 +378,7 @@ impl Value {
             Value::UnitConstructor(_) => Type::function(vec![Type::Float], Type::Float),
             Value::BuiltinFn(bf) => bf.signature.clone(),
             Value::BuiltinMacro(bm) => bm.signature.clone(),
+            Value::SpecialForm(sf) => sf.signature(),
             Value::UserFunction(uf) => {
                 // Create a function type with Unknown parameter types and return type
                 // since we don't track types at compile time yet
@@ -513,6 +524,7 @@ impl fmt::Debug for Value {
             Value::UnitConstructor(unit) => write!(f, "<unit-constructor {}>", &*unit.name),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
+            Value::SpecialForm(sf) => write!(f, "<special-form {}>", sf.name()),
             Value::UserFunction(uf) => write!(f, "<fn {}>", &*uf.name),
         }
     }
@@ -556,6 +568,7 @@ impl fmt::Display for Value {
             Value::UnitConstructor(unit) => write!(f, "<unit-constructor {}>", &*unit.name),
             Value::BuiltinFn(bf) => write!(f, "<builtin-fn {}>", bf.name),
             Value::BuiltinMacro(bm) => write!(f, "<builtin-macro {}>", bm.name),
+            Value::SpecialForm(sf) => write!(f, "<special-form {}>", sf.name()),
             Value::UserFunction(uf) => write!(f, "<fn {}>", &*uf.name),
         }
     }

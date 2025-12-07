@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// Context for IR generation from AST.
 ///
 /// Tracks SSA values, variable bindings, and types during IR generation.
-struct IrGenContext {
+pub struct IrGenContext {
     /// Maps variable names to their SSA value IDs.
     variables: HashMap<InternedString, ValueId>,
     /// Type environment for type inference.
@@ -29,7 +29,7 @@ struct IrGenContext {
 
 impl IrGenContext {
     /// Create a new IR generation context.
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             variables: HashMap::new(),
             type_env: TypeEnv::new(),
@@ -37,23 +37,23 @@ impl IrGenContext {
     }
 
     /// Bind a variable name to an SSA value and add its type to the environment.
-    fn bind_var(&mut self, name: InternedString, value: ValueId, ty: &InferType) {
+    pub fn bind_var(&mut self, name: InternedString, value: ValueId, ty: &InferType) {
         self.variables.insert(name, value);
         self.type_env.insert(name, ty.clone());
     }
 
     /// Look up a variable binding.
-    fn lookup_var(&self, name: InternedString) -> Option<ValueId> {
+    pub fn lookup_var(&self, name: InternedString) -> Option<ValueId> {
         self.variables.get(&name).copied()
     }
 
     /// Get the type environment.
-    fn type_env(&self) -> &TypeEnv {
+    pub fn type_env(&self) -> &TypeEnv {
         &self.type_env
     }
 
     /// Get a mutable reference to the type environment.
-    fn type_env_mut(&mut self) -> &mut TypeEnv {
+    pub fn type_env_mut(&mut self) -> &mut TypeEnv {
         &mut self.type_env
     }
 }
