@@ -13,8 +13,12 @@ pub fn verify_cst_coverage(sql: &str) {
     for token in cst.descendants_with_tokens() {
         if let cadenza_tree::SyntaxElement::Token(token) = token {
             let range = token.text_range();
-            for i in range.start().into()..range.end().into() {
-                covered[i] = true;
+            for is_covered in covered
+                .iter_mut()
+                .take(range.end().into())
+                .skip(range.start().into())
+            {
+                *is_covered = true;
             }
         }
     }

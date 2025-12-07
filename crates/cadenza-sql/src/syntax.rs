@@ -712,8 +712,8 @@ impl<'src> Parser<'src> {
             if ch == quote {
                 self.pos += 1;
                 break;
-            } else if ch == '\\' {
-                self.pos += 2; // Skip escape sequence
+            } else if ch == '\\' && self.pos + 1 < self.src.len() {
+                self.pos += 2; // Skip escape sequence (only if next char exists)
             } else {
                 self.pos += 1;
             }
@@ -769,6 +769,10 @@ impl<'src> Parser<'src> {
     }
 
     fn peek_char(&self) -> Option<char> {
+        // Note: This method treats bytes as chars, which is safe because it's only used
+        // to check for ASCII SQL syntax (keywords, operators, delimiters, etc.). Content
+        // like string literals and identifiers is always handled as &str slices which
+        // properly preserve UTF-8.
         if self.pos < self.src.len() {
             Some(self.src.as_bytes()[self.pos] as char)
         } else {
@@ -777,6 +781,7 @@ impl<'src> Parser<'src> {
     }
 
     fn peek_ahead(&self, offset: usize) -> Option<char> {
+        // Note: See peek_char comment about ASCII-only usage
         let pos = self.pos + offset;
         if pos < self.src.len() {
             Some(self.src.as_bytes()[pos] as char)
