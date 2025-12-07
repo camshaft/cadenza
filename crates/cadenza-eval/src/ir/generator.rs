@@ -300,6 +300,18 @@ impl IrGenerator {
             "measure" => special_form::measure_form::get(),
             "|>" => special_form::pipeline_form::get(),
             "." => special_form::field_access_form::get(),
+            "+" => special_form::add_form::get(),
+            "-" => special_form::sub_form::get(),
+            "*" => special_form::mul_form::get(),
+            "/" => special_form::div_form::get(),
+            "==" => special_form::eq_form::get(),
+            "!=" => special_form::ne_form::get(),
+            "<" => special_form::lt_form::get(),
+            "<=" => special_form::le_form::get(),
+            ">" => special_form::gt_form::get(),
+            ">=" => special_form::ge_form::get(),
+            "&&" => special_form::and_form::get(),
+            "||" => special_form::or_form::get(),
             _ => return None, // Not a special form
         };
 
@@ -320,81 +332,58 @@ impl IrGenerator {
             .callee()
             .ok_or_else(|| Diagnostic::syntax("Missing callee in application"))?;
 
-        // Handle binary operators
-        if let Expr::Op(op) = &callee {
-            let op_text = op.syntax().text();
-
-            // Check if this is the assignment operator with a let pattern
-            if op_text == "=" {
-                let args = apply.all_arguments();
-                if args.len() == 2 {
-                    // Check if LHS is [let, name] pattern
-                    if let Expr::Apply(lhs_apply) = &args[0] {
-                        if let Some(Expr::Ident(lhs_ident)) = lhs_apply.callee() {
-                            let lhs_text = lhs_ident.syntax().text();
-                            if lhs_text == "let" {
-                                // This is a let binding: let name = value
-                                return self
-                                    .gen_let_binding(lhs_apply, &args[1], block, ctx, source);
-                            }
-                        }
-                    }
-                }
-                // Regular assignment (not let) - not supported in IR yet
-                return Err(Diagnostic::syntax(
-                    "Assignment operator (without let) not yet supported in IR generation",
-                ));
-            }
-
-            // Get the operator
-            let ir_op = self.map_operator(&op_text)?;
-
-            // Get arguments
-            let args = apply.all_arguments();
-            if args.len() != 2 {
-                return Err(Diagnostic::syntax(format!(
-                    "Binary operator {} expects 2 arguments, got {}",
-                    op_text,
-                    args.len()
-                )));
-            }
-
-            // Generate IR for operands
-            let lhs = self.gen_expr(&args[0], block, ctx)?;
-            let rhs = self.gen_expr(&args[1], block, ctx)?;
-
-            // Infer the type of the binary operation
-            // Note: We need to clone Apply to wrap it as Expr for type inference
-            let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
-
-            // Emit binary operation with inferred type
-            return Ok(block.binop(ir_op, lhs, rhs, inferred_ty, source));
-        }
-
-        // Handle macro and function calls by identifier or synthetic
-        let func_name_opt = match &callee {
+        // Extract the name/operator from the callee
+        let name_opt = match &callee {
             Expr::Ident(ident) => {
-                let name = ident.syntax().text().interned();
-                Some(name)
+                let text = ident.syntax().text().interned();
+                Some(text.to_string())
             }
             Expr::Synthetic(syn) => {
                 let id = syn.identifier();
-                Some(InternedString::new(id))
+                Some(id.to_string())
+            }
+            Expr::Op(op) => {
+                let text = op.syntax().text().interned();
+                Some(text.to_string())
             }
             _ => None,
         };
 
-        if let Some(func_name) = func_name_opt {
-            let func_name_str: &str = &func_name;
-
+        if let Some(name) = name_opt {
             // Try to dispatch to a special form's IR generation
-            if let Some(result) =
-                self.try_gen_special_form(func_name_str, apply, block, ctx, source)
-            {
+            if let Some(result) = self.try_gen_special_form(&name, apply, block, ctx, source) {
                 return result;
             }
 
-            // Look up the function ID
+            // If it's an operator and not a special form, handle with hardcoded logic
+            if let Expr::Op(_) = &callee {
+                // Get the operator
+                let ir_op = self.map_operator(&name)?;
+
+                // Get arguments
+                let args = apply.all_arguments();
+                if args.len() != 2 {
+                    return Err(Diagnostic::syntax(format!(
+                        "Binary operator {} expects 2 arguments, got {}",
+                        name,
+                        args.len()
+                    )));
+                }
+
+                // Generate IR for operands
+                let lhs = self.gen_expr(&args[0], block, ctx)?;
+                let rhs = self.gen_expr(&args[1], block, ctx)?;
+
+                // Infer the type of the binary operation
+                // Note: We need to clone Apply to wrap it as Expr for type inference
+                let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
+
+                // Emit binary operation with inferred type
+                return Ok(block.binop(ir_op, lhs, rhs, inferred_ty, source));
+            }
+
+            // Not an operator - try to look up as a function
+            let func_name = InternedString::new(&name);
             let func_id = self.functions.get(&func_name).copied().ok_or_else(|| {
                 Diagnostic::syntax(format!("Unknown function in IR generation: {}", func_name))
             })?;
@@ -419,47 +408,6 @@ impl IrGenerator {
             "Unsupported callee type for IR generation: {:?}",
             callee
         )))
-    }
-
-    /// Generate IR for a let binding: let name = value
-    fn gen_let_binding(
-        &mut self,
-        lhs_apply: &cadenza_syntax::ast::Apply,
-        value_expr: &Expr,
-        block: &mut BlockBuilder,
-        ctx: &mut IrGenContext,
-        _source: SourceLocation,
-    ) -> Result<ValueId> {
-        // Extract the variable name from [let, name]
-        let args = lhs_apply.all_arguments();
-        if args.is_empty() {
-            return Err(Diagnostic::syntax("let requires a variable name"));
-        }
-
-        let var_name = match &args[0] {
-            Expr::Ident(ident) => ident.syntax().text().interned(),
-            _ => {
-                return Err(Diagnostic::syntax(
-                    "let requires an identifier as variable name",
-                ));
-            }
-        };
-
-        // Generate IR for the value expression
-        let value_id = self.gen_expr(value_expr, block, ctx)?;
-
-        // Infer the type of the value
-        // Keep as InferType to preserve type variables for polymorphism
-        let inferred_ty = self
-            .type_inferencer
-            .infer_expr(value_expr, ctx.type_env())
-            .unwrap_or(InferType::Concrete(Type::Unknown));
-
-        // Bind the variable in the context with its type
-        ctx.bind_var(var_name, value_id, &inferred_ty);
-
-        // Return the value (let expressions evaluate to their value)
-        Ok(value_id)
     }
 
     /// Map operator string to IR binary operator.

@@ -22,18 +22,30 @@
 //! `__block__` and `__list__`. Future refactoring could introduce a special form registry that
 //! both the environment and IR generator use.
 
+pub mod add_form;
+pub mod and_form;
 pub mod assert_form;
 pub mod assign_form;
 pub mod block_form;
+pub mod div_form;
+pub mod eq_form;
 pub mod field_access_form;
 pub mod fn_form;
+pub mod ge_form;
+pub mod gt_form;
 pub mod index_form;
+pub mod le_form;
 pub mod let_form;
 pub mod list_form;
+pub mod lt_form;
 pub mod match_form;
 pub mod measure_form;
+pub mod mul_form;
+pub mod ne_form;
+pub mod or_form;
 pub mod pipeline_form;
 pub mod record_form;
+pub mod sub_form;
 pub mod typeof_form;
 
 use crate::{

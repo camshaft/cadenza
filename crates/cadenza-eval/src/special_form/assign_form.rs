@@ -127,14 +127,47 @@ fn eval_assign(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 }
 
 fn ir_assign(
-    _args: &[Expr],
-    _block: &mut BlockBuilder,
-    _ctx: &mut IrGenContext,
+    args: &[Expr],
+    block: &mut BlockBuilder,
+    ctx: &mut IrGenContext,
     _source: SourceLocation,
-    _gen_expr: &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> Result<ValueId>,
+    gen_expr: &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> Result<ValueId>,
 ) -> Result<ValueId> {
+    // Expect exactly two arguments
+    if args.len() != 2 {
+        return Err(Diagnostic::arity(2, args.len()));
+    }
+
+    let lhs_expr = &args[0];
+    let rhs_expr = &args[1];
+
+    // Check if LHS is an application - could be a special form delegation
+    if let Expr::Apply(apply) = lhs_expr {
+        if let Some(callee_expr) = apply.callee() {
+            // Try to extract an identifier from the callee
+            if let Some(id) = extract_identifier(&callee_expr) {
+                let id_str: &str = &id;
+                
+                // Check if this is the `let` special form
+                if id_str == "let" {
+                    // This is a let binding: let name = value
+                    // Delegate to the let special form's IR generation
+                    let lhs_args = apply.all_arguments();
+                    let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
+                    new_args.extend(lhs_args);
+                    new_args.push(rhs_expr.clone());
+                    
+                    // Call the let special form's IR generation
+                    let let_form = crate::special_form::let_form::get();
+                    return let_form.build_ir(&new_args, block, ctx, _source, gen_expr);
+                }
+            }
+        }
+    }
+
+    // For now, other assignment patterns are not supported in IR generation
     Err(Diagnostic::syntax(
-        "assignment operator not yet supported in IR generation",
+        "assignment operator (without let) not yet supported in IR generation",
     ))
 }
 
