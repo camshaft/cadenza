@@ -53,7 +53,7 @@ fn eval_list(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 }
 
 fn ir_list(
-    args: &[Expr],
+    _args: &[Expr],
     _block: &mut BlockBuilder,
     _ctx: &mut IrGenContext,
     _source: SourceLocation,
@@ -61,15 +61,9 @@ fn ir_list(
 ) -> Result<ValueId> {
     // TODO: Add list construction instruction to IR
     // For now, return an error as lists aren't fully supported in IR yet
-    if args.is_empty() {
-        Err(crate::diagnostic::Diagnostic::syntax(
-            "List construction not yet supported in IR",
-        ))
-    } else {
-        Err(crate::diagnostic::Diagnostic::syntax(
-            "List construction not yet supported in IR",
-        ))
-    }
+    Err(crate::diagnostic::Diagnostic::syntax(
+        "List construction not yet supported in IR",
+    ))
 }
 
 #[cfg(test)]

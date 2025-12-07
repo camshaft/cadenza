@@ -22,9 +22,11 @@
 //! `__block__` and `__list__`. Future refactoring could introduce a special form registry that
 //! both the environment and IR generator use.
 
+pub mod assert_form;
 pub mod block_form;
 pub mod let_form;
 pub mod list_form;
+pub mod typeof_form;
 
 use crate::{
     context::EvalContext,
