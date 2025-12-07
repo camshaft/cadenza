@@ -20,7 +20,7 @@ Root@0..246
     ApplyArgument@20..84
       Literal@20..84
         StringContent@20..84
-          StringContent@20..84 "The range of a projec ..."
+          StringContent@20..84 "The range of a projectile is calculated using the formula below."
   Newline@84..85 "\n"
   Newline@85..86 "\n"
   CommentContent@86..89 "```"
@@ -108,5 +108,5 @@ Root@0..246
     ApplyArgument@171..245
       Literal@171..245
         StringContent@171..245
-          StringContent@171..245 "You can experiment wi ..."
+          StringContent@171..245 "You can experiment with different values to see how they affect the range!"
   Newline@245..246 "\n"

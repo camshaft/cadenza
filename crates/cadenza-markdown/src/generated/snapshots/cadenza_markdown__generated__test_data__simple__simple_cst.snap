@@ -20,5 +20,5 @@ Root@0..43
     ApplyArgument@15..42
       Literal@15..42
         StringContent@15..42
-          StringContent@15..42 "This is a simple para ..."
+          StringContent@15..42 "This is a simple paragraph."
   Newline@42..43 "\n"

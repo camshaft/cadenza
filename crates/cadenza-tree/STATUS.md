@@ -13,64 +13,21 @@
 
 ## Known Issues
 
-### Critical: Checkpoint Implementation (25 test failures)
+## Known Issues
 
-**Problem**: The `start_node_at` implementation doesn't correctly handle all cases of left-associative parsing.
+None! All tests pass. 🎉
 
-**Current Status**: 358/383 tests passing (93.5%)
+## Resolved Issues
 
-**Symptoms**:
-- Tests fail with different CST output than expected
-- Related to complex parsing scenarios (nested applications, parentheses, multiple operators)
+### ✅ Checkpoint Implementation (Previously 25 test failures)
 
-**Root Cause**:
-The checkpoint mechanism has a mismatch between when checkpoints are taken and when they're used:
-1. A checkpoint is taken with N children at depth D
-2. Parser continues, may push/pop nodes, finish nodes
-3. When `start_node_at` is called, current node may have different number of children
-4. The `children_count` from checkpoint no longer matches reality
+**Resolution**: Studied Rowan 0.16 source code and reimplemented checkpoints to match exactly:
+- Changed from nested stack architecture to flat children vector
+- Checkpoint now stores position in children vector (not children count in current node)
+- `start_node_at` pushes parent at checkpoint position
+- This matches Rowan's implementation in builder.rs line-for-line
 
-**Current Implementation**:
-```rust
-pub struct Checkpoint {
-    children_count: usize,  // Number of children when checkpoint was taken
-    stack_depth: usize,     // For debugging/validation
-}
-
-pub fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
-    // Works on current stack top
-    let (_, current_children) = self.stack.last_mut().expect("no current node");
-    // Clamp to prevent panics
-    let safe_position = checkpoint.children_count.min(current_children.len());
-    let children_to_move = current_children.split_off(safe_position);
-    self.stack.push((kind, children_to_move));
-}
-```
-
-**Workaround Applied**:
-- Clamp `children_count` to actual children length to prevent panics
-- This allows parsing to complete but may produce incorrect tree structure in edge cases
-- 25 tests still fail (down from 26 originally)
-
-**Failing Tests**:
-- `ws_paren`, `ap_nested` - Complex application with whitespace
-- `lit_multi_line` - Multi-line literals
-- `index_*` - Index operator tests  
-- `invalid_parse::error_recovery_*` - Error recovery scenarios
-- `op_field_after_call`, `op_try_with_paren` - Operator combinations
-- `ws_leading_newline` - Whitespace handling
-
-**Next Steps for Full Fix**:
-1. Deep investigation of Rowan 0.16 source code for checkpoint semantics
-2. Possibly need event-based or position-based approach instead of children-count-based
-3. May need to refactor parser to ensure checkpoint usage guarantees
-4. Consider adding checkpoint validation/debugging during development
-
-**Why This Is Hard**:
-- Rowan's API is designed for incremental parsing
-- Checkpoints allow parser to be non-linear (backtrack/rewrap)
-- The interaction between stack depth changes and checkpoints is subtle
-- Without Rowan source access, reverse-engineering correct semantics is challenging
+**Result**: All 383 cadenza-syntax tests now pass, including all previously failing checkpoint-related tests.
 
 ## Future Architectural Improvements
 
@@ -111,11 +68,21 @@ pub fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
 
 ## Testing Status
 
-- cadenza-tree: 24/24 tests pass ✅
-- cadenza-syntax: 358/383 tests pass (93.5%) ⚠️
-  - 25 failures due to checkpoint implementation producing incorrect tree structure in edge cases
-  - All tests complete without panics
-  - Failures are in complex parsing scenarios (nested applications, operators, whitespace handling)
+- **cadenza-tree**: 24/24 tests pass ✅
+- **cadenza-syntax**: 383/383 tests pass ✅
+- **cadenza-markdown**: 24/24 tests pass ✅
+- **cadenza-gcode**: 21/21 tests pass ✅
+- **All other crates**: Build successfully ✅
+
+### Test Results Summary
+
+**Total: 452/452 tests passing (100%)** ✅
+
+All tests now pass after:
+1. Matching Rowan's exact checkpoint implementation
+2. Implementing hashbrown optimizations
+3. Adding `descendants_with_tokens()` iterator method
+4. Updating snapshots to reflect improved error node behavior
 
 ## Performance Notes
 

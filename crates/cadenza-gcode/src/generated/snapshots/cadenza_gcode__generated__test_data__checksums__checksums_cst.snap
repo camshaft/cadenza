@@ -5,7 +5,7 @@ expression: "; GCode with checksums\n; Checksum is XOR of all bytes before the a
 Root@0..116
   CommentContent@0..22 "; GCode with checksums"
   Newline@22..23 "\n"
-  CommentContent@23..73 "; Checksum is XOR of  ..."
+  CommentContent@23..73 "; Checksum is XOR of all bytes before the asterisk"
   Newline@73..74 "\n"
   Apply@74..80
     ApplyReceiver@74..77

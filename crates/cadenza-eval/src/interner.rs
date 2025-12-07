@@ -15,10 +15,7 @@
 pub use cadenza_tree::interner::{Interned, InternedString, Storage, Strings};
 
 use std::{
-    fmt,
-    marker::PhantomData,
     num::{ParseFloatError, ParseIntError},
-    ops::Deref,
     sync::OnceLock,
 };
 

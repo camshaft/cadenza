@@ -3,7 +3,7 @@ source: crates/cadenza-gcode/src/generated/test_data.rs
 expression: "; Klipper macro format with named parameters\nSET_PIN PIN=my_led VALUE=1\nSET_HEATER_TEMPERATURE HEATER=extruder TARGET=200\nSET_VELOCITY_LIMIT VELOCITY=100 ACCEL=3000\nG28 X Y\nTEMPERATURE_WAIT SENSOR=extruder MINIMUM=195 MAXIMUM=205\n"
 ---
 Root@0..230
-  CommentContent@0..44 "; Klipper macro forma ..."
+  CommentContent@0..44 "; Klipper macro format with named parameters"
   Newline@44..45 "\n"
   Apply@45..71
     ApplyReceiver@45..52

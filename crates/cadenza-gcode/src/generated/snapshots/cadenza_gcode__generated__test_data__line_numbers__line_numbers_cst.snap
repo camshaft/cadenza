@@ -3,7 +3,7 @@ source: crates/cadenza-gcode/src/generated/test_data.rs
 expression: "; GCode with line numbers\nN10 G28\nN20 G1 X100 Y50 F3000\nN30 M104 S200\nN40 G90\n"
 ---
 Root@0..78
-  CommentContent@0..25 "; GCode with line num ..."
+  CommentContent@0..25 "; GCode with line numbers"
   Newline@25..26 "\n"
   Apply@26..33
     ApplyReceiver@26..27

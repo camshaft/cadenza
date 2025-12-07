@@ -20,7 +20,7 @@ Root@0..333
     ApplyArgument@20..56
       Literal@20..56
         StringContent@20..56
-          StringContent@20..56 "This document has mul ..."
+          StringContent@20..56 "This document has multiple elements."
   Newline@56..57 "\n"
   Newline@57..58 "\n"
   CommentContent@58..60 "##"
@@ -40,7 +40,7 @@ Root@0..333
     ApplyArgument@75..125
       Literal@75..125
         StringContent@75..125
-          StringContent@75..125 "Welcome to this tutor ..."
+          StringContent@75..125 "Welcome to this tutorial. Here's what we'll cover:"
   Newline@125..126 "\n"
   Newline@126..127 "\n"
   Apply@127..157

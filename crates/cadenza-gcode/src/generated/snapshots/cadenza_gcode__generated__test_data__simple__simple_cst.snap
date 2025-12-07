@@ -13,7 +13,7 @@ Root@0..255
         Identifier@41..44 "G28"
   Newline@44..45 "\n"
   Newline@45..46 "\n"
-  CommentContent@46..72 "; Set absolute positi ..."
+  CommentContent@46..72 "; Set absolute positioning"
   Newline@72..73 "\n"
   Apply@73..76
     ApplyReceiver@73..76
@@ -39,7 +39,7 @@ Root@0..255
               Integer@100..103 "200"
   Newline@103..104 "\n"
   Newline@104..105 "\n"
-  CommentContent@105..132 "; Move to starting po ..."
+  CommentContent@105..132 "; Move to starting position"
   Newline@132..133 "\n"
   Apply@133..154
     ApplyReceiver@133..135

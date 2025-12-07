@@ -20,7 +20,7 @@ Root@0..267
     ApplyArgument@23..63
       Literal@23..63
         StringContent@23..63
-          StringContent@23..63 "This example shows co ..."
+          StringContent@23..63 "This example shows code with parameters."
   Newline@63..64 "\n"
   Newline@64..65 "\n"
   CommentContent@65..68 "```"
@@ -74,7 +74,7 @@ Root@0..267
     ApplyArgument@141..179
       Literal@141..179
         StringContent@141..179
-          StringContent@141..179 "The code above is hid ..."
+          StringContent@141..179 "The code above is hidden and editable."
   Newline@179..180 "\n"
   Newline@180..181 "\n"
   CommentContent@181..184 "```"
@@ -100,5 +100,5 @@ Root@0..267
     ApplyArgument@232..266
       Literal@232..266
         StringContent@232..266
-          StringContent@232..266 "Different languages a ..."
+          StringContent@232..266 "Different languages are supported!"
   Newline@266..267 "\n"

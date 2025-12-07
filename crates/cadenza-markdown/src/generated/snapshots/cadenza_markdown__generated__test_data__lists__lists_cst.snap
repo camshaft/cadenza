@@ -45,5 +45,5 @@ Root@0..73
     ApplyArgument@47..72
       Literal@47..72
         StringContent@47..72
-          StringContent@47..72 "Some text after the l ..."
+          StringContent@47..72 "Some text after the list."
   Newline@72..73 "\n"

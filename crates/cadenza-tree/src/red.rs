@@ -128,6 +128,26 @@ impl<L: Language> SyntaxNode<L> {
             .map(move |(i, child)| self.element_at_index(child.clone(), i))
     }
 
+    /// Iterate over all descendant elements (nodes and tokens) in pre-order.
+    pub fn descendants_with_tokens(&self) -> impl Iterator<Item = SyntaxElement<L>> {
+        let mut stack = vec![SyntaxElement::Node(self.clone())];
+        std::iter::from_fn(move || {
+            while let Some(element) = stack.pop() {
+                // Add children in reverse order so they're processed in the correct order
+                match &element {
+                    SyntaxElement::Node(node) => {
+                        for child in node.children_with_tokens().collect::<Vec<_>>().into_iter().rev() {
+                            stack.push(child);
+                        }
+                    }
+                    SyntaxElement::Token(_) => {}
+                }
+                return Some(element);
+            }
+            None
+        })
+    }
+
     fn child_node(&self, green: &GreenNode) -> SyntaxNode<L> {
         // Find this child's index
         for (i, child) in self.green.children().iter().enumerate() {
