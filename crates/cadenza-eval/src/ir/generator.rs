@@ -252,7 +252,10 @@ impl IrGenerator {
         let result = self.gen_expr_with_state(&func.body, &mut state, &mut ctx)?;
 
         // Complete the current block with a return
-        let block = state.current_block.take().expect("No current block available for function return");
+        let block = state
+            .current_block
+            .take()
+            .expect("No current block available for function return");
         let (block_inst, next_val) = block.ret(Some(result), self.dummy_source());
         state.complete_current_block(block_inst, next_val);
 
@@ -427,9 +430,13 @@ impl IrGenerator {
                     |expr: &Expr, state: &mut IrGenState, ctx: &mut IrGenContext| {
                         self.gen_expr_with_state(expr, state, ctx)
                     };
-                
+
                 return Some(special_form::match_form::ir_match_with_state(
-                    &args, state, ctx, source, &mut gen_expr_adapter,
+                    &args,
+                    state,
+                    ctx,
+                    source,
+                    &mut gen_expr_adapter,
                 ));
             }
 
@@ -479,7 +486,9 @@ impl IrGenerator {
 
         if let Some(name) = name_opt {
             // Try to dispatch to a special form's IR generation
-            if let Some(result) = self.try_gen_special_form_with_state(&name, apply, state, ctx, source) {
+            if let Some(result) =
+                self.try_gen_special_form_with_state(&name, apply, state, ctx, source)
+            {
                 return result;
             }
 
