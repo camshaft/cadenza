@@ -287,7 +287,7 @@ impl Default for GreenNodeBuilder {
 /// This ensures that identical subtrees and tokens share the same memory.
 struct Cache {
     nodes: Mutex<FxHashMap<(SyntaxKind, Box<[GreenElement]>), GreenNode>>,
-    tokens: Mutex<FxHashMap<(SyntaxKind, Arc<str>), GreenToken>>,
+    tokens: Mutex<FxHashMap<(SyntaxKind, String), GreenToken>>,
 }
 
 impl Cache {
@@ -299,50 +299,39 @@ impl Cache {
     }
 
     fn token(&self, kind: SyntaxKind, text: &str) -> GreenToken {
-        // Check cache first with just the string slice (no allocation yet)
-        {
-            let cache = self.tokens.lock().unwrap();
-            // Try to find existing token with this text
-            for ((cached_kind, cached_text), token) in cache.iter() {
-                if *cached_kind == kind && cached_text.as_ref() == text {
-                    return token.clone();
-                }
+        let mut cache = self.tokens.lock().unwrap();
+        
+        // Use entry API to avoid double lookup
+        use std::collections::hash_map::Entry;
+        match cache.entry((kind, text.to_string())) {
+            Entry::Occupied(e) => e.get().clone(),
+            Entry::Vacant(e) => {
+                // Create interned token
+                let text_arc: Arc<str> = Arc::from(text);
+                let token = GreenToken {
+                    inner: Arc::new(GreenTokenData {
+                        kind,
+                        text: SyntaxText::interned(text_arc),
+                    }),
+                };
+                e.insert(token.clone());
+                token
             }
         }
-
-        // Not found, intern the text and create new token
-        let text_arc: Arc<str> = Arc::from(text);
-        let token = GreenToken {
-            inner: Arc::new(GreenTokenData {
-                kind,
-                text: SyntaxText::interned(text_arc.clone()),
-            }),
-        };
-
-        // Insert into cache
-        {
-            let mut cache = self.tokens.lock().unwrap();
-            cache.insert((kind, text_arc), token.clone());
-        }
-
-        token
     }
 
     fn node(&self, kind: SyntaxKind, children: Vec<GreenElement>) -> GreenNode {
         let children: Box<[GreenElement]> = children.into();
 
-        // Check cache first
-        {
-            let cache = self.nodes.lock().unwrap();
-            if let Some(node) = cache.get(&(kind, children.clone())) {
-                return node.clone();
-            }
+        let mut cache = self.nodes.lock().unwrap();
+        
+        // Check if already cached
+        if let Some(node) = cache.get(&(kind, children.clone())) {
+            return node.clone();
         }
 
-        // Compute width
+        // Not found, create new node
         let width = children.iter().map(|c| c.text_len()).sum();
-
-        // Create new node
         let node = GreenNode {
             inner: Arc::new(GreenNodeData {
                 kind,
@@ -351,12 +340,8 @@ impl Cache {
             }),
         };
 
-        // Insert into cache
-        {
-            let mut cache = self.nodes.lock().unwrap();
-            cache.insert((kind, children), node.clone());
-        }
-
+        // Insert into cache (still holding the lock)
+        cache.insert((kind, children), node.clone());
         node
     }
 }
