@@ -1,12 +1,12 @@
 //! The `assert` special form for runtime assertions.
 
 use crate::{
+    Eval,
     context::EvalContext,
     diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
     value::{Type, Value},
-    Eval,
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;
@@ -102,7 +102,9 @@ fn ir_assert(
     _gen_expr: &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> Result<ValueId>,
 ) -> Result<ValueId> {
     // TODO: Add assertion instruction to IR
-    Err(Diagnostic::syntax("assert not yet supported in IR generation"))
+    Err(Diagnostic::syntax(
+        "assert not yet supported in IR generation",
+    ))
 }
 
 #[cfg(test)]
@@ -136,9 +138,9 @@ mod tests {
         let parsed = parse(input);
         let root = parsed.ast();
 
-        let results = crate::eval(&root, &mut env, &mut compiler);
+        let _results = crate::eval(&root, &mut env, &mut compiler);
 
         // Should have an error diagnostic
-        assert!(compiler.diagnostics().len() > 0);
+        assert!(!compiler.diagnostics().is_empty());
     }
 }

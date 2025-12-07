@@ -71,7 +71,9 @@ fn ir_typeof(
     _gen_expr: &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> Result<ValueId>,
 ) -> Result<ValueId> {
     // TODO: Add typeof instruction to IR or compile-time evaluate
-    Err(Diagnostic::syntax("typeof not yet supported in IR generation"))
+    Err(Diagnostic::syntax(
+        "typeof not yet supported in IR generation",
+    ))
 }
 
 #[cfg(test)]

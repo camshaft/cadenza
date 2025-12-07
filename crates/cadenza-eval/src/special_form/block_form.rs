@@ -1,12 +1,12 @@
 //! The `__block__` special form for block expressions.
 
 use crate::{
+    Eval,
     context::EvalContext,
     diagnostic::Result,
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
     value::{Type, Value},
-    Eval,
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;
@@ -90,7 +90,6 @@ fn ir_block(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{Compiler, Env};
     use cadenza_syntax::parse::parse;
 

@@ -1,12 +1,12 @@
 //! The `__list__` special form for list literals.
 
 use crate::{
+    Eval,
     context::EvalContext,
     diagnostic::Result,
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
     value::{Type, Value},
-    Eval,
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;
@@ -68,7 +68,6 @@ fn ir_list(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{Compiler, Env, Value};
     use cadenza_syntax::parse::parse;
 
@@ -88,7 +87,11 @@ mod tests {
         let value = &results[0];
         assert_eq!(
             *value,
-            Value::List(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+            Value::List(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
         );
     }
 
