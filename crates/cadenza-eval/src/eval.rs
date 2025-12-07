@@ -38,25 +38,26 @@ fn intern_syntax_text(text: &rowan::SyntaxText) -> InternedString {
         Multi(String),
     }
 
-    let final_state: std::result::Result<State, std::convert::Infallible> = text.try_fold_chunks(State::Empty, |state, chunk| {
-        Ok(match state {
-            State::Empty => {
-                // First chunk
-                State::Single(chunk.to_owned())
-            }
-            State::Single(first) => {
-                // Second chunk - switch to multi mode
-                let mut concatenated = first;
-                concatenated.push_str(chunk);
-                State::Multi(concatenated)
-            }
-            State::Multi(mut concatenated) => {
-                // Third+ chunk - continue concatenating
-                concatenated.push_str(chunk);
-                State::Multi(concatenated)
-            }
-        })
-    });
+    let final_state: std::result::Result<State, std::convert::Infallible> =
+        text.try_fold_chunks(State::Empty, |state, chunk| {
+            Ok(match state {
+                State::Empty => {
+                    // First chunk
+                    State::Single(chunk.to_owned())
+                }
+                State::Single(first) => {
+                    // Second chunk - switch to multi mode
+                    let mut concatenated = first;
+                    concatenated.push_str(chunk);
+                    State::Multi(concatenated)
+                }
+                State::Multi(mut concatenated) => {
+                    // Third+ chunk - continue concatenating
+                    concatenated.push_str(chunk);
+                    State::Multi(concatenated)
+                }
+            })
+        });
 
     match final_state {
         Ok(State::Empty) => InternedString::new(""),
@@ -710,8 +711,7 @@ fn handle_field_assignment(
     let field_name = match &args[1] {
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
-            let id = intern_syntax_text(&text);
-            id
+            intern_syntax_text(&text)
         }
         _ => return Err(Diagnostic::syntax("field name must be an identifier")),
     };
@@ -1093,8 +1093,7 @@ pub fn builtin_measure() -> BuiltinMacro {
                 let name = match &args[0] {
                     Expr::Ident(ident) => {
                         let text = ident.syntax().text();
-                        let name = intern_syntax_text(&text);
-                        name
+                        intern_syntax_text(&text)
                     }
                     _ => {
                         return Err(Diagnostic::syntax(
@@ -1123,8 +1122,7 @@ pub fn builtin_measure() -> BuiltinMacro {
                         let base_unit_name = match base_expr {
                             Some(Expr::Ident(ident)) => {
                                 let text = ident.syntax().text();
-                                let name = intern_syntax_text(&text);
-                                name
+                                intern_syntax_text(&text)
                             }
                             _ => {
                                 return Err(Diagnostic::syntax(
