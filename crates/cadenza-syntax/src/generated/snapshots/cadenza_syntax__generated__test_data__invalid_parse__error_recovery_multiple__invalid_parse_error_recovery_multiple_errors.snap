@@ -1,0 +1,20 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "let a = 1\n)\nlet b = 2\n]\nlet c = 3\n"
+---
+[
+    ParseError {
+        span: Span {
+            start: 10,
+            end: 11,
+        },
+        message: "expected expression, found )",
+    },
+    ParseError {
+        span: Span {
+            start: 22,
+            end: 23,
+        },
+        message: "expected expression, found ]",
+    },
+]

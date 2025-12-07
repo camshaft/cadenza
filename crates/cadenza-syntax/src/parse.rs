@@ -270,8 +270,24 @@ impl<'src> Parser<'src> {
             Kind::LBrace => {
                 self.parse_record();
             }
+            // Invalid tokens that cannot start an expression
+            Kind::RParen | Kind::RBracket | Kind::RBrace | Kind::Comma | Kind::Semicolon => {
+                // Create an error node for the unexpected token
+                self.builder.start_node(Kind::Error.into());
+                let token_name = self.current().display_name();
+                self.error(&format!("expected expression, found {}", token_name));
+                self.bump();
+                self.builder.finish_node();
+            }
+            Kind::Eof => {
+                // Don't bump past EOF, just report error
+                self.builder.start_node(Kind::Error.into());
+                self.error("unexpected end of file");
+                self.builder.finish_node();
+            }
             _ => {
-                // Other tokens
+                // Other tokens (including operators) are allowed as primaries
+                // This allows operators to be used as values in this keyword-less language
                 self.bump();
             }
         }
