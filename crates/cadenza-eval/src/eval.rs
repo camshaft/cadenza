@@ -470,6 +470,8 @@ impl Eval for Synthetic {
 // Built-in special forms for variable declaration and assignment
 // =============================================================================
 
+/// **DEPRECATED**: Use `special_form::let_form` instead.
+///
 /// Creates the `let` macro for declaring and initializing variables.
 ///
 /// The `let` macro can be used in two forms:
@@ -486,6 +488,8 @@ impl Eval for Synthetic {
 /// Examples:
 /// - `let x = 42` - Called with `[x, 42]`, declares `x` and assigns 42
 /// - `let y = x + 10` - Called with `[y, x + 10]`, declares `y` and assigns the result
+#[deprecated(note = "Use special_form::let_form instead")]
+#[allow(dead_code)]
 pub fn builtin_let() -> BuiltinMacro {
     BuiltinMacro {
         name: "let",
@@ -535,6 +539,8 @@ pub fn builtin_let() -> BuiltinMacro {
     }
 }
 
+/// **DEPRECATED**: Use `special_form::assign_form` instead.
+///
 /// Creates the `=` operator that assigns values or delegates to macros.
 ///
 /// The `=` operator takes two arguments:
@@ -551,6 +557,8 @@ pub fn builtin_let() -> BuiltinMacro {
 /// - `fn add x y = x + y` - Delegates to `fn` with `[add, x, y, x + y]`
 /// - `measure inch = millimeter 25.4` - Delegates to `measure` with `[inch, millimeter 25.4]`
 /// - `x = 50` - Direct reassignment to existing variable `x`
+#[deprecated(note = "Use special_form::assign_form instead")]
+#[allow(dead_code)]
 pub fn builtin_assign() -> BuiltinMacro {
     BuiltinMacro {
         name: "=",
@@ -820,6 +828,8 @@ fn handle_function_definition(
     Ok(Value::Nil)
 }
 
+/// **DEPRECATED**: Use `special_form::block_form` instead.
+///
 /// Creates the `__block__` synthetic macro for handling block expressions.
 ///
 /// The `__block__` macro is automatically emitted by the parser when multiple
@@ -836,6 +846,8 @@ fn handle_function_definition(
 /// ```
 ///
 /// The parser transforms this into: `[=, [let, result], [__block__, [=, [let, x], 10], [=, [let, y], 20], [+, x, y]]]`
+#[deprecated(note = "Use special_form::block_form instead")]
+#[allow(dead_code)]
 pub fn builtin_block() -> BuiltinMacro {
     BuiltinMacro {
         name: "__block__",
@@ -864,6 +876,8 @@ pub fn builtin_block() -> BuiltinMacro {
     }
 }
 
+/// **DEPRECATED**: Use `special_form::list_form` instead.
+///
 /// Creates the `__list__` builtin macro for list literals.
 ///
 /// The `__list__` macro evaluates its arguments and constructs a list value.
@@ -877,6 +891,8 @@ pub fn builtin_block() -> BuiltinMacro {
 /// ```
 ///
 /// The parser transforms `[1, 2, 3]` into: `[__list__, 1, 2, 3]`
+#[deprecated(note = "Use special_form::list_form instead")]
+#[allow(dead_code)]
 pub fn builtin_list() -> BuiltinMacro {
     BuiltinMacro {
         name: "__list__",
@@ -2075,6 +2091,8 @@ pub fn builtin_pipeline() -> BuiltinMacro {
     }
 }
 
+/// **DEPRECATED**: Use `special_form::assert_form` instead.
+///
 /// Creates the `assert` builtin macro for runtime assertions.
 ///
 /// The `assert` macro checks that a condition is true and reports a detailed error if it fails.
@@ -2111,6 +2129,8 @@ pub fn builtin_pipeline() -> BuiltinMacro {
 /// - The condition expression that failed
 /// - The custom message (if provided)
 /// - Source location information
+#[deprecated(note = "Use special_form::assert_form instead")]
+#[allow(dead_code)]
 pub fn builtin_assert() -> BuiltinMacro {
     BuiltinMacro {
         name: "assert",
@@ -2273,6 +2293,8 @@ pub fn builtin_match() -> BuiltinMacro {
     }
 }
 
+/// **DEPRECATED**: Use `special_form::typeof_form` instead.
+///
 /// A builtin macro that returns the inferred type of an expression.
 ///
 /// This demonstrates how macros can use the type inference system to query types.
@@ -2298,6 +2320,8 @@ pub fn builtin_match() -> BuiltinMacro {
 /// A `Type` value representing the inferred type of the expression.
 /// If the type contains unresolved type variables (e.g., for polymorphic functions),
 /// returns `Type::Unknown`.
+#[deprecated(note = "Use special_form::typeof_form instead")]
+#[allow(dead_code)]
 pub fn builtin_typeof() -> BuiltinMacro {
     BuiltinMacro {
         name: "typeof",

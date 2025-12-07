@@ -5,13 +5,13 @@
 
 use crate::{
     eval::{
-        builtin_add, builtin_assert, builtin_assign, builtin_block, builtin_div, builtin_eq,
-        builtin_field_access, builtin_fn, builtin_gt, builtin_gte, builtin_index, builtin_let,
-        builtin_list, builtin_lt, builtin_lte, builtin_match, builtin_measure, builtin_mul,
-        builtin_ne, builtin_pipeline, builtin_record, builtin_sub, builtin_typeof,
+        builtin_add, builtin_div, builtin_eq, builtin_field_access, builtin_fn, builtin_gt,
+        builtin_gte, builtin_index, builtin_lt, builtin_lte, builtin_match, builtin_measure, builtin_mul,
+        builtin_ne, builtin_pipeline, builtin_record, builtin_sub,
     },
     interner::InternedString,
     map::Map,
+    special_form,
     value::Value,
 };
 use std::{collections::HashSet, rc::Rc};
@@ -125,16 +125,28 @@ impl Env {
         let record_id: InternedString = "__record__".into();
         let index_id: InternedString = "__index__".into();
 
-        self.define(let_id, Value::BuiltinMacro(builtin_let()));
-        self.define(assign_id, Value::BuiltinMacro(builtin_assign()));
+        self.define(let_id, Value::SpecialForm(special_form::let_form::get()));
+        self.define(
+            assign_id,
+            Value::SpecialForm(special_form::assign_form::get()),
+        );
         self.define(fn_id, Value::BuiltinMacro(builtin_fn()));
         self.define(match_id, Value::BuiltinMacro(builtin_match()));
-        self.define(assert_id, Value::BuiltinMacro(builtin_assert()));
-        self.define(typeof_id, Value::BuiltinMacro(builtin_typeof()));
+        self.define(
+            assert_id,
+            Value::SpecialForm(special_form::assert_form::get()),
+        );
+        self.define(
+            typeof_id,
+            Value::SpecialForm(special_form::typeof_form::get()),
+        );
         self.define(measure_id, Value::BuiltinMacro(builtin_measure()));
         self.define(pipeline_id, Value::BuiltinMacro(builtin_pipeline()));
-        self.define(block_id, Value::BuiltinMacro(builtin_block()));
-        self.define(list_id, Value::BuiltinMacro(builtin_list()));
+        self.define(
+            block_id,
+            Value::SpecialForm(special_form::block_form::get()),
+        );
+        self.define(list_id, Value::SpecialForm(special_form::list_form::get()));
         self.define(record_id, Value::BuiltinMacro(builtin_record()));
         self.define(index_id, Value::BuiltinMacro(builtin_index()));
 
@@ -327,12 +339,12 @@ mod tests {
         let assign_id: InternedString = "=".into();
 
         assert!(
-            matches!(env.get(let_id), Some(Value::BuiltinMacro(_))),
-            "Expected `let` to be registered as a BuiltinMacro"
+            matches!(env.get(let_id), Some(Value::SpecialForm(_))),
+            "Expected `let` to be registered as a SpecialForm"
         );
         assert!(
-            matches!(env.get(assign_id), Some(Value::BuiltinMacro(_))),
-            "Expected `=` to be registered as a BuiltinMacro"
+            matches!(env.get(assign_id), Some(Value::SpecialForm(_))),
+            "Expected `=` to be registered as a SpecialForm"
         );
     }
 
@@ -353,12 +365,12 @@ mod tests {
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
         assert!(
-            matches!(env.get(let_id), Some(Value::BuiltinMacro(_))),
-            "Expected `let` to be registered as a BuiltinMacro"
+            matches!(env.get(let_id), Some(Value::SpecialForm(_))),
+            "Expected `let` to be registered as a SpecialForm"
         );
         assert!(
-            matches!(env.get(assign_id), Some(Value::BuiltinMacro(_))),
-            "Expected `=` to be registered as a BuiltinMacro"
+            matches!(env.get(assign_id), Some(Value::SpecialForm(_))),
+            "Expected `=` to be registered as a SpecialForm"
         );
     }
 
