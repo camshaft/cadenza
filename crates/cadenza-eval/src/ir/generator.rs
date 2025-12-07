@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{
     interner::InternedString,
+    special_form,
     typeinfer::{InferType, TypeEnv, TypeInferencer},
     value::{Type, UserFunction, Value},
 };
@@ -253,6 +254,52 @@ impl IrGenerator {
             .ok_or_else(|| format!("Undefined variable in IR generation: {}", name))
     }
 
+    /// Try to generate IR for a special form by name.
+    ///
+    /// Returns Some(result) if the name matches a known special form, None otherwise.
+    /// This allows dispatching to the special form's IR generation function.
+    fn try_gen_special_form(
+        &mut self,
+        name: &str,
+        apply: &cadenza_syntax::ast::Apply,
+        block: &mut BlockBuilder,
+        ctx: &mut IrGenContext,
+        source: SourceLocation,
+    ) -> Option<Result<ValueId, String>> {
+        let args = apply.all_arguments();
+        
+        // Create a mutable closure for generating sub-expressions that converts String errors to Diagnostic
+        let mut gen_expr_adapter = |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+            self.gen_expr(expr, block, ctx)
+                .map_err(|e| crate::diagnostic::Diagnostic::syntax(e))
+        };
+        
+        // Dispatch to the appropriate special form
+        let special_form = match name {
+            "let" => special_form::let_form::get(),
+            "=" => special_form::assign_form::get(),
+            "fn" => special_form::fn_form::get(),
+            "__block__" => special_form::block_form::get(),
+            "__list__" => special_form::list_form::get(),
+            "__record__" => special_form::record_form::get(),
+            "__index__" => special_form::index_form::get(),
+            "match" => special_form::match_form::get(),
+            "assert" => special_form::assert_form::get(),
+            "typeof" => special_form::typeof_form::get(),
+            "measure" => special_form::measure_form::get(),
+            "|>" => special_form::pipeline_form::get(),
+            "." => special_form::field_access_form::get(),
+            _ => return None, // Not a special form
+        };
+        
+        // Call the special form's IR generation function and convert errors from Diagnostic to String
+        Some(
+            special_form
+                .build_ir(&args, block, ctx, source, &mut gen_expr_adapter)
+                .map_err(|e| format!("{}", e))
+        )
+    }
+
     /// Generate IR for an application (function call or operator).
     fn gen_apply(
         &mut self,
@@ -332,11 +379,9 @@ impl IrGenerator {
         if let Some(func_name) = func_name_opt {
             let func_name_str: &str = &func_name;
 
-            // Check if this is a known macro
-            if func_name_str == "__block__" {
-                return self.gen_block(apply, block, ctx);
-            } else if func_name_str == "__list__" {
-                return self.gen_list(apply, block, ctx, source);
+            // Try to dispatch to a special form's IR generation
+            if let Some(result) = self.try_gen_special_form(func_name_str, apply, block, ctx, source) {
+                return result;
             }
 
             // Look up the function ID
@@ -406,39 +451,6 @@ impl IrGenerator {
 
         // Return the value (let expressions evaluate to their value)
         Ok(value_id)
-    }
-
-    /// Generate IR for a block expression
-    fn gen_block(
-        &mut self,
-        apply: &cadenza_syntax::ast::Apply,
-        block: &mut BlockBuilder,
-        ctx: &mut IrGenContext,
-    ) -> Result<ValueId, String> {
-        let args = apply.all_arguments();
-
-        if args.is_empty() {
-            // Empty block returns nil
-            return Ok(block.const_val(IrConst::Nil, Type::Nil, self.dummy_source()));
-        }
-
-        // Generate IR for each expression in the block, returning the last value
-        args.iter()
-            .try_fold(None, |_, expr| self.gen_expr(expr, block, ctx).map(Some))?
-            .ok_or_else(|| "Block should have at least one expression".to_string())
-    }
-
-    /// Generate IR for a list construction
-    fn gen_list(
-        &mut self,
-        _apply: &cadenza_syntax::ast::Apply,
-        _block: &mut BlockBuilder,
-        _ctx: &mut IrGenContext,
-        _source: SourceLocation,
-    ) -> Result<ValueId, String> {
-        // TODO: Add list construction instruction to IR
-        // For now, return an error as lists aren't supported in IR yet
-        Err("List construction not yet supported in IR".to_string())
     }
 
     /// Map operator string to IR binary operator.

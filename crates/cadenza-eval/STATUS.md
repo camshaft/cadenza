@@ -152,13 +152,13 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Unified with extract_identifier helper
    - [PR #21](https://github.com/camshaft/cadenza/pull/21#discussion_r2575603972)
 
-~~22. **Refactor Built-in Macros to Special Forms**~~ ✅
+22. **Refactor Built-in Macros to Special Forms** (In Progress)
    - [x] Create BuiltinSpecialForm struct with eval_fn and ir_fn
    - [x] Add Value::SpecialForm variant using &'static BuiltinSpecialForm
    - [x] Organize special forms as submodules (one module per form)
    - [x] Update to use Result<ValueId> for IR generation (consistent with eval)
    - [x] Implement let_form as example with OnceLock pattern
-   - [x] Migrate remaining 11 builtins to special forms:
+   - [x] Migrate 11 builtins to special forms (evaluation only):
      - [x] `=` - Assignment operator
      - [x] `fn` - Function definition
      - [x] `__block__` - Block expressions
@@ -170,11 +170,22 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
      - [x] `measure` - Unit definitions
      - [x] `|>` - Pipeline operator
      - [x] `.` - Field access (implemented as `__index__` special form)
-   - [x] All special forms migrated and integrated into environment and IR generator
-   
-   **Next Steps (Cleanup):**
-   - [ ] Remove deprecated `builtin_*` BuiltinMacro functions from eval.rs
-   - [ ] Remove BuiltinMacro type if no longer needed for user-defined macros
+   - [x] Remove deprecated `builtin_*` BuiltinMacro functions from eval.rs
+   - [ ] **Wire up special form IR generation to IR generator**
+     - [ ] Modify IrGenerator::gen_apply to detect special forms and call their ir_fn
+     - [ ] Remove hardcoded __block__ and __list__ handling in favor of special form dispatch
+     - [ ] Test IR generation for all special forms
+   - [ ] **Migrate builtin operators to special forms**
+     - [ ] `+` - Addition operator
+     - [ ] `-` - Subtraction operator
+     - [ ] `*` - Multiplication operator
+     - [ ] `/` - Division operator
+     - [ ] `==` - Equality operator
+     - [ ] `!=` - Inequality operator
+     - [ ] `<` - Less than operator
+     - [ ] `<=` - Less than or equal operator
+     - [ ] `>` - Greater than operator
+     - [ ] `>=` - Greater than or equal operator
    
    **Migration Pattern Used:**
    1. Create `special_form/<name>.rs` module
