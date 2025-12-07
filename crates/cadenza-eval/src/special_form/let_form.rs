@@ -1,13 +1,13 @@
 //! The `let` special form for variable declarations.
 
 use crate::{
+    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     interner::InternedString,
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
     value::{Type, Value},
-    Eval,
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;
@@ -108,7 +108,7 @@ fn ir_let(
         _ => {
             return Err(Diagnostic::syntax(
                 "let requires an identifier as variable name",
-            ))
+            ));
         }
     };
 

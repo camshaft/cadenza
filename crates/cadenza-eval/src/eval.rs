@@ -90,7 +90,9 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
                                         if ctx.compiler.get_macro(id).is_some()
                                             || matches!(
                                                 ctx.env.get(id),
-                                                Some(Value::BuiltinMacro(_) | Value::SpecialForm(_))
+                                                Some(
+                                                    Value::BuiltinMacro(_) | Value::SpecialForm(_)
+                                                )
                                             )
                                         {
                                             // This is a function definition - delegate to fn macro
@@ -111,7 +113,8 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
                                             if let Some(Value::BuiltinMacro(builtin)) = macro_value
                                             {
                                                 let _ = (builtin.func)(&new_args, &mut ctx);
-                                            } else if let Some(Value::SpecialForm(sf)) = macro_value {
+                                            } else if let Some(Value::SpecialForm(sf)) = macro_value
+                                            {
                                                 let _ = sf.eval(&new_args, &mut ctx);
                                             }
                                         }
@@ -1944,7 +1947,9 @@ pub fn builtin_pipeline() -> BuiltinMacro {
                         }
 
                         // Check for macro in environment
-                        if let Some(Value::BuiltinMacro(_) | Value::SpecialForm(_)) = ctx.env.get(id) {
+                        if let Some(Value::BuiltinMacro(_) | Value::SpecialForm(_)) =
+                            ctx.env.get(id)
+                        {
                             return Err(Diagnostic::syntax(
                                 "cannot use pipeline operator with macros",
                             ));
