@@ -303,6 +303,14 @@ impl IrGenerator {
             "." => special_form::field_access_form::get(),
             "+" => special_form::add_form::get(),
             "-" => special_form::sub_form::get(),
+            "*" => special_form::mul_form::get(),
+            "/" => special_form::div_form::get(),
+            "==" => special_form::eq_form::get(),
+            "!=" => special_form::ne_form::get(),
+            "<" => special_form::lt_form::get(),
+            "<=" => special_form::le_form::get(),
+            ">" => special_form::gt_form::get(),
+            ">=" => special_form::ge_form::get(),
             _ => return None, // Not a special form
         };
 
