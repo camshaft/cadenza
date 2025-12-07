@@ -9,14 +9,15 @@
 use anyhow::Result;
 use cadenza_eval::{Compiler, Env, Value};
 use cadenza_syntax::{lexer::Lexer, parse::parse, token::Kind};
-use rustyline::completion::{Completer, Pair};
-use rustyline::error::ReadlineError;
-use rustyline::highlight::{Highlighter, CmdKind};
-use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
-use rustyline::{Context, Editor, Helper};
-use std::borrow::Cow;
-use std::path::PathBuf;
+use rustyline::{
+    Context, Editor, Helper,
+    completion::{Completer, Pair},
+    error::ReadlineError,
+    highlight::{CmdKind, Highlighter},
+    hint::Hinter,
+    validate::Validator,
+};
+use std::{borrow::Cow, path::PathBuf};
 
 /// REPL helper that provides completion and syntax highlighting
 struct CadenzaHelper;
@@ -51,13 +52,13 @@ impl Completer for CadenzaHelper {
 
         // Collect matching identifiers from the environment
         let mut candidates = Vec::new();
-        
+
         // Get identifiers from the environment
         // Note: Env doesn't expose a way to iterate over bindings,
         // so we'll provide a basic set of built-in names
         let builtins = [
-            "let", "fn", "=", "match", "assert", "typeof", "measure",
-            "+", "-", "*", "/", "==", "!=", "<", "<=", ">", ">=", "|>",
+            "let", "fn", "=", "match", "assert", "typeof", "measure", "+", "-", "*", "/", "==",
+            "!=", "<", "<=", ">", ">=", "|>",
         ];
 
         for builtin in &builtins {
@@ -85,37 +86,46 @@ impl Highlighter for CadenzaHelper {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
         // Use the cadenza lexer to tokenize the line
         let tokens: Vec<_> = Lexer::new(line).collect();
-        
+
         // Build a colored version of the line
         let mut result = String::new();
         let mut last_end = 0;
-        
+
         for token in tokens {
             let span = token.span;
-            let start = span.start as usize;
-            let end = span.end as usize;
-            
+            let start = span.start;
+            let end = span.end;
+
             // Add any whitespace/text between tokens
             if start > last_end {
                 result.push_str(&line[last_end..start]);
             }
-            
+
             // Add the token with color based on its kind
             let text = &line[start..end];
             let colored = match token.kind {
                 Kind::Integer | Kind::Float => format!("\x1b[33m{}\x1b[0m", text), // Yellow
-                Kind::StringStart | Kind::StringContent | Kind::StringContentWithEscape | Kind::StringEnd => {
+                Kind::StringStart
+                | Kind::StringContent
+                | Kind::StringContentWithEscape
+                | Kind::StringEnd => {
                     format!("\x1b[32m{}\x1b[0m", text) // Green
                 }
                 Kind::Identifier => {
                     // Check if it's a builtin keyword
-                    if matches!(text, "let" | "fn" | "match" | "assert" | "typeof" | "measure") {
+                    if matches!(
+                        text,
+                        "let" | "fn" | "match" | "assert" | "typeof" | "measure"
+                    ) {
                         format!("\x1b[35m{}\x1b[0m", text) // Magenta
                     } else {
                         text.to_string()
                     }
                 }
-                Kind::CommentStart | Kind::CommentContent | Kind::DocCommentStart | Kind::DocCommentContent => {
+                Kind::CommentStart
+                | Kind::CommentContent
+                | Kind::DocCommentStart
+                | Kind::DocCommentContent => {
                     format!("\x1b[90m{}\x1b[0m", text) // Gray
                 }
                 _ => text.to_string(),
@@ -123,12 +133,12 @@ impl Highlighter for CadenzaHelper {
             result.push_str(&colored);
             last_end = end;
         }
-        
+
         // Add any remaining text
         if last_end < line.len() {
             result.push_str(&line[last_end..]);
         }
-        
+
         Cow::Owned(result)
     }
 
@@ -154,7 +164,7 @@ pub fn start_repl(load_file: Option<PathBuf>) -> Result<()> {
         println!("Loading {}...", path.display());
         let source = std::fs::read_to_string(&path)?;
         let parsed = parse(&source);
-        
+
         if !parsed.errors.is_empty() {
             eprintln!("Parse errors in {}:", path.display());
             for error in &parsed.errors {
@@ -164,7 +174,7 @@ pub fn start_repl(load_file: Option<PathBuf>) -> Result<()> {
         }
 
         cadenza_eval::eval(&parsed.ast(), &mut env, &mut compiler);
-        
+
         if compiler.has_errors() {
             eprintln!("Evaluation errors in {}:", path.display());
             for diagnostic in compiler.diagnostics() {
@@ -172,7 +182,7 @@ pub fn start_repl(load_file: Option<PathBuf>) -> Result<()> {
             }
             return Err(anyhow::anyhow!("Failed to evaluate {}", path.display()));
         }
-        
+
         println!("Loaded successfully.\n");
     }
 
