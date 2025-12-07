@@ -35,6 +35,7 @@ pub mod match_form;
 pub mod measure_form;
 pub mod pipeline_form;
 pub mod record_form;
+pub mod sub_form;
 pub mod typeof_form;
 
 use crate::{
