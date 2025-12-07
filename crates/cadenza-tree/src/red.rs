@@ -132,19 +132,17 @@ impl<L: Language> SyntaxNode<L> {
     pub fn descendants_with_tokens(&self) -> impl Iterator<Item = SyntaxElement<L>> {
         let mut stack = vec![SyntaxElement::Node(self.clone())];
         std::iter::from_fn(move || {
-            while let Some(element) = stack.pop() {
-                // Add children in reverse order so they're processed in the correct order
-                match &element {
-                    SyntaxElement::Node(node) => {
-                        for child in node.children_with_tokens().collect::<Vec<_>>().into_iter().rev() {
-                            stack.push(child);
-                        }
-                    }
-                    SyntaxElement::Token(_) => {}
-                }
-                return Some(element);
+            let element = stack.pop()?;
+            
+            // Add children in reverse order so they're processed in the correct order
+            if let SyntaxElement::Node(ref node) = element {
+                // Collect children into a temporary vector and extend in reverse
+                // This is more efficient than collecting and reversing
+                let children: Vec<_> = node.children_with_tokens().collect();
+                stack.extend(children.into_iter().rev());
             }
-            None
+            
+            Some(element)
         })
     }
 
