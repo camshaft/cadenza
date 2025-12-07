@@ -7,7 +7,7 @@ repository.workspace = true
 build = "build/main.rs"
 
 [dependencies]
-rowan.workspace = true
+cadenza-tree = { version = "0.1.0", path = "../cadenza-tree" }
 serde.workspace = true
 
 [dev-dependencies]

@@ -1,11 +1,11 @@
 //! Efficient text representation for syntax nodes.
 
-use std::{borrow::Cow, fmt, ops::Deref};
+use std::{borrow::Cow, fmt, ops::Deref, sync::Arc};
 
 /// Text of a syntax node.
 ///
 /// This is similar to Rowan's SyntaxText but simpler. It represents the text
-/// of a node as either a borrowed str or an owned String.
+/// of a node as either a borrowed str, an owned String, or an Arc<str> for interning.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SyntaxText(TextInner);
 
@@ -13,6 +13,7 @@ pub struct SyntaxText(TextInner);
 enum TextInner {
     Borrowed(&'static str),
     Owned(String),
+    Interned(Arc<str>),
 }
 
 impl SyntaxText {
@@ -26,11 +27,17 @@ impl SyntaxText {
         Self(TextInner::Owned(s))
     }
 
+    /// Create text from an interned Arc<str>.
+    pub fn interned(s: Arc<str>) -> Self {
+        Self(TextInner::Interned(s))
+    }
+
     /// Get the text as a string slice.
     pub fn as_str(&self) -> &str {
         match &self.0 {
             TextInner::Borrowed(s) => s,
             TextInner::Owned(s) => s,
+            TextInner::Interned(s) => s.as_ref(),
         }
     }
 
@@ -79,6 +86,12 @@ impl From<&'static str> for SyntaxText {
 impl From<String> for SyntaxText {
     fn from(s: String) -> Self {
         Self::owned(s)
+    }
+}
+
+impl From<Arc<str>> for SyntaxText {
+    fn from(s: Arc<str>) -> Self {
+        Self::interned(s)
     }
 }
 

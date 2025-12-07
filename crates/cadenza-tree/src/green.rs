@@ -177,8 +177,18 @@ impl From<GreenToken> for GreenElement {
 /// This provides an API similar to Rowan's GreenNodeBuilder for easy migration.
 pub struct GreenNodeBuilder {
     stack: Vec<(SyntaxKind, Vec<GreenElement>)>,
-    cache: &'static NodeCache,
+    cache: &'static Cache,
     root: Option<GreenNode>,
+}
+
+/// A checkpoint in the builder that allows starting nodes at previous positions.
+///
+/// This is useful for implementing left-associative parsing where you need to
+/// wrap previously parsed content in a new node.
+#[derive(Debug, Clone, Copy)]
+pub struct Checkpoint {
+    /// The number of children in the parent node when the checkpoint was taken.
+    children_count: usize,
 }
 
 impl GreenNodeBuilder {
@@ -186,9 +196,22 @@ impl GreenNodeBuilder {
     pub fn new() -> Self {
         Self {
             stack: Vec::new(),
-            cache: node_cache(),
+            cache: cache(),
             root: None,
         }
+    }
+
+    /// Create a checkpoint at the current position.
+    ///
+    /// This allows you to start a node at this position later using `start_node_at`.
+    /// The checkpoint records the current number of children in the current node.
+    pub fn checkpoint(&self) -> Checkpoint {
+        let children_count = self
+            .stack
+            .last()
+            .map(|(_, children)| children.len())
+            .unwrap_or(0);
+        Checkpoint { children_count }
     }
 
     /// Start a new node with the given kind.
@@ -196,9 +219,25 @@ impl GreenNodeBuilder {
         self.stack.push((kind, Vec::new()));
     }
 
-    /// Add a token to the current node.
-    pub fn token(&mut self, kind: SyntaxKind, text: impl Into<SyntaxText>) {
-        let token = GreenToken::new(kind, text);
+    /// Start a new node at a previous checkpoint.
+    ///
+    /// This moves all children added since the checkpoint into the new node.
+    /// This is useful for implementing left-associative parsing where you
+    /// wrap previously parsed content.
+    pub fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
+        let (_, current_children) = self.stack.last_mut().expect("no current node");
+        let children_to_move = current_children.split_off(checkpoint.children_count);
+
+        // Start a new node and move the children into it
+        self.stack.push((kind, children_to_move));
+    }
+
+    /// Add a token to the current node, interning the text.
+    ///
+    /// This is more efficient than the generic `token` when you have a string slice,
+    /// as it avoids allocation if the token is already cached.
+    pub fn token(&mut self, kind: SyntaxKind, text: &str) {
+        let token = self.cache.token(kind, text);
         self.add_element(GreenElement::Token(token));
     }
 
@@ -206,7 +245,7 @@ impl GreenNodeBuilder {
     pub fn finish_node(&mut self) {
         let (kind, children) = self.stack.pop().expect("no node to finish");
         let node = self.cache.node(kind, children);
-        
+
         if self.stack.is_empty() {
             // This is the root node
             self.root = Some(node);
@@ -243,18 +282,50 @@ impl Default for GreenNodeBuilder {
     }
 }
 
-/// Cache for interning green nodes.
+/// Cache for interning green nodes and tokens.
 ///
-/// This ensures that identical subtrees share the same memory.
-struct NodeCache {
+/// This ensures that identical subtrees and tokens share the same memory.
+struct Cache {
     nodes: Mutex<FxHashMap<(SyntaxKind, Box<[GreenElement]>), GreenNode>>,
+    tokens: Mutex<FxHashMap<(SyntaxKind, Arc<str>), GreenToken>>,
 }
 
-impl NodeCache {
+impl Cache {
     fn new() -> Self {
         Self {
             nodes: Mutex::new(FxHashMap::default()),
+            tokens: Mutex::new(FxHashMap::default()),
         }
+    }
+
+    fn token(&self, kind: SyntaxKind, text: &str) -> GreenToken {
+        // Check cache first with just the string slice (no allocation yet)
+        {
+            let cache = self.tokens.lock().unwrap();
+            // Try to find existing token with this text
+            for ((cached_kind, cached_text), token) in cache.iter() {
+                if *cached_kind == kind && cached_text.as_ref() == text {
+                    return token.clone();
+                }
+            }
+        }
+
+        // Not found, intern the text and create new token
+        let text_arc: Arc<str> = Arc::from(text);
+        let token = GreenToken {
+            inner: Arc::new(GreenTokenData {
+                kind,
+                text: SyntaxText::interned(text_arc.clone()),
+            }),
+        };
+
+        // Insert into cache
+        {
+            let mut cache = self.tokens.lock().unwrap();
+            cache.insert((kind, text_arc), token.clone());
+        }
+
+        token
     }
 
     fn node(&self, kind: SyntaxKind, children: Vec<GreenElement>) -> GreenNode {
@@ -290,10 +361,10 @@ impl NodeCache {
     }
 }
 
-/// Get the global node cache.
-fn node_cache() -> &'static NodeCache {
-    static CACHE: OnceLock<NodeCache> = OnceLock::new();
-    CACHE.get_or_init(NodeCache::new)
+/// Get the global cache.
+fn cache() -> &'static Cache {
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    CACHE.get_or_init(Cache::new)
 }
 
 #[cfg(test)]

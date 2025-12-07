@@ -23,7 +23,7 @@ mod syntax_kind;
 mod text;
 mod metadata;
 
-pub use green::{GreenNode, GreenNodeBuilder, GreenToken};
+pub use green::{GreenNode, GreenNodeBuilder, GreenToken, Checkpoint};
 pub use red::{SyntaxNode, SyntaxToken, SyntaxElement, NodeOrToken};
 pub use syntax_kind::SyntaxKind;
 pub use text::SyntaxText;
