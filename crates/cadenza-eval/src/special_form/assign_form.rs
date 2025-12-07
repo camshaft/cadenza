@@ -291,9 +291,12 @@ mod tests {
 
         // Verify the record field was updated
         let rec_id: InternedString = "rec".into();
+        let x_id: InternedString = "x".into();
+        
         if let Some(Value::Record(fields)) = env.get(rec_id) {
-            let x_id: InternedString = "x".into();
-            assert_eq!(fields.iter().find(|(k, _)| *k == x_id).map(|(_, v)| v), Some(&Value::Integer(42)));
+            let x_field = fields.iter().find(|(k, _)| *k == x_id);
+            assert!(x_field.is_some(), "Field 'x' not found in record");
+            assert_eq!(x_field.unwrap().1, Value::Integer(42), "Field 'x' has wrong value");
         } else {
             panic!("Expected record value");
         }
