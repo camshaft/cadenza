@@ -207,7 +207,7 @@ fn maybe_auto_apply(value: Value, ctx: &mut EvalContext<'_>) -> Result<Value> {
 
 /// Helper to look up an identifier value without auto-applying.
 /// Used when the identifier is being used as a callee in an application.
-fn eval_ident_no_auto_apply(ident: &Ident, ctx: &mut EvalContext<'_>) -> Result<Value> {
+pub fn eval_ident_no_auto_apply(ident: &Ident, ctx: &mut EvalContext<'_>) -> Result<Value> {
     let text = ident.syntax().text();
     let id: InternedString = text.to_string().as_str().into();
 
@@ -296,7 +296,7 @@ impl Eval for Apply {
 ///
 /// TODO: Investigate rowan API to avoid allocation. SyntaxText doesn't implement
 /// AsRef<str> directly, so we need to allocate a String. See STATUS.md item #12.
-fn extract_identifier(expr: &Expr) -> Option<InternedString> {
+pub fn extract_identifier(expr: &Expr) -> Option<InternedString> {
     match expr {
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
@@ -340,7 +340,7 @@ fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> 
 }
 
 /// Applies a callable value to arguments.
-fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
+pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
         Value::BuiltinFn(builtin) => (builtin.func)(&args, ctx),
         Value::Symbol(id) => {
