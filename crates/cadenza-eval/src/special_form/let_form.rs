@@ -1,7 +1,4 @@
-//! Built-in special form implementations.
-//!
-//! This module contains the implementations of all built-in special forms,
-//! which provide both evaluation and IR generation logic.
+//! The `let` special form for variable declarations.
 
 use crate::{
     context::EvalContext,
@@ -13,8 +10,9 @@ use crate::{
     Eval,
 };
 use cadenza_syntax::ast::Expr;
+use std::sync::OnceLock;
 
-/// Creates the `let` special form for variable declarations.
+/// Returns the `let` special form for variable declarations.
 ///
 /// The `let` special form binds a name to a value in the current scope.
 ///
@@ -34,13 +32,14 @@ use cadenza_syntax::ast::Expr;
 /// let x = 42
 /// let y = x + 1
 /// ```
-pub fn special_form_let() -> BuiltinSpecialForm {
-    BuiltinSpecialForm {
+pub fn get() -> &'static BuiltinSpecialForm {
+    static LET_FORM: OnceLock<BuiltinSpecialForm> = OnceLock::new();
+    LET_FORM.get_or_init(|| BuiltinSpecialForm {
         name: "let",
         signature: Type::function(vec![Type::Symbol, Type::Unknown], Type::Unknown),
         eval_fn: eval_let,
         ir_fn: ir_let,
-    }
+    })
 }
 
 fn eval_let(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
@@ -91,11 +90,13 @@ fn ir_let(
     block: &mut BlockBuilder,
     ctx: &mut IrGenContext,
     _source: SourceLocation,
-    gen_expr: &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> std::result::Result<ValueId, String>,
-) -> std::result::Result<ValueId, String> {
+    gen_expr: &mut dyn FnMut(&Expr, &mut BlockBuilder, &mut IrGenContext) -> Result<ValueId>,
+) -> Result<ValueId> {
     // Validate argument count
     if args.len() != 2 {
-        return Err("let requires exactly 2 arguments in IR generation".to_string());
+        return Err(Diagnostic::syntax(
+            "let requires exactly 2 arguments in IR generation",
+        ));
     }
 
     // Extract the variable name from the identifier
@@ -104,7 +105,11 @@ fn ir_let(
             let text = ident.syntax().text().to_string();
             InternedString::new(&text)
         }
-        _ => return Err("let requires an identifier as variable name".to_string()),
+        _ => {
+            return Err(Diagnostic::syntax(
+                "let requires an identifier as variable name",
+            ))
+        }
     };
 
     // Generate IR for the value expression using the provided gen_expr callback
@@ -114,7 +119,7 @@ fn ir_let(
     // Currently we use Unknown type because the special form doesn't have access to
     // the TypeInferencer (which is inside IrGenerator). This should be addressed by:
     // 1. Passing type information via ctx (preferred), OR
-    // 2. Adding type inferencer as a parameter to build_ir, OR  
+    // 2. Adding type inferencer as a parameter to build_ir, OR
     // 3. Having special forms integrate directly into IrGenerator methods
     // For now, this matches the approach used before type inference was added to let bindings.
     let inferred_ty = crate::InferType::Concrete(crate::Type::Unknown);
@@ -133,13 +138,13 @@ mod tests {
     use cadenza_syntax::parse::parse;
 
     #[test]
-    fn test_special_form_let_eval() {
+    fn test_let_special_form_eval() {
         // Create an environment with the special form AND the = operator
-        let mut env = Env::with_standard_builtins();  // This registers all builtins including =
-        
+        let mut env = Env::with_standard_builtins(); // This registers all builtins including =
+
         // Replace the let macro with our special form
         let let_id: InternedString = "let".into();
-        env.define(let_id, Value::SpecialForm(std::rc::Rc::new(special_form_let())));
+        env.define(let_id, Value::SpecialForm(get()));
 
         // Create a compiler
         let mut compiler = Compiler::new();
@@ -148,11 +153,8 @@ mod tests {
         let input = "let x = 42";
         let parsed = parse(input);
         let root = parsed.ast();
-        
-        let results = crate::eval(&root, &mut env, &mut compiler);
 
-        eprintln!("Results: {:?}", results);
-        eprintln!("Diagnostics: {:?}", compiler.diagnostics());
+        let results = crate::eval(&root, &mut env, &mut compiler);
 
         assert!(!results.is_empty(), "Expected at least one result");
         let value = &results[0];

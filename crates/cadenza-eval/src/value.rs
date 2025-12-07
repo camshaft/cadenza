@@ -262,7 +262,7 @@ pub enum Value {
     /// for interacting with the evaluator, type system, and IR builder.
     /// Unlike macros (syntax tree to syntax tree), special forms provide both
     /// evaluation semantics and IR generation logic.
-    SpecialForm(std::rc::Rc<dyn crate::special_form::SpecialForm>),
+    SpecialForm(&'static crate::special_form::BuiltinSpecialForm),
 
     /// A user-defined function with parameter names and body expression.
     UserFunction(UserFunction),

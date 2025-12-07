@@ -152,6 +152,35 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Unified with extract_identifier helper
    - [PR #21](https://github.com/camshaft/cadenza/pull/21#discussion_r2575603972)
 
+22. **Refactor Built-in Macros to Special Forms** (In Progress)
+   - [x] Create BuiltinSpecialForm struct with eval_fn and ir_fn
+   - [x] Add Value::SpecialForm variant using &'static BuiltinSpecialForm
+   - [x] Organize special forms as submodules (one module per form)
+   - [x] Update to use Result<ValueId> for IR generation (consistent with eval)
+   - [x] Implement let_form as example with OnceLock pattern
+   - [ ] Migrate remaining 11 builtins to special forms:
+     - [ ] `=` - Assignment operator
+     - [ ] `fn` - Function definition
+     - [ ] `__block__` - Block expressions
+     - [ ] `__list__` - List literals
+     - [ ] `__record__` - Record literals
+     - [ ] `match` - Pattern matching
+     - [ ] `assert` - Runtime assertions
+     - [ ] `typeof` - Type queries
+     - [ ] `measure` - Unit definitions
+     - [ ] `|>` - Pipeline operator
+     - [ ] `.` - Field access
+   - [ ] Deprecate and remove BuiltinMacro once migration complete
+   
+   **Pattern for each migration:**
+   1. Create `special_form/<name>.rs` module
+   2. Implement `get() -> &'static BuiltinSpecialForm` using OnceLock
+   3. Implement `eval_fn` and `ir_fn` functions
+   4. Update `Env::register_standard_builtins()` to use SpecialForm
+   5. Update IR generator if needed for IR generation support
+   6. Move tests from old location to new module
+
+
 ## Priority Suggestions
 
 ### High Priority (Architectural Foundation)
