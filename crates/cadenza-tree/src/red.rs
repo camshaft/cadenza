@@ -178,11 +178,50 @@ impl<L: Language> Hash for SyntaxNode<L> {
 
 impl<L: Language> fmt::Debug for SyntaxNode<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SyntaxNode")
-            .field("kind", &self.kind())
-            .field("range", &self.text_range())
-            .finish()
+        // Format like Rowan: Kind@start..end with children indented
+        fmt_node(self, f, 0, true)
     }
+}
+
+/// Format a syntax node with Rowan-compatible output.
+fn fmt_node<L: Language>(
+    node: &SyntaxNode<L>,
+    f: &mut fmt::Formatter<'_>,
+    indent: usize,
+    is_first: bool,
+) -> fmt::Result {
+    if !is_first {
+        write!(f, "{:indent$}", "", indent = indent * 2)?;
+    }
+    
+    write!(f, "{:?}@", node.kind())?;
+    write!(f, "{}..{}", node.text_range().start().into(), node.text_range().end().into())?;
+    
+    // Check if this node has any children
+    let has_children = !node.green.children().is_empty();
+    
+    if has_children {
+        writeln!(f)?;
+        for child in node.children_with_tokens() {
+            match child {
+                SyntaxElement::Node(child_node) => {
+                    fmt_node(&child_node, f, indent + 1, false)?;
+                }
+                SyntaxElement::Token(token) => {
+                    write!(f, "{:indent$}", "", indent = (indent + 1) * 2)?;
+                    write!(f, "{:?}@", token.kind())?;
+                    write!(f, "{}..{}", token.text_range().start().into(), token.text_range().end().into())?;
+                    write!(f, " {:?}", token.text().as_str())?;
+                    writeln!(f)?;
+                }
+            }
+        }
+    } else if !is_first {
+        // Empty node but not the root - still need newline
+        writeln!(f)?;
+    }
+    
+    Ok(())
 }
 
 /// A token in the red tree.
