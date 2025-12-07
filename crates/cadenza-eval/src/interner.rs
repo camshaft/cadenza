@@ -41,6 +41,11 @@ pub trait Storage: Sized + 'static {
     /// Inserts a value into storage and returns its index.
     fn insert(value: &str) -> Self::Index;
 
+    /// Inserts from rowan SyntaxText without allocating for lookups.
+    ///
+    /// This avoids building the full string just to check if it exists.
+    fn insert_syntax_text(text: &rowan::SyntaxText) -> Self::Index;
+
     /// Inserts a value from an iterator of string chunks into storage.
     ///
     /// This is useful for avoiding allocations when interning from sources like
@@ -144,6 +149,15 @@ impl<S: Storage> From<&str> for Interned<S> {
     }
 }
 
+impl From<&rowan::SyntaxText> for InternedString {
+    fn from(text: &rowan::SyntaxText) -> Self {
+        Self {
+            index: Strings::insert_syntax_text(text),
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<S: Storage> Deref for Interned<S> {
     type Target = S::Value;
 
@@ -206,6 +220,28 @@ impl StringData {
         index
     }
 
+    /// Insert from rowan SyntaxText without allocating for lookups.
+    ///
+    /// This method checks if the text already exists by comparing against
+    /// stored strings using SyntaxText's PartialEq, avoiding allocation
+    /// until we know we need to insert.
+    fn insert_syntax_text(&mut self, text: &rowan::SyntaxText) -> u32 {
+        // Check if we already have this text without allocating
+        // Use SyntaxText's PartialEq with str to check equality
+        for (stored, &index) in &self.map {
+            if text == stored.as_str() {
+                return index;
+            }
+        }
+
+        // Not found, need to allocate and insert
+        let index = self.strings.len() as u32;
+        let owned = text.to_string();
+        self.strings.push(owned.clone());
+        self.map.insert(owned, index);
+        index
+    }
+
     fn insert_chunks<I>(&mut self, chunks: I) -> u32
     where
         I: IntoIterator,
@@ -246,6 +282,10 @@ impl Storage for Strings {
 
     fn insert(value: &str) -> Self::Index {
         string_storage().lock().unwrap().insert(value)
+    }
+
+    fn insert_syntax_text(text: &rowan::SyntaxText) -> Self::Index {
+        string_storage().lock().unwrap().insert_syntax_text(text)
     }
 
     fn insert_chunks<I>(chunks: I) -> Self::Index
@@ -354,6 +394,11 @@ impl Storage for Integers {
         integer_storage().lock().unwrap().insert(value)
     }
 
+    fn insert_syntax_text(text: &rowan::SyntaxText) -> Self::Index {
+        // For integers, we need to parse anyway, so just convert to string
+        Self::insert(&text.to_string())
+    }
+
     fn insert_chunks<I>(chunks: I) -> Self::Index
     where
         I: IntoIterator,
@@ -459,6 +504,11 @@ impl Storage for Floats {
 
     fn insert(value: &str) -> Self::Index {
         float_storage().lock().unwrap().insert(value)
+    }
+
+    fn insert_syntax_text(text: &rowan::SyntaxText) -> Self::Index {
+        // For floats, we need to parse anyway, so just convert to string
+        Self::insert(&text.to_string())
     }
 
     fn insert_chunks<I>(chunks: I) -> Self::Index
