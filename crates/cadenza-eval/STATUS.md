@@ -152,32 +152,36 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Unified with extract_identifier helper
    - [PR #21](https://github.com/camshaft/cadenza/pull/21#discussion_r2575603972)
 
-22. **Refactor Built-in Macros to Special Forms** (In Progress)
+~~22. **Refactor Built-in Macros to Special Forms**~~ ✅
    - [x] Create BuiltinSpecialForm struct with eval_fn and ir_fn
    - [x] Add Value::SpecialForm variant using &'static BuiltinSpecialForm
    - [x] Organize special forms as submodules (one module per form)
    - [x] Update to use Result<ValueId> for IR generation (consistent with eval)
    - [x] Implement let_form as example with OnceLock pattern
-   - [ ] Migrate remaining 11 builtins to special forms:
-     - [ ] `=` - Assignment operator
-     - [ ] `fn` - Function definition
-     - [ ] `__block__` - Block expressions
-     - [ ] `__list__` - List literals
-     - [ ] `__record__` - Record literals
-     - [ ] `match` - Pattern matching
-     - [ ] `assert` - Runtime assertions
-     - [ ] `typeof` - Type queries
-     - [ ] `measure` - Unit definitions
-     - [ ] `|>` - Pipeline operator
-     - [ ] `.` - Field access
-   - [ ] Deprecate and remove BuiltinMacro once migration complete
+   - [x] Migrate remaining 11 builtins to special forms:
+     - [x] `=` - Assignment operator
+     - [x] `fn` - Function definition
+     - [x] `__block__` - Block expressions
+     - [x] `__list__` - List literals
+     - [x] `__record__` - Record literals
+     - [x] `match` - Pattern matching
+     - [x] `assert` - Runtime assertions
+     - [x] `typeof` - Type queries
+     - [x] `measure` - Unit definitions
+     - [x] `|>` - Pipeline operator
+     - [x] `.` - Field access (implemented as `__index__` special form)
+   - [x] All special forms migrated and integrated into environment and IR generator
    
-   **Pattern for each migration:**
+   **Next Steps (Cleanup):**
+   - [ ] Remove deprecated `builtin_*` BuiltinMacro functions from eval.rs
+   - [ ] Remove BuiltinMacro type if no longer needed for user-defined macros
+   
+   **Migration Pattern Used:**
    1. Create `special_form/<name>.rs` module
    2. Implement `get() -> &'static BuiltinSpecialForm` using OnceLock
    3. Implement `eval_fn` and `ir_fn` functions
    4. Update `Env::register_standard_builtins()` to use SpecialForm
-   5. Update IR generator if needed for IR generation support
+   5. Update IR generator for IR generation support
    6. Move tests from old location to new module
 
 
