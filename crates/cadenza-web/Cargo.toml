@@ -17,6 +17,9 @@ wasm-opt = false
 [dependencies]
 cadenza-eval = { path = "../cadenza-eval" }
 cadenza-syntax = { path = "../cadenza-syntax" }
+cadenza-markdown = { path = "../cadenza-markdown" }
+cadenza-sql = { path = "../cadenza-sql" }
+cadenza-gcode = { path = "../cadenza-gcode" }
 cadenza-tree = { path = "../cadenza-tree" }
 cadenza-lsp = { path = "../cadenza-lsp" }
 wasm-bindgen.workspace = true

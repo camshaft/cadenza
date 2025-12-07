@@ -6,13 +6,14 @@ import { AstPanel } from './components/AstPanel'
 import { EvalPanel } from './components/EvalPanel'
 import { loadWasm } from './lib/wasm'
 import { EXAMPLES } from './generated/examples'
-import type { CadenzaWasm, LexResult, ParseResult, AstResult, EvalResult } from './types/cadenza'
+import type { CadenzaWasm, LexResult, ParseResult, AstResult, EvalResult, Syntax } from './types/cadenza'
 import './index.css'
 
 type Tab = 'tokens' | 'cst' | 'ast' | 'eval';
 
 const STORAGE_KEY = 'cadenza-compiler-explorer-source';
 const STORAGE_EXAMPLE_KEY = 'cadenza-compiler-explorer-example';
+const STORAGE_SYNTAX_KEY = 'cadenza-compiler-explorer-syntax';
 
 function App() {
   const [source, setSource] = useState(EXAMPLES[0]?.source || '');
@@ -21,16 +22,23 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [selectedExample, setSelectedExample] = useState<string>(EXAMPLES[0]?.id || '');
   const [isUserEdited, setIsUserEdited] = useState(false);
+  const [selectedSyntax, setSelectedSyntax] = useState<Syntax>('cadenza');
 
   // Load WASM module on mount
   useEffect(() => {
     loadWasm().then((module) => {
       setWasm(module);
       
-      // Try to load saved source from localStorage
+      // Try to load saved source and syntax from localStorage
       try {
         const savedSource = localStorage.getItem(STORAGE_KEY);
         const savedExample = localStorage.getItem(STORAGE_EXAMPLE_KEY);
+        const savedSyntax = localStorage.getItem(STORAGE_SYNTAX_KEY) as Syntax | null;
+        
+        if (savedSyntax && ['cadenza', 'markdown', 'sql', 'gcode'].includes(savedSyntax)) {
+          setSelectedSyntax(savedSyntax);
+        }
+        
         if (savedSource) {
           setSource(savedSource);
           setIsUserEdited(true);
@@ -65,32 +73,32 @@ function App() {
   const parseResult = useMemo<ParseResult | null>(() => {
     if (!wasm) return null;
     try {
-      return wasm.parse_source(source);
+      return wasm.parse_source(source, selectedSyntax);
     } catch (e) {
       console.error('Parse error:', e);
       return null;
     }
-  }, [wasm, source]);
+  }, [wasm, source, selectedSyntax]);
 
   const astResult = useMemo<AstResult | null>(() => {
     if (!wasm) return null;
     try {
-      return wasm.ast(source);
+      return wasm.ast(source, selectedSyntax);
     } catch (e) {
       console.error('AST error:', e);
       return null;
     }
-  }, [wasm, source]);
+  }, [wasm, source, selectedSyntax]);
 
   const evalResult = useMemo<EvalResult | null>(() => {
     if (!wasm) return null;
     try {
-      return wasm.eval_source(source);
+      return wasm.eval_source(source, selectedSyntax);
     } catch (e) {
       console.error('Eval error:', e);
       return null;
     }
-  }, [wasm, source]);
+  }, [wasm, source, selectedSyntax]);
 
   const handleSourceChange = useCallback((value: string) => {
     setSource(value);
@@ -129,6 +137,17 @@ function App() {
     }
   }, []);
 
+  const handleSyntaxChange = useCallback((syntax: Syntax) => {
+    setSelectedSyntax(syntax);
+    
+    // Save syntax selection to localStorage
+    try {
+      localStorage.setItem(STORAGE_SYNTAX_KEY, syntax);
+    } catch (e) {
+      console.error('Failed to save to localStorage:', e);
+    }
+  }, []);
+
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'tokens', label: 'Tokens', count: lexResult?.tokens.length },
     { id: 'cst', label: 'CST', count: parseResult?.errors.length || undefined },
@@ -148,11 +167,27 @@ function App() {
     <div className="min-h-screen bg-gray-900 text-white flex flex-col">
       {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700 px-4 py-2 md:py-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <h1 className="text-lg md:text-xl font-bold text-purple-400">
             Cadenza Compiler Explorer
           </h1>
-          <div className="hidden md:block text-sm text-gray-400">
+          <div className="flex items-center gap-2">
+            <label htmlFor="syntax-select" className="text-xs text-gray-500 whitespace-nowrap">
+              Syntax:
+            </label>
+            <select
+              id="syntax-select"
+              value={selectedSyntax}
+              onChange={(e) => handleSyntaxChange(e.target.value as Syntax)}
+              className="text-sm bg-gray-700 text-gray-200 border border-gray-600 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500"
+            >
+              <option value="cadenza">Cadenza</option>
+              <option value="markdown">Markdown</option>
+              <option value="sql">SQL</option>
+              <option value="gcode">GCode</option>
+            </select>
+          </div>
+          <div className="hidden lg:block text-sm text-gray-400">
             Interactive compiler development tool
           </div>
         </div>

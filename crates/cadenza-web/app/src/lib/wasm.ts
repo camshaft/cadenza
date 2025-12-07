@@ -1,7 +1,7 @@
 // WASM bindings for cadenza-web
 // This module loads the actual WASM module built by wasm-pack
 
-import type { LexResult, ParseResult, AstResult, EvalResult, CadenzaWasm, LspDiagnostic, LspHoverInfo, LspCompletionItem } from '../types/cadenza';
+import type { LexResult, ParseResult, AstResult, EvalResult, CadenzaWasm, LspDiagnostic, LspHoverInfo, LspCompletionItem, Syntax, SyntaxInfo } from '../types/cadenza';
 
 // The WASM module will be loaded from the pkg directory
 let wasmModule: typeof import('../../pkg/cadenza_web') | null = null;
@@ -31,17 +31,20 @@ function createWasmBindings(module: typeof import('../../pkg/cadenza_web')): Cad
     lex: (source: string): LexResult => {
       return module.lex(source) as LexResult;
     },
-    parse_source: (source: string): ParseResult => {
-      return module.parse_source(source) as ParseResult;
+    parse_source: (source: string, syntax: Syntax): ParseResult => {
+      return module.parse_source(source, syntax) as ParseResult;
     },
-    ast: (source: string): AstResult => {
-      return module.ast(source) as AstResult;
+    ast: (source: string, syntax: Syntax): AstResult => {
+      return module.ast(source, syntax) as AstResult;
     },
-    eval_source: (source: string): EvalResult => {
-      return module.eval_source(source) as EvalResult;
+    eval_source: (source: string, syntax: Syntax): EvalResult => {
+      return module.eval_source(source, syntax) as EvalResult;
     },
     get_token_kinds: (): string[] => {
       return module.get_token_kinds() as string[];
+    },
+    get_syntaxes: (): SyntaxInfo[] => {
+      return module.get_syntaxes() as SyntaxInfo[];
     },
     lsp_diagnostics: (source: string): LspDiagnostic[] => {
       return module.lsp_diagnostics(source) as LspDiagnostic[];
@@ -127,7 +130,7 @@ function mockLex(source: string): LexResult {
   return { tokens, success: true };
 }
 
-function mockParse(source: string): ParseResult {
+function mockParse(source: string, _syntax: Syntax): ParseResult {
   const lexResult = mockLex(source);
   return {
     tree: {
@@ -144,8 +147,8 @@ function mockParse(source: string): ParseResult {
   };
 }
 
-function mockAst(source: string): AstResult {
-  const parseResult = mockParse(source);
+function mockAst(source: string, syntax: Syntax): AstResult {
+  const parseResult = mockParse(source, syntax);
   return {
     nodes: parseResult.tree.children
       .filter((c) => !['Space', 'Newline'].includes(c.kind))
@@ -159,7 +162,7 @@ function mockAst(source: string): AstResult {
   };
 }
 
-function mockEval(source: string): EvalResult {
+function mockEval(source: string, _syntax: Syntax): EvalResult {
   const values: EvalResult['values'] = [];
   const diagnostics: EvalResult['diagnostics'] = [];
   
@@ -187,6 +190,12 @@ export const mockWasm: CadenzaWasm = {
     'Plus', 'Minus', 'Star', 'Slash', 'Equal', 'Less', 'Greater',
     'LParen', 'RParen', 'LBracket', 'RBracket', 'LBrace', 'RBrace',
     'Comma', 'Dot', 'Colon', 'Semicolon', 'Space', 'Newline',
+  ],
+  get_syntaxes: () => [
+    { id: 'cadenza', name: 'Cadenza' },
+    { id: 'markdown', name: 'Markdown' },
+    { id: 'sql', name: 'SQL' },
+    { id: 'gcode', name: 'GCode' },
   ],
   lsp_diagnostics: (_source: string): LspDiagnostic[] => {
     // Mock: return empty diagnostics
