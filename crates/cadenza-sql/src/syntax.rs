@@ -527,7 +527,7 @@ impl<'src> Parser<'src> {
     fn parse_expression(&mut self) {
         // Take checkpoint before parsing - this allows us to wrap in Apply if we find an operator
         let checkpoint = self.builder.checkpoint();
-        
+
         // Parse the primary expression (left side)
         self.parse_primary_expression();
 
@@ -535,13 +535,13 @@ impl<'src> Parser<'src> {
 
         // Check for binary operators
         let op_ch = self.peek_char();
-        if op_ch == Some('=') || op_ch == Some('>') || op_ch == Some('<') || op_ch == Some('!')
-        {
+        if op_ch == Some('=') || op_ch == Some('>') || op_ch == Some('<') || op_ch == Some('!') {
             // This is a binary operation - wrap in Apply node starting at checkpoint
             self.builder.start_node_at(checkpoint, Kind::Apply.into());
 
             // Wrap the already-parsed left side as first argument
-            self.builder.start_node_at(checkpoint, Kind::ApplyArgument.into());
+            self.builder
+                .start_node_at(checkpoint, Kind::ApplyArgument.into());
             self.builder.finish_node();
 
             // Parse operator as receiver
@@ -557,7 +557,7 @@ impl<'src> Parser<'src> {
             self.builder.finish_node(); // End Apply
         }
     }
-    
+
     fn parse_primary_expression(&mut self) {
         // Parse a primary expression without checking for binary operators
         let ch = self.peek_char();
@@ -579,14 +579,14 @@ impl<'src> Parser<'src> {
             self.parse_parenthesized_list();
         }
     }
-    
+
     fn parse_operator_as_receiver(&mut self) {
         // Parse operator and wrap as ApplyReceiver
         self.builder.start_node(Kind::ApplyReceiver.into());
-        
+
         let start = self.pos;
         let ch = self.peek_char();
-        
+
         if ch == Some('=') {
             self.pos += 1;
             let text = &self.src[start..self.pos];
@@ -621,7 +621,7 @@ impl<'src> Parser<'src> {
             self.builder.token(Kind::Bang.into(), text);
             self.builder.finish_node();
         }
-        
+
         self.builder.finish_node(); // End ApplyReceiver
     }
 
@@ -681,9 +681,9 @@ impl<'src> Parser<'src> {
         // For CREATE TABLE: "id INTEGER PRIMARY KEY" - multiple keywords/identifiers
         // For INSERT VALUES: "'Alice'" - a string
         // For column lists: "name" - an identifier
-        
+
         let ch = self.peek_char();
-        
+
         if ch == Some('\'') || ch == Some('"') {
             // String literal
             self.parse_string();
@@ -696,7 +696,7 @@ impl<'src> Parser<'src> {
             loop {
                 self.parse_identifier();
                 self.skip_whitespace_and_comments();
-                
+
                 // Check if there's another identifier following
                 let next_ch = self.peek_char();
                 if next_ch.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {

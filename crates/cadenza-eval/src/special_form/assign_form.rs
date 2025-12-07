@@ -147,7 +147,7 @@ fn ir_assign(
             // Try to extract an identifier from the callee
             if let Some(id) = extract_identifier(&callee_expr) {
                 let id_str: &str = &id;
-                
+
                 // Check if this is the `let` special form
                 if id_str == "let" {
                     // This is a let binding: let name = value
@@ -156,7 +156,7 @@ fn ir_assign(
                     let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
                     new_args.extend(lhs_args);
                     new_args.push(rhs_expr.clone());
-                    
+
                     // Call the let special form's IR generation
                     let let_form = crate::special_form::let_form::get();
                     return let_form.build_ir(&new_args, block, ctx, _source, gen_expr);

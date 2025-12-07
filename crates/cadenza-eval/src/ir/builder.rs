@@ -104,6 +104,7 @@ impl FunctionBuilder {
     }
 
     /// Get the next block ID that will be allocated.
+    #[allow(dead_code)]
     pub(crate) fn next_block_id(&self) -> u32 {
         self.next_block_id
     }
@@ -116,6 +117,7 @@ impl FunctionBuilder {
     }
 
     /// Get the next value ID that will be allocated.
+    #[allow(dead_code)]
     pub(crate) fn next_value_id(&self) -> u32 {
         self.next_value_id
     }
