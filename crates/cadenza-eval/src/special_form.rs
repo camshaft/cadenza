@@ -9,6 +9,18 @@
 //! - `build_ir`: Generates IR instructions from the form's AST arguments
 //!
 //! Examples of special forms include: `let`, `fn`, `if`, `__block__`, etc.
+//!
+//! ## Integration Pattern
+//!
+//! Currently, special forms must be manually integrated in two places:
+//! 1. **Environment Registration**: Register the special form in `Env::register_standard_builtins()`
+//!    so it can be looked up and called during evaluation.
+//! 2. **IR Generator Integration**: Add explicit handling in `IrGenerator::gen_apply()` to detect
+//!    the special form by name and call its IR generation logic.
+//!
+//! This dual registration is temporary and follows the existing pattern for built-in macros like
+//! `__block__` and `__list__`. Future refactoring could introduce a special form registry that
+//! both the environment and IR generator use.
 
 use crate::{
     context::EvalContext,
