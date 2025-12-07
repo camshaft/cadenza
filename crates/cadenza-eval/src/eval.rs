@@ -90,7 +90,7 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
                                         if ctx.compiler.get_macro(id).is_some()
                                             || matches!(
                                                 ctx.env.get(id),
-                                                Some(Value::BuiltinMacro(_))
+                                                Some(Value::BuiltinMacro(_) | Value::SpecialForm(_))
                                             )
                                         {
                                             // This is a function definition - delegate to fn macro
@@ -111,6 +111,8 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
                                             if let Some(Value::BuiltinMacro(builtin)) = macro_value
                                             {
                                                 let _ = (builtin.func)(&new_args, &mut ctx);
+                                            } else if let Some(Value::SpecialForm(sf)) = macro_value {
+                                                let _ = sf.eval(&new_args, &mut ctx);
                                             }
                                         }
                                     }
@@ -247,8 +249,8 @@ impl Eval for Apply {
                 return apply_macro(macro_value.clone(), self, ctx);
             }
 
-            // Check for macro in environment
-            if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
+            // Check for macro or special form in environment
+            if let Some(Value::BuiltinMacro(_) | Value::SpecialForm(_)) = ctx.env.get(id) {
                 let macro_value = ctx.env.get(id).unwrap().clone();
                 return apply_macro(macro_value, self, ctx);
             }
@@ -322,6 +324,13 @@ fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> 
 
             // Call the builtin macro with unevaluated expressions
             (builtin.func)(&arg_exprs, ctx)
+        }
+        Value::SpecialForm(special_form) => {
+            // Collect unevaluated argument expressions (use all_arguments to get flattened args)
+            let arg_exprs: Vec<Expr> = apply.all_arguments();
+
+            // Call the special form's eval method with unevaluated expressions
+            special_form.eval(&arg_exprs, ctx)
         }
         _ => Err(Diagnostic::internal("expected macro value")),
     }
@@ -572,20 +581,33 @@ pub fn builtin_assign() -> BuiltinMacro {
                             Some(value.clone())
                         } else {
                             ctx.env.get(id).and_then(|v| match v {
-                                Value::BuiltinMacro(_) => Some(v.clone()),
+                                Value::BuiltinMacro(_) | Value::SpecialForm(_) => Some(v.clone()),
                                 _ => None,
                             })
                         };
 
-                        if let Some(Value::BuiltinMacro(builtin)) = macro_value {
-                            // This is a macro! Delegate to it with [lhs_args..., rhs]
-                            let lhs_args = apply.all_arguments();
-                            let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
-                            new_args.extend(lhs_args);
-                            new_args.push(rhs_expr.clone());
+                        match macro_value {
+                            Some(Value::BuiltinMacro(builtin)) => {
+                                // This is a macro! Delegate to it with [lhs_args..., rhs]
+                                let lhs_args = apply.all_arguments();
+                                let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
+                                new_args.extend(lhs_args);
+                                new_args.push(rhs_expr.clone());
 
-                            // Call the macro directly
-                            return (builtin.func)(&new_args, ctx);
+                                // Call the macro directly
+                                return (builtin.func)(&new_args, ctx);
+                            }
+                            Some(Value::SpecialForm(sf)) => {
+                                // This is a special form! Delegate to it with [lhs_args..., rhs]
+                                let lhs_args = apply.all_arguments();
+                                let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
+                                new_args.extend(lhs_args);
+                                new_args.push(rhs_expr.clone());
+
+                                // Call the special form directly
+                                return sf.eval(&new_args, ctx);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -1922,7 +1944,7 @@ pub fn builtin_pipeline() -> BuiltinMacro {
                         }
 
                         // Check for macro in environment
-                        if let Some(Value::BuiltinMacro(_)) = ctx.env.get(id) {
+                        if let Some(Value::BuiltinMacro(_) | Value::SpecialForm(_)) = ctx.env.get(id) {
                             return Err(Diagnostic::syntax(
                                 "cannot use pipeline operator with macros",
                             ));

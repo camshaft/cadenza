@@ -27,6 +27,7 @@ mod generated;
 pub mod interner;
 pub mod ir;
 mod map;
+pub mod special_form;
 pub mod typeinfer;
 pub mod unit;
 mod value;
@@ -46,6 +47,7 @@ pub use eval::{
 };
 pub use interner::InternedString;
 pub use map::Map;
+pub use special_form::BuiltinSpecialForm;
 pub use typeinfer::{Constraint, InferType, Substitution, TypeEnv, TypeInferencer, TypeVar};
 pub use unit::{DerivedDimension, Dimension, Unit, UnitRegistry};
 pub use value::{BuiltinFn, BuiltinMacro, SourceInfo, TrackedValue, Type, UserFunction, Value};
