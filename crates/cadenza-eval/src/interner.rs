@@ -11,9 +11,14 @@
 //!
 //! # Interning from rowan SyntaxText
 //!
-//! To efficiently intern from rowan's `SyntaxText`, use the `intern_syntax_text()`
-//! helper function in the eval module, which optimizes for the common case of
-//! single-chunk text (e.g., simple identifiers and operators).
+//! Use `From<&rowan::SyntaxText>` to intern efficiently:
+//!
+//! ```ignore
+//! let text = ident.syntax().text();
+//! let interned: InternedString = (&text).into();
+//! ```
+//!
+//! This avoids allocation during lookups by using `SyntaxText`'s `PartialEq<str>`.
 
 use std::{
     fmt,

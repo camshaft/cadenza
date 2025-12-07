@@ -108,12 +108,12 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573082852)
 
 12. ~~**Investigate rowan API for zero-allocation interning**~~ ✅
-    - [x] Added `insert_chunks()` to Storage trait for chunk-based interning
-    - [x] Implemented `new_from_chunks()` on Interned<S> for efficient chunk handling
-    - [x] Created `intern_syntax_text()` helper with fast path for single chunks
-    - [x] Replaced all `.to_string().as_str().into()` patterns (17 occurrences)
-    - [x] Optimizes common case (simple identifiers) with direct interning
-    - Previous: `SyntaxText.to_string().as_str()` allocated unnecessarily
+    - [x] Implemented `From<&rowan::SyntaxText> for InternedString`
+    - [x] Added `insert_syntax_text()` to Storage trait
+    - [x] Uses SyntaxText's `PartialEq<str>` to check equality without allocating
+    - [x] Only allocates when inserting new values (not on lookups)
+    - [x] Replaced all `.to_string().as_str().into()` with `(&text).into()` (17 occurrences)
+    - Previous: Built complete string just to check if it exists
     - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573285289)
 
 13. **Use smol_str for reference-counted strings**
