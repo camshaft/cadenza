@@ -1,12 +1,12 @@
 //! Markdown lexer and parser that produces Cadenza-compatible AST.
 //!
 //! This module treats Markdown as an alternative syntax for Cadenza. It lexes and parses
-//! Markdown into a Rowan CST that can be directly evaluated by the Cadenza eval crate.
+//! Markdown into a CST that can be directly evaluated by the Cadenza eval crate.
 //!
 //! # Architecture
 //!
 //! - **Lexer**: Tokenizes Markdown (headings, paragraphs, code blocks, etc.)
-//! - **Parser**: Builds Rowan GreenNode CST using cadenza-syntax token kinds
+//! - **Parser**: Builds GreenNode CST using cadenza-syntax token kinds
 //! - **AST**: Markdown elements become Apply nodes that call macros with content
 //!
 //! # Example
@@ -21,9 +21,7 @@
 //! ```
 
 use cadenza_syntax::{parse::Parse, token::Kind};
-use rowan::GreenNodeBuilder;
-
-type SyntaxToken = rowan::SyntaxToken<cadenza_syntax::Lang>;
+use cadenza_tree::GreenNodeBuilder;
 
 /// Parse Markdown source into a Cadenza-compatible AST.
 pub fn parse(src: &str) -> Parse {
@@ -33,7 +31,7 @@ pub fn parse(src: &str) -> Parse {
 struct Parser<'src> {
     src: &'src str,
     pos: usize,
-    builder: GreenNodeBuilder<'static>,
+    builder: GreenNodeBuilder,
     errors: Vec<cadenza_syntax::parse::ParseError>,
 }
 
@@ -421,19 +419,18 @@ impl<'src> Parser<'src> {
     // Helper to recursively add elements from another parsed tree
     fn add_element_recursive(
         &mut self,
-        element: rowan::NodeOrToken<cadenza_syntax::SyntaxNode, SyntaxToken>,
+        element: cadenza_tree::SyntaxElement<cadenza_syntax::Lang>,
     ) {
         match element {
-            rowan::NodeOrToken::Node(node) => {
+            cadenza_tree::SyntaxElement::Node(node) => {
                 self.builder.start_node(node.kind().into());
                 for child in node.children_with_tokens() {
                     self.add_element_recursive(child);
                 }
                 self.builder.finish_node();
             }
-            rowan::NodeOrToken::Token(token) => {
-                // Just use the token's text content - Rowan will handle positions automatically
-                self.builder.token(token.kind().into(), token.text());
+            cadenza_tree::SyntaxElement::Token(token) => {
+                self.builder.token(token.kind().into(), token.text().as_str());
             }
         }
     }

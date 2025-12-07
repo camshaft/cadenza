@@ -14,6 +14,7 @@
 use cadenza_eval::{Compiler, Env, Value};
 use cadenza_lsp::{core as lsp_core, lsp_types};
 use cadenza_syntax::{lexer::Lexer, parse, token::Kind};
+use cadenza_tree::SyntaxElement;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -162,10 +163,8 @@ pub fn lex(source: &str) -> JsValue {
     serde_wasm_bindgen::to_value(&result).expect("Failed to serialize LexResult")
 }
 
-/// Converts a rowan SyntaxNode to our CstNode format.
+/// Converts a SyntaxNode to our CstNode format.
 fn syntax_node_to_cst(node: &cadenza_syntax::SyntaxNode) -> CstNode {
-    use rowan::NodeOrToken;
-
     let kind = format!("{:?}", node.kind());
     let range = node.text_range();
     let start = range.start().into();
@@ -175,10 +174,10 @@ fn syntax_node_to_cst(node: &cadenza_syntax::SyntaxNode) -> CstNode {
 
     for child in node.children_with_tokens() {
         match child {
-            NodeOrToken::Node(n) => {
+            SyntaxElement::Node(n) => {
                 children.push(syntax_node_to_cst(&n));
             }
-            NodeOrToken::Token(t) => {
+            SyntaxElement::Token(t) => {
                 children.push(CstNode {
                     kind: format!("{:?}", t.kind()),
                     start: t.text_range().start().into(),
