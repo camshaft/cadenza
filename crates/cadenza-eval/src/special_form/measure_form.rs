@@ -1,6 +1,7 @@
 //! The `measure` special form for defining units and conversions.
 
 use crate::{
+    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     interner::InternedString,
@@ -8,7 +9,6 @@ use crate::{
     special_form::BuiltinSpecialForm,
     unit::Unit,
     value::{Type, Value},
-    Eval,
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;

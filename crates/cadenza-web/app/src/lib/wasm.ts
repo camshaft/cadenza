@@ -188,15 +188,15 @@ export const mockWasm: CadenzaWasm = {
     'LParen', 'RParen', 'LBracket', 'RBracket', 'LBrace', 'RBrace',
     'Comma', 'Dot', 'Colon', 'Semicolon', 'Space', 'Newline',
   ],
-  lsp_diagnostics: (source: string): LspDiagnostic[] => {
+  lsp_diagnostics: (_source: string): LspDiagnostic[] => {
     // Mock: return empty diagnostics
     return [];
   },
-  lsp_hover: (source: string, line: number, character: number): LspHoverInfo => {
+  lsp_hover: (_source: string, _line: number, _character: number): LspHoverInfo => {
     // Mock: return no hover info
     return { content: '', found: false };
   },
-  lsp_completions: (source: string, line: number, character: number): LspCompletionItem[] => {
+  lsp_completions: (_source: string, _line: number, _character: number): LspCompletionItem[] => {
     // Mock: return basic completions
     return [
       { label: 'let', kind: 'keyword', detail: 'Variable binding' },

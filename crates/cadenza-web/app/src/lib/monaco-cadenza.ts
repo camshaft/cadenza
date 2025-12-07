@@ -117,15 +117,12 @@ export function setupDiagnostics(
   wasm: CadenzaWasm,
   model: monaco.editor.ITextModel
 ): () => void {
-  let decorations: string[] = [];
-  let markers: monaco.editor.IMarkerData[] = [];
-  
   const updateDiagnostics = () => {
     const source = model.getValue();
     const diagnostics = wasm.lsp_diagnostics(source);
     
     // Convert to Monaco markers
-    markers = diagnostics.map((diag: LspDiagnostic) => ({
+    const markers = diagnostics.map((diag: LspDiagnostic) => ({
       severity: diagSeverityToMonaco(diag.severity),
       startLineNumber: diag.start_line + 1,  // Monaco is 1-based
       startColumn: diag.start_character + 1,
@@ -192,6 +189,12 @@ export function setupCompletions(wasm: CadenzaWasm): monaco.IDisposable {
           kind: completionKindToMonaco(item.kind),
           detail: item.detail || undefined,
           insertText: item.label,
+          range: {
+            startLineNumber: position.lineNumber,
+            startColumn: position.column,
+            endLineNumber: position.lineNumber,
+            endColumn: position.column,
+          },
         })),
       };
     },

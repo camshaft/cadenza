@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import Editor, { loader, OnMount } from '@monaco-editor/react';
-import type * as monaco from 'monaco-editor';
+import Editor, { loader, type OnMount } from '@monaco-editor/react';
 import {
   CADENZA_LANGUAGE_ID,
   registerCadenzaLanguage,
@@ -78,7 +77,7 @@ export function SourceEditor({ value, onChange, wasm }: SourceEditorProps) {
     };
   }, []);
 
-  const handleEditorDidMount: OnMount = (editor, monaco) => {
+  const handleEditorDidMount: OnMount = (editor, _monaco) => {
     // Editor mounted successfully - clear timeout and mark as loaded
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);

@@ -41,9 +41,8 @@ pub use diagnostic::{
 pub use diagnostic::{Error, ErrorKind};
 pub use env::Env;
 pub use eval::{
-    builtin_add, builtin_div, builtin_eq, builtin_gt,
-    builtin_gte, builtin_lt, builtin_lte, builtin_mul, builtin_ne,
-    builtin_sub, eval,
+    builtin_add, builtin_div, builtin_eq, builtin_gt, builtin_gte, builtin_lt, builtin_lte,
+    builtin_mul, builtin_ne, builtin_sub, eval,
 };
 pub use interner::InternedString;
 pub use map::Map;

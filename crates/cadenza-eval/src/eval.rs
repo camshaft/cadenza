@@ -753,6 +753,9 @@ fn handle_field_assignment(
 ///
 /// The fn_args slice contains the arguments after 'fn' (i.e., `name param1 param2...`),
 /// and body_expr is the function body (the RHS of the `=`).
+///
+/// **DEPRECATED**: This function has been moved to special_form::fn_form and should not be used directly.
+#[allow(dead_code)]
 fn handle_function_definition(
     fn_args: &[Expr],
     body_expr: &Expr,
@@ -931,6 +934,9 @@ pub fn builtin_list() -> BuiltinMacro {
 ///
 /// The parser transforms `{ a = 1, b = 2 }` into: `[__record__, [=, a, 1], [=, b, 2]]`
 /// The parser transforms `{ x, y }` into: `[__record__, x, y]`
+///
+/// **DEPRECATED**: Kept for backward compatibility but no longer used. Special forms have replaced builtin macros.
+#[allow(dead_code)]
 pub fn builtin_record() -> BuiltinMacro {
     BuiltinMacro {
         name: "__record__",
@@ -1010,6 +1016,9 @@ pub fn builtin_record() -> BuiltinMacro {
 /// ```
 ///
 /// The parser transforms `arr[0]` into: `[__index__, arr, 0]`
+///
+/// **DEPRECATED**: Kept for backward compatibility but no longer used. Special forms have replaced builtin macros.
+#[allow(dead_code)]
 pub fn builtin_index() -> BuiltinMacro {
     BuiltinMacro {
         name: "__index__",
@@ -1090,6 +1099,9 @@ pub fn builtin_index() -> BuiltinMacro {
 /// - `fn add x y = x + y` - Called with `[add, x, y, x + y]`, defines a 2-param function
 /// - `fn square x = x * x` - Called with `[square, x, x * x]`, defines a 1-param function
 /// - `fn const = 42` - Called with `[const, 42]`, defines a 0-param function
+///
+/// **DEPRECATED**: Kept for backward compatibility but no longer used. Special forms have replaced builtin macros.
+#[allow(dead_code)]
 pub fn builtin_fn() -> BuiltinMacro {
     BuiltinMacro {
         name: "fn",
@@ -1130,6 +1142,9 @@ pub fn builtin_fn() -> BuiltinMacro {
 /// measure inch = millimeter 25.4   // 1 inch = 25.4 millimeters
 /// measure foot = inch 12           // 1 foot = 12 inches
 /// ```
+///
+/// **DEPRECATED**: Kept for backward compatibility but no longer used. Special forms have replaced builtin macros.
+#[allow(dead_code)]
 pub fn builtin_measure() -> BuiltinMacro {
     use crate::unit::Unit;
 
@@ -1925,6 +1940,9 @@ pub fn builtin_gte() -> BuiltinFn {
 /// - Returns a type error if the first argument is not a record
 /// - Returns a syntax error if the field name is not an identifier
 /// - Returns an error if the field does not exist in the record
+///
+/// **DEPRECATED**: Kept for backward compatibility but no longer used. Special forms have replaced builtin macros.
+#[allow(dead_code)]
 pub fn builtin_field_access() -> BuiltinMacro {
     BuiltinMacro {
         name: ".",
@@ -1992,6 +2010,9 @@ pub fn builtin_field_access() -> BuiltinMacro {
 /// This is implemented as a macro because it needs to:
 /// 1. Evaluate the LHS to get the value to pipe
 /// 2. Manipulate the RHS application by injecting the LHS value as the first argument
+///
+/// **DEPRECATED**: Kept for backward compatibility but no longer used. Special forms have replaced builtin macros.
+#[allow(dead_code)]
 pub fn builtin_pipeline() -> BuiltinMacro {
     BuiltinMacro {
         name: "|>",
@@ -2221,6 +2242,9 @@ pub fn builtin_assert() -> BuiltinMacro {
 ///     true -> "positive"
 ///     false -> "negative"
 /// ```
+///
+/// **DEPRECATED**: Kept for backward compatibility but no longer used. Special forms have replaced builtin macros.
+#[allow(dead_code)]
 pub fn builtin_match() -> BuiltinMacro {
     BuiltinMacro {
         name: "match",

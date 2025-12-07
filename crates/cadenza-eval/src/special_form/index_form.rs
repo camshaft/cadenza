@@ -1,12 +1,12 @@
 //! The `__index__` special form for array indexing.
 
 use crate::{
+    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
     value::{Type, Value},
-    Eval,
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;
@@ -61,10 +61,7 @@ fn eval_index(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     let index = match index_value {
         Value::Integer(i) => i,
         _ => {
-            return Err(Diagnostic::type_error(
-                Type::Integer,
-                index_value.type_of(),
-            ));
+            return Err(Diagnostic::type_error(Type::Integer, index_value.type_of()));
         }
     };
 
