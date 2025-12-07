@@ -544,27 +544,19 @@ impl<'src> Parser<'src> {
             self.parse_number();
         } else if ch.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
             // Check if this is a binary operator expression
-            let saved_pos = self.pos;
             self.parse_identifier();
-            
+
             self.skip_whitespace_and_comments();
-            
+
             // Check for binary operators
             let op_ch = self.peek_char();
-            if op_ch == Some('=')
-                || op_ch == Some('>')
-                || op_ch == Some('<')
-                || op_ch == Some('!')
+            if op_ch == Some('=') || op_ch == Some('>') || op_ch == Some('<') || op_ch == Some('!')
             {
-                // This is a binary operation, need to wrap in Apply
-                let checkpoint = self.builder.checkpoint();
-                
+                // This is a binary operation
                 // We already parsed the left side, now parse operator and right side
                 self.parse_operator();
                 self.skip_whitespace_and_comments();
                 self.parse_expression();
-                
-                // No need to wrap since we're already in the right structure
             }
         } else if ch == Some('(') {
             // Parenthesized expression or subquery
@@ -579,7 +571,7 @@ impl<'src> Parser<'src> {
 
     fn parse_operator(&mut self) {
         let start = self.pos;
-        
+
         // Handle multi-character operators
         let ch = self.peek_char();
         if ch == Some('=') {
@@ -623,9 +615,10 @@ impl<'src> Parser<'src> {
 
         self.skip_whitespace_and_comments();
 
-        // Parse contents
+        // Parse contents - keep consuming until we hit )
         while self.pos < self.src.len() && self.peek_char() != Some(')') {
-            self.parse_expression();
+            // Parse everything until comma or )
+            self.parse_list_item();
 
             self.skip_whitespace_and_comments();
 
@@ -635,8 +628,6 @@ impl<'src> Parser<'src> {
                 let comma_text = &self.src[comma_start..self.pos];
                 self.builder.token(Kind::Comma.into(), comma_text);
                 self.skip_whitespace_and_comments();
-            } else if self.peek_char() != Some(')') {
-                break;
             }
         }
 
@@ -645,6 +636,32 @@ impl<'src> Parser<'src> {
             self.pos += 1;
             let rparen = &self.src[rparen_start..self.pos];
             self.builder.token(Kind::RParen.into(), rparen);
+        }
+    }
+
+    fn parse_list_item(&mut self) {
+        // Parse a list item - everything until comma or closing paren
+        // This handles complex column definitions like "id INTEGER PRIMARY KEY"
+        while self.pos < self.src.len() {
+            let ch = self.peek_char();
+            if ch == Some(',') || ch == Some(')') {
+                break;
+            } else if ch == Some('(') {
+                // Nested parentheses
+                self.parse_parenthesized_list();
+            } else if ch == Some('\'') || ch == Some('"') {
+                self.parse_string();
+            } else if ch.is_some_and(|c| c.is_ascii_digit()) {
+                self.parse_number();
+            } else if ch.is_some_and(|c| c.is_ascii_whitespace()) {
+                self.skip_whitespace_and_comments();
+            } else if ch.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+                self.parse_identifier();
+                self.skip_whitespace_and_comments();
+            } else {
+                // Unknown character, skip it
+                self.pos += 1;
+            }
         }
     }
 
@@ -789,7 +806,7 @@ impl<'src> Parser<'src> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cadenza_eval::{eval, BuiltinMacro, Compiler, Env, Type, Value};
+    use cadenza_eval::{BuiltinMacro, Compiler, Env, Type, Value, eval};
 
     #[test]
     fn test_execute_sql_with_macros() {

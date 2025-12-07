@@ -1,0 +1,54 @@
+---
+source: crates/cadenza-sql/src/generated/test_data.rs
+expression: "INSERT INTO users (name, email, age) VALUES ('John', 'john@example.com', 25);\n"
+---
+Root@0..78
+  Apply@0..76
+    ApplyReceiver@0..6
+      Identifier@0..6
+        Identifier@0..6 "INSERT"
+    Space@6..7 " "
+    ApplyArgument@7..11
+      Identifier@7..11
+        Identifier@7..11 "INTO"
+    Space@11..12 " "
+    ApplyArgument@12..17
+      Identifier@12..17
+        Identifier@12..17 "users"
+    Space@17..18 " "
+    ApplyArgument@18..36
+      LParen@18..19 "("
+      Identifier@19..23
+        Identifier@19..23 "name"
+      Comma@23..24 ","
+      Space@24..25 " "
+      Identifier@25..30
+        Identifier@25..30 "email"
+      Comma@30..31 ","
+      Space@31..32 " "
+      Identifier@32..35
+        Identifier@32..35 "age"
+      RParen@35..36 ")"
+    Space@36..37 " "
+    ApplyArgument@37..43
+      Identifier@37..43
+        Identifier@37..43 "VALUES"
+    Space@43..44 " "
+    ApplyArgument@44..76
+      LParen@44..45 "("
+      Literal@45..51
+        StringContent@45..51
+          StringContent@45..51 "'John'"
+      Comma@51..52 ","
+      Space@52..53 " "
+      Literal@53..71
+        StringContent@53..71
+          StringContent@53..71 "'john@example.com'"
+      Comma@71..72 ","
+      Space@72..73 " "
+      Literal@73..75
+        Integer@73..75
+          Integer@73..75 "25"
+      RParen@75..76 ")"
+  Semicolon@76..77 ";"
+  Newline@77..78 "\n"

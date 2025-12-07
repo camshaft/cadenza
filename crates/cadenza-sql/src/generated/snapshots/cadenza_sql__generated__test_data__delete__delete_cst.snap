@@ -1,0 +1,33 @@
+---
+source: crates/cadenza-sql/src/generated/test_data.rs
+expression: "DELETE FROM users WHERE age < 18;\n"
+---
+Root@0..34
+  Apply@0..32
+    ApplyReceiver@0..6
+      Identifier@0..6
+        Identifier@0..6 "DELETE"
+    Space@6..7 " "
+    ApplyArgument@7..11
+      Identifier@7..11
+        Identifier@7..11 "FROM"
+    Space@11..12 " "
+    ApplyArgument@12..17
+      Identifier@12..17
+        Identifier@12..17 "users"
+    Space@17..18 " "
+    ApplyArgument@18..23
+      Identifier@18..23
+        Identifier@18..23 "WHERE"
+    Space@23..24 " "
+    ApplyArgument@24..32
+      Identifier@24..27
+        Identifier@24..27 "age"
+      Space@27..28 " "
+      Less@28..29 "<"
+      Space@29..30 " "
+      Literal@30..32
+        Integer@30..32
+          Integer@30..32 "18"
+  Semicolon@32..33 ";"
+  Newline@33..34 "\n"

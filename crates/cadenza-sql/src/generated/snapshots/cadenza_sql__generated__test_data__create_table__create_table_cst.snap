@@ -1,0 +1,66 @@
+---
+source: crates/cadenza-sql/src/generated/test_data.rs
+expression: "CREATE TABLE users (\n    id INTEGER PRIMARY KEY,\n    name TEXT NOT NULL,\n    email TEXT UNIQUE,\n    age INTEGER\n);\n"
+---
+Root@0..115
+  Apply@0..113
+    ApplyReceiver@0..6
+      Identifier@0..6
+        Identifier@0..6 "CREATE"
+    Space@6..7 " "
+    ApplyArgument@7..12
+      Identifier@7..12
+        Identifier@7..12 "TABLE"
+    Space@12..13 " "
+    ApplyArgument@13..18
+      Identifier@13..18
+        Identifier@13..18 "users"
+    Space@18..19 " "
+    ApplyArgument@19..113
+      LParen@19..20 "("
+      Newline@20..25 "\n    "
+      Identifier@25..27
+        Identifier@25..27 "id"
+      Space@27..28 " "
+      Identifier@28..35
+        Identifier@28..35 "INTEGER"
+      Space@35..36 " "
+      Identifier@36..43
+        Identifier@36..43 "PRIMARY"
+      Space@43..44 " "
+      Identifier@44..47
+        Identifier@44..47 "KEY"
+      Comma@47..48 ","
+      Newline@48..53 "\n    "
+      Identifier@53..57
+        Identifier@53..57 "name"
+      Space@57..58 " "
+      Identifier@58..62
+        Identifier@58..62 "TEXT"
+      Space@62..63 " "
+      Identifier@63..66
+        Identifier@63..66 "NOT"
+      Space@66..67 " "
+      Identifier@67..71
+        Identifier@67..71 "NULL"
+      Comma@71..72 ","
+      Newline@72..77 "\n    "
+      Identifier@77..82
+        Identifier@77..82 "email"
+      Space@82..83 " "
+      Identifier@83..87
+        Identifier@83..87 "TEXT"
+      Space@87..88 " "
+      Identifier@88..94
+        Identifier@88..94 "UNIQUE"
+      Comma@94..95 ","
+      Newline@95..100 "\n    "
+      Identifier@100..103
+        Identifier@100..103 "age"
+      Space@103..104 " "
+      Identifier@104..111
+        Identifier@104..111 "INTEGER"
+      Newline@111..112 "\n"
+      RParen@112..113 ")"
+  Semicolon@113..114 ";"
+  Newline@114..115 "\n"
