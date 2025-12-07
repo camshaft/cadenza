@@ -437,6 +437,8 @@ enum PostfixBindingPower {
     /// Try operator: ? (lower than FieldAccess=30 so field resolves first)
     Try = 29,
     /// Array indexing: arr[0] (highest precedence, same as PathAccess)
+    /// Note: This is handled specially in the parser, not through the binding power system
+    #[allow(dead_code)]
     ArrayIndex = 34,
 }
 
