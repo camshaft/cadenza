@@ -5,9 +5,8 @@
 
 use crate::{
     eval::{
-        builtin_add, builtin_div, builtin_eq, builtin_gt,
-        builtin_gte, builtin_lt, builtin_lte, builtin_mul,
-        builtin_ne, builtin_sub,
+        builtin_add, builtin_div, builtin_eq, builtin_gt, builtin_gte, builtin_lt, builtin_lte,
+        builtin_mul, builtin_ne, builtin_sub,
     },
     interner::InternedString,
     map::Map,

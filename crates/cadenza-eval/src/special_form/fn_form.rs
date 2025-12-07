@@ -6,7 +6,7 @@ use crate::{
     interner::InternedString,
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
-    value::{Type, Value, UserFunction},
+    value::{Type, UserFunction, Value},
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;
@@ -34,8 +34,8 @@ pub fn get() -> &'static BuiltinSpecialForm {
     FN_FORM.get_or_init(|| BuiltinSpecialForm {
         name: "fn",
         signature: Type::function(vec![Type::Unknown], Type::Nil),
-        eval_fn: eval_fn,
-        ir_fn: ir_fn,
+        eval_fn,
+        ir_fn,
     })
 }
 

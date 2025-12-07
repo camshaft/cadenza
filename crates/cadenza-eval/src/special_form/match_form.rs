@@ -1,12 +1,12 @@
 //! The `match` special form for pattern matching.
 
 use crate::{
+    Eval,
     context::EvalContext,
     diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
     value::{Type, Value},
-    Eval,
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;
@@ -58,10 +58,8 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     let match_bool = match match_value {
         Value::Bool(b) => b,
         _ => {
-            return Err(
-                Diagnostic::type_error(Type::Bool, match_value.type_of())
-                    .with_span(match_expr.span()),
-            );
+            return Err(Diagnostic::type_error(Type::Bool, match_value.type_of())
+                .with_span(match_expr.span()));
         }
     };
 
@@ -104,7 +102,10 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     }
 
     // No pattern matched
-    Err(Diagnostic::syntax("match expression did not match any pattern").with_span(match_expr.span()))
+    Err(
+        Diagnostic::syntax("match expression did not match any pattern")
+            .with_span(match_expr.span()),
+    )
 }
 
 fn ir_match(

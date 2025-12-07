@@ -466,8 +466,6 @@ impl Eval for Synthetic {
     }
 }
 
-
-
 // =============================================================================
 // Built-in operators (registered as functions in the standard environment)
 // =============================================================================
@@ -1129,11 +1127,6 @@ pub fn builtin_gte() -> BuiltinFn {
         },
     }
 }
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {
