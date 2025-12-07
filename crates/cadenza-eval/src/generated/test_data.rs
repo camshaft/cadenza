@@ -761,6 +761,47 @@ mod type_inference_demo {
         );
     }
 }
+mod fn_match_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_match_simple",
+            t::eval_all(
+                "# Test function with match expression\n\n# Function that returns different values based on boolean condition\nfn sign_bool x =\n    match x\n        (true -> 1)\n        (false -> -1)\n\n# Test the function\nlet result1 = sign_bool true\nassert result1 == 1\n\nlet result2 = sign_bool false\nassert result2 == -1\n"
+            ),
+            "# Test function with match expression\n\n# Function that returns different values based on boolean condition\nfn sign_bool x =\n    match x\n        (true -> 1)\n        (false -> -1)\n\n# Test the function\nlet result1 = sign_bool true\nassert result1 == 1\n\nlet result2 = sign_bool false\nassert result2 == -1\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "fn_match_simple_ast",
+            t::ast(
+                "# Test function with match expression\n\n# Function that returns different values based on boolean condition\nfn sign_bool x =\n    match x\n        (true -> 1)\n        (false -> -1)\n\n# Test the function\nlet result1 = sign_bool true\nassert result1 == 1\n\nlet result2 = sign_bool false\nassert result2 == -1\n"
+            ),
+            "# Test function with match expression\n\n# Function that returns different values based on boolean condition\nfn sign_bool x =\n    match x\n        (true -> 1)\n        (false -> -1)\n\n# Test the function\nlet result1 = sign_bool true\nassert result1 == 1\n\nlet result2 = sign_bool false\nassert result2 == -1\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "fn_match_simple_ir",
+            t::ir(
+                "# Test function with match expression\n\n# Function that returns different values based on boolean condition\nfn sign_bool x =\n    match x\n        (true -> 1)\n        (false -> -1)\n\n# Test the function\nlet result1 = sign_bool true\nassert result1 == 1\n\nlet result2 = sign_bool false\nassert result2 == -1\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "fn_match_simple_wat",
+            t::wat(
+                "# Test function with match expression\n\n# Function that returns different values based on boolean condition\nfn sign_bool x =\n    match x\n        (true -> 1)\n        (false -> -1)\n\n# Test the function\nlet result1 = sign_bool true\nassert result1 == 1\n\nlet result2 = sign_bool false\nassert result2 == -1\n"
+            )
+        );
+    }
+}
 mod measure_base {
     use super::*;
     #[test]

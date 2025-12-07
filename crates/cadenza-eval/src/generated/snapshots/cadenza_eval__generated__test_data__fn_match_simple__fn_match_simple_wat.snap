@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"# Test function with match expression\\n\\n# Function that returns different values based on boolean condition\\nfn sign_bool x =\\n    match x\\n        (true -> 1)\\n        (false -> -1)\\n\\n# Test the function\\nlet result1 = sign_bool true\\nassert result1 == 1\\n\\nlet result2 = sign_bool false\\nassert result2 == -1\\n\")"
+---
+(module)
