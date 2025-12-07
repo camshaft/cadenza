@@ -613,7 +613,13 @@ impl PartialEq for Value {
                     false
                 }
             }
-            // Functions and macros are compared by identity (they never compare equal)
+            // Functions, macros, and special forms are compared by identity (they never compare equal)
+            (Value::BuiltinFn(_), _) | (_, Value::BuiltinFn(_)) => false,
+            (Value::BuiltinMacro(_), _) | (_, Value::BuiltinMacro(_)) => false,
+            (Value::SpecialForm(_), _) | (_, Value::SpecialForm(_)) => false,
+            (Value::UnitConstructor(_), _) | (_, Value::UnitConstructor(_)) => false,
+            (Value::UserFunction(_), _) | (_, Value::UserFunction(_)) => false,
+            // All other combinations are false (different types)
             _ => false,
         }
     }
