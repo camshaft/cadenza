@@ -11,17 +11,9 @@
 //!
 //! # Interning from rowan SyntaxText
 //!
-//! To avoid allocations when interning from rowan's `SyntaxText`, collect the
-//! chunks first and use `new_from_chunks`:
-//!
-//! ```ignore
-//! use cadenza_eval::interner::InternedString;
-//!
-//! let text = ident.syntax().text();
-//! let mut chunks = Vec::new();
-//! text.for_each_chunk(|chunk| chunks.push(chunk));
-//! let interned = InternedString::new_from_chunks(chunks);
-//! ```
+//! To efficiently intern from rowan's `SyntaxText`, use the `intern_syntax_text()`
+//! helper function in the eval module, which optimizes for the common case of
+//! single-chunk text (e.g., simple identifiers and operators).
 
 use std::{
     fmt,
@@ -122,19 +114,11 @@ impl<S: Storage> Interned<S> {
 
     /// Creates a new `Interned` value from an iterator of string chunks.
     ///
-    /// This is useful for avoiding allocations when interning from sources like
-    /// rowan's `SyntaxText`, which may store text in multiple chunks. Instead of
-    /// allocating a temporary `String`, this method inserts directly from the chunks.
+    /// This is useful when you have text split across multiple chunks.
+    /// The chunks will be concatenated into a single string for interning.
     ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // With rowan SyntaxText (doesn't allocate):
-    /// let text = ident.syntax().text();
-    /// let mut chunks = Vec::new();
-    /// text.for_each_chunk(|chunk| chunks.push(chunk));
-    /// let interned = InternedString::new_from_chunks(chunks);
-    /// ```
+    /// For rowan `SyntaxText`, prefer using the `intern_syntax_text()` helper
+    /// in the eval module which optimizes for single-chunk text.
     #[inline]
     pub fn new_from_chunks<I>(chunks: I) -> Self
     where

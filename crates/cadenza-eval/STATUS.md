@@ -107,8 +107,13 @@ The evaluator implements a minimal tree-walk interpreter for Cadenza. It can:
    - [x] Single `Interned<S>` type with Storage trait, static OnceLock storage
    - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573082852)
 
-12. **Investigate rowan API for zero-allocation interning**
-    - Current: `SyntaxText.to_string().as_str()` allocates unnecessarily
+12. ~~**Investigate rowan API for zero-allocation interning**~~ ✅
+    - [x] Added `insert_chunks()` to Storage trait for chunk-based interning
+    - [x] Implemented `new_from_chunks()` on Interned<S> for efficient chunk handling
+    - [x] Created `intern_syntax_text()` helper with fast path for single chunks
+    - [x] Replaced all `.to_string().as_str().into()` patterns (17 occurrences)
+    - [x] Optimizes common case (simple identifiers) with direct interning
+    - Previous: `SyntaxText.to_string().as_str()` allocated unnecessarily
     - [PR #4](https://github.com/camshaft/cadenza/pull/4#discussion_r2573285289)
 
 13. **Use smol_str for reference-counted strings**

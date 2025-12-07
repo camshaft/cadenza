@@ -27,24 +27,42 @@ use cadenza_syntax::{
 /// text is stored as a single contiguous chunk (e.g., simple identifiers).
 ///
 /// Previously we used `.to_string().as_str().into()` which allocates a String
-/// then immediately copies it into the interner. Now we build the string once
-/// and intern it directly.
+/// then immediately copies it into the interner. Now we optimize for single
+/// chunks while still handling multi-chunk text correctly.
 #[inline]
 fn intern_syntax_text(text: &rowan::SyntaxText) -> InternedString {
-    // Count chunks to determine if we have a simple case
-    let mut count = 0;
-    text.for_each_chunk(|_| count += 1);
+    // Track state during iteration to handle single vs multi-chunk efficiently
+    enum State {
+        Empty,
+        Single(String),
+        Multi(String),
+    }
 
-    if count == 1 {
-        // Fast path: single chunk - intern directly from the chunk
-        let mut result = None;
-        text.for_each_chunk(|chunk| result = Some(InternedString::new(chunk)));
-        result.unwrap()
-    } else {
-        // Slow path: multiple chunks - concatenate into a string first
-        let mut concatenated = String::new();
-        text.for_each_chunk(|chunk| concatenated.push_str(chunk));
-        InternedString::new(&concatenated)
+    let final_state: std::result::Result<State, std::convert::Infallible> = text.try_fold_chunks(State::Empty, |state, chunk| {
+        Ok(match state {
+            State::Empty => {
+                // First chunk
+                State::Single(chunk.to_owned())
+            }
+            State::Single(first) => {
+                // Second chunk - switch to multi mode
+                let mut concatenated = first;
+                concatenated.push_str(chunk);
+                State::Multi(concatenated)
+            }
+            State::Multi(mut concatenated) => {
+                // Third+ chunk - continue concatenating
+                concatenated.push_str(chunk);
+                State::Multi(concatenated)
+            }
+        })
+    });
+
+    match final_state {
+        Ok(State::Empty) => InternedString::new(""),
+        Ok(State::Single(s)) => InternedString::new(&s),
+        Ok(State::Multi(s)) => InternedString::new(&s),
+        Err(_) => unreachable!("try_fold_chunks cannot fail with Ok-only closure"),
     }
 }
 
