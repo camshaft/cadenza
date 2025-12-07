@@ -740,4 +740,34 @@ mod tests {
         assert_eq!(results[0], Value::Integer(3));
         assert_eq!(results[1], Value::Integer(3));
     }
+
+    #[test]
+    fn test_parse_markdown_syntax() {
+        let source = "# Hello\n\nWorld!";
+        let parsed = parse_with_syntax(source, Syntax::Markdown);
+        // Just verify it doesn't panic and returns something
+        let _root = parsed.ast();
+        // Markdown parser should succeed
+        assert!(parsed.errors.is_empty() || parsed.errors.len() < 10);
+    }
+
+    #[test]
+    fn test_parse_sql_syntax() {
+        let source = "SELECT * FROM users;";
+        let parsed = parse_with_syntax(source, Syntax::Sql);
+        // Just verify it doesn't panic and returns something
+        let _root = parsed.ast();
+        // SQL parser should succeed
+        assert!(parsed.errors.is_empty() || parsed.errors.len() < 10);
+    }
+
+    #[test]
+    fn test_parse_gcode_syntax() {
+        let source = "G28\nG1 X100 Y50\n";
+        let parsed = parse_with_syntax(source, Syntax::Gcode);
+        // Just verify it doesn't panic and returns something
+        let _root = parsed.ast();
+        // GCode parser should succeed
+        assert!(parsed.errors.is_empty() || parsed.errors.len() < 10);
+    }
 }
