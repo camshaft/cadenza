@@ -369,7 +369,7 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
 
         // Code content as second argument
-        // Special case: if language is empty or "cadenza", parse as Cadenza code
+        // Special case: if language is empty, "cadenza", or "sql", parse accordingly
         self.builder.start_node(Kind::ApplyArgument.into());
         if language.is_empty() || language == "cadenza" {
             // Parse the code content as Cadenza
@@ -392,8 +392,29 @@ impl<'src> Parser<'src> {
             }
 
             self.builder.finish_node(); // End Apply (block)
+        } else if language == "sql" {
+            // Parse the code content as SQL
+            let sql_parse = cadenza_sql::parse(code_content);
+            // Get the root node from the parsed SQL code
+            let sql_root = sql_parse.syntax();
+
+            // Wrap the SQL statements in a synthetic block
+            self.builder.start_node(Kind::Apply.into());
+            self.builder.start_node(Kind::ApplyReceiver.into());
+            self.builder.start_node(Kind::SyntheticBlock.into());
+            self.builder.finish_node();
+            self.builder.finish_node();
+
+            // Add each statement as an argument to the block
+            for child in sql_root.children_with_tokens() {
+                self.builder.start_node(Kind::ApplyArgument.into());
+                self.add_element_recursive(child);
+                self.builder.finish_node();
+            }
+
+            self.builder.finish_node(); // End Apply (block)
         } else {
-            // Non-Cadenza code: emit as string content
+            // Non-Cadenza/SQL code: emit as string content
             self.builder.start_node(Kind::Literal.into());
             self.builder.start_node(Kind::StringContent.into());
             self.builder.token(Kind::StringContent.into(), code_content);
