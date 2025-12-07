@@ -2,7 +2,7 @@
 
 use crate::{
     context::EvalContext,
-    diagnostic::{Diagnostic, DiagnosticKind, Result},
+    diagnostic::{Diagnostic, Result},
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
     value::{Type, Value},
@@ -61,13 +61,10 @@ fn eval_index(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     let index = match index_value {
         Value::Integer(i) => i,
         _ => {
-            return Err(Box::new(Diagnostic::new(
-                DiagnosticKind::TypeError {
-                    expected: Type::Integer,
-                    actual: index_value.type_of(),
-                },
-                None,
-            )));
+            return Err(Diagnostic::type_error(
+                Type::Integer,
+                index_value.type_of(),
+            ));
         }
     };
 
@@ -88,13 +85,10 @@ fn eval_index(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
             Ok(elements[actual_index as usize].clone())
         }
-        _ => Err(Box::new(Diagnostic::new(
-            DiagnosticKind::TypeError {
-                expected: Type::list(Type::Unknown),
-                actual: array_value.type_of(),
-            },
-            None,
-        ))),
+        _ => Err(Diagnostic::type_error(
+            Type::list(Type::Unknown),
+            array_value.type_of(),
+        )),
     }
 }
 

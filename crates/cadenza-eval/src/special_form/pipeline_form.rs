@@ -88,7 +88,7 @@ fn eval_pipeline(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
                 // Check for macro in environment
                 if let Some(Value::BuiltinMacro(_) | Value::SpecialForm(_)) = ctx.env.get(id) {
                     return Err(Diagnostic::syntax(
-                        "cannot use pipeline operator with macros",
+                        "cannot use pipeline operator with macros or special forms",
                     ));
                 }
             }

@@ -53,7 +53,7 @@ fn eval_record(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
             // Shorthand syntax: { x, y } where x and y are identifiers
             Expr::Ident(ident) => {
                 let text = ident.syntax().text();
-                let field_name: InternedString = text.to_string().as_str().into();
+                let field_name = InternedString::new(&text.to_string());
 
                 // Look up the variable in the environment
                 let value = ctx.env.get(field_name).cloned().ok_or_else(|| {
@@ -76,7 +76,7 @@ fn eval_record(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
                 let field_name = match &all_args[0] {
                     Expr::Ident(ident) => {
                         let text = ident.syntax().text();
-                        text.to_string().as_str().into()
+                        InternedString::new(&text.to_string())
                     }
                     _ => {
                         return Err(Diagnostic::syntax(
