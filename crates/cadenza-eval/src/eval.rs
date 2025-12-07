@@ -1012,7 +1012,7 @@ pub fn builtin_index() -> BuiltinMacro {
 
                     // Check bounds
                     if actual_index < 0 || actual_index >= len {
-                        return Err(Diagnostic::internal(format!(
+                        return Err(Diagnostic::syntax(format!(
                             "index out of bounds: index {} is out of range for list of length {}",
                             index, len
                         )));
