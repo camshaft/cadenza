@@ -436,6 +436,8 @@ enum PostfixBindingPower {
     PipeTry = 0,
     /// Try operator: ? (lower than FieldAccess=30 so field resolves first)
     Try = 29,
+    /// Array indexing: arr[0] (highest precedence, same as PathAccess)
+    ArrayIndex = 34,
 }
 
 struct Punctuation {
@@ -661,6 +663,7 @@ impl Synthetic {
             s("SyntheticList", "__list__"),
             s("SyntheticRecord", "__record__"),
             s("SyntheticBlock", "__block__"),
+            s("SyntheticIndex", "__index__"),
             // Markdown elements
             s("SyntheticMarkdownH1", "h1"),
             s("SyntheticMarkdownH2", "h2"),

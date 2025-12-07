@@ -1,0 +1,34 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "arr[0]\narr [0]\n"
+---
+Root@0..15
+  Apply@0..6
+    ApplyArgument@0..3
+      Identifier@0..3
+        Identifier@0..3 "arr"
+    ApplyReceiver@3..3
+      SyntheticIndex@3..3
+    ApplyArgument@3..6
+      LBracket@3..4 "["
+      Literal@4..5
+        Integer@4..5
+          Integer@4..5 "0"
+      RBracket@5..6 "]"
+  Newline@6..7 "\n"
+  Apply@7..15
+    ApplyReceiver@7..11
+      Identifier@7..10
+        Identifier@7..10 "arr"
+      Space@10..11 " "
+    ApplyArgument@11..15
+      Apply@11..14
+        LBracket@11..12 "["
+        ApplyReceiver@12..12
+          SyntheticList@12..12
+        ApplyArgument@12..13
+          Literal@12..13
+            Integer@12..13
+              Integer@12..13 "0"
+        RBracket@13..14 "]"
+      Newline@14..15 "\n"

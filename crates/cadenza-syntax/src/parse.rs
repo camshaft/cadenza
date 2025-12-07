@@ -116,6 +116,46 @@ impl<'src> Parser<'src> {
 
         // Loop to handle sequences of operators and function application
         loop {
+            // Special case: Check for array indexing (arr[0]) before skipping trivia
+            // Array indexing requires no whitespace before '[', otherwise it's function application
+            if self.current() == Kind::LBracket {
+                // Array indexing binding power (same as PathAccess)
+                let l_bp = 34;
+                
+                if l_bp < min_bp {
+                    marker.finish(self);
+                    return;
+                }
+                
+                // Parse array indexing: arr[index]
+                // Represented as Apply(__index__, [array, index])
+                self.builder
+                    .start_node_at(apply_checkpoint, Kind::Apply.into());
+                
+                // The left side becomes the first argument (without trailing trivia)
+                self.builder
+                    .start_node_at(content_checkpoint, Kind::ApplyArgument.into());
+                self.builder.finish_node();
+                
+                // Create synthetic __index__ receiver
+                self.builder.start_node(Kind::ApplyReceiver.into());
+                self.builder.start_node(Kind::SyntheticIndex.into());
+                self.builder.finish_node();
+                self.builder.finish_node();
+                
+                // Parse the index expression with bracket marker
+                self.builder.start_node(Kind::ApplyArgument.into());
+                let index_marker = BracketMarker::new(self);
+                // BracketMarker will consume '[', parse content, and consume ']'
+                self.parse_expression(index_marker);
+                self.builder.finish_node(); // Close ApplyArgument (index)
+                
+                self.builder.finish_node(); // Close Apply (__index__)
+                
+                // Continue the loop to check for more operators
+                continue;
+            }
+            
             // Check what comes next
             self.skip_trivia();
 
