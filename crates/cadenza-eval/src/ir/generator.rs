@@ -243,7 +243,7 @@ impl IrGenerator {
         let result = self.gen_expr_with_state(&func.body, &mut state, &mut ctx)?;
 
         // Complete the current block with a return
-        let block = state.current_block.take().expect("No current block");
+        let block = state.current_block.take().expect("No current block available for function return");
         let (block_inst, next_val) = block.ret(Some(result), self.dummy_source());
         state.complete_current_block(block_inst, next_val);
 
@@ -1024,8 +1024,6 @@ mod tests {
         // Build the module and check the output
         let module = generator.build();
         let ir_text = module.to_string();
-
-        println!("Generated IR for match:\n{}", ir_text);
 
         // Verify the function was generated
         assert_eq!(module.functions.len(), 1);

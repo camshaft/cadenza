@@ -190,7 +190,7 @@ pub fn ir_match_with_state(
     let merge_block_id = state.alloc_block_id();
 
     // Complete the entry block with a branch instruction
-    let current = state.current_block.take().expect("No current block");
+    let current = state.current_block.take().expect("No entry block available for branch instruction");
     let (entry_block, next_val) = current.branch(cond, then_block_id, else_block_id, source);
     state.complete_current_block(entry_block, next_val);
 
@@ -198,7 +198,7 @@ pub fn ir_match_with_state(
     let then_block = state.create_block_with_id(then_block_id);
     state.current_block = Some(then_block);
     let then_value = gen_expr(&then_expr, state, ctx)?;
-    let then_block = state.current_block.take().expect("No current block after then");
+    let then_block = state.current_block.take().expect("Current block missing after generating then branch");
     let (then_block_complete, then_next_val) = then_block.jump(merge_block_id, source);
     state.complete_current_block(then_block_complete, then_next_val);
 
@@ -206,7 +206,7 @@ pub fn ir_match_with_state(
     let else_block = state.create_block_with_id(else_block_id);
     state.current_block = Some(else_block);
     let else_value = gen_expr(&else_expr, state, ctx)?;
-    let else_block = state.current_block.take().expect("No current block after else");
+    let else_block = state.current_block.take().expect("Current block missing after generating else branch");
     let (else_block_complete, else_next_val) = else_block.jump(merge_block_id, source);
     state.complete_current_block(else_block_complete, else_next_val);
 
