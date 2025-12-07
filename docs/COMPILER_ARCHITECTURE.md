@@ -121,6 +121,16 @@ The compiler operates in distinct phases, with each phase building on the previo
 
 ### Key Architectural Decisions
 
+#### Why This Phase Ordering?
+
+**See `/docs/ARCHITECTURE_REVIEW.md` for detailed analysis and comparison with other languages.**
+
+The phase ordering `Parse → Evaluate (Macros) → Type Check → IR → Optimize → Codegen` is the correct approach based on:
+
+1. **Research across multiple languages** (Rust, Julia, Zig, Lisp, etc.) shows this is the universal pattern
+2. **All use cases are supported** by this architecture (verified against use case documents)
+3. **No design corners** - the architecture allows future evolution without backing us into constraints
+
 #### Evaluation Before Type Checking
 
 The evaluator runs **before** type checking because:
@@ -129,7 +139,27 @@ The evaluator runs **before** type checking because:
 2. **Compile-time computation**: Some types may depend on compile-time computations (e.g., array sizes, unit conversions).
 3. **Module building**: The evaluator accumulates exports into the Compiler state, which the type checker validates.
 
+**Why not do macros after IR?** 
+- Macros operate on AST (high-level code structures like functions, data structures)
+- IR is too low-level (SSA form, basic blocks, phi nodes)
+- No language does IR → Macros (all do Macros → IR)
+- Would require reverse-engineering high-level constructs from low-level IR
+
 **Note on error handling**: If evaluation fails or produces errors, those diagnostics are recorded in the Compiler state but don't prevent type checking. The type checker operates on both successfully evaluated code and unevaluated branches, ensuring we get comprehensive type errors even when evaluation issues exist. This provides better overall error reporting than stopping at the first evaluation failure.
+
+#### Type Checking Before IR
+
+Type checking happens **before** IR generation (not after) because:
+
+1. **Better error messages**: Can reference source-level constructs rather than IR
+2. **Type-guided IR generation**: Type information helps generate better IR
+3. **Follows established patterns**: Rust, Julia, and others check types before generating IR
+4. **Enables type-directed optimizations**: Monomorphization and specialization work on typed AST
+
+**Why not check types on IR?**
+- Harder to provide good error messages (IR is far from source)
+- Lose semantic information that aids type checking
+- More complex to implement correctly
 
 #### Handling Unevaluated Branches
 
@@ -164,6 +194,18 @@ let process =
 ```
 
 Both branches are type-checked even if only one is evaluated.
+
+#### IR Generation Timing
+
+**Implementation detail**: In the current implementation, the IR generator optionally collects information during evaluation (when `Compiler::with_ir()` is used), but the complete IR module is only finalized and retrieved **after** evaluation completes via `Compiler::build_ir_module()`.
+
+This design:
+- ✅ Keeps IR generation optional (REPL/LSP don't need it)
+- ✅ Allows incremental IR building during evaluation
+- ✅ Finalizes IR only after evaluation is complete
+- ✅ Maintains clear phase separation
+
+The key principle: **Macros must fully expand before any IR is finalized**. The current implementation respects this.
 
 #### AST Representation
 
