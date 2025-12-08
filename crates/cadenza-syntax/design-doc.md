@@ -161,6 +161,7 @@ match success
 
 Parses as:
 ```
+# Simplified - showing one variant for brevity
 enum Result { Ok = { value = Integer } }
 # → Apply(Ident(enum), [
 #     Ident(Result),
@@ -181,6 +182,11 @@ Result.Ok { value = 42 }
 #       Apply(Ident(=), [Ident(value), Lit(42)])
 #     ])]
 #   )
+
+match success true => ... false => ...
+# → Apply(Apply(Apply(Ident(match), [Ident(success)]),
+#     [Apply(Ident(=>), [Ident(true), ...])]),
+#     [Apply(Ident(=>), [Ident(false), ...])])
 ```
 
 ### Parser Strategy
