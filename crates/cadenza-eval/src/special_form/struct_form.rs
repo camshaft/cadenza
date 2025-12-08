@@ -54,6 +54,10 @@ pub fn get() -> &'static BuiltinSpecialForm {
     static STRUCT_FORM: OnceLock<BuiltinSpecialForm> = OnceLock::new();
     STRUCT_FORM.get_or_init(|| BuiltinSpecialForm {
         name: "struct",
+        // Type signature: struct Name { fields }
+        // First arg is Symbol (representing an identifier for the struct name)
+        // Second arg is Record (representing the field definitions)
+        // Returns Type (the struct type definition)
         signature: Type::function(vec![Type::Symbol, Type::Record(vec![])], Type::Type),
         eval_fn: eval_struct,
         ir_fn: ir_struct,

@@ -494,13 +494,22 @@ fn create_numeric_value(
 
 /// Helper function to check if two types are compatible.
 ///
-/// For now, this is a simple check that accepts Unknown types as compatible with anything.
-/// A more sophisticated type checker would perform proper unification.
+/// This performs basic type compatibility checking. Unknown types are treated as
+/// compatible with anything since full type information may not be available at runtime.
+/// Struct types use nominal equality - they must have the same name to be compatible.
+///
+/// TODO: Replace with proper type unification when the type system is more complete.
 fn types_compatible(expected: &Type, actual: &Type) -> bool {
-    // Unknown types are compatible with anything
+    // For struct types, enforce nominal typing - names must match
+    if let (Type::Struct { name: n1, .. }, Type::Struct { name: n2, .. }) = (expected, actual) {
+        return n1 == n2;
+    }
+    
+    // Unknown types are compatible with anything (temporary until type system is complete)
     if matches!(expected, Type::Unknown) || matches!(actual, Type::Unknown) {
         return true;
     }
+    
     // Otherwise, types must be equal
     expected == actual
 }

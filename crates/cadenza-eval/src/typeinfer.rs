@@ -396,9 +396,11 @@ impl InferType {
                     .collect(),
             ),
             Type::Struct { name: _, fields } => {
-                // For now, treat structs as nominal records
-                // We could add a separate InferType::Struct variant later for better type checking
-                // but for initial implementation, structs are similar to records with a name tag
+                // TODO: Add InferType::Struct variant for proper nominal type checking
+                // Currently treating structs as records loses nominal type information,
+                // which means two structs with the same fields could be incorrectly
+                // considered compatible during type inference.
+                // For now, struct type checking happens at evaluation time in eval.rs.
                 InferType::Record(
                     fields
                         .iter()
