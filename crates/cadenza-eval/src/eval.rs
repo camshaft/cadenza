@@ -334,6 +334,66 @@ fn apply_macro(macro_value: Value, apply: &Apply, ctx: &mut EvalContext<'_>) -> 
     }
 }
 
+/// Converts a runtime Value to a synthetic literal Expr for passing to special forms.
+///
+/// This is used when special forms are called as first-class values (e.g., `let add_op = +`).
+/// The arguments have already been evaluated, so we need to wrap them back as literal expressions.
+fn value_to_literal_expr(value: Value) -> Result<Expr> {
+    use cadenza_syntax::token::Kind;
+    use cadenza_tree::GreenNodeBuilder;
+    
+    match value {
+        Value::Integer(n) => {
+            let mut builder = GreenNodeBuilder::new();
+            builder.start_node(Kind::Literal.into());
+            builder.start_node(Kind::LiteralInteger.into());
+            builder.token(Kind::Integer.into(), &n.to_string());
+            builder.finish_node();
+            builder.finish_node();
+            let green = builder.finish();
+            let syntax = cadenza_syntax::SyntaxNode::new_root(green);
+            Ok(Expr::Literal(Literal::cast(syntax).expect("Failed to cast synthetic literal")))
+        }
+        Value::Float(f) => {
+            let mut builder = GreenNodeBuilder::new();
+            builder.start_node(Kind::Literal.into());
+            builder.start_node(Kind::LiteralFloat.into());
+            builder.token(Kind::Float.into(), &f.to_string());
+            builder.finish_node();
+            builder.finish_node();
+            let green = builder.finish();
+            let syntax = cadenza_syntax::SyntaxNode::new_root(green);
+            Ok(Expr::Literal(Literal::cast(syntax).expect("Failed to cast synthetic literal")))
+        }
+        Value::Bool(b) => {
+            let mut builder = GreenNodeBuilder::new();
+            builder.start_node(Kind::Ident.into());
+            builder.token(Kind::Ident.into(), if b { "true" } else { "false" });
+            builder.finish_node();
+            let green = builder.finish();
+            let syntax = cadenza_syntax::SyntaxNode::new_root(green);
+            Ok(Expr::Ident(Ident::cast(syntax).expect("Failed to cast synthetic ident")))
+        }
+        Value::String(s) => {
+            let mut builder = GreenNodeBuilder::new();
+            builder.start_node(Kind::Literal.into());
+            builder.start_node(Kind::LiteralString.into());
+            // Escape the string content
+            let escaped = format!("\"{}\"", s.as_str().replace('"', "\\\""));
+            builder.token(Kind::String.into(), &escaped);
+            builder.finish_node();
+            builder.finish_node();
+            let green = builder.finish();
+            let syntax = cadenza_syntax::SyntaxNode::new_root(green);
+            Ok(Expr::Literal(Literal::cast(syntax).expect("Failed to cast synthetic literal")))
+        }
+        _ => Err(Diagnostic::syntax(format!(
+            "Cannot convert {} to expression for special form call",
+            value.type_of()
+        ))),
+    }
+}
+
 /// Applies a callable value to arguments.
 pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -> Result<Value> {
     match callee {
@@ -396,6 +456,17 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
             let result = user_fn.body.eval(&mut call_ctx)?;
 
             Ok(result)
+        }
+        Value::SpecialForm(special_form) => {
+            // Special forms when used as first-class values need to have their arguments
+            // converted to literal expressions. This is mainly for operators like +, -, etc.
+            // that can be passed around as values.
+            let arg_exprs: Vec<Expr> = args
+                .into_iter()
+                .map(value_to_literal_expr)
+                .collect::<Result<Vec<_>>>()?;
+            
+            special_form.eval(&arg_exprs, ctx)
         }
         _ => Err(Diagnostic::not_callable(callee.type_of())),
     }

@@ -400,8 +400,7 @@ impl IrGenerator {
     /// Try to generate IR for a special form by name.
     ///
     /// Returns Some(result) if the name matches a known special form, None otherwise.
-    /// This dynamically looks up the special form from the environment, but also
-    /// checks for known operators that have special forms for IR generation.
+    /// This dynamically looks up the special form from the environment.
     fn try_gen_special_form(
         &mut self,
         name: &str,
@@ -412,51 +411,25 @@ impl IrGenerator {
     ) -> Option<Result<ValueId>> {
         let args = apply.all_arguments();
 
-        // First check if this is a known operator with a special form
-        // Operators are registered as BuiltinFn for evaluation but we use
-        // special forms for IR generation to get correct types
-        let operator_special_form: Option<&'static _> = match name {
-            "+" => Some(crate::special_form::add_form::get()),
-            "-" => Some(crate::special_form::sub_form::get()),
-            "*" => Some(crate::special_form::mul_form::get()),
-            "/" => Some(crate::special_form::div_form::get()),
-            "==" => Some(crate::special_form::eq_form::get()),
-            "!=" => Some(crate::special_form::ne_form::get()),
-            "<" => Some(crate::special_form::lt_form::get()),
-            "<=" => Some(crate::special_form::le_form::get()),
-            ">" => Some(crate::special_form::gt_form::get()),
-            ">=" => Some(crate::special_form::ge_form::get()),
-            _ => None,
-        };
-
-        let special_form: Option<&'static _> = if let Some(sf) = operator_special_form {
-            Some(sf)
+        // Look up the name in the environment
+        let name_interned: InternedString = name.into();
+        let value = ctx.env().get(name_interned)?;
+        
+        // Check if it's a special form in the environment
+        let special_form = if let Value::SpecialForm(sf) = value {
+            Some(*sf)  // Dereference to get &'static BuiltinSpecialForm
         } else {
-            // Not an operator, try environment lookup
-            let name_interned: InternedString = name.into();
-            let value = ctx.env().get(name_interned)?;
-            
-            // Check if it's a special form in the environment
-            if let Value::SpecialForm(sf) = value {
-                Some(*sf)  // Dereference to get &'static BuiltinSpecialForm
-            } else {
-                None
-            }
-        };
-
-        if let Some(special_form) = special_form {
-            // Create a mutable closure for generating sub-expressions
-            let mut gen_expr_adapter =
-                |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
-                    self.gen_expr(expr, block, ctx)
-                };
-
-            // Call the special form's IR generation function
-            Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
-        } else {
-            // Not a special form
             None
-        }
+        }?;
+
+        // Create a mutable closure for generating sub-expressions
+        let mut gen_expr_adapter =
+            |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+                self.gen_expr(expr, block, ctx)
+            };
+
+        // Call the special form's IR generation function
+        Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
     }
 
     /// Try to generate IR for a special form by name (state-based version).
@@ -474,72 +447,46 @@ impl IrGenerator {
     ) -> Option<Result<ValueId>> {
         let args = apply.all_arguments();
 
-        // First check if this is a known operator with a special form
-        // Operators are registered as BuiltinFn for evaluation but we use
-        // special forms for IR generation to get correct types
-        let operator_special_form: Option<&'static _> = match name {
-            "+" => Some(crate::special_form::add_form::get()),
-            "-" => Some(crate::special_form::sub_form::get()),
-            "*" => Some(crate::special_form::mul_form::get()),
-            "/" => Some(crate::special_form::div_form::get()),
-            "==" => Some(crate::special_form::eq_form::get()),
-            "!=" => Some(crate::special_form::ne_form::get()),
-            "<" => Some(crate::special_form::lt_form::get()),
-            "<=" => Some(crate::special_form::le_form::get()),
-            ">" => Some(crate::special_form::gt_form::get()),
-            ">=" => Some(crate::special_form::ge_form::get()),
-            _ => None,
-        };
-
-        let special_form: Option<&'static _> = if let Some(sf) = operator_special_form {
-            Some(sf)
+        // Look up the name in the environment
+        let name_interned: InternedString = name.into();
+        let value = ctx.env().get(name_interned)?;
+        
+        // Check if it's a special form in the environment
+        let special_form = if let Value::SpecialForm(sf) = value {
+            Some(*sf)  // Dereference to get &'static BuiltinSpecialForm
         } else {
-            // Not an operator, try environment lookup
-            let name_interned: InternedString = name.into();
-            let value = ctx.env().get(name_interned)?;
-            
-            // Check if it's a special form in the environment
-            if let Value::SpecialForm(sf) = value {
-                Some(*sf)  // Dereference to get &'static BuiltinSpecialForm
-            } else {
-                None
-            }
-        };
+            None
+        }?;
 
-        if let Some(special_form) = special_form {
-            // TODO: The hardcoded check for "match" is a temporary solution.
-            // A better approach would be to extend the SpecialForm trait with a method
-            // indicating whether the form needs multi-block generation, or to unify
-            // the single-block and multi-block APIs so all special forms can use IrGenState.
-            // For now, "match" is the only special form that needs multi-block support.
-            if name == "match" {
-                // Create a mutable closure for generating sub-expressions with state
-                let mut gen_expr_adapter =
-                    |expr: &Expr, state: &mut IrGenState, ctx: &mut IrGenContext| {
-                        self.gen_expr_with_state(expr, state, ctx)
-                    };
-
-                return Some(special_form::match_form::ir_match_with_state(
-                    &args,
-                    state,
-                    ctx,
-                    source,
-                    &mut gen_expr_adapter,
-                ));
-            }
-
-            // For other special forms (including operators), use the single-block API
-            let block = state.current_block();
+        // TODO: The hardcoded check for "match" is a temporary solution.
+        // A better approach would be to extend the SpecialForm trait with a method
+        // indicating whether the form needs multi-block generation, or to unify
+        // the single-block and multi-block APIs so all special forms can use IrGenState.
+        // For now, "match" is the only special form that needs multi-block support.
+        if name == "match" {
+            // Create a mutable closure for generating sub-expressions with state
             let mut gen_expr_adapter =
-                |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
-                    self.gen_expr(expr, block, ctx)
+                |expr: &Expr, state: &mut IrGenState, ctx: &mut IrGenContext| {
+                    self.gen_expr_with_state(expr, state, ctx)
                 };
 
-            Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
-        } else {
-            // Not a special form
-            None
+            return Some(special_form::match_form::ir_match_with_state(
+                &args,
+                state,
+                ctx,
+                source,
+                &mut gen_expr_adapter,
+            ));
         }
+
+        // For other special forms (including operators), use the single-block API
+        let block = state.current_block();
+        let mut gen_expr_adapter =
+            |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+                self.gen_expr(expr, block, ctx)
+            };
+
+        Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
     }
 
     /// Generate IR for an application using IrGenState (state-based version).
