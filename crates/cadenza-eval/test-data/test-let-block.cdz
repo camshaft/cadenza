@@ -1,5 +1,0 @@
-# Test let with block RHS
-let x =
-    foo
-    bar
-x

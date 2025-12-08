@@ -1266,9 +1266,18 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 
 **Basic boolean pattern matching is now working!** The parser naturally supports match expressions through function application.
 
-Working syntax:
+Working syntaxes:
+
+Single-line:
 ```cadenza
 match x > 0 (true -> "positive") (false -> "negative")
+```
+
+Indented (preferred):
+```cadenza
+match x > 0
+    (true -> "positive")
+    (false -> "negative")
 ```
 
 The parser represents this as left-associative function application:
@@ -1276,30 +1285,51 @@ The parser represents this as left-associative function application:
 [[[match, [>, x, 0]], [->, true, "positive"]], [->, false, "negative"]]
 ```
 
+**Important:** Each pattern arm MUST be wrapped in parentheses. This is required because
+the `->` operator has lower binding power (Assignment) than function application (Juxtaposition).
+Without parentheses, `match cond true -> 42` would incorrectly parse as `(match cond true) -> 42`.
+
 Current capabilities:
 - Boolean patterns (`true`/`false`)
-- Arrow syntax for pattern arms: `pattern -> result`
-- Each arm must be parenthesized: `(pattern -> result)`
-- Both `match cond (...)` and `(match cond (...))` work (outer parens optional)
+- Arrow syntax for pattern arms: `(pattern -> result)`
+- Single-line and indented syntax
+- Nested match expressions
 - Full evaluation, IR generation, and WebAssembly compilation support
 
 ### What Still Needs To Be Done
 
 For comprehensive pattern matching with more pattern types:
 
-1. Support `|` as a pattern arm separator or use indentation-based syntax
-2. Parse match arms with more pattern types (currently only boolean)
-3. Represent match as: `Apply(match, [scrutinee, Apply(__arm__, [pattern, body]), ...])`
-4. Support pattern syntax: literals, identifiers (wildcards/bindings), constructors
-5. Handle guard clauses: `pattern if condition -> body`
-6. Handle indented match blocks
+1. Support more pattern types beyond booleans:
+   - Literal patterns: numbers, strings
+   - Wildcard pattern: `_`
+   - Constructor patterns for algebraic data types
+   - Tuple/record destructuring patterns
+
+2. Consider syntax improvements:
+   - Could adjust operator precedence to allow `pattern -> result` without parentheses
+   - Or introduce special syntax like `match x: pattern -> result` to signal match context
+   - Or use a different separator like `|` between pattern and body
+
+3. Advanced features:
+   - Or-patterns: `pattern1 | pattern2 -> result`
+   - Guard clauses: `pattern if condition -> result`
+   - Nested patterns: `Some (Just x) -> ...`
 
 ### Test Cases
 
 #### Working Now: match-boolean.cdz
 
+Single-line:
 ```cadenza
 match x > 0 (true -> "positive") (false -> "negative")
+```
+
+Indented:
+```cadenza
+match x > 0
+    (true -> "positive")
+    (false -> "negative")
 ```
 
 **Actual AST:**

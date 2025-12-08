@@ -1,5 +1,23 @@
-# Match with indented arms (each arm has parens)
-let result = match true
+# Test match with indented syntax (each arm has parens)
+
+# Basic match with indented arms
+let result1 = match true
     (true -> 42)
     (false -> 0)
-result
+assert result1 == 42
+
+# Match with expression condition
+let x = 10
+let result2 = match x > 5
+    (true -> "big")
+    (false -> "small")
+assert result2 == "big"
+
+# Nested match with indentation
+let y = 3
+let result3 = match y > 0
+    (true -> match y > 10
+        (true -> "huge")
+        (false -> "positive"))
+    (false -> "non-positive")
+assert result3 == "positive"

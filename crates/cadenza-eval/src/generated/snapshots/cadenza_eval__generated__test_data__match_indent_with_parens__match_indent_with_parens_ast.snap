@@ -1,8 +1,14 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "# Match with indented arms (each arm has parens)\nlet result = match true\n    (true -> 42)\n    (false -> 0)\nresult\n"
+expression: "# Test match with indented syntax (each arm has parens)\n\n# Basic match with indented arms\nlet result1 = match true\n    (true -> 42)\n    (false -> 0)\nassert result1 == 42\n\n# Match with expression condition\nlet x = 10\nlet result2 = match x > 5\n    (true -> \"big\")\n    (false -> \"small\")\nassert result2 == \"big\"\n\n# Nested match with indentation\nlet y = 3\nlet result3 = match y > 0\n    (true -> match y > 10\n        (true -> \"huge\")\n        (false -> \"positive\"))\n    (false -> \"non-positive\")\nassert result3 == \"positive\"\n"
 ---
 [
-    [=, [let, result], [[[match, true], [->, true, 42]], [->, false, 0]]],
-    result,
+    [=, [let, result1], [[[match, true], [->, true, 42]], [->, false, 0]]],
+    [assert, [==, result1, 42]],
+    [=, [let, x], 10],
+    [=, [let, result2], [[[match, [>, x, 5]], [->, true, "big"]], [->, false, "small"]]],
+    [assert, [==, result2, "big"]],
+    [=, [let, y], 3],
+    [=, [let, result3], [[[match, [>, y, 0]], [->, true, [[[match, [>, y, 10]], [->, true, "huge"]], [->, false, "positive"]]]], [->, false, "non-positive"]]],
+    [assert, [==, result3, "positive"]],
 ]

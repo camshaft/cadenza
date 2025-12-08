@@ -197,22 +197,32 @@ The parser implements most core syntax features:
 
 ### 8. Match Expressions ✅ COMPLETE (Basic Boolean Matching)
 
-**Status:** Basic pattern matching on boolean values is working. The parser naturally supports match expressions through function application.
+**Status:** Basic pattern matching on boolean values is working. Both single-line and indented syntaxes are supported.
 
 **Working:**
-- Simple boolean patterns: `match x > 0 (true -> "positive") (false -> "negative")`
-- Nested match: `match a (true -> match b (true -> 1) (false -> 2)) (false -> 3)`
-- Both syntaxes work: with or without outer parentheses
-  - `match cond (true -> a) (false -> b)` ✅
-  - `(match cond (true -> a) (false -> b))` ✅
-- Pattern arms use arrow syntax: `pattern -> result`
-- Each arm is a parenthesized expression: `(pattern -> result)`
+- Single-line: `match x > 0 (true -> "positive") (false -> "negative")`
+- Indented: 
+  ```cadenza
+  match x > 0
+      (true -> "positive")
+      (false -> "negative")
+  ```
+- Nested match expressions with proper indentation
+- Pattern arms use arrow syntax: `(pattern -> result)` - **parentheses required**
+- Full support in evaluation, IR, and WebAssembly compilation
 
 **Implementation:**
 - Parser represents as left-associative function application: `[[[match, scrutinee], arm1], arm2]`
+- Each arm is a parenthesized expression containing an arrow operator
 - Special form evaluation in `cadenza-eval` handles boolean patterns
+- Special form also handles `__block__` nodes for indented syntax
 - IR generation creates branching control flow with phi nodes
-- Full support in evaluation, IR, and WebAssembly compilation
+
+**Important Syntax Note:**
+Each pattern arm MUST be wrapped in parentheses. This is required because `->` has lower 
+binding power than function application. Without parentheses:
+- `match cond true -> 42` would parse as `(match cond true) -> 42` ❌
+- `match cond (true -> 42)` correctly passes the arm as an argument ✅
 
 **Current Limitations:**
 - Only supports boolean patterns (`true`/`false`)
@@ -224,26 +234,27 @@ The parser implements most core syntax features:
 
 **Future Work:**
 For comprehensive pattern matching, would need:
-1. Parse match arms with more pattern types
+1. More pattern types (literals, constructors, wildcards)
 2. Support `|` as pattern separator for or-patterns
-3. Support literal patterns (numbers, strings)
-4. Support constructor patterns for algebraic data types
-5. Handle guard clauses: `pattern if condition -> body`
-6. Wildcard pattern `_` for catch-all
+3. Guard clauses: `pattern if condition -> body`
+4. Possibly adjust operator precedence or parser to allow `match cond\n    pattern -> result` 
+   without parentheses around each arm
 
 **Syntax Examples:**
 ```cadenza
-# Current (boolean patterns only)
-match x > 0 (true -> "positive") (false -> "negative")
+# Current (boolean patterns with parentheses)
+match x > 0
+    (true -> "positive")
+    (false -> "negative")
 
-# Future (with more patterns)
+# Future (with more patterns, maybe without parens?)
 match x
     0 -> "zero"
     1 -> "one"
     _ -> "other"
 ```
 
-**Test Files:** `if-simple.cdz`, `fn-match-phi.cdz`, `match-no-parens.cdz` in cadenza-eval/test-data/
+**Test Files:** `if-simple.cdz`, `fn-match-phi.cdz`, `match-no-parens.cdz`, `match-indent-with-parens.cdz` in cadenza-eval/test-data/
 
 **References:** `PARSER_ISSUES.md` Issue 8
 

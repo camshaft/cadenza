@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 /// - Takes at least 2 arguments: match expression and pattern arms
 /// - Evaluates the match expression (must be boolean)
 /// - Checks each pattern arm in order
-/// - Pattern arms have syntax: `pattern -> result`
+/// - Pattern arms have syntax: `(pattern -> result)` - note the parentheses!
 /// - Patterns must be `true` or `false`
 /// - Returns the result of the first matching arm
 ///
@@ -28,19 +28,21 @@ use std::sync::OnceLock;
 ///
 /// # Examples
 ///
-/// Indented syntax (preferred):
+/// Indented syntax (preferred - cleaner for multi-line):
 /// ```cadenza
 /// match x > 0
-///     true -> "positive"
-///     false -> "negative or zero"
+///     (true -> "positive")
+///     (false -> "negative or zero")
 /// ```
 ///
-/// Inline syntax:
+/// Single-line syntax (more compact):
 /// ```cadenza
 /// match x > 0 (true -> "positive") (false -> "negative")
 /// ```
 ///
-/// Both syntaxes work. The indented syntax is cleaner for multi-line bodies.
+/// Note: Each pattern arm MUST be wrapped in parentheses due to operator
+/// precedence. The `->` operator has lower precedence than function application,
+/// so without parentheses the parser would incorrectly group the expressions.
 pub fn get() -> &'static BuiltinSpecialForm {
     static MATCH_FORM: OnceLock<BuiltinSpecialForm> = OnceLock::new();
     MATCH_FORM.get_or_init(|| BuiltinSpecialForm {
