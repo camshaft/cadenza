@@ -27,13 +27,20 @@ use std::sync::OnceLock;
 /// - Not yet implemented (returns error)
 ///
 /// # Examples
+///
+/// Indented syntax (preferred):
 /// ```cadenza
-/// match x > 0 (true -> "positive") (false -> "negative or zero")
+/// match x > 0
+///     true -> "positive"
+///     false -> "negative or zero"
 /// ```
 ///
-/// Note: Outer parentheses are optional. Both syntaxes work:
-/// - `match x > 0 (true -> "positive") (false -> "negative")`
-/// - `(match x > 0 (true -> "positive") (false -> "negative"))`
+/// Inline syntax:
+/// ```cadenza
+/// match x > 0 (true -> "positive") (false -> "negative")
+/// ```
+///
+/// Both syntaxes work. The indented syntax is cleaner for multi-line bodies.
 pub fn get() -> &'static BuiltinSpecialForm {
     static MATCH_FORM: OnceLock<BuiltinSpecialForm> = OnceLock::new();
     MATCH_FORM.get_or_init(|| BuiltinSpecialForm {
@@ -65,9 +72,26 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         }
     };
 
-    // Remaining arguments are pattern arms
-    // Each arm should be an arrow expression: pattern -> result
-    for arm in &args[1..] {
+    // Collect all pattern arms - they can be passed as individual args or in a block
+    let mut arms = Vec::new();
+    
+    for arg in &args[1..] {
+        // Check if this is a __block__ containing multiple arms
+        if let Expr::Apply(apply) = arg {
+            if let Some(Expr::Synthetic(syn)) = apply.callee() {
+                if syn.identifier() == "__block__" {
+                    // It's a block - collect all arguments as arms
+                    arms.extend(apply.all_arguments());
+                    continue;
+                }
+            }
+        }
+        // Otherwise, it's a single arm
+        arms.push(arg.clone());
+    }
+
+    // Process each arm
+    for arm in &arms {
         // Each arm should be an arrow expression: pattern -> result
         if let Expr::Apply(apply) = arm {
             // Check if the callee is the -> operator
@@ -146,12 +170,30 @@ pub fn ir_match_with_state(
     // First argument is the expression to match on (must be boolean)
     let match_expr = &args[0];
 
+    // Collect all pattern arms - they can be passed as individual args or in a block
+    let mut arms = Vec::new();
+    
+    for arg in &args[1..] {
+        // Check if this is a __block__ containing multiple arms
+        if let Expr::Apply(apply) = arg {
+            if let Some(Expr::Synthetic(syn)) = apply.callee() {
+                if syn.identifier() == "__block__" {
+                    // It's a block - collect all arguments as arms
+                    arms.extend(apply.all_arguments());
+                    continue;
+                }
+            }
+        }
+        // Otherwise, it's a single arm
+        arms.push(arg.clone());
+    }
+
     // Parse the arms to find the then and else branches
     // Each arm should be: pattern -> result
     let mut then_expr = None;
     let mut else_expr = None;
 
-    for arm in &args[1..] {
+    for arm in &arms {
         if let Expr::Apply(apply) = arm
             && let Some(Expr::Op(op)) = apply.callee()
             && op.syntax().text() == "->"

@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test match with indented arms (desired syntax)\nlet result = match true\n    true -> 42\n    false -> 0\nresult\n"
+---
+[
+    [=, [let, result], [->, [[->, [[match, true], true], 42], false], 0]],
+    result,
+]

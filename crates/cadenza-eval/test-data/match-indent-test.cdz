@@ -1,0 +1,5 @@
+# Test match with indented arms (desired syntax)
+let result = match true
+    true -> 42
+    false -> 0
+result

@@ -1,0 +1,25 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test function application with indent\nfoo bar\n    baz\n    qux\n"
+---
+EvalResult {
+    values: [
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: UndefinedVariable(
+                "foo",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 40,
+                    end: 43,
+                },
+            ),
+            stack_trace: [],
+        },
+    ],
+}

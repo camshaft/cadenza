@@ -1,0 +1,5 @@
+# Match with indented arms (each arm has parens)
+let result = match true
+    (true -> 42)
+    (false -> 0)
+result

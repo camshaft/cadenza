@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Match with indented arms (each arm has parens)\nlet result = match true\n    (true -> 42)\n    (false -> 0)\nresult\n"
+---
+EvalResult {
+    values: [
+        42,
+        42,
+    ],
+    diagnostics: [],
+}

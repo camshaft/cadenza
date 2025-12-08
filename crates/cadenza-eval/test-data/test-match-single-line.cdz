@@ -1,0 +1,2 @@
+# Match on single line without outer parens
+match true (true -> 42) (false -> 0)

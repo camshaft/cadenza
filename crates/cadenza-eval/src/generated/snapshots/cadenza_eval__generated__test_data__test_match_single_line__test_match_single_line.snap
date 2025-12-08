@@ -1,0 +1,10 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Match on single line without outer parens\nmatch true (true -> 42) (false -> 0)\n"
+---
+EvalResult {
+    values: [
+        42,
+    ],
+    diagnostics: [],
+}

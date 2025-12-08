@@ -1,0 +1,4 @@
+# Test function application with indent
+foo bar
+    baz
+    qux

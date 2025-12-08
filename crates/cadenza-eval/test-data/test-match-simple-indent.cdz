@@ -1,0 +1,4 @@
+# Simplest test - just match with newline
+match true
+    true -> 42
+    false -> 0

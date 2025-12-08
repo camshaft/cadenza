@@ -1264,12 +1264,31 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 
 ### Current State
 
-There is no special handling for `match` expressions. Since Cadenza has no keywords, `match` would be parsed as an identifier and its arguments as function application, but the pattern-matching arms syntax is not supported.
+**Basic boolean pattern matching is now working!** The parser naturally supports match expressions through function application.
 
-### What Needs To Be Done
+Working syntax:
+```cadenza
+match x > 0 (true -> "positive") (false -> "negative")
+```
+
+The parser represents this as left-associative function application:
+```
+[[[match, [>, x, 0]], [->, true, "positive"]], [->, false, "negative"]]
+```
+
+Current capabilities:
+- Boolean patterns (`true`/`false`)
+- Arrow syntax for pattern arms: `pattern -> result`
+- Each arm must be parenthesized: `(pattern -> result)`
+- Both `match cond (...)` and `(match cond (...))` work (outer parens optional)
+- Full evaluation, IR generation, and WebAssembly compilation support
+
+### What Still Needs To Be Done
+
+For comprehensive pattern matching with more pattern types:
 
 1. Support `|` as a pattern arm separator or use indentation-based syntax
-2. Parse match arms with patterns and bodies
+2. Parse match arms with more pattern types (currently only boolean)
 3. Represent match as: `Apply(match, [scrutinee, Apply(__arm__, [pattern, body]), ...])`
 4. Support pattern syntax: literals, identifiers (wildcards/bindings), constructors
 5. Handle guard clauses: `pattern if condition -> body`
@@ -1277,7 +1296,19 @@ There is no special handling for `match` expressions. Since Cadenza has no keywo
 
 ### Test Cases
 
-#### Test: match-simple.cdz
+#### Working Now: match-boolean.cdz
+
+```cadenza
+match x > 0 (true -> "positive") (false -> "negative")
+```
+
+**Actual AST:**
+
+```
+[[[match, [>, x, 0]], [->, true, "positive"]], [->, false, "negative"]]
+```
+
+#### Future: match-simple.cdz
 
 ```cadenza
 match x

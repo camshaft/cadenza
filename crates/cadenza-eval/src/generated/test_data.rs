@@ -46,6 +46,39 @@ mod cmp_gt {
         ss!("cmp_gt_wat", t::wat("2 > 1\n"));
     }
 }
+mod test_func_indent {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "test_func_indent",
+            t::eval_all("# Test function application with indent\nfoo bar\n    baz\n    qux\n"),
+            "# Test function application with indent\nfoo bar\n    baz\n    qux\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "test_func_indent_ast",
+            t::ast("# Test function application with indent\nfoo bar\n    baz\n    qux\n"),
+            "# Test function application with indent\nfoo bar\n    baz\n    qux\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "test_func_indent_ir",
+            t::ir("# Test function application with indent\nfoo bar\n    baz\n    qux\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "test_func_indent_wat",
+            t::wat("# Test function application with indent\nfoo bar\n    baz\n    qux\n")
+        );
+    }
+}
 mod fn_basic {
     use super::*;
     #[test]
@@ -427,6 +460,39 @@ mod example_03_arithmetic {
         );
     }
 }
+mod test_block_arrows {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "test_block_arrows",
+            t::eval_all("# Test block with arrows\nfoo\n    a -> b\n    c -> d\n"),
+            "# Test block with arrows\nfoo\n    a -> b\n    c -> d\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "test_block_arrows_ast",
+            t::ast("# Test block with arrows\nfoo\n    a -> b\n    c -> d\n"),
+            "# Test block with arrows\nfoo\n    a -> b\n    c -> d\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "test_block_arrows_ir",
+            t::ir("# Test block with arrows\nfoo\n    a -> b\n    c -> d\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "test_block_arrows_wat",
+            t::wat("# Test block with arrows\nfoo\n    a -> b\n    c -> d\n")
+        );
+    }
+}
 mod measure_unit_arithmetic {
     use super::*;
     #[test]
@@ -646,6 +712,47 @@ mod error_let_invalid {
         ss!("error_let_invalid_wat", t::wat("let 42 = 1\n"));
     }
 }
+mod match_indent_test {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "match_indent_test",
+            t::eval_all(
+                "# Test match with indented arms (desired syntax)\nlet result = match true\n    true -> 42\n    false -> 0\nresult\n"
+            ),
+            "# Test match with indented arms (desired syntax)\nlet result = match true\n    true -> 42\n    false -> 0\nresult\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "match_indent_test_ast",
+            t::ast(
+                "# Test match with indented arms (desired syntax)\nlet result = match true\n    true -> 42\n    false -> 0\nresult\n"
+            ),
+            "# Test match with indented arms (desired syntax)\nlet result = match true\n    true -> 42\n    false -> 0\nresult\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "match_indent_test_ir",
+            t::ir(
+                "# Test match with indented arms (desired syntax)\nlet result = match true\n    true -> 42\n    false -> 0\nresult\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "match_indent_test_wat",
+            t::wat(
+                "# Test match with indented arms (desired syntax)\nlet result = match true\n    true -> 42\n    false -> 0\nresult\n"
+            )
+        );
+    }
+}
 mod measure_quantity {
     use super::*;
     #[test]
@@ -761,6 +868,47 @@ mod type_inference_demo {
         );
     }
 }
+mod test_match_single_line {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "test_match_single_line",
+            t::eval_all(
+                "# Match on single line without outer parens\nmatch true (true -> 42) (false -> 0)\n"
+            ),
+            "# Match on single line without outer parens\nmatch true (true -> 42) (false -> 0)\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "test_match_single_line_ast",
+            t::ast(
+                "# Match on single line without outer parens\nmatch true (true -> 42) (false -> 0)\n"
+            ),
+            "# Match on single line without outer parens\nmatch true (true -> 42) (false -> 0)\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "test_match_single_line_ir",
+            t::ir(
+                "# Match on single line without outer parens\nmatch true (true -> 42) (false -> 0)\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "test_match_single_line_wat",
+            t::wat(
+                "# Match on single line without outer parens\nmatch true (true -> 42) (false -> 0)\n"
+            )
+        );
+    }
+}
 mod measure_base {
     use super::*;
     #[test]
@@ -813,6 +961,39 @@ mod typeof_integer {
     #[test]
     fn wat() {
         ss!("typeof_integer_wat", t::wat("let x = 42\ntypeof x"));
+    }
+}
+mod test_let_block {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "test_let_block",
+            t::eval_all("# Test let with block RHS\nlet x =\n    foo\n    bar\nx\n"),
+            "# Test let with block RHS\nlet x =\n    foo\n    bar\nx\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "test_let_block_ast",
+            t::ast("# Test let with block RHS\nlet x =\n    foo\n    bar\nx\n"),
+            "# Test let with block RHS\nlet x =\n    foo\n    bar\nx\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "test_let_block_ir",
+            t::ir("# Test let with block RHS\nlet x =\n    foo\n    bar\nx\n")
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "test_let_block_wat",
+            t::wat("# Test let with block RHS\nlet x =\n    foo\n    bar\nx\n")
+        );
     }
 }
 mod error_cmp_type_mismatch_lt {
@@ -1127,6 +1308,47 @@ mod typeof_function {
         ss!(
             "typeof_function_wat",
             t::wat("fn identity x = x\ntypeof identity")
+        );
+    }
+}
+mod match_indent_with_parens {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "match_indent_with_parens",
+            t::eval_all(
+                "# Match with indented arms (each arm has parens)\nlet result = match true\n    (true -> 42)\n    (false -> 0)\nresult\n"
+            ),
+            "# Match with indented arms (each arm has parens)\nlet result = match true\n    (true -> 42)\n    (false -> 0)\nresult\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "match_indent_with_parens_ast",
+            t::ast(
+                "# Match with indented arms (each arm has parens)\nlet result = match true\n    (true -> 42)\n    (false -> 0)\nresult\n"
+            ),
+            "# Match with indented arms (each arm has parens)\nlet result = match true\n    (true -> 42)\n    (false -> 0)\nresult\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "match_indent_with_parens_ir",
+            t::ir(
+                "# Match with indented arms (each arm has parens)\nlet result = match true\n    (true -> 42)\n    (false -> 0)\nresult\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "match_indent_with_parens_wat",
+            t::wat(
+                "# Match with indented arms (each arm has parens)\nlet result = match true\n    (true -> 42)\n    (false -> 0)\nresult\n"
+            )
         );
     }
 }
@@ -2804,6 +3026,47 @@ mod fn_match_phi {
             "fn_match_phi_wat",
             t::wat(
                 "# Test function with match that generates phi nodes\n\nfn abs x = match x > 0 (true -> x) (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+            )
+        );
+    }
+}
+mod test_match_simple_indent {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "test_match_simple_indent",
+            t::eval_all(
+                "# Simplest test - just match with newline\nmatch true\n    true -> 42\n    false -> 0\n"
+            ),
+            "# Simplest test - just match with newline\nmatch true\n    true -> 42\n    false -> 0\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "test_match_simple_indent_ast",
+            t::ast(
+                "# Simplest test - just match with newline\nmatch true\n    true -> 42\n    false -> 0\n"
+            ),
+            "# Simplest test - just match with newline\nmatch true\n    true -> 42\n    false -> 0\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "test_match_simple_indent_ir",
+            t::ir(
+                "# Simplest test - just match with newline\nmatch true\n    true -> 42\n    false -> 0\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "test_match_simple_indent_wat",
+            t::wat(
+                "# Simplest test - just match with newline\nmatch true\n    true -> 42\n    false -> 0\n"
             )
         );
     }
