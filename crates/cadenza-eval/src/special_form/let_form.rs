@@ -112,14 +112,12 @@ fn ir_let(
     // Generate IR for the value expression using the provided gen_expr callback
     let value_id = gen_expr(&args[1], block, ctx)?;
 
-    // TODO(type-inference): Infer the type of the value expression.
-    // Currently we use Unknown type because the special form doesn't have access to
-    // the TypeInferencer (which is inside IrGenerator). This should be addressed by:
-    // 1. Passing type information via ctx (preferred), OR
-    // 2. Adding type inferencer as a parameter to build_ir, OR
-    // 3. Having special forms integrate directly into IrGenerator methods
-    // For now, this matches the approach used before type inference was added to let bindings.
-    let inferred_ty = crate::InferType::Concrete(crate::Type::Unknown);
+    // Get the type of the generated value from the context
+    let value_type = ctx
+        .get_value_type(value_id)
+        .cloned()
+        .unwrap_or(crate::Type::Unknown);
+    let inferred_ty = crate::InferType::Concrete(value_type);
 
     // Bind the variable name to the value
     ctx.bind_var(var_name, value_id, &inferred_ty);

@@ -31,6 +31,8 @@ pub struct IrGenContext<'a> {
     type_env: TypeEnv,
     /// Reference to the evaluator environment for looking up special forms.
     env: &'a Env,
+    /// Maps SSA value IDs to their inferred types.
+    value_types: HashMap<ValueId, Type>,
 }
 
 impl<'a> IrGenContext<'a> {
@@ -40,6 +42,7 @@ impl<'a> IrGenContext<'a> {
             variables: HashMap::new(),
             type_env: TypeEnv::new(),
             env,
+            value_types: HashMap::new(),
         }
     }
 
@@ -67,6 +70,16 @@ impl<'a> IrGenContext<'a> {
     /// Get a reference to the evaluator environment.
     pub fn env(&self) -> &Env {
         self.env
+    }
+
+    /// Store the type of an SSA value.
+    pub fn set_value_type(&mut self, value: ValueId, ty: Type) {
+        self.value_types.insert(value, ty);
+    }
+
+    /// Get the type of an SSA value, if known.
+    pub fn get_value_type(&self, value: ValueId) -> Option<&Type> {
+        self.value_types.get(&value)
     }
 }
 
@@ -278,7 +291,7 @@ impl IrGenerator {
         let source = self.dummy_source();
 
         match expr {
-            Expr::Literal(lit) => self.gen_literal(lit, state.current_block(), source),
+            Expr::Literal(lit) => self.gen_literal(lit, state.current_block(), ctx, source),
             Expr::Ident(ident) => self.gen_ident(ident, ctx),
             Expr::Apply(apply) => self.gen_apply_with_state(apply, state, ctx, source),
             _ => Err(Diagnostic::syntax(format!(
@@ -300,7 +313,7 @@ impl IrGenerator {
         let source = self.dummy_source();
 
         match expr {
-            Expr::Literal(lit) => self.gen_literal(lit, block, source),
+            Expr::Literal(lit) => self.gen_literal(lit, block, ctx, source),
             Expr::Ident(ident) => self.gen_ident(ident, ctx),
             Expr::Apply(apply) => self.gen_apply(apply, block, ctx, source),
             _ => Err(Diagnostic::syntax(format!(
@@ -315,6 +328,7 @@ impl IrGenerator {
         &mut self,
         lit: &cadenza_syntax::ast::Literal,
         block: &mut BlockBuilder,
+        ctx: &mut IrGenContext,
         source: SourceLocation,
     ) -> Result<ValueId> {
         use cadenza_syntax::ast::LiteralValue;
@@ -353,7 +367,9 @@ impl IrGenerator {
             }
         };
 
-        Ok(block.const_val(const_val, ty, source))
+        let value_id = block.const_val(const_val, ty.clone(), source);
+        ctx.set_value_type(value_id, ty);
+        Ok(value_id)
     }
 
     /// Generate IR for an identifier (variable reference).
@@ -520,7 +536,9 @@ impl IrGenerator {
 
                 // Emit binary operation with inferred type
                 let block = state.current_block();
-                return Ok(block.binop(ir_op, lhs, rhs, inferred_ty, source));
+                let result = block.binop(ir_op, lhs, rhs, inferred_ty.clone(), source);
+                ctx.set_value_type(result, inferred_ty);
+                return Ok(result);
             }
 
             // Not an operator - try to look up as a function
@@ -542,7 +560,9 @@ impl IrGenerator {
 
             // Emit call instruction with inferred return type
             let block = state.current_block();
-            return Ok(block.call(func_id, arg_values, inferred_ty, source));
+            let result = block.call(func_id, arg_values, inferred_ty.clone(), source);
+            ctx.set_value_type(result, inferred_ty);
+            return Ok(result);
         }
 
         Err(Diagnostic::syntax(format!(
@@ -611,7 +631,9 @@ impl IrGenerator {
                 let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
 
                 // Emit binary operation with inferred type
-                return Ok(block.binop(ir_op, lhs, rhs, inferred_ty, source));
+                let result = block.binop(ir_op, lhs, rhs, inferred_ty.clone(), source);
+                ctx.set_value_type(result, inferred_ty);
+                return Ok(result);
             }
 
             // Not an operator - try to look up as a function
@@ -633,7 +655,9 @@ impl IrGenerator {
             let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
 
             // Emit call instruction with inferred return type
-            return Ok(block.call(func_id, arg_values, inferred_ty, source));
+            let result = block.call(func_id, arg_values, inferred_ty.clone(), source);
+            ctx.set_value_type(result, inferred_ty);
+            return Ok(result);
         }
 
         Err(Diagnostic::syntax(format!(

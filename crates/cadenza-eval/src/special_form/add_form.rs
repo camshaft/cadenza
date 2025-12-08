@@ -159,10 +159,18 @@ fn ir_add(
     let lhs = gen_expr(&args[0], block, ctx)?;
     let rhs = gen_expr(&args[1], block, ctx)?;
 
-    // Infer the result type
-    // For now, use Unknown - proper type inference would go here
-    let ty = Type::Unknown;
+    // Infer the result type based on operand types
+    let ty = match (ctx.get_value_type(lhs), ctx.get_value_type(rhs)) {
+        (Some(Type::Integer), Some(Type::Integer)) => Type::Integer,
+        (Some(Type::Float), Some(Type::Float)) => Type::Float,
+        (Some(Type::Integer), Some(Type::Float))
+        | (Some(Type::Float), Some(Type::Integer)) => Type::Float,
+        // For quantities or unknown types, fall back to Unknown
+        _ => Type::Unknown,
+    };
 
     // Emit binary add instruction
-    Ok(block.binop(BinOp::Add, lhs, rhs, ty, source))
+    let result = block.binop(BinOp::Add, lhs, rhs, ty.clone(), source);
+    ctx.set_value_type(result, ty);
+    Ok(result)
 }

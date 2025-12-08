@@ -225,11 +225,15 @@ pub fn ir_match_with_state(
     let mut merge = merge_block;
     let incoming = vec![(then_value, then_block_id), (else_value, else_block_id)];
 
-    // Infer the type from one of the branches (they should have the same type)
-    // For now, use Unknown - proper type inference would check both branches
-    let result_ty = Type::Unknown;
+    // Infer the type from the branches (prefer non-Unknown types)
+    let result_ty = ctx
+        .get_value_type(then_value)
+        .or_else(|| ctx.get_value_type(else_value))
+        .cloned()
+        .unwrap_or(Type::Unknown);
 
-    let result = merge.phi(incoming, result_ty, source);
+    let result = merge.phi(incoming, result_ty.clone(), source);
+    ctx.set_value_type(result, result_ty);
 
     // Set merge block as current block
     state.current_block = Some(merge);
