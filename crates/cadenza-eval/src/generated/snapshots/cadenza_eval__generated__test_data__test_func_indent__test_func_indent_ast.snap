@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test function application with indent\nfoo bar\n    baz\n    qux\n"
+---
+[
+    [[[foo, bar], baz], qux],
+]

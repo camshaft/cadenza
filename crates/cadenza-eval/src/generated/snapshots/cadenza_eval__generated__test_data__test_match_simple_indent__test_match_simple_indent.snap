@@ -1,0 +1,25 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Simplest test - just match with newline\nmatch true\n    true -> 42\n    false -> 0\n"
+---
+EvalResult {
+    values: [
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: UndefinedVariable(
+                "->",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 78,
+                    end: 80,
+                },
+            ),
+            stack_trace: [],
+        },
+    ],
+}

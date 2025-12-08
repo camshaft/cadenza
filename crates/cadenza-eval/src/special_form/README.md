@@ -169,10 +169,11 @@ The following builtins still need to be migrated:
 - `=` - Assignment operator
 - `fn` - Function definition
 - `__record__` - Record literals
-- `match` - Pattern matching
 - `measure` - Unit definitions
 - `|>` - Pipeline operator
 - `.` - Field access
+
+Note: `match` pattern matching has been migrated to a special form.
 
 ## Testing
 

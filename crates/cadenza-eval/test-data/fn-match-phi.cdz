@@ -1,6 +1,8 @@
 # Test function with match that generates phi nodes
 
-fn abs x = (match x > 0 (true -> x) (false -> 0 - x))
+fn abs x = match x > 0
+    true => x
+    false => 0 - x
 
 abs 5
 abs (-3)

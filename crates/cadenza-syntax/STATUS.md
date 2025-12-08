@@ -195,25 +195,65 @@ The parser implements most core syntax features:
 
 ---
 
-### 8. Match Expressions ❌ NOT IMPLEMENTED
+### 8. Match Expressions ✅ COMPLETE (Basic Boolean Matching)
 
-**Status:** No pattern matching support.
+**Status:** Basic pattern matching on boolean values is working with clean, indentation-based syntax using the `=>` operator.
 
-**What's Needed:**
-1. Parse match arms with patterns and bodies
-2. Support `|` as pattern separator or indentation-based
-3. Represent as `Apply(match, [scrutinee, arm1, arm2, ...])`
-4. Each arm: `Apply(__arm__, [pattern, body])`
-5. Support pattern syntax: literals, identifiers, constructors
-6. Handle guard clauses: `pattern if condition -> body`
+**Working:**
+- Single-line: `match x > 0 true => "positive" false => "negative"`
+- Indented: 
+  ```cadenza
+  match x > 0
+      true => "positive"
+      false => "negative"
+  ```
+- Nested match expressions with proper indentation
+- Pattern arms use fat arrow syntax: `pattern => result` - **no parentheses needed!**
+- Full support in evaluation, IR, and WebAssembly compilation
+
+**Implementation:**
+- Parser represents as left-associative function application: `[[[match, scrutinee], arm1], arm2]`
+- The `=>` operator has binding power between Juxtaposition and LogicalOr
+- This allows `match cond true => 42` to parse as `match cond (true => 42)` correctly
+- Special form evaluation handles both inline args and `__block__` nodes for indented syntax
+- IR generation creates branching control flow with phi nodes
+
+**Syntax Advantage:**
+The `=>` operator has higher binding power than function application but lower than most other operators,
+so it naturally groups pattern arms without requiring parentheses:
+- `match x > 0 true => 1 false => 0` ✅ Clean and readable
+- Previous `->` syntax required: `match x > 0 (true -> 1) (false -> 0)` ❌ Extra parentheses
+
+**Current Limitations:**
+- Only supports boolean patterns (`true`/`false`)
+- No support for literal patterns (numbers, strings)
+- No constructor patterns or destructuring
+- No guard clauses (`pattern if condition`)
+- No wildcard pattern (`_`)
+- No or-patterns (`pattern1 | pattern2`)
+
+**Future Work:**
+For comprehensive pattern matching, would need:
+1. More pattern types (literals, constructors, wildcards)
+2. Support `|` as pattern separator for or-patterns
+3. Guard clauses: `pattern if condition => body`
+4. Destructuring patterns for tuples/records
 
 **Syntax Examples:**
 ```cadenza
+# Current (boolean patterns with =>)
+match x > 0
+    true => "positive"
+    false => "negative"
+
+# Future (with more patterns)
 match x
-    0 -> "zero"
-    1 -> "one"
-    _ -> "other"
+    0 => "zero"
+    1 => "one"
+    _ => "other"
 ```
+
+**Test Files:** `if-simple.cdz`, `fn-match-phi.cdz`, `match-no-parens.cdz`, `match-indent.cdz` in cadenza-eval/test-data/
 
 **References:** `PARSER_ISSUES.md` Issue 8
 

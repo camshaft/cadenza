@@ -1,0 +1,24 @@
+# Test match without outer parentheses
+
+# Basic true pattern - single line syntax
+let result1 = match true true => 42 false => 0
+assert result1 == 42
+
+# Basic false pattern
+let result2 = match false true => 42 false => 0
+assert result2 == 0
+
+# Match with comparison
+let x = 5
+let result3 = match x > 0 true => "positive" false => "negative"
+assert result3 == "positive"
+
+# Match with comparison (false case)
+let y = -3
+let result4 = match y > 0 true => "positive" false => "negative"
+assert result4 == "negative"
+
+# Nested match expressions
+let z = 10
+let result5 = match z > 5 true => match z > 15 true => "very large" false => "large" false => "small"
+assert result5 == "large"

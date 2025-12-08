@@ -1,0 +1,40 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test match with indented arms (desired syntax)\nlet result = match true\n    true -> 42\n    false -> 0\nresult\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: UndefinedVariable(
+                "->",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 98,
+                    end: 100,
+                },
+            ),
+            stack_trace: [],
+        },
+        Diagnostic {
+            kind: UndefinedVariable(
+                "result",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 103,
+                    end: 109,
+                },
+            ),
+            stack_trace: [],
+        },
+    ],
+}

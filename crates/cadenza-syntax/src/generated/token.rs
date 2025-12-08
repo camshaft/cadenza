@@ -26,6 +26,8 @@ pub enum Kind {
     Equal,
     /// "->"
     RightArrow,
+    /// "=>"
+    FatArrow,
     /// "<-"
     LeftArrow,
     /// "+="
@@ -175,6 +177,7 @@ impl Kind {
         Self::DotDotEqual,
         Self::Equal,
         Self::RightArrow,
+        Self::FatArrow,
         Self::LeftArrow,
         Self::PlusEqual,
         Self::MinusEqual,
@@ -294,6 +297,7 @@ impl Kind {
         Self::DotDotEqual,
         Self::Equal,
         Self::RightArrow,
+        Self::FatArrow,
         Self::LeftArrow,
         Self::PlusEqual,
         Self::MinusEqual,
@@ -372,6 +376,7 @@ impl Kind {
                 | Self::DotDotEqual
                 | Self::Equal
                 | Self::RightArrow
+                | Self::FatArrow
                 | Self::LeftArrow
                 | Self::PlusEqual
                 | Self::MinusEqual
@@ -450,6 +455,7 @@ impl Kind {
             Self::DotDotEqual => Some("..="),
             Self::Equal => Some("="),
             Self::RightArrow => Some("->"),
+            Self::FatArrow => Some("=>"),
             Self::LeftArrow => Some("<-"),
             Self::PlusEqual => Some("+="),
             Self::MinusEqual => Some("-="),
@@ -507,7 +513,7 @@ impl Kind {
 
     /// Try to convert a u16 discriminant to a Kind
     pub const fn try_from_u16(value: u16) -> Option<Self> {
-        if value < 95 {
+        if value < 96 {
             // SAFETY: value is within valid discriminant range
             Some(unsafe { core::mem::transmute::<u16, Kind>(value) })
         } else {
@@ -530,6 +536,7 @@ impl Kind {
             Self::DotDotEqual => "..=",
             Self::Equal => "=",
             Self::RightArrow => "->",
+            Self::FatArrow => "=>",
             Self::LeftArrow => "<-",
             Self::PlusEqual => "+=",
             Self::MinusEqual => "-=",
@@ -630,6 +637,7 @@ impl Kind {
             Self::DotDotEqual => Some(Op::DotDotEqual),
             Self::Equal => Some(Op::Equal),
             Self::RightArrow => Some(Op::RightArrow),
+            Self::FatArrow => Some(Op::FatArrow),
             Self::LeftArrow => Some(Op::LeftArrow),
             Self::PlusEqual => Some(Op::PlusEqual),
             Self::MinusEqual => Some(Op::MinusEqual),
@@ -684,6 +692,7 @@ impl Kind {
             Self::DotDotEqual => Some((2, 3)),
             Self::Equal => Some((5, 4)),
             Self::RightArrow => Some((5, 4)),
+            Self::FatArrow => Some((8, 9)),
             Self::LeftArrow => Some((5, 4)),
             Self::PlusEqual => Some((5, 4)),
             Self::MinusEqual => Some((5, 4)),
@@ -695,27 +704,27 @@ impl Kind {
             Self::CaretEqual => Some((5, 4)),
             Self::LessLessEqual => Some((5, 4)),
             Self::GreaterGreaterEqual => Some((5, 4)),
-            Self::PipePipe => Some((8, 9)),
-            Self::AmpersandAmpersand => Some((10, 11)),
-            Self::EqualEqual => Some((12, 13)),
-            Self::BangEqual => Some((12, 13)),
-            Self::Less => Some((14, 15)),
-            Self::LessEqual => Some((14, 15)),
-            Self::Greater => Some((14, 15)),
-            Self::GreaterEqual => Some((14, 15)),
-            Self::Pipe => Some((16, 17)),
-            Self::Caret => Some((18, 19)),
-            Self::Ampersand => Some((20, 21)),
-            Self::LessLess => Some((22, 23)),
-            Self::GreaterGreater => Some((22, 23)),
-            Self::Plus => Some((24, 25)),
-            Self::Minus => Some((24, 25)),
-            Self::Star => Some((26, 27)),
-            Self::Slash => Some((26, 27)),
-            Self::Percent => Some((26, 27)),
-            Self::StarStar => Some((29, 28)),
-            Self::Dot => Some((30, 31)),
-            Self::ColonColon => Some((32, 33)),
+            Self::PipePipe => Some((10, 11)),
+            Self::AmpersandAmpersand => Some((12, 13)),
+            Self::EqualEqual => Some((14, 15)),
+            Self::BangEqual => Some((14, 15)),
+            Self::Less => Some((16, 17)),
+            Self::LessEqual => Some((16, 17)),
+            Self::Greater => Some((16, 17)),
+            Self::GreaterEqual => Some((16, 17)),
+            Self::Pipe => Some((18, 19)),
+            Self::Caret => Some((20, 21)),
+            Self::Ampersand => Some((22, 23)),
+            Self::LessLess => Some((24, 25)),
+            Self::GreaterGreater => Some((24, 25)),
+            Self::Plus => Some((26, 27)),
+            Self::Minus => Some((26, 27)),
+            Self::Star => Some((28, 29)),
+            Self::Slash => Some((28, 29)),
+            Self::Percent => Some((28, 29)),
+            Self::StarStar => Some((31, 30)),
+            Self::Dot => Some((32, 33)),
+            Self::ColonColon => Some((34, 35)),
             _ => None,
         }
     }
@@ -737,7 +746,7 @@ impl Kind {
     /// Returns the left binding power for array indexing
     /// Array indexing has the same precedence as path access (::)
     pub const fn array_index_binding_power() -> u8 {
-        32
+        34
     }
 
     /// Returns true if this token kind has infix binding power
@@ -806,6 +815,8 @@ pub enum Op {
     Equal,
     /// "->"
     RightArrow,
+    /// "=>"
+    FatArrow,
     /// "<-"
     LeftArrow,
     /// "+="

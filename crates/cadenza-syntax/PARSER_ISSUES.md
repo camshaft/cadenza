@@ -1264,20 +1264,76 @@ Parentheses are currently used for grouping expressions. The parser handles `(ex
 
 ### Current State
 
-There is no special handling for `match` expressions. Since Cadenza has no keywords, `match` would be parsed as an identifier and its arguments as function application, but the pattern-matching arms syntax is not supported.
+**Basic boolean pattern matching is now working with clean syntax!** Uses the `=>` operator instead of `->` for pattern arms, eliminating the need for parentheses.
 
-### What Needs To Be Done
+Working syntaxes:
 
-1. Support `|` as a pattern arm separator or use indentation-based syntax
-2. Parse match arms with patterns and bodies
-3. Represent match as: `Apply(match, [scrutinee, Apply(__arm__, [pattern, body]), ...])`
-4. Support pattern syntax: literals, identifiers (wildcards/bindings), constructors
-5. Handle guard clauses: `pattern if condition -> body`
-6. Handle indented match blocks
+Single-line:
+```cadenza
+match x > 0 true => "positive" false => "negative"
+```
+
+Indented (preferred):
+```cadenza
+match x > 0
+    true => "positive"
+    false => "negative"
+```
+
+The parser represents this as left-associative function application:
+```
+[[[match, [>, x, 0]], [=>, true, "positive"]], [=>, false, "negative"]]
+```
+
+**Key Improvement:** The `=>` (fat arrow) operator has binding power between Juxtaposition (function application)
+and LogicalOr. This is higher than `->` (which has Assignment-level precedence), so pattern arms no longer
+need to be wrapped in parentheses. The syntax is clean and readable: `match cond true => val1 false => val2`.
+
+Current capabilities:
+- Boolean patterns (`true`/`false`)
+- Fat arrow syntax for pattern arms: `pattern => result`
+- Single-line and indented syntax - no parentheses needed
+- Nested match expressions
+- Full evaluation, IR generation, and WebAssembly compilation support
+
+### What Still Needs To Be Done
+
+For comprehensive pattern matching with more pattern types:
+
+1. Support more pattern types beyond booleans:
+   - Literal patterns: numbers, strings
+   - Wildcard pattern: `_`
+   - Constructor patterns for algebraic data types
+   - Tuple/record destructuring patterns
+
+2. Advanced features:
+   - Or-patterns: `pattern1 | pattern2 => result`
+   - Guard clauses: `pattern if condition => result`
+   - Nested patterns: `Some (Just x) => ...`
 
 ### Test Cases
 
-#### Test: match-simple.cdz
+#### Working Now: match-boolean.cdz
+
+Single-line:
+```cadenza
+match x > 0 true => "positive" false => "negative"
+```
+
+Indented:
+```cadenza
+match x > 0
+    true => "positive"
+    false => "negative"
+```
+
+**Actual AST:**
+
+```
+[[[match, [>, x, 0]], [=>, true, "positive"]], [=>, false, "negative"]]
+```
+
+#### Future: match-simple.cdz
 
 ```cadenza
 match x

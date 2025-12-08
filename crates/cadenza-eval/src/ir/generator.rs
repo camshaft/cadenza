@@ -1032,8 +1032,8 @@ mod tests {
         let mut generator = IrGenerator::new();
         let env = Env::with_standard_builtins();
 
-        // Create a function with a match expression: fn sign(x) = match x > 0 (true -> 1) (false -> 0)
-        let source = "match x > 0 (true -> 1) (false -> 0)";
+        // Create a function with a match expression: fn sign(x) = match x > 0 true => 1 false => 0
+        let source = "match x > 0 true => 1 false => 0";
         let parsed = parse(source);
         let ast = parsed.ast();
         let body = ast.items().next().expect("No expression in AST");

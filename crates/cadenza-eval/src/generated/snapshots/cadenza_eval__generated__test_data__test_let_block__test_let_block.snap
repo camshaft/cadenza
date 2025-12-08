@@ -1,0 +1,40 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test let with block RHS\nlet x =\n    foo\n    bar\nx\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: UndefinedVariable(
+                "foo",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 38,
+                    end: 41,
+                },
+            ),
+            stack_trace: [],
+        },
+        Diagnostic {
+            kind: UndefinedVariable(
+                "x",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 50,
+                    end: 51,
+                },
+            ),
+            stack_trace: [],
+        },
+    ],
+}

@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 /// - Takes at least 2 arguments: match expression and pattern arms
 /// - Evaluates the match expression (must be boolean)
 /// - Checks each pattern arm in order
-/// - Pattern arms have syntax: `pattern -> result`
+/// - Pattern arms have syntax: `pattern => result`
 /// - Patterns must be `true` or `false`
 /// - Returns the result of the first matching arm
 ///
@@ -27,11 +27,21 @@ use std::sync::OnceLock;
 /// - Not yet implemented (returns error)
 ///
 /// # Examples
+///
+/// Indented syntax (preferred - cleaner for multi-line):
 /// ```cadenza
 /// match x > 0
-///     true -> "positive"
-///     false -> "negative or zero"
+///     true => "positive"
+///     false => "negative or zero"
 /// ```
+///
+/// Single-line syntax (more compact):
+/// ```cadenza
+/// match x > 0 true => "positive" false => "negative"
+/// ```
+///
+/// Note: The `=>` operator has higher binding power than function application,
+/// so parentheses are not needed around pattern arms in most cases.
 pub fn get() -> &'static BuiltinSpecialForm {
     static MATCH_FORM: OnceLock<BuiltinSpecialForm> = OnceLock::new();
     MATCH_FORM.get_or_init(|| BuiltinSpecialForm {
@@ -63,14 +73,31 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         }
     };
 
-    // Remaining arguments are pattern arms
-    // Each arm should be an arrow expression: pattern -> result
-    for arm in &args[1..] {
-        // Each arm should be an arrow expression: pattern -> result
+    // Collect all pattern arms - they can be passed as individual args or in a block
+    let mut arms = Vec::new();
+    
+    for arg in &args[1..] {
+        // Check if this is a __block__ containing multiple arms
+        if let Expr::Apply(apply) = arg {
+            if let Some(Expr::Synthetic(syn)) = apply.callee() {
+                if syn.identifier() == "__block__" {
+                    // It's a block - collect all arguments as arms
+                    arms.extend(apply.all_arguments());
+                    continue;
+                }
+            }
+        }
+        // Otherwise, it's a single arm
+        arms.push(arg.clone());
+    }
+
+    // Process each arm
+    for arm in &arms {
+        // Each arm should be an arrow expression: pattern => result
         if let Expr::Apply(apply) = arm {
-            // Check if the callee is the -> operator
+            // Check if the callee is the => operator
             if let Some(Expr::Op(op)) = apply.callee()
-                && op.syntax().text() == "->"
+                && op.syntax().text() == "=>"
             {
                 let arm_args = apply.all_arguments();
                 if arm_args.len() == 2 {
@@ -144,15 +171,33 @@ pub fn ir_match_with_state(
     // First argument is the expression to match on (must be boolean)
     let match_expr = &args[0];
 
+    // Collect all pattern arms - they can be passed as individual args or in a block
+    let mut arms = Vec::new();
+    
+    for arg in &args[1..] {
+        // Check if this is a __block__ containing multiple arms
+        if let Expr::Apply(apply) = arg {
+            if let Some(Expr::Synthetic(syn)) = apply.callee() {
+                if syn.identifier() == "__block__" {
+                    // It's a block - collect all arguments as arms
+                    arms.extend(apply.all_arguments());
+                    continue;
+                }
+            }
+        }
+        // Otherwise, it's a single arm
+        arms.push(arg.clone());
+    }
+
     // Parse the arms to find the then and else branches
     // Each arm should be: pattern -> result
     let mut then_expr = None;
     let mut else_expr = None;
 
-    for arm in &args[1..] {
+    for arm in &arms {
         if let Expr::Apply(apply) = arm
             && let Some(Expr::Op(op)) = apply.callee()
-            && op.syntax().text() == "->"
+            && op.syntax().text() == "=>"
         {
             let arm_args = apply.all_arguments();
             if arm_args.len() == 2 {
@@ -252,7 +297,7 @@ mod tests {
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
 
-        let input = "(match true (true -> 1) (false -> 2))";
+        let input = "match true true => 1 false => 2";
         let parsed = parse(input);
         let root = parsed.ast();
 
@@ -267,7 +312,7 @@ mod tests {
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
 
-        let input = "(match false (true -> 1) (false -> 2))";
+        let input = "match false true => 1 false => 2";
         let parsed = parse(input);
         let root = parsed.ast();
 
@@ -289,7 +334,7 @@ mod tests {
         let _results1 = crate::eval(&root1, &mut env, &mut compiler);
 
         // Then do the match
-        let input2 = "(match (x > 0) (true -> \"positive\") (false -> \"not positive\"))";
+        let input2 = "match x > 0 true => \"positive\" false => \"not positive\"";
         let parsed2 = parse(input2);
         let root2 = parsed2.ast();
         let results2 = crate::eval(&root2, &mut env, &mut compiler);

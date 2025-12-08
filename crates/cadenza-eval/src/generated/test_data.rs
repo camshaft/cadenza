@@ -534,6 +534,47 @@ mod field_assign_simple {
         );
     }
 }
+mod match_indent {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "match_indent",
+            t::eval_all(
+                "# Test match with indented syntax\n\n# Basic match with indented arms\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Match with expression condition\nlet x = 10\nlet result2 = match x > 5\n    true => \"big\"\n    false => \"small\"\nassert result2 == \"big\"\n\n# Nested match with indentation (use parens for nested match in arm)\nlet y = 3\nlet result3 = match y > 0\n    true => (match y > 10 true => \"huge\" false => \"positive\")\n    false => \"non-positive\"\nassert result3 == \"positive\"\n"
+            ),
+            "# Test match with indented syntax\n\n# Basic match with indented arms\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Match with expression condition\nlet x = 10\nlet result2 = match x > 5\n    true => \"big\"\n    false => \"small\"\nassert result2 == \"big\"\n\n# Nested match with indentation (use parens for nested match in arm)\nlet y = 3\nlet result3 = match y > 0\n    true => (match y > 10 true => \"huge\" false => \"positive\")\n    false => \"non-positive\"\nassert result3 == \"positive\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "match_indent_ast",
+            t::ast(
+                "# Test match with indented syntax\n\n# Basic match with indented arms\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Match with expression condition\nlet x = 10\nlet result2 = match x > 5\n    true => \"big\"\n    false => \"small\"\nassert result2 == \"big\"\n\n# Nested match with indentation (use parens for nested match in arm)\nlet y = 3\nlet result3 = match y > 0\n    true => (match y > 10 true => \"huge\" false => \"positive\")\n    false => \"non-positive\"\nassert result3 == \"positive\"\n"
+            ),
+            "# Test match with indented syntax\n\n# Basic match with indented arms\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Match with expression condition\nlet x = 10\nlet result2 = match x > 5\n    true => \"big\"\n    false => \"small\"\nassert result2 == \"big\"\n\n# Nested match with indentation (use parens for nested match in arm)\nlet y = 3\nlet result3 = match y > 0\n    true => (match y > 10 true => \"huge\" false => \"positive\")\n    false => \"non-positive\"\nassert result3 == \"positive\"\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "match_indent_ir",
+            t::ir(
+                "# Test match with indented syntax\n\n# Basic match with indented arms\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Match with expression condition\nlet x = 10\nlet result2 = match x > 5\n    true => \"big\"\n    false => \"small\"\nassert result2 == \"big\"\n\n# Nested match with indentation (use parens for nested match in arm)\nlet y = 3\nlet result3 = match y > 0\n    true => (match y > 10 true => \"huge\" false => \"positive\")\n    false => \"non-positive\"\nassert result3 == \"positive\"\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "match_indent_wat",
+            t::wat(
+                "# Test match with indented syntax\n\n# Basic match with indented arms\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Match with expression condition\nlet x = 10\nlet result2 = match x > 5\n    true => \"big\"\n    false => \"small\"\nassert result2 == \"big\"\n\n# Nested match with indentation (use parens for nested match in arm)\nlet y = 3\nlet result3 = match y > 0\n    true => (match y > 10 true => \"huge\" false => \"positive\")\n    false => \"non-positive\"\nassert result3 == \"positive\"\n"
+            )
+        );
+    }
+}
 mod arith_mul {
     use super::*;
     #[test]
@@ -1007,6 +1048,47 @@ mod field_access_missing_field {
         ss!(
             "field_access_missing_field_wat",
             t::wat("let point = { x = 10, y = 20 }\npoint.z\n")
+        );
+    }
+}
+mod match_no_parens {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "match_no_parens",
+            t::eval_all(
+                "# Test match without outer parentheses\n\n# Basic true pattern - single line syntax\nlet result1 = match true true => 42 false => 0\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = match false true => 42 false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0 true => \"positive\" false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0 true => \"positive\" false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5 true => match z > 15 true => \"very large\" false => \"large\" false => \"small\"\nassert result5 == \"large\"\n"
+            ),
+            "# Test match without outer parentheses\n\n# Basic true pattern - single line syntax\nlet result1 = match true true => 42 false => 0\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = match false true => 42 false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0 true => \"positive\" false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0 true => \"positive\" false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5 true => match z > 15 true => \"very large\" false => \"large\" false => \"small\"\nassert result5 == \"large\"\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "match_no_parens_ast",
+            t::ast(
+                "# Test match without outer parentheses\n\n# Basic true pattern - single line syntax\nlet result1 = match true true => 42 false => 0\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = match false true => 42 false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0 true => \"positive\" false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0 true => \"positive\" false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5 true => match z > 15 true => \"very large\" false => \"large\" false => \"small\"\nassert result5 == \"large\"\n"
+            ),
+            "# Test match without outer parentheses\n\n# Basic true pattern - single line syntax\nlet result1 = match true true => 42 false => 0\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = match false true => 42 false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0 true => \"positive\" false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0 true => \"positive\" false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5 true => match z > 15 true => \"very large\" false => \"large\" false => \"small\"\nassert result5 == \"large\"\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "match_no_parens_ir",
+            t::ir(
+                "# Test match without outer parentheses\n\n# Basic true pattern - single line syntax\nlet result1 = match true true => 42 false => 0\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = match false true => 42 false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0 true => \"positive\" false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0 true => \"positive\" false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5 true => match z > 15 true => \"very large\" false => \"large\" false => \"small\"\nassert result5 == \"large\"\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "match_no_parens_wat",
+            t::wat(
+                "# Test match without outer parentheses\n\n# Basic true pattern - single line syntax\nlet result1 = match true true => 42 false => 0\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = match false true => 42 false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0 true => \"positive\" false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0 true => \"positive\" false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5 true => match z > 15 true => \"very large\" false => \"large\" false => \"small\"\nassert result5 == \"large\"\n"
+            )
         );
     }
 }
@@ -2352,9 +2434,9 @@ mod if_simple {
         s!(
             "if_simple",
             t::eval_all(
-                "# Test match expression\n\n# Basic true pattern - single line syntax\nlet result1 = (match true (true -> 42) (false -> 0))\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = (match false (true -> 42) (false -> 0))\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = (match x > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = (match y > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = (match z > 5 (true -> (match z > 15 (true -> \"very large\") (false -> \"large\"))) (false -> \"small\"))\nassert result5 == \"large\"\n"
+                "# Test match expression\n\n# Indented syntax (preferred)\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Basic false pattern  \nlet result2 = match false\n    true => 42\n    false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5\n    true => (match z > 15 true => \"very large\" false => \"large\")\n    false => \"small\"\nassert result5 == \"large\"\n"
             ),
-            "# Test match expression\n\n# Basic true pattern - single line syntax\nlet result1 = (match true (true -> 42) (false -> 0))\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = (match false (true -> 42) (false -> 0))\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = (match x > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = (match y > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = (match z > 5 (true -> (match z > 15 (true -> \"very large\") (false -> \"large\"))) (false -> \"small\"))\nassert result5 == \"large\"\n"
+            "# Test match expression\n\n# Indented syntax (preferred)\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Basic false pattern  \nlet result2 = match false\n    true => 42\n    false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5\n    true => (match z > 15 true => \"very large\" false => \"large\")\n    false => \"small\"\nassert result5 == \"large\"\n"
         );
     }
     #[test]
@@ -2362,9 +2444,9 @@ mod if_simple {
         s!(
             "if_simple_ast",
             t::ast(
-                "# Test match expression\n\n# Basic true pattern - single line syntax\nlet result1 = (match true (true -> 42) (false -> 0))\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = (match false (true -> 42) (false -> 0))\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = (match x > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = (match y > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = (match z > 5 (true -> (match z > 15 (true -> \"very large\") (false -> \"large\"))) (false -> \"small\"))\nassert result5 == \"large\"\n"
+                "# Test match expression\n\n# Indented syntax (preferred)\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Basic false pattern  \nlet result2 = match false\n    true => 42\n    false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5\n    true => (match z > 15 true => \"very large\" false => \"large\")\n    false => \"small\"\nassert result5 == \"large\"\n"
             ),
-            "# Test match expression\n\n# Basic true pattern - single line syntax\nlet result1 = (match true (true -> 42) (false -> 0))\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = (match false (true -> 42) (false -> 0))\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = (match x > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = (match y > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = (match z > 5 (true -> (match z > 15 (true -> \"very large\") (false -> \"large\"))) (false -> \"small\"))\nassert result5 == \"large\"\n"
+            "# Test match expression\n\n# Indented syntax (preferred)\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Basic false pattern  \nlet result2 = match false\n    true => 42\n    false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5\n    true => (match z > 15 true => \"very large\" false => \"large\")\n    false => \"small\"\nassert result5 == \"large\"\n"
         );
     }
     #[test]
@@ -2372,7 +2454,7 @@ mod if_simple {
         ss!(
             "if_simple_ir",
             t::ir(
-                "# Test match expression\n\n# Basic true pattern - single line syntax\nlet result1 = (match true (true -> 42) (false -> 0))\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = (match false (true -> 42) (false -> 0))\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = (match x > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = (match y > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = (match z > 5 (true -> (match z > 15 (true -> \"very large\") (false -> \"large\"))) (false -> \"small\"))\nassert result5 == \"large\"\n"
+                "# Test match expression\n\n# Indented syntax (preferred)\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Basic false pattern  \nlet result2 = match false\n    true => 42\n    false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5\n    true => (match z > 15 true => \"very large\" false => \"large\")\n    false => \"small\"\nassert result5 == \"large\"\n"
             )
         );
     }
@@ -2381,7 +2463,7 @@ mod if_simple {
         ss!(
             "if_simple_wat",
             t::wat(
-                "# Test match expression\n\n# Basic true pattern - single line syntax\nlet result1 = (match true (true -> 42) (false -> 0))\nassert result1 == 42\n\n# Basic false pattern\nlet result2 = (match false (true -> 42) (false -> 0))\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = (match x > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = (match y > 0 (true -> \"positive\") (false -> \"negative\"))\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = (match z > 5 (true -> (match z > 15 (true -> \"very large\") (false -> \"large\"))) (false -> \"small\"))\nassert result5 == \"large\"\n"
+                "# Test match expression\n\n# Indented syntax (preferred)\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Basic false pattern  \nlet result2 = match false\n    true => 42\n    false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5\n    true => (match z > 15 true => \"very large\" false => \"large\")\n    false => \"small\"\nassert result5 == \"large\"\n"
             )
         );
     }
@@ -2733,9 +2815,9 @@ mod fn_match_phi {
         s!(
             "fn_match_phi",
             t::eval_all(
-                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+                "# Test function with match that generates phi nodes\n\nfn abs x = match x > 0\n    true => x\n    false => 0 - x\n\nabs 5\nabs (-3)\n"
             ),
-            "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+            "# Test function with match that generates phi nodes\n\nfn abs x = match x > 0\n    true => x\n    false => 0 - x\n\nabs 5\nabs (-3)\n"
         );
     }
     #[test]
@@ -2743,9 +2825,9 @@ mod fn_match_phi {
         s!(
             "fn_match_phi_ast",
             t::ast(
-                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+                "# Test function with match that generates phi nodes\n\nfn abs x = match x > 0\n    true => x\n    false => 0 - x\n\nabs 5\nabs (-3)\n"
             ),
-            "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+            "# Test function with match that generates phi nodes\n\nfn abs x = match x > 0\n    true => x\n    false => 0 - x\n\nabs 5\nabs (-3)\n"
         );
     }
     #[test]
@@ -2753,7 +2835,7 @@ mod fn_match_phi {
         ss!(
             "fn_match_phi_ir",
             t::ir(
-                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+                "# Test function with match that generates phi nodes\n\nfn abs x = match x > 0\n    true => x\n    false => 0 - x\n\nabs 5\nabs (-3)\n"
             )
         );
     }
@@ -2762,7 +2844,7 @@ mod fn_match_phi {
         ss!(
             "fn_match_phi_wat",
             t::wat(
-                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+                "# Test function with match that generates phi nodes\n\nfn abs x = match x > 0\n    true => x\n    false => 0 - x\n\nabs 5\nabs (-3)\n"
             )
         );
     }

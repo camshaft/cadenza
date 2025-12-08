@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"# Simplest test - just match with newline\\nmatch true\\n    true -> 42\\n    false -> 0\\n\")"
+---
+# IR Module

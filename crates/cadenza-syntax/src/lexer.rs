@@ -115,10 +115,15 @@ impl<'a> Lexer<'a> {
                 Some(b) => Kind::BangEqual.spanned((a, b)),
                 _ => Kind::Bang.spanned(a),
             },
-            '=' => match self.chars.next_if_eq('=') {
-                Some(b) => Kind::EqualEqual.spanned((a, b)),
-                _ => Kind::Equal.spanned(a),
-            },
+            '=' => {
+                if let Some(b) = self.chars.next_if_eq('=') {
+                    Kind::EqualEqual.spanned((a, b))
+                } else if let Some(b) = self.chars.next_if_eq('>') {
+                    Kind::FatArrow.spanned((a, b))
+                } else {
+                    Kind::Equal.spanned(a)
+                }
+            }
             '<' => {
                 if let Some(b) = self.chars.next_if_eq('=') {
                     Kind::LessEqual.spanned((a, b))
