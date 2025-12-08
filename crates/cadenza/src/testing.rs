@@ -12,15 +12,32 @@ use std::{
 ///
 /// This function spawns the REPL process, pipes the input to stdin,
 /// and captures both stdout and stderr. This is used for snapshot testing REPL sessions.
+///
+/// Note: This assumes the cadenza binary has been built in debug mode.
+/// If testing in release mode, ensure `cargo build --release -p cadenza` has been run.
 pub fn repl(input: &str) -> String {
     // Get the path to the cadenza binary
+    // For tests, we use the workspace target directory
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_dir = std::path::Path::new(manifest_dir)
         .parent()
         .and_then(|p| p.parent())
         .expect("Failed to find workspace directory");
 
-    let binary_path = workspace_dir.join("target").join("debug").join("cadenza");
+    // Check for both debug and release builds
+    let debug_path = workspace_dir.join("target").join("debug").join("cadenza");
+    let release_path = workspace_dir.join("target").join("release").join("cadenza");
+
+    let binary_path = if debug_path.exists() {
+        debug_path
+    } else if release_path.exists() {
+        release_path
+    } else {
+        panic!(
+            "Could not find cadenza binary. Please run `cargo build -p cadenza` first.\nLooked in:\n  {:?}\n  {:?}",
+            debug_path, release_path
+        )
+    };
 
     // Spawn the REPL process
     let mut child = Command::new(binary_path)
