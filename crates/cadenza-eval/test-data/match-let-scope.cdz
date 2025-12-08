@@ -1,0 +1,8 @@
+let test = 1
+match test > 0
+    true =>
+        let foo = 1
+        foo
+    false =>
+        let bar = 0
+        bar

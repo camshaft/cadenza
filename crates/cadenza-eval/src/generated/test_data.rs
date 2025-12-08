@@ -2901,3 +2901,44 @@ mod error_cmp_type_mismatch_eq {
         );
     }
 }
+mod match_let_scope {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "match_let_scope",
+            t::eval_all(
+                "let test = 1\nmatch test > 0\n    true =>\n        let foo = 1\n        foo\n    false =>\n        let bar = 0\n        bar\n"
+            ),
+            "let test = 1\nmatch test > 0\n    true =>\n        let foo = 1\n        foo\n    false =>\n        let bar = 0\n        bar\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "match_let_scope_ast",
+            t::ast(
+                "let test = 1\nmatch test > 0\n    true =>\n        let foo = 1\n        foo\n    false =>\n        let bar = 0\n        bar\n"
+            ),
+            "let test = 1\nmatch test > 0\n    true =>\n        let foo = 1\n        foo\n    false =>\n        let bar = 0\n        bar\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "match_let_scope_ir",
+            t::ir(
+                "let test = 1\nmatch test > 0\n    true =>\n        let foo = 1\n        foo\n    false =>\n        let bar = 0\n        bar\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "match_let_scope_wat",
+            t::wat(
+                "let test = 1\nmatch test > 0\n    true =>\n        let foo = 1\n        foo\n    false =>\n        let bar = 0\n        bar\n"
+            )
+        );
+    }
+}
