@@ -3,8 +3,10 @@
 //! This module provides helper functions for testing the REPL by piping input
 //! and capturing output.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 /// Run the REPL with the given input and return the combined stdout and stderr output.
 ///
@@ -17,11 +19,8 @@ pub fn repl(input: &str) -> String {
         .parent()
         .and_then(|p| p.parent())
         .expect("Failed to find workspace directory");
-    
-    let binary_path = workspace_dir
-        .join("target")
-        .join("debug")
-        .join("cadenza");
+
+    let binary_path = workspace_dir.join("target").join("debug").join("cadenza");
 
     // Spawn the REPL process
     let mut child = Command::new(binary_path)
@@ -50,6 +49,6 @@ pub fn repl(input: &str) -> String {
     if !stderr.is_empty() {
         result.push_str(&stderr);
     }
-    
+
     result
 }
