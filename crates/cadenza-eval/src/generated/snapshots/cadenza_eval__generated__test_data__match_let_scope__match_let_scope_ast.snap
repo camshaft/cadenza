@@ -1,0 +1,8 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "let test = 1\nmatch test > 0\n    true =>\n        let foo = 1\n        foo\n    false =>\n        let bar = 0\n        bar\n"
+---
+[
+    [=, [let, test], 1],
+    [[[match, [>, test, 0]], [=>, true, [__block__, [=, [let, foo], 1], foo]]], [=>, false, [__block__, [=, [let, bar], 0], bar]]],
+]

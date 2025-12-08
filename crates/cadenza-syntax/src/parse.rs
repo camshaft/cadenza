@@ -259,7 +259,8 @@ impl<'src> Parser<'src> {
                     {
                         self.builder.start_node(Kind::ApplyArgument.into());
                         let expr_marker = self.whitespace.marker();
-                        self.parse_expression_bp(r_bp, expr_marker);
+                        // Start with binding power 0 for each expression in the block
+                        self.parse_expression_bp(0, expr_marker);
                         self.builder.finish_node(); // ApplyArgument
 
                         self.skip_trivia();
