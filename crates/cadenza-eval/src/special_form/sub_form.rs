@@ -160,11 +160,10 @@ fn ir_sub(
     let rhs = gen_expr(&args[1], block, ctx)?;
 
     // Infer the result type based on operand types
+    // No coercion - operands must be the same type
     let ty = match (ctx.get_value_type(lhs), ctx.get_value_type(rhs)) {
         (Some(Type::Integer), Some(Type::Integer)) => Type::Integer,
         (Some(Type::Float), Some(Type::Float)) => Type::Float,
-        (Some(Type::Integer), Some(Type::Float))
-        | (Some(Type::Float), Some(Type::Integer)) => Type::Float,
         // For quantities or unknown types, fall back to Unknown
         _ => Type::Unknown,
     };
