@@ -584,7 +584,9 @@ assert (len [1, 2, 3]) == 3
 
 ### Struct (Nominal Record Types)
 
-Support for defining nominally-typed records (structs) with type constructors.
+~~Support for defining nominally-typed records (structs) with type constructors.~~
+
+**Status**: ✅ **Completed**
 
 **Syntax**:
 ```cadenza
@@ -600,18 +602,29 @@ assert foo.b == 2.0
 ```
 
 **Requirements**:
-- [ ] Implement `struct` as a builtin macro (no keyword needed - identifiers handled by environment)
-- [ ] Parser support for struct definitions
-- [ ] AST representation for struct definitions
-- [ ] Type system support for nominal types
-- [ ] Store struct definitions in environment/compiler
-- [ ] Generate constructor functions for structs
-- [ ] Struct type checking: ensure fields match definition
-- [ ] Module-scoped nominal typing (structs from different modules are different)
-- [ ] Field access on struct values
-- [ ] Display/debug formatting for struct instances
+- [x] Implement `struct` as a special form (registered in environment)
+- [x] Parser support for struct definitions (uses existing record syntax)
+- [x] AST representation for struct definitions (Value::Type and Value::StructConstructor)
+- [x] Type system support for nominal types (Type::Struct variant)
+- [x] Store struct definitions in environment/compiler (constructor registered in environment)
+- [x] Generate constructor functions for structs
+- [x] Struct type checking: ensure fields match definition
+- [x] Module-scoped nominal typing (structs from different modules are different)
+- [x] Field access on struct values (updated field_access_form to handle Struct values)
+- [x] Display/debug formatting for struct instances
+- [x] Comprehensive test coverage (4 test files with snapshots)
 
-**Notes**: Structs provide nominal typing vs structural typing of records. Same field structure but different names = different types. Important for type safety and API design.
+**Implementation Notes**: 
+- Structs provide nominal typing vs structural typing of records. Same field structure but different names = different types. Important for type safety and API design.
+- Type constants (Integer, Float, String, Bool) are registered in environment for use in struct definitions
+- Struct constructor validates field presence and types when creating instances
+- IR generation for structs not yet implemented (returns error, can be added later)
+
+**Test Files**:
+- `struct-simple.cdz`: Basic struct definition, instantiation, and field access
+- `struct-nominal.cdz`: Demonstrates nominal typing with Point vs Vector
+- `struct-multiple-instances.cdz`: Multiple instances of Person struct
+- `struct-nested-types.cdz`: Inner and Outer structs with different field types
 
 ### Enum Types
 
