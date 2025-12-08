@@ -75,17 +75,16 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
     // Collect all pattern arms - they can be passed as individual args or in a block
     let mut arms = Vec::new();
-    
+
     for arg in &args[1..] {
         // Check if this is a __block__ containing multiple arms
-        if let Expr::Apply(apply) = arg {
-            if let Some(Expr::Synthetic(syn)) = apply.callee() {
-                if syn.identifier() == "__block__" {
-                    // It's a block - collect all arguments as arms
-                    arms.extend(apply.all_arguments());
-                    continue;
-                }
-            }
+        if let Expr::Apply(apply) = arg
+            && let Some(Expr::Synthetic(syn)) = apply.callee()
+            && syn.identifier() == "__block__"
+        {
+            // It's a block - collect all arguments as arms
+            arms.extend(apply.all_arguments());
+            continue;
         }
         // Otherwise, it's a single arm
         arms.push(arg.clone());
@@ -173,17 +172,16 @@ pub fn ir_match_with_state(
 
     // Collect all pattern arms - they can be passed as individual args or in a block
     let mut arms = Vec::new();
-    
+
     for arg in &args[1..] {
         // Check if this is a __block__ containing multiple arms
-        if let Expr::Apply(apply) = arg {
-            if let Some(Expr::Synthetic(syn)) = apply.callee() {
-                if syn.identifier() == "__block__" {
-                    // It's a block - collect all arguments as arms
-                    arms.extend(apply.all_arguments());
-                    continue;
-                }
-            }
+        if let Expr::Apply(apply) = arg
+            && let Some(Expr::Synthetic(syn)) = apply.callee()
+            && syn.identifier() == "__block__"
+        {
+            // It's a block - collect all arguments as arms
+            arms.extend(apply.all_arguments());
+            continue;
         }
         // Otherwise, it's a single arm
         arms.push(arg.clone());
