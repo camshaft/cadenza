@@ -28,10 +28,12 @@ use std::sync::OnceLock;
 ///
 /// # Examples
 /// ```cadenza
-/// match x > 0
-///     true -> "positive"
-///     false -> "negative or zero"
+/// match x > 0 (true -> "positive") (false -> "negative or zero")
 /// ```
+///
+/// Note: Outer parentheses are optional. Both syntaxes work:
+/// - `match x > 0 (true -> "positive") (false -> "negative")`
+/// - `(match x > 0 (true -> "positive") (false -> "negative"))`
 pub fn get() -> &'static BuiltinSpecialForm {
     static MATCH_FORM: OnceLock<BuiltinSpecialForm> = OnceLock::new();
     MATCH_FORM.get_or_init(|| BuiltinSpecialForm {
@@ -252,7 +254,7 @@ mod tests {
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
 
-        let input = "(match true (true -> 1) (false -> 2))";
+        let input = "match true (true -> 1) (false -> 2)";
         let parsed = parse(input);
         let root = parsed.ast();
 
@@ -267,7 +269,7 @@ mod tests {
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
 
-        let input = "(match false (true -> 1) (false -> 2))";
+        let input = "match false (true -> 1) (false -> 2)";
         let parsed = parse(input);
         let root = parsed.ast();
 
@@ -289,7 +291,7 @@ mod tests {
         let _results1 = crate::eval(&root1, &mut env, &mut compiler);
 
         // Then do the match
-        let input2 = "(match (x > 0) (true -> \"positive\") (false -> \"not positive\"))";
+        let input2 = "match x > 0 (true -> \"positive\") (false -> \"not positive\")";
         let parsed2 = parse(input2);
         let root2 = parsed2.ast();
         let results2 = crate::eval(&root2, &mut env, &mut compiler);

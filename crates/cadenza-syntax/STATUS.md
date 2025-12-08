@@ -195,25 +195,55 @@ The parser implements most core syntax features:
 
 ---
 
-### 8. Match Expressions ❌ NOT IMPLEMENTED
+### 8. Match Expressions ✅ COMPLETE (Basic Boolean Matching)
 
-**Status:** No pattern matching support.
+**Status:** Basic pattern matching on boolean values is working. The parser naturally supports match expressions through function application.
 
-**What's Needed:**
-1. Parse match arms with patterns and bodies
-2. Support `|` as pattern separator or indentation-based
-3. Represent as `Apply(match, [scrutinee, arm1, arm2, ...])`
-4. Each arm: `Apply(__arm__, [pattern, body])`
-5. Support pattern syntax: literals, identifiers, constructors
-6. Handle guard clauses: `pattern if condition -> body`
+**Working:**
+- Simple boolean patterns: `match x > 0 (true -> "positive") (false -> "negative")`
+- Nested match: `match a (true -> match b (true -> 1) (false -> 2)) (false -> 3)`
+- Both syntaxes work: with or without outer parentheses
+  - `match cond (true -> a) (false -> b)` ✅
+  - `(match cond (true -> a) (false -> b))` ✅
+- Pattern arms use arrow syntax: `pattern -> result`
+- Each arm is a parenthesized expression: `(pattern -> result)`
+
+**Implementation:**
+- Parser represents as left-associative function application: `[[[match, scrutinee], arm1], arm2]`
+- Special form evaluation in `cadenza-eval` handles boolean patterns
+- IR generation creates branching control flow with phi nodes
+- Full support in evaluation, IR, and WebAssembly compilation
+
+**Current Limitations:**
+- Only supports boolean patterns (`true`/`false`)
+- No support for literal patterns (numbers, strings)
+- No constructor patterns or destructuring
+- No guard clauses (`pattern if condition`)
+- No wildcard pattern (`_`)
+- No or-patterns (`pattern1 | pattern2`)
+
+**Future Work:**
+For comprehensive pattern matching, would need:
+1. Parse match arms with more pattern types
+2. Support `|` as pattern separator for or-patterns
+3. Support literal patterns (numbers, strings)
+4. Support constructor patterns for algebraic data types
+5. Handle guard clauses: `pattern if condition -> body`
+6. Wildcard pattern `_` for catch-all
 
 **Syntax Examples:**
 ```cadenza
+# Current (boolean patterns only)
+match x > 0 (true -> "positive") (false -> "negative")
+
+# Future (with more patterns)
 match x
     0 -> "zero"
     1 -> "one"
     _ -> "other"
 ```
+
+**Test Files:** `if-simple.cdz`, `fn-match-phi.cdz`, `match-no-parens.cdz` in cadenza-eval/test-data/
 
 **References:** `PARSER_ISSUES.md` Issue 8
 
