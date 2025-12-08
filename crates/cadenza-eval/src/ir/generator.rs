@@ -225,20 +225,30 @@ impl IrGenerator {
         let name = func.name;
 
         // Create a type environment for inference
-        let mut ctx = IrGenContext::new(env);
+        let mut inference_ctx = IrGenContext::new(env);
 
         // Create type variables for parameters
+        for p in &func.params {
+            self.create_param_type_var(*p, &mut inference_ctx);
+        }
+
+        // Infer the return type by inferring the body expression
+        let return_ty = self.infer_concrete_type(&func.body, &inference_ctx);
+
+        // Try to get inferred types for parameters from the type environment
         let param_types: Vec<(InternedString, Type)> = func
             .params
             .iter()
             .map(|p| {
-                self.create_param_type_var(*p, &mut ctx);
-                (*p, Type::Unknown) // We'll compute concrete type later if possible
+                // Try to infer the parameter type from the type environment
+                let ty = inference_ctx
+                    .type_env()
+                    .get(*p)
+                    .and_then(|infer_ty| infer_ty.to_concrete().ok())
+                    .unwrap_or(Type::Unknown);
+                (*p, ty)
             })
             .collect();
-
-        // Infer the return type by inferring the body expression
-        let return_ty = self.infer_concrete_type(&func.body, &ctx);
 
         let mut func_builder = self.builder.function(name, param_types.clone(), return_ty);
         // Register the function early so recursive calls can find it
@@ -248,14 +258,17 @@ impl IrGenerator {
         // Create the entry block
         let entry_block = func_builder.block();
 
-        // Reset context for IR generation (parameters get bound as SSA values)
+        // Create context for IR generation (parameters get bound as SSA values)
         let mut ctx = IrGenContext::new(env);
 
         // Bind parameters to their SSA values (v0, v1, ...)
-        // Also add them to the type environment
+        // Also add them to the type environment and value types map
         for (i, param_name) in func.params.iter().enumerate() {
-            self.create_param_type_var(*param_name, &mut ctx);
-            ctx.variables.insert(*param_name, ValueId(i as u32));
+            let value_id = ValueId(i as u32);
+            let param_ty = &param_types[i].1; // Get the type from param_types
+            let infer_ty = InferType::Concrete(param_ty.clone());
+            ctx.bind_var(*param_name, value_id, &infer_ty);
+            ctx.set_value_type(value_id, param_ty.clone());
         }
 
         // Create state for multi-block generation
