@@ -9,7 +9,7 @@
 //! - **Parser**: Builds GreenNode CST using cadenza-syntax token kinds
 //! - **AST**: Markdown elements become Apply nodes that call macros with content
 
-use cadenza_syntax::{parse::Parse, token::Kind};
+use cadenza_syntax::{parse::Parse, span::Span, token::Kind};
 use cadenza_tree::GreenNodeBuilder;
 
 /// Parse Markdown source into a Cadenza-compatible AST.
@@ -17,11 +17,16 @@ pub fn parse(src: &str) -> Parse {
     Parser::new(src).parse()
 }
 
+// Safety limits to prevent infinite loops
+const MAX_PARSE_ITERATIONS: usize = 100_000;
+const MAX_INLINE_RECURSION_DEPTH: usize = 100;
+
 struct Parser<'src> {
     src: &'src str,
     pos: usize,
     builder: GreenNodeBuilder,
     errors: Vec<cadenza_syntax::parse::ParseError>,
+    inline_recursion_depth: usize,
 }
 
 impl<'src> Parser<'src> {
@@ -31,17 +36,37 @@ impl<'src> Parser<'src> {
             pos: 0,
             builder: GreenNodeBuilder::new(),
             errors: Vec::new(),
+            inline_recursion_depth: 0,
         }
     }
 
     fn parse(mut self) -> Parse {
         self.builder.start_node(Kind::Root.into());
 
+        let mut iterations = 0;
         loop {
+            // Safety: prevent infinite loops
+            iterations += 1;
+            if iterations > MAX_PARSE_ITERATIONS {
+                self.errors.push(cadenza_syntax::parse::ParseError {
+                    span: Span {
+                        start: self.pos,
+                        end: self.pos,
+                    },
+                    message: format!(
+                        "Maximum parse iterations ({}) exceeded - possible infinite loop prevented",
+                        MAX_PARSE_ITERATIONS
+                    ),
+                });
+                break;
+            }
+
             self.skip_blank_lines();
             if self.pos >= self.src.len() {
                 break;
             }
+
+            let start_pos = self.pos;
 
             // Check what kind of element we're parsing
             if self.is_heading() {
@@ -53,6 +78,19 @@ impl<'src> Parser<'src> {
             } else {
                 // Default to paragraph
                 self.parse_paragraph();
+            }
+
+            // Safety: ensure we made progress
+            if self.pos == start_pos && self.pos < self.src.len() {
+                // If we didn't advance, skip one character to avoid infinite loop
+                self.pos += 1;
+                self.errors.push(cadenza_syntax::parse::ParseError {
+                    span: Span {
+                        start: start_pos,
+                        end: start_pos + 1,
+                    },
+                    message: "Unexpected character - skipped to prevent infinite loop".to_string(),
+                });
             }
         }
 
@@ -613,6 +651,19 @@ impl<'src> Parser<'src> {
     /// Parse inline elements within a text content range.
     /// Returns the content as either a simple string or a list of mixed inline elements.
     fn parse_inline_content(&mut self, content: &str, content_start: usize) {
+        // Safety: prevent stack overflow from deeply nested inline elements
+        if self.inline_recursion_depth >= MAX_INLINE_RECURSION_DEPTH {
+            // Emit as simple string to avoid further recursion
+            self.builder.start_node(Kind::Literal.into());
+            self.builder.start_node(Kind::StringContent.into());
+            self.builder.token(Kind::StringContent.into(), content);
+            self.builder.finish_node();
+            self.builder.finish_node();
+            return;
+        }
+
+        self.inline_recursion_depth += 1;
+
         // Check if there are any inline elements in the content
         if !self.has_inline_elements(content) {
             // No inline elements, just emit as string
@@ -625,6 +676,8 @@ impl<'src> Parser<'src> {
             // Has inline elements, parse them
             self.parse_inline_elements(content, content_start);
         }
+
+        self.inline_recursion_depth -= 1;
     }
 
     /// Check if content has any inline elements
@@ -643,8 +696,27 @@ impl<'src> Parser<'src> {
 
         let mut pos = 0;
         let bytes = content.as_bytes();
+        let mut iterations = 0;
+        const MAX_INLINE_ITERATIONS: usize = 10_000;
 
         while pos < bytes.len() {
+            // Safety: prevent infinite loops in inline parsing
+            iterations += 1;
+            if iterations > MAX_INLINE_ITERATIONS {
+                // Emit remaining content as plain text and exit
+                if pos < bytes.len() {
+                    let remaining = &content[pos..];
+                    self.builder.start_node(Kind::ApplyArgument.into());
+                    self.builder.start_node(Kind::Literal.into());
+                    self.builder.start_node(Kind::StringContent.into());
+                    self.builder.token(Kind::StringContent.into(), remaining);
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                    self.builder.finish_node();
+                }
+                break;
+            }
+
             // Check for inline code first (highest priority)
             if bytes[pos] == b'`' {
                 let code_start = pos;
