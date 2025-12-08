@@ -767,4 +767,194 @@ mod tests {
         // GCode parser should succeed
         assert!(parsed.errors.is_empty() || parsed.errors.len() < 10);
     }
+    
+    #[test]
+    fn test_syntax_node_to_cst_with_markdown() {
+        let source = r#"# Welcome to Cadenza!
+# A functional language with units of measure
+
+# Try some basic expressions
+42
+3.14159
+1 + 2 * 3
+
+# Define variables
+let name = "Cadenza"
+let version = 0.1
+
+# Create functions
+fn square x = x * x
+square 5
+"#;
+        
+        println!("Parsing markdown...");
+        let parsed = parse_with_syntax(source, Syntax::Markdown);
+        println!("Parse completed with {} errors", parsed.errors.len());
+        
+        println!("Converting to CST...");
+        let _cst = syntax_node_to_cst(&parsed.syntax());
+        println!("CST conversion completed!");
+    }
+}
+
+#[cfg(test)]
+mod wasm_serialization_tests {
+    use super::*;
+    
+    #[test]
+    fn test_parse_result_serialization_with_markdown() {
+        let source = r#"# Welcome to Cadenza!
+# A functional language with units of measure
+
+# Try some basic expressions
+42
+3.14159
+1 + 2 * 3
+
+# Define variables
+let name = "Cadenza"
+let version = 0.1
+
+# Create functions
+fn square x = x * x
+square 5
+"#;
+        
+        println!("Parsing markdown...");
+        let parsed = parse_with_syntax(source, Syntax::Markdown);
+        println!("Parse completed");
+        
+        println!("Converting to CST...");
+        let tree = syntax_node_to_cst(&parsed.syntax());
+        println!("CST conversion completed");
+        
+        let errors: Vec<ParseError> = parsed
+            .errors
+            .iter()
+            .map(|e| ParseError {
+                start: e.span.start,
+                end: e.span.end,
+                message: e.message.clone(),
+            })
+            .collect();
+        
+        let result = ParseResult {
+            tree,
+            errors,
+            success: true,
+        };
+        
+        println!("Serializing with serde_wasm_bindgen...");
+        let _serialized = serde_wasm_bindgen::to_value(&result).expect("Failed to serialize");
+        println!("Serialization completed!");
+    }
+}
+
+#[cfg(test)]
+mod tree_analysis_tests {
+    use super::*;
+    
+    fn analyze_cst_depth(node: &CstNode, depth: usize) -> (usize, usize) {
+        let mut max_depth = depth;
+        let mut total_nodes = 1;
+        
+        for child in &node.children {
+            let (child_depth, child_nodes) = analyze_cst_depth(child, depth + 1);
+            max_depth = max_depth.max(child_depth);
+            total_nodes += child_nodes;
+        }
+        
+        (max_depth, total_nodes)
+    }
+    
+    #[test]
+    fn test_markdown_cst_tree_size() {
+        let source = r#"# Welcome to Cadenza!
+# A functional language with units of measure
+
+# Try some basic expressions
+42
+3.14159
+1 + 2 * 3
+
+# Define variables
+let name = "Cadenza"
+let version = 0.1
+
+# Create functions
+fn square x = x * x
+square 5
+"#;
+        
+        println!("Parsing markdown...");
+        let parsed = parse_with_syntax(source, Syntax::Markdown);
+        
+        println!("Converting to CST...");
+        let tree = syntax_node_to_cst(&parsed.syntax());
+        
+        let (max_depth, total_nodes) = analyze_cst_depth(&tree, 0);
+        
+        println!("Max depth: {}", max_depth);
+        println!("Total nodes: {}", total_nodes);
+        
+        // Sanity checks - if these fail, there might be an issue
+        assert!(max_depth < 1000, "Tree depth is suspiciously high: {}", max_depth);
+        assert!(total_nodes < 10000, "Too many nodes: {}", total_nodes);
+    }
+}
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+    
+    #[test]
+    fn test_markdown_parse_empty_string() {
+        let _result = parse_with_syntax("", Syntax::Markdown);
+        let _cst = syntax_node_to_cst(&_result.syntax());
+    }
+    
+    #[test]
+    fn test_markdown_parse_single_char() {
+        let _result = parse_with_syntax("a", Syntax::Markdown);
+        let _cst = syntax_node_to_cst(&_result.syntax());
+    }
+    
+    #[test]
+    fn test_markdown_parse_only_whitespace() {
+        let _result = parse_with_syntax("   \n\n  \n", Syntax::Markdown);
+        let _cst = syntax_node_to_cst(&_result.syntax());
+    }
+}
+
+#[cfg(test)]
+mod all_syntax_tests {
+    use super::*;
+    
+    #[test]
+    fn test_all_syntaxes_with_cadenza_example() {
+        let source = r#"# Welcome to Cadenza!
+# A functional language with units of measure
+
+# Try some basic expressions
+42
+3.14159
+1 + 2 * 3
+
+# Define variables
+let name = "Cadenza"
+let version = 0.1
+
+# Create functions
+fn square x = x * x
+square 5
+"#;
+        
+        for syntax in &[Syntax::Cadenza, Syntax::Markdown, Syntax::Sql, Syntax::Gcode] {
+            println!("Testing {:?}...", syntax);
+            let parsed = parse_with_syntax(source, *syntax);
+            let _cst = syntax_node_to_cst(&parsed.syntax());
+            let _ast_root = parsed.ast();
+            println!("  ✓ {:?} completed", syntax);
+        }
+    }
 }
