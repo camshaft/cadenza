@@ -75,6 +75,19 @@ fn eval_field_access(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> 
                     .with_span(field_span),
             )
         }
+        Value::Struct { type_name: _, fields } => {
+            // Look up the field in the struct
+            for (name, value) in fields {
+                if name == field_name {
+                    return Ok(value);
+                }
+            }
+            // Field not found
+            Err(
+                Diagnostic::syntax(format!("field '{}' not found in struct", &*field_name))
+                    .with_span(field_span),
+            )
+        }
         other => Err(Diagnostic::type_error(
             Type::Record(vec![]),
             other.type_of(),

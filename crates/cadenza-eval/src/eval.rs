@@ -376,6 +376,66 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
                 dimension,
             })
         }
+        Value::StructConstructor { name, field_types } => {
+            // Struct constructors create struct instances from field assignments
+            // Expect exactly one argument: a record with field values
+            if args.len() != 1 {
+                return Err(Diagnostic::arity(1, args.len()));
+            }
+
+            // The argument should be a record with field values
+            match &args[0] {
+                Value::Record(field_values) => {
+                    // Validate that all required fields are provided and have correct types
+                    if field_values.len() != field_types.len() {
+                        return Err(Diagnostic::syntax(&format!(
+                            "struct {} expects {} fields, got {}",
+                            &*name,
+                            field_types.len(),
+                            field_values.len()
+                        )));
+                    }
+
+                    // Check that all fields are present and types match
+                    let mut validated_fields = Vec::with_capacity(field_types.len());
+                    for (expected_name, expected_type) in &field_types {
+                        // Find the field in the provided values
+                        let mut found = false;
+                        for (field_name, field_value) in field_values {
+                            if field_name == expected_name {
+                                // Check that the type matches
+                                let actual_type = field_value.type_of();
+                                if !types_compatible(expected_type, &actual_type) {
+                                    return Err(Diagnostic::type_error(
+                                        expected_type.clone(),
+                                        actual_type,
+                                    ));
+                                }
+                                validated_fields.push((*field_name, field_value.clone()));
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            return Err(Diagnostic::syntax(&format!(
+                                "struct {} missing required field '{}'",
+                                &*name, &*expected_name
+                            )));
+                        }
+                    }
+
+                    // Create the struct instance
+                    Ok(Value::Struct {
+                        type_name: name,
+                        fields: validated_fields,
+                    })
+                }
+                _ => Err(Diagnostic::syntax(&format!(
+                    "struct constructor {} expects a record argument",
+                    &*name
+                ))),
+            }
+        }
         Value::UserFunction(user_fn) => {
             // Check arity
             if args.len() != user_fn.params.len() {
@@ -430,6 +490,19 @@ fn create_numeric_value(
             Value::Float(value)
         }
     }
+}
+
+/// Helper function to check if two types are compatible.
+///
+/// For now, this is a simple check that accepts Unknown types as compatible with anything.
+/// A more sophisticated type checker would perform proper unification.
+fn types_compatible(expected: &Type, actual: &Type) -> bool {
+    // Unknown types are compatible with anything
+    if matches!(expected, Type::Unknown) || matches!(actual, Type::Unknown) {
+        return true;
+    }
+    // Otherwise, types must be equal
+    expected == actual
 }
 
 impl Eval for Attr {

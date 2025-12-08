@@ -11,7 +11,7 @@ use crate::{
     interner::InternedString,
     map::Map,
     special_form,
-    value::Value,
+    value::{Type, Value},
 };
 use std::{collections::HashSet, rc::Rc};
 
@@ -123,6 +123,7 @@ impl Env {
         let list_id: InternedString = "__list__".into();
         let record_id: InternedString = "__record__".into();
         let index_id: InternedString = "__index__".into();
+        let struct_id: InternedString = "struct".into();
 
         self.define(let_id, Value::SpecialForm(special_form::let_form::get()));
         self.define(
@@ -163,6 +164,10 @@ impl Env {
             index_id,
             Value::SpecialForm(special_form::index_form::get()),
         );
+        self.define(
+            struct_id,
+            Value::SpecialForm(special_form::struct_form::get()),
+        );
 
         // Arithmetic operators
         let add_id: InternedString = "+".into();
@@ -195,6 +200,16 @@ impl Env {
         let false_id: InternedString = "false".into();
         self.define(true_id, Value::Bool(true));
         self.define(false_id, Value::Bool(false));
+
+        // Type constants (for use in struct definitions, etc.)
+        let integer_type_id: InternedString = "Integer".into();
+        let float_type_id: InternedString = "Float".into();
+        let string_type_id: InternedString = "String".into();
+        let bool_type_id: InternedString = "Bool".into();
+        self.define(integer_type_id, Value::Type(Type::Integer));
+        self.define(float_type_id, Value::Type(Type::Float));
+        self.define(string_type_id, Value::Type(Type::String));
+        self.define(bool_type_id, Value::Type(Type::Bool));
 
         // Field access operator
         let dot_id: InternedString = ".".into();

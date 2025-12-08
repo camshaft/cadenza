@@ -395,6 +395,17 @@ impl InferType {
                     .map(|(name, ty)| (*name, InferType::from_concrete(ty)))
                     .collect(),
             ),
+            Type::Struct { name: _, fields } => {
+                // For now, treat structs as nominal records
+                // We could add a separate InferType::Struct variant later for better type checking
+                // but for initial implementation, structs are similar to records with a name tag
+                InferType::Record(
+                    fields
+                        .iter()
+                        .map(|(field_name, ty)| (*field_name, InferType::from_concrete(ty)))
+                        .collect(),
+                )
+            }
             Type::Tuple(elems) => {
                 InferType::Tuple(elems.iter().map(InferType::from_concrete).collect())
             }

@@ -2414,6 +2414,47 @@ mod measure_conversion {
         );
     }
 }
+mod struct_simple {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "struct_simple",
+            t::eval_all(
+                "struct Point {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\np.x\n"
+            ),
+            "struct Point {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\np.x\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "struct_simple_ast",
+            t::ast(
+                "struct Point {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\np.x\n"
+            ),
+            "struct Point {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\np.x\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "struct_simple_ir",
+            t::ir(
+                "struct Point {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\np.x\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "struct_simple_wat",
+            t::wat(
+                "struct Point {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\np.x\n"
+            )
+        );
+    }
+}
 mod measure_scalar_ops {
     use super::*;
     #[test]
