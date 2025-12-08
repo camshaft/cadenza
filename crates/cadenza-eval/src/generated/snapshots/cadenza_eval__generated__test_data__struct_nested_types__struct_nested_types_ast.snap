@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "struct Inner {\n  value = Integer,\n}\n\nstruct Outer {\n  inner = Integer,\n  count = Integer,\n}\n\nlet inner_obj = Inner { value = 42 }\nlet outer_obj = Outer { inner = 10, count = 5 }\n\ninner_obj.value\nouter_obj.count\n"
+---
+[
+    [[struct, Inner], [__record__, [=, value, Integer]]],
+    [[struct, Outer], [__record__, [=, inner, Integer], [=, count, Integer]]],
+    [=, [let, inner_obj], [Inner, [__record__, [=, value, 42]]]],
+    [=, [let, outer_obj], [Outer, [__record__, [=, inner, 10], [=, count, 5]]]],
+    [., inner_obj, value],
+    [., outer_obj, count],
+]

@@ -1,0 +1,10 @@
+struct Person {
+  name = String,
+  age = Integer,
+}
+
+let alice = Person { name = "Alice", age = 30 }
+let bob = Person { name = "Bob", age = 25 }
+
+alice.name
+bob.age

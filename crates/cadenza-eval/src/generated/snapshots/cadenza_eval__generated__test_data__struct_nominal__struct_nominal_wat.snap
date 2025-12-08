@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::wat(\"# Test nominal typing - two structs with same structure should be different types\\nstruct Point {\\n  x = Integer,\\n  y = Integer,\\n}\\n\\nstruct Vector {\\n  x = Integer,\\n  y = Integer,\\n}\\n\\nlet p = Point { x = 1, y = 2 }\\nlet v = Vector { x = 1, y = 2 }\\n\\n# Points and vectors are different types even though they have the same fields\\n# This demonstrates nominal typing\\np\\nv\\n\")"
+---
+(module)

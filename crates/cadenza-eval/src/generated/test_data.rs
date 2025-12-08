@@ -426,6 +426,47 @@ mod cmp_eq {
         ss!("cmp_eq_wat", t::wat("1 == 1\n"));
     }
 }
+mod struct_multiple_instances {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "struct_multiple_instances",
+            t::eval_all(
+                "struct Person {\n  name = String,\n  age = Integer,\n}\n\nlet alice = Person { name = \"Alice\", age = 30 }\nlet bob = Person { name = \"Bob\", age = 25 }\n\nalice.name\nbob.age\n"
+            ),
+            "struct Person {\n  name = String,\n  age = Integer,\n}\n\nlet alice = Person { name = \"Alice\", age = 30 }\nlet bob = Person { name = \"Bob\", age = 25 }\n\nalice.name\nbob.age\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "struct_multiple_instances_ast",
+            t::ast(
+                "struct Person {\n  name = String,\n  age = Integer,\n}\n\nlet alice = Person { name = \"Alice\", age = 30 }\nlet bob = Person { name = \"Bob\", age = 25 }\n\nalice.name\nbob.age\n"
+            ),
+            "struct Person {\n  name = String,\n  age = Integer,\n}\n\nlet alice = Person { name = \"Alice\", age = 30 }\nlet bob = Person { name = \"Bob\", age = 25 }\n\nalice.name\nbob.age\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "struct_multiple_instances_ir",
+            t::ir(
+                "struct Person {\n  name = String,\n  age = Integer,\n}\n\nlet alice = Person { name = \"Alice\", age = 30 }\nlet bob = Person { name = \"Bob\", age = 25 }\n\nalice.name\nbob.age\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "struct_multiple_instances_wat",
+            t::wat(
+                "struct Person {\n  name = String,\n  age = Integer,\n}\n\nlet alice = Person { name = \"Alice\", age = 30 }\nlet bob = Person { name = \"Bob\", age = 25 }\n\nalice.name\nbob.age\n"
+            )
+        );
+    }
+}
 mod example_07_measures {
     use super::*;
     #[test]
@@ -901,6 +942,47 @@ mod fn_auto_apply {
     #[test]
     fn wat() {
         ss!("fn_auto_apply_wat", t::wat("fn add x y = x + y\nadd\n"));
+    }
+}
+mod struct_nominal {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "struct_nominal",
+            t::eval_all(
+                "# Test nominal typing - two structs with same structure should be different types\nstruct Point {\n  x = Integer,\n  y = Integer,\n}\n\nstruct Vector {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\nlet v = Vector { x = 1, y = 2 }\n\n# Points and vectors are different types even though they have the same fields\n# This demonstrates nominal typing\np\nv\n"
+            ),
+            "# Test nominal typing - two structs with same structure should be different types\nstruct Point {\n  x = Integer,\n  y = Integer,\n}\n\nstruct Vector {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\nlet v = Vector { x = 1, y = 2 }\n\n# Points and vectors are different types even though they have the same fields\n# This demonstrates nominal typing\np\nv\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "struct_nominal_ast",
+            t::ast(
+                "# Test nominal typing - two structs with same structure should be different types\nstruct Point {\n  x = Integer,\n  y = Integer,\n}\n\nstruct Vector {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\nlet v = Vector { x = 1, y = 2 }\n\n# Points and vectors are different types even though they have the same fields\n# This demonstrates nominal typing\np\nv\n"
+            ),
+            "# Test nominal typing - two structs with same structure should be different types\nstruct Point {\n  x = Integer,\n  y = Integer,\n}\n\nstruct Vector {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\nlet v = Vector { x = 1, y = 2 }\n\n# Points and vectors are different types even though they have the same fields\n# This demonstrates nominal typing\np\nv\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "struct_nominal_ir",
+            t::ir(
+                "# Test nominal typing - two structs with same structure should be different types\nstruct Point {\n  x = Integer,\n  y = Integer,\n}\n\nstruct Vector {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\nlet v = Vector { x = 1, y = 2 }\n\n# Points and vectors are different types even though they have the same fields\n# This demonstrates nominal typing\np\nv\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "struct_nominal_wat",
+            t::wat(
+                "# Test nominal typing - two structs with same structure should be different types\nstruct Point {\n  x = Integer,\n  y = Integer,\n}\n\nstruct Vector {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\nlet v = Vector { x = 1, y = 2 }\n\n# Points and vectors are different types even though they have the same fields\n# This demonstrates nominal typing\np\nv\n"
+            )
+        );
     }
 }
 mod assert_pass {
@@ -2647,6 +2729,47 @@ mod cmp_gt {
     #[test]
     fn wat() {
         ss!("cmp_gt_wat", t::wat("2 > 1\n"));
+    }
+}
+mod struct_nested_types {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "struct_nested_types",
+            t::eval_all(
+                "struct Inner {\n  value = Integer,\n}\n\nstruct Outer {\n  inner = Integer,\n  count = Integer,\n}\n\nlet inner_obj = Inner { value = 42 }\nlet outer_obj = Outer { inner = 10, count = 5 }\n\ninner_obj.value\nouter_obj.count\n"
+            ),
+            "struct Inner {\n  value = Integer,\n}\n\nstruct Outer {\n  inner = Integer,\n  count = Integer,\n}\n\nlet inner_obj = Inner { value = 42 }\nlet outer_obj = Outer { inner = 10, count = 5 }\n\ninner_obj.value\nouter_obj.count\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "struct_nested_types_ast",
+            t::ast(
+                "struct Inner {\n  value = Integer,\n}\n\nstruct Outer {\n  inner = Integer,\n  count = Integer,\n}\n\nlet inner_obj = Inner { value = 42 }\nlet outer_obj = Outer { inner = 10, count = 5 }\n\ninner_obj.value\nouter_obj.count\n"
+            ),
+            "struct Inner {\n  value = Integer,\n}\n\nstruct Outer {\n  inner = Integer,\n  count = Integer,\n}\n\nlet inner_obj = Inner { value = 42 }\nlet outer_obj = Outer { inner = 10, count = 5 }\n\ninner_obj.value\nouter_obj.count\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "struct_nested_types_ir",
+            t::ir(
+                "struct Inner {\n  value = Integer,\n}\n\nstruct Outer {\n  inner = Integer,\n  count = Integer,\n}\n\nlet inner_obj = Inner { value = 42 }\nlet outer_obj = Outer { inner = 10, count = 5 }\n\ninner_obj.value\nouter_obj.count\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "struct_nested_types_wat",
+            t::wat(
+                "struct Inner {\n  value = Integer,\n}\n\nstruct Outer {\n  inner = Integer,\n  count = Integer,\n}\n\nlet inner_obj = Inner { value = 42 }\nlet outer_obj = Outer { inner = 10, count = 5 }\n\ninner_obj.value\nouter_obj.count\n"
+            )
+        );
     }
 }
 mod error_cmp_type_mismatch_lt {

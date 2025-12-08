@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "struct Person {\n  name = String,\n  age = Integer,\n}\n\nlet alice = Person { name = \"Alice\", age = 30 }\nlet bob = Person { name = \"Bob\", age = 25 }\n\nalice.name\nbob.age\n"
+---
+[
+    [[struct, Person], [__record__, [=, name, String], [=, age, Integer]]],
+    [=, [let, alice], [Person, [__record__, [=, name, "Alice"], [=, age, 30]]]],
+    [=, [let, bob], [Person, [__record__, [=, name, "Bob"], [=, age, 25]]]],
+    [., alice, name],
+    [., bob, age],
+]
