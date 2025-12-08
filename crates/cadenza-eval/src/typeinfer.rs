@@ -807,10 +807,10 @@ impl TypeInferencer {
 
             // Type variable unifies with anything (occurs check)
             (InferType::Var(v), t) | (t, InferType::Var(v)) => {
-                if let InferType::Var(v2) = t {
-                    if v == v2 {
-                        return Ok(Substitution::new());
-                    }
+                if let InferType::Var(v2) = t
+                    && v == v2
+                {
+                    return Ok(Substitution::new());
                 }
                 // Occurs check: prevent infinite types
                 if t.free_vars().contains(v) {

@@ -58,18 +58,17 @@ fn fold_constants_in_function(func: &mut IrFunction) -> bool {
                     // Try to fold binary operations with constant operands
                     if let (Some(lhs_const), Some(rhs_const)) =
                         (const_values.get(lhs), const_values.get(rhs))
+                        && let Some(folded) = fold_binop(op_copy, lhs_const, rhs_const)
                     {
-                        if let Some(folded) = fold_binop(op_copy, lhs_const, rhs_const) {
-                            // Replace this instruction with a const
-                            *instr = IrInstr::Const {
-                                result: result_id,
-                                ty: ty_copy,
-                                value: folded.clone(),
-                                source: source_copy,
-                            };
-                            const_values.insert(result_id, folded);
-                            changed = true;
-                        }
+                        // Replace this instruction with a const
+                        *instr = IrInstr::Const {
+                            result: result_id,
+                            ty: ty_copy,
+                            value: folded.clone(),
+                            source: source_copy,
+                        };
+                        const_values.insert(result_id, folded);
+                        changed = true;
                     }
                 }
                 IrInstr::UnOp {
@@ -86,17 +85,17 @@ fn fold_constants_in_function(func: &mut IrFunction) -> bool {
                     let source_copy = *source;
 
                     // Try to fold unary operations with constant operands
-                    if let Some(operand_const) = const_values.get(operand) {
-                        if let Some(folded) = fold_unop(op_copy, operand_const) {
-                            *instr = IrInstr::Const {
-                                result: result_id,
-                                ty: ty_copy,
-                                value: folded.clone(),
-                                source: source_copy,
-                            };
-                            const_values.insert(result_id, folded);
-                            changed = true;
-                        }
+                    if let Some(operand_const) = const_values.get(operand)
+                        && let Some(folded) = fold_unop(op_copy, operand_const)
+                    {
+                        *instr = IrInstr::Const {
+                            result: result_id,
+                            ty: ty_copy,
+                            value: folded.clone(),
+                            source: source_copy,
+                        };
+                        const_values.insert(result_id, folded);
+                        changed = true;
                     }
                 }
                 _ => {}

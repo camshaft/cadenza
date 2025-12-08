@@ -25,6 +25,3 @@ cadenza-lsp = { path = "../cadenza-lsp" }
 wasm-bindgen.workspace = true
 serde.workspace = true
 serde-wasm-bindgen.workspace = true
-
-[dev-dependencies]
-wasm-bindgen-test = "0.3"

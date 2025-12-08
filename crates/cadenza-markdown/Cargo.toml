@@ -7,7 +7,6 @@ repository.workspace = true
 build = "build/main.rs"
 
 [dependencies]
-cadenza-eval = { path = "../cadenza-eval" }
 cadenza-sql = { path = "../cadenza-sql" }
 cadenza-syntax = { path = "../cadenza-syntax" }
 cadenza-tree = { path = "../cadenza-tree" }

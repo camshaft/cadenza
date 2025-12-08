@@ -85,10 +85,10 @@ impl<L: Language> SyntaxNode<L> {
     /// Check if this node has exactly one token and return its text if so.
     fn single_token_text(&self) -> Option<SyntaxText> {
         let children = self.green.children();
-        if children.len() == 1 {
-            if let GreenElement::Token(token) = &children[0] {
-                return Some(*token.text());
-            }
+        if children.len() == 1
+            && let GreenElement::Token(token) = &children[0]
+        {
+            return Some(*token.text());
         }
         None
     }
@@ -153,10 +153,10 @@ impl<L: Language> SyntaxNode<L> {
     fn child_node(&self, green: &GreenNode) -> SyntaxNode<L> {
         // Find this child's index
         for (i, child) in self.green.children().iter().enumerate() {
-            if let GreenElement::Node(n) = child {
-                if n == green {
-                    return self.child_at_index(green.clone(), i);
-                }
+            if let GreenElement::Node(n) = child
+                && n == green
+            {
+                return self.child_at_index(green.clone(), i);
             }
         }
         panic!("child not found in parent");
