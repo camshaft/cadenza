@@ -2726,6 +2726,47 @@ mod field_assign_missing_field {
         );
     }
 }
+mod fn_match_phi {
+    use super::*;
+    #[test]
+    fn eval() {
+        s!(
+            "fn_match_phi",
+            t::eval_all(
+                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+            ),
+            "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+        );
+    }
+    #[test]
+    fn ast() {
+        s!(
+            "fn_match_phi_ast",
+            t::ast(
+                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+            ),
+            "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+        );
+    }
+    #[test]
+    fn ir() {
+        ss!(
+            "fn_match_phi_ir",
+            t::ir(
+                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+            )
+        );
+    }
+    #[test]
+    fn wat() {
+        ss!(
+            "fn_match_phi_wat",
+            t::wat(
+                "# Test function with match that generates phi nodes\n\nfn abs x = (match x > 0 (true -> x) (false -> 0 - x))\n\nabs 5\nabs (-3)\n"
+            )
+        );
+    }
+}
 mod multi_expr {
     use super::*;
     #[test]

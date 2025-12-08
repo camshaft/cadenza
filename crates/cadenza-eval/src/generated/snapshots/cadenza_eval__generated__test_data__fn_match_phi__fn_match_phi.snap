@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test function with match that generates phi nodes\n\nfn abs x =\n    match x > 0\n        (true -> x)\n        (false -> 0 - x)\n\nabs 5\nabs (-3)\n"
+---
+EvalResult {
+    values: [
+        nil,
+        5,
+        3,
+    ],
+    diagnostics: [],
+}

@@ -61,6 +61,21 @@ impl ValueLocationTracker {
     }
 }
 
+/// Information about an if-then-else-merge pattern with phi node.
+#[derive(Debug)]
+struct MergePhiPattern {
+    /// The merge block ID
+    merge_block: BlockId,
+    /// The phi node's result value
+    phi_result: ValueId,
+    /// The type of the phi result
+    phi_type: Type,
+    /// The value from the then branch
+    then_value: ValueId,
+    /// The value from the else branch
+    else_value: ValueId,
+}
+
 /// WASM code generator for IR.
 pub struct WasmCodegen {
     /// The WASM module being built.
@@ -259,6 +274,110 @@ impl WasmCodegen {
         Ok(())
     }
 
+    /// Detect if both branches jump to the same merge block with a phi node.
+    ///
+    /// This pattern can be compiled to WASM's `if` instruction with a result type,
+    /// where each branch leaves its value on the stack.
+    fn detect_merge_phi_pattern(
+        &self,
+        then_block_id: BlockId,
+        else_block_id: BlockId,
+        blocks: &HashMap<BlockId, &IrBlock>,
+    ) -> Option<MergePhiPattern> {
+        // Get the then and else blocks
+        let then_block = blocks.get(&then_block_id)?;
+        let else_block = blocks.get(&else_block_id)?;
+
+        // Check if both blocks end with a Jump to the same target
+        let then_target = match &then_block.terminator {
+            IrTerminator::Jump { target, .. } => *target,
+            _ => return None,
+        };
+
+        let else_target = match &else_block.terminator {
+            IrTerminator::Jump { target, .. } => *target,
+            _ => return None,
+        };
+
+        if then_target != else_target {
+            return None;
+        }
+
+        // Check if the merge block has a phi node as its first instruction
+        let merge_block = blocks.get(&then_target)?;
+        let phi_instr = merge_block.instructions.first()?;
+
+        if let IrInstr::Phi {
+            result,
+            ty,
+            incoming,
+            ..
+        } = phi_instr
+        {
+            // Find the values from the then and else branches
+            let mut then_value = None;
+            let mut else_value = None;
+
+            for (value, block) in incoming {
+                if *block == then_block_id {
+                    then_value = Some(*value);
+                } else if *block == else_block_id {
+                    else_value = Some(*value);
+                }
+            }
+
+            if let (Some(then_val), Some(else_val)) = (then_value, else_value) {
+                return Some(MergePhiPattern {
+                    merge_block: then_target,
+                    phi_result: *result,
+                    phi_type: ty.clone(),
+                    then_value: then_val,
+                    else_value: else_val,
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Generate code for a block that's part of a phi branch.
+    ///
+    /// This is similar to `generate_block_recursive` but ensures the block
+    /// leaves the specified value on the stack instead of jumping to the merge block.
+    fn generate_block_for_phi_branch(
+        &self,
+        func: &mut Function,
+        block_id: BlockId,
+        result_value: ValueId,
+        blocks: &HashMap<BlockId, &IrBlock>,
+        tracker: &ValueLocationTracker,
+        visited: &mut HashSet<BlockId>,
+    ) -> Result<(), String> {
+        visited.insert(block_id);
+
+        let block = blocks
+            .get(&block_id)
+            .ok_or_else(|| format!("Block {} not found", block_id))?;
+
+        // Generate all instructions (excluding phi nodes)
+        for instr in &block.instructions {
+            if matches!(instr, IrInstr::Phi { .. }) {
+                // Skip phi nodes in branch blocks
+                continue;
+            }
+            self.generate_instruction(func, instr, tracker)?;
+        }
+
+        // Instead of generating the terminator (which would be a jump),
+        // load the result value onto the stack
+        let local_idx = tracker
+            .get_local(result_value)
+            .ok_or_else(|| format!("No local for phi branch value {}", result_value))?;
+        func.instruction(&Instruction::LocalGet(local_idx));
+
+        Ok(())
+    }
+
     /// Generate code for a block and its successors recursively.
     ///
     /// The `visited` set tracks which blocks have been generated to avoid infinite loops.
@@ -356,30 +475,115 @@ impl WasmCodegen {
                     .ok_or_else(|| format!("No local for branch condition {}", cond))?;
                 func.instruction(&Instruction::LocalGet(cond_local));
 
-                // Try to detect if-then-else-merge pattern for structured control flow
-                // For now, generate a simple if-else structure and recurse into branches
-                // Note: This is a simplified implementation that may not handle all cases
+                // Check if this is an if-then-else-merge pattern with phi node
+                if let Some(phi_pattern) =
+                    self.detect_merge_phi_pattern(*then_block, *else_block, blocks)
+                {
+                    // Generate if with result type (the phi's type)
+                    let phi_wasm_type = self.type_to_wasm(&phi_pattern.phi_type)?;
+                    func.instruction(&Instruction::If(wasm_encoder::BlockType::Result(
+                        phi_wasm_type,
+                    )));
 
-                // Emit if instruction (result type is based on the blocks' return)
-                // For simplicity, use empty type (no result on stack from if)
-                func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+                    // Generate then block (nested in control structure)
+                    // It should end by loading the then_value onto the stack
+                    self.generate_block_for_phi_branch(
+                        func,
+                        *then_block,
+                        phi_pattern.then_value,
+                        blocks,
+                        tracker,
+                        visited,
+                    )?;
 
-                // Generate then block (nested in control structure)
-                self.generate_block_recursive(func, *then_block, blocks, tracker, visited, true)?;
+                    // Emit else
+                    func.instruction(&Instruction::Else);
 
-                // Emit else
-                func.instruction(&Instruction::Else);
+                    // Generate else block (nested in control structure)
+                    // It should end by loading the else_value onto the stack
+                    self.generate_block_for_phi_branch(
+                        func,
+                        *else_block,
+                        phi_pattern.else_value,
+                        blocks,
+                        tracker,
+                        visited,
+                    )?;
 
-                // Generate else block (nested in control structure)
-                self.generate_block_recursive(func, *else_block, blocks, tracker, visited, true)?;
-
-                // End if-else
-                func.instruction(&Instruction::End);
-
-                // If we're at function level (not nested in another control structure),
-                // and both branches returned, we still need to close the function body
-                if !in_control_structure {
+                    // End if-else
                     func.instruction(&Instruction::End);
+
+                    // Store the result (now on stack) to the phi result's local
+                    let phi_local = tracker
+                        .get_local(phi_pattern.phi_result)
+                        .ok_or_else(|| {
+                            format!("No local for phi result {}", phi_pattern.phi_result)
+                        })?;
+                    func.instruction(&Instruction::LocalSet(phi_local));
+
+                    // Mark the merge block as visited so we skip generating it later
+                    // But still generate the rest of the merge block (after the phi)
+                    visited.insert(phi_pattern.merge_block);
+                    
+                    // Continue with the rest of the merge block (after the phi node)
+                    let merge_block = blocks
+                        .get(&phi_pattern.merge_block)
+                        .ok_or_else(|| format!("Merge block {} not found", phi_pattern.merge_block))?;
+                    
+                    // Generate instructions after the phi node
+                    for instr in merge_block.instructions.iter().skip(1) {
+                        self.generate_instruction(func, instr, tracker)?;
+                    }
+                    
+                    // Generate the merge block's terminator
+                    match &merge_block.terminator {
+                        IrTerminator::Return { value, .. } => {
+                            if let Some(value_id) = value {
+                                let local_idx = tracker
+                                    .get_local(*value_id)
+                                    .ok_or_else(|| format!("No local for return value {}", value_id))?;
+                                func.instruction(&Instruction::LocalGet(local_idx));
+                            }
+                            if !in_control_structure {
+                                func.instruction(&Instruction::End);
+                            }
+                        }
+                        IrTerminator::Jump { target, .. } => {
+                            // Continue with the target block
+                            self.generate_block_recursive(
+                                func,
+                                *target,
+                                blocks,
+                                tracker,
+                                visited,
+                                in_control_structure,
+                            )?;
+                        }
+                        IrTerminator::Branch { .. } => {
+                            return Err("Nested branches in merge block not yet supported".to_string());
+                        }
+                    }
+                } else {
+                    // No phi pattern detected, use simple if-else structure
+                    func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+
+                    // Generate then block (nested in control structure)
+                    self.generate_block_recursive(func, *then_block, blocks, tracker, visited, true)?;
+
+                    // Emit else
+                    func.instruction(&Instruction::Else);
+
+                    // Generate else block (nested in control structure)
+                    self.generate_block_recursive(func, *else_block, blocks, tracker, visited, true)?;
+
+                    // End if-else
+                    func.instruction(&Instruction::End);
+
+                    // If we're at function level (not nested in another control structure),
+                    // and both branches returned, we still need to close the function body
+                    if !in_control_structure {
+                        func.instruction(&Instruction::End);
+                    }
                 }
             }
             IrTerminator::Jump { target, .. } => {
@@ -490,8 +694,13 @@ impl WasmCodegen {
                 return Err("Tuple types not yet implemented for WASM".to_string());
             }
             IrInstr::Phi { .. } => {
-                // Phi nodes are typically handled during SSA deconstruction
-                return Err("Phi nodes should be eliminated before WASM codegen".to_string());
+                // Phi nodes are handled specially in the phi-merge pattern detection.
+                // When we generate an if-then-else with a merge block containing a phi,
+                // we use the phi's result type for the if instruction and each branch
+                // leaves its value on the stack. The phi itself is skipped.
+                // If we encounter a phi node here, it means it wasn't part of a
+                // recognized pattern, which is an error.
+                return Err("Phi node encountered outside of if-then-else-merge pattern".to_string());
             }
         }
         Ok(())
