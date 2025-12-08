@@ -1,8 +1,0 @@
----
-source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "# Test let with block RHS\nlet x =\n    foo\n    bar\nx\n"
----
-[
-    [=, [let, x], [__block__, foo, bar]],
-    x,
-]

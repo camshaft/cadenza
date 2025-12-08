@@ -1,7 +1,0 @@
----
-source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "# Test block with arrows\nfoo\n    a -> b\n    c -> d\n"
----
-[
-    [->, [[->, [foo, a], b], c], d],
-]

@@ -1,5 +1,0 @@
----
-source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "t::wat(\"# Match on single line without outer parens\\nmatch true (true -> 42) (false -> 0)\\n\")"
----
-(module)

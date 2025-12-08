@@ -1,7 +1,0 @@
----
-source: crates/cadenza-syntax/src/generated/test_data.rs
-expression: "{ a = 1, # comment\nb = 2 }\n"
----
-[
-    [__record__, [=, a, 1], [=, b, 2]],
-]

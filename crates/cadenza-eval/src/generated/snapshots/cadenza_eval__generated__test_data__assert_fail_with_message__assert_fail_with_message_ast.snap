@@ -1,6 +1,6 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "let v = 1\nassert (v == 2) \"v should be 2\"\n"
+expression: "let v = 1\nassert v == 2 \"v should be 2\"\n"
 ---
 [
     [=, [let, v], 1],

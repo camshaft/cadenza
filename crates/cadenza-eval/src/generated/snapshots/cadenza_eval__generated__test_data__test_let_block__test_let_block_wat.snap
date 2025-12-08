@@ -1,5 +1,0 @@
----
-source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "t::wat(\"# Test let with block RHS\\nlet x =\\n    foo\\n    bar\\nx\\n\")"
----
-(module)
