@@ -17,7 +17,11 @@ use rustyline::{
     hint::Hinter,
     validate::Validator,
 };
-use std::{borrow::Cow, path::PathBuf};
+use std::{
+    borrow::Cow,
+    io::{BufRead, Write},
+    path::PathBuf,
+};
 
 /// REPL helper that provides completion and syntax highlighting
 struct CadenzaHelper;
@@ -149,7 +153,116 @@ impl Highlighter for CadenzaHelper {
 
 impl Validator for CadenzaHelper {}
 
-/// Start the Cadenza REPL
+/// Run a REPL session with generic input/output streams.
+///
+/// This function provides the core REPL logic that can be used for both
+/// interactive sessions (with rustyline) and for testing (with in-memory streams).
+///
+/// # Arguments
+/// * `input` - A buffered reader to read input lines from
+/// * `output` - A writer to write output to
+/// * `error` - A writer to write errors to
+/// * `load_file` - Optional file to load into the environment before starting
+///
+/// Returns `Ok(())` on success, or an error if the REPL fails to initialize.
+#[allow(dead_code)]
+pub fn run_repl<R: BufRead, W: Write, E: Write>(
+    mut input: R,
+    mut output: W,
+    mut error: E,
+    load_file: Option<PathBuf>,
+) -> Result<()> {
+    writeln!(output, "Cadenza REPL v{}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(
+        output,
+        "Type expressions to evaluate. Press Ctrl+D or Ctrl+C to exit."
+    )?;
+    writeln!(output)?;
+
+    // Initialize environment and compiler
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    // Load file if specified
+    if let Some(path) = load_file {
+        writeln!(output, "Loading {}...", path.display())?;
+        let source = std::fs::read_to_string(&path)?;
+        let parsed = parse(&source);
+
+        if !parsed.errors.is_empty() {
+            writeln!(error, "Parse errors in {}:", path.display())?;
+            for err in &parsed.errors {
+                writeln!(error, "  {:?}", err)?;
+            }
+            return Err(anyhow::anyhow!("Failed to parse {}", path.display()));
+        }
+
+        cadenza_eval::eval(&parsed.ast(), &mut env, &mut compiler);
+
+        if compiler.has_errors() {
+            writeln!(error, "Evaluation errors in {}:", path.display())?;
+            for diagnostic in compiler.diagnostics() {
+                writeln!(error, "  {}", diagnostic)?;
+            }
+            return Err(anyhow::anyhow!("Failed to evaluate {}", path.display()));
+        }
+
+        writeln!(output, "Loaded successfully.\n")?;
+    }
+
+    // REPL loop - read lines from input
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes_read = input.read_line(&mut line)?;
+
+        // EOF reached
+        if bytes_read == 0 {
+            writeln!(output, "^D")?;
+            break;
+        }
+
+        let line_trimmed = line.trim();
+        if line_trimmed.is_empty() {
+            continue;
+        }
+
+        // Parse and evaluate
+        let parsed = parse(line_trimmed);
+
+        if !parsed.errors.is_empty() {
+            writeln!(error, "Parse errors:")?;
+            for err in &parsed.errors {
+                writeln!(error, "  {:?}", err)?;
+            }
+            continue;
+        }
+
+        let results = cadenza_eval::eval(&parsed.ast(), &mut env, &mut compiler);
+
+        if compiler.has_errors() {
+            writeln!(error, "Evaluation errors:")?;
+            for diagnostic in compiler.diagnostics() {
+                writeln!(error, "  {}", diagnostic)?;
+            }
+            compiler.clear_diagnostics();
+            continue;
+        }
+
+        // Print results
+        for (i, result) in results.iter().enumerate() {
+            if results.len() > 1 {
+                writeln!(output, "[{}] {}", i, format_value(result))?;
+            } else {
+                writeln!(output, "{}", format_value(result))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Start the Cadenza REPL with interactive readline support
 pub fn start_repl(load_file: Option<PathBuf>) -> Result<()> {
     println!("Cadenza REPL v{}", env!("CARGO_PKG_VERSION"));
     println!("Type expressions to evaluate. Press Ctrl+D or Ctrl+C to exit.");

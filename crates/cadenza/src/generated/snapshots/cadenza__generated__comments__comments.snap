@@ -1,0 +1,10 @@
+---
+source: crates/cadenza/src/generated/test_data.rs
+expression: "t::repl(\"1 + 1 # Inline comment\\n2 + 2\\n\")"
+---
+Cadenza REPL v0.1.0
+Type expressions to evaluate. Press Ctrl+D or Ctrl+C to exit.
+
+2
+4
+^D

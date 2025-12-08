@@ -1,0 +1,12 @@
+---
+source: crates/cadenza/src/generated/test_data.rs
+expression: "t::repl(\"1 + \\\"string\\\"\\nundefined_var\\n\")"
+---
+Cadenza REPL v0.1.0
+Type expressions to evaluate. Press Ctrl+D or Ctrl+C to exit.
+
+^D
+Evaluation errors:
+  error: type error: expected integer | float, got string
+Evaluation errors:
+  error: undefined variable: undefined_var at 0..13
