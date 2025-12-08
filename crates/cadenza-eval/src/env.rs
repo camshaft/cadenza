@@ -4,10 +4,6 @@
 //! identifiers to values. Closures capture the environment by reference.
 
 use crate::{
-    eval::{
-        builtin_add, builtin_div, builtin_eq, builtin_gt, builtin_gte, builtin_lt, builtin_lte,
-        builtin_mul, builtin_ne, builtin_sub,
-    },
     interner::InternedString,
     map::Map,
     special_form,
@@ -170,10 +166,10 @@ impl Env {
         let mul_id: InternedString = "*".into();
         let div_id: InternedString = "/".into();
 
-        self.define(add_id, Value::BuiltinFn(builtin_add()));
-        self.define(sub_id, Value::BuiltinFn(builtin_sub()));
-        self.define(mul_id, Value::BuiltinFn(builtin_mul()));
-        self.define(div_id, Value::BuiltinFn(builtin_div()));
+        self.define(add_id, Value::SpecialForm(special_form::add_form::get()));
+        self.define(sub_id, Value::SpecialForm(special_form::sub_form::get()));
+        self.define(mul_id, Value::SpecialForm(special_form::mul_form::get()));
+        self.define(div_id, Value::SpecialForm(special_form::div_form::get()));
 
         // Comparison operators
         let eq_id: InternedString = "==".into();
@@ -183,12 +179,12 @@ impl Env {
         let gt_id: InternedString = ">".into();
         let gte_id: InternedString = ">=".into();
 
-        self.define(eq_id, Value::BuiltinFn(builtin_eq()));
-        self.define(ne_id, Value::BuiltinFn(builtin_ne()));
-        self.define(lt_id, Value::BuiltinFn(builtin_lt()));
-        self.define(lte_id, Value::BuiltinFn(builtin_lte()));
-        self.define(gt_id, Value::BuiltinFn(builtin_gt()));
-        self.define(gte_id, Value::BuiltinFn(builtin_gte()));
+        self.define(eq_id, Value::SpecialForm(special_form::eq_form::get()));
+        self.define(ne_id, Value::SpecialForm(special_form::ne_form::get()));
+        self.define(lt_id, Value::SpecialForm(special_form::lt_form::get()));
+        self.define(lte_id, Value::SpecialForm(special_form::le_form::get()));
+        self.define(gt_id, Value::SpecialForm(special_form::gt_form::get()));
+        self.define(gte_id, Value::SpecialForm(special_form::ge_form::get()));
 
         // Boolean constants
         let true_id: InternedString = "true".into();

@@ -414,21 +414,22 @@ impl IrGenerator {
         // Look up the name in the environment
         let name_interned: InternedString = name.into();
         let value = ctx.env().get(name_interned)?;
-
-        // Check if it's a special form
-        if let Value::SpecialForm(special_form) = value {
-            // Create a mutable closure for generating sub-expressions
-            let mut gen_expr_adapter =
-                |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
-                    self.gen_expr(expr, block, ctx)
-                };
-
-            // Call the special form's IR generation function
-            Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
+        
+        // Check if it's a special form in the environment
+        let special_form = if let Value::SpecialForm(sf) = value {
+            Some(*sf)  // Dereference to get &'static BuiltinSpecialForm
         } else {
-            // Not a special form
             None
-        }
+        }?;
+
+        // Create a mutable closure for generating sub-expressions
+        let mut gen_expr_adapter =
+            |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+                self.gen_expr(expr, block, ctx)
+            };
+
+        // Call the special form's IR generation function
+        Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
     }
 
     /// Try to generate IR for a special form by name (state-based version).
@@ -449,42 +450,43 @@ impl IrGenerator {
         // Look up the name in the environment
         let name_interned: InternedString = name.into();
         let value = ctx.env().get(name_interned)?;
+        
+        // Check if it's a special form in the environment
+        let special_form = if let Value::SpecialForm(sf) = value {
+            Some(*sf)  // Dereference to get &'static BuiltinSpecialForm
+        } else {
+            None
+        }?;
 
-        // Check if it's a special form
-        if let Value::SpecialForm(special_form) = value {
-            // TODO: The hardcoded check for "match" is a temporary solution.
-            // A better approach would be to extend the SpecialForm trait with a method
-            // indicating whether the form needs multi-block generation, or to unify
-            // the single-block and multi-block APIs so all special forms can use IrGenState.
-            // For now, "match" is the only special form that needs multi-block support.
-            if name == "match" {
-                // Create a mutable closure for generating sub-expressions with state
-                let mut gen_expr_adapter =
-                    |expr: &Expr, state: &mut IrGenState, ctx: &mut IrGenContext| {
-                        self.gen_expr_with_state(expr, state, ctx)
-                    };
-
-                return Some(special_form::match_form::ir_match_with_state(
-                    &args,
-                    state,
-                    ctx,
-                    source,
-                    &mut gen_expr_adapter,
-                ));
-            }
-
-            // For other special forms, use the single-block API
-            let block = state.current_block();
+        // TODO: The hardcoded check for "match" is a temporary solution.
+        // A better approach would be to extend the SpecialForm trait with a method
+        // indicating whether the form needs multi-block generation, or to unify
+        // the single-block and multi-block APIs so all special forms can use IrGenState.
+        // For now, "match" is the only special form that needs multi-block support.
+        if name == "match" {
+            // Create a mutable closure for generating sub-expressions with state
             let mut gen_expr_adapter =
-                |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
-                    self.gen_expr(expr, block, ctx)
+                |expr: &Expr, state: &mut IrGenState, ctx: &mut IrGenContext| {
+                    self.gen_expr_with_state(expr, state, ctx)
                 };
 
-            Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
-        } else {
-            // Not a special form
-            None
+            return Some(special_form::match_form::ir_match_with_state(
+                &args,
+                state,
+                ctx,
+                source,
+                &mut gen_expr_adapter,
+            ));
         }
+
+        // For other special forms (including operators), use the single-block API
+        let block = state.current_block();
+        let mut gen_expr_adapter =
+            |expr: &Expr, block: &mut BlockBuilder, ctx: &mut IrGenContext| {
+                self.gen_expr(expr, block, ctx)
+            };
+
+        Some(special_form.build_ir(&args, block, ctx, source, &mut gen_expr_adapter))
     }
 
     /// Generate IR for an application using IrGenState (state-based version).

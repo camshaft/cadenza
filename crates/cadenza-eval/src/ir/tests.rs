@@ -441,3 +441,56 @@ fn test_builder_record_construction() {
     let output = module.to_string();
     assert!(output.contains("record { x = v0, y = v1 }"));
 }
+// Test to verify IR type generation
+#[test]
+fn test_comparison_ir_type() {
+    use crate::{Compiler, Env};
+    use cadenza_syntax::parse::parse;
+    
+    let src = "fn test x = x > 0";
+    let parsed = parse(src);
+    let root = parsed.ast();
+    
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::with_ir();
+    
+    let _values = crate::eval(&root, &mut env, &mut compiler);
+    
+    let ir_module = compiler.build_ir_module().expect("Should have IR");
+    let ir_str = ir_module.to_string();
+    
+    println!("IR:\n{}", ir_str);
+    
+    // Check that the comparison result has type bool
+    assert!(ir_str.contains(": bool = binop gt"), "Comparison should have type bool, got:\n{}", ir_str);
+}
+#[test]
+fn test_wasm_for_comparison() {
+    use crate::{Compiler, Env};
+    use cadenza_syntax::parse::parse;
+    
+    let src = "fn test x = x > 0";
+    let parsed = parse(src);
+    let root = parsed.ast();
+    
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::with_ir();
+    
+    let _values = crate::eval(&root, &mut env, &mut compiler);
+    
+    let ir_module = compiler.build_ir_module().expect("Should have IR");
+    
+    // Try to generate WASM
+    let result = crate::ir::wasm::WasmCodegen::new().generate(&ir_module);
+    
+    match result {
+        Ok(bytes) => {
+            println!("WASM generated successfully: {} bytes", bytes.len());
+            let wat = wasmprinter::print_bytes(&bytes).expect("Failed to convert to WAT");
+            println!("WAT:\n{}", wat);
+        }
+        Err(e) => {
+            panic!("WASM generation failed: {}", e);
+        }
+    }
+}
