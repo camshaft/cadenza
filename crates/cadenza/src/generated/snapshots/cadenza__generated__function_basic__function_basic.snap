@@ -1,0 +1,11 @@
+---
+source: crates/cadenza/src/generated/test_data.rs
+expression: "t::repl(\"fn add a b = a + b\\nadd 3 4\\nadd 10 20\\n\")"
+---
+Cadenza REPL v0.1.0
+Type expressions to evaluate. Press Ctrl+D or Ctrl+C to exit.
+
+nil
+7
+30
+^D

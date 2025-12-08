@@ -20,3 +20,6 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 rustyline.workspace = true
 dirs.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

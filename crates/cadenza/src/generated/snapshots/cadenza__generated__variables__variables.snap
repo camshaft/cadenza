@@ -1,0 +1,12 @@
+---
+source: crates/cadenza/src/generated/test_data.rs
+expression: "t::repl(\"let x = 42\\nx\\nlet y = 10\\nx + y\\n\")"
+---
+Cadenza REPL v0.1.0
+Type expressions to evaluate. Press Ctrl+D or Ctrl+C to exit.
+
+42
+42
+10
+52
+^D
