@@ -858,9 +858,16 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
             }
 
-            // If we didn't advance (e.g., malformed marker), advance by 1 to avoid infinite loop
+            // If we didn't advance (e.g., malformed marker), advance by 1 UTF-8 char to avoid infinite loop
             if pos == text_start && pos < bytes.len() {
-                let char = &content[pos..pos + 1];
+                // Find the next character boundary to handle multi-byte UTF-8 properly
+                let next_pos = content[pos..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(idx, _)| pos + idx)
+                    .unwrap_or(content.len());
+                
+                let char = &content[pos..next_pos];
                 self.builder.start_node(Kind::ApplyArgument.into());
                 self.builder.start_node(Kind::Literal.into());
                 self.builder.start_node(Kind::StringContent.into());
@@ -868,7 +875,7 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
                 self.builder.finish_node();
                 self.builder.finish_node();
-                pos += 1;
+                pos = next_pos;
             }
         }
 
