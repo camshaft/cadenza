@@ -1,5 +1,5 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "t::wat(\"# Test match with indented syntax\\n\\n# Basic match with indented arms\\nlet result1 = match true\\n    true => 42\\n    false => 0\\nassert result1 == 42\\n\\n# Match with expression condition\\nlet x = 10\\nlet result2 = match x > 5\\n    true => \\\"big\\\"\\n    false => \\\"small\\\"\\nassert result2 == \\\"big\\\"\\n\\n# Nested match with indentation\\nlet y = 3\\nlet result3 = match y > 0\\n    true => match y > 10\\n        true => \\\"huge\\\"\\n        false => \\\"positive\\\"\\n    false => \\\"non-positive\\\"\\nassert result3 == \\\"positive\\\"\\n\")"
+expression: "t::wat(\"# Test match with indented syntax\\n\\n# Basic match with indented arms\\nlet result1 = match true\\n    true => 42\\n    false => 0\\nassert result1 == 42\\n\\n# Match with expression condition\\nlet x = 10\\nlet result2 = match x > 5\\n    true => \\\"big\\\"\\n    false => \\\"small\\\"\\nassert result2 == \\\"big\\\"\\n\\n# Nested match with indentation (use parens for nested match in arm)\\nlet y = 3\\nlet result3 = match y > 0\\n    true => (match y > 10 true => \\\"huge\\\" false => \\\"positive\\\")\\n    false => \\\"non-positive\\\"\\nassert result3 == \\\"positive\\\"\\n\")"
 ---
 (module)

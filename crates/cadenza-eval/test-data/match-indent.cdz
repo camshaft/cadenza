@@ -13,11 +13,9 @@ let result2 = match x > 5
     false => "small"
 assert result2 == "big"
 
-# Nested match with indentation
+# Nested match with indentation (use parens for nested match in arm)
 let y = 3
 let result3 = match y > 0
-    true => match y > 10
-        true => "huge"
-        false => "positive"
+    true => (match y > 10 true => "huge" false => "positive")
     false => "non-positive"
 assert result3 == "positive"

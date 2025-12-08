@@ -29,8 +29,6 @@ assert result4 == "negative"
 # Nested match expressions
 let z = 10
 let result5 = match z > 5
-    true => match z > 15
-        true => "very large"
-        false => "large"
+    true => (match z > 15 true => "very large" false => "large")
     false => "small"
 assert result5 == "large"

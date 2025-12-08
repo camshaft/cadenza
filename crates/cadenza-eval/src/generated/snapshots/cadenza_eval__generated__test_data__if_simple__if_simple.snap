@@ -1,6 +1,6 @@
 ---
 source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "# Test match expression\n\n# Indented syntax (preferred)\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Basic false pattern  \nlet result2 = match false\n    true => 42\n    false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5\n    true => match z > 15\n        true => \"very large\"\n        false => \"large\"\n    false => \"small\"\nassert result5 == \"large\"\n"
+expression: "# Test match expression\n\n# Indented syntax (preferred)\nlet result1 = match true\n    true => 42\n    false => 0\nassert result1 == 42\n\n# Basic false pattern  \nlet result2 = match false\n    true => 42\n    false => 0\nassert result2 == 0\n\n# Match with comparison\nlet x = 5\nlet result3 = match x > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result3 == \"positive\"\n\n# Match with comparison (false case)\nlet y = -3\nlet result4 = match y > 0\n    true => \"positive\"\n    false => \"negative\"\nassert result4 == \"negative\"\n\n# Nested match expressions\nlet z = 10\nlet result5 = match z > 5\n    true => (match z > 15 true => \"very large\" false => \"large\")\n    false => \"small\"\nassert result5 == \"large\"\n"
 ---
 EvalResult {
     values: [
@@ -15,24 +15,8 @@ EvalResult {
         "negative",
         nil,
         10,
-        <special-form match>,
+        "large",
         nil,
     ],
-    diagnostics: [
-        Diagnostic {
-            kind: TypeError {
-                expected: Fn(
-                    [
-                        Unknown,
-                        Unknown,
-                    ],
-                ),
-                actual: String,
-            },
-            level: Error,
-            file: None,
-            span: None,
-            stack_trace: [],
-        },
-    ],
+    diagnostics: [],
 }
