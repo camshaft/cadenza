@@ -31,6 +31,8 @@ pub struct IrGenContext<'a> {
     type_env: TypeEnv,
     /// Reference to the evaluator environment for looking up special forms.
     env: &'a Env,
+    /// Maps SSA value IDs to their inferred types.
+    value_types: HashMap<ValueId, Type>,
 }
 
 impl<'a> IrGenContext<'a> {
@@ -40,6 +42,7 @@ impl<'a> IrGenContext<'a> {
             variables: HashMap::new(),
             type_env: TypeEnv::new(),
             env,
+            value_types: HashMap::new(),
         }
     }
 
@@ -67,6 +70,16 @@ impl<'a> IrGenContext<'a> {
     /// Get a reference to the evaluator environment.
     pub fn env(&self) -> &Env {
         self.env
+    }
+
+    /// Store the type of an SSA value.
+    pub fn set_value_type(&mut self, value: ValueId, ty: Type) {
+        self.value_types.insert(value, ty);
+    }
+
+    /// Get the type of an SSA value, if known.
+    pub fn get_value_type(&self, value: ValueId) -> Option<&Type> {
+        self.value_types.get(&value)
     }
 }
 
@@ -212,20 +225,30 @@ impl IrGenerator {
         let name = func.name;
 
         // Create a type environment for inference
-        let mut ctx = IrGenContext::new(env);
+        let mut inference_ctx = IrGenContext::new(env);
 
         // Create type variables for parameters
+        for p in &func.params {
+            self.create_param_type_var(*p, &mut inference_ctx);
+        }
+
+        // Infer the return type by inferring the body expression
+        let return_ty = self.infer_concrete_type(&func.body, &inference_ctx);
+
+        // Try to get inferred types for parameters from the type environment
         let param_types: Vec<(InternedString, Type)> = func
             .params
             .iter()
             .map(|p| {
-                self.create_param_type_var(*p, &mut ctx);
-                (*p, Type::Unknown) // We'll compute concrete type later if possible
+                // Try to infer the parameter type from the type environment
+                let ty = inference_ctx
+                    .type_env()
+                    .get(*p)
+                    .and_then(|infer_ty| infer_ty.to_concrete().ok())
+                    .unwrap_or(Type::Unknown);
+                (*p, ty)
             })
             .collect();
-
-        // Infer the return type by inferring the body expression
-        let return_ty = self.infer_concrete_type(&func.body, &ctx);
 
         let mut func_builder = self.builder.function(name, param_types.clone(), return_ty);
         // Register the function early so recursive calls can find it
@@ -235,14 +258,17 @@ impl IrGenerator {
         // Create the entry block
         let entry_block = func_builder.block();
 
-        // Reset context for IR generation (parameters get bound as SSA values)
+        // Create context for IR generation (parameters get bound as SSA values)
         let mut ctx = IrGenContext::new(env);
 
         // Bind parameters to their SSA values (v0, v1, ...)
-        // Also add them to the type environment
+        // Also add them to the type environment and value types map
         for (i, param_name) in func.params.iter().enumerate() {
-            self.create_param_type_var(*param_name, &mut ctx);
-            ctx.variables.insert(*param_name, ValueId(i as u32));
+            let value_id = ValueId(i as u32);
+            let param_ty = &param_types[i].1; // Get the type from param_types
+            let infer_ty = InferType::Concrete(param_ty.clone());
+            ctx.bind_var(*param_name, value_id, &infer_ty);
+            ctx.set_value_type(value_id, param_ty.clone());
         }
 
         // Create state for multi-block generation
@@ -278,7 +304,7 @@ impl IrGenerator {
         let source = self.dummy_source();
 
         match expr {
-            Expr::Literal(lit) => self.gen_literal(lit, state.current_block(), source),
+            Expr::Literal(lit) => self.gen_literal(lit, state.current_block(), ctx, source),
             Expr::Ident(ident) => self.gen_ident(ident, ctx),
             Expr::Apply(apply) => self.gen_apply_with_state(apply, state, ctx, source),
             _ => Err(Diagnostic::syntax(format!(
@@ -300,7 +326,7 @@ impl IrGenerator {
         let source = self.dummy_source();
 
         match expr {
-            Expr::Literal(lit) => self.gen_literal(lit, block, source),
+            Expr::Literal(lit) => self.gen_literal(lit, block, ctx, source),
             Expr::Ident(ident) => self.gen_ident(ident, ctx),
             Expr::Apply(apply) => self.gen_apply(apply, block, ctx, source),
             _ => Err(Diagnostic::syntax(format!(
@@ -315,6 +341,7 @@ impl IrGenerator {
         &mut self,
         lit: &cadenza_syntax::ast::Literal,
         block: &mut BlockBuilder,
+        ctx: &mut IrGenContext,
         source: SourceLocation,
     ) -> Result<ValueId> {
         use cadenza_syntax::ast::LiteralValue;
@@ -353,7 +380,9 @@ impl IrGenerator {
             }
         };
 
-        Ok(block.const_val(const_val, ty, source))
+        let value_id = block.const_val(const_val, ty.clone(), source);
+        ctx.set_value_type(value_id, ty);
+        Ok(value_id)
     }
 
     /// Generate IR for an identifier (variable reference).
@@ -520,7 +549,9 @@ impl IrGenerator {
 
                 // Emit binary operation with inferred type
                 let block = state.current_block();
-                return Ok(block.binop(ir_op, lhs, rhs, inferred_ty, source));
+                let result = block.binop(ir_op, lhs, rhs, inferred_ty.clone(), source);
+                ctx.set_value_type(result, inferred_ty);
+                return Ok(result);
             }
 
             // Not an operator - try to look up as a function
@@ -542,7 +573,9 @@ impl IrGenerator {
 
             // Emit call instruction with inferred return type
             let block = state.current_block();
-            return Ok(block.call(func_id, arg_values, inferred_ty, source));
+            let result = block.call(func_id, arg_values, inferred_ty.clone(), source);
+            ctx.set_value_type(result, inferred_ty);
+            return Ok(result);
         }
 
         Err(Diagnostic::syntax(format!(
@@ -611,7 +644,9 @@ impl IrGenerator {
                 let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
 
                 // Emit binary operation with inferred type
-                return Ok(block.binop(ir_op, lhs, rhs, inferred_ty, source));
+                let result = block.binop(ir_op, lhs, rhs, inferred_ty.clone(), source);
+                ctx.set_value_type(result, inferred_ty);
+                return Ok(result);
             }
 
             // Not an operator - try to look up as a function
@@ -633,7 +668,9 @@ impl IrGenerator {
             let inferred_ty = self.infer_concrete_type(&Expr::Apply(apply.clone()), ctx);
 
             // Emit call instruction with inferred return type
-            return Ok(block.call(func_id, arg_values, inferred_ty, source));
+            let result = block.call(func_id, arg_values, inferred_ty.clone(), source);
+            ctx.set_value_type(result, inferred_ty);
+            return Ok(result);
         }
 
         Err(Diagnostic::syntax(format!(

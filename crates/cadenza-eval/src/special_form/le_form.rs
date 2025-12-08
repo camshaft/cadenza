@@ -61,5 +61,7 @@ fn ir_le(
 
     let lhs = gen_expr(&args[0], block, ctx)?;
     let rhs = gen_expr(&args[1], block, ctx)?;
-    Ok(block.binop(BinOp::Le, lhs, rhs, Type::Bool, source))
+    let result = block.binop(BinOp::Le, lhs, rhs, Type::Bool, source);
+    ctx.set_value_type(result, Type::Bool);
+    Ok(result)
 }
