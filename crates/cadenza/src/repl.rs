@@ -404,13 +404,26 @@ fn format_value(value: &Value) -> String {
                 .join(", ");
             format!("[{}]", items_str)
         }
-        Value::Record(fields) => {
+        Value::Record { type_name, fields } => {
+            let (type_name, tn_space) = if let Some(name) = type_name {
+                (&name[..], " ")
+            } else {
+                ("", "")
+            };
             let fields_str = fields
                 .iter()
                 .map(|(k, v)| format!("{}: {}", k, format_value(v)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{{{}}}", fields_str)
+            format!("{type_name}{tn_space}{{{}}}", fields_str)
+        }
+        Value::StructConstructor { name, field_types } => {
+            let fields_str = field_types
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} {{{}}}", name, fields_str)
         }
         Value::UserFunction(f) => format!("<function {}>", f.name),
         Value::BuiltinFn(f) => format!("<builtin {}>", f.name),

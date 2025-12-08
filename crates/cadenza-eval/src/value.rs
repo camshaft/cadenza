@@ -687,7 +687,7 @@ impl PartialEq for Value {
                 match (n1, n2) {
                     (None, None) => f1 == f2,  // Structural equality
                     (Some(name1), Some(name2)) => name1 == name2 && f1 == f2,  // Nominal equality
-                    _ => false,  // Structural vs nominal are never equal
+                    _ => false,  // Structural record vs nominal struct are never equal
                 }
             }
             (Value::StructConstructor { name: n1, .. }, Value::StructConstructor { name: n2, .. }) => {
