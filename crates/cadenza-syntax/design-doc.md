@@ -135,6 +135,34 @@ let ast = '
 # Parses as: Apply(Ident(__list__), [Ident(foo), Ident(bar)])
 ```
 
+#### Enums (Algebraic Data Types)
+
+Enums are defined as function applications, like all other constructs:
+
+```cadenza
+enum Result {
+  Ok = {
+    value = Integer,
+  },
+  Error = {
+    message = String,
+  },
+}
+
+# Create enum values using variant constructors
+let success = Result.Ok { value = 42 }
+let failure = Result.Error { message = "error" }
+
+# Pattern matching on enums
+match success
+  Result.Ok { value } -> value
+  Result.Error { message } -> 0
+```
+
+Parses as:
+- `enum Result { ... }` → `Apply(Ident(enum), [Ident(Result), Apply(Ident(__record__), [...])])`
+- `Result.Ok { value = 42 }` → `Apply(Apply(Ident(.), [Ident(Result), Ident(Ok)]), [Apply(Ident(__record__), [Apply(Ident(=), [Ident(value), Lit(42)])])])`
+
 ### Parser Strategy
 
 1. **No keywords** - Lexer only produces identifiers, literals, operators, punctuation
