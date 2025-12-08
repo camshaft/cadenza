@@ -20,6 +20,7 @@ pub fn parse(src: &str) -> Parse {
 // Safety limits to prevent infinite loops
 const MAX_PARSE_ITERATIONS: usize = 100_000;
 const MAX_INLINE_RECURSION_DEPTH: usize = 100;
+const MAX_INLINE_ITERATIONS: usize = 10_000;
 
 struct Parser<'src> {
     src: &'src str,
@@ -82,15 +83,23 @@ impl<'src> Parser<'src> {
 
             // Safety: ensure we made progress
             if self.pos == start_pos && self.pos < self.src.len() {
-                // If we didn't advance, skip one character to avoid infinite loop
-                self.pos += 1;
+                // If we didn't advance, skip one UTF-8 character to avoid infinite loop
+                // Use char_indices to properly handle multi-byte UTF-8 characters
+                let next_pos = self.src[self.pos..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(idx, _)| self.pos + idx)
+                    .unwrap_or(self.src.len());
+                
                 self.errors.push(cadenza_syntax::parse::ParseError {
                     span: Span {
                         start: start_pos,
-                        end: start_pos + 1,
+                        end: next_pos,
                     },
                     message: "Unexpected character - skipped to prevent infinite loop".to_string(),
                 });
+                
+                self.pos = next_pos;
             }
         }
 
@@ -697,7 +706,6 @@ impl<'src> Parser<'src> {
         let mut pos = 0;
         let bytes = content.as_bytes();
         let mut iterations = 0;
-        const MAX_INLINE_ITERATIONS: usize = 10_000;
 
         while pos < bytes.len() {
             // Safety: prevent infinite loops in inline parsing
