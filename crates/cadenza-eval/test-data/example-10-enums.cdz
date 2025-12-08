@@ -1,0 +1,70 @@
+# Enums (Algebraic Data Types)
+# Tagged unions with named variants
+
+# Simple enum with record variants
+enum Result {
+  Ok = {
+    value = Integer,
+  },
+  Error = {
+    message = String,
+  },
+}
+
+# Create enum values using variant constructors
+let success = Result.Ok { value = 42 }
+let failure = Result.Error { message = "Something went wrong" }
+
+# Pattern matching on enums
+match success
+  Result.Ok { value } -> value
+  Result.Error { message } -> 0
+
+# Enum with different variant types
+enum Shape {
+  Circle = {
+    radius = Float,
+  },
+  Rectangle = {
+    width = Float,
+    height = Float,
+  },
+  Triangle = {
+    base = Float,
+    height = Float,
+  },
+}
+
+# Create shape values
+let circle = Shape.Circle { radius = 5.0 }
+let rect = Shape.Rectangle { width = 10.0, height = 20.0 }
+
+# Calculate area using pattern matching
+fn area shape =
+  match shape
+    Shape.Circle { radius } -> 3.14159 * radius * radius
+    Shape.Rectangle { width, height } -> width * height
+    Shape.Triangle { base, height } -> 0.5 * base * height
+
+area circle
+area rect
+
+# Enum for optional values
+enum Option {
+  Some = {
+    value = Integer,
+  },
+  None = {},
+}
+
+let some_value = Option.Some { value = 100 }
+let no_value = Option.None {}
+
+# Unwrap optional with default
+fn unwrap_or option default =
+  match option
+    Option.Some { value } -> value
+    Option.None {} -> default
+
+unwrap_or some_value 0
+unwrap_or no_value -1
