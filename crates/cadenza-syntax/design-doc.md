@@ -160,8 +160,28 @@ match success
 ```
 
 Parses as:
-- `enum Result { ... }` → `Apply(Ident(enum), [Ident(Result), Apply(Ident(__record__), [...])])`
-- `Result.Ok { value = 42 }` → `Apply(Apply(Ident(.), [Ident(Result), Ident(Ok)]), [Apply(Ident(__record__), [Apply(Ident(=), [Ident(value), Lit(42)])])])`
+```
+enum Result { Ok = { value = Integer } }
+# → Apply(Ident(enum), [
+#     Ident(Result),
+#     Apply(Ident(__record__), [
+#       Apply(Ident(=), [
+#         Ident(Ok),
+#         Apply(Ident(__record__), [
+#           Apply(Ident(=), [Ident(value), Ident(Integer)])
+#         ])
+#       ])
+#     ])
+#   ])
+
+Result.Ok { value = 42 }
+# → Apply(
+#     Apply(Ident(.), [Ident(Result), Ident(Ok)]),
+#     [Apply(Ident(__record__), [
+#       Apply(Ident(=), [Ident(value), Lit(42)])
+#     ])]
+#   )
+```
 
 ### Parser Strategy
 
