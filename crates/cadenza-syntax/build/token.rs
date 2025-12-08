@@ -381,6 +381,8 @@ enum InfixBindingPower {
     Assignment,
     /// Juxtaposition (function application)
     Juxtaposition,
+    /// Match arm separator: =>
+    MatchArm,
     /// Logical OR: ||
     LogicalOr,
     /// Logical AND: &&
@@ -491,6 +493,7 @@ impl Punctuation {
             p("DotDotEqual", "..=").infix(InfixBindingPower::Range),
             p("Equal", "=").infix(InfixBindingPower::Assignment),
             p("RightArrow", "->").infix(InfixBindingPower::Assignment),
+            p("FatArrow", "=>").infix(InfixBindingPower::MatchArm),
             p("LeftArrow", "<-").infix(InfixBindingPower::Assignment),
             p("PlusEqual", "+=").infix(InfixBindingPower::Assignment),
             p("MinusEqual", "-=").infix(InfixBindingPower::Assignment),

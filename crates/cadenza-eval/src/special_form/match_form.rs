@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 /// - Takes at least 2 arguments: match expression and pattern arms
 /// - Evaluates the match expression (must be boolean)
 /// - Checks each pattern arm in order
-/// - Pattern arms have syntax: `(pattern -> result)` - note the parentheses!
+/// - Pattern arms have syntax: `pattern => result`
 /// - Patterns must be `true` or `false`
 /// - Returns the result of the first matching arm
 ///
@@ -31,18 +31,17 @@ use std::sync::OnceLock;
 /// Indented syntax (preferred - cleaner for multi-line):
 /// ```cadenza
 /// match x > 0
-///     (true -> "positive")
-///     (false -> "negative or zero")
+///     true => "positive"
+///     false => "negative or zero"
 /// ```
 ///
 /// Single-line syntax (more compact):
 /// ```cadenza
-/// match x > 0 (true -> "positive") (false -> "negative")
+/// match x > 0 true => "positive" false => "negative"
 /// ```
 ///
-/// Note: Each pattern arm MUST be wrapped in parentheses due to operator
-/// precedence. The `->` operator has lower precedence than function application,
-/// so without parentheses the parser would incorrectly group the expressions.
+/// Note: The `=>` operator has higher binding power than function application,
+/// so parentheses are not needed around pattern arms in most cases.
 pub fn get() -> &'static BuiltinSpecialForm {
     static MATCH_FORM: OnceLock<BuiltinSpecialForm> = OnceLock::new();
     MATCH_FORM.get_or_init(|| BuiltinSpecialForm {
@@ -94,11 +93,11 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
     // Process each arm
     for arm in &arms {
-        // Each arm should be an arrow expression: pattern -> result
+        // Each arm should be an arrow expression: pattern => result
         if let Expr::Apply(apply) = arm {
-            // Check if the callee is the -> operator
+            // Check if the callee is the => operator
             if let Some(Expr::Op(op)) = apply.callee()
-                && op.syntax().text() == "->"
+                && op.syntax().text() == "=>"
             {
                 let arm_args = apply.all_arguments();
                 if arm_args.len() == 2 {
@@ -198,7 +197,7 @@ pub fn ir_match_with_state(
     for arm in &arms {
         if let Expr::Apply(apply) = arm
             && let Some(Expr::Op(op)) = apply.callee()
-            && op.syntax().text() == "->"
+            && op.syntax().text() == "=>"
         {
             let arm_args = apply.all_arguments();
             if arm_args.len() == 2 {
@@ -298,7 +297,7 @@ mod tests {
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
 
-        let input = "match true (true -> 1) (false -> 2)";
+        let input = "match true true => 1 false => 2";
         let parsed = parse(input);
         let root = parsed.ast();
 
@@ -313,7 +312,7 @@ mod tests {
         let mut env = Env::with_standard_builtins();
         let mut compiler = Compiler::new();
 
-        let input = "match false (true -> 1) (false -> 2)";
+        let input = "match false true => 1 false => 2";
         let parsed = parse(input);
         let root = parsed.ast();
 
@@ -335,7 +334,7 @@ mod tests {
         let _results1 = crate::eval(&root1, &mut env, &mut compiler);
 
         // Then do the match
-        let input2 = "match x > 0 (true -> \"positive\") (false -> \"not positive\")";
+        let input2 = "match x > 0 true => \"positive\" false => \"not positive\"";
         let parsed2 = parse(input2);
         let root2 = parsed2.ast();
         let results2 = crate::eval(&root2, &mut env, &mut compiler);
