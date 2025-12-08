@@ -239,21 +239,18 @@ pub enum Value {
     /// A list of values.
     List(Vec<Value>),
 
-    /// A record (struct-like) value with named fields.
+    /// A record value with named fields.
     ///
-    /// Records are structural types with field names mapping to values.
+    /// When `type_name` is None, this is a structurally-typed record.
+    /// When `type_name` is Some, this is a nominally-typed struct instance.
+    ///
+    /// Structural records are equal if they have the same fields and values.
+    /// Nominal structs are equal only if they have the same type name, fields, and values.
     /// Field order is preserved from construction.
-    Record(Vec<(InternedString, Value)>),
-
-    /// A nominally-typed struct instance.
-    ///
-    /// Unlike records which use structural typing, structs are nominally typed:
-    /// two struct instances are only compatible if they are instances of the same named struct type.
-    Struct {
-        /// The name of the struct type this is an instance of.
-        type_name: InternedString,
-        /// The field values of this struct instance.
-        /// The field names and types are defined in the struct type definition.
+    Record {
+        /// The type name for nominally-typed structs, None for structural records.
+        type_name: Option<InternedString>,
+        /// The field values.
         fields: Vec<(InternedString, Value)>,
     },
 
@@ -408,24 +405,20 @@ impl Value {
             Value::String(_) => Type::String,
             // For lists, we use Unknown since we don't track element types at runtime yet
             Value::List(_) => Type::list(Type::Unknown),
-            // For records, we extract field names and use Unknown for field types
-            // since we don't track types at compile time yet
-            Value::Record(fields) => {
-                let field_types = fields
-                    .iter()
-                    .map(|(name, _)| (*name, Type::Unknown))
-                    .collect();
-                Type::Record(field_types)
-            }
-            // For struct instances, return the struct type with field types
-            Value::Struct { type_name, fields } => {
+            // For records, extract field types
+            // Structural records (type_name = None) use Unknown for field types
+            // Nominal structs (type_name = Some) return Struct type with field types
+            Value::Record { type_name, fields } => {
                 let field_types = fields
                     .iter()
                     .map(|(name, val)| (*name, val.type_of()))
                     .collect();
-                Type::Struct {
-                    name: *type_name,
-                    fields: field_types,
+                match type_name {
+                    None => Type::Record(field_types),
+                    Some(name) => Type::Struct {
+                        name: *name,
+                        fields: field_types,
+                    },
                 }
             }
             // For struct constructors, return a function type that takes the struct type
@@ -571,25 +564,31 @@ impl fmt::Debug for Value {
             Value::Float(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "{s:?}"),
             Value::List(items) => f.debug_list().entries(items).finish(),
-            Value::Record(fields) => {
-                write!(f, "{{")?;
-                for (i, (name, value)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+            Value::Record { type_name, fields } => {
+                match type_name {
+                    None => {
+                        // Structural record
+                        write!(f, "{{")?;
+                        for (i, (name, value)) in fields.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}: {:?}", &**name, value)?;
+                        }
+                        write!(f, "}}")
                     }
-                    write!(f, "{}: {:?}", &**name, value)?;
-                }
-                write!(f, "}}")
-            }
-            Value::Struct { type_name, fields } => {
-                write!(f, "Struct({} {{", &**type_name)?;
-                for (i, (name, value)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                    Some(name) => {
+                        // Nominal struct
+                        write!(f, "Struct({} {{", &**name)?;
+                        for (i, (field_name, value)) in fields.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}: {:?}", &**field_name, value)?;
+                        }
+                        write!(f, "}})")
                     }
-                    write!(f, "{}: {:?}", &**name, value)?;
                 }
-                write!(f, "}})")
             }
             Value::StructConstructor { name, field_types } => {
                 write!(f, "StructConstructor({}, {} fields)", &**name, field_types.len())
@@ -628,25 +627,31 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::Record(fields) => {
-                write!(f, "{{")?;
-                for (i, (name, value)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+            Value::Record { type_name, fields } => {
+                match type_name {
+                    None => {
+                        // Structural record
+                        write!(f, "{{")?;
+                        for (i, (name, value)) in fields.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{} = {}", &**name, value)?;
+                        }
+                        write!(f, "}}")
                     }
-                    write!(f, "{} = {}", &**name, value)?;
-                }
-                write!(f, "}}")
-            }
-            Value::Struct { type_name, fields } => {
-                write!(f, "{} {{", &**type_name)?;
-                for (i, (name, value)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                    Some(type_name) => {
+                        // Nominal struct
+                        write!(f, "{} {{", &**type_name)?;
+                        for (i, (name, value)) in fields.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{} = {}", &**name, value)?;
+                        }
+                        write!(f, "}}")
                     }
-                    write!(f, "{} = {}", &**name, value)?;
                 }
-                write!(f, "}}")
             }
             Value::StructConstructor { name, .. } => {
                 write!(f, "<struct-constructor {}>", &**name)
@@ -676,15 +681,14 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
-            (Value::Record(a), Value::Record(b)) => {
-                // Records are equal if they have the same fields with the same values
-                // Field order matters for structural equality
-                a == b
-            }
-            (Value::Struct { type_name: n1, fields: f1 }, Value::Struct { type_name: n2, fields: f2 }) => {
-                // Structs are equal only if they have the same type name and field values
-                // Nominal typing: different struct types are never equal
-                n1 == n2 && f1 == f2
+            (Value::Record { type_name: n1, fields: f1 }, Value::Record { type_name: n2, fields: f2 }) => {
+                // Structural records (type_name = None) are equal if fields match
+                // Nominal structs (type_name = Some) must also have matching type names
+                match (n1, n2) {
+                    (None, None) => f1 == f2,  // Structural equality
+                    (Some(name1), Some(name2)) => name1 == name2 && f1 == f2,  // Nominal equality
+                    _ => false,  // Structural vs nominal are never equal
+                }
             }
             (Value::StructConstructor { name: n1, .. }, Value::StructConstructor { name: n2, .. }) => {
                 // Struct constructors are equal if they construct the same struct type

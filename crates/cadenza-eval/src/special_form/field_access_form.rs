@@ -62,29 +62,20 @@ fn eval_field_access(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> 
 
     // Extract the record fields
     match record_value {
-        Value::Record(fields) => {
-            // Look up the field in the record
+        Value::Record { type_name, fields } => {
+            // Look up the field in the record (works for both structural and nominal)
             for (name, value) in fields {
                 if name == field_name {
                     return Ok(value);
                 }
             }
-            // Field not found
+            // Field not found - include type name in error if it's a struct
+            let type_description = match type_name {
+                Some(name) => format!("struct {}", &*name),
+                None => "record".to_string(),
+            };
             Err(
-                Diagnostic::syntax(format!("field '{}' not found in record", &*field_name))
-                    .with_span(field_span),
-            )
-        }
-        Value::Struct { type_name: _, fields } => {
-            // Look up the field in the struct
-            for (name, value) in fields {
-                if name == field_name {
-                    return Ok(value);
-                }
-            }
-            // Field not found
-            Err(
-                Diagnostic::syntax(format!("field '{}' not found in struct", &*field_name))
+                Diagnostic::syntax(format!("field '{}' not found in {}", &*field_name, type_description))
                     .with_span(field_span),
             )
         }
