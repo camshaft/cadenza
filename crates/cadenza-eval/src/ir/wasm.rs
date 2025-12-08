@@ -239,7 +239,7 @@ impl WasmCodegen {
         let mut function = Function::new(local_types);
 
         // Generate code for all blocks with proper control flow
-        self.generate_function_body(&mut function, func, &tracker)?;
+        self.generate_function_body(&mut function, func, &tracker, &value_types)?;
 
         self.code.function(&function);
         Ok(())
@@ -254,6 +254,7 @@ impl WasmCodegen {
         func: &mut Function,
         ir_func: &IrFunction,
         tracker: &ValueLocationTracker,
+        value_types: &HashMap<ValueId, &Type>,
     ) -> Result<(), String> {
         // Build a map of block IDs to blocks for quick lookup
         let mut blocks: HashMap<BlockId, &IrBlock> = HashMap::new();
@@ -267,6 +268,7 @@ impl WasmCodegen {
             ir_func.entry_block,
             &blocks,
             tracker,
+            value_types,
             &mut HashSet::new(),
             false,
         )?;
@@ -351,6 +353,7 @@ impl WasmCodegen {
         result_value: ValueId,
         blocks: &HashMap<BlockId, &IrBlock>,
         tracker: &ValueLocationTracker,
+        value_types: &HashMap<ValueId, &Type>,
         visited: &mut HashSet<BlockId>,
     ) -> Result<(), String> {
         visited.insert(block_id);
@@ -365,7 +368,7 @@ impl WasmCodegen {
                 // Skip phi nodes in branch blocks
                 continue;
             }
-            self.generate_instruction(func, instr, tracker)?;
+            self.generate_instruction(func, instr, tracker, value_types)?;
         }
 
         // Instead of generating the terminator (which would be a jump),
@@ -397,6 +400,7 @@ impl WasmCodegen {
         block_id: BlockId,
         blocks: &HashMap<BlockId, &IrBlock>,
         tracker: &ValueLocationTracker,
+        value_types: &HashMap<ValueId, &Type>,
         visited: &mut HashSet<BlockId>,
         in_control_structure: bool,
     ) -> Result<(), String> {
@@ -445,7 +449,7 @@ impl WasmCodegen {
             }
 
             // Generate the instruction normally
-            self.generate_instruction(func, instr, tracker)?;
+            self.generate_instruction(func, instr, tracker, value_types)?;
         }
 
         // Generate terminator
@@ -492,6 +496,7 @@ impl WasmCodegen {
                         phi_pattern.then_value,
                         blocks,
                         tracker,
+                        value_types,
                         visited,
                     )?;
 
@@ -506,6 +511,7 @@ impl WasmCodegen {
                         phi_pattern.else_value,
                         blocks,
                         tracker,
+                        value_types,
                         visited,
                     )?;
 
@@ -529,7 +535,7 @@ impl WasmCodegen {
 
                     // Generate instructions after the phi node
                     for instr in merge_block.instructions.iter().skip(1) {
-                        self.generate_instruction(func, instr, tracker)?;
+                        self.generate_instruction(func, instr, tracker, value_types)?;
                     }
 
                     // Generate the merge block's terminator
@@ -552,6 +558,7 @@ impl WasmCodegen {
                                 *target,
                                 blocks,
                                 tracker,
+                                value_types,
                                 visited,
                                 in_control_structure,
                             )?;
@@ -572,6 +579,7 @@ impl WasmCodegen {
                         *then_block,
                         blocks,
                         tracker,
+                        value_types,
                         visited,
                         true,
                     )?;
@@ -585,6 +593,7 @@ impl WasmCodegen {
                         *else_block,
                         blocks,
                         tracker,
+                        value_types,
                         visited,
                         true,
                     )?;
@@ -607,6 +616,7 @@ impl WasmCodegen {
                     *target,
                     blocks,
                     tracker,
+                    value_types,
                     visited,
                     in_control_structure,
                 )?;
@@ -622,6 +632,7 @@ impl WasmCodegen {
         func: &mut Function,
         instr: &IrInstr,
         tracker: &ValueLocationTracker,
+        value_types: &HashMap<ValueId, &Type>,
     ) -> Result<(), String> {
         match instr {
             IrInstr::Const {
@@ -642,7 +653,7 @@ impl WasmCodegen {
                 ty,
                 ..
             } => {
-                self.generate_binop(func, *op, *lhs, *rhs, ty, tracker)?;
+                self.generate_binop(func, *op, *lhs, *rhs, ty, tracker, value_types)?;
                 // Store result in local
                 let local_idx = tracker
                     .get_local(*result)
@@ -763,6 +774,7 @@ impl WasmCodegen {
         rhs: ValueId,
         ty: &Type,
         tracker: &ValueLocationTracker,
+        value_types: &HashMap<ValueId, &Type>,
     ) -> Result<(), String> {
         // Load LHS from local
         let lhs_local = tracker
@@ -776,10 +788,29 @@ impl WasmCodegen {
             .ok_or_else(|| format!("No local for RHS value {}", rhs))?;
         func.instruction(&Instruction::LocalGet(rhs_local));
 
-        // For unknown types, default to integer operations
-        let effective_ty = if matches!(ty, Type::Unknown) {
+        // For operations, determine the effective type:
+        // - For comparison operations (result is Bool), use the operand type
+        // - For arithmetic operations, use the result type
+        // - For unknown types, default to integer
+        let effective_ty = if matches!(ty, Type::Bool) {
+            // Comparison operation - use operand type
+            // Look up the types of operands, preferring non-Unknown types
+            let lhs_ty = value_types.get(&lhs).copied();
+            let rhs_ty = value_types.get(&rhs).copied();
+            
+            // Prefer non-Unknown types
+            match (lhs_ty, rhs_ty) {
+                (Some(t), _) if !matches!(t, Type::Unknown) => t,
+                (_, Some(t)) if !matches!(t, Type::Unknown) => t,
+                (Some(t), _) => t,
+                (_, Some(t)) => t,
+                _ => &Type::Integer,
+            }
+        } else if matches!(ty, Type::Unknown) {
+            // Unknown type - default to integer
             &Type::Integer
         } else {
+            // Arithmetic operation - use result type
             ty
         };
 

@@ -16,9 +16,9 @@ fn compute =
     block block_0 =
         let v0: integer = const 10
         let v1: integer = const 5
-        let v2: unknown = binop mul v0 v1
+        let v2: integer = binop mul v0 v1
         let v3: integer = const 2
-        let v4: unknown = binop add v2 v3
+        let v4: integer = binop add v2 v3
         ret v4
 
 

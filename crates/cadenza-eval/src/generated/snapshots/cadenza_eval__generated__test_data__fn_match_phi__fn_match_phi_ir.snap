@@ -8,7 +8,7 @@ expression: "t::ir(\"# Test function with match that generates phi nodes\\n\\nfn
 fn abs x =
     block block_0 =
         let v1: integer = const 0
-        let v2: unknown = binop gt v0 v1
+        let v2: bool = binop gt v0 v1
         br v2 block_1 block_2
     block block_1 =
         jmp block_3
