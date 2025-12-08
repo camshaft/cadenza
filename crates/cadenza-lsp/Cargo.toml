@@ -6,7 +6,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-cadenza-eval = { path = "../cadenza-eval" }
 cadenza-syntax = { path = "../cadenza-syntax" }
 lsp-types.workspace = true
 serde.workspace = true

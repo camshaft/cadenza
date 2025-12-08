@@ -8,6 +8,3 @@ repository.workspace = true
 [dependencies]
 hashbrown.workspace = true
 rustc-hash.workspace = true
-
-[dev-dependencies]
-insta.workspace = true

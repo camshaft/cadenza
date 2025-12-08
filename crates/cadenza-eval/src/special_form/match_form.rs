@@ -69,31 +69,31 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         // Each arm should be an arrow expression: pattern -> result
         if let Expr::Apply(apply) = arm {
             // Check if the callee is the -> operator
-            if let Some(Expr::Op(op)) = apply.callee() {
-                if op.syntax().text() == "->" {
-                    let arm_args = apply.all_arguments();
-                    if arm_args.len() == 2 {
-                        let pattern = &arm_args[0];
-                        let result_expr = &arm_args[1];
+            if let Some(Expr::Op(op)) = apply.callee()
+                && op.syntax().text() == "->"
+            {
+                let arm_args = apply.all_arguments();
+                if arm_args.len() == 2 {
+                    let pattern = &arm_args[0];
+                    let result_expr = &arm_args[1];
 
-                        // Check if pattern is a boolean literal
-                        if let Expr::Ident(ident) = pattern {
-                            let pattern_text = ident.syntax().text();
-                            let matches = match pattern_text.as_str() {
-                                "true" => match_bool,
-                                "false" => !match_bool,
-                                _ => {
-                                    return Err(Diagnostic::syntax(format!(
-                                        "match pattern must be 'true' or 'false', got '{}'",
-                                        pattern_text.as_str()
-                                    ))
-                                    .with_span(pattern.span()));
-                                }
-                            };
-
-                            if matches {
-                                return result_expr.eval(ctx);
+                    // Check if pattern is a boolean literal
+                    if let Expr::Ident(ident) = pattern {
+                        let pattern_text = ident.syntax().text();
+                        let matches = match pattern_text.as_str() {
+                            "true" => match_bool,
+                            "false" => !match_bool,
+                            _ => {
+                                return Err(Diagnostic::syntax(format!(
+                                    "match pattern must be 'true' or 'false', got '{}'",
+                                    pattern_text.as_str()
+                                ))
+                                .with_span(pattern.span()));
                             }
+                        };
+
+                        if matches {
+                            return result_expr.eval(ctx);
                         }
                     }
                 }
@@ -150,27 +150,26 @@ pub fn ir_match_with_state(
     let mut else_expr = None;
 
     for arm in &args[1..] {
-        if let Expr::Apply(apply) = arm {
-            if let Some(Expr::Op(op)) = apply.callee() {
-                if op.syntax().text() == "->" {
-                    let arm_args = apply.all_arguments();
-                    if arm_args.len() == 2 {
-                        let pattern = &arm_args[0];
-                        let result_expr = &arm_args[1];
+        if let Expr::Apply(apply) = arm
+            && let Some(Expr::Op(op)) = apply.callee()
+            && op.syntax().text() == "->"
+        {
+            let arm_args = apply.all_arguments();
+            if arm_args.len() == 2 {
+                let pattern = &arm_args[0];
+                let result_expr = &arm_args[1];
 
-                        if let Expr::Ident(ident) = pattern {
-                            let pattern_text = ident.syntax().text();
-                            match pattern_text.as_str() {
-                                "true" => then_expr = Some(result_expr.clone()),
-                                "false" => else_expr = Some(result_expr.clone()),
-                                _ => {
-                                    return Err(Diagnostic::syntax(format!(
-                                        "match pattern must be 'true' or 'false', got '{}'",
-                                        pattern_text.as_str()
-                                    ))
-                                    .with_span(pattern.span()));
-                                }
-                            }
+                if let Expr::Ident(ident) = pattern {
+                    let pattern_text = ident.syntax().text();
+                    match pattern_text.as_str() {
+                        "true" => then_expr = Some(result_expr.clone()),
+                        "false" => else_expr = Some(result_expr.clone()),
+                        _ => {
+                            return Err(Diagnostic::syntax(format!(
+                                "match pattern must be 'true' or 'false', got '{}'",
+                                pattern_text.as_str()
+                            ))
+                            .with_span(pattern.span()));
                         }
                     }
                 }

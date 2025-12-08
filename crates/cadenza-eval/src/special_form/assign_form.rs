@@ -55,51 +55,51 @@ fn eval_assign(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
     // Check if LHS is a macro application - delegate if so
     // EXCEPT for field access (.) which should be handled as field assignment
-    if let Expr::Apply(apply) = lhs_expr {
-        if let Some(callee_expr) = apply.callee() {
-            // Check if this is field access - handle separately
-            if let Expr::Op(op) = &callee_expr {
-                if op.syntax().text() == "." {
-                    // This is field assignment: record.field = value
-                    return handle_field_assignment(apply, rhs_expr, ctx);
+    if let Expr::Apply(apply) = lhs_expr
+        && let Some(callee_expr) = apply.callee()
+    {
+        // Check if this is field access - handle separately
+        if let Expr::Op(op) = &callee_expr
+            && op.syntax().text() == "."
+        {
+            // This is field assignment: record.field = value
+            return handle_field_assignment(apply, rhs_expr, ctx);
+        }
+
+        // Try to extract an identifier from the callee
+        if let Some(id) = extract_identifier(&callee_expr) {
+            // Check if this identifier refers to a macro
+            let macro_value = if let Some(value) = ctx.compiler.get_macro(id) {
+                Some(value.clone())
+            } else {
+                ctx.env.get(id).and_then(|v| match v {
+                    Value::BuiltinMacro(_) | Value::SpecialForm(_) => Some(v.clone()),
+                    _ => None,
+                })
+            };
+
+            match macro_value {
+                Some(Value::BuiltinMacro(builtin)) => {
+                    // This is a macro! Delegate to it with [lhs_args..., rhs]
+                    let lhs_args = apply.all_arguments();
+                    let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
+                    new_args.extend(lhs_args);
+                    new_args.push(rhs_expr.clone());
+
+                    // Call the macro directly
+                    return (builtin.func)(&new_args, ctx);
                 }
-            }
+                Some(Value::SpecialForm(sf)) => {
+                    // This is a special form! Delegate to it with [lhs_args..., rhs]
+                    let lhs_args = apply.all_arguments();
+                    let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
+                    new_args.extend(lhs_args);
+                    new_args.push(rhs_expr.clone());
 
-            // Try to extract an identifier from the callee
-            if let Some(id) = extract_identifier(&callee_expr) {
-                // Check if this identifier refers to a macro
-                let macro_value = if let Some(value) = ctx.compiler.get_macro(id) {
-                    Some(value.clone())
-                } else {
-                    ctx.env.get(id).and_then(|v| match v {
-                        Value::BuiltinMacro(_) | Value::SpecialForm(_) => Some(v.clone()),
-                        _ => None,
-                    })
-                };
-
-                match macro_value {
-                    Some(Value::BuiltinMacro(builtin)) => {
-                        // This is a macro! Delegate to it with [lhs_args..., rhs]
-                        let lhs_args = apply.all_arguments();
-                        let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
-                        new_args.extend(lhs_args);
-                        new_args.push(rhs_expr.clone());
-
-                        // Call the macro directly
-                        return (builtin.func)(&new_args, ctx);
-                    }
-                    Some(Value::SpecialForm(sf)) => {
-                        // This is a special form! Delegate to it with [lhs_args..., rhs]
-                        let lhs_args = apply.all_arguments();
-                        let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
-                        new_args.extend(lhs_args);
-                        new_args.push(rhs_expr.clone());
-
-                        // Call the special form directly
-                        return sf.eval(&new_args, ctx);
-                    }
-                    _ => {}
+                    // Call the special form directly
+                    return sf.eval(&new_args, ctx);
                 }
+                _ => {}
             }
         }
     }
@@ -142,25 +142,25 @@ fn ir_assign(
     let rhs_expr = &args[1];
 
     // Check if LHS is an application - could be a special form delegation
-    if let Expr::Apply(apply) = lhs_expr {
-        if let Some(callee_expr) = apply.callee() {
-            // Try to extract an identifier from the callee
-            if let Some(id) = extract_identifier(&callee_expr) {
-                let id_str: &str = &id;
+    if let Expr::Apply(apply) = lhs_expr
+        && let Some(callee_expr) = apply.callee()
+    {
+        // Try to extract an identifier from the callee
+        if let Some(id) = extract_identifier(&callee_expr) {
+            let id_str: &str = &id;
 
-                // Check if this is the `let` special form
-                if id_str == "let" {
-                    // This is a let binding: let name = value
-                    // Delegate to the let special form's IR generation
-                    let lhs_args = apply.all_arguments();
-                    let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
-                    new_args.extend(lhs_args);
-                    new_args.push(rhs_expr.clone());
+            // Check if this is the `let` special form
+            if id_str == "let" {
+                // This is a let binding: let name = value
+                // Delegate to the let special form's IR generation
+                let lhs_args = apply.all_arguments();
+                let mut new_args = Vec::with_capacity(lhs_args.len() + 1);
+                new_args.extend(lhs_args);
+                new_args.push(rhs_expr.clone());
 
-                    // Call the let special form's IR generation
-                    let let_form = crate::special_form::let_form::get();
-                    return let_form.build_ir(&new_args, block, ctx, _source, gen_expr);
-                }
+                // Call the let special form's IR generation
+                let let_form = crate::special_form::let_form::get();
+                return let_form.build_ir(&new_args, block, ctx, _source, gen_expr);
             }
         }
     }

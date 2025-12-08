@@ -353,7 +353,7 @@ impl<'src> Parser<'src> {
         if let Ok(expected_checksum) = checksum_str.parse::<u8>() {
             // Calculate actual checksum (XOR of all bytes before *)
             let mut calculated: u8 = 0;
-            for &byte in self.src[line_start..checksum_start].as_bytes() {
+            for &byte in &self.src.as_bytes()[line_start..checksum_start] {
                 calculated ^= byte;
             }
 

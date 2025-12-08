@@ -421,27 +421,26 @@ impl WasmCodegen {
                 && matches!(&block.terminator, IrTerminator::Return { .. })
                 && !in_control_structure; // Don't use tail call in nested structures
 
-            if can_tail_call {
-                if let IrInstr::Call {
+            if can_tail_call
+                && let IrInstr::Call {
                     result,
                     func: func_id,
                     args,
                     ..
                 } = instr
-                {
-                    // Check if return value matches
-                    let ret_value_matches = match &block.terminator {
-                        IrTerminator::Return { value, .. } => {
-                            (result.is_none() && value.is_none())
-                                || (result.is_some() && result.as_ref() == value.as_ref())
-                        }
-                        _ => false,
-                    };
-
-                    if ret_value_matches {
-                        self.generate_tail_call(func, *func_id, args, tracker)?;
-                        return Ok(()); // Tail call ends the block
+            {
+                // Check if return value matches
+                let ret_value_matches = match &block.terminator {
+                    IrTerminator::Return { value, .. } => {
+                        (result.is_none() && value.is_none())
+                            || (result.is_some() && result.as_ref() == value.as_ref())
                     }
+                    _ => false,
+                };
+
+                if ret_value_matches {
+                    self.generate_tail_call(func, *func_id, args, tracker)?;
+                    return Ok(()); // Tail call ends the block
                 }
             }
 
@@ -514,34 +513,32 @@ impl WasmCodegen {
                     func.instruction(&Instruction::End);
 
                     // Store the result (now on stack) to the phi result's local
-                    let phi_local = tracker
-                        .get_local(phi_pattern.phi_result)
-                        .ok_or_else(|| {
-                            format!("No local for phi result {}", phi_pattern.phi_result)
-                        })?;
+                    let phi_local = tracker.get_local(phi_pattern.phi_result).ok_or_else(|| {
+                        format!("No local for phi result {}", phi_pattern.phi_result)
+                    })?;
                     func.instruction(&Instruction::LocalSet(phi_local));
 
                     // Mark the merge block as visited so we skip generating it later
                     // But still generate the rest of the merge block (after the phi)
                     visited.insert(phi_pattern.merge_block);
-                    
+
                     // Continue with the rest of the merge block (after the phi node)
-                    let merge_block = blocks
-                        .get(&phi_pattern.merge_block)
-                        .ok_or_else(|| format!("Merge block {} not found", phi_pattern.merge_block))?;
-                    
+                    let merge_block = blocks.get(&phi_pattern.merge_block).ok_or_else(|| {
+                        format!("Merge block {} not found", phi_pattern.merge_block)
+                    })?;
+
                     // Generate instructions after the phi node
                     for instr in merge_block.instructions.iter().skip(1) {
                         self.generate_instruction(func, instr, tracker)?;
                     }
-                    
+
                     // Generate the merge block's terminator
                     match &merge_block.terminator {
                         IrTerminator::Return { value, .. } => {
                             if let Some(value_id) = value {
-                                let local_idx = tracker
-                                    .get_local(*value_id)
-                                    .ok_or_else(|| format!("No local for return value {}", value_id))?;
+                                let local_idx = tracker.get_local(*value_id).ok_or_else(|| {
+                                    format!("No local for return value {}", value_id)
+                                })?;
                                 func.instruction(&Instruction::LocalGet(local_idx));
                             }
                             if !in_control_structure {
@@ -560,7 +557,9 @@ impl WasmCodegen {
                             )?;
                         }
                         IrTerminator::Branch { .. } => {
-                            return Err("Nested branches in merge block not yet supported".to_string());
+                            return Err(
+                                "Nested branches in merge block not yet supported".to_string()
+                            );
                         }
                     }
                 } else {
@@ -568,13 +567,27 @@ impl WasmCodegen {
                     func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
 
                     // Generate then block (nested in control structure)
-                    self.generate_block_recursive(func, *then_block, blocks, tracker, visited, true)?;
+                    self.generate_block_recursive(
+                        func,
+                        *then_block,
+                        blocks,
+                        tracker,
+                        visited,
+                        true,
+                    )?;
 
                     // Emit else
                     func.instruction(&Instruction::Else);
 
                     // Generate else block (nested in control structure)
-                    self.generate_block_recursive(func, *else_block, blocks, tracker, visited, true)?;
+                    self.generate_block_recursive(
+                        func,
+                        *else_block,
+                        blocks,
+                        tracker,
+                        visited,
+                        true,
+                    )?;
 
                     // End if-else
                     func.instruction(&Instruction::End);
@@ -700,7 +713,9 @@ impl WasmCodegen {
                 // leaves its value on the stack. The phi itself is skipped.
                 // If we encounter a phi node here, it means it wasn't part of a
                 // recognized pattern, which is an error.
-                return Err("Phi node encountered outside of if-then-else-merge pattern".to_string());
+                return Err(
+                    "Phi node encountered outside of if-then-else-merge pattern".to_string()
+                );
             }
         }
         Ok(())

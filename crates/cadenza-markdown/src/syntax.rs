@@ -8,17 +8,6 @@
 //! - **Lexer**: Tokenizes Markdown (headings, paragraphs, code blocks, etc.)
 //! - **Parser**: Builds GreenNode CST using cadenza-syntax token kinds
 //! - **AST**: Markdown elements become Apply nodes that call macros with content
-//!
-//! # Example
-//!
-//! ```
-//! use cadenza_markdown::parse;
-//! use cadenza_eval::eval;
-//!
-//! let markdown = "# Hello\n\nWorld!";
-//! let root = parse(markdown);
-//! // eval() doesn't care that this came from Markdown - it's just an AST
-//! ```
 
 use cadenza_syntax::{parse::Parse, token::Kind};
 use cadenza_tree::GreenNodeBuilder;
