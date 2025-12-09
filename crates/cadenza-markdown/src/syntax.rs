@@ -527,13 +527,20 @@ impl<'src> Parser<'src> {
                 break;
             }
 
-            // Read the line
+            // Read the line - advance by UTF-8 character boundaries
             while self.pos < self.src.len() {
-                let ch = self.peek_char().unwrap();
-                if ch == '\n' || ch == '\r' {
+                // Check for newline first (they're ASCII, safe to check as bytes)
+                let byte = self.src.as_bytes()[self.pos];
+                if byte == b'\n' || byte == b'\r' {
                     break;
                 }
-                self.pos += 1;
+                // Advance by one UTF-8 character
+                let remaining = &self.src[self.pos..];
+                if let Some(ch) = remaining.chars().next() {
+                    self.pos += ch.len_utf8();
+                } else {
+                    break;
+                }
             }
 
             // Check if we hit end of source
@@ -541,13 +548,16 @@ impl<'src> Parser<'src> {
                 break;
             }
 
+            // Save position before consuming newline
+            let before_newline = self.pos;
+            
             // Consume newline
-            if self.peek_char() == Some('\r') {
+            if self.pos < self.src.len() && self.src.as_bytes()[self.pos] == b'\r' {
                 self.pos += 1;
-                if self.peek_char() == Some('\n') {
+                if self.pos < self.src.len() && self.src.as_bytes()[self.pos] == b'\n' {
                     self.pos += 1;
                 }
-            } else if self.peek_char() == Some('\n') {
+            } else if self.pos < self.src.len() && self.src.as_bytes()[self.pos] == b'\n' {
                 self.pos += 1;
             }
 
@@ -555,10 +565,10 @@ impl<'src> Parser<'src> {
             let save_pos = self.pos;
             let mut found_content = false;
             while self.pos < self.src.len() {
-                let ch = self.peek_char().unwrap();
-                if ch == ' ' || ch == '\t' {
+                let byte = self.src.as_bytes()[self.pos];
+                if byte == b' ' || byte == b'\t' {
                     self.pos += 1;
-                } else if ch == '\n' || ch == '\r' {
+                } else if byte == b'\n' || byte == b'\r' {
                     // Blank line - end of paragraph
                     break;
                 } else {
@@ -569,20 +579,8 @@ impl<'src> Parser<'src> {
             }
 
             if !found_content {
-                // Found blank line or end - restore position and end paragraph
-                // Strip the trailing newline from paragraph by backing up
-                self.pos = save_pos;
-                if self.pos > content_start {
-                    // Back up over the newline we just consumed
-                    if self.pos >= 2 && &self.src[self.pos - 2..self.pos] == "\r\n" {
-                        self.pos -= 2;
-                    } else if self.pos >= 1 {
-                        let prev_char = self.src.as_bytes()[self.pos - 1];
-                        if prev_char == b'\n' || prev_char == b'\r' {
-                            self.pos -= 1;
-                        }
-                    }
-                }
+                // Found blank line or end - restore position to before the newline
+                self.pos = before_newline;
                 break;
             }
 
