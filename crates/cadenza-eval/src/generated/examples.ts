@@ -223,4 +223,38 @@ let result = divide 10 2
 assert result == 5 "expected result to be 5"
 `,
   },
+  {
+    id: "tuples",
+    name: "Tuples",
+    source: `# Tuples - Ordered Collections
+# Tuples group multiple values together into a single value
+
+# Basic tuple with two elements (a pair)
+let point = (3, 4)
+point
+
+# Empty tuple
+()
+
+# Single-element tuple (note the trailing comma)
+(42,)
+
+# Tuple with different types
+let person = ("Alice", 30, true)
+person
+
+# Nested tuples
+let matrix = ((1, 2), (3, 4))
+matrix
+
+# Tuples vs Lists
+# Lists: [1, 2, 3] - homogeneous, mutable
+# Tuples: (1, 2, 3) - can be heterogeneous, immutable
+
+# Tuples are useful for returning multiple values
+# (though Cadenza doesn't have tuple destructuring yet)
+let coordinates = (10, 20, 30)
+coordinates
+`,
+  },
 ];

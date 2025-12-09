@@ -1,0 +1,16 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Tuples - Ordered Collections\n# Tuples group multiple values together into a single value\n\n# Basic tuple with two elements (a pair)\nlet point = (3, 4)\npoint\n\n# Empty tuple\n()\n\n# Single-element tuple (note the trailing comma)\n(42,)\n\n# Tuple with different types\nlet person = (\"Alice\", 30, true)\nperson\n\n# Nested tuples\nlet matrix = ((1, 2), (3, 4))\nmatrix\n\n# Tuples vs Lists\n# Lists: [1, 2, 3] - homogeneous, mutable\n# Tuples: (1, 2, 3) - can be heterogeneous, immutable\n\n# Tuples are useful for returning multiple values\n# (though Cadenza doesn't have tuple destructuring yet)\nlet coordinates = (10, 20, 30)\ncoordinates\n"
+---
+[
+    [=, [let, point], [__tuple__, 3, 4]],
+    point,
+    [__tuple__],
+    [__tuple__, 42],
+    [=, [let, person], [__tuple__, "Alice", 30, true]],
+    person,
+    [=, [let, matrix], [__tuple__, [__tuple__, 1, 2], [__tuple__, 3, 4]]],
+    matrix,
+    [=, [let, coordinates], [__tuple__, 10, 20, 30]],
+    coordinates,
+]
