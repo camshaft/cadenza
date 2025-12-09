@@ -102,7 +102,7 @@ fn eval_struct(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
                         field_types.push((field_name, ty));
                     }
                     _ => {
-                        return Err(Diagnostic::syntax(&format!(
+                        return Err(Diagnostic::syntax(format!(
                             "field '{}' must have a type value, got {}",
                             &*field_name,
                             field_type_value.type_of()

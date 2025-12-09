@@ -409,7 +409,7 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
                                 if !types_compatible(expected_type, &actual_type) {
                                     errors.push(format!(
                                         "field '{}': expected type {}, got {}",
-                                        &*expected_name, expected_type, actual_type
+                                        expected_name, expected_type, actual_type
                                     ));
                                 } else {
                                     validated_fields.push((*field_name, field_value.clone()));
@@ -418,20 +418,20 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
                             }
                         }
                         if !found {
-                            errors.push(format!("missing required field '{}'", &*expected_name));
+                            errors.push(format!("missing required field '{}'", expected_name));
                         }
                     }
 
                     // Check for extra fields that weren't expected
                     for (field_name, _) in field_values {
                         if !found_fields.contains(field_name) {
-                            errors.push(format!("unexpected field '{}'", &*field_name));
+                            errors.push(format!("unexpected field '{}'", field_name));
                         }
                     }
 
                     // If there are any errors, return them all at once
                     if !errors.is_empty() {
-                        return Err(Diagnostic::syntax(&format!(
+                        return Err(Diagnostic::syntax(format!(
                             "struct {} field validation failed:\n  - {}",
                             &*name,
                             errors.join("\n  - ")
@@ -444,7 +444,7 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
                         fields: validated_fields,
                     })
                 }
-                _ => Err(Diagnostic::syntax(&format!(
+                _ => Err(Diagnostic::syntax(format!(
                     "struct constructor {} expects a record argument",
                     &*name
                 ))),
