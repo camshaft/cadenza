@@ -22,7 +22,10 @@ jobs:
   auto-fix:
     runs-on: ubuntu-latest
     # Skip if the PR is from a fork (can't push to fork branches)
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Also skip if the PR title starts with "chore: auto-fix" to prevent loops
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !startsWith(github.event.pull_request.title, 'chore: auto-fix')
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v6
@@ -83,17 +86,18 @@ jobs:
           git push origin "$FIX_BRANCH"
 
           # Create a PR against the original PR branch
-          gh pr create \
-            --base "$PR_BRANCH" \
-            --head "$FIX_BRANCH" \
-            --title \
-              "chore: auto-fix rustfmt and clippy for PR #${PR_NUMBER}" \
-            --body "This PR contains automatic fixes for rustfmt and \
+          PR_BODY="This PR contains automatic fixes for rustfmt and \
           clippy issues found in PR #${PR_NUMBER}.
 
           ## Changes
           - Applied \`cargo +nightly fmt --all\` to fix formatting
           - Applied \`cargo clippy --fix\` to fix clippy warnings
 
-          Please review and merge this PR into #${PR_NUMBER}." \
+          Please review and merge this PR into #${PR_NUMBER}."
+
+          gh pr create \
+            --base "$PR_BRANCH" \
+            --head "$FIX_BRANCH" \
+            --title "chore: auto-fix rustfmt and clippy for PR #${PR_NUMBER}" \
+            --body "$PR_BODY" \
             --label "auto-fix"
