@@ -13,5 +13,6 @@ thiserror.workspace = true
 miette.workspace = true
 
 [dev-dependencies]
+bolero.workspace = true
 cadenza-eval = { path = "../cadenza-eval" }
 insta.workspace = true
