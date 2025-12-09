@@ -1013,6 +1013,10 @@ impl WasmCodegen {
                 // Union types would need runtime type tags
                 Err("Union/Enum types not yet supported in WASM".to_string())
             }
+            Type::Trait { .. } | Type::Constrained { .. } => {
+                // Trait and constrained types are compile-time only (resolved by monomorphization)
+                Err("Trait and constrained types are compile-time only".to_string())
+            }
             Type::Type => {
                 // Type values are compile-time only
                 Err("Type values are compile-time only".to_string())

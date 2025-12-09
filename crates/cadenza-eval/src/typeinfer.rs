@@ -425,6 +425,11 @@ impl InferType {
             Type::Union(types) => {
                 InferType::Union(types.iter().map(InferType::from_concrete).collect())
             }
+            Type::Trait { .. } | Type::Constrained { .. } => {
+                // TODO: Add proper support for trait and constrained types in type inference
+                // For now, treat them as unknown types
+                InferType::Concrete(Type::Unknown)
+            }
         }
     }
 
