@@ -522,8 +522,8 @@ impl<'src> Parser<'src> {
 
         // Read until blank line or special element
         while self.pos < self.src.len() {
-            // Check for end conditions at start of line
-            if self.is_heading() || self.is_code_fence() {
+            // Check for end conditions at start of line (but not on the first line)
+            if self.pos > content_start && (self.is_heading() || self.is_code_fence()) {
                 break;
             }
 
