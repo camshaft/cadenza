@@ -571,10 +571,11 @@ impl<'src> Parser<'src> {
     fn parse_string(&mut self) {
         self.builder.start_node(Kind::Literal.into());
         self.bump(); // StringStart
-        debug_assert!(
-            [Kind::StringContent, Kind::StringContentWithEscape].contains(&self.current())
-        );
-        self.bump();
+
+        // Consume StringContent if present (may not be present for unterminated strings at EOF)
+        if [Kind::StringContent, Kind::StringContentWithEscape].contains(&self.current()) {
+            self.bump();
+        }
 
         if self.current() == Kind::StringEnd {
             self.bump();

@@ -240,7 +240,10 @@ fn handle_field_assignment(
 
     // Update the field in the record
     match record {
-        Value::Record { type_name: _, fields } => {
+        Value::Record {
+            type_name: _,
+            fields,
+        } => {
             // Find and update the field (works for both records and structs)
             let mut found = false;
             for (name, value) in fields.iter_mut() {
@@ -328,7 +331,11 @@ mod tests {
         let rec_id: InternedString = "rec".into();
         let x_id: InternedString = "x".into();
 
-        if let Some(Value::Record { type_name: _, fields }) = env.get(rec_id) {
+        if let Some(Value::Record {
+            type_name: _,
+            fields,
+        }) = env.get(rec_id)
+        {
             let x_field = fields.iter().find(|(k, _)| *k == x_id);
             assert!(x_field.is_some(), "Field 'x' not found in record");
             assert_eq!(

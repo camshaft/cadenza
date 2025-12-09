@@ -5,10 +5,10 @@
 
 use anyhow::Result;
 use cadenza_eval::{Compiler, Env, Value};
-use cadenza_syntax::{parse::parse, SyntaxNode};
+use cadenza_syntax::{SyntaxNode, parse::parse};
 use rmcp::{
-    handler::server::router::tool::ToolRouter, model::*, schemars, tool, tool_router,
-    ErrorData as McpError, ServerHandler, ServiceExt,
+    ErrorData as McpError, ServerHandler, ServiceExt, handler::server::router::tool::ToolRouter,
+    model::*, schemars, tool, tool_router,
 };
 use serde::Deserialize;
 use std::fmt::Write as _;
@@ -54,7 +54,9 @@ impl CadenzaMcpServer {
     }
 
     /// Evaluate a Cadenza expression and return the result
-    #[tool(description = "Evaluate a Cadenza expression and return the result. Use this to run calculations, test code, or perform dimensional analysis.")]
+    #[tool(
+        description = "Evaluate a Cadenza expression and return the result. Use this to run calculations, test code, or perform dimensional analysis."
+    )]
     async fn eval(
         &self,
         rmcp::handler::server::wrapper::Parameters(req): rmcp::handler::server::wrapper::Parameters<
@@ -81,7 +83,7 @@ impl CadenzaMcpServer {
 
         // Evaluate
         let result = cadenza_eval::eval(&parsed.ast(), &mut env, &mut compiler);
-        
+
         // Check for evaluation errors
         if compiler.has_errors() {
             let mut error_msg = String::from("Evaluation errors:\n");
@@ -90,14 +92,16 @@ impl CadenzaMcpServer {
             }
             return Ok(CallToolResult::error(vec![Content::text(error_msg)]));
         }
-        
+
         // Format results using Display trait
         let output = if result.is_empty() {
             "nil".to_string()
         } else if result.len() == 1 {
             format!("{}", result[0])
         } else {
-            result.iter().enumerate()
+            result
+                .iter()
+                .enumerate()
                 .map(|(i, v)| format!("[{}] {}", i, v))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -107,7 +111,9 @@ impl CadenzaMcpServer {
     }
 
     /// Parse Cadenza code and display the Abstract Syntax Tree
-    #[tool(description = "Parse Cadenza code and display the Abstract Syntax Tree (AST). Use this to understand code structure or debug parsing issues.")]
+    #[tool(
+        description = "Parse Cadenza code and display the Abstract Syntax Tree (AST). Use this to understand code structure or debug parsing issues."
+    )]
     async fn parse(
         &self,
         rmcp::handler::server::wrapper::Parameters(req): rmcp::handler::server::wrapper::Parameters<
@@ -134,12 +140,14 @@ impl CadenzaMcpServer {
     }
 
     /// Check dimensional analysis for an expression with units
-    #[tool(description = "Check dimensional analysis for an expression with units. Use this to verify unit compatibility and conversions.")]
+    #[tool(
+        description = "Check dimensional analysis for an expression with units. Use this to verify unit compatibility and conversions."
+    )]
     async fn check_dimensions(
         &self,
-        rmcp::handler::server::wrapper::Parameters(
-            req,
-        ): rmcp::handler::server::wrapper::Parameters<CheckDimensionsRequest>,
+        rmcp::handler::server::wrapper::Parameters(req): rmcp::handler::server::wrapper::Parameters<
+            CheckDimensionsRequest,
+        >,
     ) -> Result<CallToolResult, McpError> {
         let mut compiler = Compiler::new();
         let mut env = Env::with_standard_builtins();
@@ -152,7 +160,7 @@ impl CadenzaMcpServer {
         }
 
         let result = cadenza_eval::eval(&parsed.ast(), &mut env, &mut compiler);
-        
+
         // Check for evaluation errors
         if compiler.has_errors() {
             let mut error_msg = String::from("Evaluation errors:\n");
@@ -161,7 +169,7 @@ impl CadenzaMcpServer {
             }
             return Ok(CallToolResult::error(vec![Content::text(error_msg)]));
         }
-        
+
         // Check the last value
         if let Some(value) = result.last() {
             match value {
@@ -185,13 +193,15 @@ impl CadenzaMcpServer {
     }
 
     /// List all built-in functions and operators
-    #[tool(description = "List all built-in functions, operators, and special forms available in Cadenza. Use this to discover available functionality.")]
+    #[tool(
+        description = "List all built-in functions, operators, and special forms available in Cadenza. Use this to discover available functionality."
+    )]
     async fn list_builtins(&self) -> Result<CallToolResult, McpError> {
         // Create an environment with standard builtins to query
         let env = Env::with_standard_builtins();
-        
+
         let mut output = String::new();
-        
+
         // Iterate through all bindings in the environment
         for (name, value) in env.iter() {
             let type_str = match value {
@@ -209,7 +219,9 @@ impl CadenzaMcpServer {
     }
 
     /// Get documentation for a symbol
-    #[tool(description = "Get documentation for a specific symbol, function, or operator. Use this to understand how to use language features.")]
+    #[tool(
+        description = "Get documentation for a specific symbol, function, or operator. Use this to understand how to use language features."
+    )]
     async fn get_docs(
         &self,
         rmcp::handler::server::wrapper::Parameters(req): rmcp::handler::server::wrapper::Parameters<
@@ -218,7 +230,7 @@ impl CadenzaMcpServer {
     ) -> Result<CallToolResult, McpError> {
         // Create an environment with standard builtins to query
         let env = Env::with_standard_builtins();
-        
+
         // Look up the symbol in the environment
         if let Some(value) = env.get(req.symbol.as_str().into()) {
             let doc = match value {
@@ -232,7 +244,10 @@ impl CadenzaMcpServer {
                     format!("{}\n\nBuilt-in macro: {}", req.symbol, bm.name)
                 }
                 Value::UnitConstructor(unit) => {
-                    format!("Unit: {}\n\nCreates quantities with this unit.", &*unit.name)
+                    format!(
+                        "Unit: {}\n\nCreates quantities with this unit.",
+                        &*unit.name
+                    )
                 }
                 _ => format!("Symbol found: {}\nValue: {}", req.symbol, value),
             };
@@ -246,7 +261,9 @@ impl CadenzaMcpServer {
     }
 
     /// Get information about the Cadenza language
-    #[tool(description = "Get comprehensive information about the Cadenza language, its features, and use cases.")]
+    #[tool(
+        description = "Get comprehensive information about the Cadenza language, its features, and use cases."
+    )]
     async fn about_cadenza(&self) -> Result<CallToolResult, McpError> {
         let about = include_str!("about_cadenza.md");
         Ok(CallToolResult::success(vec![Content::text(about)]))

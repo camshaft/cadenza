@@ -550,7 +550,7 @@ impl<'src> Parser<'src> {
 
             // Save position before consuming newline
             let before_newline = self.pos;
-            
+
             // Consume newline
             if self.pos < self.src.len() && self.src.as_bytes()[self.pos] == b'\r' {
                 self.pos += 1;

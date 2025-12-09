@@ -9,6 +9,9 @@ pub mod token;
 #[cfg(test)]
 mod testing;
 
+#[cfg(test)]
+mod fuzz;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Lang;
 

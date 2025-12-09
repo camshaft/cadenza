@@ -385,14 +385,17 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
 
             // The argument should be a record with field values
             match &args[0] {
-                Value::Record { type_name: _, fields: field_values } => {
+                Value::Record {
+                    type_name: _,
+                    fields: field_values,
+                } => {
                     // Collect all validation errors instead of bailing at first error
                     let mut errors = Vec::new();
                     let mut validated_fields = Vec::with_capacity(field_types.len());
-                    
+
                     // Track which fields were found
                     let mut found_fields = std::collections::HashSet::new();
-                    
+
                     // Check that all required fields are present and types match
                     for (expected_name, expected_type) in &field_types {
                         let mut found = false;
@@ -400,13 +403,13 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
                             if field_name == expected_name {
                                 found = true;
                                 found_fields.insert(*field_name);
-                                
+
                                 // Check that the type matches
                                 let actual_type = field_value.type_of();
                                 if !types_compatible(expected_type, &actual_type) {
                                     errors.push(format!(
                                         "field '{}': expected type {}, got {}",
-                                        &*expected_name, expected_type, actual_type
+                                        expected_name, expected_type, actual_type
                                     ));
                                 } else {
                                     validated_fields.push((*field_name, field_value.clone()));
@@ -415,20 +418,20 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
                             }
                         }
                         if !found {
-                            errors.push(format!("missing required field '{}'", &*expected_name));
+                            errors.push(format!("missing required field '{}'", expected_name));
                         }
                     }
-                    
+
                     // Check for extra fields that weren't expected
                     for (field_name, _) in field_values {
                         if !found_fields.contains(field_name) {
-                            errors.push(format!("unexpected field '{}'", &*field_name));
+                            errors.push(format!("unexpected field '{}'", field_name));
                         }
                     }
-                    
+
                     // If there are any errors, return them all at once
                     if !errors.is_empty() {
-                        return Err(Diagnostic::syntax(&format!(
+                        return Err(Diagnostic::syntax(format!(
                             "struct {} field validation failed:\n  - {}",
                             &*name,
                             errors.join("\n  - ")
@@ -441,7 +444,7 @@ pub fn apply_value(callee: Value, args: Vec<Value>, ctx: &mut EvalContext<'_>) -
                         fields: validated_fields,
                     })
                 }
-                _ => Err(Diagnostic::syntax(&format!(
+                _ => Err(Diagnostic::syntax(format!(
                     "struct constructor {} expects a record argument",
                     &*name
                 ))),
@@ -515,12 +518,12 @@ fn types_compatible(expected: &Type, actual: &Type) -> bool {
     if let (Type::Struct { name: n1, .. }, Type::Struct { name: n2, .. }) = (expected, actual) {
         return n1 == n2;
     }
-    
+
     // Unknown types are compatible with anything (temporary until type system is complete)
     if matches!(expected, Type::Unknown) || matches!(actual, Type::Unknown) {
         return true;
     }
-    
+
     // Otherwise, types must be equal
     expected == actual
 }

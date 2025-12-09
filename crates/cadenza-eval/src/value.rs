@@ -423,15 +423,13 @@ impl Value {
             }
             // For struct constructors, return a function type that takes the struct type
             // and returns a struct instance
-            Value::StructConstructor { name, field_types } => {
-                Type::function(
-                    vec![Type::Record(field_types.clone())],
-                    Type::Struct {
-                        name: *name,
-                        fields: field_types.clone(),
-                    },
-                )
-            }
+            Value::StructConstructor { name, field_types } => Type::function(
+                vec![Type::Record(field_types.clone())],
+                Type::Struct {
+                    name: *name,
+                    fields: field_types.clone(),
+                },
+            ),
             Value::Type(_) => Type::Type,
             Value::Quantity { .. } => Type::Float, // Quantities are numeric
             Value::UnitConstructor(_) => Type::function(vec![Type::Float], Type::Float),
@@ -591,7 +589,12 @@ impl fmt::Debug for Value {
                 }
             }
             Value::StructConstructor { name, field_types } => {
-                write!(f, "StructConstructor({}, {} fields)", &**name, field_types.len())
+                write!(
+                    f,
+                    "StructConstructor({}, {} fields)",
+                    &**name,
+                    field_types.len()
+                )
             }
             Value::Type(t) => write!(f, "Type({t})"),
             Value::Quantity {
@@ -681,16 +684,28 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
-            (Value::Record { type_name: n1, fields: f1 }, Value::Record { type_name: n2, fields: f2 }) => {
+            (
+                Value::Record {
+                    type_name: n1,
+                    fields: f1,
+                },
+                Value::Record {
+                    type_name: n2,
+                    fields: f2,
+                },
+            ) => {
                 // Structural records (type_name = None) are equal if fields match
                 // Nominal structs (type_name = Some) must also have matching type names
                 match (n1, n2) {
-                    (None, None) => f1 == f2,  // Structural equality
-                    (Some(name1), Some(name2)) => name1 == name2 && f1 == f2,  // Nominal equality
-                    _ => false,  // Structural record vs nominal struct are never equal
+                    (None, None) => f1 == f2, // Structural equality
+                    (Some(name1), Some(name2)) => name1 == name2 && f1 == f2, // Nominal equality
+                    _ => false,               // Structural record vs nominal struct are never equal
                 }
             }
-            (Value::StructConstructor { name: n1, .. }, Value::StructConstructor { name: n2, .. }) => {
+            (
+                Value::StructConstructor { name: n1, .. },
+                Value::StructConstructor { name: n2, .. },
+            ) => {
                 // Struct constructors are equal if they construct the same struct type
                 n1 == n2
             }

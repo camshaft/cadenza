@@ -74,10 +74,11 @@ fn eval_field_access(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> 
                 Some(name) => format!("struct {}", &*name),
                 None => "record".to_string(),
             };
-            Err(
-                Diagnostic::syntax(format!("field '{}' not found in {}", &*field_name, type_description))
-                    .with_span(field_span),
-            )
+            Err(Diagnostic::syntax(format!(
+                "field '{}' not found in {}",
+                &*field_name, type_description
+            ))
+            .with_span(field_span))
         }
         other => Err(Diagnostic::type_error(
             Type::Record(vec![]),

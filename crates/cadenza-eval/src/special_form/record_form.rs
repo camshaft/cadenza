@@ -136,7 +136,10 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            Value::Record { type_name: None, fields } => {
+            Value::Record {
+                type_name: None,
+                fields,
+            } => {
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0].0, InternedString::new("a"));
                 assert_eq!(fields[0].1, Value::Integer(1));
@@ -164,7 +167,10 @@ let y = 20
 
         assert_eq!(results.len(), 3);
         match &results[2] {
-            Value::Record { type_name: None, fields } => {
+            Value::Record {
+                type_name: None,
+                fields,
+            } => {
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0].0, InternedString::new("x"));
                 assert_eq!(fields[0].1, Value::Integer(10));
@@ -188,7 +194,10 @@ let y = 20
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            Value::Record { type_name: None, fields } => {
+            Value::Record {
+                type_name: None,
+                fields,
+            } => {
                 assert_eq!(fields.len(), 0);
             }
             _ => panic!("Expected Record value"),
