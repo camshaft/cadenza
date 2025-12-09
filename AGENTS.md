@@ -26,6 +26,28 @@ To apply rustfmt formatting to all files:
 cargo xtask fmt
 ```
 
+## Auto-fix Workflow
+
+The repository includes a GitHub Action that automatically detects and fixes rustfmt and clippy issues in pull requests.
+
+### How it Works
+
+When you open or update a pull request, the auto-fix workflow:
+1. Runs `cargo +nightly fmt --all` to fix formatting issues
+2. Runs `cargo clippy --fix` to automatically fix clippy warnings
+3. If any changes are made, creates a new pull request against your PR branch with the fixes
+
+### What to Do
+
+If the auto-fix workflow creates a PR against your PR:
+1. Review the automated fixes to ensure they're correct
+2. Merge the auto-fix PR into your PR branch
+3. Continue working on your changes
+
+The auto-fix workflow helps maintain code quality by catching and fixing common issues automatically, so you can focus on the logic of your changes.
+
+**Note**: The workflow only runs on PRs from branches in the main repository, not on PRs from forks (due to security restrictions on pushing to fork branches).
+
 ## Before Submitting a Commit
 
 Before submitting a commit, ensure that the CI checks pass by running:
