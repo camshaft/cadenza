@@ -1,0 +1,103 @@
+---
+name: Auto-fix rustfmt and clippy issues
+
+"on":
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: 1
+  # Pin the nightly toolchain to prevent breakage.
+  # This should be occasionally updated.
+  RUST_NIGHTLY_TOOLCHAIN: nightly-2025-11-23
+
+jobs:
+  auto-fix:
+    runs-on: ubuntu-latest
+    # Skip if the PR is from a fork (can't push to fork branches)
+    # Also skip if the PR title starts with "chore: auto-fix" to prevent loops
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !startsWith(github.event.pull_request.title, 'chore: auto-fix')
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install Rust toolchains
+        run: |
+          rustup toolchain install stable \
+            --profile minimal --component clippy,rustfmt
+          rustup toolchain install ${{ env.RUST_NIGHTLY_TOOLCHAIN }} \
+            --profile minimal --component rustfmt
+          rustup override set stable
+
+      - uses: camshaft/rust-cache@v1
+
+      - name: Run rustfmt
+        run: |
+          cargo +nightly fmt --all
+        continue-on-error: true
+
+      - name: Run clippy with auto-fix
+        run: |
+          cargo clippy --fix --allow-dirty --allow-staged \
+            --all-features --all-targets --workspace
+        continue-on-error: true
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          git diff --exit-code || echo "has_changes=true" >> $GITHUB_OUTPUT
+
+      - name: Create auto-fix PR
+        if: steps.check_changes.outputs.has_changes == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "github-actions[bot]@users.noreply.github.com"
+
+          # Create a new branch for the fixes
+          FIX_BRANCH="auto-fix/pr-${PR_NUMBER}-$(date +%s)"
+          git checkout -b "$FIX_BRANCH"
+
+          # Commit the changes
+          git add .
+          git commit -m \
+            "chore: auto-fix rustfmt and clippy issues for PR #${PR_NUMBER}"
+
+          # Push the branch
+          git push origin "$FIX_BRANCH"
+
+          # Create a PR against the original PR branch
+          PR_BODY="This PR contains automatic fixes for rustfmt and \
+          clippy issues found in PR #${PR_NUMBER}.
+
+          ## Changes
+          - Applied \`cargo +nightly fmt --all\` to fix formatting
+          - Applied \`cargo clippy --fix\` to fix clippy warnings
+
+          Please review and merge this PR into #${PR_NUMBER}."
+
+          gh pr create \
+            --base "$PR_BRANCH" \
+            --head "$FIX_BRANCH" \
+            --title "chore: auto-fix rustfmt and clippy for PR #${PR_NUMBER}" \
+            --body "$PR_BODY" \
+            --label "auto-fix"
