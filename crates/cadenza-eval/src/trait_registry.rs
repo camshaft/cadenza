@@ -1,6 +1,7 @@
 //! Trait registry for storing and looking up trait definitions and implementations.
 
 use crate::{
+    diagnostic::{Diagnostic, Result},
     interner::InternedString,
     map::Map,
     value::{MethodSignature, Type, Value},
@@ -95,9 +96,12 @@ impl TraitRegistry {
     ///
     /// # Errors
     /// Returns an error if a trait with the same name already exists.
-    pub fn define_trait(&mut self, trait_def: TraitDef) -> Result<(), String> {
+    pub fn define_trait(&mut self, trait_def: TraitDef) -> Result<()> {
         if self.traits.contains_key(&trait_def.name) {
-            return Err(format!("Trait {} already defined", &*trait_def.name));
+            return Err(Diagnostic::syntax(format!(
+                "Trait {} already defined",
+                &*trait_def.name
+            )));
         }
         self.traits.insert(trait_def.name, trait_def);
         Ok(())
@@ -117,30 +121,32 @@ impl TraitRegistry {
     /// - The trait does not exist
     /// - An implementation for this (type, trait) pair already exists
     /// - The implementation methods do not match the trait's method signatures
-    pub fn implement_trait(&mut self, trait_impl: TraitImpl) -> Result<(), String> {
+    pub fn implement_trait(&mut self, trait_impl: TraitImpl) -> Result<()> {
         // Check that the trait exists
         let trait_def = self
             .get_trait(trait_impl.trait_name)
-            .ok_or_else(|| format!("Trait {} not found", &*trait_impl.trait_name))?;
+            .ok_or_else(|| {
+                Diagnostic::syntax(format!("Trait {} not found", &*trait_impl.trait_name))
+            })?;
 
         // Check for duplicate implementation
         if self
             .find_implementation(&trait_impl.for_type, trait_impl.trait_name)
             .is_some()
         {
-            return Err(format!(
+            return Err(Diagnostic::syntax(format!(
                 "Trait {} already implemented for type {}",
                 &*trait_impl.trait_name, trait_impl.for_type
-            ));
+            )));
         }
 
         // Validate that all methods are implemented
         for method_sig in &trait_def.methods {
             if !trait_impl.methods.contains_key(&method_sig.name) {
-                return Err(format!(
+                return Err(Diagnostic::syntax(format!(
                     "Implementation missing method {}",
                     &*method_sig.name
-                ));
+                )));
             }
         }
 
