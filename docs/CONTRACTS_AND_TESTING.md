@@ -161,6 +161,7 @@ Use `@` attributes to attach contracts to functions and types.
 fn divide (a: Float) (b: Float) -> Float
   @requires { b != 0.0 "divisor cannot be zero" }
   @ensures { result * b ~= a "result times divisor approximately equals dividend" }
+  # Note: ~= is approximate equality operator for floating-point comparisons
 =
   a / b
 
@@ -270,7 +271,7 @@ fn test_negatives =
 
 ### Test Organization
 
-Tests are discovered automatically in the codebase:
+Tests are discovered automatically in the codebase. Tests can be placed in the same file as the code being tested, or in separate test files using the `.test.cdz` extension convention.
 
 ```cadenza
 # In module: math.cdz
@@ -287,6 +288,7 @@ fn test_add_negative =
   assert add -2 3 == 1
 
 # Or in a separate test file: math.test.cdz
+# Using the .test.cdz extension helps organize tests separately from production code
 @test
 fn test_add_zero =
   assert add 0 5 == 5
@@ -418,8 +420,9 @@ type Email = String @ { is_valid_email x }
 
 @generator Email
 fn generate_email =
-  let username = arbitrary_alphanumeric
-  let domain = arbitrary_domain
+  # These are hypothetical helper functions for generating test data
+  let username = arbitrary_alphanumeric  # Generates random alphanumeric string
+  let domain = arbitrary_domain          # Generates random domain name like "example.com"
   "${username}@${domain}"
 
 # Use in property tests
