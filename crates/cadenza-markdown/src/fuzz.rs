@@ -21,13 +21,18 @@ fn parse_no_crash() {
         std::thread::scope(|s| {
             let handle = s.spawn(|| run_test(input));
 
-            let timeout = s.spawn(move || {
-                // Check if the thread is still running after 1 second
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                assert!(!handle.is_finished(), "Parser should not loop infinitely");
-            });
+            // Wait up to 1 second for parser to complete
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(1) {
+                if handle.is_finished() {
+                    // Parser completed successfully
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
 
-            let _ = timeout.join().unwrap();
+            // If we get here, parser is taking too long
+            panic!("Parser took longer than 1 second - likely infinite loop");
         });
     });
 }
