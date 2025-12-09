@@ -1,0 +1,7 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "((1, 2), (3, 4))\n"
+---
+[
+    [__tuple__, [__tuple__, 1, 2], [__tuple__, 3, 4]],
+]
