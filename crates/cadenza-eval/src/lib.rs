@@ -17,6 +17,7 @@
 //! - [`Eval`]: Trait for evaluatable expressions
 //! - [`eval`]: The main evaluation function
 //! - [`typeinfer`]: Hindley-Milner type inference
+//! - [`trait_registry`]: Trait definitions and implementations
 
 mod compiler;
 mod context;
@@ -28,6 +29,7 @@ pub mod interner;
 pub mod ir;
 mod map;
 pub mod special_form;
+pub mod trait_registry; // New module
 pub mod typeinfer;
 pub mod unit;
 mod value;
@@ -47,9 +49,13 @@ pub use eval::{
 pub use interner::InternedString;
 pub use map::Map;
 pub use special_form::BuiltinSpecialForm;
+pub use trait_registry::{TraitDef, TraitImpl, TraitRegistry}; // Export trait types
 pub use typeinfer::{Constraint, InferType, Substitution, TypeEnv, TypeInferencer, TypeVar};
 pub use unit::{DerivedDimension, Dimension, Unit, UnitRegistry};
-pub use value::{BuiltinFn, BuiltinMacro, SourceInfo, TrackedValue, Type, UserFunction, Value};
+pub use value::{
+    BuiltinFn, BuiltinMacro, MethodSignature, SourceInfo, TrackedValue, TraitRef, Type,
+    UserFunction, Value,
+}; // Export trait-related types from value
 
 #[cfg(test)]
 mod testing;

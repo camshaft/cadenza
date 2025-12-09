@@ -6,7 +6,7 @@
 
 use crate::{
     diagnostic::Diagnostic, interner::InternedString, ir::IrGenerator, map::Map,
-    typeinfer::TypeInferencer, unit::UnitRegistry, value::Value,
+    trait_registry::TraitRegistry, typeinfer::TypeInferencer, unit::UnitRegistry, value::Value,
 };
 
 /// The compiler state that accumulates definitions during evaluation.
@@ -24,6 +24,9 @@ use crate::{
 /// The compiler also includes an IR generator that converts evaluated functions
 /// into a target-independent intermediate representation suitable for optimization
 /// and code generation.
+///
+/// The compiler includes a trait registry for storing trait definitions and
+/// implementations, enabling the trait system.
 pub struct Compiler {
     /// Variable and function definitions.
     defs: Map<Value>,
@@ -38,6 +41,8 @@ pub struct Compiler {
     /// IR generator for code generation.
     /// This is optional to avoid paying costs for IR/codegen when only type checking.
     ir_generator: Option<IrGenerator>,
+    /// Trait registry for trait definitions and implementations.
+    trait_registry: TraitRegistry,
 }
 
 impl Default for Compiler {
@@ -56,6 +61,7 @@ impl Compiler {
             units: UnitRegistry::new(),
             type_inferencer: TypeInferencer::new(),
             ir_generator: None,
+            trait_registry: TraitRegistry::new(),
         }
     }
 
@@ -68,6 +74,7 @@ impl Compiler {
             units: UnitRegistry::new(),
             type_inferencer: TypeInferencer::new(),
             ir_generator: Some(IrGenerator::new()),
+            trait_registry: TraitRegistry::new(),
         }
     }
 
@@ -224,6 +231,20 @@ impl Compiler {
     /// Checks if IR generation is enabled.
     pub fn is_ir_enabled(&self) -> bool {
         self.ir_generator.is_some()
+    }
+
+    /// Returns a reference to the trait registry.
+    ///
+    /// The trait registry stores trait definitions and implementations.
+    pub fn trait_registry(&self) -> &TraitRegistry {
+        &self.trait_registry
+    }
+
+    /// Returns a mutable reference to the trait registry.
+    ///
+    /// This allows registering new traits and implementations.
+    pub fn trait_registry_mut(&mut self) -> &mut TraitRegistry {
+        &mut self.trait_registry
     }
 }
 
