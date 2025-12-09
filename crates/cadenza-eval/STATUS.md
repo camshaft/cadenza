@@ -721,6 +721,37 @@ The following enhancements were identified during code review and are planned fo
 
 **References**: COMPILER_ARCHITECTURE.md "Type System" section
 
+### Traits and Effects (Phase 4)
+
+**Status**: Foundation Complete ✅, Implementation In Progress
+
+The trait and effect system allows for implicit trait bounds and effect propagation, following the design in `TRAITS_AND_EFFECTS.md`.
+
+**Completed Tasks**:
+- [x] Add Type::Trait and Type::Constrained variants to Type enum
+- [x] Add TraitRef and MethodSignature supporting types
+- [x] Create trait_registry.rs module with TraitRegistry, TraitDef, and TraitImpl
+- [x] Integrate TraitRegistry into Compiler
+- [x] Add accessor methods for trait registry
+- [x] Update Display implementations for new types
+- [x] Add placeholder handling in typeinfer.rs and wasm.rs
+- [x] Write comprehensive design document (TRAITS_AND_EFFECTS.md)
+- [x] All existing tests pass (594 tests)
+
+**Next Tasks**:
+- [ ] Implement `trait` special form for defining traits
+- [ ] Implement `impl` special form for implementing traits
+- [ ] Add test files demonstrating trait usage
+- [ ] Add trait constraint generation during type inference
+- [ ] Implement trait constraint solving
+- [ ] Add effect system (similar structure to traits)
+
+**Documentation**:
+- Design: `crates/cadenza-eval/TRAITS_AND_EFFECTS.md`
+- Architecture: See "Monomorphization and Trait System" and "Effect System" sections in `docs/COMPILER_ARCHITECTURE.md`
+
+**References**: COMPILER_ARCHITECTURE.md "Monomorphization and Trait System", "Effect System"
+
 ### Module System (Phase 3)
 - [ ] **Module structure**: Default exports, `_` prefix for private items
 - [ ] **Import/export mechanism**: Modules as records with destructuring
@@ -730,14 +761,6 @@ The following enhancements were identified during code review and are planned fo
 
 **References**: COMPILER_ARCHITECTURE.md "Module System" section
 
-### Traits and Effects (Phase 4)
-- [ ] **Trait system**: Type classes with implicit trait inference
-- [ ] **Trait constraints**: Infer requirements from operations (e.g., `+` requires Numeric)
-- [ ] **Effect system**: Computational context (DB, logging, config) as implicit parameters
-- [ ] **Effect handlers**: Provide implementations at call sites with `with` blocks
-- [ ] **Constraint solving**: Unify trait and effect constraints
-
-**References**: COMPILER_ARCHITECTURE.md "Monomorphization and Trait System", "Effect System"
 
 ### Code Generation (Phase 5)
 - [x] **Intermediate representation**: Target-independent IR with optimization passes (basic implementation complete)

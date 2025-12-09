@@ -48,8 +48,72 @@ pub enum Type {
     Enum(Vec<(InternedString, Type)>),
     /// A union type representing one of several possible types.
     Union(Vec<Type>),
+    /// A trait type definition.
+    /// Defines a set of methods that types can implement.
+    Trait {
+        /// The name of the trait.
+        name: InternedString,
+        /// The method signatures in this trait.
+        methods: Vec<MethodSignature>,
+    },
+    /// A type with trait constraints.
+    /// Example: `[Numeric a] => a` is represented as Constrained with ty=a and traits=[Numeric].
+    Constrained {
+        /// The underlying type.
+        ty: Box<Type>,
+        /// The trait constraints on this type.
+        traits: Vec<TraitRef>,
+    },
     /// An unknown or unresolved type (used when type inference is incomplete).
     Unknown,
+}
+
+/// A reference to a trait, potentially with type parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TraitRef {
+    /// The name of the trait being referenced.
+    pub name: InternedString,
+    /// Type parameters to the trait (if any).
+    /// For simple traits like `Numeric`, this is empty.
+    /// For generic traits like `Add<Rhs, Output>`, this contains the type parameters.
+    pub params: Vec<Type>,
+}
+
+impl TraitRef {
+    /// Creates a new trait reference with no type parameters.
+    pub fn simple(name: InternedString) -> Self {
+        Self {
+            name,
+            params: Vec::new(),
+        }
+    }
+
+    /// Creates a new trait reference with type parameters.
+    pub fn with_params(name: InternedString, params: Vec<Type>) -> Self {
+        Self { name, params }
+    }
+}
+
+/// A method signature in a trait definition.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MethodSignature {
+    /// The name of the method.
+    pub name: InternedString,
+    /// The parameter types (first parameter is typically Self).
+    pub params: Vec<Type>,
+    /// The return type.
+    pub return_ty: Type,
+}
+
+impl MethodSignature {
+    /// Creates a new method signature.
+    pub fn new(name: InternedString, params: Vec<Type>, return_ty: Type) -> Self {
+        Self {
+            name,
+            params,
+            return_ty,
+        }
+    }
 }
 
 impl Type {
@@ -91,6 +155,8 @@ impl Type {
             Type::Tuple(_) => "tuple",
             Type::Enum(_) => "enum",
             Type::Union(_) => "union",
+            Type::Trait { .. } => "trait",
+            Type::Constrained { .. } => "constrained",
             Type::Unknown => "unknown",
         }
     }
@@ -174,6 +240,48 @@ impl fmt::Display for Type {
                     }
                     Ok(())
                 }
+            }
+            Type::Trait { name, methods } => {
+                write!(f, "trait {}", &**name)?;
+                if !methods.is_empty() {
+                    write!(f, " {{")?;
+                    for (i, method) in methods.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, " {}(", &*method.name)?;
+                        for (j, param) in method.params.iter().enumerate() {
+                            if j > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}", param)?;
+                        }
+                        write!(f, ") -> {}", method.return_ty)?;
+                    }
+                    write!(f, " }}")
+                } else {
+                    Ok(())
+                }
+            }
+            Type::Constrained { ty, traits } => {
+                write!(f, "[")?;
+                for (i, trait_ref) in traits.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", &*trait_ref.name)?;
+                    if !trait_ref.params.is_empty() {
+                        write!(f, "<")?;
+                        for (j, param) in trait_ref.params.iter().enumerate() {
+                            if j > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}", param)?;
+                        }
+                        write!(f, ">")?;
+                    }
+                }
+                write!(f, "] => {}", ty)
             }
             Type::Unknown => write!(f, "unknown"),
         }
