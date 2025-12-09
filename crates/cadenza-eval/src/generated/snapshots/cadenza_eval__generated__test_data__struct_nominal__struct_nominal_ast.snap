@@ -1,0 +1,12 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test nominal typing - two structs with same structure should be different types\nstruct Point {\n  x = Integer,\n  y = Integer,\n}\n\nstruct Vector {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\nlet v = Vector { x = 1, y = 2 }\n\n# Points and vectors are different types even though they have the same fields\n# This demonstrates nominal typing\np\nv\n"
+---
+[
+    [[struct, Point], [__record__, [=, x, Integer], [=, y, Integer]]],
+    [[struct, Vector], [__record__, [=, x, Integer], [=, y, Integer]]],
+    [=, [let, p], [Point, [__record__, [=, x, 1], [=, y, 2]]]],
+    [=, [let, v], [Vector, [__record__, [=, x, 1], [=, y, 2]]]],
+    p,
+    v,
+]

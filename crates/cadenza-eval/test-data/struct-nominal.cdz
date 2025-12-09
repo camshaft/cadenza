@@ -1,0 +1,18 @@
+# Test nominal typing - two structs with same structure should be different types
+struct Point {
+  x = Integer,
+  y = Integer,
+}
+
+struct Vector {
+  x = Integer,
+  y = Integer,
+}
+
+let p = Point { x = 1, y = 2 }
+let v = Vector { x = 1, y = 2 }
+
+# Points and vectors are different types even though they have the same fields
+# This demonstrates nominal typing
+p
+v

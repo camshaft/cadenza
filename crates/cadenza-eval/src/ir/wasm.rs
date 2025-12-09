@@ -997,6 +997,10 @@ impl WasmCodegen {
                 // Records would use struct types from GC proposal
                 Err("Record types not yet supported in WASM".to_string())
             }
+            Type::Struct { .. } => {
+                // Structs would use struct types from GC proposal (similar to records)
+                Err("Struct types not yet supported in WASM".to_string())
+            }
             Type::Tuple(_) => {
                 // Tuples could use struct types
                 Err("Tuple types not yet supported in WASM".to_string())

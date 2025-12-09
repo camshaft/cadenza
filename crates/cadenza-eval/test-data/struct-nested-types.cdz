@@ -1,0 +1,14 @@
+struct Inner {
+  value = Integer,
+}
+
+struct Outer {
+  inner = Integer,
+  count = Integer,
+}
+
+let inner_obj = Inner { value = 42 }
+let outer_obj = Outer { inner = 10, count = 5 }
+
+inner_obj.value
+outer_obj.count

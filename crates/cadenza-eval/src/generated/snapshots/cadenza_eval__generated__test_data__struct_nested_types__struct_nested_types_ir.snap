@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"struct Inner {\\n  value = Integer,\\n}\\n\\nstruct Outer {\\n  inner = Integer,\\n  count = Integer,\\n}\\n\\nlet inner_obj = Inner { value = 42 }\\nlet outer_obj = Outer { inner = 10, count = 5 }\\n\\ninner_obj.value\\nouter_obj.count\\n\")"
+---
+# IR Module

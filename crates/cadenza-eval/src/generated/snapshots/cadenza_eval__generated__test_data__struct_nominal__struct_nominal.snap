@@ -1,0 +1,15 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "# Test nominal typing - two structs with same structure should be different types\nstruct Point {\n  x = Integer,\n  y = Integer,\n}\n\nstruct Vector {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\nlet v = Vector { x = 1, y = 2 }\n\n# Points and vectors are different types even though they have the same fields\n# This demonstrates nominal typing\np\nv\n"
+---
+EvalResult {
+    values: [
+        Type(struct Point {x: integer, y: integer}),
+        Type(struct Vector {x: integer, y: integer}),
+        Struct(Point {x: 1, y: 2}),
+        Struct(Vector {x: 1, y: 2}),
+        Struct(Point {x: 1, y: 2}),
+        Struct(Vector {x: 1, y: 2}),
+    ],
+    diagnostics: [],
+}

@@ -1,0 +1,14 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "struct Person {\n  name = String,\n  age = Integer,\n}\n\nlet alice = Person { name = \"Alice\", age = 30 }\nlet bob = Person { name = \"Bob\", age = 25 }\n\nalice.name\nbob.age\n"
+---
+EvalResult {
+    values: [
+        Type(struct Person {name: string, age: integer}),
+        Struct(Person {name: "Alice", age: 30}),
+        Struct(Person {name: "Bob", age: 25}),
+        "Alice",
+        25,
+    ],
+    diagnostics: [],
+}

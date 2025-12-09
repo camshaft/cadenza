@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "t::ir(\"struct Person {\\n  name = String,\\n  age = Integer,\\n}\\n\\nlet alice = Person { name = \\\"Alice\\\", age = 30 }\\nlet bob = Person { name = \\\"Bob\\\", age = 25 }\\n\\nalice.name\\nbob.age\\n\")"
+---
+# IR Module

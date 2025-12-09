@@ -1,0 +1,9 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "struct Point {\n  x = Integer,\n  y = Integer,\n}\n\nlet p = Point { x = 1, y = 2 }\np.x\n"
+---
+[
+    [[struct, Point], [__record__, [=, x, Integer], [=, y, Integer]]],
+    [=, [let, p], [Point, [__record__, [=, x, 1], [=, y, 2]]]],
+    [., p, x],
+]
