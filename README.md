@@ -48,6 +48,28 @@ cadenza lsp
 
 This enables IDE features like code completion, diagnostics, and go-to-definition in editors that support LSP.
 
+### Model Context Protocol (MCP)
+
+Start the MCP server for LLM integration:
+
+```bash
+cadenza mcp
+```
+
+This enables LLMs like Claude to interact with Cadenza, providing code evaluation, type checking, dimensional analysis, and more.
+
+Configure with Claude Desktop by adding to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "cadenza": {
+      "command": "/path/to/cadenza",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 ## License
 
 MIT
