@@ -677,6 +677,7 @@ impl Synthetic {
         [
             s("SyntheticList", "__list__"),
             s("SyntheticRecord", "__record__"),
+            s("SyntheticTuple", "__tuple__"),
             s("SyntheticBlock", "__block__"),
             s("SyntheticIndex", "__index__"),
             // Markdown elements

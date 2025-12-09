@@ -123,11 +123,9 @@ impl TraitRegistry {
     /// - The implementation methods do not match the trait's method signatures
     pub fn implement_trait(&mut self, trait_impl: TraitImpl) -> Result<()> {
         // Check that the trait exists
-        let trait_def = self
-            .get_trait(trait_impl.trait_name)
-            .ok_or_else(|| {
-                Diagnostic::syntax(format!("Trait {} not found", &*trait_impl.trait_name))
-            })?;
+        let trait_def = self.get_trait(trait_impl.trait_name).ok_or_else(|| {
+            Diagnostic::syntax(format!("Trait {} not found", &*trait_impl.trait_name))
+        })?;
 
         // Check for duplicate implementation
         if self

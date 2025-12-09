@@ -122,6 +122,7 @@ impl Env {
         let block_id: InternedString = "__block__".into();
         let list_id: InternedString = "__list__".into();
         let record_id: InternedString = "__record__".into();
+        let tuple_id: InternedString = "__tuple__".into();
         let index_id: InternedString = "__index__".into();
         let struct_id: InternedString = "struct".into();
 
@@ -159,6 +160,10 @@ impl Env {
         self.define(
             record_id,
             Value::SpecialForm(special_form::record_form::get()),
+        );
+        self.define(
+            tuple_id,
+            Value::SpecialForm(special_form::tuple_form::get()),
         );
         self.define(
             index_id,

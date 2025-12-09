@@ -347,6 +347,21 @@ pub enum Value {
     /// A list of values.
     List(Vec<Value>),
 
+    /// A tuple value with positional elements.
+    ///
+    /// Tuples are similar to records but use positional (numeric) fields instead of named fields.
+    /// When `type_name` is None, this is a structurally-typed tuple.
+    /// When `type_name` is Some, this is a nominally-typed tuple.
+    ///
+    /// Structural tuples are equal if they have the same element values.
+    /// Nominal tuples are equal only if they have the same type name and element values.
+    Tuple {
+        /// The type name for nominally-typed tuples, None for structural tuples.
+        type_name: Option<InternedString>,
+        /// The element values.
+        elements: Vec<Value>,
+    },
+
     /// A record value with named fields.
     ///
     /// When `type_name` is None, this is a structurally-typed record.
@@ -513,6 +528,16 @@ impl Value {
             Value::String(_) => Type::String,
             // For lists, we use Unknown since we don't track element types at runtime yet
             Value::List(_) => Type::list(Type::Unknown),
+            // For tuples, extract element types
+            // Structural tuples (type_name = None) return Tuple type with element types
+            // Nominal tuples (type_name = Some) might need a separate type (TBD)
+            Value::Tuple {
+                type_name: _,
+                elements,
+            } => {
+                let element_types = elements.iter().map(|val| val.type_of()).collect();
+                Type::Tuple(element_types)
+            }
             // For records, extract field types
             // Structural records (type_name = None) use Unknown for field types
             // Nominal structs (type_name = Some) return Struct type with field types
@@ -670,6 +695,43 @@ impl fmt::Debug for Value {
             Value::Float(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "{s:?}"),
             Value::List(items) => f.debug_list().entries(items).finish(),
+            Value::Tuple {
+                type_name,
+                elements,
+            } => {
+                match type_name {
+                    None => {
+                        // Structural tuple
+                        write!(f, "(")?;
+                        for (i, value) in elements.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{:?}", value)?;
+                        }
+                        // Single-element tuples need trailing comma
+                        if elements.len() == 1 {
+                            write!(f, ",")?;
+                        }
+                        write!(f, ")")
+                    }
+                    Some(name) => {
+                        // Nominal tuple
+                        write!(f, "Tuple({} (", &**name)?;
+                        for (i, value) in elements.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{:?}", value)?;
+                        }
+                        // Single-element tuples need trailing comma
+                        if elements.len() == 1 {
+                            write!(f, ",")?;
+                        }
+                        write!(f, "))")
+                    }
+                }
+            }
             Value::Record { type_name, fields } => {
                 match type_name {
                     None => {
@@ -737,6 +799,43 @@ impl fmt::Display for Value {
                     write!(f, "{item}")?;
                 }
                 write!(f, "]")
+            }
+            Value::Tuple {
+                type_name,
+                elements,
+            } => {
+                match type_name {
+                    None => {
+                        // Structural tuple
+                        write!(f, "(")?;
+                        for (i, value) in elements.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{value}")?;
+                        }
+                        // Single-element tuples need trailing comma
+                        if elements.len() == 1 {
+                            write!(f, ",")?;
+                        }
+                        write!(f, ")")
+                    }
+                    Some(type_name) => {
+                        // Nominal tuple
+                        write!(f, "{} (", &**type_name)?;
+                        for (i, value) in elements.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{value}")?;
+                        }
+                        // Single-element tuples need trailing comma
+                        if elements.len() == 1 {
+                            write!(f, ",")?;
+                        }
+                        write!(f, ")")
+                    }
+                }
             }
             Value::Record { type_name, fields } => {
                 match type_name {

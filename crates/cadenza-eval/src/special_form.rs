@@ -53,6 +53,7 @@ pub mod pipeline_form;
 pub mod record_form;
 pub mod struct_form;
 pub mod sub_form;
+pub mod tuple_form;
 pub mod typeof_form;
 
 use crate::{
