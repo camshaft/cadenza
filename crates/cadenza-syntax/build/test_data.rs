@@ -18,11 +18,13 @@ pub fn tests() -> String {
     for Example { name, src } in valid_examples.iter() {
         w!("mod {name} {{");
         w!("    use super::*;");
+        w!("    static SRC: &str = {src:?};");
+
         for ty in types {
             let name = format!("{name}_{ty}");
             w!("    #[test]");
             w!("    fn {ty}() {{");
-            w!("        s!({name:?}, t::{ty}({src:?}), {src:?});");
+            w!("        s!({name:?}, t::{ty}(SRC), SRC);");
             w!("    }}");
         }
         w!("}}");
@@ -32,35 +34,37 @@ pub fn tests() -> String {
     if !invalid_parse_examples.is_empty() {
         w!("mod invalid_parse {{");
         w!("    use super::*;");
+
         for Example { name, src } in invalid_parse_examples.iter() {
             w!("    mod {name} {{");
             w!("        use super::*;");
+            w!("        static SRC: &str = {src:?};");
             // Use no_assert versions for CST and AST
             let snap_name_cst = format!("invalid_parse_{name}_cst");
             w!("        #[test]");
             w!("        fn cst() {{");
-            w!("            s!({snap_name_cst:?}, t::cst_no_assert({src:?}), {src:?});");
+            w!("            s!({snap_name_cst:?}, t::cst_no_assert(SRC), SRC);");
             w!("        }}");
             let snap_name_ast = format!("invalid_parse_{name}_ast");
             w!("        #[test]");
             w!("        fn ast() {{");
-            w!("            s!({snap_name_ast:?}, t::ast_no_assert({src:?}), {src:?});");
+            w!("            s!({snap_name_ast:?}, t::ast_no_assert(SRC), SRC);");
             w!("        }}");
             // Lex can use the regular function
             let snap_name_lex = format!("invalid_parse_{name}_lex");
             w!("        #[test]");
             w!("        fn lex() {{");
-            w!("            s!({snap_name_lex:?}, t::lex({src:?}), {src:?});");
+            w!("            s!({snap_name_lex:?}, t::lex(SRC), SRC);");
             w!("        }}");
             // Add a test that asserts errors are emitted
             let snap_name = format!("invalid_parse_{name}_errors");
             w!("        #[test]");
             w!("        fn errors() {{");
-            w!("            let errors = t::parse_errors({src:?});");
+            w!("            let errors = t::parse_errors(SRC);");
             w!(
                 "            assert!(!errors.is_empty(), \"expected parse errors for invalid input\");"
             );
-            w!("            s!({snap_name:?}, errors, {src:?});");
+            w!("            s!({snap_name:?}, errors, SRC);");
             w!("        }}");
             w!("    }}");
         }
