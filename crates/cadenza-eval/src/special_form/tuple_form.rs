@@ -86,7 +86,10 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            Value::Tuple { type_name, elements } => {
+            Value::Tuple {
+                type_name,
+                elements,
+            } => {
                 assert!(type_name.is_none());
                 assert_eq!(elements.len(), 0);
             }
@@ -107,7 +110,10 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            Value::Tuple { type_name, elements } => {
+            Value::Tuple {
+                type_name,
+                elements,
+            } => {
                 assert!(type_name.is_none());
                 assert_eq!(elements.len(), 2);
                 assert_eq!(elements[0], Value::Integer(1));
@@ -130,7 +136,10 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            Value::Tuple { type_name, elements } => {
+            Value::Tuple {
+                type_name,
+                elements,
+            } => {
                 assert!(type_name.is_none());
                 assert_eq!(elements.len(), 3);
                 assert_eq!(elements[0], Value::Integer(1));
@@ -154,13 +163,19 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            Value::Tuple { type_name, elements } => {
+            Value::Tuple {
+                type_name,
+                elements,
+            } => {
                 assert!(type_name.is_none());
                 assert_eq!(elements.len(), 2);
-                
+
                 // Check first nested tuple
                 match &elements[0] {
-                    Value::Tuple { type_name: tn1, elements: e1 } => {
+                    Value::Tuple {
+                        type_name: tn1,
+                        elements: e1,
+                    } => {
                         assert!(tn1.is_none());
                         assert_eq!(e1.len(), 2);
                         assert_eq!(e1[0], Value::Integer(1));
@@ -168,10 +183,13 @@ mod tests {
                     }
                     _ => panic!("Expected tuple in first element"),
                 }
-                
+
                 // Check second nested tuple
                 match &elements[1] {
-                    Value::Tuple { type_name: tn2, elements: e2 } => {
+                    Value::Tuple {
+                        type_name: tn2,
+                        elements: e2,
+                    } => {
                         assert!(tn2.is_none());
                         assert_eq!(e2.len(), 2);
                         assert_eq!(e2[0], Value::Integer(3));

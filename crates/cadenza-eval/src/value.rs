@@ -531,11 +531,11 @@ impl Value {
             // For tuples, extract element types
             // Structural tuples (type_name = None) return Tuple type with element types
             // Nominal tuples (type_name = Some) might need a separate type (TBD)
-            Value::Tuple { type_name: _, elements } => {
-                let element_types = elements
-                    .iter()
-                    .map(|val| val.type_of())
-                    .collect();
+            Value::Tuple {
+                type_name: _,
+                elements,
+            } => {
+                let element_types = elements.iter().map(|val| val.type_of()).collect();
                 Type::Tuple(element_types)
             }
             // For records, extract field types
@@ -695,7 +695,10 @@ impl fmt::Debug for Value {
             Value::Float(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "{s:?}"),
             Value::List(items) => f.debug_list().entries(items).finish(),
-            Value::Tuple { type_name, elements } => {
+            Value::Tuple {
+                type_name,
+                elements,
+            } => {
                 match type_name {
                     None => {
                         // Structural tuple
@@ -789,7 +792,10 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::Tuple { type_name, elements } => {
+            Value::Tuple {
+                type_name,
+                elements,
+            } => {
                 match type_name {
                     None => {
                         // Structural tuple

@@ -161,7 +161,10 @@ impl Env {
             record_id,
             Value::SpecialForm(special_form::record_form::get()),
         );
-        self.define(tuple_id, Value::SpecialForm(special_form::tuple_form::get()));
+        self.define(
+            tuple_id,
+            Value::SpecialForm(special_form::tuple_form::get()),
+        );
         self.define(
             index_id,
             Value::SpecialForm(special_form::index_form::get()),
