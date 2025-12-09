@@ -77,7 +77,7 @@ impl CadenzaMcpServer {
             let errors: Vec<String> = parsed
                 .errors
                 .iter()
-                .map(|e| format!("{}", e.message))
+                .map(|e| e.message.to_string())
                 .collect();
             return Ok(CallToolResult::error(vec![Content::text(format!(
                 "Parse errors:\n{}",
@@ -88,7 +88,7 @@ impl CadenzaMcpServer {
         // Evaluate
         let result = cadenza_eval::eval(&parsed.ast(), &mut env, &mut compiler);
         // eval returns Vec<Value>, one for each top-level expression
-        let formatted_results: Vec<String> = result.iter().map(|v| format_value(v)).collect();
+        let formatted_results: Vec<String> = result.iter().map(format_value).collect();
         let output = if formatted_results.is_empty() {
             "nil".to_string()
         } else {
@@ -115,7 +115,7 @@ impl CadenzaMcpServer {
             for err in &parsed.errors {
                 output.push_str(&format!("  {}\n", err.message));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         // Format AST
@@ -366,7 +366,7 @@ fn format_value(value: &Value) -> String {
         Value::Float(f) => f.to_string(),
         Value::String(s) => format!("\"{}\"", s),
         Value::List(items) => {
-            let formatted: Vec<String> = items.iter().map(|v| format_value(v)).collect();
+            let formatted: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", formatted.join(", "))
         }
         Value::Record { type_name, fields } => {
