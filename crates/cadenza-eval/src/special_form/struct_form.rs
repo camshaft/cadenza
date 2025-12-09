@@ -79,9 +79,7 @@ fn eval_struct(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
             InternedString::new(&text.to_string())
         }
         _ => {
-            return Err(Diagnostic::syntax(
-                "struct name must be an identifier",
-            ));
+            return Err(Diagnostic::syntax("struct name must be an identifier"));
         }
     };
 
@@ -92,7 +90,10 @@ fn eval_struct(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
     // Extract field definitions from the record
     let field_types = match field_defs_value {
-        Value::Record { type_name: _, fields } => {
+        Value::Record {
+            type_name: _,
+            fields,
+        } => {
             let mut field_types = Vec::with_capacity(fields.len());
             for (field_name, field_type_value) in fields {
                 // Each field value must be a Type
@@ -229,7 +230,10 @@ p
 
         // Check the final result is a struct instance
         match &results[2] {
-            Value::Record { type_name: Some(name), fields } => {
+            Value::Record {
+                type_name: Some(name),
+                fields,
+            } => {
                 assert_eq!(&**name, "Point");
                 assert_eq!(fields.len(), 2);
                 assert_eq!(&*fields[0].0, "x");
