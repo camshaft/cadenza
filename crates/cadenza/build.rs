@@ -1,14 +1,19 @@
+use std::fs::write;
+
 fn main() {
     println!("cargo:rerun-if-changed=test-data");
 
     // Create src/generated directory if it doesn't exist
+
+    write("src/generated.rs", GENERATED.trim_start()).unwrap();
+
     let _ = std::fs::create_dir_all("src/generated");
     let _ = std::fs::create_dir_all("src/generated/snapshots");
 
     // Generate test code
     let test_code = test_data::tests();
     let dest_path = std::path::Path::new("src/generated/test_data.rs");
-    std::fs::write(dest_path, test_code).unwrap();
+    write(dest_path, test_code).unwrap();
 }
 
 mod test_data {
@@ -31,7 +36,8 @@ mod test_data {
             w!("    use super::*;");
             w!("    #[test]");
             w!("    fn repl() {{");
-            w!("        s!({name:?}, t::repl({src:?}));");
+            w!("        let src = {src:?};");
+            w!("        s!({name:?}, t::repl(src), src);");
             w!("    }}");
             w!("}}");
         }
@@ -76,3 +82,8 @@ mod test_data {
         }
     }
 }
+
+static GENERATED: &str = r#"
+#[cfg(test)]
+mod test_data;
+"#;

@@ -16,29 +16,28 @@ pub fn tests() -> String {
     for Example { name, src } in examples.iter() {
         w!("mod {name} {{");
         w!("    use super::*;");
+        w!("    static SRC: &str = {src:?};");
 
         // CST test to verify all bytes are attributed to tokens
         w!("    #[test]");
         w!("    fn cst() {{");
-        w!("        let sql = {src:?};");
-        w!("        let parse = parse(sql);");
+        w!("        let parse = parse(SRC);");
         w!("        let cst = parse.syntax();");
         w!("");
         w!("        // Verify CST span coverage and token text accuracy");
-        w!("        verify_cst_coverage(sql);");
+        w!("        verify_cst_coverage(SRC);");
         w!("");
         let snap_name_cst = format!("{name}_cst");
-        w!("        s!({snap_name_cst:?}, &cst, {src:?});");
+        w!("        s!({snap_name_cst:?}, &cst, SRC);");
         w!("    }}");
 
         // AST test
         w!("    #[test]");
         w!("    fn ast() {{");
-        w!("        let sql = {src:?};");
-        w!("        let parse = parse(sql);");
+        w!("        let parse = parse(SRC);");
         w!("        let root = parse.ast();");
         let snap_name_ast = format!("{name}_ast");
-        w!("        s!({snap_name_ast:?}, root, {src:?});");
+        w!("        s!({snap_name_ast:?}, root, SRC);");
         w!("    }}");
 
         w!("}}");

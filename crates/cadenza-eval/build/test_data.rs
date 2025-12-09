@@ -15,24 +15,25 @@ pub fn tests() -> String {
     for Example { name, src } in examples.iter() {
         w!("mod {name} {{");
         w!("    use super::*;");
+        w!("    const SRC: &str = {src:?};");
         w!("    #[test]");
         w!("    fn eval() {{");
-        w!("        s!({name:?}, t::eval_all({src:?}), {src:?});");
+        w!("        s!({name:?}, t::eval_all(SRC), SRC);");
         w!("    }}");
         w!("    #[test]");
         w!("    fn ast() {{");
         let ast_name = format!("{name}_ast");
-        w!("        s!({ast_name:?}, t::ast({src:?}), {src:?});");
+        w!("        s!({ast_name:?}, t::ast(SRC), SRC);");
         w!("    }}");
         w!("    #[test]");
         w!("    fn ir() {{");
         let ir_name = format!("{name}_ir");
-        w!("        ss!({ir_name:?}, t::ir({src:?}));");
+        w!("        ss!({ir_name:?}, t::ir(SRC), SRC);");
         w!("    }}");
         w!("    #[test]");
         w!("    fn wat() {{");
         let wat_name = format!("{name}_wat");
-        w!("        ss!({wat_name:?}, t::wat({src:?}));");
+        w!("        ss!({wat_name:?}, t::wat(SRC), SRC);");
         w!("    }}");
         w!("}}");
     }
