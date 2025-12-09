@@ -1,7 +1,0 @@
----
-source: crates/cadenza-syntax/src/generated/test_data.rs
-expression: "fn add v0: integer v1: integer = (\n    let v2: integer = add v0 v1\n    v2\n)\n"
----
-[
-    [=, [[[[[[[fn, add], v0], <MISSING APPLY ARGUMENT EXPR in []>], integer], v1], <MISSING APPLY ARGUMENT EXPR in []>], integer], [[=, [[[let, v2], <MISSING APPLY ARGUMENT EXPR in []>], integer], [[add, v0], v1]], v2]],
-]

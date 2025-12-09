@@ -1,5 +1,0 @@
----
-source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "t::wat(\"# Test function application with indent\\nfoo bar\\n    baz\\n    qux\\n\")"
----
-(module)

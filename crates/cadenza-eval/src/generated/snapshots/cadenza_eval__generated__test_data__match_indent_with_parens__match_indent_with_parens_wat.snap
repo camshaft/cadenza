@@ -1,5 +1,0 @@
----
-source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "t::wat(\"# Match with indented arms (each arm has parens)\\nlet result = match true\\n    (true -> 42)\\n    (false -> 0)\\nresult\\n\")"
----
-(module)

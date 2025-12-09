@@ -1,7 +1,0 @@
----
-source: crates/cadenza-eval/src/generated/test_data.rs
-expression: "# Simplest test - just match with newline\nmatch true\n    true -> 42\n    false -> 0\n"
----
-[
-    [->, [[->, [[match, true], true], 42], false], 0],
-]
