@@ -318,7 +318,7 @@ impl<'src> Parser<'src> {
                 self.parse_string();
             }
             Kind::LParen => {
-                self.parse_expression(ParenMarker::new(self));
+                self.parse_paren_or_tuple();
             }
             Kind::LBracket => {
                 self.parse_array();
@@ -507,6 +507,120 @@ impl<'src> Parser<'src> {
         brace_marker.finish(self);
 
         self.builder.finish_node();
+    }
+
+    /// Parse parenthesized expression or tuple literal
+    /// - `(expr)` is parsed as just expr (grouping)
+    /// - `(a, b)` is parsed as a tuple with multiple elements
+    /// - `()` is parsed as an empty tuple
+    /// - `(a,)` is parsed as a single-element tuple (trailing comma distinguishes from grouping)
+    fn parse_paren_or_tuple(&mut self) {
+        // Create marker before consuming opening paren
+        let paren_marker = ParenMarker::new(self);
+        
+        // Consume opening paren and skip trivia
+        paren_marker.start(self);
+        
+        // Check for empty parens (empty tuple)
+        if self.current() == Kind::RParen {
+            // Empty tuple: ()
+            // Start Apply node for tuple
+            self.builder.start_node(Kind::Apply.into());
+            
+            // Create synthetic receiver
+            self.builder.start_node(Kind::ApplyReceiver.into());
+            self.builder.start_node(Kind::SyntheticTuple.into());
+            self.builder.finish_node();
+            self.builder.finish_node();
+            
+            // Close the Apply
+            paren_marker.finish(self);
+            self.builder.finish_node();
+            return;
+        }
+        
+        // For non-empty parens, we need to parse and look ahead
+        // We'll use a different strategy: parse elements in a loop and decide at the end
+        
+        // Take checkpoint for the Apply node (before any content)
+        let apply_checkpoint = self.builder.checkpoint();
+        // Take checkpoint for the first element (right before parsing it)
+        let first_elem_checkpoint = self.builder.checkpoint();
+        
+        // Parse first element
+        let child_marker = CommaMarker::new(paren_marker, self);
+        self.parse_expression_bp(0, child_marker);
+        
+        self.skip_trivia();
+        
+        // Check what comes after first element
+        let is_tuple = self.current() == Kind::Comma;
+        
+        if is_tuple {
+            // It's a tuple - wrap everything in Apply with SyntheticTuple
+            self.builder.start_node_at(apply_checkpoint, Kind::Apply.into());
+            
+            // Wrap first element as ApplyArgument (this will be inserted at first_elem_checkpoint)
+            self.builder.start_node_at(first_elem_checkpoint, Kind::ApplyArgument.into());
+            self.builder.finish_node();
+            
+            // Create synthetic receiver (this will be inserted after the Apply but before the first arg due to checkpoint ordering)
+            self.builder.start_node(Kind::ApplyReceiver.into());
+            self.builder.start_node(Kind::SyntheticTuple.into());
+            self.builder.finish_node();
+            self.builder.finish_node();
+            
+            // Parse remaining elements
+            let mut after_comma = false;
+            let mut comma_line = 0;
+            loop {
+                // Consume comma
+                if self.current() == Kind::Comma {
+                    comma_line = self.whitespace.line;
+                    self.bump();
+                    self.skip_trivia();
+                    after_comma = true;
+                }
+                
+                // Check for closing paren
+                if self.current() == Kind::RParen || self.current() == Kind::Eof {
+                    break;
+                }
+                
+                // Check for dedentation
+                if !paren_marker.saved_whitespace.should_continue_indent(self) {
+                    if self.current() == Kind::RParen {
+                        break;
+                    }
+                    if !after_comma || comma_line <= paren_marker.saved_whitespace.line {
+                        break;
+                    }
+                }
+                
+                // Check for empty element
+                if self.current() == Kind::Comma {
+                    self.builder.start_node(Kind::Error.into());
+                    self.error("expected expression before comma");
+                    self.builder.finish_node();
+                    continue;
+                }
+                
+                // Parse next element
+                self.builder.start_node(Kind::ApplyArgument.into());
+                let child_marker = CommaMarker::new(paren_marker, self);
+                self.parse_expression_bp(0, child_marker);
+                self.builder.finish_node();
+                
+                self.skip_trivia();
+                after_comma = false;
+            }
+            
+            paren_marker.finish(self);
+            self.builder.finish_node(); // Close Apply
+        } else {
+            // It's just a parenthesized expression
+            paren_marker.finish(self);
+        }
     }
 
     fn parse_literal(&mut self) {

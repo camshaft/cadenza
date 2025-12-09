@@ -1,0 +1,11 @@
+---
+source: crates/cadenza-syntax/src/generated/test_data.rs
+expression: "()\n"
+---
+Root@0..3
+  LParen@0..1 "("
+  Apply@1..2
+    ApplyReceiver@1..1
+      SyntheticTuple@1..1
+    RParen@1..2 ")"
+  Newline@2..3 "\n"
