@@ -420,9 +420,9 @@ type Email = String @ { is_valid_email x }
 
 @generator Email
 fn generate_email =
-  # These are hypothetical helper functions for generating test data
-  let username = arbitrary_alphanumeric  # Generates random alphanumeric string
-  let domain = arbitrary_domain          # Generates random domain name like "example.com"
+  # Note: These are hypothetical helper functions for illustration
+  let username = generate_alphanumeric 10  # Generate 10 random alphanumeric chars
+  let domain = generate_domain             # Generate random domain like "example.com"
   "${username}@${domain}"
 
 # Use in property tests
