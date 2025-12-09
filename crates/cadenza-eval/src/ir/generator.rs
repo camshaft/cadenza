@@ -960,8 +960,8 @@ mod tests {
             .gen_function(&add_func, &env)
             .expect("Failed to generate add function");
 
-        // Create a function that calls add: fn compute(x, y) = add(x * 2, y + 1)
-        let source2 = "add(x * 2, y + 1)";
+        // Create a function that calls add: fn compute(x, y) = add (x * 2) (y + 1)
+        let source2 = "add (x * 2) (y + 1)";
         let parsed2 = parse(source2);
         let ast2 = parsed2.ast();
         let body2 = ast2.items().next().expect("No expression in AST");
