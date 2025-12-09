@@ -25,10 +25,11 @@ fn parse_no_crash() {
             let start = std::time::Instant::now();
             while start.elapsed() < std::time::Duration::from_secs(1) {
                 if handle.is_finished() {
-                    // Parser completed successfully
+                    // Parser completed - join to propagate any panics
+                    handle.join().unwrap();
                     return;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
             // If we get here, parser is taking too long
