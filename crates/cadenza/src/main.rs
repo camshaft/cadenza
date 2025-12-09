@@ -3,8 +3,10 @@
 //! This binary provides various commands for working with Cadenza, including:
 //! - `repl`: Start an interactive REPL with history, syntax highlighting, and auto-completion
 //! - `lsp`: Start a Language Server Protocol server for editor integration
+//! - `mcp`: Start a Model Context Protocol server for LLM integration
 
 mod lsp;
+mod mcp;
 mod repl;
 
 use clap::{Parser, Subcommand};
@@ -28,6 +30,8 @@ enum Commands {
     },
     /// Start the Language Server Protocol server
     Lsp,
+    /// Start the Model Context Protocol server for LLM integration
+    Mcp,
 }
 
 #[tokio::main]
@@ -48,6 +52,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Lsp => {
             lsp::start_server().await?;
+        }
+        Commands::Mcp => {
+            mcp::start_server().await?;
         }
     }
 
