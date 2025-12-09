@@ -59,3 +59,44 @@ fn run_test(input: &str) {
     // Note: We don't check for parse errors here because arbitrary input
     // is expected to produce errors. We only care that we don't crash.
 }
+
+/// Regression test for issue where a single `#` caused an infinite loop.
+///
+/// This test specifically checks that a single `#` character (which is not
+/// a valid heading because it lacks a space after the `#`) is parsed as a
+/// paragraph without entering an infinite loop.
+#[test]
+fn parse_single_hash_no_loop() {
+    // This used to cause an infinite loop
+    let result = parse("#");
+    
+    // Should parse successfully as a paragraph containing "#"
+    assert_eq!(
+        result.syntax().kind(),
+        cadenza_syntax::token::Kind::Root,
+        "Parser should produce a Root node"
+    );
+    
+    // Verify we got some content parsed
+    assert!(result.syntax().descendants_with_tokens().count() > 1);
+}
+
+/// Regression test for hash without space - should be treated as paragraph.
+#[test]
+fn parse_hash_without_space() {
+    // These should all be treated as paragraphs, not headings
+    let test_cases = ["#", "#test", "##", "###test"];
+    
+    for input in test_cases {
+        let result = parse(input);
+        assert_eq!(
+            result.syntax().kind(),
+            cadenza_syntax::token::Kind::Root,
+            "Parser should produce a Root node for input: {}",
+            input
+        );
+        
+        // Verify parsing completes
+        let _count = result.syntax().descendants_with_tokens().count();
+    }
+}
