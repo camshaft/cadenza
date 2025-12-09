@@ -53,9 +53,19 @@ fn eval_block(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
     // Evaluate each expression in sequence
     let mut result = Value::Nil;
+    let mut pending_attrs: Vec<cadenza_syntax::ast::Attr> = Vec::new();
     for expr in args {
-        result = expr.eval(ctx)?;
-        // Continue evaluation even if one expression returns Nil
+        if let Expr::Attr(attr) = expr {
+            pending_attrs.push(attr.clone());
+            continue;
+        }
+        let attrs = std::mem::take(&mut pending_attrs);
+        result = crate::eval::evaluate_with_attributes(expr, attrs, ctx)?;
+    }
+
+    if !pending_attrs.is_empty() {
+        ctx.compiler
+            .record_diagnostic(*crate::eval::dangling_attributes_error(&pending_attrs));
     }
 
     // Pop the scope when exiting the block

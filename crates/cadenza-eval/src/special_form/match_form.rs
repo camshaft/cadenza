@@ -62,7 +62,7 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
     // First argument is the expression to match on
     let match_expr = &args[0];
-    let match_value = match_expr.eval(ctx)?;
+    let match_value = ctx.eval_child(match_expr)?;
 
     // Check that the match value is a boolean
     let match_bool = match match_value {
@@ -119,7 +119,7 @@ fn eval_match(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
                         };
 
                         if matches {
-                            return result_expr.eval(ctx);
+                            return ctx.eval_child(result_expr);
                         }
                     }
                 }

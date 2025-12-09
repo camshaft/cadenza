@@ -624,6 +624,59 @@ fn test_type_inference_synthetic() {
 }
 
 #[test]
+fn test_fn_type_attribute_consumed() {
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let input = r#"
+@t integer integer -> integer
+fn add a b = a + b
+add 1 2
+"#;
+
+    let parsed = parse(input);
+    let root = parsed.ast();
+
+    let results = crate::eval(&root, &mut env, &mut compiler);
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], Value::Nil);
+    assert_eq!(results[1], Value::Integer(3));
+    assert!(!compiler.has_errors(), "unexpected diagnostics: {:?}", compiler.diagnostics());
+
+    // Verify annotation stored on the function
+    let add_id: InternedString = "add".into();
+    let fn_value = compiler
+        .get_var(add_id)
+        .cloned()
+        .expect("function should be hoisted");
+    match fn_value {
+        Value::UserFunction(f) => {
+            let ann = f.type_annotation.expect("annotation missing");
+            assert_eq!(ann.params, vec![Type::Integer, Type::Integer]);
+            assert_eq!(ann.return_type, Type::Integer);
+        }
+        _ => panic!("expected add to be a user function"),
+    }
+}
+
+#[test]
+fn test_unconsumed_attribute_errors() {
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let input = "@foo 42";
+    let parsed = parse(input);
+    let root = parsed.ast();
+
+    let results = crate::eval(&root, &mut env, &mut compiler);
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], Value::Nil);
+    assert!(compiler.has_errors());
+}
+
+#[test]
 fn test_type_inference_error_node() {
     use crate::typeinfer::InferType;
 

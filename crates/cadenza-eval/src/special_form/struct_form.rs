@@ -86,7 +86,7 @@ fn eval_struct(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     // Second argument is the field definitions (should be a record expression)
     // Each field in the record maps field name -> Type value
     let field_defs_expr = &args[1];
-    let field_defs_value = field_defs_expr.eval(ctx)?;
+    let field_defs_value = ctx.eval_child(field_defs_expr)?;
 
     // Extract field definitions from the record
     let field_types = match field_defs_value {

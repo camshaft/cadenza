@@ -91,7 +91,23 @@ impl<'src> Parser<'src> {
         let content_checkpoint = self.builder.checkpoint();
 
         // Check for prefix operators
-        if let Some(prefix_bp) = self.current().prefix_binding_power() {
+        if self.current() == Kind::At {
+            // Attribute node: store unevaluated payload expression
+            let prefix_bp = self
+                .current()
+                .prefix_binding_power()
+                .expect("attribute must have prefix binding power");
+
+            self.builder.start_node_at(apply_checkpoint, Kind::Attr.into());
+            self.bump(); // '@'
+
+            // Parse the attribute payload
+            let child_marker = self.whitespace.marker();
+            self.skip_trivia();
+            self.parse_expression_bp(prefix_bp, child_marker);
+
+            self.builder.finish_node();
+        } else if let Some(prefix_bp) = self.current().prefix_binding_power() {
             // Create a unary Apply node: operator(operand)
             self.builder
                 .start_node_at(apply_checkpoint, Kind::Apply.into());

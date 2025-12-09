@@ -50,7 +50,7 @@ fn eval_pipeline(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     }
 
     // Evaluate the LHS to get the value to pipe
-    let lhs_value = args[0].eval(ctx)?;
+    let lhs_value = ctx.eval_child(&args[0])?;
 
     // The RHS should be either:
     // 1. A function identifier (e.g., `|> f` means `f lhs_value`)
@@ -94,20 +94,22 @@ fn eval_pipeline(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
             }
 
             // Not a macro - evaluate the callee normally
-            let callee = match &callee_expr {
-                Expr::Ident(ident) => eval_ident_no_auto_apply(ident, ctx)?,
+            let callee = ctx.with_attribute_scope(Vec::new(), |ctx| match &callee_expr {
+                Expr::Ident(ident) => eval_ident_no_auto_apply(ident, ctx),
                 Expr::Op(op) => {
                     // Use extract_identifier to get the operator name
                     let id = extract_identifier(&callee_expr)
                         .ok_or_else(|| Diagnostic::syntax("invalid operator"))?;
                     let span = op.span();
-                    ctx.env
+                    let value = ctx
+                        .env
                         .get(id)
                         .cloned()
-                        .ok_or_else(|| Diagnostic::undefined_variable(id).with_span(span))?
+                        .ok_or_else(|| Diagnostic::undefined_variable(id).with_span(span))?;
+                    Ok(value)
                 }
-                _ => callee_expr.eval(ctx)?,
-            };
+                _ => ctx.eval_child(&callee_expr),
+            })?;
 
             // Get all RHS arguments and evaluate them
             let rhs_arg_exprs = apply.all_arguments();
@@ -118,7 +120,7 @@ fn eval_pipeline(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
             // Then add the evaluated RHS arguments
             for arg_expr in rhs_arg_exprs {
-                let value = arg_expr.eval(ctx)?;
+                let value = ctx.eval_child(&arg_expr)?;
                 all_args.push(value);
             }
 

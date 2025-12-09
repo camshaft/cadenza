@@ -27,8 +27,8 @@ fn eval_ge(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         return Err(Diagnostic::arity(2, args.len()));
     }
 
-    let lhs = args[0].eval(ctx)?;
-    let rhs = args[1].eval(ctx)?;
+    let lhs = ctx.eval_child(&args[0])?;
+    let rhs = ctx.eval_child(&args[1])?;
 
     // Require exact type match for comparison
     if lhs.type_of() != rhs.type_of() {
