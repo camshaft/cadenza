@@ -218,7 +218,7 @@ impl CadenzaMcpServer {
     /// List all built-in functions and operators
     #[tool(description = "List all built-in functions, operators, and special forms available in Cadenza. Use this to discover available functionality.")]
     async fn list_builtins(&self) -> Result<CallToolResult, McpError> {
-        let builtins = vec![
+        let builtins = [
             "Operators: +, -, *, /, ==, !=, <, <=, >, >=, |>",
             "Special Forms: let, fn, match, assert, typeof, measure",
             "Math Functions: (to be implemented)",
