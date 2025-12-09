@@ -56,7 +56,19 @@ Start the MCP server for LLM integration:
 cadenza mcp
 ```
 
-This enables LLMs like Claude to interact with Cadenza, providing code evaluation, type checking, dimensional analysis, and more. See [MCP_README.md](crates/cadenza/MCP_README.md) for detailed information on configuring and using the MCP server.
+This enables LLMs like Claude to interact with Cadenza, providing code evaluation, type checking, dimensional analysis, and more.
+
+Configure with Claude Desktop by adding to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "cadenza": {
+      "command": "/path/to/cadenza",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
 ## License
 
