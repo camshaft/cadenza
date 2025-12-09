@@ -571,7 +571,7 @@ impl<'src> Parser<'src> {
     fn parse_string(&mut self) {
         self.builder.start_node(Kind::Literal.into());
         self.bump(); // StringStart
-        
+
         // Consume StringContent if present (may not be present for unterminated strings at EOF)
         if [Kind::StringContent, Kind::StringContentWithEscape].contains(&self.current()) {
             self.bump();
