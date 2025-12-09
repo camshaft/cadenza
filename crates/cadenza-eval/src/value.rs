@@ -709,6 +709,10 @@ impl fmt::Debug for Value {
                             }
                             write!(f, "{:?}", value)?;
                         }
+                        // Single-element tuples need trailing comma
+                        if elements.len() == 1 {
+                            write!(f, ",")?;
+                        }
                         write!(f, ")")
                     }
                     Some(name) => {
@@ -719,6 +723,10 @@ impl fmt::Debug for Value {
                                 write!(f, ", ")?;
                             }
                             write!(f, "{:?}", value)?;
+                        }
+                        // Single-element tuples need trailing comma
+                        if elements.len() == 1 {
+                            write!(f, ",")?;
                         }
                         write!(f, "))")
                     }
@@ -806,6 +814,10 @@ impl fmt::Display for Value {
                             }
                             write!(f, "{value}")?;
                         }
+                        // Single-element tuples need trailing comma
+                        if elements.len() == 1 {
+                            write!(f, ",")?;
+                        }
                         write!(f, ")")
                     }
                     Some(type_name) => {
@@ -816,6 +828,10 @@ impl fmt::Display for Value {
                                 write!(f, ", ")?;
                             }
                             write!(f, "{value}")?;
+                        }
+                        // Single-element tuples need trailing comma
+                        if elements.len() == 1 {
+                            write!(f, ",")?;
                         }
                         write!(f, ")")
                     }

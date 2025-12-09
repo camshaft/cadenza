@@ -415,7 +415,9 @@ fn format_value(value: &Value) -> String {
                 .map(format_value)
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{type_name}{tn_space}({})", elements_str)
+            // Single-element tuples need trailing comma
+            let trailing_comma = if elements.len() == 1 { "," } else { "" };
+            format!("{type_name}{tn_space}({}{trailing_comma})", elements_str)
         }
         Value::Record { type_name, fields } => {
             let (type_name, tn_space) = if let Some(name) = type_name {
