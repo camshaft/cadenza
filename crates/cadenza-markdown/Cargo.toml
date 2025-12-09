@@ -14,4 +14,5 @@ thiserror.workspace = true
 miette.workspace = true
 
 [dev-dependencies]
+bolero.workspace = true
 insta.workspace = true
