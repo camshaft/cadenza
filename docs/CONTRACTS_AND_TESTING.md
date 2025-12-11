@@ -748,13 +748,10 @@ fn prop_user_validation (username: String) (email: String) (age: Integer) =
 ### Example 3: Sorting Contract
 
 ```cadenza
-fn sort (list: List Integer) -> List Integer
-  @ensures {
-    length result == length list "preserves length",
-    is_sorted result "result is sorted",
-    is_permutation result list "result is permutation of input"
-  }
-=
+@ensures length $0 == length list "preserves length"
+@ensures is_sorted $0 "result is sorted"
+@ensures is_permutation $0 list "result is permutation of input"
+fn sort (list: List Integer) -> List Integer =
   # Implementation
   ...
 
