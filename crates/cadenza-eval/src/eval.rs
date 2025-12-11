@@ -17,7 +17,7 @@ use crate::{
     value::{BuiltinFn, Type, Value},
 };
 use cadenza_syntax::{
-    ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic},
+    ast::{Apply, Expr, Ident, Literal, LiteralValue, Root, Synthetic},
     span::Span,
 };
 
@@ -37,14 +37,24 @@ use cadenza_syntax::{
 /// that expression. Check `compiler.has_errors()` after calling to see if
 /// any errors occurred.
 pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
-    // First pass: hoist function definitions
-    hoist_functions(root, env, compiler);
+    let mut ctx = EvalContext::new(env, compiler);
+
+    // First pass: hoist function definitions with threaded attributes
+    hoist_functions(root, &mut ctx);
 
     // Second pass: evaluate all expressions
-    let mut ctx = EvalContext::new(env, compiler);
     let mut results = Vec::new();
     for expr in root.items() {
-        match expr.eval(&mut ctx) {
+        if is_attr_application(&expr) {
+            if let Err(diagnostic) = expr.eval(&mut ctx) {
+                ctx.compiler.record_diagnostic(*diagnostic);
+                results.push(Value::Nil);
+            }
+            continue;
+        }
+
+        let attrs = ctx.take_attributes();
+        match evaluate_with_attributes(&expr, attrs, &mut ctx) {
             Ok(value) => results.push(value),
             Err(diagnostic) => {
                 ctx.compiler.record_diagnostic(*diagnostic);
@@ -52,7 +62,32 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
             }
         }
     }
+
+    let leftover = ctx.take_attributes();
+    if !leftover.is_empty() {
+        let diagnostic = dangling_attributes_error(&leftover);
+        ctx.compiler.record_diagnostic(*diagnostic);
+        results.push(Value::Nil);
+    }
+
     results
+}
+
+pub(crate) fn evaluate_with_attributes(
+    expr: &Expr,
+    attrs: Vec<Expr>,
+    ctx: &mut EvalContext<'_>,
+) -> Result<Value> {
+    ctx.replace_attributes(attrs);
+    let result = expr.eval(ctx);
+    let remaining = ctx.take_attributes();
+    ctx.replace_attributes(Vec::new());
+
+    if remaining.is_empty() {
+        result
+    } else {
+        Err(unconsumed_attributes_error(&remaining, expr.span()))
+    }
 }
 
 /// First pass: scan for function definitions and register them (hoisting).
@@ -62,10 +97,13 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
 /// This now uses the same delegation pattern as the `=` operator: if LHS is a macro call,
 /// we delegate to that macro.
 #[allow(clippy::collapsible_if)]
-fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
-    let mut ctx = EvalContext::new(env, compiler);
-
+fn hoist_functions(root: &Root, ctx: &mut EvalContext<'_>) {
     for expr in root.items() {
+        if is_attr_application(&expr) {
+            let _ = expr.eval(ctx);
+            continue;
+        }
+
         // Check if this is a function definition (= with macro pattern on LHS)
         if let Expr::Apply(apply) = expr {
             // Check if the callee is the = operator
@@ -102,21 +140,27 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
                                             new_args.extend(lhs_args);
                                             new_args.push(rhs.clone());
 
-                                            // Get the fn macro and call it
-                                            let macro_value =
-                                                if let Some(value) = ctx.compiler.get_macro(id) {
-                                                    Some(value.clone())
-                                                } else {
-                                                    ctx.env.get(id).cloned()
-                                                };
+                                            let attrs = ctx.take_attributes();
+                                            ctx.with_attribute_scope(attrs, |ctx| {
+                                                // Get the fn macro and call it
+                                                let macro_value =
+                                                    if let Some(value) = ctx.compiler.get_macro(id)
+                                                    {
+                                                        Some(value.clone())
+                                                    } else {
+                                                        ctx.env.get(id).cloned()
+                                                    };
 
-                                            if let Some(Value::BuiltinMacro(builtin)) = macro_value
-                                            {
-                                                let _ = (builtin.func)(&new_args, &mut ctx);
-                                            } else if let Some(Value::SpecialForm(sf)) = macro_value
-                                            {
-                                                let _ = sf.eval(&new_args, &mut ctx);
-                                            }
+                                                if let Some(Value::BuiltinMacro(builtin)) =
+                                                    macro_value
+                                                {
+                                                    let _ = (builtin.func)(&new_args, ctx);
+                                                } else if let Some(Value::SpecialForm(sf)) =
+                                                    macro_value
+                                                {
+                                                    let _ = sf.eval(&new_args, ctx);
+                                                }
+                                            });
                                         }
                                     }
                                 }
@@ -129,6 +173,43 @@ fn hoist_functions(root: &Root, env: &mut Env, compiler: &mut Compiler) {
     }
 }
 
+pub(crate) fn unconsumed_attributes_error(attrs: &[Expr], target_span: Span) -> Box<Diagnostic> {
+    let names = attrs
+        .iter()
+        .map(|attr| attr.syntax().text().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut diagnostic =
+        Diagnostic::syntax(format!("unconsumed attribute(s): {}", names)).with_span(target_span);
+    if let Some(span) = attrs.first().map(|attr| attr.span()) {
+        diagnostic = diagnostic.with_span(span);
+    }
+    diagnostic
+}
+
+pub(crate) fn dangling_attributes_error(attrs: &[Expr]) -> Box<Diagnostic> {
+    let names = attrs
+        .iter()
+        .map(|attr| attr.syntax().text().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut diagnostic =
+        Diagnostic::syntax(format!("attribute(s) must annotate an expression: {}", names));
+    if let Some(span) = attrs.first().map(|attr| attr.span()) {
+        diagnostic = diagnostic.with_span(span);
+    }
+    diagnostic
+}
+
+pub(crate) fn is_attr_application(expr: &Expr) -> bool {
+    if let Expr::Apply(apply) = expr {
+        if let Some(Expr::Op(op)) = apply.callee() {
+            return op.syntax().text() == "@";
+        }
+    }
+    false
+}
+
 // =============================================================================
 // Eval trait implementations
 // =============================================================================
@@ -139,7 +220,7 @@ impl Eval for Expr {
             Expr::Literal(lit) => lit.eval(ctx),
             Expr::Ident(ident) => ident.eval(ctx),
             Expr::Apply(apply) => apply.eval(ctx),
-            Expr::Attr(attr) => attr.eval(ctx),
+            Expr::Attr(attr) => Err(Diagnostic::syntax("attribute node not supported; use @ special form").with_span(attr.span())),
             Expr::Op(op) => {
                 // Operators as values (for higher-order usage)
                 // Use SyntaxText directly without allocating a String
@@ -259,8 +340,8 @@ impl Eval for Apply {
 
         // Not a macro call - evaluate the callee
         // For identifiers and operators, we must NOT auto-apply since this is an application context
-        let callee = match &callee_expr {
-            Expr::Ident(ident) => eval_ident_no_auto_apply(ident, ctx)?,
+        let callee = ctx.with_attribute_scope(Vec::new(), |ctx| match &callee_expr {
+            Expr::Ident(ident) => eval_ident_no_auto_apply(ident, ctx),
             Expr::Op(op) => {
                 // Look up operator in environment
                 let text = op.syntax().text();
@@ -270,10 +351,10 @@ impl Eval for Apply {
                 ctx.env
                     .get(id)
                     .cloned()
-                    .ok_or_else(|| Diagnostic::undefined_variable(id).with_span(span))?
+                    .ok_or_else(|| Diagnostic::undefined_variable(id).with_span(span))
             }
-            _ => callee_expr.eval(ctx)?,
-        };
+            _ => callee_expr.eval(ctx),
+        })?;
 
         // Get all arguments (flattened from nested Apply nodes)
         let all_arg_exprs = self.all_arguments();
@@ -281,7 +362,7 @@ impl Eval for Apply {
         // Evaluate all arguments
         let mut args = Vec::new();
         for arg_expr in all_arg_exprs {
-            let value = arg_expr.eval(ctx)?;
+            let value = ctx.eval_child(&arg_expr)?;
             args.push(value);
         }
 
@@ -526,18 +607,6 @@ fn types_compatible(expected: &Type, actual: &Type) -> bool {
 
     // Otherwise, types must be equal
     expected == actual
-}
-
-impl Eval for Attr {
-    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
-        // For now, attributes are evaluated and returned as-is
-        // In the future, they might have special semantics
-        if let Some(value_expr) = self.value() {
-            value_expr.eval(ctx)
-        } else {
-            Ok(Value::Nil)
-        }
-    }
 }
 
 impl Eval for Synthetic {

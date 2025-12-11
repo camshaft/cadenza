@@ -46,8 +46,8 @@ fn eval_div(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     }
 
     // Evaluate both arguments
-    let lhs = args[0].eval(ctx)?;
-    let rhs = args[1].eval(ctx)?;
+    let lhs = ctx.eval_child(&args[0])?;
+    let rhs = ctx.eval_child(&args[1])?;
 
     match (&lhs, &rhs) {
         (Value::Integer(a), Value::Integer(b)) => {

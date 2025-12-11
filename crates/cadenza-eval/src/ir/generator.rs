@@ -224,28 +224,48 @@ impl IrGenerator {
     pub fn gen_function(&mut self, func: &UserFunction, env: &Env) -> Result<FunctionId> {
         let name = func.name;
 
-        // Create a type environment for inference
+        // Create a type environment for inference/annotations
         let mut inference_ctx = IrGenContext::new(env);
 
-        // Create type variables for parameters
-        for p in &func.params {
-            self.create_param_type_var(*p, &mut inference_ctx);
+        // If a type annotation exists, seed the type environment with concrete types.
+        // Otherwise, create fresh type variables for inference.
+        if let Some(annotation) = &func.type_annotation {
+            for (param_name, param_ty) in func.params.iter().zip(annotation.params.iter()) {
+                let infer_ty = InferType::Concrete(param_ty.clone());
+                inference_ctx.type_env_mut().insert(*param_name, infer_ty);
+            }
+        } else {
+            for p in &func.params {
+                self.create_param_type_var(*p, &mut inference_ctx);
+            }
         }
 
-        // Infer the return type by inferring the body expression
-        let return_ty = self.infer_concrete_type(&func.body, &inference_ctx);
+        // Determine return type
+        let return_ty = if let Some(annotation) = &func.type_annotation {
+            annotation.return_type.clone()
+        } else {
+            self.infer_concrete_type(&func.body, &inference_ctx)
+        };
 
-        // Try to get inferred types for parameters from the type environment
+        // Determine parameter types
         let param_types: Vec<(InternedString, Type)> = func
             .params
             .iter()
-            .map(|p| {
-                // Try to infer the parameter type from the type environment
-                let ty = inference_ctx
-                    .type_env()
-                    .get(*p)
-                    .and_then(|infer_ty| infer_ty.to_concrete().ok())
-                    .unwrap_or(Type::Unknown);
+            .enumerate()
+            .map(|(idx, p)| {
+                let ty = if let Some(annotation) = &func.type_annotation {
+                    annotation
+                        .params
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or(Type::Unknown)
+                } else {
+                    inference_ctx
+                        .type_env()
+                        .get(*p)
+                        .and_then(|infer_ty| infer_ty.to_concrete().ok())
+                        .unwrap_or(Type::Unknown)
+                };
                 (*p, ty)
             })
             .collect();
@@ -788,6 +808,7 @@ mod tests {
             params: vec![InternedString::new("a"), InternedString::new("b")],
             body,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let func_id = generator
@@ -827,6 +848,7 @@ mod tests {
             params: vec![],
             body,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let _func_id = generator
@@ -864,6 +886,7 @@ mod tests {
             params: vec![InternedString::new("x"), InternedString::new("y")],
             body,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let _func_id = generator
@@ -901,6 +924,7 @@ mod tests {
             params: vec![InternedString::new("x")],
             body,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let _double_id = generator
@@ -918,6 +942,7 @@ mod tests {
             params: vec![InternedString::new("y")],
             body: body2,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let _quadruple_id = generator
@@ -954,6 +979,7 @@ mod tests {
             params: vec![InternedString::new("a"), InternedString::new("b")],
             body,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let _add_id = generator
@@ -971,6 +997,7 @@ mod tests {
             params: vec![InternedString::new("x"), InternedString::new("y")],
             body: body2,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let _compute_id = generator
@@ -1008,6 +1035,7 @@ mod tests {
             params: vec![InternedString::new("n")],
             body,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let _countdown_id = generator
@@ -1043,6 +1071,7 @@ mod tests {
             params: vec![InternedString::new("x")],
             body,
             captured_env: Env::new(),
+            type_annotation: None,
         };
 
         let func_id = generator

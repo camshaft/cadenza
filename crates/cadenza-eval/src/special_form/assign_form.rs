@@ -110,7 +110,7 @@ fn eval_assign(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
             let text = ident.syntax().text();
             let name: InternedString = text.to_string().as_str().into();
 
-            let rhs_value = rhs_expr.eval(ctx)?;
+            let rhs_value = ctx.eval_child(rhs_expr)?;
 
             // Check if the variable exists (must be declared with `let` first)
             if let Some(var) = ctx.env.get_mut(name) {
@@ -230,7 +230,7 @@ fn handle_field_assignment(
     };
 
     // Evaluate the RHS value
-    let new_value = rhs_expr.eval(ctx)?;
+    let new_value = ctx.eval_child(rhs_expr)?;
 
     // Get a mutable reference to the record from the environment
     let record = ctx

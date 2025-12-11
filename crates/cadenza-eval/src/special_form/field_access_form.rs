@@ -48,7 +48,7 @@ fn eval_field_access(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> 
     }
 
     // Evaluate the record (first argument)
-    let record_value = args[0].eval(ctx)?;
+    let record_value = ctx.eval_child(&args[0])?;
 
     // Extract the field name from the second argument (must be an identifier)
     let (field_name, field_span) = match &args[1] {

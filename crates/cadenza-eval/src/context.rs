@@ -5,6 +5,8 @@
 //! This makes it easy to add new fields in the future without changing function signatures.
 
 use crate::{compiler::Compiler, diagnostic::Result, env::Env, value::Value};
+use cadenza_syntax::ast::Expr;
+use std::{cell::RefCell, rc::Rc};
 
 /// The evaluation context containing all state needed during evaluation.
 ///
@@ -21,12 +23,18 @@ pub struct EvalContext<'a> {
     pub env: &'a mut Env,
     /// The compiler state that accumulates definitions.
     pub compiler: &'a mut Compiler,
+    /// Attributes currently attached to the expression being evaluated.
+    attributes: Rc<RefCell<Vec<Expr>>>,
 }
 
 impl<'a> EvalContext<'a> {
     /// Creates a new evaluation context with the given environment and compiler.
     pub fn new(env: &'a mut Env, compiler: &'a mut Compiler) -> Self {
-        Self { env, compiler }
+        Self {
+            env,
+            compiler,
+            attributes: Rc::new(RefCell::new(Vec::new())),
+        }
     }
 
     /// Creates a borrowed evaluation context from the current context.
@@ -37,7 +45,42 @@ impl<'a> EvalContext<'a> {
         EvalContext {
             env: self.env,
             compiler: self.compiler,
+            attributes: Rc::clone(&self.attributes),
         }
+    }
+
+    /// Replace the current attribute list, returning the previous list.
+    pub fn replace_attributes(&self, attrs: Vec<Expr>) -> Vec<Expr> {
+        std::mem::replace(&mut *self.attributes.borrow_mut(), attrs)
+    }
+
+    /// Take the current attributes (consuming them) and leave an empty list.
+    pub fn take_attributes(&self) -> Vec<Expr> {
+        std::mem::take(&mut *self.attributes.borrow_mut())
+    }
+
+    /// Runs a closure with a temporary attribute scope, restoring the previous
+    /// attributes afterward.
+    pub fn with_attribute_scope<R>(
+        &mut self,
+        attrs: Vec<Expr>,
+        f: impl FnOnce(&mut EvalContext<'_>) -> R,
+    ) -> R {
+        let saved = self.replace_attributes(attrs);
+        let mut nested = self.reborrow();
+        let result = f(&mut nested);
+        self.replace_attributes(saved);
+        result
+    }
+
+    /// Evaluate a child expression without inheriting any pending attributes.
+    pub fn eval_child(&mut self, expr: &cadenza_syntax::ast::Expr) -> Result<Value> {
+        self.with_attribute_scope(Vec::new(), |ctx| expr.eval(ctx))
+    }
+
+    /// Append an attribute to the current list.
+    pub fn add_attribute(&self, expr: Expr) {
+        self.attributes.borrow_mut().push(expr);
     }
 }
 

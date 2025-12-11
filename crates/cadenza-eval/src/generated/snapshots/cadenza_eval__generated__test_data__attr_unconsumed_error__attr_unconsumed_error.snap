@@ -1,0 +1,25 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "@ foo 42\n"
+---
+EvalResult {
+    values: [
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: SyntaxError(
+                "attribute(s) must annotate an expression: foo 42\n, foo 42\n",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 2,
+                    end: 9,
+                },
+            ),
+            stack_trace: [],
+        },
+    ],
+}

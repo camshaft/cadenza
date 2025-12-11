@@ -52,7 +52,7 @@ fn eval_assert(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     let condition_expr = &args[0];
 
     // Evaluate the condition
-    let condition_value = condition_expr.eval(ctx)?;
+    let condition_value = ctx.eval_child(condition_expr)?;
 
     // Check that condition is a boolean
     let condition_result = match condition_value {
@@ -74,7 +74,7 @@ fn eval_assert(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         let message = if args.len() == 2 {
             // Custom message provided
             let msg_expr = &args[1];
-            let msg_value = msg_expr.eval(ctx)?;
+            let msg_value = ctx.eval_child(msg_expr)?;
             match msg_value {
                 Value::String(s) => format!("{}\n  condition: {}", s, condition_text.as_str()),
                 _ => {

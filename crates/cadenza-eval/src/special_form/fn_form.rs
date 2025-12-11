@@ -6,7 +6,7 @@ use crate::{
     interner::InternedString,
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
-    value::{Type, UserFunction, Value},
+    value::{FunctionTypeAnnotation, Type, UserFunction, Value},
 };
 use cadenza_syntax::ast::Expr;
 use std::sync::OnceLock;
@@ -96,6 +96,21 @@ fn handle_function_definition(
     // Clone the body expression
     let body = body_expr.clone();
 
+    // Consume and interpret @t attributes for type annotations
+    let type_annotation = parse_type_attribute(ctx)?;
+    if let Some(annotation) = &type_annotation {
+        if !annotation.params.is_empty() && annotation.params.len() != params.len() {
+            return Err(Box::new(
+                Diagnostic::syntax(format!(
+                    "type annotation parameter count ({}) does not match function parameters ({})",
+                    annotation.params.len(),
+                    params.len()
+                ))
+                .with_span(body.span()),
+            ));
+        }
+    }
+
     // Capture the current environment for closure semantics
     let captured_env = ctx.env.clone();
 
@@ -105,6 +120,7 @@ fn handle_function_definition(
         params,
         body,
         captured_env,
+        type_annotation,
     };
 
     // Generate IR for the function if IR generation is enabled and it hasn't been generated already
@@ -143,6 +159,136 @@ fn ir_fn(
     Err(Diagnostic::syntax(
         "fn special form IR generation not yet implemented",
     ))
+}
+
+/// Consume current attributes and parse @t type annotations, if present.
+fn parse_type_attribute(ctx: &mut EvalContext<'_>) -> Result<Option<FunctionTypeAnnotation>> {
+    let attrs = ctx.take_attributes();
+    if attrs.is_empty() {
+        return Ok(None);
+    }
+
+    let mut type_annotation = None;
+    let mut unconsumed = Vec::new();
+
+    for attr in attrs {
+        let is_t_attr = is_t_attribute(&attr);
+
+        if is_t_attr && type_annotation.is_none() {
+            type_annotation = parse_type_annotation_expr(&attr, ctx).ok();
+        } else {
+            unconsumed.push(attr);
+        }
+    }
+
+    if !unconsumed.is_empty() {
+        return Err(crate::eval::unconsumed_attributes_error(
+            &unconsumed,
+            unconsumed[0].span(),
+        ));
+    }
+
+    Ok(type_annotation)
+}
+
+fn parse_type_annotation_expr(attr_expr: &Expr, ctx: &mut EvalContext<'_>) -> Result<FunctionTypeAnnotation> {
+    let args = match attr_expr {
+        Expr::Apply(apply) => {
+            if let Some(Expr::Ident(id)) = apply.callee() {
+                if id.syntax().text() == "t" {
+                    apply.all_arguments()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    };
+
+    if args.is_empty() {
+        return Ok(FunctionTypeAnnotation {
+            params: Vec::new(),
+            return_type: Type::Nil,
+        });
+    }
+
+    if args.len() == 1 {
+        let mut parts = Vec::new();
+        collect_arrow_types(&args[0], &mut parts);
+        if parts.len() == 1 {
+            // Treat single bare type as one parameter, nil return
+            return Ok(FunctionTypeAnnotation {
+                params: vec![resolve_type_expr(&parts[0], ctx)?],
+                return_type: Type::Nil,
+            });
+        }
+
+        let mut types = Vec::new();
+        for expr in &parts {
+            types.push(resolve_type_expr(expr, ctx)?);
+        }
+
+        let return_type = types.pop().unwrap_or(Type::Unknown);
+        return Ok(FunctionTypeAnnotation {
+            params: types,
+            return_type,
+        });
+    }
+
+    let mut params = Vec::new();
+    for expr in &args[..args.len() - 1] {
+        params.push(resolve_type_expr(expr, ctx)?);
+    }
+    let return_type = resolve_type_expr(&args[args.len() - 1], ctx)?;
+
+    Ok(FunctionTypeAnnotation { params, return_type })
+}
+
+fn collect_arrow_types(expr: &Expr, out: &mut Vec<Expr>) {
+    if let Expr::Apply(apply) = expr {
+        if let Some(Expr::Op(op)) = apply.callee() {
+            if op.syntax().text() == "->" {
+                let args = apply.all_arguments();
+                if args.len() == 2 {
+                    collect_arrow_types(&args[0], out);
+                    collect_arrow_types(&args[1], out);
+                    return;
+                }
+            }
+        }
+    }
+    out.push(expr.clone());
+}
+
+fn is_t_attribute(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(id) => id.syntax().text() == "t",
+        Expr::Apply(apply) => matches!(apply.callee(), Some(Expr::Ident(id)) if id.syntax().text() == "t"),
+        _ => false,
+    }
+}
+
+fn resolve_type_expr(expr: &Expr, ctx: &mut EvalContext<'_>) -> Result<Type> {
+    match expr {
+        Expr::Ident(ident) => {
+            let text = ident.syntax().text();
+            let direct_id = text.interned();
+
+            let lookup = |name: InternedString| match ctx.env.get(name) {
+                Some(Value::Type(t)) => Some(t.clone()),
+                _ => None,
+            };
+
+            if let Some(t) = lookup(direct_id) {
+                return Ok(t);
+            }
+
+            Ok(Type::Unknown)
+        }
+        _ => Ok(Type::Unknown),
+    }
 }
 
 #[cfg(test)]

@@ -52,10 +52,10 @@ fn eval_index(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     }
 
     // Evaluate the array expression
-    let array_value = args[0].eval(ctx)?;
+    let array_value = ctx.eval_child(&args[0])?;
 
     // Evaluate the index expression
-    let index_value = args[1].eval(ctx)?;
+    let index_value = ctx.eval_child(&args[1])?;
 
     // Extract the index as an integer
     let index = match index_value {

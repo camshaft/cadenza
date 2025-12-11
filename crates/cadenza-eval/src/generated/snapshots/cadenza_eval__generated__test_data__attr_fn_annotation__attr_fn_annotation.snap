@@ -1,0 +1,40 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "@ t Integer Integer -> Integer\nfn add a b = a + b\nadd 1 2\n"
+---
+EvalResult {
+    values: [
+        nil,
+        nil,
+    ],
+    diagnostics: [
+        Diagnostic {
+            kind: SyntaxError(
+                "unconsumed attribute(s): t Integer Integer -> Integer\n",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 2,
+                    end: 31,
+                },
+            ),
+            stack_trace: [],
+        },
+        Diagnostic {
+            kind: UndefinedVariable(
+                "add",
+            ),
+            level: Error,
+            file: None,
+            span: Some(
+                Span {
+                    start: 50,
+                    end: 53,
+                },
+            ),
+            stack_trace: [],
+        },
+    ],
+}

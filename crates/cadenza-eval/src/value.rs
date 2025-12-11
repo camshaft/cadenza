@@ -485,6 +485,15 @@ pub struct UserFunction {
     /// This enables closure semantics - the function uses this environment
     /// when called, not the caller's environment.
     pub captured_env: crate::env::Env,
+    /// Optional type annotation sourced from @t attributes.
+    pub type_annotation: Option<FunctionTypeAnnotation>,
+}
+
+/// Function type annotation extracted from attributes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionTypeAnnotation {
+    pub params: Vec<Type>,
+    pub return_type: Type,
 }
 
 impl Value {
@@ -570,10 +579,12 @@ impl Value {
             Value::BuiltinMacro(bm) => bm.signature.clone(),
             Value::SpecialForm(sf) => sf.signature(),
             Value::UserFunction(uf) => {
-                // Create a function type with Unknown parameter types and return type
-                // since we don't track types at compile time yet
-                let param_types = vec![Type::Unknown; uf.params.len()];
-                Type::function(param_types, Type::Unknown)
+                if let Some(annotation) = &uf.type_annotation {
+                    Type::function(annotation.params.clone(), annotation.return_type.clone())
+                } else {
+                    let param_types = vec![Type::Unknown; uf.params.len()];
+                    Type::function(param_types, Type::Unknown)
+                }
             }
         }
     }

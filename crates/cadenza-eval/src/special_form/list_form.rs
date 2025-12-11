@@ -44,7 +44,7 @@ fn eval_list(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     // Evaluate each argument expression
     let mut elements = Vec::with_capacity(args.len());
     for expr in args {
-        let value = expr.eval(ctx)?;
+        let value = ctx.eval_child(expr)?;
         elements.push(value);
     }
 

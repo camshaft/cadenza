@@ -86,7 +86,7 @@ fn eval_record(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
                 };
 
                 // Evaluate the field value (second arg)
-                let value = all_args[1].eval(ctx)?;
+                let value = ctx.eval_child(&all_args[1])?;
 
                 fields.push((field_name, value));
             }

@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-eval/src/generated/test_data.rs
+expression: "@ t Integer Integer -> Integer\nfn add a b = a + b\nadd 1 2\n"
+---
+# IR Module

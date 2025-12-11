@@ -76,7 +76,7 @@ fn eval_let(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
     // Second argument is the value expression
     let value_expr = &args[1];
-    let value = value_expr.eval(ctx)?;
+    let value = ctx.eval_child(value_expr)?;
 
     // Define the variable in the environment with the evaluated value
     ctx.env.define(name, value.clone());

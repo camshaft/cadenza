@@ -28,7 +28,7 @@ fn eval_and(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     }
 
     // Evaluate left operand first
-    let lhs = args[0].eval(ctx)?;
+    let lhs = ctx.eval_child(&args[0])?;
 
     match lhs {
         Value::Bool(false) => {
@@ -37,7 +37,7 @@ fn eval_and(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         }
         Value::Bool(true) => {
             // Left is true, need to evaluate right
-            let rhs = args[1].eval(ctx)?;
+            let rhs = ctx.eval_child(&args[1])?;
             match rhs {
                 Value::Bool(b) => Ok(Value::Bool(b)),
                 _ => Err(Diagnostic::type_error(Type::Bool, rhs.type_of())),

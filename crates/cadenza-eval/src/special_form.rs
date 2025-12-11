@@ -32,6 +32,7 @@ pub mod add_form;
 pub mod and_form;
 pub mod assert_form;
 pub mod assign_form;
+pub mod attr_form;
 pub mod block_form;
 pub mod div_form;
 pub mod eq_form;

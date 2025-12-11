@@ -45,7 +45,7 @@ fn eval_tuple(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
     let mut elements = Vec::with_capacity(args.len());
 
     for arg in args {
-        let value = arg.eval(ctx)?;
+        let value = ctx.eval_child(arg)?;
         elements.push(value);
     }
 
