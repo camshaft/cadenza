@@ -59,20 +59,22 @@ Ada's approach of constrained subtypes provides compile-time and runtime safety 
 
 ### Basic Constrained Types
 
-Define subtypes with range constraints:
+Define subtypes with range constraints using attributes:
 
 ```cadenza
 # Range-constrained integer type
-type Natural = Integer @ { x >= 0 }
+@invariant $0 >= 0
+type Natural = Integer
 
 # Bounded range
-type Percentage = Float @ { x >= 0.0 && x <= 100.0 }
+@invariant $0 >= 0.0
+@invariant $0 <= 100.0
+type Percentage = Float
 
-# Multiple named constraints
-type Age = Integer @ { 
-  x >= 0 "age cannot be negative",
-  x < 150 "age must be realistic"
-}
+# Multiple constraints with custom messages
+@invariant $0 >= 0 "age cannot be negative"
+@invariant $0 < 150 "age must be realistic"
+type Age = Integer
 
 # Using the constrained types
 fn discount (percent: Percentage) (price: Float) =
@@ -84,16 +86,20 @@ let bad = discount 150.0 100.0   # Error: 150.0 violates Percentage constraint
 
 ### Predicate Syntax
 
-Constraints use a predicate expression where `x` (or any parameter name) represents the value:
+Constraints use attribute predicates where `$0` represents the value being constrained:
 
 ```cadenza
-type T = BaseType @ { predicate }
+@invariant predicate
+type T = BaseType
 
 # Multiple constraints with custom messages
-type T = BaseType @ {
-  constraint1 "error message 1",
-  constraint2 "error message 2"
-}
+@invariant constraint1 "error message 1"
+@invariant constraint2 "error message 2"
+type T = BaseType
+
+# Calling functions from attributes to encapsulate checks
+@invariant is_valid_email $0 "must be a valid email"
+type Email = String
 ```
 
 ### Constraint Checking
@@ -104,7 +110,8 @@ type T = BaseType @ {
 - When returning from functions with constrained return types
 
 ```cadenza
-type PositiveInt = Integer @ { x > 0 }
+@invariant $0 > 0
+type PositiveInt = Integer
 
 fn reciprocal (n: PositiveInt) = 1.0 / n
 
@@ -112,7 +119,7 @@ fn reciprocal (n: PositiveInt) = 1.0 / n
 ```
 
 **Static Analysis** (when possible):
-- Literal values: `let x: Natural = -5` → compile-time error
+- Literal values: `let x: Natural = -5` → compile-time error "age cannot be negative"
 - Known constraints: `let x = 5; let y: Natural = x` → compile-time OK
 - Dependent relationships: `let x: Natural = y + 1` → OK if `y: Natural`
 
@@ -125,11 +132,14 @@ fn reciprocal (n: PositiveInt) = 1.0 / n
 Constrained types work with dimensional analysis:
 
 ```cadenza
-type Speed = Float<meter/second> @ { x >= 0.0 && x < 299792458.0 }
-# Speed cannot be negative or exceed speed of light
+# Note: Final syntax for dimensional types is still being designed
+# This is a placeholder showing the concept
+@invariant $0 >= 0.0 "speed cannot be negative"
+@invariant $0 < 299792458.0 "speed cannot exceed speed of light"
+type Speed = Quantity meter/second
 
-type Temperature = Float<kelvin> @ { x >= 0.0 }
-# Absolute zero is the minimum temperature
+@invariant $0 >= 0.0 "temperature cannot be below absolute zero"
+type Temperature = Quantity kelvin
 ```
 
 ### Dependent Types (Future)
@@ -138,14 +148,17 @@ More sophisticated constraints that depend on other values:
 
 ```cadenza
 # Array with length tracked in the type
+@invariant length $0.elements == $0.length
 type Array (n: Natural) (T: Type) = {
   length = n,
-  elements = List T @ { length elements == n }
+  elements = List T
 }
 
 # Function that preserves array length
 fn map (f: T -> U) (arr: Array n T) -> Array n U = ...
 ```
+
+**Note**: Dependent types would be valuable to add early in development, as they may be difficult to retrofit later. They enable powerful compile-time guarantees about relationships between values.
 
 ---
 
@@ -267,6 +280,20 @@ fn test_zero =
 fn test_negatives =
   assert -1 + 1 == 0
   assert -5 + -3 == -8
+
+# Use tags to categorize tests for filtering
+@test
+@tag "unit"
+@tag "arithmetic"
+fn test_add_positive =
+  assert 2 + 3 == 5
+
+@test
+@tag "integration"
+@tag "database"
+fn test_db_connection =
+  # integration test code
+  assert true
 ```
 
 ### Test Organization
@@ -300,11 +327,17 @@ fn test_add_zero =
 # Run all tests
 cadenza test
 
-# Run specific test file
-cadenza test math.test.cdz
+# Run tests in specific module (default behavior with filter)
+cadenza test math
 
-# Run tests matching pattern
-cadenza test --filter "addition"
+# Run tests matching pattern (default mode, similar to cargo test)
+cadenza test addition
+
+# Exclude tests by tag
+cadenza test --exclude-tag integration
+
+# Include only specific tags
+cadenza test --tag unit
 
 # Run tests in watch mode
 cadenza test --watch
@@ -326,21 +359,25 @@ fn test_with_fixture =
   cleanup_test_database db
 ```
 
-### Test Grouping
+### Test Organization with Tags
+
+Instead of explicit test groups, use tags to organize and filter tests:
 
 ```cadenza
-# Group related tests
-@test_group "arithmetic operations"
-{
-  @test
-  fn test_addition = assert 1 + 1 == 2
-  
-  @test
-  fn test_subtraction = assert 5 - 3 == 2
-  
-  @test
-  fn test_multiplication = assert 3 * 4 == 12
-}
+# Use tags to categorize related tests
+@test
+@tag "arithmetic"
+fn test_addition = assert 1 + 1 == 2
+
+@test
+@tag "arithmetic"
+fn test_subtraction = assert 5 - 3 == 2
+
+@test
+@tag "arithmetic"
+fn test_multiplication = assert 3 * 4 == 12
+
+# Run all arithmetic tests: cadenza test --tag arithmetic
 ```
 
 ### Expected Failures
@@ -474,13 +511,28 @@ Cadenza supports multiple levels of contract checking:
 
 ### Configuration
 
-```cadenza
-# At module level
-@verification_level "static"
+Verification level is configured at build time, not in the code:
 
-# Or per-function
+```bash
+# Development: full dynamic checking
+cadenza build --verification dynamic
+
+# Release: static verification where possible, dynamic fallback
+cadenza build --verification hybrid
+
+# Maximum verification (slowest, most thorough)
+cadenza build --verification static
+
+# No contract checking (fastest, least safe)
+cadenza build --verification none
+```
+
+Per-function verification levels can be specified as hints to the compiler:
+
+```cadenza
+# Suggest static verification for critical functions
+@verification_hint "static"
 fn critical_function (x: Integer) -> Integer
-  @verification_level "static"
   @requires { x > 0 }
   @ensures { result > x }
 =
@@ -556,8 +608,11 @@ arbitrary<Option String>     # None or Some string
 Type invariants guide test generation:
 
 ```cadenza
-type Even = Integer @ { x % 2 == 0 }
-type Odd = Integer @ { x % 2 == 1 }
+@invariant $0 % 2 == 0
+type Even = Integer
+
+@invariant $0 % 2 == 1
+type Odd = Integer
 
 @property
 fn prop_even_plus_odd_is_odd (e: Even) (o: Odd) =
@@ -614,7 +669,9 @@ impl Shrink for Email =
 ### Example 1: Array Bounds
 
 ```cadenza
-type Index (n: Natural) = Integer @ { x >= 0 && x < n }
+@invariant $0 >= 0
+@invariant $0 < n
+type Index (n: Natural) = Integer
 
 fn safe_get (arr: Array n T) (i: Index n) -> T =
   # No bounds check needed: type system ensures i is valid
@@ -630,21 +687,23 @@ fn prop_safe_get_no_panic (arr: Array n Integer) (i: Index n) =
 ### Example 2: Validated Input
 
 ```cadenza
-type Username = String @ {
-  length x >= 3 "username must be at least 3 characters",
-  length x <= 20 "username must be at most 20 characters",
-  all_alphanumeric x "username must be alphanumeric"
-}
+@invariant length $0 >= 3 "username must be at least 3 characters"
+@invariant length $0 <= 20 "username must be at most 20 characters"
+@invariant all_alphanumeric $0 "username must be alphanumeric"
+type Username = String
 
-type Email = String @ {
-  contains x "@" "email must contain @",
-  valid_email x "email must be valid format"
-}
+@invariant contains $0 "@" "email must contain @"
+@invariant valid_email $0 "email must be valid format"
+type Email = String
+
+@invariant $0 >= 18 "user must be an adult"
+@invariant $0 < 150 "age must be realistic"
+type UserAge = Integer
 
 struct User {
   username = Username,
   email = Email,
-  age = Integer @ { x >= 18 && x < 150 },
+  age = UserAge,
 }
 
 @property
@@ -717,13 +776,16 @@ fn prop_traffic_light_cycle (initial: TrafficLight) =
 ### Example 5: Numeric Constraints with Units
 
 ```cadenza
-type Speed = Float<meter/second> @ { 
-  x >= 0.0 "speed cannot be negative",
-  x < 299792458.0 "speed cannot exceed speed of light"
-}
+# Note: Syntax for dimensional types is still being designed
+@invariant $0 >= 0.0 "speed cannot be negative"
+@invariant $0 < 299792458.0 "speed cannot exceed speed of light"
+type Speed = Quantity meter/second
 
-type Distance = Float<meter> @ { x >= 0.0 }
-type Time = Float<second> @ { x > 0.0 }
+@invariant $0 >= 0.0 "distance cannot be negative"
+type Distance = Quantity meter
+
+@invariant $0 > 0.0 "time must be positive"
+type Time = Quantity second
 
 fn calculate_speed (distance: Distance) (time: Time) -> Speed
   @ensures { result >= 0.0 && result < 299792458.0 }
