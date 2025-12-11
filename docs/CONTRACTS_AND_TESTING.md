@@ -132,9 +132,11 @@ fn reciprocal (n: PositiveInt) = 1.0 / n
 Constrained types work with dimensional analysis:
 
 ```cadenza
-# Note: Both dimensional types and the Quantity type are still being designed
-# Quantity would be a built-in type that represents dimensioned values
-# The syntax meter/second represents the dimension specification
+# Note: Both dimensional types and the Quantity type are still being designed.
+# Quantity would be a built-in generic type that represents dimensioned values.
+# The syntax meter/second represents the dimension specification.
+# Key design question: How to represent dimensions in a way that works with
+# the generic parser (no keywords, no special awareness of units).
 @invariant $0 >= 0.0 "speed cannot be negative"
 @invariant $0 < 299792458.0 "speed cannot exceed speed of light"
 type Speed = Quantity meter/second
@@ -160,7 +162,7 @@ type Array (n: Natural) (T: Type) = {
 fn map (f: T -> U) (arr: Array n T) -> Array n U = ...
 ```
 
-**Note**: Dependent types would be valuable to add early in development, as they may be difficult to retrofit later. They enable powerful compile-time guarantees about relationships between values. The exact syntax for how type parameters interact with invariants and how invariants apply to struct types is still being designed.
+**Note**: Dependent types would be valuable to add early in development, as they may be difficult to retrofit later. For example, changing the type system to track array lengths after APIs are already designed without length tracking would require breaking changes throughout the codebase. They enable powerful compile-time guarantees about relationships between values. The exact syntax for how type parameters interact with invariants and how invariants apply to struct types is still being designed.
 
 ---
 
@@ -484,8 +486,11 @@ struct BankAccountModel {
 @invariant $0 > 0.0
 type PositiveAmount = Float
 
-# Note: Complex constraints referencing runtime values are still being designed
-# The syntax below shows the conceptual interface
+# Note: Constraints that reference runtime values (like model.balance) are complex
+# because they need to evaluate against state that changes during execution.
+# Design challenge: How to express "amount <= current balance" as a type constraint
+# when balance is a runtime value. This may require dependent types or special
+# handling in the property testing framework.
 @stateful_property
 fn prop_bank_account_invariant =
   let model = BankAccountModel { balance = 100.0 }
@@ -640,7 +645,10 @@ fn prop_even_plus_odd_is_odd (e: Even) (o: Odd) =
 ### Custom Generators for Complex Types
 
 ```cadenza
-# Note: Syntax for struct invariants is still being designed
+# Note: Struct invariants have unique design challenges:
+# - Should they validate field relationships vs individual field types?
+# - How do they interact with struct construction and mutation?
+# - Can they reference multiple fields using $0.field1, $0.field2?
 @invariant is_sorted $0.elements
 struct SortedList (T: Type) {
   elements = List T,
@@ -700,7 +708,7 @@ fn prop_safe_get_no_panic (arr: Array n Integer) (i: Index n) =
   assert true  # Always passes
 ```
 
-**Note**: The exact syntax for how invariants reference type parameters is still being designed. This example illustrates the concept of dependent type constraints.
+**Note**: The exact syntax for how invariants reference type parameters is still being designed. Key challenges: How does the constraint checker evaluate `$0 < n` when `n` is a type parameter? Should this be resolved at compile-time, or does it require dependent type checking? Alternative approaches being considered include using predicates that take both the value and type parameters as arguments, or special syntax for dependent constraints.
 
 ### Example 2: Validated Input
 
