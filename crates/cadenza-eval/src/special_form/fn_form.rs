@@ -172,16 +172,10 @@ fn parse_type_attribute(ctx: &mut EvalContext<'_>) -> Result<Option<FunctionType
     let mut unconsumed = Vec::new();
 
     for attr in attrs {
-        let is_t_attr = attr
-            .syntax()
-            .text()
-            .trim_start()
-            .strip_prefix("@t")
-            .map_or(false, |rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+        let is_t_attr = is_t_attribute(&attr);
 
         if is_t_attr && type_annotation.is_none() {
-            // For now, consume @t and leave types unknown if we cannot resolve them.
-            type_annotation = parse_type_annotation_ast(&attr, ctx).ok();
+            type_annotation = parse_type_annotation_expr(&attr, ctx).ok();
         } else {
             unconsumed.push(attr);
         }
@@ -197,29 +191,58 @@ fn parse_type_attribute(ctx: &mut EvalContext<'_>) -> Result<Option<FunctionType
     Ok(type_annotation)
 }
 
-fn parse_type_annotation_ast(attr: &cadenza_syntax::ast::Attr, ctx: &mut EvalContext<'_>) -> Result<FunctionTypeAnnotation> {
-    let value_expr = attr
-        .value()
-        .ok_or_else(|| Diagnostic::syntax("type annotation requires types after @t").with_span(attr.span()))?;
+fn parse_type_annotation_expr(attr_expr: &Expr, ctx: &mut EvalContext<'_>) -> Result<FunctionTypeAnnotation> {
+    let args = match attr_expr {
+        Expr::Apply(apply) => {
+            if let Some(Expr::Ident(id)) = apply.callee() {
+                if id.syntax().text() == "t" {
+                    apply.all_arguments()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    };
 
-    let mut parts = Vec::new();
-    collect_arrow_types(&value_expr, &mut parts);
-    if parts.is_empty() {
-        return Err(Box::new(
-            Diagnostic::syntax("type annotation requires at least a return type").with_span(attr.span()),
-        ));
+    if args.is_empty() {
+        return Ok(FunctionTypeAnnotation {
+            params: Vec::new(),
+            return_type: Type::Unknown,
+        });
     }
 
-    let mut types = Vec::new();
-    for expr in &parts {
-        types.push(resolve_type_expr(expr, ctx)?);
+    if args.len() == 1 {
+        let mut parts = Vec::new();
+        collect_arrow_types(&args[0], &mut parts);
+        if parts.is_empty() {
+            return Err(Box::new(
+                Diagnostic::syntax("type annotation requires at least a return type")
+                    .with_span(attr_expr.span()),
+            ));
+        }
+
+        let mut types = Vec::new();
+        for expr in &parts {
+            types.push(resolve_type_expr(expr, ctx)?);
+        }
+
+        let return_type = types.pop().unwrap_or(Type::Unknown);
+        return Ok(FunctionTypeAnnotation {
+            params: types,
+            return_type,
+        });
     }
 
-    let return_type = types.pop().unwrap_or(Type::Unknown);
-    Ok(FunctionTypeAnnotation {
-        params: types,
-        return_type,
-    })
+    let mut params = Vec::new();
+    for expr in &args[..args.len() - 1] {
+        params.push(resolve_type_expr(expr, ctx)?);
+    }
+    let return_type = resolve_type_expr(&args[args.len() - 1], ctx)?;
+
+    Ok(FunctionTypeAnnotation { params, return_type })
 }
 
 fn collect_arrow_types(expr: &Expr, out: &mut Vec<Expr>) {
@@ -238,13 +261,27 @@ fn collect_arrow_types(expr: &Expr, out: &mut Vec<Expr>) {
     out.push(expr.clone());
 }
 
+fn is_t_attribute(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(id) => id.syntax().text() == "t",
+        Expr::Apply(apply) => {
+            if let Some(Expr::Ident(id)) = apply.callee() {
+                id.syntax().text() == "t"
+            } else {
+                true
+            }
+        }
+        _ => true,
+    }
+}
+
 fn resolve_type_expr(expr: &Expr, ctx: &mut EvalContext<'_>) -> Result<Type> {
     match expr {
         Expr::Ident(ident) => {
             let text = ident.syntax().text();
             let direct_id = text.interned();
 
-            let mut lookup = |name: InternedString| match ctx.env.get(name) {
+            let lookup = |name: InternedString| match ctx.env.get(name) {
                 Some(Value::Type(t)) => Some(t.clone()),
                 _ => None,
             };
@@ -258,17 +295,15 @@ fn resolve_type_expr(expr: &Expr, ctx: &mut EvalContext<'_>) -> Result<Type> {
                 title.extend(first.to_uppercase());
                 title.push_str(&text[first.len_utf8()..]);
                 let title_id: InternedString = title.as_str().into();
-            if let Some(t) = lookup(title_id) {
-                return Ok(t);
+                if let Some(t) = lookup(title_id) {
+                    return Ok(t);
+                }
             }
-        }
 
-        Ok(Type::Unknown)
+            Ok(Type::Unknown)
+        }
+        _ => Ok(Type::Unknown),
     }
-    _ => Err(Box::new(
-        Diagnostic::syntax("unsupported expression in @t annotation").with_span(expr.span()),
-    )),
-}
 }
 
 #[cfg(test)]

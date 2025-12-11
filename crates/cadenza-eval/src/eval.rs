@@ -17,7 +17,7 @@ use crate::{
     value::{BuiltinFn, Type, Value},
 };
 use cadenza_syntax::{
-    ast::{Apply, Attr, Expr, Ident, Literal, LiteralValue, Root, Synthetic},
+    ast::{Apply, Expr, Ident, Literal, LiteralValue, Root, Synthetic},
     span::Span,
 };
 
@@ -44,17 +44,16 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
 
     // Second pass: evaluate all expressions
     let mut results = Vec::new();
-    let mut pending_attrs = Vec::new();
     for expr in root.items() {
-        match expr {
-            Expr::Attr(attr) => {
-                pending_attrs.push(attr);
-                continue;
+        if is_attr_application(&expr) {
+            if let Err(diagnostic) = expr.eval(&mut ctx) {
+                ctx.compiler.record_diagnostic(*diagnostic);
+                results.push(Value::Nil);
             }
-            _ => {}
+            continue;
         }
 
-        let attrs = std::mem::take(&mut pending_attrs);
+        let attrs = ctx.take_attributes();
         match evaluate_with_attributes(&expr, attrs, &mut ctx) {
             Ok(value) => results.push(value),
             Err(diagnostic) => {
@@ -64,8 +63,9 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
         }
     }
 
-    if !pending_attrs.is_empty() {
-        let diagnostic = dangling_attributes_error(&pending_attrs);
+    let leftover = ctx.take_attributes();
+    if !leftover.is_empty() {
+        let diagnostic = dangling_attributes_error(&leftover);
         ctx.compiler.record_diagnostic(*diagnostic);
         results.push(Value::Nil);
     }
@@ -75,7 +75,7 @@ pub fn eval(root: &Root, env: &mut Env, compiler: &mut Compiler) -> Vec<Value> {
 
 pub(crate) fn evaluate_with_attributes(
     expr: &Expr,
-    attrs: Vec<Attr>,
+    attrs: Vec<Expr>,
     ctx: &mut EvalContext<'_>,
 ) -> Result<Value> {
     let saved_attrs = ctx.replace_attributes(attrs);
@@ -98,11 +98,9 @@ pub(crate) fn evaluate_with_attributes(
 /// we delegate to that macro.
 #[allow(clippy::collapsible_if)]
 fn hoist_functions(root: &Root, ctx: &mut EvalContext<'_>) {
-    let mut pending_attrs = Vec::new();
-
     for expr in root.items() {
-        if let Expr::Attr(attr) = expr {
-            pending_attrs.push(attr);
+        if is_attr_application(&expr) {
+            let _ = expr.eval(ctx);
             continue;
         }
 
@@ -142,7 +140,7 @@ fn hoist_functions(root: &Root, ctx: &mut EvalContext<'_>) {
                                             new_args.extend(lhs_args);
                                             new_args.push(rhs.clone());
 
-                                            let attrs = std::mem::take(&mut pending_attrs);
+                                            let attrs = ctx.take_attributes();
                                             ctx.with_attribute_scope(attrs, |ctx| {
                                                 // Get the fn macro and call it
                                                 let macro_value =
@@ -175,7 +173,7 @@ fn hoist_functions(root: &Root, ctx: &mut EvalContext<'_>) {
     }
 }
 
-pub(crate) fn unconsumed_attributes_error(attrs: &[Attr], target_span: Span) -> Box<Diagnostic> {
+pub(crate) fn unconsumed_attributes_error(attrs: &[Expr], target_span: Span) -> Box<Diagnostic> {
     let names = attrs
         .iter()
         .map(|attr| attr.syntax().text().to_string())
@@ -189,7 +187,7 @@ pub(crate) fn unconsumed_attributes_error(attrs: &[Attr], target_span: Span) -> 
     diagnostic
 }
 
-pub(crate) fn dangling_attributes_error(attrs: &[Attr]) -> Box<Diagnostic> {
+pub(crate) fn dangling_attributes_error(attrs: &[Expr]) -> Box<Diagnostic> {
     let names = attrs
         .iter()
         .map(|attr| attr.syntax().text().to_string())
@@ -203,6 +201,15 @@ pub(crate) fn dangling_attributes_error(attrs: &[Attr]) -> Box<Diagnostic> {
     diagnostic
 }
 
+pub(crate) fn is_attr_application(expr: &Expr) -> bool {
+    if let Expr::Apply(apply) = expr {
+        if let Some(Expr::Op(op)) = apply.callee() {
+            return op.syntax().text() == "@";
+        }
+    }
+    false
+}
+
 // =============================================================================
 // Eval trait implementations
 // =============================================================================
@@ -213,7 +220,7 @@ impl Eval for Expr {
             Expr::Literal(lit) => lit.eval(ctx),
             Expr::Ident(ident) => ident.eval(ctx),
             Expr::Apply(apply) => apply.eval(ctx),
-            Expr::Attr(attr) => attr.eval(ctx),
+            Expr::Attr(attr) => Err(Diagnostic::syntax("attribute node not supported; use @ special form").with_span(attr.span())),
             Expr::Op(op) => {
                 // Operators as values (for higher-order usage)
                 // Use SyntaxText directly without allocating a String
@@ -600,13 +607,6 @@ fn types_compatible(expected: &Type, actual: &Type) -> bool {
 
     // Otherwise, types must be equal
     expected == actual
-}
-
-impl Eval for Attr {
-    fn eval(&self, ctx: &mut EvalContext<'_>) -> Result<Value> {
-        // Attribute nodes should be consumed by the annotated expression, not evaluated directly.
-        Err(Diagnostic::syntax("attribute must annotate an expression").with_span(self.span()))
-    }
 }
 
 impl Eval for Synthetic {

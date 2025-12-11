@@ -114,6 +114,7 @@ impl Env {
         let let_id: InternedString = "let".into();
         let assign_id: InternedString = "=".into();
         let fn_id: InternedString = "fn".into();
+        let attr_id: InternedString = "@".into();
         let match_id: InternedString = "match".into();
         let assert_id: InternedString = "assert".into();
         let typeof_id: InternedString = "typeof".into();
@@ -132,6 +133,7 @@ impl Env {
             Value::SpecialForm(special_form::assign_form::get()),
         );
         self.define(fn_id, Value::SpecialForm(special_form::fn_form::get()));
+        self.define(attr_id, Value::SpecialForm(special_form::attr_form::get()));
         self.define(
             match_id,
             Value::SpecialForm(special_form::match_form::get()),

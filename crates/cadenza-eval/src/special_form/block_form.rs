@@ -53,19 +53,38 @@ fn eval_block(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
     // Evaluate each expression in sequence
     let mut result = Value::Nil;
-    let mut pending_attrs: Vec<cadenza_syntax::ast::Attr> = Vec::new();
+    let mut pending_attrs: Vec<cadenza_syntax::ast::Expr> = Vec::new();
     for expr in args {
-        if let Expr::Attr(attr) = expr {
-            pending_attrs.push(attr.clone());
+        if crate::eval::is_attr_application(expr) {
+            // Preserve already pending attrs and accumulate new ones
+            let mut current = ctx.take_attributes();
+            current.extend(pending_attrs.drain(..));
+            ctx.replace_attributes(current);
+            if let Err(diag) = expr.eval(ctx) {
+                ctx.compiler.record_diagnostic(*diag);
+            }
             continue;
         }
-        let attrs = std::mem::take(&mut pending_attrs);
-        result = crate::eval::evaluate_with_attributes(expr, attrs, ctx)?;
+
+        // Merge any pending attrs plus those stored in context
+        let mut attrs = ctx.take_attributes();
+        attrs.extend(pending_attrs.drain(..));
+
+        match crate::eval::evaluate_with_attributes(expr, attrs, ctx) {
+            Ok(val) => result = val,
+            Err(diag) => {
+                ctx.compiler.record_diagnostic(*diag);
+                result = Value::Nil;
+            }
+        }
     }
 
-    if !pending_attrs.is_empty() {
+    let leftover = ctx.take_attributes();
+    if !leftover.is_empty() || !pending_attrs.is_empty() {
+        let mut all = leftover;
+        all.extend(pending_attrs);
         ctx.compiler
-            .record_diagnostic(*crate::eval::dangling_attributes_error(&pending_attrs));
+            .record_diagnostic(*crate::eval::dangling_attributes_error(&all));
     }
 
     // Pop the scope when exiting the block
