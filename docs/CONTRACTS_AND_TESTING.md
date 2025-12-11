@@ -776,7 +776,10 @@ enum TrafficLight {
   Green,
 }
 
-@ensures (current == Red && $0 == Green) || (current == Green && $0 == Yellow) || (current == Yellow && $0 == Red)
+# Ensure valid state transitions
+@ensures current == Red ==> $0 == Green
+@ensures current == Green ==> $0 == Yellow
+@ensures current == Yellow ==> $0 == Red
 fn next_light (current: TrafficLight) -> TrafficLight =
   match current
     Red => Green
