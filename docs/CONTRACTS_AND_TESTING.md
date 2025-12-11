@@ -132,8 +132,9 @@ fn reciprocal (n: PositiveInt) = 1.0 / n
 Constrained types work with dimensional analysis:
 
 ```cadenza
-# Note: Final syntax for dimensional types is still being designed
-# This is a placeholder showing the concept
+# Note: Both dimensional types and the Quantity type are still being designed
+# Quantity would be a built-in type that represents dimensioned values
+# The syntax meter/second represents the dimension specification
 @invariant $0 >= 0.0 "speed cannot be negative"
 @invariant $0 < 299792458.0 "speed cannot exceed speed of light"
 type Speed = Quantity meter/second
@@ -478,19 +479,26 @@ struct BankAccountModel {
   balance = Float,
 }
 
+@invariant $0 > 0.0
+type PositiveAmount = Float
+
+# Note: Complex constraints referencing runtime values are still being designed
+# The syntax below shows the conceptual interface
 @stateful_property
 fn prop_bank_account_invariant =
   let model = BankAccountModel { balance = 100.0 }
   
   @command "deposit"
-  fn deposit (amount: Float @ { x > 0.0 }) =
+  fn deposit (amount: PositiveAmount) =
     model.balance = model.balance + amount
     assert model.balance >= 0.0
   
-  @command "withdraw"
-  fn withdraw (amount: Float @ { x > 0.0 && x <= model.balance }) =
-    model.balance = model.balance - amount
-    assert model.balance >= 0.0
+  @command "withdraw"  
+  fn withdraw (amount: PositiveAmount) =
+    # Precondition check: amount must not exceed balance
+    if amount <= model.balance then
+      model.balance = model.balance - amount
+      assert model.balance >= 0.0
 
 # Framework generates random command sequences:
 # deposit 50.0, withdraw 30.0, deposit 20.0, withdraw 100.0, ...
@@ -542,11 +550,14 @@ fn critical_function (x: Integer) -> Integer
 
 ### Static Analysis with SMT Solvers
 
-For functions marked with `@verification_level "static"`, Cadenza can use SMT solvers (Z3, CVC5) to prove correctness:
+For functions with static verification hints, Cadenza can use SMT solvers (Z3, CVC5) to prove correctness:
 
 ```cadenza
-fn safe_divide (a: Integer) (b: Integer @ { x != 0 }) -> Integer
-  @verification_level "static"
+@invariant $0 != 0
+type NonZero = Integer
+
+fn safe_divide (a: Integer) (b: NonZero) -> Integer
+  @verification_hint "static"
 =
   a / b  # Provably safe: type system ensures b != 0
 ```
@@ -671,9 +682,9 @@ impl Shrink for Email =
 
 ```cadenza
 # Conceptual syntax - exact handling of type parameters in invariants TBD
+@invariant $0 >= 0
+@invariant $0 < n  # References type parameter n
 type Index (n: Natural) = Integer
-  @invariant $0 >= 0
-  @invariant $0 < n  # References type parameter n
 
 fn safe_get (arr: Array n T) (i: Index n) -> T =
   # No bounds check needed: type system ensures i is valid
