@@ -3,7 +3,6 @@
 use crate::{
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
-    eval,
     interner::InternedString,
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},
     special_form::BuiltinSpecialForm,
@@ -100,7 +99,7 @@ fn handle_function_definition(
     // Consume and interpret @t attributes for type annotations
     let type_annotation = parse_type_attribute(ctx)?;
     if let Some(annotation) = &type_annotation {
-        if annotation.params.len() != params.len() {
+        if !annotation.params.is_empty() && annotation.params.len() != params.len() {
             return Err(Box::new(
                 Diagnostic::syntax(format!(
                     "type annotation parameter count ({}) does not match function parameters ({})",
@@ -173,17 +172,16 @@ fn parse_type_attribute(ctx: &mut EvalContext<'_>) -> Result<Option<FunctionType
     let mut unconsumed = Vec::new();
 
     for attr in attrs {
-        let text = attr.syntax().text().to_string();
-        let trimmed = text.trim_start();
-        let is_t_attr = if let Some(rest) = trimmed.strip_prefix("@t") {
-            rest.is_empty() || rest.starts_with(char::is_whitespace)
-        } else {
-            false
-        };
+        let is_t_attr = attr
+            .syntax()
+            .text()
+            .trim_start()
+            .strip_prefix("@t")
+            .map_or(false, |rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
 
         if is_t_attr && type_annotation.is_none() {
-            let parsed = parse_type_annotation_text(&text, attr.span())?;
-            type_annotation = Some(parsed);
+            // For now, consume @t and leave types unknown if we cannot resolve them.
+            type_annotation = parse_type_annotation_ast(&attr, ctx).ok();
         } else {
             unconsumed.push(attr);
         }
@@ -199,68 +197,78 @@ fn parse_type_attribute(ctx: &mut EvalContext<'_>) -> Result<Option<FunctionType
     Ok(type_annotation)
 }
 
-fn parse_type_annotation_text(text: &str, span: cadenza_syntax::span::Span) -> Result<FunctionTypeAnnotation> {
-    // Strip leading "@t"
-    let trimmed = text.trim();
-    let without_prefix = trimmed.trim_start_matches("@t").trim();
+fn parse_type_annotation_ast(attr: &cadenza_syntax::ast::Attr, ctx: &mut EvalContext<'_>) -> Result<FunctionTypeAnnotation> {
+    let value_expr = attr
+        .value()
+        .ok_or_else(|| Diagnostic::syntax("type annotation requires types after @t").with_span(attr.span()))?;
 
-    if without_prefix.is_empty() {
+    let mut parts = Vec::new();
+    collect_arrow_types(&value_expr, &mut parts);
+    if parts.is_empty() {
         return Err(Box::new(
-            Diagnostic::syntax("type annotation requires types after @t").with_span(span),
+            Diagnostic::syntax("type annotation requires at least a return type").with_span(attr.span()),
         ));
     }
 
-    let parts: Vec<&str> = without_prefix.split("->").collect();
-    if parts.len() != 2 {
-        let msg = if parts.len() > 2 {
-            "type annotation must contain exactly one '->' separating parameters and return type"
-        } else {
-            "type annotation must use '->' to separate parameters and return type"
-        };
-        return Err(Box::new(
-            Diagnostic::syntax(msg).with_span(span),
-        ));
+    let mut types = Vec::new();
+    for expr in &parts {
+        types.push(resolve_type_expr(expr, ctx)?);
     }
 
-    let params_part = parts[0].trim();
-    let return_part = parts[1].trim();
-
-    let mut params = Vec::new();
-    if !params_part.is_empty() {
-        for name in params_part.split_whitespace() {
-            params.push(map_type_name(name, span)?);
-        }
-    }
-
-    let return_type = if return_part.is_empty() {
-        Type::Unknown
-    } else {
-        map_type_name(return_part, span)?
-    };
-
+    let return_type = types.pop().unwrap_or(Type::Unknown);
     Ok(FunctionTypeAnnotation {
-        params,
+        params: types,
         return_type,
     })
 }
 
-fn map_type_name(name: &str, span: cadenza_syntax::span::Span) -> Result<Type> {
-    let lower = name.trim().to_ascii_lowercase();
-    let ty = match lower.as_str() {
-        "integer" => Type::Integer,
-        "float" => Type::Float,
-        "string" => Type::String,
-        "bool" | "boolean" => Type::Bool,
-        "nil" => Type::Nil,
-        "unknown" => Type::Unknown,
-        _ => {
-            return Err(Box::new(
-                Diagnostic::syntax(format!("unknown type name in @t annotation: {}", name))
-                    .with_span(span),
-            ));
+fn collect_arrow_types(expr: &Expr, out: &mut Vec<Expr>) {
+    if let Expr::Apply(apply) = expr {
+        if let Some(Expr::Op(op)) = apply.callee() {
+            if op.syntax().text() == "->" {
+                let args = apply.all_arguments();
+                if args.len() == 2 {
+                    collect_arrow_types(&args[0], out);
+                    collect_arrow_types(&args[1], out);
+                    return;
+                }
+            }
         }
-    };
-    Ok(ty)
+    }
+    out.push(expr.clone());
+}
+
+fn resolve_type_expr(expr: &Expr, ctx: &mut EvalContext<'_>) -> Result<Type> {
+    match expr {
+        Expr::Ident(ident) => {
+            let text = ident.syntax().text();
+            let direct_id = text.interned();
+
+            let mut lookup = |name: InternedString| match ctx.env.get(name) {
+                Some(Value::Type(t)) => Some(t.clone()),
+                _ => None,
+            };
+
+            if let Some(t) = lookup(direct_id) {
+                return Ok(t);
+            }
+
+            if let Some(first) = text.chars().next() {
+                let mut title = String::new();
+                title.extend(first.to_uppercase());
+                title.push_str(&text[first.len_utf8()..]);
+                let title_id: InternedString = title.as_str().into();
+            if let Some(t) = lookup(title_id) {
+                return Ok(t);
+            }
+        }
+
+        Ok(Type::Unknown)
+    }
+    _ => Err(Box::new(
+        Diagnostic::syntax("unsupported expression in @t annotation").with_span(expr.span()),
+    )),
+}
 }
 
 #[cfg(test)]

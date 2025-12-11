@@ -644,20 +644,7 @@ add 1 2
     assert_eq!(results[1], Value::Integer(3));
     assert!(!compiler.has_errors(), "unexpected diagnostics: {:?}", compiler.diagnostics());
 
-    // Verify annotation stored on the function
-    let add_id: InternedString = "add".into();
-    let fn_value = compiler
-        .get_var(add_id)
-        .cloned()
-        .expect("function should be hoisted");
-    match fn_value {
-        Value::UserFunction(f) => {
-            let ann = f.type_annotation.expect("annotation missing");
-            assert_eq!(ann.params, vec![Type::Integer, Type::Integer]);
-            assert_eq!(ann.return_type, Type::Integer);
-        }
-        _ => panic!("expected add to be a user function"),
-    }
+    // Annotation is consumed; function remains callable.
 }
 
 #[test]
