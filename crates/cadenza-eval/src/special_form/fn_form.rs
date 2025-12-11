@@ -98,8 +98,8 @@ fn handle_function_definition(
 
     // Consume and interpret @t attributes for type annotations
     let type_annotation = parse_type_attribute(ctx)?;
-    if let Some(annotation) = &type_annotation {
-        if !annotation.params.is_empty() && annotation.params.len() != params.len() {
+    if let Some(annotation) = &type_annotation
+        && !annotation.params.is_empty() && annotation.params.len() != params.len() {
             return Err(Box::new(
                 Diagnostic::syntax(format!(
                     "type annotation parameter count ({}) does not match function parameters ({})",
@@ -109,7 +109,6 @@ fn handle_function_definition(
                 .with_span(body.span()),
             ));
         }
-    }
 
     // Capture the current environment for closure semantics
     let captured_env = ctx.env.clone();
@@ -247,9 +246,9 @@ fn parse_type_annotation_expr(attr_expr: &Expr, ctx: &mut EvalContext<'_>) -> Re
 }
 
 fn collect_arrow_types(expr: &Expr, out: &mut Vec<Expr>) {
-    if let Expr::Apply(apply) = expr {
-        if let Some(Expr::Op(op)) = apply.callee() {
-            if op.syntax().text() == "->" {
+    if let Expr::Apply(apply) = expr
+        && let Some(Expr::Op(op)) = apply.callee()
+            && op.syntax().text() == "->" {
                 let args = apply.all_arguments();
                 if args.len() == 2 {
                     collect_arrow_types(&args[0], out);
@@ -257,8 +256,6 @@ fn collect_arrow_types(expr: &Expr, out: &mut Vec<Expr>) {
                     return;
                 }
             }
-        }
-    }
     out.push(expr.clone());
 }
 

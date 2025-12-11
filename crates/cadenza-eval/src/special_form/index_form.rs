@@ -1,7 +1,6 @@
 //! The `__index__` special form for array indexing.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},

@@ -1,7 +1,6 @@
 //! The `match` special form for pattern matching.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},

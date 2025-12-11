@@ -1,7 +1,6 @@
 //! The `__list__` special form for list literals.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::Result,
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},

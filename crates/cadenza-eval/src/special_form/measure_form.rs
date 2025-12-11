@@ -1,7 +1,6 @@
 //! The `measure` special form for defining units and conversions.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     interner::InternedString,

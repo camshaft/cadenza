@@ -1,7 +1,6 @@
 //! The `.` special form for field access.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
     interner::InternedString,
