@@ -1,7 +1,6 @@
 //! The `assert` special form for runtime assertions.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},

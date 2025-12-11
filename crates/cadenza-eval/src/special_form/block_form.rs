@@ -58,7 +58,7 @@ fn eval_block(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
         if crate::eval::is_attr_application(expr) {
             // Preserve already pending attrs and accumulate new ones
             let mut current = ctx.take_attributes();
-            current.extend(pending_attrs.drain(..));
+            current.append(&mut pending_attrs);
             ctx.replace_attributes(current);
             if let Err(diag) = expr.eval(ctx) {
                 ctx.compiler.record_diagnostic(*diag);
@@ -68,7 +68,7 @@ fn eval_block(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
 
         // Merge any pending attrs plus those stored in context
         let mut attrs = ctx.take_attributes();
-        attrs.extend(pending_attrs.drain(..));
+        attrs.append(&mut pending_attrs);
 
         match crate::eval::evaluate_with_attributes(expr, attrs, ctx) {
             Ok(val) => result = val,

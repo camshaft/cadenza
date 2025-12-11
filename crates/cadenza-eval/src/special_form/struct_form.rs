@@ -1,7 +1,6 @@
 //! The `struct` special form for defining nominally-typed structs.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     interner::InternedString,
