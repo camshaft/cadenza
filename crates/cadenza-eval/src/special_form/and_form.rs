@@ -1,7 +1,6 @@
 //! The `&&` special form for logical AND.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     ir::{BinOp, BlockBuilder, IrGenContext, SourceLocation, ValueId},

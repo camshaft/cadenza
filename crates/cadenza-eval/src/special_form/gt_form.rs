@@ -1,7 +1,6 @@
 //! The `>` special form for greater-than comparison.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     ir::{BinOp, BlockBuilder, IrGenContext, SourceLocation, ValueId},

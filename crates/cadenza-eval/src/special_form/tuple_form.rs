@@ -1,7 +1,6 @@
 //! The `__tuple__` special form for tuple literals.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     ir::{BlockBuilder, IrGenContext, SourceLocation, ValueId},

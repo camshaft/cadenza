@@ -1,7 +1,6 @@
 //! The `let` special form for variable declarations.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     interner::InternedString,

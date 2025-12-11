@@ -1,7 +1,6 @@
 //! The `__record__` special form for record literals.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{BoxedDiagnosticExt, Diagnostic, Result},
     interner::InternedString,

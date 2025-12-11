@@ -202,11 +202,10 @@ pub(crate) fn dangling_attributes_error(attrs: &[Expr]) -> Box<Diagnostic> {
 }
 
 pub(crate) fn is_attr_application(expr: &Expr) -> bool {
-    if let Expr::Apply(apply) = expr {
-        if let Some(Expr::Op(op)) = apply.callee() {
+    if let Expr::Apply(apply) = expr
+        && let Some(Expr::Op(op)) = apply.callee() {
             return op.syntax().text() == "@";
         }
-    }
     false
 }
 

@@ -1,7 +1,6 @@
 //! The `|>` special form for pipeline operator.
 
 use crate::{
-    Eval,
     context::EvalContext,
     diagnostic::{Diagnostic, Result},
     eval::{apply_value, eval_ident_no_auto_apply, extract_identifier},
