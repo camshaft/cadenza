@@ -629,7 +629,7 @@ fn test_fn_type_attribute_consumed() {
     let mut compiler = Compiler::new();
 
     let input = r#"
-@t integer integer -> integer
+@ t Integer Integer -> Integer
 fn add a b = a + b
 add 1 2
 "#;
@@ -640,7 +640,7 @@ add 1 2
     let results = crate::eval(&root, &mut env, &mut compiler);
 
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0], Value::Nil);
+    assert_eq!(results[0], Value::Nil); // function definition
     assert_eq!(results[1], Value::Integer(3));
     assert!(!compiler.has_errors(), "unexpected diagnostics: {:?}", compiler.diagnostics());
 
