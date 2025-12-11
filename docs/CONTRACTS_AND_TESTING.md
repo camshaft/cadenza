@@ -175,11 +175,11 @@ Use `@` attributes to attach contracts to functions and types.
 ### Function Contracts
 
 ```cadenza
-fn divide (a: Float) (b: Float) -> Float
-  @requires { b != 0.0 "divisor cannot be zero" }
-  @ensures { result * b ~= a "result times divisor approximately equals dividend" }
-  # Note: ~= is approximate equality operator for floating-point comparisons
-=
+@requires b != 0.0 "divisor cannot be zero"
+@ensures $0 * b ~= a "result times divisor approximately equals dividend"
+# Note: ~= is approximate equality operator for floating-point comparisons
+# Note: $0 refers to the return value in @ensures
+fn divide (a: Float) (b: Float) -> Float =
   a / b
 
 # Calling with invalid input
@@ -189,17 +189,12 @@ let x = divide 10.0 0.0  # Error: precondition violated: "divisor cannot be zero
 ### Multiple Conditions
 
 ```cadenza
-fn binary_search (arr: List Integer) (target: Integer) -> Integer
-  @requires { 
-    is_sorted arr "array must be sorted",
-    length arr > 0 "array cannot be empty"
-  }
-  @ensures {
-    result >= -1 "result is valid index or -1",
-    result < length arr "result is within bounds",
-    result >= 0 ==> get arr result == target "if found, element matches target"
-  }
-=
+@requires is_sorted arr "array must be sorted"
+@requires length arr > 0 "array cannot be empty"
+@ensures $0 >= -1 "result is valid index or -1"
+@ensures $0 < length arr "result is within bounds"
+@ensures $0 >= 0 ==> get arr $0 == target "if found, element matches target"
+fn binary_search (arr: List Integer) (target: Integer) -> Integer =
   # implementation
   ...
 ```
@@ -218,10 +213,9 @@ struct BankAccount {
 }
 
 # Methods must preserve invariants
-fn withdraw (account: BankAccount) (amount: Float) -> BankAccount
-  @requires amount > 0.0 && amount <= account.balance
-  @ensures result.balance == account.balance - amount
-=
+@requires amount > 0.0 && amount <= account.balance
+@ensures $0.balance == account.balance - amount
+fn withdraw (account: BankAccount) (amount: Float) -> BankAccount =
   { ...account, balance = account.balance - amount }
 
 # This would violate the invariant and be rejected
@@ -234,17 +228,13 @@ fn break_account (account: BankAccount) -> BankAccount =
 For formal verification of loops:
 
 ```cadenza
-fn sum_array (arr: Array n Integer) -> Integer
-  @ensures { result == sum_of_elements arr }
-=
+@ensures $0 == sum_of_elements arr
+fn sum_array (arr: Array n Integer) -> Integer =
   let total = 0
   let i = 0
-  while i < n
-    @invariant { 
-      0 <= i && i <= n,
-      total == sum (take i arr)
-    }
-  do
+  @invariant 0 <= i && i <= n
+  @invariant total == sum (take i arr)
+  while i < n do
     total = total + arr[i]
     i = i + 1
   total
@@ -255,7 +245,7 @@ fn sum_array (arr: Array n Integer) -> Integer
 Contract attributes use `@name predicate` syntax:
 
 - `@requires predicate` - Precondition (checked on entry)
-- `@ensures predicate` - Postcondition (checked on exit, can reference `result`)
+- `@ensures predicate` - Postcondition (checked on exit, can reference `$0` for return value)
 - `@invariant predicate "message"` - Type invariant (checked on construction and mutation)
 - `@modifies variable_list` - Documents side effects (future)
 
@@ -389,7 +379,8 @@ fn test_multiplication = assert 3 * 4 == 12
 ### Expected Failures
 
 ```cadenza
-@test @should_panic "division by zero"
+@test
+@should_panic "division by zero"
 fn test_divide_by_zero =
   let x = 1 / 0
   x  # Should panic before reaching here
@@ -459,7 +450,8 @@ struct Point {
 # The framework automatically generates arbitrary Points
 
 # Custom generator for constrained types
-type Email = String @ { is_valid_email x }
+@invariant is_valid_email $0
+type Email = String
 
 @generator Email
 fn generate_email =
@@ -472,6 +464,13 @@ fn generate_email =
 @property
 fn prop_email_roundtrip (email: Email) =
   assert parse_email (format_email email) == email
+
+# Override generator per harness to constrain search space
+@property
+@generator Email custom_email_generator
+fn prop_email_specific_domains (email: Email) =
+  # This property uses custom_email_generator instead of the default
+  assert email_domain email in ["example.com", "test.com"]
 ```
 
 ### Stateful Property Testing
@@ -735,13 +734,13 @@ struct User {
 @property
 fn prop_user_validation (username: String) (email: String) (age: Integer) =
   match create_user username email age
-    Ok user ->
+    Ok user =>
       # If creation succeeded, all constraints are satisfied
       assert length user.username >= 3
       assert length user.username <= 20
       assert contains user.email "@"
       assert user.age >= 18
-    Err error ->
+    Err error =>
       # If creation failed, at least one constraint was violated
       assert true
 ```
@@ -777,18 +776,12 @@ enum TrafficLight {
   Green,
 }
 
-fn next_light (current: TrafficLight) -> TrafficLight
-  @ensures {
-    # Ensure valid transitions
-    (current == Red && result == Green) ||
-    (current == Green && result == Yellow) ||
-    (current == Yellow && result == Red)
-  }
-=
+@ensures (current == Red && $0 == Green) || (current == Green && $0 == Yellow) || (current == Yellow && $0 == Red)
+fn next_light (current: TrafficLight) -> TrafficLight =
   match current
-    Red -> Green
-    Green -> Yellow
-    Yellow -> Red
+    Red => Green
+    Green => Yellow
+    Yellow => Red
 
 @property
 fn prop_traffic_light_cycle (initial: TrafficLight) =
@@ -813,9 +806,8 @@ type Distance = Quantity meter
 @invariant $0 > 0.0 "time must be positive"
 type Time = Quantity second
 
-fn calculate_speed (distance: Distance) (time: Time) -> Speed
-  @ensures { result >= 0.0 && result < 299792458.0 }
-=
+@ensures $0 >= 0.0 && $0 < 299792458.0
+fn calculate_speed (distance: Distance) (time: Time) -> Speed =
   distance / time
 
 @property
@@ -840,7 +832,7 @@ fn prop_speed_calculation (distance: Distance) (time: Time) =
    - Constraint checking at assignment and function boundaries
 
 2. **Basic constraint syntax**
-   - Parser support for `Type @ { predicate }` syntax
+   - Parser support for `@invariant predicate` attribute syntax
    - AST representation for constrained types
    - Error messages for constraint violations
 
