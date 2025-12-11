@@ -119,7 +119,7 @@ fn reciprocal (n: PositiveInt) = 1.0 / n
 ```
 
 **Static Analysis** (when possible):
-- Literal values: `let x: Natural = -5` → compile-time error "constraint violated: $0 >= 0"
+- Literal values: `let x: Natural = -5` → compile-time error "constraint violated: value must be >= 0"
 - Known constraints: `let x = 5; let y: Natural = x` → compile-time OK
 - Dependent relationships: `let x: Natural = y + 1` → OK if `y: Natural`
 
@@ -149,18 +149,18 @@ More sophisticated constraints that depend on other values:
 
 ```cadenza
 # Array with length tracked in the type (conceptual syntax)
-# The type parameter n is used to constrain valid indices
+# The type parameter n is used to constrain the length field
+@invariant length == n
 type Array (n: Natural) (T: Type) = {
   length = Natural,
   elements = List T
 }
-  @invariant length == n
 
 # Function that preserves array length
 fn map (f: T -> U) (arr: Array n T) -> Array n U = ...
 ```
 
-**Note**: Dependent types would be valuable to add early in development, as they may be difficult to retrofit later. They enable powerful compile-time guarantees about relationships between values. The exact syntax for how type parameters interact with invariants is still being designed.
+**Note**: Dependent types would be valuable to add early in development, as they may be difficult to retrofit later. They enable powerful compile-time guarantees about relationships between values. The exact syntax for how type parameters interact with invariants and how invariants apply to struct types is still being designed.
 
 ---
 
