@@ -119,7 +119,7 @@ fn reciprocal (n: PositiveInt) = 1.0 / n
 ```
 
 **Static Analysis** (when possible):
-- Literal values: `let x: Natural = -5` → compile-time error "age cannot be negative"
+- Literal values: `let x: Natural = -5` → compile-time error "constraint violated: $0 >= 0"
 - Known constraints: `let x = 5; let y: Natural = x` → compile-time OK
 - Dependent relationships: `let x: Natural = y + 1` → OK if `y: Natural`
 
@@ -147,18 +147,19 @@ type Temperature = Quantity kelvin
 More sophisticated constraints that depend on other values:
 
 ```cadenza
-# Array with length tracked in the type
-@invariant length $0.elements == $0.length
+# Array with length tracked in the type (conceptual syntax)
+# The type parameter n is used to constrain valid indices
 type Array (n: Natural) (T: Type) = {
-  length = n,
+  length = Natural,
   elements = List T
 }
+  @invariant length == n
 
 # Function that preserves array length
 fn map (f: T -> U) (arr: Array n T) -> Array n U = ...
 ```
 
-**Note**: Dependent types would be valuable to add early in development, as they may be difficult to retrofit later. They enable powerful compile-time guarantees about relationships between values.
+**Note**: Dependent types would be valuable to add early in development, as they may be difficult to retrofit later. They enable powerful compile-time guarantees about relationships between values. The exact syntax for how type parameters interact with invariants is still being designed.
 
 ---
 
@@ -669,9 +670,10 @@ impl Shrink for Email =
 ### Example 1: Array Bounds
 
 ```cadenza
-@invariant $0 >= 0
-@invariant $0 < n
+# Conceptual syntax - exact handling of type parameters in invariants TBD
 type Index (n: Natural) = Integer
+  @invariant $0 >= 0
+  @invariant $0 < n  # References type parameter n
 
 fn safe_get (arr: Array n T) (i: Index n) -> T =
   # No bounds check needed: type system ensures i is valid
@@ -683,6 +685,8 @@ fn prop_safe_get_no_panic (arr: Array n Integer) (i: Index n) =
   let value = safe_get arr i
   assert true  # Always passes
 ```
+
+**Note**: The exact syntax for how invariants reference type parameters is still being designed. This example illustrates the concept of dependent type constraints.
 
 ### Example 2: Validated Input
 
