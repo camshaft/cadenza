@@ -1,5 +1,7 @@
 # Cadenza Compiler Architecture
 
+> **📋 Note**: Cadenza is planning to migrate to [Salsa](https://github.com/salsa-rs/salsa) for incremental compilation and fast LSP queries. See [SALSA_MIGRATION_PLAN.md](SALSA_MIGRATION_PLAN.md) for the comprehensive migration plan, or start with [SALSA_EXECUTIVE_SUMMARY.md](SALSA_EXECUTIVE_SUMMARY.md) for a high-level overview.
+
 ## Overview
 
 This document describes the comprehensive architecture for the Cadenza compiler, covering type checking, multi-phase compilation, module system, code generation, LSP integration, and more. The design prioritizes incremental compilation, excellent error messages, and seamless integration between compile-time and runtime execution.
