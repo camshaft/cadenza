@@ -207,22 +207,24 @@ fn binary_search (arr: List Integer) (target: Integer) -> Integer
 Type invariants ensure that values always satisfy certain properties:
 
 ```cadenza
+@invariant $0 >= 0.0 "balance cannot be negative"
+type PositiveFloat = Float
+
 struct BankAccount {
-  balance = Float @ { x >= 0.0 },
+  balance = PositiveFloat,
   owner = String,
 }
-  @invariant { balance >= 0.0 "balance cannot be negative" }
 
 # Methods must preserve invariants
 fn withdraw (account: BankAccount) (amount: Float) -> BankAccount
-  @requires { amount > 0.0 && amount <= account.balance }
-  @ensures { result.balance == account.balance - amount }
+  @requires amount > 0.0 && amount <= account.balance
+  @ensures result.balance == account.balance - amount
 =
   { ...account, balance = account.balance - amount }
 
 # This would violate the invariant and be rejected
 fn break_account (account: BankAccount) -> BankAccount =
-  { ...account, balance = -100.0 }  # Error: violates balance >= 0.0 invariant
+  { ...account, balance = -100.0 }  # Error: violates PositiveFloat invariant
 ```
 
 ### Loop Invariants (Future)
@@ -248,12 +250,12 @@ fn sum_array (arr: Array n Integer) -> Integer
 
 ### Attribute Syntax
 
-Contract attributes use `@name { ... }` syntax:
+Contract attributes use `@name predicate` syntax:
 
-- `@requires { predicate }` - Precondition (checked on entry)
-- `@ensures { predicate }` - Postcondition (checked on exit, can reference `result`)
-- `@invariant { predicate }` - Type invariant (checked on construction and mutation)
-- `@modifies { variable_list }` - Documents side effects (future)
+- `@requires predicate` - Precondition (checked on entry)
+- `@ensures predicate` - Postcondition (checked on exit, can reference `result`)
+- `@invariant predicate "message"` - Type invariant (checked on construction and mutation)
+- `@modifies variable_list` - Documents side effects (future)
 
 ---
 
@@ -638,10 +640,11 @@ fn prop_even_plus_odd_is_odd (e: Even) (o: Odd) =
 ### Custom Generators for Complex Types
 
 ```cadenza
+# Note: Syntax for struct invariants is still being designed
+@invariant is_sorted $0.elements
 struct SortedList (T: Type) {
   elements = List T,
 }
-  @invariant { is_sorted elements }
 
 # Custom generator ensures invariant
 @generator (SortedList Integer)
