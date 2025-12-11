@@ -210,18 +210,19 @@ fn parse_type_annotation_expr(attr_expr: &Expr, ctx: &mut EvalContext<'_>) -> Re
     if args.is_empty() {
         return Ok(FunctionTypeAnnotation {
             params: Vec::new(),
-            return_type: Type::Unknown,
+            return_type: Type::Nil,
         });
     }
 
     if args.len() == 1 {
         let mut parts = Vec::new();
         collect_arrow_types(&args[0], &mut parts);
-        if parts.is_empty() {
-            return Err(Box::new(
-                Diagnostic::syntax("type annotation requires at least a return type")
-                    .with_span(attr_expr.span()),
-            ));
+        if parts.len() == 1 {
+            // Treat single bare type as one parameter, nil return
+            return Ok(FunctionTypeAnnotation {
+                params: vec![resolve_type_expr(&parts[0], ctx)?],
+                return_type: Type::Nil,
+            });
         }
 
         let mut types = Vec::new();
@@ -264,14 +265,8 @@ fn collect_arrow_types(expr: &Expr, out: &mut Vec<Expr>) {
 fn is_t_attribute(expr: &Expr) -> bool {
     match expr {
         Expr::Ident(id) => id.syntax().text() == "t",
-        Expr::Apply(apply) => {
-            if let Some(Expr::Ident(id)) = apply.callee() {
-                id.syntax().text() == "t"
-            } else {
-                true
-            }
-        }
-        _ => true,
+        Expr::Apply(apply) => matches!(apply.callee(), Some(Expr::Ident(id)) if id.syntax().text() == "t"),
+        _ => false,
     }
 }
 
@@ -288,16 +283,6 @@ fn resolve_type_expr(expr: &Expr, ctx: &mut EvalContext<'_>) -> Result<Type> {
 
             if let Some(t) = lookup(direct_id) {
                 return Ok(t);
-            }
-
-            if let Some(first) = text.chars().next() {
-                let mut title = String::new();
-                title.extend(first.to_uppercase());
-                title.push_str(&text[first.len_utf8()..]);
-                let title_id: InternedString = title.as_str().into();
-                if let Some(t) = lookup(title_id) {
-                    return Ok(t);
-                }
             }
 
             Ok(Type::Unknown)

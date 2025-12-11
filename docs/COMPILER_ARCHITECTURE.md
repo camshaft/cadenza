@@ -357,9 +357,9 @@ defmacro my_macro args = ...
 
 ### Attributes
 
-- Attributes are parsed as `Attr` nodes (`@expr`) and are threaded as unevaluated AST into the next expression.
+- Attributes are introduced via the `@` special form, which registers its argument into the current attribute list (unevaluated AST).
 - The annotated expression must consume all pending attributes; otherwise, a compile-time error is emitted.
-- Special forms/macros access and consume attributes via the evaluation context; for example, `fn` consumes `@t` to attach type annotations (`@t integer integer -> integer`).
+- Special forms/macros access and consume attributes via the evaluation context; for example, `fn` consumes `@t` to attach type annotations (`@t Integer Integer -> Integer`).
 
 ### Import/Export Mechanism
 

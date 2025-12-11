@@ -78,10 +78,10 @@ pub(crate) fn evaluate_with_attributes(
     attrs: Vec<Expr>,
     ctx: &mut EvalContext<'_>,
 ) -> Result<Value> {
-    let saved_attrs = ctx.replace_attributes(attrs);
+    ctx.replace_attributes(attrs);
     let result = expr.eval(ctx);
     let remaining = ctx.take_attributes();
-    ctx.replace_attributes(saved_attrs);
+    ctx.replace_attributes(Vec::new());
 
     if remaining.is_empty() {
         result
