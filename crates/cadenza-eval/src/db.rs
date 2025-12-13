@@ -43,15 +43,22 @@
 //! implementation in `interner.rs`, which provides zero-allocation lookups and
 //! cached parsing for integer/float literals.
 //!
+//! ## Phase 3: Parsing
+//!
+//! Phase 3 makes parsing a tracked function with diagnostic accumulation:
+//!
+//! - [`ParsedFile`]: Tracked struct holding parsed CST and source reference
+//! - [`parse_file`]: Tracked function that parses source text into CST
+//! - [`Diagnostic`]: Accumulator for collecting parse errors and warnings
+//!
 //! ## Migration Status
 //!
-//! Phase 1 (Foundation) and Phase 2 (Source Tracking) are complete. The database
-//! infrastructure is established with source file tracking. The existing
-//! mutable `Compiler` and `EvalContext` architecture remains the primary
+//! Phase 1 (Foundation), Phase 2 (Source Tracking), and Phase 3 (Parsing) are complete.
+//! The database infrastructure is established with source file tracking and parsing.
+//! The existing mutable `Compiler` and `EvalContext` architecture remains the primary
 //! evaluation path.
 //!
 //! Future phases will:
-//! - Phase 3: Make parsing a tracked function
 //! - Phase 4: Convert evaluation to tracked functions
 //! - Phase 5: Make type inference a set of queries
 //! - Phase 6: Wire LSP to query the database
@@ -90,6 +97,185 @@ pub struct SourceFile {
     /// The text content of the source file.
     #[returns(ref)]
     pub text: String,
+}
+
+// =============================================================================
+// Tracked Types
+// =============================================================================
+
+/// A parsed file containing the concrete syntax tree (CST).
+///
+/// This is a Salsa tracked struct, meaning it is automatically memoized based
+/// on its inputs. When the source file changes, Salsa will automatically
+/// recompute this value and any queries that depend on it.
+///
+/// # Example
+///
+/// ```
+/// use cadenza_eval::db::{CadenzaDbImpl, SourceFile, parse_file};
+///
+/// let db = CadenzaDbImpl::default();
+/// let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
+/// let parsed = parse_file(&db, source);
+///
+/// // Access the CST
+/// let cst = parsed.cst(&db);
+/// ```
+#[salsa::tracked]
+pub struct ParsedFile<'db> {
+    /// The source file that was parsed.
+    pub source: SourceFile,
+
+    /// The concrete syntax tree (CST) root node.
+    #[returns(ref)]
+    pub cst: cadenza_syntax::SyntaxNode,
+}
+
+// =============================================================================
+// Accumulators
+// =============================================================================
+
+/// The severity level of a diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Severity {
+    /// An error that prevents compilation or execution.
+    Error,
+    /// A warning that doesn't prevent compilation but indicates a potential issue.
+    Warning,
+    /// An informational hint or suggestion.
+    Hint,
+}
+
+/// A related diagnostic that provides additional context or suggestions.
+///
+/// Related diagnostics are used to show hints, notes, or other information
+/// that helps the user understand and fix the primary diagnostic. For example,
+/// pointing to where a variable was defined when reporting an undefined variable error.
+///
+/// Note: Does not derive Debug because SourceFile (Salsa input type) doesn't implement Debug.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct RelatedInformation {
+    /// The source file containing the related information.
+    pub source: SourceFile,
+
+    /// The span in the source file.
+    pub span: cadenza_syntax::span::Span,
+
+    /// A message describing the relationship (e.g., "variable defined here").
+    pub message: String,
+}
+
+/// A diagnostic message (error or warning) accumulated during compilation.
+///
+/// Diagnostics are collected using Salsa's accumulator pattern. Any tracked
+/// function can emit diagnostics, and they can be collected after the query
+/// completes.
+///
+/// **Scope**: Diagnostics are scoped to the tracked function that emits them.
+/// For example, `parse_file::accumulated::<Diagnostic>(db, source)` returns
+/// only the diagnostics emitted during parsing of that specific source file.
+///
+/// **File context**: Each diagnostic includes the source file it relates to,
+/// allowing diagnostics from multiple files to be distinguished.
+///
+/// **Related information**: Diagnostics can include related information that
+/// points to other locations in the source code (similar to Rust's diagnostic hints).
+///
+/// # Example
+///
+/// ```ignore
+/// #[salsa::tracked]
+/// fn some_query(db: &dyn CadenzaDb, source: SourceFile) -> Result {
+///     use salsa::Accumulator;
+///
+///     // Emit a diagnostic with severity and related information
+///     Diagnostic {
+///         source,
+///         severity: Severity::Error,
+///         span: error_span,
+///         message: "Parse error: unexpected token".to_string(),
+///         related: vec![],
+///     }.accumulate(db);
+///
+///     // Continue processing...
+/// }
+/// ```
+#[salsa::accumulator]
+pub struct Diagnostic {
+    /// The source file where the diagnostic occurred.
+    ///
+    /// This allows diagnostics from different files to be distinguished and
+    /// ensures we know the file context even when collecting diagnostics from
+    /// multiple queries.
+    pub source: SourceFile,
+
+    /// The severity level of this diagnostic.
+    pub severity: Severity,
+
+    /// The span in the source file where the diagnostic occurred.
+    pub span: cadenza_syntax::span::Span,
+
+    /// The diagnostic message.
+    pub message: String,
+
+    /// Related information providing additional context.
+    ///
+    /// This can include references to where variables were defined, suggestions
+    /// for fixes, or other contextual information to help the user understand
+    /// and resolve the issue.
+    pub related: Vec<RelatedInformation>,
+}
+
+// =============================================================================
+// Tracked Functions
+// =============================================================================
+
+/// Parse a source file into a concrete syntax tree (CST).
+///
+/// This is a Salsa tracked function, meaning its result is automatically
+/// memoized. When called with the same source file, it returns the cached
+/// result. When the source file changes, Salsa automatically recomputes
+/// the parse.
+///
+/// Parse errors are accumulated as diagnostics and can be retrieved using
+/// `parse_file::accumulated::<Diagnostic>(db, source)`.
+///
+/// # Example
+///
+/// ```
+/// use cadenza_eval::db::{CadenzaDbImpl, SourceFile, parse_file, Diagnostic};
+///
+/// let db = CadenzaDbImpl::default();
+/// let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
+///
+/// // Parse the file
+/// let parsed = parse_file(&db, source);
+/// let cst = parsed.cst(&db);
+///
+/// // Check for diagnostics
+/// let diagnostics = parse_file::accumulated::<Diagnostic>(&db, source);
+/// assert_eq!(diagnostics.len(), 0);
+/// ```
+#[salsa::tracked]
+pub fn parse_file(db: &dyn CadenzaDb, source: SourceFile) -> ParsedFile<'_> {
+    use salsa::Accumulator;
+
+    let text = source.text(db);
+    let parse = cadenza_syntax::parse::parse(text);
+
+    // Accumulate parse errors as diagnostics
+    for error in &parse.errors {
+        Diagnostic {
+            source,
+            severity: Severity::Error,
+            span: error.span,
+            message: error.message.clone(),
+            related: vec![],
+        }
+        .accumulate(db);
+    }
+
+    ParsedFile::new(db, source, parse.syntax())
 }
 
 // =============================================================================
@@ -168,6 +354,88 @@ mod tests {
         // Test mutation
         source.set_text(&mut db).to("let x = 2".to_string());
         assert_eq!(source.text(&db), "let x = 2");
+    }
+
+    #[test]
+    fn test_parse_file() {
+        let db = CadenzaDbImpl::default();
+        let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
+
+        // Parse the file
+        let parsed = parse_file(&db, source);
+
+        // Check that we got a CST back
+        let cst = parsed.cst(&db);
+        assert_eq!(cst.kind(), cadenza_syntax::token::Kind::Root);
+
+        // Check that the source is correctly tracked
+        // Note: Using assert! with == because Salsa tracked types don't implement Debug
+        assert!(parsed.source(&db) == source);
+
+        // Check that there are no diagnostics for valid code
+        let diagnostics = parse_file::accumulated::<Diagnostic>(&db, source);
+        assert_eq!(diagnostics.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_file_with_errors() {
+        let db = CadenzaDbImpl::default();
+        // Unterminated string should cause parse error
+        let source = SourceFile::new(
+            &db,
+            "error.cdz".to_string(),
+            "let x = \"unterminated".to_string(),
+        );
+
+        // Parse the file
+        let _parsed = parse_file(&db, source);
+
+        // Check that diagnostics were accumulated
+        let diagnostics = parse_file::accumulated::<Diagnostic>(&db, source);
+        assert!(
+            !diagnostics.is_empty(),
+            "Expected parse errors for unterminated string"
+        );
+
+        // Check that the diagnostic contains useful information
+        let first_diagnostic = &diagnostics[0];
+        assert!(!first_diagnostic.message.is_empty());
+    }
+
+    #[test]
+    fn test_parse_file_memoization() {
+        let db = CadenzaDbImpl::default();
+        let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
+
+        // Parse twice
+        let parsed1 = parse_file(&db, source);
+        let parsed2 = parse_file(&db, source);
+
+        // Should return the same tracked value
+        // Note: Using assert! with == because Salsa tracked types don't implement Debug
+        assert!(parsed1 == parsed2);
+    }
+
+    #[test]
+    fn test_parse_file_invalidation() {
+        let mut db = CadenzaDbImpl::default();
+        let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
+
+        // Parse the initial version
+        let parsed1 = parse_file(&db, source);
+        let text1 = parsed1.cst(&db).text().to_string();
+
+        // Modify the source
+        source.set_text(&mut db).to("let y = 2".to_string());
+
+        // Parse again - should get a different result
+        let parsed2 = parse_file(&db, source);
+        let text2 = parsed2.cst(&db).text().to_string();
+
+        // The CST should be different (different text content)
+        assert_ne!(text1, text2);
+        assert!(text1.contains("x"), "Expected 'x' in: {}", text1);
+        assert!(text2.contains("y"), "Expected 'y' in: {}", text2);
     }
 
     // Note: CadenzaDbImpl is not Send + Sync because Salsa databases use
