@@ -73,7 +73,7 @@
 ///
 /// let mut db = CadenzaDbImpl::default();
 /// let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
-/// 
+///
 /// // Later, update the source text
 /// source.set_text(&mut db).to("let x = 2".to_string());
 /// // All queries depending on this source are now invalidated
@@ -83,7 +83,7 @@ pub struct SourceFile {
     /// The path to the source file (e.g., "main.cdz", "lib/math.cdz").
     #[returns(ref)]
     pub path: String,
-    
+
     /// The text content of the source file.
     #[returns(ref)]
     pub text: String,
@@ -107,7 +107,7 @@ pub struct SourceFile {
 /// let db = CadenzaDbImpl::default();
 /// let id1 = Identifier::new(&db, "foo".to_string());
 /// let id2 = Identifier::new(&db, "foo".to_string());
-/// 
+///
 /// // These are the same identifier (same pointer)
 /// assert!(id1 == id2);
 /// ```
@@ -195,7 +195,7 @@ mod tests {
     fn test_source_file_creation() {
         let db = CadenzaDbImpl::default();
         let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
-        
+
         assert_eq!(source.path(&db), "test.cdz");
         assert_eq!(source.text(&db), "let x = 1");
     }
@@ -204,16 +204,16 @@ mod tests {
     fn test_source_file_mutation() {
         let mut db = CadenzaDbImpl::default();
         let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
-        
+
         // Initial text
         assert_eq!(source.text(&db), "let x = 1");
-        
+
         // Update the text
         source.set_text(&mut db).to("let x = 2".to_string());
-        
+
         // Text should be updated
         assert_eq!(source.text(&db), "let x = 2");
-        
+
         // Path should remain the same
         assert_eq!(source.path(&db), "test.cdz");
     }
@@ -222,10 +222,10 @@ mod tests {
     fn test_source_file_path_mutation() {
         let mut db = CadenzaDbImpl::default();
         let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
-        
+
         // Update the path
         source.set_path(&mut db).to("renamed.cdz".to_string());
-        
+
         assert_eq!(source.path(&db), "renamed.cdz");
         assert_eq!(source.text(&db), "let x = 1");
     }
@@ -238,7 +238,7 @@ mod tests {
     fn test_identifier_creation() {
         let db = CadenzaDbImpl::default();
         let id = Identifier::new(&db, "foo".to_string());
-        
+
         assert_eq!(id.text(&db), "foo");
     }
 
@@ -247,7 +247,7 @@ mod tests {
         let db = CadenzaDbImpl::default();
         let id1 = Identifier::new(&db, "foo".to_string());
         let id2 = Identifier::new(&db, "foo".to_string());
-        
+
         // Same text should result in the same interned identifier
         assert!(id1 == id2);
     }
@@ -257,7 +257,7 @@ mod tests {
         let db = CadenzaDbImpl::default();
         let id1 = Identifier::new(&db, "foo".to_string());
         let id2 = Identifier::new(&db, "bar".to_string());
-        
+
         // Different texts should result in different identifiers
         assert!(id1 != id2);
     }
@@ -267,7 +267,7 @@ mod tests {
         let db = CadenzaDbImpl::default();
         let id1 = Identifier::new(&db, "foo".to_string());
         let id2 = Identifier::new(&db, "foo".to_string());
-        
+
         // Equality check should be cheap (pointer comparison)
         // This is ensured by Salsa's interning mechanism
         assert!(id1 == id2);
@@ -280,7 +280,7 @@ mod tests {
         let id2 = Identifier::new(&db, "bar".to_string());
         let id3 = Identifier::new(&db, "foo".to_string());
         let id4 = Identifier::new(&db, "baz".to_string());
-        
+
         assert!(id1 == id3);
         assert!(id1 != id2);
         assert!(id1 != id4);
