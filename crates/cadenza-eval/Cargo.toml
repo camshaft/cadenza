@@ -11,6 +11,7 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 cadenza-tree = { path = "../cadenza-tree" }
 miette.workspace = true
 rustc-hash.workspace = true
+salsa.workspace = true
 thiserror.workspace = true
 wasm-encoder.workspace = true
 wasmparser.workspace = true
