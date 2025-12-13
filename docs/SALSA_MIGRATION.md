@@ -38,6 +38,11 @@ pub fn eval(ctx: &mut EvalContext, expr: &Expr) -> Result<Value> {
     // No memoization
     // Must re-evaluate everything on changes
 }
+
+// Efficient interner (kept in Salsa migration)
+pub struct InternedString { /* ... */ }
+pub struct InternedInteger { /* ... */ }  
+pub struct InternedFloat { /* ... */ }
 ```
 
 **Issues:**
@@ -45,6 +50,9 @@ pub fn eval(ctx: &mut EvalContext, expr: &Expr) -> Result<Value> {
 - No natural way to query specific information (e.g., "what's the type of this function?")
 - Adding new queries requires threading state through the system
 - Difficult to implement features like incremental compilation or efficient LSP
+
+**Strengths to Preserve:**
+- Efficient interner with zero-allocation lookups and cached parsing
 
 ## Proposed Architecture with Salsa
 
@@ -126,12 +134,14 @@ pub struct CadenzaDbImpl {
 
 ### Phase 2: Source Tracking (2-3 days)
 
-Migrate source text and string interning to Salsa.
+Add source file tracking using Salsa inputs.
 
 **Tasks:**
-- Define `SourceFile` input
-- Define `Identifier` interned type
-- Update interner to use Salsa
+- Define `SourceFile` input for tracking source code text and paths
+- Keep existing interner (`InternedString`, `InternedInteger`, `InternedFloat`)
+- Integrate interner with Salsa queries in future phases
+
+**Implementation:**
 
 ```rust
 #[salsa::input]
@@ -141,13 +151,27 @@ pub struct SourceFile {
     #[returns(ref)]
     pub text: String,
 }
-
-#[salsa::interned]
-pub struct Identifier<'db> {
-    #[returns(ref)]
-    pub text: String,
-}
 ```
+
+**Design Decision: Keep Existing Interner**
+
+The existing interner in `interner.rs` is kept rather than using Salsa's `#[salsa::interned]`:
+
+**Advantages of Current Interner:**
+- **Zero allocation on cache hit**: Checks with `&str` first, only allocates on miss
+- **Single hash map lookup**: More efficient than Salsa's interning
+- **Cached parsing**: Integer and float literals (e.g., `"123"`) parse once and cache the result
+- **No DB dependency**: Can access interned values for debugging without a database reference
+- **Append-only**: Simple and efficient (GC can be added later if needed)
+
+**Integration with Salsa:**
+
+Tracked functions and queries will use the existing interner types:
+- `InternedString` for identifiers, symbols, and text
+- `InternedInteger` for integer literals with cached parsing
+- `InternedFloat` for float literals with cached parsing
+
+The interner remains a separate, efficient layer below Salsa's query system.
 
 ### Phase 3: Parsing (3-4 days)
 
