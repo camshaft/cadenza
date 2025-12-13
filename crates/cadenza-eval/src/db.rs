@@ -135,23 +135,64 @@ pub struct ParsedFile<'db> {
 // Accumulators
 // =============================================================================
 
+/// The severity level of a diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Severity {
+    /// An error that prevents compilation or execution.
+    Error,
+    /// A warning that doesn't prevent compilation but indicates a potential issue.
+    Warning,
+    /// An informational hint or suggestion.
+    Hint,
+}
+
+/// A related diagnostic that provides additional context or suggestions.
+///
+/// Related diagnostics are used to show hints, notes, or other information
+/// that helps the user understand and fix the primary diagnostic. For example,
+/// pointing to where a variable was defined when reporting an undefined variable error.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct RelatedInformation {
+    /// The source file containing the related information.
+    pub source: SourceFile,
+
+    /// The span in the source file.
+    pub span: cadenza_syntax::span::Span,
+
+    /// A message describing the relationship (e.g., "variable defined here").
+    pub message: String,
+}
+
 /// A diagnostic message (error or warning) accumulated during compilation.
 ///
 /// Diagnostics are collected using Salsa's accumulator pattern. Any tracked
 /// function can emit diagnostics, and they can be collected after the query
 /// completes.
 ///
+/// **Scope**: Diagnostics are scoped to the tracked function that emits them.
+/// For example, `parse_file::accumulated::<Diagnostic>(db, source)` returns
+/// only the diagnostics emitted during parsing of that specific source file.
+///
+/// **File context**: Each diagnostic includes the source file it relates to,
+/// allowing diagnostics from multiple files to be distinguished.
+///
+/// **Related information**: Diagnostics can include related information that
+/// points to other locations in the source code (similar to Rust's diagnostic hints).
+///
 /// # Example
 ///
 /// ```ignore
 /// #[salsa::tracked]
-/// fn some_query(db: &dyn CadenzaDb, input: SomeInput) -> Result {
+/// fn some_query(db: &dyn CadenzaDb, source: SourceFile) -> Result {
 ///     use salsa::Accumulator;
 ///
-///     // Emit a diagnostic
+///     // Emit a diagnostic with severity and related information
 ///     Diagnostic {
-///         span,
+///         source,
+///         severity: Severity::Error,
+///         span: error_span,
 ///         message: "Parse error: unexpected token".to_string(),
+///         related: vec![],
 ///     }.accumulate(db);
 ///
 ///     // Continue processing...
@@ -159,11 +200,28 @@ pub struct ParsedFile<'db> {
 /// ```
 #[salsa::accumulator]
 pub struct Diagnostic {
+    /// The source file where the diagnostic occurred.
+    ///
+    /// This allows diagnostics from different files to be distinguished and
+    /// ensures we know the file context even when collecting diagnostics from
+    /// multiple queries.
+    pub source: SourceFile,
+
+    /// The severity level of this diagnostic.
+    pub severity: Severity,
+
     /// The span in the source file where the diagnostic occurred.
     pub span: cadenza_syntax::span::Span,
 
     /// The diagnostic message.
     pub message: String,
+
+    /// Related information providing additional context.
+    ///
+    /// This can include references to where variables were defined, suggestions
+    /// for fixes, or other contextual information to help the user understand
+    /// and resolve the issue.
+    pub related: Vec<RelatedInformation>,
 }
 
 // =============================================================================
@@ -206,8 +264,11 @@ pub fn parse_file(db: &dyn CadenzaDb, source: SourceFile) -> ParsedFile<'_> {
     // Accumulate parse errors as diagnostics
     for error in &parse.errors {
         Diagnostic {
+            source,
+            severity: Severity::Error,
             span: error.span,
             message: error.message.clone(),
+            related: vec![],
         }
         .accumulate(db);
     }
