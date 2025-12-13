@@ -9,6 +9,7 @@ build = "build/main.rs"
 [dependencies]
 cadenza-syntax = { path = "../cadenza-syntax" }
 cadenza-tree = { path = "../cadenza-tree" }
+im.workspace = true
 miette.workspace = true
 rustc-hash.workspace = true
 salsa.workspace = true
