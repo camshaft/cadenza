@@ -59,8 +59,8 @@
 ///
 /// ```ignore
 /// #[salsa::tracked]
-/// pub fn parse_file(db: &dyn CadenzaDb, source: SourceFile) -> ParsedFile<'_> {
-///     // Implementation
+/// pub fn example_query(db: &dyn CadenzaDb, input: SomeInput) -> SomeOutput {
+///     // Implementation will be added in future phases
 /// }
 /// ```
 #[salsa::db]
