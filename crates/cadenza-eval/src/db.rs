@@ -306,6 +306,7 @@ mod tests {
         assert_eq!(cst.kind(), cadenza_syntax::token::Kind::Root);
 
         // Check that the source is correctly tracked
+        // Note: Using assert! with == because Salsa tracked types don't implement Debug
         assert!(parsed.source(&db) == source);
 
         // Check that there are no diagnostics for valid code
@@ -348,6 +349,7 @@ mod tests {
         let parsed2 = parse_file(&db, source);
 
         // Should return the same tracked value
+        // Note: Using assert! with == because Salsa tracked types don't implement Debug
         assert!(parsed1 == parsed2);
     }
 
@@ -368,9 +370,9 @@ mod tests {
         let text2 = parsed2.cst(&db).text().to_string();
 
         // The CST should be different (different text content)
-        assert!(text1 != text2);
-        assert!(text1.contains("x"));
-        assert!(text2.contains("y"));
+        assert_ne!(text1, text2);
+        assert!(text1.contains("x"), "Expected 'x' in: {}", text1);
+        assert!(text2.contains("y"), "Expected 'y' in: {}", text2);
     }
 
     // Note: CadenzaDbImpl is not Send + Sync because Salsa databases use
