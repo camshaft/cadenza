@@ -146,12 +146,13 @@ pub struct ParsedFile<'db> {
 /// ```ignore
 /// #[salsa::tracked]
 /// fn some_query(db: &dyn CadenzaDb, input: SomeInput) -> Result {
+///     use salsa::Accumulator;
+///
 ///     // Emit a diagnostic
-///     Diagnostic::new(
-///         db,
+///     Diagnostic {
 ///         span,
-///         "Parse error: unexpected token".to_string()
-///     ).accumulate(db);
+///         message: "Parse error: unexpected token".to_string(),
+///     }.accumulate(db);
 ///
 ///     // Continue processing...
 /// }
