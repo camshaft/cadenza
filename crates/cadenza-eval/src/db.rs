@@ -405,15 +405,137 @@ pub fn collect_symbols<'db>(
     db: &'db dyn CadenzaDb,
     parsed: ParsedFile<'db>,
 ) -> SymbolTable<'db> {
-    let _cst = parsed.cst(db);
-    let definitions = Vec::new();
-    let references = Vec::new();
+    use cadenza_syntax::ast::*;
 
-    // Walk the CST and collect symbols
-    // TODO: Implement proper AST walking
-    // For now, this is a placeholder that returns empty results
+    let cst = parsed.cst(db);
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+
+    // Parse into root AST node
+    let Some(root) = Root::cast(cst.clone()) else {
+        // Empty or invalid file
+        return SymbolTable::new(db, parsed, definitions, references);
+    };
+
+    // Walk all items in the file
+    for item in root.items() {
+        collect_symbols_from_expr(&item, &mut definitions, &mut references);
+    }
 
     SymbolTable::new(db, parsed, definitions, references)
+}
+
+/// Helper to recursively collect symbols from an expression.
+fn collect_symbols_from_expr(
+    expr: &cadenza_syntax::ast::Expr,
+    definitions: &mut Vec<SymbolDef>,
+    references: &mut Vec<SymbolRef>,
+) {
+    use cadenza_syntax::ast::*;
+
+    match expr {
+        Expr::Ident(ident) => {
+            // An identifier is a reference to a symbol
+            references.push(SymbolRef {
+                name: ident.syntax().text().to_string(),
+                span: ident.span(),
+            });
+        }
+        Expr::Apply(apply) => {
+            // Check if this is a `let` binding
+            if let Some(receiver) = apply.receiver() {
+                if let Some(receiver_expr) = receiver.value() {
+                    // Check for `let` special form
+                    if let Expr::Ident(ident) = receiver_expr {
+                        if ident.syntax().text() == "let" {
+                            // This is a let binding: `let x = value`
+                            // First argument is the binding name
+                            let mut args = apply.arguments();
+                            if let Some(first_arg) = args.next() {
+                                if let Some(arg_expr) = first_arg.value() {
+                                    if let Expr::Ident(name_ident) = arg_expr {
+                                        definitions.push(SymbolDef {
+                                            name: name_ident.syntax().text().to_string(),
+                                            span: name_ident.span(),
+                                            kind: SymbolKind::Variable,
+                                        });
+                                    }
+                                }
+
+                                // Collect symbols from the value expression
+                                if let Some(value_arg) = args.next() {
+                                    if let Some(value_expr) = value_arg.value() {
+                                        collect_symbols_from_expr(
+                                            &value_expr,
+                                            definitions,
+                                            references,
+                                        );
+                                    }
+                                }
+                            }
+                            return;
+                        } else if ident.syntax().text() == "fn" {
+                            // This is a function definition: `fn name params = body`
+                            let mut args = apply.arguments();
+                            if let Some(first_arg) = args.next() {
+                                if let Some(arg_expr) = first_arg.value() {
+                                    if let Expr::Ident(name_ident) = arg_expr {
+                                        definitions.push(SymbolDef {
+                                            name: name_ident.syntax().text().to_string(),
+                                            span: name_ident.span(),
+                                            kind: SymbolKind::Function,
+                                        });
+                                    }
+                                }
+
+                                // Parameters are definitions too
+                                // TODO: Extract parameter names
+
+                                // Collect symbols from the body (last argument after `=`)
+                                // For now, collect from all remaining args
+                                for arg in args {
+                                    if let Some(arg_expr) = arg.value() {
+                                        collect_symbols_from_expr(&arg_expr, definitions, references);
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // For other apply nodes, recursively collect from all parts
+            if let Some(receiver) = apply.receiver() {
+                if let Some(receiver_expr) = receiver.value() {
+                    collect_symbols_from_expr(&receiver_expr, definitions, references);
+                }
+            }
+            for arg in apply.arguments() {
+                if let Some(arg_expr) = arg.value() {
+                    collect_symbols_from_expr(&arg_expr, definitions, references);
+                }
+            }
+        }
+        Expr::Attr(attr) => {
+            // Just collect from the value expression
+            if let Some(value_expr) = attr.value() {
+                collect_symbols_from_expr(&value_expr, definitions, references);
+            }
+        }
+        Expr::Op(_) | Expr::Synthetic(_) => {
+            // For Op and Synthetic, just recursively collect from all child expressions
+            // Walk the syntax tree directly
+            for child in expr.syntax().children() {
+                if let Some(child_expr) = Expr::cast_syntax_node(&child) {
+                    collect_symbols_from_expr(&child_expr, definitions, references);
+                }
+            }
+        }
+        Expr::Literal(_) | Expr::Error(_) => {
+            // No symbols in literals or errors
+        }
+    }
 }
 
 // =============================================================================
@@ -588,6 +710,64 @@ mod tests {
         // Empty file should have no symbols
         assert_eq!(symbols.definitions(&db).len(), 0);
         assert_eq!(symbols.references(&db).len(), 0);
+    }
+
+    #[test]
+    fn test_collect_symbols_let_binding() {
+        let db = CadenzaDbImpl::default();
+        let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
+        let parsed = parse_file(&db, source);
+
+        // Collect symbols
+        let symbols = collect_symbols(&db, parsed);
+
+        // Should have one definition (x)
+        let defs = symbols.definitions(&db);
+
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "x");
+        assert_eq!(defs[0].kind, SymbolKind::Variable);
+    }
+
+    #[test]
+    fn test_collect_symbols_function_definition() {
+        let db = CadenzaDbImpl::default();
+        let source = SourceFile::new(
+            &db,
+            "test.cdz".to_string(),
+            "fn add x y = x + y".to_string(),
+        );
+        let parsed = parse_file(&db, source);
+
+        // Collect symbols
+        let symbols = collect_symbols(&db, parsed);
+        let defs = symbols.definitions(&db);
+
+        // Should have one function definition (add)
+        assert!(defs.iter().any(|d| d.name == "add" && d.kind == SymbolKind::Function));
+    }
+
+    #[test]
+    fn test_collect_symbols_with_reference() {
+        let db = CadenzaDbImpl::default();
+        let source = SourceFile::new(
+            &db,
+            "test.cdz".to_string(),
+            "let x = 1\nx".to_string(),
+        );
+        let parsed = parse_file(&db, source);
+
+        // Collect symbols
+        let symbols = collect_symbols(&db, parsed);
+        let defs = symbols.definitions(&db);
+        let refs = symbols.references(&db);
+
+        // Should have one definition (x)
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "x");
+
+        // Should have at least two references to x (one in the standalone `x` expression)
+        assert!(refs.iter().filter(|r| r.name == "x").count() >= 1);
     }
 
     #[test]
