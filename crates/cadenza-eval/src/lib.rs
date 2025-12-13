@@ -37,7 +37,7 @@ mod value;
 
 pub use compiler::Compiler;
 pub use context::{Eval, EvalContext};
-pub use db::{CadenzaDb, CadenzaDbImpl, Identifier, SourceFile};
+pub use db::{CadenzaDb, CadenzaDbImpl};
 pub use diagnostic::{
     BoxedDiagnosticExt, Diagnostic, DiagnosticKind, DiagnosticLevel, Result, StackFrame,
 };
