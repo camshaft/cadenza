@@ -151,6 +151,8 @@ pub enum Severity {
 /// Related diagnostics are used to show hints, notes, or other information
 /// that helps the user understand and fix the primary diagnostic. For example,
 /// pointing to where a variable was defined when reporting an undefined variable error.
+///
+/// Note: Does not derive Debug because SourceFile (Salsa input type) doesn't implement Debug.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RelatedInformation {
     /// The source file containing the related information.
