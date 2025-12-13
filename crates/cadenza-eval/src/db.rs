@@ -33,21 +33,68 @@
 //! }
 //! ```
 //!
+//! ## Phase 2: Source Tracking
+//!
+//! Phase 2 introduces source file tracking using Salsa:
+//!
+//! - [`SourceFile`]: Salsa input for source text with path and content
+//!
+//! Note: String interning continues to use the existing efficient `InternedString`
+//! implementation in `interner.rs`, which provides zero-allocation lookups and
+//! cached parsing for integer/float literals.
+//!
 //! ## Migration Status
 //!
-//! This is Phase 1 of the Salsa migration. The database infrastructure is
-//! established but not yet integrated into the evaluator. The existing
+//! Phase 1 (Foundation) and Phase 2 (Source Tracking) are complete. The database
+//! infrastructure is established with source file tracking. The existing
 //! mutable `Compiler` and `EvalContext` architecture remains the primary
 //! evaluation path.
 //!
 //! Future phases will:
-//! - Phase 2: Add source file tracking as Salsa inputs
 //! - Phase 3: Make parsing a tracked function
 //! - Phase 4: Convert evaluation to tracked functions
 //! - Phase 5: Make type inference a set of queries
 //! - Phase 6: Wire LSP to query the database
 //!
 //! See `/docs/SALSA_MIGRATION.md` for the complete migration plan.
+
+// =============================================================================
+// Input Types
+// =============================================================================
+
+/// A source file input containing the path and text content.
+///
+/// This is a Salsa input, meaning it can be mutated from outside the
+/// database. When the text changes, Salsa automatically invalidates all
+/// derived queries that depend on this source file.
+///
+/// # Example
+///
+/// ```
+/// use cadenza_eval::db::{CadenzaDbImpl, SourceFile};
+/// use salsa::Setter;
+///
+/// let mut db = CadenzaDbImpl::default();
+/// let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
+///
+/// // Later, update the source text
+/// source.set_text(&mut db).to("let x = 2".to_string());
+/// // All queries depending on this source are now invalidated
+/// ```
+#[salsa::input]
+pub struct SourceFile {
+    /// The path to the source file (e.g., "main.cdz", "lib/math.cdz").
+    #[returns(ref)]
+    pub path: String,
+
+    /// The text content of the source file.
+    #[returns(ref)]
+    pub text: String,
+}
+
+// =============================================================================
+// Database Trait
+// =============================================================================
 
 /// The main database trait for Cadenza compiler queries.
 ///
@@ -59,8 +106,8 @@
 ///
 /// ```ignore
 /// #[salsa::tracked]
-/// pub fn example_query(db: &dyn CadenzaDb, input: SomeInput) -> SomeOutput {
-///     // Implementation will be added in future phases
+/// pub fn parse_file(db: &dyn CadenzaDb, source: SourceFile) -> ParsedFile<'_> {
+///     // Implementation will be added in Phase 3
 /// }
 /// ```
 #[salsa::db]
@@ -95,6 +142,7 @@ impl CadenzaDb for CadenzaDbImpl {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use salsa::Setter;
 
     #[test]
     fn test_db_creation() {
@@ -107,6 +155,19 @@ mod tests {
         fn check_db<T: CadenzaDb>(_db: &T) {}
         let db = CadenzaDbImpl::default();
         check_db(&db);
+    }
+
+    #[test]
+    fn test_source_file() {
+        let mut db = CadenzaDbImpl::default();
+        let source = SourceFile::new(&db, "test.cdz".to_string(), "let x = 1".to_string());
+
+        assert_eq!(source.path(&db), "test.cdz");
+        assert_eq!(source.text(&db), "let x = 1");
+
+        // Test mutation
+        source.set_text(&mut db).to("let x = 2".to_string());
+        assert_eq!(source.text(&db), "let x = 2");
     }
 
     // Note: CadenzaDbImpl is not Send + Sync because Salsa databases use
