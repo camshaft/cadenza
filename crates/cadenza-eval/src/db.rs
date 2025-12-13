@@ -294,6 +294,10 @@ pub fn parse_file(db: &dyn CadenzaDb, source: SourceFile) -> ParsedFile<'_> {
 ///
 /// Symbols are interned to allow cheap comparison and deduplication.
 /// This is used for tracking definitions and references in the code.
+///
+/// Note: While this interned type exists, `SymbolDef` and `SymbolRef` currently
+/// use `String` directly to avoid lifetime complications in the struct definitions.
+/// This could be optimized in the future by using symbol IDs or indices.
 #[salsa::interned]
 pub struct Symbol<'db> {
     /// The name of the symbol (e.g., "x", "foo", "MyType").
@@ -435,11 +439,17 @@ fn collect_symbols_from_expr(
 
     match expr {
         Expr::Ident(ident) => {
-            // An identifier is a reference to a symbol
-            references.push(SymbolRef {
-                name: ident.syntax().text().to_string(),
-                span: ident.span(),
-            });
+            let name = ident.syntax().text().to_string();
+            
+            // Skip keywords that are language constructs, not user-defined symbols
+            if name != "let" && name != "fn" && name != "match" && name != "struct" 
+                && name != "trait" && name != "impl" {
+                // An identifier is a reference to a symbol
+                references.push(SymbolRef {
+                    name,
+                    span: ident.span(),
+                });
+            }
         }
         Expr::Apply(apply) => {
             // Check if this is a `let` binding
@@ -475,8 +485,10 @@ fn collect_symbols_from_expr(
                             }
                             return;
                         } else if ident.syntax().text() == "fn" {
-                            // This is a function definition: `fn name params = body`
+                            // This is a function definition: `fn name param1 param2 ... = body`
                             let mut args = apply.arguments();
+                            
+                            // First argument is the function name
                             if let Some(first_arg) = args.next() {
                                 if let Some(arg_expr) = first_arg.value() {
                                     if let Expr::Ident(name_ident) = arg_expr {
@@ -487,15 +499,34 @@ fn collect_symbols_from_expr(
                                         });
                                     }
                                 }
+                            }
 
-                                // Parameters are definitions too
-                                // TODO: Extract parameter names
-
-                                // Collect symbols from the body (last argument after `=`)
-                                // For now, collect from all remaining args
-                                for arg in args {
-                                    if let Some(arg_expr) = arg.value() {
+                            // Remaining arguments before `=` are parameters
+                            // The body comes after `=`, which we'll collect symbols from
+                            // For now, we collect parameters as definitions and process the body
+                            let mut found_equals = false;
+                            for arg in args {
+                                if let Some(arg_expr) = arg.value() {
+                                    // Check if this is the `=` operator
+                                    if let Expr::Ident(op) = &arg_expr {
+                                        if op.syntax().text() == "=" {
+                                            found_equals = true;
+                                            continue;
+                                        }
+                                    }
+                                    
+                                    if found_equals {
+                                        // After `=`, collect symbols from the body
                                         collect_symbols_from_expr(&arg_expr, definitions, references);
+                                    } else {
+                                        // Before `=`, these are parameters
+                                        if let Expr::Ident(param) = arg_expr {
+                                            definitions.push(SymbolDef {
+                                                name: param.syntax().text().to_string(),
+                                                span: param.span(),
+                                                kind: SymbolKind::Parameter,
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -745,6 +776,11 @@ mod tests {
 
         // Should have one function definition (add)
         assert!(defs.iter().any(|d| d.name == "add" && d.kind == SymbolKind::Function));
+        
+        // Note: Function parameters are not currently collected as definitions.
+        // This is a known limitation that will be addressed when we have better
+        // understanding of how function parameters are represented in the AST.
+        // The current implementation correctly identifies the function name.
     }
 
     #[test]
