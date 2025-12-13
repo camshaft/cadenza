@@ -404,7 +404,10 @@ fn format_value(value: &Value) -> String {
                 .join(", ");
             format!("[{}]", items_str)
         }
-        Value::Tuple { type_name, elements } => {
+        Value::Tuple {
+            type_name,
+            elements,
+        } => {
             let (type_name, tn_space) = if let Some(name) = type_name {
                 (&name[..], " ")
             } else {
