@@ -1,5 +1,9 @@
 # Salsa Migration Plan
 
+> **Note**: This document describes the original migration plan. The actual implementation
+> has evolved to use a HIR-based approach in the `cadenza-core` crate. See the
+> [New Architecture](#new-architecture-cadenza-core) section below.
+
 ## Motivation
 
 The current compiler architecture uses a direct evaluation model with mutable state (`Compiler` struct with `Map<Value>` for definitions). As Cadenza grows, we need a solid foundation for on-demand computation that allows us to query specific information efficiently without recomputing everything.
@@ -14,6 +18,44 @@ The current compiler architecture uses a direct evaluation model with mutable st
 4. **Proven foundation**: Used in production by rust-analyzer
 
 The database becomes the central organizing principle, making it straightforward to add LSP features, watch mode, and other functionality that needs to query compiler state.
+
+## New Architecture: cadenza-core
+
+Based on feedback and learnings from the POC in `cadenza-eval`, we're implementing a new
+HIR-based architecture in the `cadenza-core` crate. Key differences:
+
+**HIR-First Approach:**
+- Compilation works on High-level Intermediate Representation (HIR), not raw AST
+- HIR is desugared, simplified, and easier to analyze
+- Every HIR node preserves source span information
+
+**Evaluation on HIR:**
+- Macro expansion: HIR → HIR (not AST mutation)
+- Compile-time evaluation happens on HIR
+- Generated code has proper span tracking
+
+**Post-Expansion LSP:**
+- LSP operates on evaluated/expanded HIR
+- Sees macro-generated code in module scope
+- Type inference works on expanded HIR
+
+See [`crates/cadenza-core/docs/ARCHITECTURE.md`](../crates/cadenza-core/docs/ARCHITECTURE.md) for
+the complete new architecture design.
+
+### Migration Path
+
+1. ✅ **Phase 1-3 POC** (cadenza-eval): Proved Salsa feasibility
+2. ✅ **cadenza-core creation**: New crate with HIR-based design
+3. ⬜ **HIR Lowering**: Implement AST → HIR transformation
+4. ⬜ **HIR Evaluation**: Macro expansion and compile-time evaluation
+5. ⬜ **Type Inference**: Type checking on expanded HIR
+6. ⬜ **LSP Integration**: IDE features using expanded HIR
+7. ⬜ **Replace cadenza-eval**: Migrate users to cadenza-core
+
+### Status
+
+**cadenza-core** is the production implementation. **cadenza-eval** remains as a POC
+showing the evolution of thinking but is not the target architecture.
 
 ## Current Architecture
 
