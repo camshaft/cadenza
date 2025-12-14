@@ -1,22 +1,17 @@
 [package]
-name = "cadenza-eval"
+name = "cadenza-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-build = "build/main.rs"
 
 [dependencies]
 cadenza-syntax = { path = "../cadenza-syntax" }
 cadenza-tree = { path = "../cadenza-tree" }
-im.workspace = true
 miette.workspace = true
 rustc-hash.workspace = true
 salsa.workspace = true
 thiserror.workspace = true
-wasm-encoder.workspace = true
-wasmparser.workspace = true
-wasmprinter.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
