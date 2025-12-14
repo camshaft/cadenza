@@ -54,6 +54,10 @@ These use cases drive our focus on dimensional analysis, interactivity, and crea
 
 ## Multi-Phase Compiler Architecture
 
+> **Note**: This section describes the overall architecture vision. The actual implementation
+> is now in the `cadenza-core` crate using a HIR-based approach with Salsa for incremental
+> computation. See [cadenza-core Implementation](#cadenza-core-implementation) below for details.
+
 The compiler operates in distinct phases, with each phase building on the previous:
 
 ```
@@ -72,12 +76,23 @@ The compiler operates in distinct phases, with each phase building on the previo
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Phase 2: Evaluation (Macro Expansion & Module Building)         │
-│  - Tree-walk interpreter evaluates top-level expressions         │
-│  - Macro expansion happens here                                  │
-│  - Functions/types are accumulated in Compiler state             │
-│  - Unevaluated branches are collected for later type checking    │
-│  - Output: Compiler state + AST nodes for exports                │
+│  Phase 1.5: HIR Lowering (cadenza-core)                          │
+│  - Transform CST → HIR (High-level Intermediate Representation)  │
+│  - Desugar complex syntax to simple forms                        │
+│  - Preserve source spans on every HIR node                       │
+│  - Output: HIR with span tracking                                │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 2: HIR Evaluation (Macro Expansion & Module Building)     │
+│  - Evaluate HIR (not AST!)                                       │
+│  - Macro expansion: HIR → HIR transformation                     │
+│  - Compile-time evaluation on HIR                                │
+│  - Preserve spans in generated/expanded code                     │
+│  - Functions/types accumulated in module scope                   │
+│  - Unevaluated branches collected for type checking              │
+│  - Output: Expanded HIR with spans                               │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -1797,52 +1812,129 @@ impl Compiler {
 
 ---
 
+## cadenza-core Implementation
+
+The actual implementation of this architecture is in the **`cadenza-core`** crate, which uses
+a HIR-based (High-level Intermediate Representation) approach with Salsa for incremental computation.
+
+### Key Design Decisions
+
+**HIR-First:**
+- Compilation works on a simplified, desugared HIR instead of raw AST
+- Complex syntax is lowered to simple forms during AST → HIR transformation
+- Easier to analyze, transform, and optimize than raw syntax
+
+**Span Preservation:**
+- Every HIR node tracks its source span
+- Macro-expanded code maintains spans pointing back to source
+- Enables accurate error messages and IDE features even on generated code
+
+**HIR Evaluation:**
+- Macro expansion: HIR → HIR (not AST mutation)
+- Compile-time evaluation happens on HIR
+- Generated code is properly-spanned HIR, not untracked values
+
+**Post-Expansion LSP:**
+- Type inference operates on expanded HIR (sees generated code)
+- LSP queries (hover, completion, etc.) work on expanded HIR
+- Module scope includes compile-time generated definitions
+
+### Architecture Pipeline
+
+```text
+Source Code
+    ↓
+Parse (CST - cadenza-syntax)
+    ↓
+Lower (HIR with spans - cadenza-core)
+    ↓
+Evaluate/Expand (Expanded HIR with spans)
+    ↓
+Type Inference (Typed HIR)
+    ↓
+LSP Queries / Code Generation
+```
+
+### Current Status
+
+**Implemented (cadenza-core):**
+- ✅ Salsa database infrastructure
+- ✅ Source file tracking (SourceFile input)
+- ✅ Parsing (ParsedFile tracked struct, parse_file function)
+- ✅ Diagnostic accumulation
+- ✅ HIR definition (expressions, literals, patterns)
+- ✅ Comprehensive documentation
+
+**TODO:**
+- ⬜ AST → HIR lowering module
+- ⬜ HIR evaluation/expansion module
+- ⬜ Type inference on expanded HIR
+- ⬜ LSP queries on expanded HIR
+
+See [`crates/cadenza-core/docs/ARCHITECTURE.md`](../crates/cadenza-core/docs/ARCHITECTURE.md)
+for detailed documentation of the cadenza-core architecture.
+
+### Legacy: cadenza-eval
+
+The `cadenza-eval` crate was a proof-of-concept that demonstrated Salsa feasibility
+but worked directly on the AST. It served its purpose and is now superseded by `cadenza-core`.
+
+---
+
 ## Implementation Roadmap
 
-### Phase 1: Foundation (Current)
-- ✅ Lexer and parser
-- ✅ Tree-walk evaluator
+### Phase 1: Foundation
+- ✅ Lexer and parser (cadenza-syntax)
+- ✅ Tree-walk evaluator (cadenza-eval - POC)
 - ✅ Basic value types
 - ✅ Macro expansion
 - ✅ Unit system
+- ✅ Salsa infrastructure (cadenza-core)
+- ✅ HIR definition (cadenza-core)
 
-### Phase 2: Type System
-- [ ] Implement HM type inference
+### Phase 2: HIR Lowering & Evaluation (In Progress)
+- [ ] Implement AST → HIR lowering (cadenza-core)
+- [ ] Implement HIR evaluation/expansion (cadenza-core)
+- [ ] Macro expansion on HIR
+- [ ] Compile-time evaluation
+
+### Phase 3: Type System
+- [ ] Implement HM type inference on expanded HIR
 - [ ] Add type checker after evaluation
 - [ ] Integrate dimensional analysis
 - [ ] Handle unevaluated branches
 - [ ] Add type annotations (optional)
 
-### Phase 3: Module System
+### Phase 4: Module System
 - [ ] Define module structure
 - [ ] Implement import/export
 - [ ] Cross-module type checking
 - [ ] Module registry
 - [ ] Dependency resolution
 
-### Phase 4: Traits and Effects
+### Phase 5: Traits and Effects
 - [ ] Define trait system
 - [ ] Implement trait inference
 - [ ] Add effect types
 - [ ] Effect handlers
 - [ ] Constraint solving
 
-### Phase 5: Code Generation
-- [ ] Design IR
+### Phase 6: Code Generation
+- [ ] Design IR (or use HIR directly)
 - [ ] Implement monomorphization
 - [ ] IR optimization passes
 - [ ] JavaScript backend (for browser)
 - [ ] Cranelift backend (for native)
 
-### Phase 6: LSP
-- [ ] LSP server skeleton
-- [ ] Incremental compilation
+### Phase 7: LSP
+- [ ] LSP queries on expanded HIR (cadenza-core)
 - [ ] Hover/go-to-definition
 - [ ] Completions
 - [ ] Semantic tokens
 - [ ] As-you-type diagnostics
+- [ ] Incremental compilation (Salsa handles this)
 
-### Phase 7: Advanced Features
+### Phase 8: Advanced Features
 - [ ] WASM backend
 - [ ] LLVM backend (optional)
 - [ ] MCP integration
