@@ -624,6 +624,46 @@ fn test_type_inference_synthetic() {
 }
 
 #[test]
+fn test_fn_type_attribute_consumed() {
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let input = r#"
+@ t Integer Integer -> Integer
+fn add a b = a + b
+add 1 2
+"#;
+
+    let parsed = parse(input);
+    let root = parsed.ast();
+
+    let results = crate::eval(&root, &mut env, &mut compiler);
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], Value::Nil); // function definition
+    assert_eq!(results[1], Value::Integer(3));
+    assert!(!compiler.has_errors(), "unexpected diagnostics: {:?}", compiler.diagnostics());
+
+    // Annotation is consumed; function remains callable.
+}
+
+#[test]
+fn test_unconsumed_attribute_errors() {
+    let mut env = Env::with_standard_builtins();
+    let mut compiler = Compiler::new();
+
+    let input = "@foo 42";
+    let parsed = parse(input);
+    let root = parsed.ast();
+
+    let results = crate::eval(&root, &mut env, &mut compiler);
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], Value::Nil);
+    assert!(compiler.has_errors());
+}
+
+#[test]
 fn test_type_inference_error_node() {
     use crate::typeinfer::InferType;
 

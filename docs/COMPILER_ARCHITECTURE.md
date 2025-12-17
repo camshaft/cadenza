@@ -355,6 +355,12 @@ defmacro my_macro args = ...
 
 **Artifacts**: The `@export` attribute is used to name artifacts (models, compositions, etc.) that can be exported from a running program (e.g., STL files for 3D models, audio files for compositions).
 
+### Attributes
+
+- Attributes are introduced via the `@` special form, which registers its argument into the current attribute list (unevaluated AST).
+- The annotated expression must consume all pending attributes; otherwise, a compile-time error is emitted.
+- Special forms/macros access and consume attributes via the evaluation context; for example, `fn` consumes `@t` to attach type annotations (`@t Integer Integer -> Integer`).
+
 ### Import/Export Mechanism
 
 #### Exports

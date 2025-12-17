@@ -114,7 +114,7 @@ fn eval_measure(args: &[Expr], ctx: &mut EvalContext<'_>) -> Result<Value> {
                 };
 
                 // Get scale
-                let scale_value = scale_args[0].eval(ctx)?;
+                let scale_value = ctx.eval_child(&scale_args[0])?;
                 let scale = match scale_value {
                     Value::Integer(n) => n as f64,
                     Value::Float(f) => f,
