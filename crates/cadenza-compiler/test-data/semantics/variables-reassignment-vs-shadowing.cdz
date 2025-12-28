@@ -1,0 +1,10 @@
+let x = 1
+let outer =
+    let x = 10
+    x
+let inner =
+    x = 2
+    x
+outer
+inner
+x

@@ -1,0 +1,58 @@
+---
+source: crates/cadenza-meta/src/tree.rs
+expression: tree
+---
+Block {
+    steps: [
+        EvalStep {
+            let_bindings: [],
+            control: CheckConstraint {
+                source: BindingId(
+                    0,
+                ),
+                constraint: IsInteger,
+                bindings: [],
+                body: Block {
+                    steps: [
+                        EvalStep {
+                            let_bindings: [],
+                            control: Return {
+                                result: Const(
+                                    Integer(
+                                        1,
+                                    ),
+                                ),
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+        EvalStep {
+            let_bindings: [],
+            control: CheckConstraint {
+                source: BindingId(
+                    0,
+                ),
+                constraint: IsSymbol(
+                    "test",
+                ),
+                bindings: [],
+                body: Block {
+                    steps: [
+                        EvalStep {
+                            let_bindings: [],
+                            control: Return {
+                                result: Const(
+                                    Integer(
+                                        2,
+                                    ),
+                                ),
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+    ],
+}

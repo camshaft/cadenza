@@ -1,0 +1,4 @@
+let foo = 1
+let Foo = 2
+let FOO = 3
+foo

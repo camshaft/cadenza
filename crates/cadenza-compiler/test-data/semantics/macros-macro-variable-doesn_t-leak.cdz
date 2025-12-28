@@ -1,0 +1,7 @@
+macro double_with_temp x =
+    quote
+        let temp = ${x} * 2
+        temp
+
+double_with_temp 5
+temp

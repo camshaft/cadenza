@@ -1,0 +1,8 @@
+error: undefined variable: `inner`
+ --> test.cdz:4:1
+  |
+4 | inner
+  | ^^^^^ not found in this scope
+  |
+  = note: `inner` is defined inside a block and not visible here
+  = help: move the binding outside the block if you need it here

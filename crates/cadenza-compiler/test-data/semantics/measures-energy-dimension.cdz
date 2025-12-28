@@ -1,0 +1,8 @@
+measure kilogram
+measure meter
+measure second
+let mass = 5kilogram
+let distance = 10meter
+let time = 2second
+let force = mass * distance / (time * time)
+force

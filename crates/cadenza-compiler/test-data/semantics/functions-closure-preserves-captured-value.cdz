@@ -1,0 +1,4 @@
+let x = 10
+fn capture_fn = x
+let x = 20
+capture_fn

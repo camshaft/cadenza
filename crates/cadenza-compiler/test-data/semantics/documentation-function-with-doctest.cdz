@@ -1,0 +1,6 @@
+## Squares a number.
+##
+## ```
+## assert (square 5) == 25
+## ```
+fn square x = x * x

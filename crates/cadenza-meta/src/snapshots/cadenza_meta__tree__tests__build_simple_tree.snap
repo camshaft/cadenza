@@ -1,0 +1,32 @@
+---
+source: crates/cadenza-meta/src/tree.rs
+expression: tree
+---
+Block {
+    steps: [
+        EvalStep {
+            let_bindings: [],
+            control: CheckConstraint {
+                source: BindingId(
+                    0,
+                ),
+                constraint: IsInteger,
+                bindings: [],
+                body: Block {
+                    steps: [
+                        EvalStep {
+                            let_bindings: [],
+                            control: Return {
+                                result: Binding(
+                                    BindingId(
+                                        1,
+                                    ),
+                                ),
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+    ],
+}

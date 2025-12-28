@@ -1,0 +1,7 @@
+let factor = 10
+macro multiply_by_factor expr =
+    quote ${factor} * ${expr}
+
+multiply_by_factor 5
+let factor = 20
+multiply_by_factor 5

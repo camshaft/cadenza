@@ -1,0 +1,4 @@
+() : Unit
+() : Unit
+"Alice" : String
+{ email = "alice@example.com", active = true } : { email: String, active: Bool }

@@ -1,0 +1,6 @@
+enum Shape {
+    Circle { radius: Float },
+    Rectangle { width: Float, height: Float }
+}
+let c = Shape.Circle { radius = 5.0 }
+let r = Shape.Rectangle { width = 10.0, height = 20.0 }

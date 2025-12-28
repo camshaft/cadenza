@@ -1,0 +1,3 @@
+() : Unit
+() : Unit
+{ x = 30, y = 20 } : { x: Integer, y: Integer }

@@ -1,0 +1,5 @@
+measure meter
+let circumference = 10.0meter
+let diameter = 3.18meter
+let pi_approx = circumference / diameter
+pi_approx * 2

@@ -1,0 +1,4 @@
+let name = "Alice"
+fn get_name = name
+name = "Bob"
+get_name

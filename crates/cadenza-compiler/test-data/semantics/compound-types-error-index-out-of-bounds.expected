@@ -1,0 +1,8 @@
+error: index out of bounds
+ --> test.cdz:2:6
+  |
+2 | nums[5]
+  |      ^ index 5 is out of bounds
+  |
+  = note: list has length 3
+  = note: valid indices are 0..2

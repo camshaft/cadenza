@@ -1,0 +1,7 @@
+error: cannot access field on non-record type
+ --> test.cdz:2:1
+  |
+2 | x.field
+  | ^ value of type Integer has no fields
+  |
+  = note: field access requires a record or struct type

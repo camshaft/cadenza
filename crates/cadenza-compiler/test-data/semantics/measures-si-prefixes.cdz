@@ -1,0 +1,4 @@
+@si kilo
+measure meter
+let distance = 5kilometer  # Auto-generated from kilo prefix
+distance

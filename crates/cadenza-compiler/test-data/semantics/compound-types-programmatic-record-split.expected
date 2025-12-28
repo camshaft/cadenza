@@ -1,0 +1,4 @@
+() : Unit
+() : Unit
+{ name = "Alice", age = 30 } : { name: String, age: Integer }
+{ email = "alice@example.com" } : { email: String }

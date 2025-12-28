@@ -1,0 +1,5 @@
+macro make_pipeline funcs init =
+    List.fold funcs init \acc fn_syntax ->
+        Syntax.apply fn_syntax [acc]
+
+make_pipeline [double, square, double] 3

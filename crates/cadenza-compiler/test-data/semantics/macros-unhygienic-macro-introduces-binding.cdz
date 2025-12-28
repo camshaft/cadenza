@@ -1,0 +1,8 @@
+@unhygienic
+macro with_result body =
+    quote
+        let result = ${body}
+        result
+
+with_result (10 + 5)
+result

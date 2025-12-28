@@ -1,0 +1,4 @@
+measure meter
+let total = 100meter
+let part = 25meter
+part / total

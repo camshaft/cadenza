@@ -1,0 +1,7 @@
+error: undefined variable: `undefined_variable`
+ --> test.cdz:1:1
+  |
+1 | undefined_variable
+  | ^^^^^^^^^^^^^^^^^^ not found in this scope
+  |
+  = help: use `let undefined_variable = ...` to define it

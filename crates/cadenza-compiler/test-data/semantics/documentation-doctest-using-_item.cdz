@@ -1,0 +1,6 @@
+## Doubles a number.
+##
+## ```
+## assert ($item 5) == 10
+## ```
+fn double x = x * 2

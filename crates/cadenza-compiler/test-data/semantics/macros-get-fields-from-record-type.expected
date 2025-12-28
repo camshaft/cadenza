@@ -1,0 +1,2 @@
+() : Unit
+[(:"name", String), (:"age", Integer)] : [(Symbol, Type)]

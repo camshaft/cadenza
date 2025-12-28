@@ -1,0 +1,5 @@
+() : Unit
+(__block__
+  (p "Summary line.")
+  (h1 "Details")
+  (p "More information here.")) : Syntax

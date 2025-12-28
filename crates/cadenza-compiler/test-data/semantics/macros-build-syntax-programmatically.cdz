@@ -1,0 +1,3 @@
+let fn_name = :"double"
+let arg = Syntax.literal 5
+Syntax.apply fn_name [arg]

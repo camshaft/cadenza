@@ -1,0 +1,8 @@
+error: unterminated string literal
+ --> test.cdz:1:1
+  |
+1 | "hello world
+  |             ^ missing closing double quote
+  |
+  = note: string literals must have a closing quote
+  = help: try adding a closing "

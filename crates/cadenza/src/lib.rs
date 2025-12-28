@@ -18,6 +18,8 @@
 
 mod error;
 mod object;
+mod types;
 
 pub use error::Error;
 pub use object::{Object, Value};
+pub use types::Type;

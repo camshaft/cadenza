@@ -1,0 +1,7 @@
+error: missing struct field
+ --> test.cdz:2:7
+  |
+2 | Point { x = 10 }
+  |       ^^^^^^^^^ missing field `y`
+  |
+  = note: struct Point requires fields: x, y

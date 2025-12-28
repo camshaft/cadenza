@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-meta/src/codegen.rs
+expression: code_str
+---
+use crate :: prelude :: * ; pub fn eval (db : & dyn Database , input : NodeId) -> Value { if matches ! (input , Value :: Integer (_)) { return Value :: Integer (input) ; } }

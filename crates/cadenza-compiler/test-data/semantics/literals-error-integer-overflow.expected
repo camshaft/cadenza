@@ -1,0 +1,8 @@
+error: integer literal is too large
+ --> test.cdz:1:1
+  |
+1 | 999999999999999999999999999999999999999999
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ exceeds maximum 128-bit integer value
+  |
+  = note: maximum value is 170141183460469231731687303715884105727
+  = help: consider using a BigInt type for arbitrarily large integers

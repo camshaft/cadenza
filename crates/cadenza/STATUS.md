@@ -46,16 +46,40 @@ The `Value` enum includes all major expression types from the design:
 
 ### Type System
 
-- [ ] Define core `Type` enum (Integer, Float, String, Bool, etc.)
-- [ ] Add compound types (List, Tuple, Record, Struct, Enum)
-- [ ] Add function types with lifetimes
-- [ ] Add reference types with lifetime tracking
-- [ ] Add type variables for inference
-- [ ] Add quantified types (`forall`)
-- [ ] Add refined types with contracts
-- [ ] Add dimensional types for units
-- [ ] Add constrained types with traits
-- [ ] Add effect types
+- [x] Define core `Type` enum (Integer, Float, String, Bool, etc.)
+- [x] Add compound types (List, Tuple, Record, Struct, Enum)
+- [x] Add function types with lifetimes
+- [x] Add reference types with lifetime tracking
+- [x] Add type variables for inference
+- [x] Add quantified types (`forall`)
+- [x] Add refined types with contracts
+- [x] Add dimensional types for units
+- [x] Add constrained types with traits
+- [x] Add effect types
+
+**Status**: ✅ Complete type system implemented in `src/types.rs`
+
+The type system has been implemented with all features from the design document:
+
+- **Base types**: Integer, Float, Rational, String, Bool, Char, Unit with optional bit widths
+- **Compound types**: List, Tuple, Record (structural), Struct (nominal), Enum
+- **Function types**: With parameters, return type, and lifetime tracking
+- **Reference types**: Mutable and immutable borrows with lifetime annotations
+- **Type variables**: For Hindley-Milner type inference
+- **Quantified types**: `forall` for polymorphic functions
+- **Refined types**: Types with contract predicates for design-by-contract
+- **Dimensional types**: Physical dimensions for units of measure with operations
+- **Constrained types**: Trait constraints for ad-hoc polymorphism
+- **Effect types**: Effect requirements for computational context
+
+The type system includes:
+
+- `is_linear()` method to determine if a type requires memory management
+- `base_type()` method to unwrap type wrappers
+- `structurally_equal()` for structural type comparison
+- Full `Display` implementation for readable type formatting
+- Dimension operations (multiply, divide, power) for dimensional analysis
+- Test suite covering linearity, dimensions, and display
 
 ### Memory Management Types
 

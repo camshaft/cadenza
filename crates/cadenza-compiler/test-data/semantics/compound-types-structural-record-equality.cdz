@@ -1,0 +1,3 @@
+let point1 = { x = 10, y = 20 }
+let point2 = { x = 10, y = 20 }
+typeof point1 == typeof point2

@@ -1,0 +1,8 @@
+error: empty character literal
+ --> test.cdz:1:1
+  |
+1 | ''
+  | ^^ this character literal is empty
+  |
+  = note: character literals must contain exactly one character
+  = help: try using \"\" for an empty string instead

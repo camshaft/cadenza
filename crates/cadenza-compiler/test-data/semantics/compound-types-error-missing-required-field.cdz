@@ -1,0 +1,2 @@
+struct Point { x = Integer, y = Integer }
+Point { x = 10 }

@@ -1,0 +1,8 @@
+let x = 1
+fn outer =
+    x = 10
+    fn inner = x
+    inner
+let get_x = outer
+get_x
+x

@@ -3,12 +3,15 @@
 //! The central type is `Object`, which represents a value throughout the compilation pipeline.
 //! Each phase progressively annotates the Object with additional information.
 
-use crate::error::Error;
+use crate::{
+    error::Error,
+    types::{Lifetime, Type},
+};
 use cadenza_syntax::ast::Expr;
 use cadenza_tree::InternedString;
 use hashbrown::HashMap;
 use rustc_hash::FxBuildHasher;
-use std::{fmt, hash::Hash, sync::Arc};
+use std::{hash::Hash, sync::Arc};
 
 /// The central data structure throughout the compilation pipeline.
 ///
@@ -33,7 +36,7 @@ pub struct Object {
     /// Source location information
     pub source: Option<Expr>,
 
-    /// Contract metadata (preconditions, postconditions, invariants)
+    /// Attributes applied to the object
     pub attributes: Attributes,
 
     /// Documentation string
@@ -186,20 +189,12 @@ pub enum Value {
     Dict(Dict),
 
     Struct {
-        name: Option<Box<Object>>,
         fields: Arc<[Object]>,
         values: Vec<Object>,
     },
 
     Tuple {
-        name: Option<Box<Object>>,
         values: Vec<Object>,
-    },
-
-    EnumVariant {
-        name: Option<Box<Object>>,
-        variant: InternedString,
-        value: Box<Object>,
     },
 
     /// Function definition
@@ -207,7 +202,7 @@ pub enum Value {
         name: Option<Box<Object>>,
         parameters: Vec<Object>,
         body: Box<Object>,
-        captures: Vec<Object>, // For closures
+        captures: Vec<(InternedString, Object)>, // For closures
     },
 
     /// Let binding
@@ -343,86 +338,6 @@ impl Value {
     }
 }
 
-/// Type information for Objects.
-///
-/// This will be expanded to include all the type system features described
-/// in the design document (generics, traits, effects, dimensions, etc.).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Type {
-    /// Integer type
-    Integer { signed: bool, bits: u8 },
-
-    /// Float type
-    Float,
-
-    /// Rational type
-    Rational { signed: bool, bits: u8 },
-
-    /// String type
-    String,
-
-    /// Boolean type
-    Bool,
-
-    /// Character type
-    Char,
-
-    /// Unit type
-    Unit,
-
-    /// Function type
-    Function { parameters_and_return: Vec<Type> },
-
-    /// Type variable (for inference)
-    Var(InternedString),
-
-    /// Placeholder for future type system features
-    Unknown,
-}
-
-impl fmt::Display for Type {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Type::Integer { .. } => write!(f, "Integer"),
-            Type::Float => write!(f, "Float"),
-            Type::Rational { .. } => write!(f, "Rational"),
-            Type::String => write!(f, "String"),
-            Type::Bool => write!(f, "Bool"),
-            Type::Char => write!(f, "Char"),
-            Type::Unit => write!(f, "Unit"),
-            Type::Function {
-                parameters_and_return,
-            } => {
-                write!(f, "(")?;
-                let len = parameters_and_return.len();
-                if len == 0 {
-                    return write!(f, ")");
-                }
-
-                if len == 1 {
-                    write!(f, "Unit")?;
-                }
-
-                for (i, param) in parameters_and_return.iter().enumerate() {
-                    if i > 0 && i < len - 1 {
-                        write!(f, ", ")?;
-                    } else if i == len - 1 {
-                        write!(f, " -> ")?;
-                    }
-                    write!(f, "{}", param)?;
-                    if i == len - 1 {
-                        write!(f, ")")?;
-                    }
-                }
-
-                Ok(())
-            }
-            Type::Var(name) => write!(f, "{}", name),
-            Type::Unknown => write!(f, "?"),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Dict(HashMap<Object, Object, FxBuildHasher>);
 
@@ -510,19 +425,6 @@ pub enum Deleter {
 
     /// Borrowed value (no cleanup)
     Reference { variable: InternedString },
-}
-
-/// Lifetime of a reference.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Lifetime {
-    /// Reference depends on local variable
-    InsideFunction(InternedString),
-
-    /// Reference depends on something beyond current function
-    OutsideFunction,
-
-    /// Static lifetime
-    Static,
 }
 
 /// Monomorphization metadata.

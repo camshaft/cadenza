@@ -1,0 +1,4 @@
+measure meter
+measure second
+let velocity = 100meter / 10second
+velocity / 5second

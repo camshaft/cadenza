@@ -1,0 +1,10 @@
+macro swap_and_add x y =
+    quote
+        let temp = ${x}
+        ${x} = ${y}
+        ${y} = temp
+        ${x} + ${y}
+
+let a = 10
+let b = 20
+swap_and_add a b

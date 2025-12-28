@@ -1,0 +1,2 @@
+let nested = { inner = { value = 42 } }
+nested.inner.value

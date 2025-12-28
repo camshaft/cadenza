@@ -1,0 +1,7 @@
+## Creates a new point.
+##
+## ```
+## let p = $module.Point { x = 10, y = 20 }
+## assert p.x == 10
+## ```
+struct Point { x = Integer, y = Integer }

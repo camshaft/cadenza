@@ -1,0 +1,19 @@
+[package]
+name = "cadenza-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build/main.rs"
+
+[features]
+# Enable testing utilities for other crates to use
+testing = []
+
+[dependencies]
+cadenza-syntax = { path = "../cadenza-syntax" }
+cadenza-tree = { path = "../cadenza-tree" }
+
+[build-dependencies]
+cadenza-codegen = { path = "../cadenza-codegen" }
+cadenza-meta = { path = "../cadenza-meta" }

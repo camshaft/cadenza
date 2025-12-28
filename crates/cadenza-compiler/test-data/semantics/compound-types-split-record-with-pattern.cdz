@@ -1,0 +1,4 @@
+let person = { name = "Alice", age = 30, email = "alice@example.com", active = true }
+let { name, age, ...rest } = person
+name
+rest

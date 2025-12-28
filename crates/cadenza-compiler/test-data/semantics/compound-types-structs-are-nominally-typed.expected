@@ -1,0 +1,8 @@
+error: type mismatch
+ --> test.cdz:5:1
+  |
+5 | p == v
+  | ^^^^^^ cannot compare Point with Vector
+  |
+  = note: Point and Vector are different nominal types
+  = note: even though they have the same fields, nominal typing makes them distinct

@@ -1,0 +1,7 @@
+error: undefined variable: `vlaue`
+ --> test.cdz:2:1
+  |
+2 | vlaue
+  | ^^^^^ not found in this scope
+  |
+  = help: did you mean `value`?

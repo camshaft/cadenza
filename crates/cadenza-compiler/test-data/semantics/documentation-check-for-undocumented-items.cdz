@@ -1,0 +1,10 @@
+## Documented function.
+fn documented x = x
+
+fn undocumented x = x
+
+for def in Module.exports
+    let doc = docof def
+    if doc == (quote ()) then
+        println $"Warning: ${def} is missing documentation"
+        break

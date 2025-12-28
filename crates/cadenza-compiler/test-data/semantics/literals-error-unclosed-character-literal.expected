@@ -1,0 +1,7 @@
+error: unterminated character literal
+ --> test.cdz:1:1
+  |
+1 | 'a
+  | ^^ missing closing single quote
+  |
+  = note: character literals must be closed on the same line

@@ -1,0 +1,3 @@
+() : Unit
+() : Unit
+{ x = 10, y = 20, z = 30, label = "point" } : { x: Integer, y: Integer, z: Integer, label: String }

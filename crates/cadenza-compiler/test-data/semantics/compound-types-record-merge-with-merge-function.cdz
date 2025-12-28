@@ -1,0 +1,3 @@
+let base = { x = 10, y = 20 }
+let extra = { z = 30, label = "point" }
+Record.merge base extra

@@ -1,0 +1,7 @@
+## Summary line.
+##
+## # Details
+##
+## More information here.
+fn example = 42
+docof example

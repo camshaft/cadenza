@@ -1,0 +1,6 @@
+let counter = Cell.new 0
+fn increment = Cell.set counter (Cell.get counter) + 1
+fn get_counter = cell_get counter
+increment
+increment
+get_counter

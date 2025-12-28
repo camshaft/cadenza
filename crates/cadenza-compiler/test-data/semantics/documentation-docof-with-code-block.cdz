@@ -1,0 +1,7 @@
+## Example function.
+##
+## ```cadenza
+## example 42
+## ```
+fn example x = x
+docof example
