@@ -1,5 +1,5 @@
 {
-  description = "Membrain - Distributed Memory System";
+  description = "Cadenza";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -46,7 +46,7 @@
         ];
 
         shellHook = ''
-          echo "Membrain development environment"
+          echo "Cadenza development environment"
           echo "Rust: $(rustc --version)"
           echo "Deno: $(deno --version)"
           echo "UV: $(uv --version)"

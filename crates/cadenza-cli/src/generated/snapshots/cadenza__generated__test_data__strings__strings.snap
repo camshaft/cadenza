@@ -1,5 +1,5 @@
 ---
-source: crates/cadenza/src/generated/test_data.rs
+source: crates/cadenza-cli/src/generated/test_data.rs
 expression: "\"Hello, World!\"\n\"Multiple\\nlines\"\n\"String with \\\"quotes\\\"\"\n"
 ---
 Cadenza REPL v0.1.0

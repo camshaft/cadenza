@@ -1,8 +1,11 @@
 pub mod ast;
+pub mod contents;
 mod generated;
+pub mod hash;
 mod iter;
 pub mod lexer;
 pub mod parse;
+pub mod source_file;
 pub mod span;
 pub mod token;
 

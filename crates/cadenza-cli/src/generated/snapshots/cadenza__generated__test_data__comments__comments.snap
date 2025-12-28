@@ -1,5 +1,5 @@
 ---
-source: crates/cadenza/src/generated/test_data.rs
+source: crates/cadenza-cli/src/generated/test_data.rs
 expression: "1 + 1 # Inline comment\n2 + 2\n"
 ---
 Cadenza REPL v0.1.0

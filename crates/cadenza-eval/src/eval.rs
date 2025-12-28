@@ -139,7 +139,6 @@ impl Eval for Expr {
             Expr::Literal(lit) => lit.eval(ctx),
             Expr::Ident(ident) => ident.eval(ctx),
             Expr::Apply(apply) => apply.eval(ctx),
-            Expr::Attr(attr) => attr.eval(ctx),
             Expr::Op(op) => {
                 // Operators as values (for higher-order usage)
                 // Use SyntaxText directly without allocating a String

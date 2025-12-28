@@ -9,6 +9,12 @@ mod lsp;
 mod mcp;
 mod repl;
 
+#[cfg(test)]
+mod testing;
+
+#[cfg(test)]
+mod generated;
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 

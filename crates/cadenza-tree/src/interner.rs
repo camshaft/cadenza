@@ -76,6 +76,26 @@ where
 
 impl<S: Storage> Eq for Interned<S> where S::Index: Eq {}
 
+impl<S: Storage> PartialOrd for Interned<S>
+where
+    S::Value: PartialOrd,
+    S::Index: PartialEq,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+}
+
+impl<S: Storage> Ord for Interned<S>
+where
+    S::Value: Ord,
+    S::Index: Eq,
+{
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
 impl<S: Storage> std::hash::Hash for Interned<S>
 where
     S::Index: std::hash::Hash,
@@ -209,7 +229,7 @@ pub type InternedString = Interned<Strings>;
 
 /// Storage for interned integer literals.
 ///
-/// Integer literals are stored as `Result<i64, ParseIntError>` where `Err` contains
+/// Integer literals are stored as `Result<i128, ParseIntError>` where `Err` contains
 /// the parse error. This allows us to intern the literal string and cache the
 /// parse result with meaningful error messages.
 ///
@@ -221,7 +241,7 @@ pub struct Integers;
 /// Internal storage data for integers.
 struct IntegerData {
     map: rustc_hash::FxHashMap<String, u32>,
-    values: Vec<Result<i64, ParseIntError>>,
+    values: Vec<Result<i128, ParseIntError>>,
 }
 
 impl IntegerData {
@@ -239,13 +259,13 @@ impl IntegerData {
         let index = self.values.len() as u32;
         // Parse the integer, removing underscores
         let clean = s.replace('_', "");
-        let value = clean.parse::<i64>();
+        let value = clean.parse();
         self.values.push(value);
         self.map.insert(s.to_string(), index);
         index
     }
 
-    fn get(&self, index: u32) -> &Result<i64, ParseIntError> {
+    fn get(&self, index: u32) -> &Result<i128, ParseIntError> {
         &self.values[index as usize]
     }
 }
@@ -258,7 +278,7 @@ fn integer_storage() -> &'static std::sync::Mutex<IntegerData> {
 
 impl Storage for Integers {
     type Index = u32;
-    type Value = Result<i64, ParseIntError>;
+    type Value = Result<i128, ParseIntError>;
 
     fn insert(value: &str) -> Self::Index {
         integer_storage().lock().unwrap().insert(value)
@@ -268,7 +288,7 @@ impl Storage for Integers {
         let storage = integer_storage().lock().unwrap();
         let v = storage.get(index);
         unsafe {
-            std::mem::transmute::<&Result<i64, ParseIntError>, &'static Result<i64, ParseIntError>>(
+            std::mem::transmute::<&Result<i128, ParseIntError>, &'static Result<i128, ParseIntError>>(
                 v,
             )
         }
