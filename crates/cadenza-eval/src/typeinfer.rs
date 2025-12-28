@@ -1007,7 +1007,6 @@ impl TypeInferencer {
             Expr::Ident(ident) => self.infer_ident(ident, env),
             Expr::Apply(apply) => self.infer_apply(apply, env),
             Expr::Op(op) => self.infer_op(op, env),
-            Expr::Attr(attr) => self.infer_attr(attr, env),
             Expr::Synthetic(syn) => self.infer_synthetic(syn, env),
             Expr::Error(_) => {
                 // Error nodes represent parsing errors, type is unknown
@@ -1090,16 +1089,6 @@ impl TypeInferencer {
         } else {
             // Unknown operator - return a fresh type variable
             Ok(InferType::Var(self.fresh_var()))
-        }
-    }
-
-    fn infer_attr(&mut self, attr: &cadenza_syntax::ast::Attr, env: &TypeEnv) -> Result<InferType> {
-        // Attributes evaluate to the type of their value expression
-        if let Some(value_expr) = attr.value() {
-            self.infer_expr(&value_expr, env)
-        } else {
-            // Missing value, return Nil type
-            Ok(InferType::Concrete(Type::Nil))
         }
     }
 

@@ -1,5 +1,5 @@
 ---
-source: crates/cadenza/src/generated/test_data.rs
+source: crates/cadenza-cli/src/generated/test_data.rs
 expression: "fn add a b = a + b\nadd 3 4\nadd 10 20\n"
 ---
 Cadenza REPL v0.1.0

@@ -5,23 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[dependencies]
-cadenza-eval = { path = "../cadenza-eval" }
-cadenza-syntax = { path = "../cadenza-syntax" }
-cadenza-lsp = { path = "../cadenza-lsp" }
-clap.workspace = true
-tower-lsp.workspace = true
-lsp-types.workspace = true
-tokio = { workspace = true, features = ["full"] }
-serde.workspace = true
-serde_json.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-anyhow.workspace = true
-rustyline.workspace = true
-dirs.workspace = true
-rmcp = { version = "0.8", features = ["server", "transport-io"] }
-schemars = "1.1.0"
+[features]
+default = []
 
-[dev-dependencies]
-insta.workspace = true
+[dependencies]
+cadenza-syntax = { path = "../cadenza-syntax" }
+cadenza-tree = { path = "../cadenza-tree" }
+hashbrown.workspace = true
+rustc-hash.workspace = true
+serde = { workspace = true, features = ["derive"] }

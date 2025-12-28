@@ -1,5 +1,5 @@
 ---
-source: crates/cadenza/src/generated/test_data.rs
+source: crates/cadenza-cli/src/generated/test_data.rs
 expression: "fn double x = x * 2\ndouble 5\ndouble 10\n"
 ---
 Cadenza REPL v0.1.0

@@ -1,5 +1,5 @@
 ---
-source: crates/cadenza/src/generated/test_data.rs
+source: crates/cadenza-cli/src/generated/test_data.rs
 expression: "let x = 42\nx\nlet y = 10\nx + y\n"
 ---
 Cadenza REPL v0.1.0

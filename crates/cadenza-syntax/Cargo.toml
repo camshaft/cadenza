@@ -7,6 +7,7 @@ repository.workspace = true
 build = "build/main.rs"
 
 [dependencies]
+blake3 = "1"
 cadenza-tree = { version = "0.1.0", path = "../cadenza-tree" }
 serde.workspace = true
 

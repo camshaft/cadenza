@@ -596,7 +596,6 @@ impl Value {
             Expr::Literal(lit) => lit.syntax(),
             Expr::Ident(ident) => ident.syntax(),
             Expr::Apply(apply) => apply.syntax(),
-            Expr::Attr(attr) => attr.syntax(),
             Expr::Op(op) => op.syntax(),
             Expr::Synthetic(syn) => syn.syntax(),
             Expr::Error(err) => err.syntax(),

@@ -1,118 +1,504 @@
-# Cadenza CLI - Status Document
+# Cadenza Compiler - Implementation Status
 
-This document tracks the current state of the `cadenza` CLI crate and remaining work items.
+This document tracks the implementation status of the Cadenza compiler based on the design in `docs/design/compiler.md`.
 
 ## Overview
 
-The Cadenza CLI provides command-line tools for working with the Cadenza language, including an interactive REPL and Language Server Protocol (LSP) server.
+The Cadenza compiler implements a multi-phase pipeline that progressively annotates the AST from parse through WASM emission.
 
-## Current State
+## Core Data Structures
 
-### ✅ Completed
+### Object (The Central Type)
 
-**REPL (Read-Eval-Print Loop):**
-- Interactive evaluation with expression-by-expression feedback
-- Persistent command history (saved to `~/.cadenza_history`)
-- Syntax highlighting using cadenza-syntax lexer with ANSI colors
-- Basic tab completion for built-in keywords and operators
-- File pre-loading with `--load` flag
-- Proper string escaping in output (quotes, newlines, tabs, backslashes)
-- Clean error reporting for parse and evaluation errors
+- [x] Define `Object` struct that includes a `Value` enum
+- [x] Add type annotation field
+- [x] Add ownership metadata field
+- [x] Add source tracking (spans, file IDs)
+- [x] Add contract metadata field
+- [x] Add documentation field
+- [x] Add monomorphization metadata field
 
-**LSP Server:**
-- Stdio transport for editor integration
-- Full integration with cadenza-lsp backend
+**Status**: ✅ Core structure implemented in `src/object.rs`
 
-**CLI Structure:**
-- Clap-based subcommand architecture
-- `repl` subcommand with optional `--load <FILE>` parameter
-- `lsp` subcommand for starting LSP server
+The `Object` struct has been implemented with all required fields:
 
-## Known Gaps & Future Enhancements
+- `value`: The `Value` enum with all expression types
+- `ty`: Optional type annotation
+- `ownership`: Optional ownership metadata
+- `source`: Optional source file reference
+- `contract`: Optional contract metadata
+- `documentation`: Optional documentation string
+- `monomorphization`: Optional monomorphization metadata
 
-### REPL Auto-completion
+The `Value` enum includes all major expression types from the design:
 
-**Current Limitation:**
-The auto-completion system uses a hardcoded list of built-in keywords and operators. It cannot suggest:
-- User-defined variables from the environment
-- User-defined functions
-- Identifiers loaded from `--load` files
-- Dynamically defined symbols
+- Literals (Number, String, Bool, Char, Unit)
+- Symbols with scope tracking
+- Apply (function application)
+- Collections (List, Array, Dict)
+- Structs, Tuples, EnumVariants
+- Functions with captures
+- Control flow (Let, If, Match, While, Do)
+- References (Ref, Deref)
+- Type operations (Type, TypeInscription)
+- Macros (Macro, Quote, Unquote)
+- Attributes and Errors
 
-**Root Cause:**
-The `Env` struct doesn't expose an API to iterate over bindings. This means the REPL cannot query what identifiers are currently in scope.
+### Type System
 
-**Potential Solutions:**
-1. **Add iteration API to Env** - Add methods like `iter_bindings()` or `all_identifiers()` to expose available symbols
-   - Pro: Clean, direct access to environment state
-   - Con: May expose internal implementation details
-   
-2. **Maintain a separate completion registry** - Track identifiers separately in the REPL
-   - Pro: Keeps Env API minimal
-   - Con: Requires duplicate tracking and synchronization
-   
-3. **Extract identifiers from compiler** - Use the Compiler's knowledge of definitions
-   - Pro: Leverages existing infrastructure
-   - Con: May not capture all runtime bindings
+- [ ] Define core `Type` enum (Integer, Float, String, Bool, etc.)
+- [ ] Add compound types (List, Tuple, Record, Struct, Enum)
+- [ ] Add function types with lifetimes
+- [ ] Add reference types with lifetime tracking
+- [ ] Add type variables for inference
+- [ ] Add quantified types (`forall`)
+- [ ] Add refined types with contracts
+- [ ] Add dimensional types for units
+- [ ] Add constrained types with traits
+- [ ] Add effect types
 
-**Related Code:**
-- `crates/cadenza/src/repl.rs:57-62` - Hardcoded builtin list
-- `crates/cadenza-eval/src/env.rs` - Env implementation
+### Memory Management Types
 
-### REPL Syntax Highlighting
+- [ ] Define `Deleter` enum (Proper, Fake, Primitive, Reference)
+- [ ] Define `MemState` struct for tracking active deleters
+- [ ] Define `Lifetime` enum (InsideFunction, OutsideFunction)
+- [ ] Add ownership status types (Owned, Moved, Borrowed)
 
-**Enhancement Opportunity:**
-Current syntax highlighting is functional but basic. Potential improvements:
-- Highlight user-defined identifiers differently from builtins
-- Error highlighting for invalid syntax as you type
-- Configurable color schemes
-- More sophisticated token classification
+## Phase 1: Parse
 
-### REPL History Management
+**Status**: ✅ Delegated to `cadenza-syntax`
 
-**Current Behavior:**
-History is saved to `~/.cadenza_history` with fallback to `.cadenza_history` in current directory.
+The parse phase is handled by the existing `cadenza-syntax` crate which provides:
 
-**Potential Enhancements:**
-- History search (Ctrl+R style reverse search)
-- Multi-line history entries
-- History size limits and rotation
-- Per-project history files
+- Lossless CST with rowan
+- Error recovery
+- Incremental re-parsing
+- Full span information
 
-### Multi-line Input
+**Integration**:
 
-**Not Yet Implemented:**
-The REPL currently evaluates single lines. For complex expressions spanning multiple lines, users must write them on one line or use semicolons.
+- [ ] Add hash-based parse cache
+- [ ] Implement conversion from CST to initial `Object`
 
-**Desired Behavior:**
-- Detect incomplete expressions and continue prompting
-- Support for explicit multi-line mode (e.g., `\` continuation)
-- Bracket/parenthesis matching to determine completeness
+## Phase 2: Evaluate
 
-### REPL Commands
+**Purpose**: Macro expansion and module building
 
-**Not Yet Implemented:**
-No special REPL commands beyond Ctrl+D/Ctrl+C to exit.
+### Core Evaluation
 
-**Potential Commands:**
-- `:help` - Show REPL help
-- `:quit` or `:exit` - Exit REPL
-- `:load <file>` - Load file at runtime
-- `:reload` - Reload the initially loaded file
-- `:clear` - Clear environment or history
-- `:type <expr>` - Show type of expression
-- `:info <identifier>` - Show information about identifier
+- [ ] Implement tree-walk interpreter
+- [ ] Add environment/scope tracking
+- [ ] Implement variable binding and lookup
+- [ ] Implement function application
+- [ ] Track unevaluated branches for type checking
 
-## Priority
+### Macro System
 
-**High Priority:**
-- Add Env iteration API for better auto-completion (blocks full completion functionality)
+- [ ] Implement macro expansion
+- [ ] Add quote/unquote support
+- [ ] Track macro definitions in environment
+- [ ] Recursive macro expansion until fixpoint
 
-**Medium Priority:**
-- Multi-line input support (quality of life improvement)
-- REPL commands (`:help`, `:load`, `:type`)
+### Module Building
 
-**Low Priority:**
-- Enhanced syntax highlighting
-- Configurable color schemes
-- History search
+- [ ] Collect function definitions
+- [ ] Collect type definitions
+- [ ] Collect macro definitions
+- [ ] Track public vs private exports (underscore prefix)
+- [ ] Build module export list
+
+### Special Forms
+
+Special forms are implemented in Rust and define interactions with the compiler:
+
+- [ ] `def` - Define functions
+- [ ] `deftype` - Define types
+- [ ] `defmacro` - Define macros
+- [ ] `let` - Local bindings
+- [ ] `if` - Conditionals
+- [ ] `match` - Pattern matching
+- [ ] `while` - Loops
+- [ ] `quote` - Prevent evaluation
+- [ ] `unquote` - Evaluate in quote context
+
+### Project.cdz Support
+
+- [ ] Implement `package` builtin
+- [ ] Implement `dependency` builtin
+- [ ] Implement `artifact` builtin
+- [ ] Implement `profile` builtin
+- [ ] Collect configuration in compiler state
+- [ ] Validate configuration after evaluation
+
+### Test Discovery
+
+- [ ] Scan for `@test` attributes during evaluation
+- [ ] Scan for `@property` attributes
+- [ ] Collect test functions in compiler state
+- [ ] Support `@tag` for test organization
+
+## Phase 3: Type Check
+
+**Purpose**: Infer and validate all types
+
+### Constraint Generation
+
+- [ ] Implement Algorithm W constraint generation
+- [ ] Generate type equations from expressions
+- [ ] Track constraints in constraint set
+- [ ] Support recursive/mutual definitions
+
+### Constraint Solving
+
+- [ ] Implement unification algorithm
+- [ ] Implement occurs check
+- [ ] Find substitutions that satisfy constraints
+- [ ] Report unification failures as type errors
+
+### Type Inference
+
+- [ ] Implement Hindley-Milner inference
+- [ ] Support let-polymorphism
+- [ ] Implement generalization at let-bindings
+- [ ] Implement instantiation at use sites
+- [ ] Iterative inference for mutual dependencies
+
+### Dimensional Analysis
+
+- [ ] Parse `measure` definitions
+- [ ] Track base dimensions (meter, second, kilogram, etc.)
+- [ ] Compute derived dimensions from operations
+- [ ] Type check dimensional consistency
+- [ ] Report dimension mismatch errors
+
+### Trait System
+
+- [ ] Infer trait constraints from operations
+- [ ] Track trait requirements on type variables
+- [ ] Support built-in traits (Numeric, Comparable, etc.)
+- [ ] Validate trait implementations
+
+### Effect System
+
+- [ ] Track effects as implicit parameters
+- [ ] Propagate effects through call graph
+- [ ] Require effect handlers at component boundaries
+- [ ] Report missing effect handlers
+
+### Contract System
+
+- [ ] Parse contract annotations (`@requires`, `@ensures`, `@invariant`)
+- [ ] Validate contract predicates are well-typed
+- [ ] Track contracts on types and functions
+- [ ] Support constraint variable substitution (`$0`, `$1`, etc.)
+
+### Rational Number Support
+
+- [ ] Add `Rational` type to type system
+- [ ] Automatic promotion: Integer division → Rational
+- [ ] Numeric tower: Integer < Rational < Float
+- [ ] Coercion rules between numeric types
+
+## Phase 4: Ownership Analysis
+
+**Purpose**: Track linear types and ensure memory safety
+
+### Memory State Tracking
+
+- [ ] Implement `MemState` with active deleter set
+- [ ] Track type dependencies (types needing delete)
+- [ ] Track lifetime mappings for references
+
+### Ownership Operations
+
+- [ ] Implement manage (add to owned set)
+- [ ] Implement unmanage (remove from owned set)
+- [ ] Implement transfer (unmanage + manage)
+- [ ] Detect use-after-move errors
+- [ ] Detect use of unowned values
+
+### Lifetime Validation
+
+- [ ] Check references don't outlive targets
+- [ ] Track inside-function vs outside-function lifetimes
+- [ ] Validate reference usage against target liveness
+
+### Deleter Annotation
+
+- [ ] Walk AST maintaining memory state
+- [ ] Annotate expressions with deleters
+- [ ] Calculate scope boundary cleanup
+- [ ] Handle conditional branches (merge states)
+- [ ] Handle loops (simulate twice)
+
+### Reference and Copy
+
+- [ ] Implement `&` operator for borrowing
+- [ ] Implement `*` operator for copying
+- [ ] Track reference creation
+- [ ] Validate reference lifetimes
+
+## Phase 5: Monomorphize
+
+**Purpose**: Specialize generics for concrete types
+
+### Generic Instantiation
+
+- [ ] Find all generic function call sites
+- [ ] Generate specialized versions for each type combination
+- [ ] Apply polymorphic suffix naming (e.g., `identity__Int`)
+- [ ] Recursively instantiate dependencies
+
+### Trait Resolution
+
+- [ ] Find trait implementations for concrete types
+- [ ] Resolve trait method calls to implementations
+- [ ] Validate trait constraints are satisfied
+
+### Dead Code Elimination
+
+- [ ] For reactor/command artifacts, eliminate unused functions
+- [ ] Whole-program analysis to find reachable code
+- [ ] Keep only functions transitively called from exports
+
+### Library vs Component
+
+- [ ] Skip monomorphization for library artifacts
+- [ ] Preserve generic functions in library output
+- [ ] Monomorphize only exports for reactor/command
+
+### Monomorphization Cache
+
+- [ ] Hash-based cache: (function_id + types) → specialized
+- [ ] Reuse cached specializations across compilation units
+
+## Phase 6: Lambda Lift
+
+**Purpose**: Convert closures to top-level functions
+
+### Closure Analysis
+
+- [ ] Identify captured variables (free variables)
+- [ ] Generate environment struct type
+- [ ] Generate copy function for environment
+- [ ] Generate delete function for environment
+
+### Lifting Transformation
+
+- [ ] Create top-level function with environment parameter
+- [ ] Replace lambda with struct + function pointer
+- [ ] Update call sites to pass environment
+
+## Phase 7: Contract Instrumentation
+
+**Purpose**: Enforce contracts at runtime or prove them
+
+### Dynamic Mode
+
+- [ ] Insert precondition checks at function entry
+- [ ] Insert postcondition checks at function exit
+- [ ] Insert invariant checks at type construction
+- [ ] Generate panic on contract violation
+
+### Static Mode (Future)
+
+- [ ] Translate contracts to SMT-LIB
+- [ ] Query SMT solver (Z3, CVC5)
+- [ ] Remove checks for proven contracts
+- [ ] Fall back to dynamic for unproven
+
+### Hybrid Mode (Future)
+
+- [ ] Try static verification first
+- [ ] Fall back to dynamic checks if can't prove
+- [ ] Optimize away proven contracts in release builds
+
+## Phase 8: Generate WIT
+
+**Purpose**: Generate component interface for exports
+
+### Export Discovery
+
+- [ ] Find public functions (not prefixed with `_`)
+- [ ] Filter to concrete (non-generic) functions
+- [ ] Warn on generic exports without `@t` annotation
+
+### Type Mapping
+
+- [ ] Map `Integer` → `s64`
+- [ ] Map `Float` → `float64`
+- [ ] Map `Rational` → `record { numerator: s64, denominator: s64 }`
+- [ ] Map `String` → `string`
+- [ ] Map `List T` → `list<T>`
+- [ ] Map `Record` → `record { ... }`
+- [ ] Handle unsupported types (e.g., functions)
+
+### WIT Generation
+
+- [ ] Generate package declaration
+- [ ] Generate version
+- [ ] Generate interface with function signatures
+- [ ] Write WIT to `.wit` file
+
+## Phase 9: Emit WASM
+
+**Purpose**: Generate executable WASM component
+
+### WASM Structure
+
+- [ ] Generate import section (allocator, dependencies)
+- [ ] Generate export section (from WIT)
+- [ ] Generate memory section
+- [ ] Generate type section (function signatures)
+
+### Expression Emission
+
+- [ ] Emit literals (i64.const, f64.const)
+- [ ] Emit variable loads (local.get, memory.load)
+- [ ] Emit function calls (call, call_indirect)
+- [ ] Emit let bindings (local.set)
+- [ ] Emit conditionals (if/else/end blocks)
+- [ ] Emit loops (loop/br)
+- [ ] Emit deleter calls (call $free)
+
+### Memory Management
+
+- [ ] Generate malloc calls for allocations
+- [ ] Generate free calls at deleter positions
+- [ ] Calculate struct layouts (offsets, alignment, padding)
+- [ ] Implement string representation (ptr + len + cap)
+- [ ] Implement list representation (ptr + len + cap)
+
+### Allocator Integration
+
+- [ ] Link with pre-compiled allocator.wasm
+- [ ] Import malloc/free/realloc functions
+- [ ] Share memory region with allocator
+
+### Component Assembly
+
+- [ ] Use wasm-encoder to build component
+- [ ] Follow WASM component model conventions
+- [ ] Write component to `.wasm` file
+
+## Supporting Systems
+
+### Error Handling
+
+- [ ] Define `CompilerError` enum for all phases
+- [ ] Implement `miette` integration for nice diagnostics
+- [ ] Multi-error reporting (collect all errors)
+- [ ] Source location tracking in errors
+- [ ] Recovery strategies for partial compilation
+
+### Incremental Compilation
+
+- [ ] Hash-based parse cache
+- [ ] Hash-based type cache
+- [ ] Hash-based ownership cache
+- [ ] Hash-based monomorphization cache
+- [ ] Cache invalidation on source changes
+- [ ] Shared cache between LSP and batch compiler
+
+### Compiler State
+
+- [ ] Track collected function definitions
+- [ ] Track collected type definitions
+- [ ] Track collected macro definitions
+- [ ] Track collected test functions
+- [ ] Track project configuration
+- [ ] Track type environment
+- [ ] Track memory state
+
+## Module System
+
+### Import Handling
+
+- [ ] Parse WIT files for WASM component imports
+- [ ] Load Cadenza library packages (`.cadenza-pkg`)
+- [ ] Convert WIT types to Cadenza types
+- [ ] Register imported functions in environment
+- [ ] Link WASM components at runtime
+
+### Export Handling
+
+- [ ] Collect public definitions during evaluation
+- [ ] Qualify exports with module name
+- [ ] Generate export list for modules
+
+### Artifact Types
+
+- [ ] Support library artifacts (source + metadata, no WASM)
+- [ ] Support reactor artifacts (WASM + WIT)
+- [ ] Support command artifacts (WASM with `_start`)
+- [ ] Generate test runner artifact from `@tests` path
+
+## Testing Infrastructure
+
+### Test Framework Integration
+
+- [ ] Generate test runner from collected tests
+- [ ] Execute test functions
+- [ ] Catch panics and record results
+- [ ] Report pass/fail counts
+- [ ] Support test filtering by tag
+- [ ] Support test name pattern matching
+
+### Property-Based Testing
+
+- [ ] Implement random value generation for types
+- [ ] Respect type constraints in generation
+- [ ] Generate test cases (default 100)
+- [ ] Implement shrinking on failure
+- [ ] Report minimal failing input
+
+## Package Management
+
+### Dependency Resolution
+
+- [ ] Parse dependency declarations from Project.cdz
+- [ ] Support registry dependencies
+- [ ] Support git dependencies
+- [ ] Support path dependencies
+- [ ] Resolve transitive dependencies
+- [ ] Generate lockfile with exact versions
+
+### Package Format
+
+- [ ] Bundle Cadenza source files
+- [ ] Include type metadata
+- [ ] Include package manifest
+- [ ] Support pre-compiled WASM (optional)
+
+## LSP Integration
+
+### Core LSP Features
+
+- [ ] Hover: Show type on hover
+- [ ] Completion: Autocomplete identifiers
+- [ ] Go to definition: Jump to source
+- [ ] Diagnostics: Show errors as-you-type
+- [ ] Semantic tokens: Semantic highlighting
+
+### LSP-Specific Concerns
+
+- [ ] Share compiler pipeline with batch mode
+- [ ] Incremental re-compilation on file changes
+- [ ] Background type checking
+- [ ] Cancellation support
+- [ ] Cache sharing between LSP and builds
+
+## Next Steps
+
+Based on the design document, the recommended implementation order is:
+
+1. **Object and Type System** - Core data structures
+2. **Phase 2: Evaluate** - Get basic evaluation working
+3. **Phase 3: Type Check** - Implement type inference
+4. **Phase 4: Ownership** - Add memory safety
+5. **Phase 9: Emit WASM** - Get end-to-end compilation working (skip intermediate phases initially)
+6. **Phase 5: Monomorphize** - Add generics support
+7. **Phase 6-8**: Lambda lifting, contracts, WIT generation
+8. **LSP and Package Management** - Tooling support
+
+The strategy is to get a minimal end-to-end pipeline working first, then incrementally add the more sophisticated features.

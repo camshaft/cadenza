@@ -376,24 +376,6 @@ fn expr_to_ast(expr: &cadenza_syntax::ast::Expr) -> AstNode {
                 children: Vec::new(),
             }
         }
-        Expr::Attr(attr) => {
-            let syntax = attr.syntax();
-            let range = syntax.text_range();
-
-            let children = if let Some(expr) = attr.value() {
-                vec![expr_to_ast(&expr)]
-            } else {
-                Vec::new()
-            };
-
-            AstNode {
-                node_type: "Attr".to_string(),
-                start: range.start().into(),
-                end: range.end().into(),
-                value: None,
-                children,
-            }
-        }
         Expr::Synthetic(syn) => {
             let syntax = syn.syntax();
             let range = syntax.text_range();

@@ -1,5 +1,8 @@
+use cadenza_tree::interner::{InternedFloat, InternedInteger};
+
 use crate::{SyntaxNode, span::Span, token::Kind};
 use core::fmt;
+use std::num::{ParseFloatError, ParseIntError};
 
 macro_rules! ast_node {
     ($name:ident) => {
@@ -268,11 +271,23 @@ impl fmt::Debug for IntegerValue {
     }
 }
 
+impl IntegerValue {
+    pub fn parse(&self) -> Result<i128, ParseIntError> {
+        (*InternedInteger::new(&self.syntax().text())).clone()
+    }
+}
+
 ast_node!(FloatValue, Float);
 
 impl fmt::Debug for FloatValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0.text())
+    }
+}
+
+impl FloatValue {
+    pub fn parse(&self) -> Result<f64, ParseFloatError> {
+        (*InternedFloat::new(&self.syntax().text())).clone()
     }
 }
 
@@ -285,6 +300,51 @@ impl fmt::Debug for StringValue {
 }
 
 ast_node!(StringValueWithEscape, StringContentWithEscape);
+
+impl StringValueWithEscape {
+    /// Unescape the string literal, processing escape sequences.
+    ///
+    /// Processes the following escape sequences:
+    /// - `\n` -> newline
+    /// - `\r` -> carriage return
+    /// - `\t` -> tab
+    /// - `\\` -> backslash
+    /// - `\"` -> double quote
+    /// - `\0` -> null character
+    pub fn unescaped(&self) -> Result<String, Span> {
+        let s = self.syntax().text();
+        let mut result = String::with_capacity(s.len());
+        let base_offset = self.span().start;
+        let mut chars = s.char_indices().peekable();
+
+        while let Some((idx, ch)) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some((_next_idx, 'n')) => result.push('\n'),
+                    Some((_next_idx, 'r')) => result.push('\r'),
+                    Some((_next_idx, 't')) => result.push('\t'),
+                    Some((_next_idx, '\\')) => result.push('\\'),
+                    Some((_next_idx, '"')) => result.push('"'),
+                    Some((_next_idx, '0')) => result.push('\0'),
+                    Some((next_idx, c)) => {
+                        // Invalid escape sequence - point to backslash through the char
+                        let end = next_idx + c.len_utf8();
+                        return Err(Span::new(base_offset + idx, base_offset + end));
+                    }
+                    None => {
+                        // Invalid escape sequence - point to backslash through the char
+                        let end = idx + 1;
+                        return Err(Span::new(base_offset + idx, base_offset + end));
+                    }
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        Ok(result)
+    }
+}
 
 impl fmt::Debug for StringValueWithEscape {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -376,10 +436,9 @@ impl fmt::Debug for Synthetic {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
     Apply(Apply),
-    Attr(Attr),
     Ident(Ident),
     Error(Error),
     Literal(Literal),
@@ -391,7 +450,6 @@ impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Apply(expr) => write!(f, "{expr:?}"),
-            Self::Attr(expr) => write!(f, "{expr:?}"),
             Self::Ident(expr) => write!(f, "{expr:?}"),
             Self::Error(expr) => write!(f, "{expr:?}"),
             Self::Literal(expr) => write!(f, "{expr:?}"),
@@ -405,7 +463,6 @@ impl Expr {
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
             Kind::Apply => Some(Self::Apply(Apply::cast(node)?)),
-            Kind::Attr => Some(Self::Attr(Attr::cast(node)?)),
             Kind::Identifier => Some(Self::Ident(Ident::cast(node)?)),
             Kind::Error => Some(Self::Error(Error::cast(node)?)),
             Kind::Literal => Some(Self::Literal(Literal::cast(node)?)),
@@ -425,7 +482,6 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Self::Apply(expr) => expr.span(),
-            Self::Attr(expr) => expr.span(),
             Self::Ident(expr) => expr.span(),
             Self::Error(expr) => expr.span(),
             Self::Literal(expr) => expr.span(),
@@ -438,7 +494,6 @@ impl Expr {
     pub fn syntax(&self) -> &SyntaxNode {
         match self {
             Self::Apply(expr) => expr.syntax(),
-            Self::Attr(expr) => expr.syntax(),
             Self::Ident(expr) => expr.syntax(),
             Self::Error(expr) => expr.syntax(),
             Self::Literal(expr) => expr.syntax(),
