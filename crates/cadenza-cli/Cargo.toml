@@ -25,7 +25,7 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 rustyline.workspace = true
 dirs.workspace = true
-rmcp = { version = "0.8", features = ["server", "transport-io"] }
+rmcp = { version = "0.12", features = ["server", "transport-io"] }
 schemars = "1.1.0"
 
 [dev-dependencies]
