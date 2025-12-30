@@ -357,7 +357,7 @@ pub fn compile_expr(expr: &Expr, var_env: &HashMap<String, BindingId>) -> Compil
 
         Expr::Let { bindings, body } => {
             // Create a new environment with the let-bound variables
-            let mut new_env = var_env.clone();
+            let new_env = var_env.clone();
             let compiled_bindings: Vec<_> = bindings
                 .iter()
                 .map(|(name, expr)| {
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn test_compile_integer_pattern() {
         let pattern = integer(capture("x"));
-        let (bindings, constraints, var_env) = compile_pattern(&pattern, BindingId(0));
+        let (bindings, constraints, _var_env) = compile_pattern(&pattern, BindingId(0));
 
         // Should have a captured binding
         assert_eq!(bindings.len(), 1);
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn test_compile_apply_pattern() {
         let rule = apply(symbol("+"), [capture("lhs"), capture("rhs")]).then(var("result"));
-        let (bindings, constraints, var_env) = compile_pattern(&rule.pattern, BindingId(0));
+        let (bindings, constraints, _var_env) = compile_pattern(&rule.pattern, BindingId(0));
 
         // Should extract callee and args
         assert!(!bindings.is_empty());

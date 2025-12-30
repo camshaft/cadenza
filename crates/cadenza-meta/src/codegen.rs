@@ -4,9 +4,9 @@
 //! quote and proc_macro2 crates.
 
 use crate::{analysis::Analysis, bindings::BindingId, tree::*, types::*};
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// Generate Rust code for a semantic definition
 pub fn generate(semantics: &Semantics, _analysis: &Analysis) -> TokenStream {
@@ -172,13 +172,12 @@ fn generate_step_with_emitted(
     for &binding_id in &step.let_bindings {
         if !emitted.contains(&binding_id) {
             // Find the binding in one of the rules
-            if let Some(rule) = rules.first() {
-                if let Some(binding) = rule.bindings.get(binding_id.0) {
+            if let Some(rule) = rules.first()
+                && let Some(binding) = rule.bindings.get(binding_id.0) {
                     let stmt = generate_binding_statement(binding_id, binding);
                     let_stmts.push(stmt);
                     emitted.insert(binding_id);
                 }
-            }
         }
     }
 
@@ -213,8 +212,8 @@ fn generate_control_flow_with_emitted(
             let mut binding_stmts = Vec::new();
             if let Some(rule) = rules.first() {
                 for &binding_id in introduced_bindings {
-                    if !emitted.contains(&binding_id) {
-                        if let Some(binding) = rule.bindings.get(binding_id.0) {
+                    if !emitted.contains(&binding_id)
+                        && let Some(binding) = rule.bindings.get(binding_id.0) {
                             // Only emit if this binding is safe after the current constraint
                             if is_binding_safe_after_constraint(binding, constraint) {
                                 let stmt = generate_binding_statement(binding_id, binding);
@@ -222,7 +221,6 @@ fn generate_control_flow_with_emitted(
                                 emitted.insert(binding_id);
                             }
                         }
-                    }
                 }
             }
 
@@ -388,7 +386,7 @@ fn generate_binding_statement(
             // Captured bindings are handled by pattern matching
             quote! {}
         }
-        crate::bindings::Binding::Extract { source, kind } => match kind {
+        crate::bindings::Binding::Extract { source: _, kind } => match kind {
             crate::bindings::ExtractKind::ApplyCallee => {
                 quote! { let #binding_name = callee; }
             }

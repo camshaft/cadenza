@@ -50,10 +50,10 @@ fn extract_tests(sh: &Shell) -> Result<()> {
         let path = entry;
 
         // Skip non-markdown files and README
-        if !path.extension().map_or(false, |ext| ext == "md") {
+        if path.extension().is_none_or(|ext| ext != "md") {
             continue;
         }
-        if path.file_name().map_or(false, |name| name == "README.md") {
+        if path.file_name().is_some_and(|name| name == "README.md") {
             continue;
         }
 

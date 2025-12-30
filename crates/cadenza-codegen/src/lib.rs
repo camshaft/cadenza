@@ -29,11 +29,10 @@ pub fn emit(path: impl AsRef<Path>, code: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("failed to create parent directory");
     }
-    if let Ok(existing) = std::fs::read_to_string(path) {
-        if existing == code {
+    if let Ok(existing) = std::fs::read_to_string(path)
+        && existing == code {
             return;
         }
-    }
     std::fs::write(path, code)
         .unwrap_or_else(|err| panic!("failed to write to {}: {err}", path.display()));
 }

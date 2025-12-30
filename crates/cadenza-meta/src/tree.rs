@@ -5,7 +5,6 @@
 //! Rust code.
 
 use crate::bindings::*;
-use std::collections::HashSet;
 
 /// A block of sequential evaluation steps
 #[derive(Clone, Debug)]
@@ -136,7 +135,7 @@ fn build_nested_constraints(rule: &CompiledRule) -> EvalStep {
 fn find_introduced_bindings(
     bindings: &[Binding],
     _source: BindingId,
-    constraint: &Constraint,
+    _constraint: &Constraint,
 ) -> Vec<BindingId> {
     // For now, return all Extract bindings
     // TODO: Filter to only those introduced by this specific constraint
