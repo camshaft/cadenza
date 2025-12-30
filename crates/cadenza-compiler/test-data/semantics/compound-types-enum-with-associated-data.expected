@@ -1,0 +1,5 @@
+() : Unit
+() : Unit
+() : Unit
+success : Result
+failure : Result

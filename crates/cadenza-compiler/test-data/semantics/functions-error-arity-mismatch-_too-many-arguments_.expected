@@ -1,0 +1,8 @@
+error: arity mismatch
+ --> test.cdz:2:1
+  |
+2 | double 5 10
+  | ^^^^^^ function expects 1 argument, got 2
+  |
+  = note: function `double` is defined with parameter: x
+  = help: remove the extra argument(s)

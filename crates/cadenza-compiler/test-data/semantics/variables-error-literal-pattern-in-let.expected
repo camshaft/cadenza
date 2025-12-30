@@ -1,0 +1,10 @@
+error: fallible pattern in let binding
+ --> test.cdz:1:5
+  |
+1 | let 42 = x
+  |     ^^ this pattern can fail to match
+  |
+  = note: literal patterns only match specific values
+  = note: let bindings require infallible patterns to prevent runtime panics
+  = help: use an identifier pattern: `let n = x`
+  = help: then test the value: `n == 42`

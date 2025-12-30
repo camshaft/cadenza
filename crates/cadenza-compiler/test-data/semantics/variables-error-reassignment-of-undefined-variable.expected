@@ -1,0 +1,8 @@
+error: undefined variable: `x`
+ --> test.cdz:1:1
+  |
+1 | x = 42
+  | ^ not found in this scope
+  |
+  = note: reassignment requires an existing binding
+  = help: use `let x = 42` to create a new binding

@@ -1,0 +1,3 @@
+let factor = 10
+fn multiply_by_factor x = x * factor
+multiply_by_factor 5

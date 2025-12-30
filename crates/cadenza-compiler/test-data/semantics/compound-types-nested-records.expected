@@ -1,0 +1,1 @@
+{ point = { x = 10, y = 20 }, label = "origin" } : { point: { x: Integer, y: Integer }, label: String }

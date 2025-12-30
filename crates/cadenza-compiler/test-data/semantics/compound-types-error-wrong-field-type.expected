@@ -1,0 +1,7 @@
+error: type mismatch in struct field
+ --> test.cdz:2:13
+  |
+2 | Point { x = "hello", y = 20 }
+  |             ^^^^^^^ expected Integer, found String
+  |
+  = note: field `x` requires type Integer

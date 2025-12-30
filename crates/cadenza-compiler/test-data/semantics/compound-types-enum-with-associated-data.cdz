@@ -1,0 +1,6 @@
+enum Result {
+    Ok Integer,
+    Err String,
+}
+let success = Result.Ok 42
+let failure = Result.Err "something went wrong"

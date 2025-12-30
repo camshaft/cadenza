@@ -1,0 +1,10 @@
+let use_fast_path = true
+
+macro make_compute =
+    if use_fast_path then
+        quote (fn compute x = x * 2)
+    else
+        quote (fn compute x = x + x)
+
+make_compute
+compute 10

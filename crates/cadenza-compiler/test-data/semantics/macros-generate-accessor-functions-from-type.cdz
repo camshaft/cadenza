@@ -1,0 +1,9 @@
+let record_ty = typeof { name = "Alice", age = 30, email = "alice@example.com" }
+for (field_name, field_ty) <- Type.fields record_ty
+    let accessor_name = :"get_${field_name}"
+    fn ${accessor_name} record = record.${field_name}
+
+let person = { name = "Bob", age = 25, email = "bob@example.com" }
+get_name person
+get_age person
+get_email person

@@ -1,0 +1,7 @@
+error: negative index
+ --> test.cdz:2:6
+  |
+2 | nums[-1]
+  |      ^^ indices must be non-negative
+  |
+  = help: use `List.last` to access the last element

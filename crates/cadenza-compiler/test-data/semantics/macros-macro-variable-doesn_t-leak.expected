@@ -1,0 +1,9 @@
+() : Unit
+10 : Integer
+error: undefined variable: `temp`
+ --> test.cdz:7:1
+  |
+7 | temp
+  | ^^^^ not found in this scope
+  |
+  = note: `temp` is a macro-internal variable and not visible here

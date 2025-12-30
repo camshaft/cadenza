@@ -1,0 +1,2 @@
+type Point = { x: Integer, y: Integer }
+let p: Point = { x = 10, y = 20 }

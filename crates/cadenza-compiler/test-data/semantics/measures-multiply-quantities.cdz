@@ -1,0 +1,5 @@
+measure meter
+measure second
+let distance = 100meter
+let time = 10second
+distance * time

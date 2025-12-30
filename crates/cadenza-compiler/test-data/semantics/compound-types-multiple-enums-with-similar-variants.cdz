@@ -1,0 +1,4 @@
+enum HttpStatus { Ok, Error }
+enum DbStatus { Ok, Error }
+let http = HttpStatus.Ok
+let db = DbStatus.Ok

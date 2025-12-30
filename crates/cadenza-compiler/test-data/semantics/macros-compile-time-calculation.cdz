@@ -1,0 +1,9 @@
+macro make_constants =
+    for i in [1, 2, 3, 4, 5]
+        let name = :"CONST_${String.from_int i}"
+        let value = i * i
+        fn ${name} = ${value}
+
+make_constants
+CONST_3
+CONST_5

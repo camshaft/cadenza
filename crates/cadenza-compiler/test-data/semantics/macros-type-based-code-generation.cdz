@@ -1,0 +1,8 @@
+macro make_show ty =
+    if (typeof ty) == Integer then
+        quote (fn show_value x = String.from_int x)
+    else
+        quote (fn show_value x = "unknown")
+
+make_show 42
+show_value 100

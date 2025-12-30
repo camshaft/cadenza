@@ -1,0 +1,9 @@
+error: pattern match failed
+ --> test.cdz:1:5
+  |
+1 | let {x, y, z} = {x = 10, y = 20}
+  |            ^    ---------------- this record has fields: x, y
+  |            |
+  |            field `z` not found in record
+  |
+  = note: record patterns can only destructure fields that exist

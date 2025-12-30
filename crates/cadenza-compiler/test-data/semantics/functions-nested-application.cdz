@@ -1,0 +1,3 @@
+fn add x y = x + y
+fn double x = x * 2
+add (double 3) (double 4)

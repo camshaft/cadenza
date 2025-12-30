@@ -1,0 +1,8 @@
+error: expected pattern, found literal
+ --> test.cdz:1:5
+  |
+1 | let 42 = x
+  |     ^^ literals cannot be used as patterns
+  |
+  = note: patterns must be identifiers or destructuring forms
+  = help: use `x == 42` to test equality instead

@@ -9,6 +9,7 @@ pub mod explorer;
 pub mod fmt;
 pub mod hooks;
 pub mod precommit;
+pub mod semantics;
 pub mod test;
 
 #[derive(Subcommand)]
@@ -25,6 +26,8 @@ pub enum Command {
     Precommit(precommit::Precommit),
     /// Run the Compiler Explorer development server or build for production
     Explorer(explorer::Explorer),
+    /// Extract tests from semantics documentation or generate reports
+    Semantics(semantics::Semantics),
     /// Run tests
     Test(test::Test),
 }
@@ -38,6 +41,7 @@ impl Command {
             Command::Hooks(cmd) => cmd.run(sh),
             Command::Precommit(cmd) => cmd.run(sh),
             Command::Explorer(cmd) => cmd.run(sh),
+            Command::Semantics(cmd) => cmd.run(sh),
             Command::Test(cmd) => cmd.run(sh),
         }
     }

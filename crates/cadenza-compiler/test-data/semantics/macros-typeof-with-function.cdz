@@ -1,0 +1,2 @@
+fn double x = x * 2
+typeof double

@@ -1,0 +1,6 @@
+let state = 0
+fn get_state = state
+fn set_state new_val =
+  state = new_val
+set_state 42
+get_state

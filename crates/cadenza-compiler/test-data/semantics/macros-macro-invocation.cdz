@@ -1,0 +1,4 @@
+macro double_it expr =
+    quote 2 * ${expr}
+
+double_it 10 + 5

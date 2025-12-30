@@ -1,0 +1,2 @@
+macro double_it expr =
+    quote 2 * ${expr}

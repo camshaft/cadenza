@@ -1,0 +1,7 @@
+error: division by zero
+ --> test.cdz:1:1
+  |
+1 | 1 / 0
+  | ^^^^^ cannot divide by zero
+  |
+  = note: division by zero is undefined

@@ -1,0 +1,7 @@
+error: field not found
+ --> test.cdz:2:7
+  |
+2 | point.z = 30
+  |       ^ field `z` does not exist
+  |
+  = note: record has fields: x, y

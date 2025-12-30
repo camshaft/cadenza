@@ -1,0 +1,8 @@
+error: character literal contains multiple characters
+ --> test.cdz:1:1
+  |
+1 | 'ab'
+  | ^^^^ contains 2 characters
+  |
+  = note: character literals can only contain a single Unicode scalar value
+  = help: use a string literal "ab" for multiple characters

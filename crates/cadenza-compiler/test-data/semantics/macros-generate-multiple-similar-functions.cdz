@@ -1,0 +1,6 @@
+for num in [2, 3, 5, 10]
+    let name = :"mul_by_${String.from_int num}"
+    fn ${name} x = x * num
+
+mul_by_2 7
+mul_by_5 4

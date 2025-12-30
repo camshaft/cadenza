@@ -1,0 +1,2 @@
+fn compute = 10 * 5 + 2
+compute

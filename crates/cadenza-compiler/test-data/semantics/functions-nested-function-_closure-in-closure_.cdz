@@ -1,0 +1,5 @@
+fn outer x =
+    fn inner y = x + y
+    inner
+let add_5 = outer 5
+add_5 3

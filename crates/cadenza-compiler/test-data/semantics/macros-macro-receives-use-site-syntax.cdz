@@ -1,0 +1,7 @@
+macro use_var var_name =
+    quote ${var_name} + 1
+
+let x = 10
+use_var x
+let x = 20
+use_var x

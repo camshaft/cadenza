@@ -1,0 +1,4 @@
+## Doubles the input value.
+##
+## Returns the input multiplied by 2.
+fn double x = x * 2

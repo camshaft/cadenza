@@ -1,0 +1,4 @@
+let outer =
+    let inner = 10
+    inner
+inner

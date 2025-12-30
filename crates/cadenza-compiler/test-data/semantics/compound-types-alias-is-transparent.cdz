@@ -1,0 +1,3 @@
+type UserId = Integer
+let id: UserId = 42
+let num: Integer = id

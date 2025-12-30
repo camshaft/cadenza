@@ -1,0 +1,4 @@
+struct Point { x = Integer, y = Integer }
+let p = Point { x = 10, y = 20 }
+let r = Record.from_struct p
+typeof r

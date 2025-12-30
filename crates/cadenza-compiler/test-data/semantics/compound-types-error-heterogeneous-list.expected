@@ -1,0 +1,8 @@
+error: type mismatch in list
+ --> test.cdz:1:4
+  |
+1 | [1, "hello", true]
+  |     ^^^^^^^ expected Integer, found String
+  |
+  = note: all list elements must have the same type
+  = note: first element has type Integer

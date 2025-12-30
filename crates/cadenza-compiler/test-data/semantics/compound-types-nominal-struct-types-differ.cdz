@@ -1,0 +1,3 @@
+struct Point { x = Integer, y = Integer }
+struct Vector { x = Integer, y = Integer }
+typeof (Point { x = 0, y = 0 }) == typeof (Vector { x = 0, y = 0 })

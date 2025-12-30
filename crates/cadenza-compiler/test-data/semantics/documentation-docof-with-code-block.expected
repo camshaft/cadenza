@@ -1,0 +1,4 @@
+() : Unit
+(__block__
+  (p "Example function.")
+  (code "cadenza" "example 42")) : Syntax

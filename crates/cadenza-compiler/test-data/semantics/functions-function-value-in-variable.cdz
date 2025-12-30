@@ -1,0 +1,3 @@
+fn add x y = x + y
+let op = add
+op 1 2

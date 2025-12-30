@@ -1,0 +1,12 @@
+error: fallible pattern in let binding
+ --> test.cdz:1:5
+  |
+1 | let [x, y] = my_list
+  |     ^^^^^^ this pattern can fail to match
+  |
+  = note: list patterns are fallible because list length is not known at compile time
+  = note: let bindings require infallible patterns to prevent runtime panics
+  = help: use a match expression to handle different list lengths:
+  = help:   match my_list
+  = help:     [x, y] => ...
+  = help:     _ => ...

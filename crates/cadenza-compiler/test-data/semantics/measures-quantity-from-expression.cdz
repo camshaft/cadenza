@@ -1,0 +1,4 @@
+measure meter
+let width = 10
+let height = 20
+meter (width * height)

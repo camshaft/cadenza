@@ -1,0 +1,2 @@
+fn multiply x y = x * y
+multiply 6 7

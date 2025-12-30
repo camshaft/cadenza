@@ -1,0 +1,7 @@
+error: not callable
+ --> test.cdz:2:1
+  |
+2 | x 10
+  | ^ value of type Integer is not a function
+  |
+  = note: only functions can be called with arguments

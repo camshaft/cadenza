@@ -1,0 +1,5 @@
+let a = 1          # Integer
+let b = 1 / 2      # Rational
+let c = 1.0        # Float
+typeof (a + b)
+typeof (b + c)

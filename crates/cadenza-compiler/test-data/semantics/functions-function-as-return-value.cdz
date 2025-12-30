@@ -1,0 +1,5 @@
+fn make_adder n =
+    fn adder x = x + n
+    adder
+let add_10 = make_adder 10
+add_10 5

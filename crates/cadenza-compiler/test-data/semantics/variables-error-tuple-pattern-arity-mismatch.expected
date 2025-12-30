@@ -1,0 +1,9 @@
+error: pattern match failed
+ --> test.cdz:1:5
+  |
+1 | let (x, y) = (1, 2, 3)
+  |     ^^^^^^   --------- this tuple has 3 elements
+  |     |
+  |     this pattern expects 2 elements
+  |
+  = note: tuple patterns must match the number of elements

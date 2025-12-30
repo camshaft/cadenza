@@ -1,0 +1,2 @@
+let person_ty = typeof { name = "Alice", age = 30 }
+Type.fields person_ty

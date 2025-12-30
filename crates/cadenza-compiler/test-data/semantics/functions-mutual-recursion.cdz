@@ -1,0 +1,11 @@
+fn is_even n =
+    match n
+        0 => true
+        n => is_odd n - 1
+
+fn is_odd n =
+    match n
+        0 => false
+        n => is_even n - 1
+
+is_even 4

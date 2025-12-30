@@ -1,0 +1,4 @@
+measure meter
+let area = 10meter * 5meter
+let length = 2meter
+area / length

@@ -1,0 +1,9 @@
+## A 2D point with x and y coordinates.
+##
+## Points use integer coordinates for precision.
+struct Point {
+    ## Point in the `x` field
+    x = Integer,
+    ## Point in the `y` field
+    y = Integer,
+}

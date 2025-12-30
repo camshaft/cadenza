@@ -1,0 +1,4 @@
+measure millimeter
+measure centimeter = 10 millimeter
+measure meter = 100 centimeter
+measure kilometer = 1000 meter

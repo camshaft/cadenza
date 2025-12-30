@@ -1,0 +1,2 @@
+fn make_point x y = { x, y }
+(make_point 5 10).x

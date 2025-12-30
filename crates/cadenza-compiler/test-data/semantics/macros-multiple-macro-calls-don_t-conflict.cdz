@@ -1,0 +1,10 @@
+macro with_counter body =
+    quote
+        let count = 0
+        ${body}
+        count
+
+let result1 = with_counter (quote count = count + 1)
+let result2 = with_counter (quote count = count + 5)
+result1
+result2

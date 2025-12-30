@@ -1,0 +1,9 @@
+fn compose f g =
+    fn composed x = f (g x)
+    composed
+
+fn double x = x * 2
+fn square x = x * x
+let double_then_square = compose square double
+
+double_then_square 3

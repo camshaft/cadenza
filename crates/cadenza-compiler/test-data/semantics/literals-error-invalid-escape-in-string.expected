@@ -1,0 +1,8 @@
+error: unknown escape sequence
+ --> test.cdz:1:7
+  |
+1 | "hello\xworld"
+  |       ^^ unknown escape: \x
+  |
+  = note: valid escape sequences are: \n \t \r \\ \" \u{...}
+  = help: use \\ to include a literal backslash

@@ -1,0 +1,5 @@
+measure millimeter
+measure inch = 25.4 millimeter
+let metric = 500millimeter
+let imperial = 2inch
+metric + imperial

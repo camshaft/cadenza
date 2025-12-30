@@ -1,0 +1,9 @@
+## Counter with state.
+##
+## ```
+## let c = make_counter
+## Cell.set c 5
+## let v = Cell.get c
+## assert v == 5
+## ```
+fn make_counter = Cell.new 0

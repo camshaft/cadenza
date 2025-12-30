@@ -1,0 +1,5 @@
+let name_cell = Cell.new "Alice"
+fn get_name = Cell.get name_cell
+fn set_name new_name = Cell.set name_cell new_name
+set_name "Bob"
+get_name
