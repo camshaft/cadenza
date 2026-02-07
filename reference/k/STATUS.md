@@ -50,15 +50,15 @@ This document tracks the implementation progress of Cadenza language features in
 The `cadenza ast` command outputs S-expressions with File and Span wrappers for error modeling:
 
 ```
-(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 2 (Integer 42)))
+(File 60 117 110 107 110 111 119 110 62 (Span 0 2 (Integer 42)))
 ```
 
-All text is encoded as Unicode char sequences (u32 hex):
-- File paths: `(File 74 65 73 74 2e 63 64 7a ...)` for "test.cdz"
-- Strings: `(String 68 65 6c 6c 6f)` for "hello"
-- Identifiers: `(Ident 66 6f 6f)` for "foo"
-- Operators: `(Op 2b)` for "+"
-- Synthetic: `(Synthetic 5f 5f 6c 69 73 74 5f 5f)` for "__list__"
+All text is encoded as Unicode char sequences (u32 decimal):
+- File paths: `(File 116 101 115 116 46 99 100 122 ...)` for "test.cdz"
+- Strings: `(String 104 101 108 108 111)` for "hello"
+- Identifiers: `(Ident 102 111 111)` for "foo"
+- Operators: `(Op 43)` for "+"
+- Synthetic: `(Synthetic 95 95 108 105 115 116 95 95)` for "__list__"
 
 Errors are emitted as `(Error)` nodes for semantic modeling.
 
@@ -66,21 +66,37 @@ Errors are emitted as `(Error)` nodes for semantic modeling.
 
 The K definition includes:
 
-- **Syntax module**: Defines the AST structure matching our S-expressions
+- **Syntax module**: Defines the S-expression syntax matching AST output with parentheses
 - **Semantics module**: Defines evaluation rules
-- **Configuration**: Runtime state structure (k cell, env cell, store cell)
+- **Configuration**: Runtime state structure (k cell, env cell, store cell, file cell, output cell)
 
-### Current Limitations
+### Current Status
 
-1. K framework not yet installed in CI
-2. K definition not yet tested (may have syntax errors)
-3. No output comparison logic yet
-4. Only basic literal rules defined
+- K framework available via nix develop
+- K definition compiles successfully
+- Basic literal evaluation rules defined
+- Test infrastructure integrated with xtask
+- AST conversion working for all test files
 
 ### Test Execution Flow
 
 ```
 .cdz file → cadenza ast → .ast file → krun → output → compare with .expected
+```
+
+Run tests with:
+```bash
+cargo xtask k test
+```
+
+Compile K definition with:
+```bash
+cargo xtask k kompile
+```
+
+Run single file with:
+```bash
+cargo xtask k run path/to/file.cdz
 ```
 
 ## Detailed Feature Status

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 use xshell::{Shell, cmd};
 
 #[derive(Args)]
@@ -40,7 +40,9 @@ impl KCommand {
 
 fn kompile(sh: &Shell) -> Result<()> {
     let k_dir = PathBuf::from("reference/k");
-    let output_dir = PathBuf::from("target/k");
+    // Use absolute path for output directory to avoid issues with push_dir
+    let repo_root = sh.current_dir();
+    let output_dir = repo_root.join("target/k");
 
     // Check if K framework is installed
     if cmd!(sh, "which kompile").quiet().run().is_err() {
@@ -55,15 +57,15 @@ fn kompile(sh: &Shell) -> Result<()> {
     println!("Output: {}", output_dir.display());
     println!();
 
+    // Create output directory before changing directories
+    fs::create_dir_all(&output_dir)?;
+
     let _pwd = sh.push_dir(&k_dir);
 
-    // Create output directory
-    sh.create_dir(&output_dir)?;
-
-    // Compile K definition
+    // Compile K definition using absolute path
     cmd!(
         sh,
-        "kompile cadenza.k --directory ../../{output_dir} --backend llvm"
+        "kompile cadenza.k --directory {output_dir} --backend llvm"
     )
     .run()
     .context("Failed to compile K definition")?;
@@ -83,23 +85,26 @@ fn test(sh: &Shell) -> Result<()> {
     println!();
 
     // Ensure K definition is compiled
-    let output_dir = PathBuf::from("target/k");
+    let repo_root = sh.current_dir();
+    let output_dir = repo_root.join("target/k");
     if !output_dir.join("cadenza-kompiled").exists() {
         println!("K definition not compiled. Compiling...");
         kompile(sh)?;
         println!();
     }
 
-    // Build cadenza CLI if needed
+    // Build cadenza CLI once
     println!("Building Cadenza CLI...");
     cmd!(sh, "cargo build --bin cadenza")
         .run()
         .context("Failed to build Cadenza CLI")?;
     println!();
 
+    let cadenza_bin = repo_root.join("target/debug/cadenza");
+
     let test_data_dir = PathBuf::from("crates/cadenza-compiler/test-data/semantics");
     let output_test_dir = output_dir.join("tests");
-    sh.create_dir(&output_test_dir)?;
+    fs::create_dir_all(&output_test_dir)?;
 
     println!("Running K framework tests...");
     println!("================================");
@@ -126,23 +131,28 @@ fn test(sh: &Shell) -> Result<()> {
             continue;
         }
 
-        // Convert .cdz to AST
+        // Convert .cdz to AST and write to file
         let ast_file = output_test_dir.join(format!("{}.ast", basename));
-        if cmd!(sh, "cargo run --bin cadenza ast {entry}")
+        let ast_output = cmd!(sh, "{cadenza_bin} ast {entry}")
             .quiet()
-            .ignore_stdout()
             .ignore_stderr()
-            .run()
-            .is_err()
-        {
-            println!("✗ {} (AST conversion failed)", basename);
-            failed += 1;
-            continue;
+            .read();
+        
+        match ast_output {
+            Ok(ast_content) => {
+                // Write AST to file
+                sh.write_file(&ast_file, ast_content)?;
+            }
+            Err(_) => {
+                println!("✗ {} (AST conversion failed)", basename);
+                failed += 1;
+                continue;
+            }
         }
 
         // Run through K interpreter (output not used for now)
         let _output_file = output_test_dir.join(format!("{}.out", basename));
-        if cmd!(sh, "krun {ast_file} --directory target/k")
+        if cmd!(sh, "krun {ast_file} --directory {output_dir}")
             .quiet()
             .ignore_stdout()
             .ignore_stderr()
@@ -168,6 +178,12 @@ fn test(sh: &Shell) -> Result<()> {
     println!("  Not Implemented: {}", not_impl);
     println!();
 
+    if failed > 0 {
+        anyhow::bail!(
+            "K framework tests failed: {failed} out of {total} tests failed"
+        );
+    }
+
     Ok(())
 }
 
@@ -181,7 +197,8 @@ fn run_single(sh: &Shell, file: &PathBuf) -> Result<()> {
     }
 
     // Ensure K definition is compiled
-    let output_dir = PathBuf::from("target/k");
+    let repo_root = sh.current_dir();
+    let output_dir = repo_root.join("target/k");
     if !output_dir.join("cadenza-kompiled").exists() {
         println!("K definition not compiled. Compiling...");
         kompile(sh)?;
@@ -193,14 +210,11 @@ fn run_single(sh: &Shell, file: &PathBuf) -> Result<()> {
         anyhow::bail!("Failed to build Cadenza CLI");
     }
 
+    let cadenza_bin = repo_root.join("target/debug/cadenza");
     let ast_file = output_dir.join("temp.ast");
 
     println!("Converting {} to AST...", file.display());
-    cmd!(sh, "cargo run --bin cadenza ast {file}")
-        .read()
-        .context("Failed to convert to AST")?;
-
-    let ast_content = cmd!(sh, "cargo run --bin cadenza ast {file}")
+    let ast_content = cmd!(sh, "{cadenza_bin} ast {file}")
         .read()
         .context("Failed to convert to AST")?;
 
@@ -211,7 +225,7 @@ fn run_single(sh: &Shell, file: &PathBuf) -> Result<()> {
     sh.write_file(&ast_file, &ast_content)?;
 
     println!("Running through K interpreter...");
-    cmd!(sh, "krun {ast_file} --directory target/k")
+    cmd!(sh, "krun {ast_file} --directory {output_dir}")
         .run()
         .context("Failed to run through K")?;
 

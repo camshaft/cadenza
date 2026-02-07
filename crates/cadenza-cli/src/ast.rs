@@ -43,10 +43,10 @@ fn convert_source_with_path(source: &str, file_path: &str) -> Result<String> {
     Ok(output)
 }
 
-/// Write a string as a char sequence (u32 values in hex)
+/// Write a string as a char sequence (u32 values in decimal)
 fn write_char_sequence(out: &mut String, s: &str) -> Result<()> {
     for ch in s.chars() {
-        write!(out, " {:x}", ch as u32)?;
+        write!(out, " {}", ch as u32)?;
     }
     Ok(())
 }
@@ -167,9 +167,10 @@ mod tests {
     #[test]
     fn test_integer_literal() {
         let result = convert_source("42").unwrap();
+        // <unknown> = 60 117 110 107 110 111 119 110 62
         assert_eq!(
             result,
-            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 2 (Integer 42)))"
+            "(File 60 117 110 107 110 111 119 110 62 (Span 0 2 (Integer 42)))"
         );
     }
 
@@ -178,67 +179,67 @@ mod tests {
         let result = convert_source("3.14").unwrap();
         assert_eq!(
             result,
-            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 4 (Float 3.14)))"
+            "(File 60 117 110 107 110 111 119 110 62 (Span 0 4 (Float 3.14)))"
         );
     }
 
     #[test]
     fn test_string_literal() {
         let result = convert_source("\"hello\"").unwrap();
-        // "hello" = 68 65 6c 6c 6f in hex, <unknown> = 3c 75 6e 6b 6e 6f 77 6e 3e
+        // "hello" = 104 101 108 108 111, <unknown> = 60 117 110 107 110 111 119 110 62
         assert_eq!(
             result,
-            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 7 (String 68 65 6c 6c 6f)))"
+            "(File 60 117 110 107 110 111 119 110 62 (Span 0 7 (String 104 101 108 108 111)))"
         );
     }
 
     #[test]
     fn test_identifier() {
         let result = convert_source("foo").unwrap();
-        // "foo" chars as u32 in hex: f=66, o=6f, o=6f
+        // "foo" = 102 111 111
         assert_eq!(
             result,
-            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 3 (Ident 66 6f 6f)))"
+            "(File 60 117 110 107 110 111 119 110 62 (Span 0 3 (Ident 102 111 111)))"
         );
     }
 
     #[test]
     fn test_simple_list() {
         let result = convert_source("[f, x]").unwrap();
-        // __list__ = 5f 5f 6c 69 73 74 5f 5f, f=66, x=78
+        // __list__ = 95 95 108 105 115 116 95 95, f=102, x=120
         assert_eq!(
             result,
-            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 6 (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 66) (Ident 78))))"
+            "(File 60 117 110 107 110 111 119 110 62 (Span 0 6 (Apply (Synthetic 95 95 108 105 115 116 95 95) (Ident 102) (Ident 120))))"
         );
     }
 
     #[test]
     fn test_multiple_args_list() {
         let result = convert_source("[add, 1, 2]").unwrap();
-        // add = 61 64 64
+        // add = 97 100 100
         assert_eq!(
             result,
-            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 11 (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 61 64 64) (Integer 1) (Integer 2))))"
+            "(File 60 117 110 107 110 111 119 110 62 (Span 0 11 (Apply (Synthetic 95 95 108 105 115 116 95 95) (Ident 97 100 100) (Integer 1) (Integer 2))))"
         );
     }
 
     #[test]
     fn test_nested_list() {
         let result = convert_source("[[f, x], y]").unwrap();
-        // f=66, x=78, y=79
+        // f=102, x=120, y=121
         assert_eq!(
             result,
-            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 11 (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 66) (Ident 78)) (Ident 79))))"
+            "(File 60 117 110 107 110 111 119 110 62 (Span 0 11 (Apply (Synthetic 95 95 108 105 115 116 95 95) (Apply (Synthetic 95 95 108 105 115 116 95 95) (Ident 102) (Ident 120)) (Ident 121))))"
         );
     }
 
     #[test]
     fn test_multiple_expressions() {
         let result = convert_source("42\n3.14\n\"hello\"").unwrap();
-        // "hello" = 68 65 6c 6c 6f in hex
+        // "hello" = 104 101 108 108 111
         assert_eq!(
             result,
-            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 2 (Integer 42)) (Span 3 7 (Float 3.14)) (Span 8 15 (String 68 65 6c 6c 6f)))"
+            "(File 60 117 110 107 110 111 119 110 62 (Span 0 2 (Integer 42)) (Span 3 7 (Float 3.14)) (Span 8 15 (String 104 101 108 108 111)))"
         );
     }
 }
