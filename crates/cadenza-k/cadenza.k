@@ -62,7 +62,13 @@ module CADENZA
     rule <k> String(S:String) => S ... </k>
         [macro]
 
-    // Boolean literals
+    // Boolean literals (handled as identifiers in the parser)
+    rule <k> Ident("true") => true ... </k>
+        [macro]
+    rule <k> Ident("false") => false ... </k>
+        [macro]
+
+    // Boolean literals (if they come as Bool nodes)
     rule <k> Bool("true") => true ... </k>
         [macro]
     rule <k> Bool("false") => false ... </k>

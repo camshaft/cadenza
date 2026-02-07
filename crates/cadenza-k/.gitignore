@@ -1,0 +1,5 @@
+# K Framework compilation output
+cadenza-kompiled/
+
+# Test output
+tests/output/

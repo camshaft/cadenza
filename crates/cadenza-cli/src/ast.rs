@@ -6,9 +6,7 @@
 
 use anyhow::{Context, Result};
 use cadenza_syntax::{ast::*, parse::parse};
-use std::fmt::Write;
-use std::fs;
-use std::path::Path;
+use std::{fmt::Write, fs, path::Path};
 
 /// Convert a Cadenza source file to an S-expression AST representation.
 pub fn convert_file(path: &Path) -> Result<String> {
@@ -22,7 +20,7 @@ pub fn convert_source(source: &str) -> Result<String> {
     let parsed = parse(source);
     let root = parsed.ast();
     let mut output = String::new();
-    
+
     // Output all top-level expressions
     for expr in root.items() {
         if !output.is_empty() {
@@ -30,7 +28,7 @@ pub fn convert_source(source: &str) -> Result<String> {
         }
         write_expr(&mut output, &expr)?;
     }
-    
+
     Ok(output)
 }
 
@@ -79,7 +77,7 @@ fn write_literal(out: &mut String, lit: &Literal) -> Result<()> {
 /// Write an application as an S-expression.
 fn write_apply(out: &mut String, apply: &Apply) -> Result<()> {
     write!(out, "(Apply ")?;
-    
+
     // Write receiver
     if let Some(receiver) = apply.receiver() {
         if let Some(receiver_expr) = receiver.value() {
@@ -90,7 +88,7 @@ fn write_apply(out: &mut String, apply: &Apply) -> Result<()> {
     } else {
         write!(out, "(Error)")?;
     }
-    
+
     // Write arguments
     for arg in apply.arguments() {
         write!(out, " ")?;
@@ -100,7 +98,7 @@ fn write_apply(out: &mut String, apply: &Apply) -> Result<()> {
             write!(out, "(Error)")?;
         }
     }
-    
+
     write!(out, ")")?;
     Ok(())
 }
