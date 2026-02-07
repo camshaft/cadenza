@@ -87,10 +87,9 @@ module CADENZA-FUNCTIONS
   rule <k> bindParams(.Ids, .Exprs) => . ... </k>
   
   rule <k> bindParams((P:Id, Ps:Ids), (V:Value, Vs:Exprs)) 
-           => . ... </k>
+           => bindParams(Ps, Vs) ... </k>
        <scope> Env:Map => Env[P <- V] </scope>
-       requires notBool (P in_keys(Env))
-    andThen bindParams(Ps, Vs)
+    requires notBool (P in_keys(Env))
   
   // =========================================================================
   // Helper Predicates
