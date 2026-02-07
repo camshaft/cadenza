@@ -12,22 +12,33 @@ use std::{fmt::Write, fs, path::Path};
 pub fn convert_file(path: &Path) -> Result<String> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
-    convert_source(&source)
+    let path_str = path.display().to_string();
+    convert_source_with_path(&source, &path_str)
 }
 
-/// Convert Cadenza source code to an S-expression AST representation.
+/// Convert Cadenza source code to an S-expression AST representation without file path.
+#[allow(dead_code)] // Used in tests
 pub fn convert_source(source: &str) -> Result<String> {
+    convert_source_with_path(source, "<unknown>")
+}
+
+/// Convert Cadenza source code to an S-expression AST representation with file path.
+fn convert_source_with_path(source: &str, file_path: &str) -> Result<String> {
     let parsed = parse(source);
     let root = parsed.ast();
     let mut output = String::new();
 
-    // Output all top-level expressions
+    // Start with File node
+    write!(output, "(File")?;
+    write_char_sequence(&mut output, file_path)?;
+
+    // Output all top-level expressions with spans
     for expr in root.items() {
-        if !output.is_empty() {
-            writeln!(&mut output)?;
-        }
-        write_expr(&mut output, &expr)?;
+        write!(output, " ")?;
+        write_expr_with_span(&mut output, &expr)?;
     }
+
+    write!(output, ")")?;
 
     Ok(output)
 }
@@ -37,6 +48,15 @@ fn write_char_sequence(out: &mut String, s: &str) -> Result<()> {
     for ch in s.chars() {
         write!(out, " {:x}", ch as u32)?;
     }
+    Ok(())
+}
+
+/// Write an expression with span information as an S-expression.
+fn write_expr_with_span(out: &mut String, expr: &Expr) -> Result<()> {
+    let span = expr.span();
+    write!(out, "(Span {} {} ", span.start, span.end)?;
+    write_expr(out, expr)?;
+    write!(out, ")")?;
     Ok(())
 }
 
@@ -63,8 +83,8 @@ fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
             write!(out, ")")?;
         }
         Expr::Error(_) => {
-            // Write error message so it shows what went wrong
-            anyhow::bail!("Encountered error node in AST - parsing failed");
+            // Emit error node in AST for error modeling in semantics
+            write!(out, "(Error)")?;
         }
     }
     Ok(())
@@ -98,14 +118,15 @@ fn write_literal(out: &mut String, lit: &Literal) -> Result<()> {
                         write!(out, ")")?;
                     }
                     Err(_) => {
-                        anyhow::bail!("Invalid escape sequence in string literal");
+                        // Emit error for invalid escape sequence - modeling in semantics
+                        write!(out, "(Error)")?;
                     }
                 }
             }
         }
     } else {
-        // This is a parser bug - literals should always have values
-        anyhow::bail!("Literal node missing value - this is a parser bug");
+        // Emit error for missing value - should be modeled in semantics
+        write!(out, "(Error)")?;
     }
     Ok(())
 }
@@ -146,27 +167,39 @@ mod tests {
     #[test]
     fn test_integer_literal() {
         let result = convert_source("42").unwrap();
-        assert_eq!(result, "(Integer 42)");
+        assert_eq!(
+            result,
+            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 2 (Integer 42)))"
+        );
     }
 
     #[test]
     fn test_float_literal() {
         let result = convert_source("3.14").unwrap();
-        assert_eq!(result, "(Float 3.14)");
+        assert_eq!(
+            result,
+            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 4 (Float 3.14)))"
+        );
     }
 
     #[test]
     fn test_string_literal() {
         let result = convert_source("\"hello\"").unwrap();
-        // "hello" = 68 65 6c 6c 6f in hex
-        assert_eq!(result, "(String 68 65 6c 6c 6f)");
+        // "hello" = 68 65 6c 6c 6f in hex, <unknown> = 3c 75 6e 6b 6e 6f 77 6e 3e
+        assert_eq!(
+            result,
+            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 7 (String 68 65 6c 6c 6f)))"
+        );
     }
 
     #[test]
     fn test_identifier() {
         let result = convert_source("foo").unwrap();
         // "foo" chars as u32 in hex: f=66, o=6f, o=6f
-        assert_eq!(result, "(Ident 66 6f 6f)");
+        assert_eq!(
+            result,
+            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 3 (Ident 66 6f 6f)))"
+        );
     }
 
     #[test]
@@ -175,7 +208,7 @@ mod tests {
         // __list__ = 5f 5f 6c 69 73 74 5f 5f, f=66, x=78
         assert_eq!(
             result,
-            "(Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 66) (Ident 78))"
+            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 6 (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 66) (Ident 78))))"
         );
     }
 
@@ -185,7 +218,7 @@ mod tests {
         // add = 61 64 64
         assert_eq!(
             result,
-            "(Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 61 64 64) (Integer 1) (Integer 2))"
+            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 11 (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 61 64 64) (Integer 1) (Integer 2))))"
         );
     }
 
@@ -195,7 +228,7 @@ mod tests {
         // f=66, x=78, y=79
         assert_eq!(
             result,
-            "(Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 66) (Ident 78)) (Ident 79))"
+            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 11 (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 66) (Ident 78)) (Ident 79))))"
         );
     }
 
@@ -205,7 +238,7 @@ mod tests {
         // "hello" = 68 65 6c 6c 6f in hex
         assert_eq!(
             result,
-            "(Integer 42)\n(Float 3.14)\n(String 68 65 6c 6c 6f)"
+            "(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 2 (Integer 42)) (Span 3 7 (Float 3.14)) (Span 8 15 (String 68 65 6c 6c 6f)))"
         );
     }
 }

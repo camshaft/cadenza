@@ -47,15 +47,20 @@ This document tracks the implementation progress of Cadenza language features in
 
 ### AST Format
 
-The `cadenza ast` command outputs S-expressions like:
+The `cadenza ast` command outputs S-expressions with File and Span wrappers for error modeling:
 
 ```
-(Int "42")
-(Float "3.14")
-(String "hello")
-(Ident "foo")
-(Apply (Ident "f") (Ident "x"))
+(File 3c 75 6e 6b 6e 6f 77 6e 3e (Span 0 2 (Integer 42)))
 ```
+
+All text is encoded as Unicode char sequences (u32 hex):
+- File paths: `(File 74 65 73 74 2e 63 64 7a ...)` for "test.cdz"
+- Strings: `(String 68 65 6c 6c 6f)` for "hello"
+- Identifiers: `(Ident 66 6f 6f)` for "foo"
+- Operators: `(Op 2b)` for "+"
+- Synthetic: `(Synthetic 5f 5f 6c 69 73 74 5f 5f)` for "__list__"
+
+Errors are emitted as `(Error)` nodes for semantic modeling.
 
 ### K Definition Structure
 

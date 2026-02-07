@@ -12,26 +12,26 @@ module CADENZA-SYNTAX
     imports LIST
 
     // Expression syntax matching the S-expression output from cadenza ast
-    // All strings are encoded as Unicode char sequences (u32 values in hex)
-    // Integers and floats are tagged: (Integer 123) (Float 3.14)
-    // Strings: (String 68 65 6c 6c 6f) - char codes for "hello"
-    // Identifiers: (Ident 66 6f 6f) - char codes for "foo"
-    // Operators: (Op 2b) - char code for "+"
-    syntax Expr ::= Integer(Int)          [klabel(IntegerLit)]
-                  | Float(Float)          [klabel(FloatLit)]
-                  | String(Ints)          [klabel(StringLit)]
-                  | Bool(String)          [klabel(BoolLit)]
-                  | Ident(Ints)           [klabel(Ident)]
-                  | Apply(Expr, Exprs)    [klabel(Apply)]
-                  | Op(Ints)              [klabel(Op)]
-                  | Synthetic(Ints)       [klabel(Synthetic)]
-                  | Error()               [klabel(Error)]
+    // All text is encoded as Unicode char sequences (u32 values in hex)
+    // File and Span nodes wrap expressions for error modeling
+    syntax Program ::= File(Ints, Exprs)     [klabel(File)]
+    
+    syntax Expr ::= Span(Int, Int, Expr)     [klabel(Span)]
+                  | Integer(Int)             [klabel(IntegerLit)]
+                  | Float(Float)             [klabel(FloatLit)]
+                  | String(Ints)             [klabel(StringLit)]
+                  | Bool(String)             [klabel(BoolLit)]
+                  | Ident(Ints)              [klabel(Ident)]
+                  | Apply(Expr, Exprs)       [klabel(Apply)]
+                  | Op(Ints)                 [klabel(Op)]
+                  | Synthetic(Ints)          [klabel(Synthetic)]
+                  | Error()                  [klabel(Error)]
 
-    // Multiple expressions (for Apply arguments)
-    syntax Exprs ::= List{Expr, ""}       [klabel(Exprs)]
+    // Multiple expressions (for Apply arguments and File contents)
+    syntax Exprs ::= List{Expr, ""}          [klabel(Exprs)]
     
     // List of integers for char sequences
-    syntax Ints ::= List{Int, ""}         [klabel(Ints)]
+    syntax Ints ::= List{Int, ""}            [klabel(Ints)]
 
     // Values - the result of evaluation
     syntax Val ::= Int
@@ -50,10 +50,22 @@ module CADENZA
 
     // Configuration defines the runtime state
     configuration
-        <k> $PGM:Expr </k>
+        <k> $PGM:Program </k>
         <env> .Map </env>      // Variable bindings: String -> Val
         <store> .Map </store>  // Memory store (for future use)
         <output> .List </output>  // Output for display
+        <file> "" </file>      // Current file path
+
+    // ==========================================
+    // File and Span Handling
+    // ==========================================
+
+    // Process File node - set file path and evaluate contents
+    rule <k> File(Path:Ints, Exprs:Exprs) => Exprs ... </k>
+         <file> _ => charsToString(Path) </file>
+
+    // Span nodes - unwrap for evaluation (span info available if needed)
+    rule <k> Span(_:Int, _:Int, E:Expr) => E ... </k>
 
     // ==========================================
     // Literal Evaluation Rules
@@ -96,7 +108,8 @@ module CADENZA
     // Error handling
     // ==========================================
 
-    // Error nodes remain as-is (for now)
+    // Error nodes represent parse/semantic errors
+    // For now, they remain as-is for error modeling
     rule <k> Error() => Error() ... </k>
 
 endmodule
