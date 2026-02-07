@@ -27,12 +27,13 @@ This document tracks the implementation progress of Cadenza language features in
 
 ### ✅ Completed
 
-- [x] Created `cadenza-k` crate structure
+- [x] Created K framework reference implementation in `reference/k/`
 - [x] Added `cadenza ast` CLI command for converting .cdz to S-expressions
-- [x] Created basic K definition (`cadenza.k`)
-- [x] Set up Makefile for building and testing
-- [x] Created test runner script (`tests/run-tests.sh`)
+- [x] Created K definition (`cadenza.k`)
+- [x] Set up xtask commands for K operations (`cargo xtask k`)
+- [x] Integrated with CI via GitHub Actions workflow
 - [x] Documentation (README.md)
+- [x] Added K framework to nix flake
 
 ### 📋 Next Steps
 

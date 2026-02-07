@@ -78,12 +78,7 @@ jobs:
         run: cargo build --bin cadenza
 
       - name: Compile K definition
-        working-directory: crates/cadenza-k
-        run: make kompile
-
-      - name: Extract semantics tests
-        run: cargo xtask semantics extract
+        run: cargo xtask k kompile
 
       - name: Run K framework tests
-        working-directory: crates/cadenza-k
-        run: make test
+        run: cargo xtask k test

@@ -8,6 +8,7 @@ pub mod common;
 pub mod explorer;
 pub mod fmt;
 pub mod hooks;
+pub mod k;
 pub mod precommit;
 pub mod semantics;
 pub mod test;
@@ -22,6 +23,8 @@ pub enum Command {
     Fmt(fmt::Fmt),
     /// Manage git hooks
     Hooks(hooks::Hooks),
+    /// K framework operations (kompile, test, run)
+    K(k::K),
     /// Run precommit checks (checks rustfmt and runs clippy)
     Precommit(precommit::Precommit),
     /// Run the Compiler Explorer development server or build for production
@@ -39,6 +42,7 @@ impl Command {
             Command::Ci(cmd) => cmd.run(sh),
             Command::Fmt(cmd) => cmd.run(sh),
             Command::Hooks(cmd) => cmd.run(sh),
+            Command::K(cmd) => cmd.run(sh),
             Command::Precommit(cmd) => cmd.run(sh),
             Command::Explorer(cmd) => cmd.run(sh),
             Command::Semantics(cmd) => cmd.run(sh),

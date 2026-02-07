@@ -11,8 +11,9 @@ module CADENZA-SYNTAX
     imports BOOL
 
     // Expression syntax matching the S-expression output from cadenza ast
-    syntax Expr ::= Int(String)           [klabel(IntLit)]
-                  | Float(String)         [klabel(FloatLit)]
+    // Integers and floats are output as raw values, not wrapped
+    syntax Expr ::= Int                   [klabel(IntLit)]
+                  | Float                 [klabel(FloatLit)]
                   | String(String)        [klabel(StringLit)]
                   | Bool(String)          [klabel(BoolLit)]
                   | Ident(String)         [klabel(Ident)]
@@ -50,13 +51,11 @@ module CADENZA
     // Literal Evaluation Rules
     // ==========================================
 
-    // Integer literals
-    rule <k> Int(S:String) => String2Int(S) ... </k>
-        [macro]
+    // Integer literals - already values
+    // No rule needed, integers are already KResults
 
-    // Float literals
-    rule <k> Float(S:String) => String2Float(S) ... </k>
-        [macro]
+    // Float literals - already values
+    // No rule needed, floats are already KResults
 
     // String literals - already evaluated
     rule <k> String(S:String) => S ... </k>

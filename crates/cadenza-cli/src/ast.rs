@@ -50,10 +50,12 @@ fn write_literal(out: &mut String, lit: &Literal) -> Result<()> {
     if let Some(value) = lit.value() {
         match value {
             LiteralValue::Integer(int_val) => {
-                write!(out, "(Int \"{}\")", int_val.syntax().text())?;
+                // Output the integer value directly, not as a string
+                write!(out, "{}", int_val.syntax().text())?;
             }
             LiteralValue::Float(float_val) => {
-                write!(out, "(Float \"{}\")", float_val.syntax().text())?;
+                // Output the float value directly, not as a string
+                write!(out, "{}", float_val.syntax().text())?;
             }
             LiteralValue::String(str_val) => {
                 // Escape the string content for S-expression output
@@ -110,13 +112,13 @@ mod tests {
     #[test]
     fn test_integer_literal() {
         let result = convert_source("42").unwrap();
-        assert_eq!(result, "(Int \"42\")");
+        assert_eq!(result, "42");
     }
 
     #[test]
     fn test_float_literal() {
         let result = convert_source("3.14").unwrap();
-        assert_eq!(result, "(Float \"3.14\")");
+        assert_eq!(result, "3.14");
     }
 
     #[test]
@@ -132,29 +134,29 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_apply() {
+    fn test_simple_list() {
         let result = convert_source("[f, x]").unwrap();
-        assert_eq!(result, "(Apply (Ident \"f\") (Ident \"x\"))");
+        assert_eq!(result, "(Apply (Synthetic \"__list__\") (Ident \"f\") (Ident \"x\"))");
     }
 
     #[test]
-    fn test_multiple_args_apply() {
+    fn test_multiple_args_list() {
         let result = convert_source("[add, 1, 2]").unwrap();
-        assert_eq!(result, "(Apply (Ident \"add\") (Int \"1\") (Int \"2\"))");
+        assert_eq!(result, "(Apply (Synthetic \"__list__\") (Ident \"add\") 1 2)");
     }
 
     #[test]
-    fn test_nested_apply() {
+    fn test_nested_list() {
         let result = convert_source("[[f, x], y]").unwrap();
         assert_eq!(
             result,
-            "(Apply (Apply (Ident \"f\") (Ident \"x\")) (Ident \"y\"))"
+            "(Apply (Synthetic \"__list__\") (Apply (Synthetic \"__list__\") (Ident \"f\") (Ident \"x\")) (Ident \"y\"))"
         );
     }
 
     #[test]
     fn test_multiple_expressions() {
         let result = convert_source("42\n3.14\n\"hello\"").unwrap();
-        assert_eq!(result, "(Int \"42\")\n(Float \"3.14\")\n(String \"hello\")");
+        assert_eq!(result, "42\n3.14\n(String \"hello\")");
     }
 }

@@ -217,6 +217,21 @@ The examples are displayed in numeric order, so choose an appropriate number tha
 - **Keep examples working**: Examples should not have errors in their snapshots - they demonstrate working language features
 - **TypeScript generation**: Examples are automatically converted to TypeScript and symlinked to the web app
 
+## Code Organization
+
+### No Bash Scripts
+
+- **All automation must use xtask**: Do not add bash scripts to the repository
+- **Use Rust for scripting**: Create xtask commands for any build, test, or automation tasks
+- **Reason**: Bash scripts are platform-dependent and harder to maintain than Rust code
+
+### No Directory Structures in Documentation
+
+- **Don't include directory trees**: Do not put file/directory structure diagrams in documentation
+- **Information becomes stale**: Directory structures change frequently and documentation gets out of sync
+- **Use code navigation**: Readers can explore the actual repository structure
+- **Exception**: High-level architectural diagrams that show component relationships, not file paths
+
 ## Snapshot Testing Guidelines
 
 ### Critical Rules

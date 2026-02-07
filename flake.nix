@@ -36,6 +36,9 @@
           # Documentation
           mdbook
           
+          # K Framework
+          kframework
+          
           # System dependencies
           libfabric
           rdma-core
@@ -50,6 +53,7 @@
           echo "Rust: $(rustc --version)"
           echo "Deno: $(deno --version)"
           echo "UV: $(uv --version)"
+          echo "K Framework: $(kompile --version 2>&1 | head -n1 || echo 'not available')"
         '';
       };
     });
