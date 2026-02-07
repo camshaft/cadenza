@@ -1,0 +1,4 @@
+// Test: Simple integer literal
+// Expected output: 42 : Integer
+
+'Integer(42)

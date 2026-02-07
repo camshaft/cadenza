@@ -1,0 +1,5 @@
+// Test: Function definition and call
+// Expected output: 10 : Integer
+
+'Fn(double, (x, .Ids), 'Apply('Op(*), 'Ident(x), 'Integer(2))) ;
+'Apply('Ident(double), ('Integer(5), .Exprs))

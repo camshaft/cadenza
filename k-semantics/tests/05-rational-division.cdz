@@ -1,0 +1,4 @@
+// Test: Integer division creates rational
+// Expected output: 1/2 : Rational
+
+'Apply('Op(/), 'Integer(1), 'Integer(2))

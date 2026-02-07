@@ -1,0 +1,5 @@
+// Test: Let binding and variable reference
+// Expected output: 42 : Integer
+
+'Let(x, 'Integer(42)) ;
+'Ident(x)

@@ -1,0 +1,4 @@
+// Test: Simple addition
+// Expected output: 3 : Integer
+
+'Apply('Op(+), 'Integer(1), 'Integer(2))

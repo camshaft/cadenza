@@ -1,0 +1,4 @@
+// Test: Comparison operator
+// Expected output: true : Bool
+
+'Apply('Op(>), 'Integer(5), 'Integer(3))

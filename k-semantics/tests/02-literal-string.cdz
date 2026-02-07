@@ -1,0 +1,4 @@
+// Test: String literal
+// Expected output: "hello" : String
+
+'String("hello")

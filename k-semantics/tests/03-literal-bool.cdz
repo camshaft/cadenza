@@ -1,0 +1,4 @@
+// Test: Boolean literal
+// Expected output: true : Bool
+
+'Bool(true)
