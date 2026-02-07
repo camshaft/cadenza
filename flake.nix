@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    kframework.url = "github:runtimeverification/k";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -10,12 +11,12 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, ... }:
+  outputs = { self, nixpkgs, kframework, flake-utils, rust-overlay, ... }:
     flake-utils.lib.eachDefaultSystem (system: {
       devShells.default = let
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [ rust-overlay.overlays.default ];
+          overlays = [ rust-overlay.overlays.default kframework.overlays.default ];
         };
         rust = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
@@ -32,17 +33,13 @@
 
           # Python
           uv
-          
+
           # Documentation
           mdbook
           
           # K Framework
-          kframework
-          
-          # System dependencies
-          libfabric
-          rdma-core
-          
+          k
+
           # Development tools
           git
           nixpkgs-fmt

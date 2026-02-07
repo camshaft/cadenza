@@ -16,12 +16,6 @@ pub fn convert_file(path: &Path) -> Result<String> {
     convert_source_with_path(&source, &path_str)
 }
 
-/// Convert Cadenza source code to an S-expression AST representation without file path.
-#[allow(dead_code)] // Used in tests
-pub fn convert_source(source: &str) -> Result<String> {
-    convert_source_with_path(source, "<unknown>")
-}
-
 /// Convert Cadenza source code to an S-expression AST representation with file path.
 fn convert_source_with_path(source: &str, file_path: &str) -> Result<String> {
     let parsed = parse(source);
@@ -29,8 +23,9 @@ fn convert_source_with_path(source: &str, file_path: &str) -> Result<String> {
     let mut output = String::new();
 
     // Start with File node
-    write!(output, "(File")?;
+    write!(output, "(File (Path")?;
     write_char_sequence(&mut output, file_path)?;
+    write!(output, ")")?;
 
     // Output all top-level expressions with spans
     for expr in root.items() {
@@ -54,7 +49,7 @@ fn write_char_sequence(out: &mut String, s: &str) -> Result<()> {
 /// Write an expression with span information as an S-expression.
 fn write_expr_with_span(out: &mut String, expr: &Expr) -> Result<()> {
     let span = expr.span();
-    write!(out, "(Span {} {} ", span.start, span.end)?;
+    write!(out, "(Span ({} {}) ", span.start, span.end)?;
     write_expr(out, expr)?;
     write!(out, ")")?;
     Ok(())
@@ -94,16 +89,24 @@ fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
 fn write_literal(out: &mut String, lit: &Literal) -> Result<()> {
     if let Some(value) = lit.value() {
         match value {
-            LiteralValue::Integer(int_val) => {
-                // Output as (Integer 123) with the value directly, not as a string
-                write!(out, "(Integer {})", int_val.syntax().text())?;
-            }
-            LiteralValue::Float(float_val) => {
-                // Output as (Float 3.14) with the value directly, not as a string
-                write!(out, "(Float {})", float_val.syntax().text())?;
-            }
+            LiteralValue::Integer(int_val) => match int_val.parse() {
+                Ok(value) => {
+                    write!(out, "(Integer {value})")?;
+                }
+                Err(_err) => {
+                    write!(out, "(Error)")?;
+                }
+            },
+            LiteralValue::Float(float_val) => match float_val.parse() {
+                Ok(value) => {
+                    // Emit float as its bit representation to avoid the semantic layer parsing floats
+                    write!(out, "(Float {})", value.to_bits())?;
+                }
+                Err(_err) => {
+                    write!(out, "(Error)")?;
+                }
+            },
             LiteralValue::String(str_val) => {
-                // Encode string as char list (u32 values in hex): (String 68 65 6c 6c 6f)
                 let text = str_val.syntax().text();
                 write!(out, "(String")?;
                 write_char_sequence(out, &text)?;
@@ -164,82 +167,56 @@ fn write_apply(out: &mut String, apply: &Apply) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Convert Cadenza source code to an S-expression AST representation without file path.
+    fn convert_source(source: &str) -> Result<String> {
+        convert_source_with_path(source, "<test>")
+    }
+
     #[test]
     fn test_integer_literal() {
         let result = convert_source("42").unwrap();
-        // <unknown> = 60 117 110 107 110 111 119 110 62
-        assert_eq!(
-            result,
-            "(File 60 117 110 107 110 111 119 110 62 (Span 0 2 (Integer 42)))"
-        );
+        insta::assert_snapshot!(result);
     }
 
     #[test]
     fn test_float_literal() {
         let result = convert_source("3.14").unwrap();
-        assert_eq!(
-            result,
-            "(File 60 117 110 107 110 111 119 110 62 (Span 0 4 (Float 3.14)))"
-        );
+        insta::assert_snapshot!(result);
     }
 
     #[test]
     fn test_string_literal() {
         let result = convert_source("\"hello\"").unwrap();
-        // "hello" = 104 101 108 108 111, <unknown> = 60 117 110 107 110 111 119 110 62
-        assert_eq!(
-            result,
-            "(File 60 117 110 107 110 111 119 110 62 (Span 0 7 (String 104 101 108 108 111)))"
-        );
+        insta::assert_snapshot!(result);
     }
 
     #[test]
     fn test_identifier() {
         let result = convert_source("foo").unwrap();
-        // "foo" = 102 111 111
-        assert_eq!(
-            result,
-            "(File 60 117 110 107 110 111 119 110 62 (Span 0 3 (Ident 102 111 111)))"
-        );
+        insta::assert_snapshot!(result);
     }
 
     #[test]
     fn test_simple_list() {
         let result = convert_source("[f, x]").unwrap();
-        // __list__ = 95 95 108 105 115 116 95 95, f=102, x=120
-        assert_eq!(
-            result,
-            "(File 60 117 110 107 110 111 119 110 62 (Span 0 6 (Apply (Synthetic 95 95 108 105 115 116 95 95) (Ident 102) (Ident 120))))"
-        );
+        insta::assert_snapshot!(result);
     }
 
     #[test]
     fn test_multiple_args_list() {
         let result = convert_source("[add, 1, 2]").unwrap();
-        // add = 97 100 100
-        assert_eq!(
-            result,
-            "(File 60 117 110 107 110 111 119 110 62 (Span 0 11 (Apply (Synthetic 95 95 108 105 115 116 95 95) (Ident 97 100 100) (Integer 1) (Integer 2))))"
-        );
+        insta::assert_snapshot!(result);
     }
 
     #[test]
     fn test_nested_list() {
         let result = convert_source("[[f, x], y]").unwrap();
-        // f=102, x=120, y=121
-        assert_eq!(
-            result,
-            "(File 60 117 110 107 110 111 119 110 62 (Span 0 11 (Apply (Synthetic 95 95 108 105 115 116 95 95) (Apply (Synthetic 95 95 108 105 115 116 95 95) (Ident 102) (Ident 120)) (Ident 121))))"
-        );
+        insta::assert_snapshot!(result);
     }
 
     #[test]
     fn test_multiple_expressions() {
         let result = convert_source("42\n3.14\n\"hello\"").unwrap();
-        // "hello" = 104 101 108 108 111
-        assert_eq!(
-            result,
-            "(File 60 117 110 107 110 111 119 110 62 (Span 0 2 (Integer 42)) (Span 3 7 (Float 3.14)) (Span 8 15 (String 104 101 108 108 111)))"
-        );
+        insta::assert_snapshot!(result);
     }
 }

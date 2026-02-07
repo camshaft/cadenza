@@ -63,12 +63,10 @@ fn kompile(sh: &Shell) -> Result<()> {
     let _pwd = sh.push_dir(&k_dir);
 
     // Compile K definition using absolute path
-    cmd!(
-        sh,
-        "kompile cadenza.k --directory {output_dir} --backend llvm"
-    )
-    .run()
-    .context("Failed to compile K definition")?;
+    // Using Haskell backend for better portability
+    cmd!(sh, "kompile cadenza.k -o {output_dir} --backend haskell")
+        .run()
+        .context("Failed to compile K definition")?;
 
     println!();
     println!("✓ K definition compiled successfully");
@@ -137,7 +135,7 @@ fn test(sh: &Shell) -> Result<()> {
             .quiet()
             .ignore_stderr()
             .read();
-        
+
         match ast_output {
             Ok(ast_content) => {
                 // Write AST to file
@@ -152,7 +150,7 @@ fn test(sh: &Shell) -> Result<()> {
 
         // Run through K interpreter (output not used for now)
         let _output_file = output_test_dir.join(format!("{}.out", basename));
-        if cmd!(sh, "krun {ast_file} --directory {output_dir}")
+        if cmd!(sh, "krun {ast_file} -d {output_dir}")
             .quiet()
             .ignore_stdout()
             .ignore_stderr()
@@ -179,9 +177,7 @@ fn test(sh: &Shell) -> Result<()> {
     println!();
 
     if failed > 0 {
-        anyhow::bail!(
-            "K framework tests failed: {failed} out of {total} tests failed"
-        );
+        anyhow::bail!("K framework tests failed: {failed} out of {total} tests failed");
     }
 
     Ok(())
@@ -225,7 +221,7 @@ fn run_single(sh: &Shell, file: &PathBuf) -> Result<()> {
     sh.write_file(&ast_file, &ast_content)?;
 
     println!("Running through K interpreter...");
-    cmd!(sh, "krun {ast_file} --directory {output_dir}")
+    cmd!(sh, "krun {ast_file} -d {output_dir}")
         .run()
         .context("Failed to run through K")?;
 
