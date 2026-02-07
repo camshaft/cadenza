@@ -32,14 +32,36 @@ pub fn convert_source(source: &str) -> Result<String> {
     Ok(output)
 }
 
+/// Write a string as a char sequence (u32 values in hex)
+fn write_char_sequence(out: &mut String, s: &str) -> Result<()> {
+    for ch in s.chars() {
+        write!(out, " {:x}", ch as u32)?;
+    }
+    Ok(())
+}
+
 /// Write an expression as an S-expression.
 fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
     match expr {
         Expr::Literal(lit) => write_literal(out, lit)?,
-        Expr::Ident(ident) => write!(out, "(Ident \"{}\")", ident.syntax().text())?,
+        Expr::Ident(ident) => {
+            write!(out, "(Ident")?;
+            let text = ident.syntax().text();
+            write_char_sequence(out, &text)?;
+            write!(out, ")")?;
+        }
         Expr::Apply(apply) => write_apply(out, apply)?,
-        Expr::Op(op) => write!(out, "(Op \"{}\")", op.syntax().text())?,
-        Expr::Synthetic(syn) => write!(out, "(Synthetic \"{}\")", syn.identifier())?,
+        Expr::Op(op) => {
+            write!(out, "(Op")?;
+            let text = op.syntax().text();
+            write_char_sequence(out, &text)?;
+            write!(out, ")")?;
+        }
+        Expr::Synthetic(syn) => {
+            write!(out, "(Synthetic")?;
+            write_char_sequence(out, syn.identifier())?;
+            write!(out, ")")?;
+        }
         Expr::Error(_) => {
             // Write error message so it shows what went wrong
             anyhow::bail!("Encountered error node in AST - parsing failed");
@@ -61,12 +83,10 @@ fn write_literal(out: &mut String, lit: &Literal) -> Result<()> {
                 write!(out, "(Float {})", float_val.syntax().text())?;
             }
             LiteralValue::String(str_val) => {
-                // Encode string as hex char list: (String 41 42 43)
+                // Encode string as char list (u32 values in hex): (String 68 65 6c 6c 6f)
                 let text = str_val.syntax().text();
                 write!(out, "(String")?;
-                for byte in text.bytes() {
-                    write!(out, " {:02x}", byte)?;
-                }
+                write_char_sequence(out, &text)?;
                 write!(out, ")")?;
             }
             LiteralValue::StringWithEscape(str_val) => {
@@ -74,9 +94,7 @@ fn write_literal(out: &mut String, lit: &Literal) -> Result<()> {
                 match str_val.unescaped() {
                     Ok(unescaped) => {
                         write!(out, "(String")?;
-                        for byte in unescaped.bytes() {
-                            write!(out, " {:02x}", byte)?;
-                        }
+                        write_char_sequence(out, &unescaped)?;
                         write!(out, ")")?;
                     }
                     Err(_) => {
@@ -147,33 +165,37 @@ mod tests {
     #[test]
     fn test_identifier() {
         let result = convert_source("foo").unwrap();
-        assert_eq!(result, "(Ident \"foo\")");
+        // "foo" chars as u32 in hex: f=66, o=6f, o=6f
+        assert_eq!(result, "(Ident 66 6f 6f)");
     }
 
     #[test]
     fn test_simple_list() {
         let result = convert_source("[f, x]").unwrap();
+        // __list__ = 5f 5f 6c 69 73 74 5f 5f, f=66, x=78
         assert_eq!(
             result,
-            "(Apply (Synthetic \"__list__\") (Ident \"f\") (Ident \"x\"))"
+            "(Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 66) (Ident 78))"
         );
     }
 
     #[test]
     fn test_multiple_args_list() {
         let result = convert_source("[add, 1, 2]").unwrap();
+        // add = 61 64 64
         assert_eq!(
             result,
-            "(Apply (Synthetic \"__list__\") (Ident \"add\") (Integer 1) (Integer 2))"
+            "(Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 61 64 64) (Integer 1) (Integer 2))"
         );
     }
 
     #[test]
     fn test_nested_list() {
         let result = convert_source("[[f, x], y]").unwrap();
+        // f=66, x=78, y=79
         assert_eq!(
             result,
-            "(Apply (Synthetic \"__list__\") (Apply (Synthetic \"__list__\") (Ident \"f\") (Ident \"x\")) (Ident \"y\"))"
+            "(Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Apply (Synthetic 5f 5f 6c 69 73 74 5f 5f) (Ident 66) (Ident 78)) (Ident 79))"
         );
     }
 

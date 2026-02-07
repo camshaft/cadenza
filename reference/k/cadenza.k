@@ -12,22 +12,25 @@ module CADENZA-SYNTAX
     imports LIST
 
     // Expression syntax matching the S-expression output from cadenza ast
+    // All strings are encoded as Unicode char sequences (u32 values in hex)
     // Integers and floats are tagged: (Integer 123) (Float 3.14)
-    // Strings are hex-encoded char lists: (String 68 65 6c 6c 6f)
+    // Strings: (String 68 65 6c 6c 6f) - char codes for "hello"
+    // Identifiers: (Ident 66 6f 6f) - char codes for "foo"
+    // Operators: (Op 2b) - char code for "+"
     syntax Expr ::= Integer(Int)          [klabel(IntegerLit)]
                   | Float(Float)          [klabel(FloatLit)]
                   | String(Ints)          [klabel(StringLit)]
                   | Bool(String)          [klabel(BoolLit)]
-                  | Ident(String)         [klabel(Ident)]
+                  | Ident(Ints)           [klabel(Ident)]
                   | Apply(Expr, Exprs)    [klabel(Apply)]
-                  | Op(String)            [klabel(Op)]
-                  | Synthetic(String)     [klabel(Synthetic)]
+                  | Op(Ints)              [klabel(Op)]
+                  | Synthetic(Ints)       [klabel(Synthetic)]
                   | Error()               [klabel(Error)]
 
     // Multiple expressions (for Apply arguments)
     syntax Exprs ::= List{Expr, ""}       [klabel(Exprs)]
     
-    // List of integers for string encoding
+    // List of integers for char sequences
     syntax Ints ::= List{Int, ""}         [klabel(Ints)]
 
     // Values - the result of evaluation
@@ -64,14 +67,18 @@ module CADENZA
     rule <k> Float(F:Float) => F ... </k>
         [macro]
 
-    // String literals - decode hex char list to string
-    rule <k> String(Chars:Ints) => hexCharsToString(Chars) ... </k>
+    // String literals - decode char list to string
+    rule <k> String(Chars:Ints) => charsToString(Chars) ... </k>
         [macro]
 
-    // Helper function to convert hex char list to string
-    syntax String ::= hexCharsToString(Ints) [function]
-    rule hexCharsToString(.Ints) => ""
-    rule hexCharsToString(I:Int, Rest:Ints) => chrChar(I) +String hexCharsToString(Rest)
+    // Helper function to convert char list to string
+    syntax String ::= charsToString(Ints) [function]
+    rule charsToString(.Ints) => ""
+    rule charsToString(I:Int, Rest:Ints) => chrChar(I) +String charsToString(Rest)
+
+    // Identifier - decode char list to string for lookup
+    rule <k> Ident(Chars:Ints) => Ident(charsToString(Chars)) ... </k>
+        [macro]
 
     // Boolean literals (handled as identifiers in the parser)
     rule <k> Ident("true") => true ... </k>
