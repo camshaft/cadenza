@@ -141,27 +141,46 @@ rule <k> Ident(X) => V ... </k>
      <env>... X |-> V ...</env>
 ```
 
-## Implementation Strategy
+## What's Implemented
 
-We're implementing features incrementally in the order defined by the semantics documents:
+### ✅ Complete
 
-1. ✅ Basic infrastructure (this setup)
-2. 🔄 01-literals.md - Integer, Float, String, Boolean literals
-3. ⏸️ 02-variables.md - Let bindings, scope, shadowing
-4. ⏸️ 03-operators.md - Arithmetic, comparison, logical operators
-5. ⏸️ 04-functions.md - Functions, closures, application
-6. ⏸️ 05-macros.md - Macro system
-7. ⏸️ 06-compound-types.md - Records, lists, tuples
-8. ⏸️ 07-documentation.md - Documentation annotations
-9. ⏸️ 08-measures.md - Units of measure
+1. **AST CLI Tool** - The `cadenza ast` command converts `.cdz` files to S-expressions
+   - Supports all expression types: literals, identifiers, applications, operators
+   - Clean S-expression output that K can parse without ambiguity
+   - Example: `cadenza ast file.cdz` outputs `(Int "42")`
 
-## Contributing
+2. **K Framework Structure**
+   - Basic K definition file (`cadenza.k`) with syntax and configuration
+   - Literal evaluation rules for integers, floats, strings, booleans
+   - Configuration with k cell, env cell, store cell
+   - Makefile for building and testing
 
-When implementing new features:
+3. **Test Infrastructure**
+   - Test runner script (`tests/run-tests.sh`)
+   - Integration with `cargo xtask semantics extract`
+   - Single test runner for development (`tests/run-single.sh`)
 
-1. Add the corresponding K rules to `cadenza.k`
-2. Run `make test` to see which tests pass
-3. Update `STATUS.md` with current progress
-4. Commit with a descriptive message
+4. **CI Integration**
+   - GitHub Actions workflow for K framework testing
+   - K framework installation steps
+   - Automated test execution on PRs
 
-The goal is not to implement every feature perfectly, but to set up the infrastructure and demonstrate basic functionality.
+### 🔄 In Progress
+
+- K definition compilation (needs K framework installed in CI)
+- Test execution and output comparison
+- More complete semantic rules
+
+### 📋 Next Steps
+
+1. Verify K framework compiles in CI
+2. Add more semantic rules incrementally
+3. Implement output comparison in test runner
+4. Track test pass rates in STATUS.md
+
+## Current Status
+
+The infrastructure is complete and ready to use. The K definition will need refinement
+as it's tested with actual K framework installation. See [STATUS.md](STATUS.md) for
+detailed progress tracking.
