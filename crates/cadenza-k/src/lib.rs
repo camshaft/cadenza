@@ -30,5 +30,3 @@
 //!
 //! This is an empty Rust crate - the actual implementation is in K.
 //! This crate exists only to integrate with the Cargo workspace.
-
-#![doc = include_str!("../README.md")]
