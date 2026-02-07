@@ -1,0 +1,4 @@
+// Test: Logical OR operator
+// Expected output: true : Bool
+
+'Apply('Op(||), 'Bool(true), 'Bool(false))

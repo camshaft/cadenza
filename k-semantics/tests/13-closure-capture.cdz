@@ -1,0 +1,6 @@
+// Test: Closure capturing outer variable
+// Expected output: 50 : Integer
+
+'Let(factor, 'Integer(10)) ;
+'Fn(multiply_by_factor, (x, .Ids), 'Apply('Op(*), 'Ident(x), 'Ident(factor))) ;
+'Apply('Ident(multiply_by_factor), ('Integer(5), .Exprs))

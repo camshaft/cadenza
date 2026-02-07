@@ -1,0 +1,4 @@
+// Test: Mixed arithmetic (rational + integer)
+// Expected output: 3/2 : Rational
+
+'Apply('Op(+), 'Apply('Op(/), 'Integer(1), 'Integer(2)), 'Integer(1))

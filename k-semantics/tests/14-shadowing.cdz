@@ -1,0 +1,6 @@
+// Test: Shadowing variables
+// Expected output: 2 : Integer
+
+'Let(x, 'Integer(1)) ;
+'Let(x, 'Integer(2)) ;
+'Ident(x)

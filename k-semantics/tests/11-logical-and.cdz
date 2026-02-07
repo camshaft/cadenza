@@ -1,0 +1,4 @@
+// Test: Logical AND operator
+// Expected output: false : Bool
+
+'Apply('Op(&&), 'Bool(true), 'Bool(false))

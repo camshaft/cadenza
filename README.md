@@ -70,6 +70,17 @@ Configure with Claude Desktop by adding to `claude_desktop_config.json`:
 }
 ```
 
+## Formal Semantics
+
+Cadenza has a formal semantics specification implemented in the [K framework](https://kframework.org/). This provides:
+
+- Executable formal specification of the language
+- Mathematical precision in semantics definition
+- Ability to verify program properties
+- Alternative implementation for validation
+
+See the [k-semantics/](k-semantics/) directory for the complete K framework implementation with documentation and examples.
+
 ## License
 
 MIT

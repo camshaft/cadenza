@@ -1,0 +1,5 @@
+// Test: Multiple parameters function
+// Expected output: 10 : Integer
+
+'Fn(add, (x, y, .Ids), 'Apply('Op(+), 'Ident(x), 'Ident(y))) ;
+'Apply('Ident(add), ('Integer(3), 'Integer(7), .Exprs))

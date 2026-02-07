@@ -41,3 +41,8 @@ ENV/
 node_modules/
 .deno/
 dist/
+
+# K framework compiled artifacts
+k-semantics/*-kompiled/
+k-semantics/.krun-*
+k-semantics/*.kore

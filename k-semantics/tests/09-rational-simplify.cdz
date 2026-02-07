@@ -1,0 +1,4 @@
+// Test: Rational simplification
+// Expected output: 3/2 : Rational
+
+'Apply('Op(/), 'Integer(6), 'Integer(4))
