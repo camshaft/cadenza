@@ -9,12 +9,14 @@ module CADENZA-SYNTAX
     imports FLOAT
     imports STRING
     imports BOOL
+    imports LIST
 
     // Expression syntax matching the S-expression output from cadenza ast
-    // Integers and floats are output as raw values, not wrapped
-    syntax Expr ::= Int                   [klabel(IntLit)]
-                  | Float                 [klabel(FloatLit)]
-                  | String(String)        [klabel(StringLit)]
+    // Integers and floats are tagged: (Integer 123) (Float 3.14)
+    // Strings are hex-encoded char lists: (String 68 65 6c 6c 6f)
+    syntax Expr ::= Integer(Int)          [klabel(IntegerLit)]
+                  | Float(Float)          [klabel(FloatLit)]
+                  | String(Ints)          [klabel(StringLit)]
                   | Bool(String)          [klabel(BoolLit)]
                   | Ident(String)         [klabel(Ident)]
                   | Apply(Expr, Exprs)    [klabel(Apply)]
@@ -24,6 +26,9 @@ module CADENZA-SYNTAX
 
     // Multiple expressions (for Apply arguments)
     syntax Exprs ::= List{Expr, ""}       [klabel(Exprs)]
+    
+    // List of integers for string encoding
+    syntax Ints ::= List{Int, ""}         [klabel(Ints)]
 
     // Values - the result of evaluation
     syntax Val ::= Int
@@ -51,15 +56,22 @@ module CADENZA
     // Literal Evaluation Rules
     // ==========================================
 
-    // Integer literals - already values
-    // No rule needed, integers are already KResults
-
-    // Float literals - already values
-    // No rule needed, floats are already KResults
-
-    // String literals - already evaluated
-    rule <k> String(S:String) => S ... </k>
+    // Integer literals - extract the value
+    rule <k> Integer(I:Int) => I ... </k>
         [macro]
+
+    // Float literals - extract the value
+    rule <k> Float(F:Float) => F ... </k>
+        [macro]
+
+    // String literals - decode hex char list to string
+    rule <k> String(Chars:Ints) => hexCharsToString(Chars) ... </k>
+        [macro]
+
+    // Helper function to convert hex char list to string
+    syntax String ::= hexCharsToString(Ints) [function]
+    rule hexCharsToString(.Ints) => ""
+    rule hexCharsToString(I:Int, Rest:Ints) => chrChar(I) +String hexCharsToString(Rest)
 
     // Boolean literals (handled as identifiers in the parser)
     rule <k> Ident("true") => true ... </k>

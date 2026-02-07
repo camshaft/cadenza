@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 #[derive(Args)]
 pub struct K {
@@ -56,14 +56,17 @@ fn kompile(sh: &Shell) -> Result<()> {
     println!();
 
     let _pwd = sh.push_dir(&k_dir);
-    
+
     // Create output directory
     sh.create_dir(&output_dir)?;
 
     // Compile K definition
-    cmd!(sh, "kompile cadenza.k --directory ../../{output_dir} --backend llvm")
-        .run()
-        .context("Failed to compile K definition")?;
+    cmd!(
+        sh,
+        "kompile cadenza.k --directory ../../{output_dir} --backend llvm"
+    )
+    .run()
+    .context("Failed to compile K definition")?;
 
     println!();
     println!("✓ K definition compiled successfully");
@@ -109,7 +112,7 @@ fn test(sh: &Shell) -> Result<()> {
 
     // Iterate through test files
     for entry in sh.read_dir(&test_data_dir)? {
-        if !entry.extension().map_or(false, |ext| ext == "cdz") {
+        if entry.extension().is_none_or(|ext| ext != "cdz") {
             continue;
         }
 
@@ -200,7 +203,7 @@ fn run_single(sh: &Shell, file: &PathBuf) -> Result<()> {
     let ast_content = cmd!(sh, "cargo run --bin cadenza ast {file}")
         .read()
         .context("Failed to convert to AST")?;
-    
+
     println!("AST:");
     println!("{}", ast_content);
     println!();

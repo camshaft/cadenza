@@ -14,71 +14,23 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install K Framework dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            m4 \
-            openjdk-17-jdk \
-            libmpfr-dev \
-            libgmp-dev \
-            libjemalloc-dev \
-            flex \
-            bison \
-            z3 \
-            libz3-dev \
-            maven \
-            pkg-config \
-            clang-14 \
-            llvm-14-tools \
-            lld-14 \
-            cmake \
-            libffi-dev \
-            libyaml-dev \
-            libtool \
-            curl
-
-      - name: Cache K Framework
-        id: cache-k
-        uses: actions/cache@v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
         with:
-          path: ~/.local/bin/k*
-          key: k-framework-v6.3.17-${{ runner.os }}
+          nix_path: nixpkgs=channel:nixos-unstable
 
-      - name: Install K Framework
-        if: steps.cache-k.outputs.cache-hit != 'true'
-        run: |
-          bash <(curl https://kframework.org/install)
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Add K to PATH
-        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Verify K installation
-        run: |
-          which kompile || echo "kompile not found in PATH"
-          kompile --version || echo "kompile failed"
-
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup override set stable
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
+      - name: Setup Nix cache
+        uses: cachix/cachix-action@v15
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-k-${{ hashFiles('**/Cargo.lock') }}
+          name: cadenza
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          skipPush: true
 
       - name: Build Cadenza CLI
-        run: cargo build --bin cadenza
+        run: nix develop --command cargo build --bin cadenza
 
       - name: Compile K definition
-        run: cargo xtask k kompile
+        run: nix develop --command cargo xtask k kompile
 
       - name: Run K framework tests
-        run: cargo xtask k test
+        run: nix develop --command cargo xtask k test

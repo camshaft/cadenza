@@ -40,7 +40,10 @@ fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
         Expr::Apply(apply) => write_apply(out, apply)?,
         Expr::Op(op) => write!(out, "(Op \"{}\")", op.syntax().text())?,
         Expr::Synthetic(syn) => write!(out, "(Synthetic \"{}\")", syn.identifier())?,
-        Expr::Error(_) => write!(out, "(Error)")?,
+        Expr::Error(_) => {
+            // Write error message so it shows what went wrong
+            anyhow::bail!("Encountered error node in AST - parsing failed");
+        }
     }
     Ok(())
 }
@@ -50,28 +53,41 @@ fn write_literal(out: &mut String, lit: &Literal) -> Result<()> {
     if let Some(value) = lit.value() {
         match value {
             LiteralValue::Integer(int_val) => {
-                // Output the integer value directly, not as a string
-                write!(out, "{}", int_val.syntax().text())?;
+                // Output as (Integer 123) with the value directly, not as a string
+                write!(out, "(Integer {})", int_val.syntax().text())?;
             }
             LiteralValue::Float(float_val) => {
-                // Output the float value directly, not as a string
-                write!(out, "{}", float_val.syntax().text())?;
+                // Output as (Float 3.14) with the value directly, not as a string
+                write!(out, "(Float {})", float_val.syntax().text())?;
             }
             LiteralValue::String(str_val) => {
-                // Escape the string content for S-expression output
+                // Encode string as hex char list: (String 41 42 43)
                 let text = str_val.syntax().text();
-                let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
-                write!(out, "(String \"{}\")", escaped)?;
+                write!(out, "(String")?;
+                for byte in text.bytes() {
+                    write!(out, " {:02x}", byte)?;
+                }
+                write!(out, ")")?;
             }
             LiteralValue::StringWithEscape(str_val) => {
-                // For strings with escapes, output the raw text
-                let text = str_val.syntax().text();
-                let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
-                write!(out, "(String \"{}\")", escaped)?;
+                // For strings with escapes, we need to unescape first then encode
+                match str_val.unescaped() {
+                    Ok(unescaped) => {
+                        write!(out, "(String")?;
+                        for byte in unescaped.bytes() {
+                            write!(out, " {:02x}", byte)?;
+                        }
+                        write!(out, ")")?;
+                    }
+                    Err(_) => {
+                        anyhow::bail!("Invalid escape sequence in string literal");
+                    }
+                }
             }
         }
     } else {
-        write!(out, "(Literal)")?;
+        // This is a parser bug - literals should always have values
+        anyhow::bail!("Literal node missing value - this is a parser bug");
     }
     Ok(())
 }
@@ -112,19 +128,20 @@ mod tests {
     #[test]
     fn test_integer_literal() {
         let result = convert_source("42").unwrap();
-        assert_eq!(result, "42");
+        assert_eq!(result, "(Integer 42)");
     }
 
     #[test]
     fn test_float_literal() {
         let result = convert_source("3.14").unwrap();
-        assert_eq!(result, "3.14");
+        assert_eq!(result, "(Float 3.14)");
     }
 
     #[test]
     fn test_string_literal() {
         let result = convert_source("\"hello\"").unwrap();
-        assert_eq!(result, "(String \"hello\")");
+        // "hello" = 68 65 6c 6c 6f in hex
+        assert_eq!(result, "(String 68 65 6c 6c 6f)");
     }
 
     #[test]
@@ -136,13 +153,19 @@ mod tests {
     #[test]
     fn test_simple_list() {
         let result = convert_source("[f, x]").unwrap();
-        assert_eq!(result, "(Apply (Synthetic \"__list__\") (Ident \"f\") (Ident \"x\"))");
+        assert_eq!(
+            result,
+            "(Apply (Synthetic \"__list__\") (Ident \"f\") (Ident \"x\"))"
+        );
     }
 
     #[test]
     fn test_multiple_args_list() {
         let result = convert_source("[add, 1, 2]").unwrap();
-        assert_eq!(result, "(Apply (Synthetic \"__list__\") (Ident \"add\") 1 2)");
+        assert_eq!(
+            result,
+            "(Apply (Synthetic \"__list__\") (Ident \"add\") (Integer 1) (Integer 2))"
+        );
     }
 
     #[test]
@@ -157,6 +180,10 @@ mod tests {
     #[test]
     fn test_multiple_expressions() {
         let result = convert_source("42\n3.14\n\"hello\"").unwrap();
-        assert_eq!(result, "42\n3.14\n(String \"hello\")");
+        // "hello" = 68 65 6c 6c 6f in hex
+        assert_eq!(
+            result,
+            "(Integer 42)\n(Float 3.14)\n(String 68 65 6c 6c 6f)"
+        );
     }
 }
