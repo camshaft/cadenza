@@ -341,18 +341,118 @@ module CADENZA
     syntax Chars ::= "eqChars" [function]
     rule eqChars => 61 .Chars  // "=" as char codes
 
-    // Rule: (Apply (Op "=") (Apply (Ident "let") (Ident name)) value)
-    // When we see an assignment where LHS is a let-application, bind the variable
-    rule <k> (Apply (Op EqOp:Chars) (Apply (Ident LetKw:Chars) (Ident NameChrs:Chars)) E:Expr)
+    // Rule: (Apply (Op "=") (Apply (Ident "let") pattern) value)
+    // When we see an assignment where LHS is a let-application, evaluate RHS then match pattern
+
+    // Simple identifier pattern: let x = expr
+    rule <k> (Apply (Op EqOp:Chars) (Apply (Ident LetKw:Chars) (Ident NameChrs:Chars) .Exprs) E:Expr .Exprs)
           => E ~> bindVar(charsToString(NameChrs)) ... </k>
          requires isKw(LetKw, "let") andBool isKw(EqOp, "=")
 
+    // Tuple pattern: let (x, y, ...) = expr
+    rule <k> (Apply (Op EqOp:Chars) (Apply (Ident LetKw:Chars) (Apply (Synthetic SynChrs:Chars) PatternExprs:Exprs) .Exprs) E:Expr .Exprs)
+          => E ~> matchTuplePattern(PatternExprs) ... </k>
+         requires isKw(LetKw, "let") andBool isKw(EqOp, "=") andBool isKw(SynChrs, "__tuple__")
+
+    // Record pattern: let { x, y, ... } = expr
+    rule <k> (Apply (Op EqOp:Chars) (Apply (Ident LetKw:Chars) (Apply (Synthetic SynChrs:Chars) PatternExprs:Exprs) .Exprs) E:Expr .Exprs)
+          => E ~> matchRecordPattern(PatternExprs) ... </k>
+         requires isKw(LetKw, "let") andBool isKw(EqOp, "=") andBool isKw(SynChrs, "__record__")
+
     // After expression evaluates to a value, bind it in the current scope
+    // Let bindings return unit (empty tuple)
     syntax KItem ::= bindVar(String)
 
-    rule <k> V:Val ~> bindVar(Name:String) => V ... </k>
+    rule <k> V:Val ~> bindVar(Name:String) => tuple(.List) ... </k>
          <scopes> ... Current |-> scope(Parent, Bindings:Map) => Current |-> scope(Parent, Bindings[Name <- V]) ... </scopes>
          <current-scope> Current:Int </current-scope>
+
+    // ==========================================
+    // Pattern Matching for Let Bindings
+    // ==========================================
+
+    // Tuple pattern matching: match tuple value against pattern expressions
+    syntax KItem ::= matchTuplePattern(Exprs)
+                   | bindTupleElemsK(Exprs, List)  // pattern exprs, values
+
+    rule <k> tuple(Vals:List) ~> matchTuplePattern(PatternExprs:Exprs)
+          => bindTupleElemsK(PatternExprs, Vals) ... </k>
+
+    // Bind tuple elements to patterns - empty case (returns unit tuple)
+    rule <k> bindTupleElemsK(.Exprs, .List) => tuple(.List) ... </k>
+
+    // Consume tuple result when continuing with empty bindTupleElemsK
+    rule <k> tuple(_) ~> bindTupleElemsK(.Exprs, .List) => tuple(.List) ... </k>
+
+    // Wildcard pattern "_" - skip binding
+    rule <k> bindTupleElemsK((Ident NameChrs:Chars) RestPatterns:Exprs, ListItem(_:Val) RestVals:List)
+          => bindTupleElemsK(RestPatterns, RestVals) ... </k>
+         requires isKw(NameChrs, "_")
+
+    // Simple identifier pattern - bind the value
+    rule <k> bindTupleElemsK((Ident NameChrs:Chars) RestPatterns:Exprs, ListItem(V:Val) RestVals:List)
+          => bindInScope(charsToString(NameChrs), V) ~> bindTupleElemsK(RestPatterns, RestVals) ... </k>
+         requires notBool isKw(NameChrs, "_")
+
+    // Nested tuple pattern - recursively match
+    rule <k> bindTupleElemsK((Apply (Synthetic SynChrs:Chars) NestedPatterns:Exprs) RestPatterns:Exprs, ListItem(tuple(NestedVals:List)) RestVals:List)
+          => bindTupleElemsK(NestedPatterns, NestedVals) ~> bindTupleElemsK(RestPatterns, RestVals) ... </k>
+         requires isKw(SynChrs, "__tuple__")
+
+    // Record pattern matching: match record value against pattern expressions
+    syntax KItem ::= matchRecordPattern(Exprs)
+                   | bindRecordFields(Exprs, Map)  // pattern fields, record values
+
+    rule <k> record(Fields:Map) ~> matchRecordPattern(PatternExprs:Exprs)
+          => bindRecordFields(PatternExprs, Fields) ... </k>
+
+    // Bind record fields - empty pattern list done
+    rule <k> bindRecordFields(.Exprs, _:Map) => record(.Map) ... </k>
+
+    // Record pattern with just identifier: { x } means bind field x to variable x
+    rule <k> bindRecordFields((Ident NameChrs:Chars) RestPatterns:Exprs, Fields:Map)
+          => bindInScope(charsToString(NameChrs), {Fields[charsToString(NameChrs)]}:>Val)
+             ~> bindRecordFields(RestPatterns, Fields) ... </k>
+         requires charsToString(NameChrs) in_keys(Fields)
+
+    // Record pattern with renaming: { x = a } means bind field x to variable a
+    rule <k> bindRecordFields((Apply (Op EqOp:Chars) (Ident FieldChrs:Chars) (Ident VarChrs:Chars)) RestPatterns:Exprs, Fields:Map)
+          => bindInScope(charsToString(VarChrs), {Fields[charsToString(FieldChrs)]}:>Val)
+             ~> bindRecordFields(RestPatterns, Fields) ... </k>
+         requires isKw(EqOp, "=") andBool charsToString(FieldChrs) in_keys(Fields)
+
+    // ==========================================
+    // Variable Reassignment (without let)
+    // ==========================================
+
+    // Reassignment: x = expr (where x already exists in scope)
+    // Pattern: (Apply (Op "=") (Ident name) expr) where name is already bound
+    rule <k> (Apply (Op EqOp:Chars) (Ident NameChrs:Chars) E:Expr)
+          => E ~> reassignVar(charsToString(NameChrs)) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
+         requires isKw(EqOp, "=")
+          andBool varExists(charsToString(NameChrs), Current, Scopes)
+
+    // Helper to reassign a variable in the scope where it's defined
+    syntax KItem ::= reassignVar(String)
+
+    rule <k> V:Val ~> reassignVar(Name:String) => V ... </k>
+         <scopes> Scopes:Map => updateVarInScope(Name, V, Current, Scopes) </scopes>
+         <current-scope> Current:Int </current-scope>
+
+    // Find the scope where a variable is defined and update it
+    syntax Map ::= updateVarInScope(String, Val, ScopeId, Map) [function]
+
+    // Found in current scope - update it
+    rule updateVarInScope(Name:String, V:Val, ScopeId:Int, (ScopeId |-> scope(Parent:Int, Bindings:Map)) Rest:Map)
+         => (ScopeId |-> scope(Parent, Bindings[Name <- V])) Rest
+         requires Name in_keys(Bindings)
+
+    // Not in current scope - recurse to parent
+    rule updateVarInScope(Name:String, V:Val, ScopeId:Int, (ScopeId |-> scope(Parent:Int, Bindings:Map)) Rest:Map)
+         => (ScopeId |-> scope(Parent, Bindings)) updateVarInScope(Name, V, Parent, Rest)
+         requires notBool (Name in_keys(Bindings)) andBool Parent >=Int 0
 
     // ==========================================
     // Variable Lookup
