@@ -148,10 +148,10 @@ fn test(sh: &Shell, pattern: Option<&str>, accept: bool) -> Result<()> {
         let basename = entry.file_stem().unwrap().to_string_lossy().to_string();
 
         // Filter by pattern if provided
-        if let Some(p) = pattern {
-            if !basename.contains(p) {
-                continue;
-            }
+        if let Some(p) = pattern
+            && !basename.contains(p)
+        {
+            continue;
         }
 
         total += 1;
@@ -312,10 +312,10 @@ fn test(sh: &Shell, pattern: Option<&str>, accept: bool) -> Result<()> {
 fn sanitize_k_output(output: &str, repo_root: &std::path::Path) -> String {
     let repo_str = repo_root.to_string_lossy();
     // Replace full repo path with a placeholder
-    let result = output.replace(&*repo_str, "<repo>");
+
     // Also handle the path encoded as char codes in the AST
     // We'll look for Path nodes and replace their content
-    result
+    output.replace(&*repo_str, "<repo>")
 }
 
 fn write_snapshot_file(

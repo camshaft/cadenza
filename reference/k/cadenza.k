@@ -62,6 +62,7 @@ module CADENZA-SYNTAX
                  | enumVal(String, String, Val)            // enum value (enum name, variant name, data)
                  | cell(Int)                               // cell reference (points to store)
                  | pending(String)                         // placeholder for hoisted but not-yet-ready function
+                 | RuntimeError()                          // runtime error value (terminal)
 
     // Type descriptors (for struct/enum definitions)
     syntax TypeDef ::= structDef(String, Map)         // struct definition (name, field types)
@@ -811,7 +812,7 @@ module CADENZA
     // ==========================================
 
     // Error nodes represent parse/semantic errors
-    // For now, they remain as-is for error modeling
-    rule <k> (Error) => (Error) ... </k>
+    // Convert to the terminal RuntimeError value
+    rule <k> (Error) => RuntimeError() ... </k>
 
 endmodule
