@@ -12,8 +12,32 @@ use std::{fmt::Write, fs, path::Path};
 pub fn convert_file(path: &Path) -> Result<String> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
-    let path_str = path.display().to_string();
+    
+    // Convert to relative path from repository root for portability
+    let path_str = get_relative_path(path)?;
     convert_source_with_path(&source, &path_str)
+}
+
+/// Get path relative to repository root by finding the .git directory
+fn get_relative_path(path: &Path) -> Result<String> {
+    // First, canonicalize the path to get absolute path
+    let abs_path = path.canonicalize()
+        .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
+    
+    // Find repository root by walking up the directory tree
+    let mut current = abs_path.parent();
+    while let Some(dir) = current {
+        if dir.join(".git").exists() {
+            // Found repository root, compute relative path
+            let relative = abs_path.strip_prefix(dir)
+                .with_context(|| format!("Failed to strip prefix from path: {}", abs_path.display()))?;
+            return Ok(relative.display().to_string());
+        }
+        current = dir.parent();
+    }
+    
+    // If no .git directory found, fall back to the original path
+    Ok(path.display().to_string())
 }
 
 /// Convert Cadenza source code to an S-expression AST representation with file path.
