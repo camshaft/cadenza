@@ -1,6 +1,11 @@
 {
   description = "Cadenza";
 
+  nixConfig = {
+    extra-substituters = [ "https://camshaft.cachix.org" ];
+    extra-trusted-public-keys = [ "camshaft.cachix.org-1:NuMo5iCUNwDpNWJNlhCw/nFp3aQ7sxsVBXdlNtXs3CQ=" ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     kframework.url = "github:runtimeverification/k";
