@@ -15,7 +15,7 @@ sum_with_context 5
 ## AST
 
 ```lisp
-(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 102 117 110 99 116 105 111 110 115 45 99 108 111 115 117 114 101 45 119 105 116 104 45 109 117 108 116 105 112 108 101 45 99 97 112 116 117 114 101 115 46 99 100 122) (Span (0 11) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 97)) (Integer 10))) (Span (11 22) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 98)) (Integer 20))) (Span (22 56) (Apply (Op 61) (Apply (Apply (Ident 102 110) (Ident 115 117 109 95 119 105 116 104 95 99 111 110 116 101 120 116)) (Ident 120)) (Apply (Op 43) (Apply (Op 43) (Ident 120) (Ident 97)) (Ident 98)))) (Span (56 74) (Apply (Ident 115 117 109 95 119 105 116 104 95 99 111 110 116 101 120 116) (Integer 5))))
+(File (Path 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 102 117 110 99 116 105 111 110 115 45 99 108 111 115 117 114 101 45 119 105 116 104 45 109 117 108 116 105 112 108 101 45 99 97 112 116 117 114 101 115 46 99 100 122) (Span (0 11) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 97)) (Integer 10))) (Span (11 22) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 98)) (Integer 20))) (Span (22 56) (Apply (Op 61) (Apply (Apply (Ident 102 110) (Ident 115 117 109 95 119 105 116 104 95 99 111 110 116 101 120 116)) (Ident 120)) (Apply (Op 43) (Apply (Op 43) (Ident 120) (Ident 97)) (Ident 98)))) (Span (56 74) (Apply (Ident 115 117 109 95 119 105 116 104 95 99 111 110 116 101 120 116) (Integer 5))))
 ```
 
 ## Expected
@@ -61,7 +61,7 @@ sum_with_context 5
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-closure-with-multiple-captures.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-closure-with-multiple-captures.cdz"
   </file>
   <span-start>
     56

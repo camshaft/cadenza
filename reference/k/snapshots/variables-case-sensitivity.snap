@@ -15,7 +15,7 @@ foo
 ## AST
 
 ```lisp
-(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 118 97 114 105 97 98 108 101 115 45 99 97 115 101 45 115 101 110 115 105 116 105 118 105 116 121 46 99 100 122) (Span (0 12) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 102 111 111)) (Integer 1))) (Span (12 24) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 70 111 111)) (Integer 2))) (Span (24 36) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 70 79 79)) (Integer 3))) (Span (36 39) (Ident 102 111 111)))
+(File (Path 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 118 97 114 105 97 98 108 101 115 45 99 97 115 101 45 115 101 110 115 105 116 105 118 105 116 121 46 99 100 122) (Span (0 12) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 102 111 111)) (Integer 1))) (Span (12 24) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 70 111 111)) (Integer 2))) (Span (24 36) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 70 79 79)) (Integer 3))) (Span (36 39) (Ident 102 111 111)))
 ```
 
 ## Expected
@@ -55,7 +55,7 @@ foo
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-case-sensitivity.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-case-sensitivity.cdz"
   </file>
   <span-start>
     36

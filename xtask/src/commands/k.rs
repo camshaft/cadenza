@@ -315,11 +315,10 @@ fn test(sh: &Shell, patterns: HashSet<&str>, accept: bool) -> Result<()> {
 /// Sanitize K output by removing absolute paths and replacing with relative paths
 fn sanitize_k_output(output: &str, repo_root: &std::path::Path) -> String {
     let repo_str = repo_root.to_string_lossy();
-    // Replace full repo path with a placeholder
-
-    // Also handle the path encoded as char codes in the AST
-    // We'll look for Path nodes and replace their content
-    output.replace(&*repo_str, "<repo>")
+    // Replace full repo path with empty string to leave just the relative path
+    // Need to also remove the trailing slash to avoid double slashes
+    let repo_with_slash = format!("{}/", repo_str);
+    output.replace(&*repo_with_slash, "")
 }
 
 fn write_snapshot_file(
