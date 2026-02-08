@@ -2,8 +2,14 @@
   description = "Cadenza";
 
   nixConfig = {
-    extra-substituters = [ "https://camshaft.cachix.org" ];
-    extra-trusted-public-keys = [ "camshaft.cachix.org-1:NuMo5iCUNwDpNWJNlhCw/nFp3aQ7sxsVBXdlNtXs3CQ=" ];
+    extra-substituters = [
+      "https://camshaft.cachix.org"
+      "https://k-framework.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "camshaft.cachix.org-1:NuMo5iCUNwDpNWJNlhCw/nFp3aQ7sxsVBXdlNtXs3CQ="
+      "k-framework.cachix.org-1:WpEOKYpADXVQzfecgUjSLujxxHPo35Y5aoa6P1B9MsE="
+    ];
   };
 
   inputs = {
