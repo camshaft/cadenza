@@ -182,7 +182,7 @@ double_then_square 3
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-function-composition.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-function-composition.cdz"
   </file>
   <span-start>
     147

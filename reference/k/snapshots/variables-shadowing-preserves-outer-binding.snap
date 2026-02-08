@@ -57,7 +57,7 @@ x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-shadowing-preserves-outer-binding.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-shadowing-preserves-outer-binding.cdz"
   </file>
   <span-start>
     62

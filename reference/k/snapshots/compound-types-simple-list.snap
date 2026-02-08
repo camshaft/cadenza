@@ -51,7 +51,7 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-simple-list.c
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-simple-list.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-simple-list.cdz"
   </file>
   <span-start>
     0

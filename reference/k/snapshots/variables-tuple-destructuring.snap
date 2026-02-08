@@ -52,7 +52,7 @@ y
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-tuple-destructuring.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-tuple-destructuring.cdz"
   </file>
   <span-start>
     24

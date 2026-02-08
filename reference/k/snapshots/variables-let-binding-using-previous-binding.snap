@@ -52,7 +52,7 @@ y
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-let-binding-using-previous-binding.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-let-binding-using-previous-binding.cdz"
   </file>
   <span-start>
     25

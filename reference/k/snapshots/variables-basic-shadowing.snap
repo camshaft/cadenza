@@ -51,7 +51,7 @@ x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-basic-shadowing.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-basic-shadowing.cdz"
   </file>
   <span-start>
     20

@@ -65,7 +65,7 @@ add_10 5
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-function-as-return-value.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-function-as-return-value.cdz"
   </file>
   <span-start>
     78

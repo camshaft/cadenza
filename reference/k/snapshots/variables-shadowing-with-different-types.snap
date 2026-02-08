@@ -51,7 +51,7 @@ x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-shadowing-with-different-types.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-shadowing-with-different-types.cdz"
   </file>
   <span-start>
     27

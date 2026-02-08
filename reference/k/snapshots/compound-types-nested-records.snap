@@ -49,7 +49,7 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-nested-record
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-nested-records.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-nested-records.cdz"
   </file>
   <span-start>
     0

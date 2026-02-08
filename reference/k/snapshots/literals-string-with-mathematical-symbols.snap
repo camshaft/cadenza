@@ -47,7 +47,7 @@ source: crates/cadenza-compiler/test-data/semantics/literals-string-with-mathema
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-string-with-mathematical-symbols.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-string-with-mathematical-symbols.cdz"
   </file>
   <span-start>
     0

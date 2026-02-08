@@ -47,7 +47,7 @@ source: crates/cadenza-compiler/test-data/semantics/literals-empty-string.cdz
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-empty-string.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-empty-string.cdz"
   </file>
   <span-start>
     0

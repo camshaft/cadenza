@@ -60,7 +60,7 @@ level1
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-multiple-nesting-levels.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-multiple-nesting-levels.cdz"
   </file>
   <span-start>
     101

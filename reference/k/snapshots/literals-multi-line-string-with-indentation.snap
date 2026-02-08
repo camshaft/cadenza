@@ -51,7 +51,7 @@ source: crates/cadenza-compiler/test-data/semantics/literals-multi-line-string-w
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-multi-line-string-with-indentation.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-multi-line-string-with-indentation.cdz"
   </file>
   <span-start>
     0

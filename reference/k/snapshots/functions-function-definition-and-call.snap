@@ -51,7 +51,7 @@ square 5
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-function-definition-and-call.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-function-definition-and-call.cdz"
   </file>
   <span-start>
     20

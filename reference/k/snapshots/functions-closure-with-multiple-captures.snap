@@ -61,7 +61,7 @@ sum_with_context 5
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-closure-with-multiple-captures.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-closure-with-multiple-captures.cdz"
   </file>
   <span-start>
     56

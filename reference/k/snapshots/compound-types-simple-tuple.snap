@@ -49,7 +49,7 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-simple-tuple.
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-simple-tuple.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-simple-tuple.cdz"
   </file>
   <span-start>
     1

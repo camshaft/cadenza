@@ -47,7 +47,7 @@ source: crates/cadenza-compiler/test-data/semantics/literals-integer-with-unders
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-integer-with-underscores.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-integer-with-underscores.cdz"
   </file>
   <span-start>
     0

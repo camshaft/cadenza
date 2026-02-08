@@ -49,7 +49,7 @@ nested.inner.value
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-chained-field-access.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-chained-field-access.cdz"
   </file>
   <span-start>
     40

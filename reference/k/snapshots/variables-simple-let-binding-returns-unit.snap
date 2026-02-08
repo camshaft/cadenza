@@ -47,7 +47,7 @@ let x = 42
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-simple-let-binding-returns-unit.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-simple-let-binding-returns-unit.cdz"
   </file>
   <span-start>
     0

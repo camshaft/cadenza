@@ -49,7 +49,7 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-tuple-with-di
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-tuple-with-different-types.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-tuple-with-different-types.cdz"
   </file>
   <span-start>
     1

@@ -52,7 +52,7 @@ x + y
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-multiple-sequential-bindings.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-multiple-sequential-bindings.cdz"
   </file>
   <span-start>
     20

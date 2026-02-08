@@ -49,7 +49,7 @@ _private_var
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-identifier-with-underscores.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-identifier-with-underscores.cdz"
   </file>
   <span-start>
     22

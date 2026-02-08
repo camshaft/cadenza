@@ -49,7 +49,7 @@ name
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-simple-identifier-lookup.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-simple-identifier-lookup.cdz"
   </file>
   <span-start>
     19

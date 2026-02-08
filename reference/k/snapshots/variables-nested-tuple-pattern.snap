@@ -51,7 +51,7 @@ a + b + c
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-nested-tuple-pattern.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-nested-tuple-pattern.cdz"
   </file>
   <span-start>
     30

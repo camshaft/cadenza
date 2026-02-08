@@ -50,7 +50,7 @@ get_value
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-zero-parameter-function.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-zero-parameter-function.cdz"
   </file>
   <span-start>
     18

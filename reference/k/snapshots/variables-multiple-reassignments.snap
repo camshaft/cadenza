@@ -55,7 +55,7 @@ x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-multiple-reassignments.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-multiple-reassignments.cdz"
   </file>
   <span-start>
     28

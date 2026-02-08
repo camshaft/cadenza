@@ -49,7 +49,7 @@ x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-let-binding-with-identifier-usage.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-let-binding-with-identifier-usage.cdz"
   </file>
   <span-start>
     11

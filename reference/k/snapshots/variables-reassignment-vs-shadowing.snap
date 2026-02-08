@@ -65,7 +65,7 @@ x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-reassignment-vs-shadowing.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-reassignment-vs-shadowing.cdz"
   </file>
   <span-start>
     83

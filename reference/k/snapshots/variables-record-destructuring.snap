@@ -50,7 +50,7 @@ x + y
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-record-destructuring.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-record-destructuring.cdz"
   </file>
   <span-start>
     34

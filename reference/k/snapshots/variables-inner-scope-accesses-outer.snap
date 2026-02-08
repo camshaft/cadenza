@@ -55,7 +55,7 @@ result
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-inner-scope-accesses-outer.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-inner-scope-accesses-outer.cdz"
   </file>
   <span-start>
     67

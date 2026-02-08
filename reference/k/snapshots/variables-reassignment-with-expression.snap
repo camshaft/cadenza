@@ -51,7 +51,7 @@ counter
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-reassignment-with-expression.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-reassignment-with-expression.cdz"
   </file>
   <span-start>
     38

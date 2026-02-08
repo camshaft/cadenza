@@ -51,7 +51,7 @@ line three" : String
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-multi-line-string.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-multi-line-string.cdz"
   </file>
   <span-start>
     0

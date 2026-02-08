@@ -53,7 +53,7 @@ counter
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-shadowing-uses-previous-value.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-shadowing-uses-previous-value.cdz"
   </file>
   <span-start>
     68

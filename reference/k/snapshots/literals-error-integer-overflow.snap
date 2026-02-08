@@ -54,7 +54,7 @@ error: integer literal is too large
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-error-integer-overflow.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-error-integer-overflow.cdz"
   </file>
   <span-start>
     0

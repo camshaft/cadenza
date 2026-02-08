@@ -50,7 +50,7 @@ point.x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-simple-field-access.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-simple-field-access.cdz"
   </file>
   <span-start>
     31

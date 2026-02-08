@@ -49,7 +49,7 @@ result
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-let-with-arithmetic-expression.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-let-with-arithmetic-expression.cdz"
   </file>
   <span-start>
     20

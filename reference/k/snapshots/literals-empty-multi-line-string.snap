@@ -51,7 +51,7 @@ source: crates/cadenza-compiler/test-data/semantics/literals-empty-multi-line-st
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-empty-multi-line-string.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-empty-multi-line-string.cdz"
   </file>
   <span-start>
     0

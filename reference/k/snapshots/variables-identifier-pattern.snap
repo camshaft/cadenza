@@ -49,7 +49,7 @@ x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-identifier-pattern.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-identifier-pattern.cdz"
   </file>
   <span-start>
     11

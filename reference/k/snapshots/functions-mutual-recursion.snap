@@ -81,7 +81,7 @@ true : Bool
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-mutual-recursion.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-mutual-recursion.cdz"
   </file>
   <span-start>
     125

@@ -55,7 +55,7 @@ x
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-reassignment-in-nested-scope.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-reassignment-in-nested-scope.cdz"
   </file>
   <span-start>
     39

@@ -69,7 +69,7 @@ apply double 5
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-call-before-eval.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-call-before-eval.cdz"
   </file>
   <span-start>
     39

@@ -71,7 +71,7 @@ add (double 3) (double 4)
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-nested-application.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-nested-application.cdz"
   </file>
   <span-start>
     39

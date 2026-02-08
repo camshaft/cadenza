@@ -54,7 +54,7 @@ let y = 20
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-list-from-variables.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-list-from-variables.cdz"
   </file>
   <span-start>
     22

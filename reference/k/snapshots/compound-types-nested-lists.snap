@@ -52,7 +52,7 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-nested-lists.
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-nested-lists.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-nested-lists.cdz"
   </file>
   <span-start>
     0

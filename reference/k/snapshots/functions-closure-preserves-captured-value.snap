@@ -57,7 +57,7 @@ capture_fn
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-closure-preserves-captured-value.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-closure-preserves-captured-value.cdz"
   </file>
   <span-start>
     40

@@ -53,7 +53,7 @@ multiply 6 7
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-application-with-multiple-arguments.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-application-with-multiple-arguments.cdz"
   </file>
   <span-start>
     24

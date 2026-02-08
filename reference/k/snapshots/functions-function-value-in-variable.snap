@@ -57,7 +57,7 @@ op 1 2
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-function-value-in-variable.cdz"
+    "crates/cadenza-compiler/test-data/semantics/functions-function-value-in-variable.cdz"
   </file>
   <span-start>
     32

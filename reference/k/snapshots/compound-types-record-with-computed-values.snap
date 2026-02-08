@@ -48,7 +48,7 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-record-with-c
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-record-with-computed-values.cdz"
+    "crates/cadenza-compiler/test-data/semantics/compound-types-record-with-computed-values.cdz"
   </file>
   <span-start>
     0

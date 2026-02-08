@@ -54,7 +54,7 @@ error: unknown escape sequence
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-error-invalid-escape-in-string.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-error-invalid-escape-in-string.cdz"
   </file>
   <span-start>
     0

@@ -48,7 +48,7 @@ Line 2	Tabbed" : String
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-string-with-escape-sequences.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-string-with-escape-sequences.cdz"
   </file>
   <span-start>
     0

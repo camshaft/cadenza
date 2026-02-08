@@ -55,7 +55,7 @@ foo
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-case-sensitivity.cdz"
+    "crates/cadenza-compiler/test-data/semantics/variables-case-sensitivity.cdz"
   </file>
   <span-start>
     36

@@ -47,7 +47,7 @@ false : Bool
     .List
   </output>
   <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/literals-false-literal.cdz"
+    "crates/cadenza-compiler/test-data/semantics/literals-false-literal.cdz"
   </file>
   <span-start>
     0
