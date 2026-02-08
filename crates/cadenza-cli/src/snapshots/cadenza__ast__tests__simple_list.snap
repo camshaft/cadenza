@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-cli/src/ast.rs
+expression: result
+---
+(File (Path 60 116 101 115 116 62) (Span (0 6) (Apply (Synthetic 95 95 108 105 115 116 95 95) (Ident 102) (Ident 120))))

@@ -1,0 +1,78 @@
+---
+source: crates/cadenza-compiler/test-data/semantics/functions-nested-function-_closure-in-closure_.cdz
+---
+# functions-nested-function-_closure-in-closure_
+
+## Input
+
+```cadenza
+fn outer x =
+    fn inner y = x + y
+    inner
+let add_5 = outer 5
+add_5 3
+```
+
+## AST
+
+```lisp
+(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 102 117 110 99 116 105 111 110 115 45 110 101 115 116 101 100 45 102 117 110 99 116 105 111 110 45 95 99 108 111 115 117 114 101 45 105 110 45 99 108 111 115 117 114 101 95 46 99 100 122) (Span (0 46) (Apply (Op 61) (Apply (Apply (Ident 102 110) (Ident 111 117 116 101 114)) (Ident 120)) (Apply (Synthetic 95 95 98 108 111 99 107 95 95) (Apply (Op 61) (Apply (Apply (Ident 102 110) (Ident 105 110 110 101 114)) (Ident 121)) (Apply (Op 43) (Ident 120) (Ident 121))) (Ident 105 110 110 101 114)))) (Span (46 66) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 97 100 100 95 53)) (Apply (Ident 111 117 116 101 114) (Integer 5)))) (Span (66 73) (Apply (Ident 97 100 100 95 53) (Integer 3))))
+```
+
+## Expected
+
+```
+() : Unit
+() : Unit
+8 : Integer
+```
+
+## K Output
+
+```
+<generatedTop>
+  <k>
+    8 ~> .K
+  </k>
+  <scopes>
+    0 |-> scope ( -1 , "add_5" |-> closure ( "inner" , ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "inner" |-> pending ( "inner" )
+    "outer" |-> pending ( "outer" )
+    "x" |-> 5 )
+    "outer" |-> closure ( "outer" , ListItem ( "x" ) , ( Apply ( Synthetic 95  95  98  108  111  99  107  95  95  .Chars ) ( Apply ( Op 61  .Chars ) ( Apply ( Apply ( Ident 102  110  .Chars ) ( Ident 105  110  110  101  114  .Chars )  .Exprs ) ( Ident 121  .Chars )  .Exprs )  ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs )  .Exprs )  ( Ident 105  110  110  101  114  .Chars )  .Exprs ) , "outer" |-> pending ( "outer" ) ) )
+    1 |-> scope ( 0 , "outer" |-> pending ( "outer" )
+    "x" |-> 5 )
+    2 |-> scope ( 1 , "inner" |-> closure ( "inner" , ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "inner" |-> pending ( "inner" )
+    "outer" |-> pending ( "outer" )
+    "x" |-> 5 ) )
+    3 |-> scope ( 0 , "inner" |-> pending ( "inner" )
+    "outer" |-> pending ( "outer" )
+    "x" |-> 5
+    "y" |-> 3 )
+  </scopes>
+  <current-scope>
+    0
+  </current-scope>
+  <next-scope>
+    4
+  </next-scope>
+  <store>
+    .Map
+  </store>
+  <next-cell>
+    0
+  </next-cell>
+  <output>
+    .List
+  </output>
+  <file>
+    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-nested-function-_closure-in-closure_.cdz"
+  </file>
+  <span-start>
+    66
+  </span-start>
+  <span-end>
+    73
+  </span-end>
+</generatedTop>
+```
+

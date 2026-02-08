@@ -1,0 +1,66 @@
+---
+source: crates/cadenza-compiler/test-data/semantics/functions-multi-parameter-function.cdz
+---
+# functions-multi-parameter-function
+
+## Input
+
+```cadenza
+fn add x y = x + y
+add 3 7
+```
+
+## AST
+
+```lisp
+(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 102 117 110 99 116 105 111 110 115 45 109 117 108 116 105 45 112 97 114 97 109 101 116 101 114 45 102 117 110 99 116 105 111 110 46 99 100 122) (Span (0 19) (Apply (Op 61) (Apply (Apply (Apply (Ident 102 110) (Ident 97 100 100)) (Ident 120)) (Ident 121)) (Apply (Op 43) (Ident 120) (Ident 121)))) (Span (19 26) (Apply (Apply (Ident 97 100 100) (Integer 3)) (Integer 7))))
+```
+
+## Expected
+
+```
+() : Unit
+10 : Integer
+```
+
+## K Output
+
+```
+<generatedTop>
+  <k>
+    10 ~> .K
+  </k>
+  <scopes>
+    0 |-> scope ( -1 , "add" |-> closure ( "add" , ListItem ( "x" )
+    ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" ) ) )
+    1 |-> scope ( 0 , "add" |-> pending ( "add" )
+    "x" |-> 3
+    "y" |-> 7 )
+  </scopes>
+  <current-scope>
+    0
+  </current-scope>
+  <next-scope>
+    2
+  </next-scope>
+  <store>
+    .Map
+  </store>
+  <next-cell>
+    0
+  </next-cell>
+  <output>
+    .List
+  </output>
+  <file>
+    "<repo>/crates/cadenza-compiler/test-data/semantics/functions-multi-parameter-function.cdz"
+  </file>
+  <span-start>
+    19
+  </span-start>
+  <span-end>
+    26
+  </span-end>
+</generatedTop>
+```
+

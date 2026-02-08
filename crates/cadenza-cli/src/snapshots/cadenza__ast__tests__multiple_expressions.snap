@@ -1,0 +1,5 @@
+---
+source: crates/cadenza-cli/src/ast.rs
+expression: result
+---
+(File (Path 60 116 101 115 116 62) (Span (0 2) (Integer 42)) (Span (3 7) (Float 4614253070214989087)) (Span (8 15) (String 104 101 108 108 111)))

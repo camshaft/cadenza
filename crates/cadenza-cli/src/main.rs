@@ -5,6 +5,7 @@
 //! - `lsp`: Start a Language Server Protocol server for editor integration
 //! - `mcp`: Start a Model Context Protocol server for LLM integration
 
+mod ast;
 mod lsp;
 mod mcp;
 mod repl;
@@ -38,6 +39,12 @@ enum Commands {
     Lsp,
     /// Start the Model Context Protocol server for LLM integration
     Mcp,
+    /// Convert a Cadenza file to S-expression AST (for K framework)
+    Ast {
+        /// Input Cadenza file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -61,6 +68,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Mcp => {
             mcp::start_server().await?;
+        }
+        Commands::Ast { file } => {
+            let ast_output = ast::convert_file(&file)?;
+            println!("{}", ast_output);
         }
     }
 

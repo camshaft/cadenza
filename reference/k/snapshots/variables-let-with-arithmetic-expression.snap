@@ -1,0 +1,62 @@
+---
+source: crates/cadenza-compiler/test-data/semantics/variables-let-with-arithmetic-expression.cdz
+---
+# variables-let-with-arithmetic-expression
+
+## Input
+
+```cadenza
+let result = 10 + 5
+result
+```
+
+## AST
+
+```lisp
+(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 118 97 114 105 97 98 108 101 115 45 108 101 116 45 119 105 116 104 45 97 114 105 116 104 109 101 116 105 99 45 101 120 112 114 101 115 115 105 111 110 46 99 100 122) (Span (0 20) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 114 101 115 117 108 116)) (Apply (Op 43) (Integer 10) (Integer 5)))) (Span (20 26) (Ident 114 101 115 117 108 116)))
+```
+
+## Expected
+
+```
+() : Unit
+15 : Integer
+```
+
+## K Output
+
+```
+<generatedTop>
+  <k>
+    15 ~> .K
+  </k>
+  <scopes>
+    0 |-> scope ( -1 , "result" |-> 15 )
+  </scopes>
+  <current-scope>
+    0
+  </current-scope>
+  <next-scope>
+    1
+  </next-scope>
+  <store>
+    .Map
+  </store>
+  <next-cell>
+    0
+  </next-cell>
+  <output>
+    .List
+  </output>
+  <file>
+    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-let-with-arithmetic-expression.cdz"
+  </file>
+  <span-start>
+    20
+  </span-start>
+  <span-end>
+    26
+  </span-end>
+</generatedTop>
+```
+

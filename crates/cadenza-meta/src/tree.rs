@@ -5,7 +5,6 @@
 //! Rust code.
 
 use crate::bindings::*;
-use std::collections::HashSet;
 
 /// A block of sequential evaluation steps
 #[derive(Clone, Debug)]

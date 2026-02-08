@@ -357,7 +357,7 @@ pub fn compile_expr(expr: &Expr, var_env: &HashMap<String, BindingId>) -> Compil
 
         Expr::Let { bindings, body } => {
             // Create a new environment with the let-bound variables
-            let mut new_env = var_env.clone();
+            let new_env = var_env.clone();
             let compiled_bindings: Vec<_> = bindings
                 .iter()
                 .map(|(name, expr)| {
