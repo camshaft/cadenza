@@ -152,7 +152,7 @@ fn test(sh: &Shell, patterns: HashSet<&str>, accept: bool) -> Result<()> {
         let basename = entry.file_stem().unwrap().to_string_lossy().to_string();
 
         // Filter by pattern if provided
-        if !patterns.iter().any(|p| basename.contains(p)) {
+        if !patterns.is_empty() && !patterns.iter().any(|p| basename.contains(p)) {
             continue;
         }
 
