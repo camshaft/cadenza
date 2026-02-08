@@ -1,0 +1,64 @@
+---
+source: crates/cadenza-compiler/test-data/semantics/variables-field-rebinding-with-equals.cdz
+---
+# variables-field-rebinding-with-equals
+
+## Input
+
+```cadenza
+let { a = x, b = y, c = z } = { a = 10, b = 20, c = 30 }
+x + y + z
+```
+
+## AST
+
+```lisp
+(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 118 97 114 105 97 98 108 101 115 45 102 105 101 108 100 45 114 101 98 105 110 100 105 110 103 45 119 105 116 104 45 101 113 117 97 108 115 46 99 100 122) (Span (0 57) (Apply (Op 61) (Apply (Ident 108 101 116) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 61) (Ident 97) (Ident 120)) (Apply (Op 61) (Ident 98) (Ident 121)) (Apply (Op 61) (Ident 99) (Ident 122)))) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 61) (Ident 97) (Integer 10)) (Apply (Op 61) (Ident 98) (Integer 20)) (Apply (Op 61) (Ident 99) (Integer 30))))) (Span (57 66) (Apply (Op 43) (Apply (Op 43) (Ident 120) (Ident 121)) (Ident 122))))
+```
+
+## Expected
+
+```
+() : Unit
+60 : Integer
+```
+
+## K Output
+
+```
+<generatedTop>
+  <k>
+    60 ~> .K
+  </k>
+  <scopes>
+    0 |-> scope ( -1 , "x" |-> 10
+    "y" |-> 20
+    "z" |-> 30 )
+  </scopes>
+  <current-scope>
+    0
+  </current-scope>
+  <next-scope>
+    1
+  </next-scope>
+  <store>
+    .Map
+  </store>
+  <next-cell>
+    0
+  </next-cell>
+  <output>
+    .List
+  </output>
+  <file>
+    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-field-rebinding-with-equals.cdz"
+  </file>
+  <span-start>
+    57
+  </span-start>
+  <span-end>
+    66
+  </span-end>
+</generatedTop>
+```
+

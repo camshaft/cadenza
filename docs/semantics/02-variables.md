@@ -333,6 +333,60 @@ rest
 
 **Notes:** The pattern only needs to match the fields it names; other fields are ignored
 
+### Test: Multiple field bindings
+
+**Input:**
+
+```cadenza
+let { a, b, c, d, e } = { a = 1, b = 2, c = 3, d = 4, e = 5 }
+a + b + c + d + e
+```
+
+**Output:**
+
+```repl
+() : Unit
+15 : Integer
+```
+
+**Notes:** Record patterns can destructure an arbitrary number of fields
+
+### Test: Field rebinding with equals
+
+**Input:**
+
+```cadenza
+let { a = x, b = y, c = z } = { a = 10, b = 20, c = 30 }
+x + y + z
+```
+
+**Output:**
+
+```repl
+() : Unit
+60 : Integer
+```
+
+**Notes:** Use `field = name` syntax to bind a field to a different identifier name
+
+### Test: Mixed shorthand and full syntax
+
+**Input:**
+
+```cadenza
+let { x, y = value, z } = { x = 1, y = 2, z = 3 }
+x + value + z
+```
+
+**Output:**
+
+```repl
+() : Unit
+6 : Integer
+```
+
+**Notes:** Shorthand (`x`, `z`) and full syntax (`y = value`) can be mixed in the same pattern
+
 ### Test: ERROR - Record pattern missing field
 
 **Input:**

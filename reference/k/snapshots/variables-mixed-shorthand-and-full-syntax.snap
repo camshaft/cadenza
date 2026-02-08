@@ -1,0 +1,64 @@
+---
+source: crates/cadenza-compiler/test-data/semantics/variables-mixed-shorthand-and-full-syntax.cdz
+---
+# variables-mixed-shorthand-and-full-syntax
+
+## Input
+
+```cadenza
+let { x, y = value, z } = { x = 1, y = 2, z = 3 }
+x + value + z
+```
+
+## AST
+
+```lisp
+(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 118 97 114 105 97 98 108 101 115 45 109 105 120 101 100 45 115 104 111 114 116 104 97 110 100 45 97 110 100 45 102 117 108 108 45 115 121 110 116 97 120 46 99 100 122) (Span (0 50) (Apply (Op 61) (Apply (Ident 108 101 116) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Ident 120) (Apply (Op 61) (Ident 121) (Ident 118 97 108 117 101)) (Ident 122))) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 61) (Ident 120) (Integer 1)) (Apply (Op 61) (Ident 121) (Integer 2)) (Apply (Op 61) (Ident 122) (Integer 3))))) (Span (50 63) (Apply (Op 43) (Apply (Op 43) (Ident 120) (Ident 118 97 108 117 101)) (Ident 122))))
+```
+
+## Expected
+
+```
+() : Unit
+6 : Integer
+```
+
+## K Output
+
+```
+<generatedTop>
+  <k>
+    6 ~> .K
+  </k>
+  <scopes>
+    0 |-> scope ( -1 , "value" |-> 2
+    "x" |-> 1
+    "z" |-> 3 )
+  </scopes>
+  <current-scope>
+    0
+  </current-scope>
+  <next-scope>
+    1
+  </next-scope>
+  <store>
+    .Map
+  </store>
+  <next-cell>
+    0
+  </next-cell>
+  <output>
+    .List
+  </output>
+  <file>
+    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-mixed-shorthand-and-full-syntax.cdz"
+  </file>
+  <span-start>
+    50
+  </span-start>
+  <span-end>
+    63
+  </span-end>
+</generatedTop>
+```
+

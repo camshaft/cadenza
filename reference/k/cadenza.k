@@ -359,6 +359,48 @@ module CADENZA
           => E ~> matchRecordPattern(PatternExprs) ... </k>
          requires isKw(LetKw, "let") andBool isKw(EqOp, "=") andBool isKw(SynChrs, "__record__")
 
+    // Alternative record pattern: let { x, ... = expr } (where = is inside the pattern)
+    // Extract the value expression from inside the pattern and evaluate it first
+    rule <k> (Apply (Ident LetKw:Chars) (Apply (Synthetic SynChrs:Chars) PatternExprs:Exprs) .Exprs)
+          => extractRecordValue(PatternExprs) ~> matchRecordPatternInline(PatternExprs) ... </k>
+         requires isKw(LetKw, "let") andBool isKw(SynChrs, "__record__")
+          andBool hasInlineValue(PatternExprs)
+
+    // Helper to check if pattern expressions contain an inline value (... = expr)
+    syntax Bool ::= hasInlineValue(Exprs) [function]
+    rule hasInlineValue((Apply (Op EqOp:Chars) (Apply (Op RestOp:Chars) _) _) _) => true
+         requires isKw(EqOp, "=") andBool isKw(RestOp, "...")
+    rule hasInlineValue(_ RestExprs:Exprs) => hasInlineValue(RestExprs)
+    rule hasInlineValue(.Exprs) => false
+
+    // Helper to extract the value expression from inline pattern
+    syntax KItem ::= extractRecordValue(Exprs)
+    rule <k> extractRecordValue((Apply (Op EqOp:Chars) (Apply (Op RestOp:Chars) _) ValueExpr:Expr .Exprs) .Exprs)
+          => ValueExpr ... </k>
+         requires isKw(EqOp, "=") andBool isKw(RestOp, "...")
+    rule <k> extractRecordValue(_ RestExprs:Exprs) => extractRecordValue(RestExprs) ... </k>
+         [owise]
+
+    // Helper to match pattern after value is evaluated (filters out the = value part)
+    syntax KItem ::= matchRecordPatternInline(Exprs)
+    rule <k> record(Fields:Map) ~> matchRecordPatternInline(PatternExprs:Exprs)
+          => bindRecordFields(filterInlineValue(PatternExprs), Fields) ... </k>
+
+    // Helper to filter out the inline value from pattern expressions
+    syntax Exprs ::= filterInlineValue(Exprs) [function]
+    rule filterInlineValue((Apply (Op EqOp:Chars) (Apply (Op RestOp:Chars) X:Expr .Exprs) _ .Exprs) RestExprs:Exprs)
+         => (Apply (Op RestOp) X .Exprs) filterInlineValue(RestExprs)
+         requires isKw(EqOp, "=") andBool isKw(RestOp, "...")
+    rule filterInlineValue(E:Expr RestExprs:Exprs) => E filterInlineValue(RestExprs)
+         requires notBool isInlineValueExpr(E)
+    rule filterInlineValue(.Exprs) => .Exprs
+
+    // Helper to check if an expression is the inline value pattern
+    syntax Bool ::= isInlineValueExpr(Expr) [function]
+    rule isInlineValueExpr((Apply (Op EqOp:Chars) (Apply (Op RestOp:Chars) _ .Exprs) _ .Exprs)) => true
+         requires isKw(EqOp, "=") andBool isKw(RestOp, "...")
+    rule isInlineValueExpr(_) => false [owise]
+
     // After expression evaluates to a value, bind it in the current scope
     // Let bindings return unit (empty tuple)
     syntax KItem ::= bindVar(String)
@@ -407,19 +449,45 @@ module CADENZA
           => bindRecordFields(PatternExprs, Fields) ... </k>
 
     // Bind record fields - empty pattern list done
-    rule <k> bindRecordFields(.Exprs, _:Map) => record(.Map) ... </k>
+    rule <k> bindRecordFields(.Exprs, _:Map) => tuple(.List) ... </k>
+
+    // Rest pattern: { ...rest } captures all remaining fields as a record
+    rule <k> bindRecordFields((Apply (Op RestOp:Chars) (Ident NameChrs:Chars) .Exprs) .Exprs, Fields:Map)
+          => bindInScope(charsToString(NameChrs), record(Fields))
+             ~> tuple(.List) ... </k>
+         requires isKw(RestOp, "...")
+
+    // Rest pattern: { ... } ignores remaining fields (Error indicates no binding)
+    rule <k> bindRecordFields((Apply (Op RestOp:Chars) (Error) .Exprs) .Exprs, _:Map)
+          => tuple(.List) ... </k>
+         requires isKw(RestOp, "...")
+
+    // Rest pattern with = (Apply (Op "=") (Apply (Op "...") (Error)) value)
+    // This happens for `{ x, ... }` syntax where it's parsed as `... = value`
+    rule <k> bindRecordFields((Apply (Op EqOp:Chars) (Apply (Op RestOp:Chars) (Error) .Exprs) _:Expr .Exprs) .Exprs, _:Map)
+          => tuple(.List) ... </k>
+         requires isKw(EqOp, "=") andBool isKw(RestOp, "...")
 
     // Record pattern with just identifier: { x } means bind field x to variable x
+    // Remove field from map so rest pattern captures remaining fields
     rule <k> bindRecordFields((Ident NameChrs:Chars) RestPatterns:Exprs, Fields:Map)
           => bindInScope(charsToString(NameChrs), {Fields[charsToString(NameChrs)]}:>Val)
-             ~> bindRecordFields(RestPatterns, Fields) ... </k>
+             ~> bindRecordFields(RestPatterns, removeKey(charsToString(NameChrs), Fields)) ... </k>
          requires charsToString(NameChrs) in_keys(Fields)
 
     // Record pattern with renaming: { x = a } means bind field x to variable a
+    // Remove field from map so rest pattern captures remaining fields
     rule <k> bindRecordFields((Apply (Op EqOp:Chars) (Ident FieldChrs:Chars) (Ident VarChrs:Chars)) RestPatterns:Exprs, Fields:Map)
           => bindInScope(charsToString(VarChrs), {Fields[charsToString(FieldChrs)]}:>Val)
-             ~> bindRecordFields(RestPatterns, Fields) ... </k>
+             ~> bindRecordFields(RestPatterns, removeKey(charsToString(FieldChrs), Fields)) ... </k>
          requires isKw(EqOp, "=") andBool charsToString(FieldChrs) in_keys(Fields)
+
+    // Helper to remove a key from a map
+    syntax Map ::= removeKey(String, Map) [function]
+    rule removeKey(K:String, (K |-> _) Rest:Map) => Rest
+    rule removeKey(K:String, (K2:String |-> V:Val) Rest:Map) => (K2 |-> V) removeKey(K, Rest)
+         requires K =/=String K2
+    rule removeKey(_, .Map) => .Map
 
     // ==========================================
     // Variable Reassignment (without let)
@@ -858,13 +926,34 @@ module CADENZA
     // Helper to evaluate record fields
     syntax KItem ::= evalRecordFields(Exprs, Map)
     rule <k> evalRecordFields(.Exprs, Acc:Map) => record(Acc) ... </k>
+
+    // Spread expression: { ...record } - merge all fields from a record
+    rule <k> evalRecordFields((Apply (Op SpreadOp:Chars) (Ident NameChrs:Chars) .Exprs) RestFields:Exprs, Acc:Map)
+          => lookupIdent(charsToString(NameChrs)) ~> spreadRecord(RestFields, Acc) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
+         requires isKw(SpreadOp, "...") andBool varExists(charsToString(NameChrs), Current, Scopes)
+
+    // Explicit field: { name = expr }
     rule <k> evalRecordFields((Apply (Op EqOp:Chars) (Ident NameChrs:Chars) ValueExpr:Expr) RestFields:Exprs, Acc:Map)
           => ValueExpr ~> evalRecordField(charsToString(NameChrs), RestFields, Acc) ... </k>
          requires isKw(EqOp, "=")
 
+    // Shorthand field: { x } means { x = x } - look up variable x and use as field x
+    rule <k> evalRecordFields((Ident NameChrs:Chars) RestFields:Exprs, Acc:Map)
+          => lookupIdent(charsToString(NameChrs)) ~> evalRecordField(charsToString(NameChrs), RestFields, Acc) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
+         requires varExists(charsToString(NameChrs), Current, Scopes)
+
     syntax KItem ::= evalRecordField(String, Exprs, Map)
     rule <k> V:Val ~> evalRecordField(Name:String, RestFields:Exprs, Acc:Map)
           => evalRecordFields(RestFields, Acc[Name <- V]) ... </k>
+
+    // Spread record: after evaluating the spread expression, merge its fields
+    syntax KItem ::= spreadRecord(Exprs, Map)
+    rule <k> record(SpreadFields:Map) ~> spreadRecord(RestFields:Exprs, Acc:Map)
+          => evalRecordFields(RestFields, mergeMapInto(Acc, SpreadFields)) ... </k>
 
     // ==========================================
     // Struct Definition and Construction
