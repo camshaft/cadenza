@@ -1,0 +1,64 @@
+---
+source: crates/cadenza-compiler/test-data/semantics/variables-simple-reassignment.cdz
+---
+# variables-simple-reassignment
+
+## Input
+
+```cadenza
+let x = 1
+x = 2
+x
+```
+
+## AST
+
+```lisp
+(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 118 97 114 105 97 98 108 101 115 45 115 105 109 112 108 101 45 114 101 97 115 115 105 103 110 109 101 110 116 46 99 100 122) (Span (0 10) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 120)) (Integer 1))) (Span (10 16) (Apply (Op 61) (Ident 120) (Integer 2))) (Span (16 17) (Ident 120)))
+```
+
+## Expected
+
+```
+() : Unit
+() : Unit
+2 : Integer
+```
+
+## K Output
+
+```
+<generatedTop>
+  <k>
+    2 ~> .K
+  </k>
+  <scopes>
+    0 |-> scope ( -1 , "x" |-> 2 )
+  </scopes>
+  <current-scope>
+    0
+  </current-scope>
+  <next-scope>
+    1
+  </next-scope>
+  <store>
+    .Map
+  </store>
+  <next-cell>
+    0
+  </next-cell>
+  <output>
+    .List
+  </output>
+  <file>
+    "<repo>/crates/cadenza-compiler/test-data/semantics/variables-simple-reassignment.cdz"
+  </file>
+  <span-start>
+    16
+  </span-start>
+  <span-end>
+    17
+  </span-end>
+</generatedTop>
+```
+

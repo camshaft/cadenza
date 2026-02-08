@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use std::{fs, path::PathBuf};
+use std::{collections::HashSet, fs, path::PathBuf};
 use xshell::{Shell, cmd};
 
 #[derive(Args)]
@@ -15,12 +15,11 @@ pub enum KCommand {
     Kompile,
     /// Run K framework tests
     Test {
-        /// Optional pattern to filter test names (e.g., "function" or "closure")
-        #[arg(short, long)]
-        pattern: Option<String>,
         /// Accept new snapshots (copy .snap.new to .snap)
         #[arg(long)]
         accept: bool,
+        /// Optional pattern to filter test names (e.g., "function" or "closure")
+        patterns: Vec<String>,
     },
     /// Run a single Cadenza file through K
     Run {
@@ -39,7 +38,9 @@ impl KCommand {
     pub fn run(&self, sh: &Shell) -> Result<()> {
         match self {
             KCommand::Kompile => kompile(sh),
-            KCommand::Test { pattern, accept } => test(sh, pattern.as_deref(), *accept),
+            KCommand::Test { patterns, accept } => {
+                test(sh, patterns.iter().map(|v| v.as_str()).collect(), *accept)
+            }
             KCommand::Run { file } => run_single(sh, file),
         }
     }
@@ -89,7 +90,7 @@ enum TestResult {
     Error,
 }
 
-fn test(sh: &Shell, pattern: Option<&str>, accept: bool) -> Result<()> {
+fn test(sh: &Shell, patterns: HashSet<&str>, accept: bool) -> Result<()> {
     // First, extract semantics tests
     println!("Extracting semantics tests...");
     cmd!(sh, "cargo xtask semantics extract")
@@ -121,8 +122,11 @@ fn test(sh: &Shell, pattern: Option<&str>, accept: bool) -> Result<()> {
     fs::create_dir_all(&output_test_dir)?;
     fs::create_dir_all(&snapshot_dir)?;
 
-    if let Some(p) = pattern {
-        println!("Running K framework tests matching '{}'...", p);
+    if !patterns.is_empty() {
+        println!(
+            "Running K framework tests matching {}...",
+            patterns.iter().copied().collect::<Vec<_>>().join(", ")
+        );
     } else {
         println!("Running K framework tests...");
     }
@@ -148,9 +152,7 @@ fn test(sh: &Shell, pattern: Option<&str>, accept: bool) -> Result<()> {
         let basename = entry.file_stem().unwrap().to_string_lossy().to_string();
 
         // Filter by pattern if provided
-        if let Some(p) = pattern
-            && !basename.contains(p)
-        {
+        if !patterns.is_empty() && !patterns.iter().any(|p| basename.contains(p)) {
             continue;
         }
 
@@ -293,9 +295,11 @@ fn test(sh: &Shell, pattern: Option<&str>, accept: bool) -> Result<()> {
         println!();
         println!(
             "To accept new snapshots, run: cargo xtask k test --accept{}",
-            pattern
-                .map(|p| format!(" --pattern {}", p))
-                .unwrap_or_default()
+            patterns
+                .iter()
+                .map(|p| format!(" {p}"))
+                .collect::<Vec<_>>()
+                .join("")
         );
     }
 
