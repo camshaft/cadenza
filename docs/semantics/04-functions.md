@@ -26,7 +26,7 @@ When a `fn` expression is evaluated:
 2. Bind the function to its name in the environment
 3. Return `Unit`
 
-The function captures the environment by reference, making it a true closure. The body is not evaluated until the function is called.
+The function captures the environment by value, making it a true closure. The body is not evaluated until the function is called.
 
 ### Type
 
@@ -290,7 +290,7 @@ Functions capture their lexical environment at definition time. This means they 
 
 ### Semantics
 
-When a function is defined, it captures a reference to the current environment. When called, the function evaluates its body using this captured environment (extended with parameter bindings), not the caller's environment.
+When a function is defined, it captures a copy of the current environment (capture by value). When called, the function evaluates its body using this captured environment (extended with parameter bindings), not the caller's environment. Later reassignments to captured variables do not affect the closure.
 
 This enables functions to "close over" variables from their definition site.
 
@@ -382,157 +382,6 @@ add_5 3
 
 ---
 
-## Closures and Reassignment
-
-Closures capture variables by reference, not by value. This means if a captured variable is reassigned, all closures that captured it see the new value.
-
-### Semantics
-
-When a closure captures a variable:
-
-1. It stores a reference to the variable's binding in the environment
-2. When the closure is called, it reads the current value of that binding
-3. If the binding is reassigned, the closure sees the new value
-4. Multiple closures can share the same captured variable
-
-This is different from capturing by value (copying), which would freeze the value at definition time.
-
-### Test: Closure sees reassignment
-
-**Input:**
-
-```cadenza
-let x = 10
-fn get_x = x
-get_x
-x = 20
-get_x
-```
-
-**Output:**
-
-```repl
-() : Unit
-() : Unit
-10 : Integer
-() : Unit
-20 : Integer
-```
-
-**Notes:** The function captures `x` by reference, so it sees the reassignment
-
-### Test: Multiple closures share captured variable
-
-**Input:**
-
-```cadenza
-let counter = 0
-fn increment =
-  counter += 1
-fn get_counter = counter
-increment
-increment
-get_counter
-```
-
-**Output:**
-
-```repl
-() : Unit
-() : Unit
-() : Unit
-() : Unit
-() : Unit
-2 : Integer
-```
-
-**Notes:** Both functions capture the same `counter` variable, so `increment` affects what `get_counter` sees
-
-### Test: Closure as mutable state
-
-**Input:**
-
-```cadenza
-let state = 0
-fn get_state = state
-fn set_state new_val =
-  state = new_val
-set_state 42
-get_state
-```
-
-**Output:**
-
-```repl
-() : Unit
-() : Unit
-() : Unit
-() : Unit
-42 : Integer
-```
-
-**Notes:** Closures can be used to create objects with mutable state
-
-### Test: Reassignment in nested closure
-
-**Input:**
-
-```cadenza
-let x = 1
-fn outer =
-    x = 10
-    fn inner = x
-    inner
-let get_x = outer
-get_x
-x
-```
-
-**Output:**
-
-```repl
-() : Unit
-() : Unit
-() : Unit
-10 : Integer
-10 : Integer
-```
-
-**Notes:** The reassignment in `outer` affects the captured variable, visible to both `inner` and the outer scope
-
-### Capture by Reference and Linear Types
-
-With linear memory management, captured variables must be handled carefully:
-
-- If a closure captures a linear type (String, List, etc.), it captures a reference
-- Reassigning the captured variable transfers ownership and deletes the old value
-- The closure then refers to the new value
-- Multiple closures sharing a captured variable means they all share the same reference
-
-### Test: Closure captures reference to linear type
-
-**Input:**
-
-```cadenza
-let name = "Alice"
-fn get_name = name
-name = "Bob"
-get_name
-```
-
-**Output:**
-
-```repl
-() : Unit
-() : Unit
-() : Unit
-"Bob" : String
-```
-
-**Notes:** The old string "Alice" is freed when `name` is reassigned. The closure sees the new value.
-
----
-
 ## Recursion
 
 Functions can call themselves by name, enabling recursive algorithms. The function name is bound in the environment before the body is evaluated, making recursion possible.
@@ -547,9 +396,7 @@ Function definitions are "hoisted" - the function name is available in its own b
 
 ```cadenza
 fn factorial n =
-    match n
-        0 => 1
-        n => n * factorial n - 1
+    if n == 0 then 1 else (n * (factorial (n - 1)))
 factorial 5
 ```
 
@@ -568,14 +415,10 @@ factorial 5
 
 ```cadenza
 fn is_even n =
-    match n
-        0 => true
-        n => is_odd n - 1
+    if n == 0 then true else (is_odd (n - 1))
 
 fn is_odd n =
-    match n
-        0 => false
-        n => is_even n - 1
+    if n == 0 then false else (is_even (n - 1))
 
 is_even 4
 ```
@@ -589,6 +432,33 @@ true : Bool
 ```
 
 **Notes:** Functions can call each other recursively due to hoisting
+
+---
+
+## Function calls before captures
+
+Functions should only be able to be called after their scope captures are evaluated.
+
+### Test: Call before eval
+
+```cadenza
+add_10 5
+
+let x = 10
+fn add_10 a = x + a
+```
+
+**Output:**
+
+```
+error: arity mismatch
+ --> test.cdz:2:1
+  |
+2 | add_10 5
+  | ^^^ `add_10` function must be called after captures have been evaluated
+  |
+  = note: function `add_10` captures the variable `x`, which has not been evaluated yet
+```
 
 ---
 

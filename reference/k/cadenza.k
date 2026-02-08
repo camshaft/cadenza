@@ -3,6 +3,13 @@
 //
 // This is a reference implementation of the Cadenza language semantics.
 // It accepts parenthesized AST produced by `cadenza ast` command.
+//
+// Scoping Model:
+// - Uses mutable scopes with a scope chain (parent references)
+// - Closures capture values by copy at definition time (immutable capture)
+// - Functions are hoisted but cannot be called until captures are ready
+// - Lexical scoping: functions capture from their definition scope
+// - Use Cell<T> for shared mutable state
 
 module CADENZA-SYNTAX
     imports INT
@@ -39,21 +46,29 @@ module CADENZA-SYNTAX
     // List of integers for char sequences
     syntax Chars ::= List{Int, ""}
 
+    // Scope identifier (unique integer)
+    syntax ScopeId ::= Int
+
     // Values - the result of evaluation
     syntax Val ::= Int
                  | Float
                  | String
                  | Bool
-                 | closure(String, List, Expr, Map)  // name, params, body, captured env
-                 | tuple(List)                        // tuple value (list of vals)
-                 | record(Map)                        // record value (map of String -> Val)
-                 | list(List)                         // list value (list of vals)
-                 | structVal(String, Map)             // struct value (name, fields)
-                 | enumVal(String, String, Val)       // enum value (enum name, variant name, data)
+                 | closure(String, List, Expr, Map)        // name, params, body, captured env (by value)
+                 | tuple(List)                             // tuple value (list of vals)
+                 | record(Map)                             // record value (map of String -> Val)
+                 | list(List)                              // list value (list of vals)
+                 | structVal(String, Map)                  // struct value (name, fields)
+                 | enumVal(String, String, Val)            // enum value (enum name, variant name, data)
+                 | cell(Int)                               // cell reference (points to store)
+                 | pending(String)                         // placeholder for hoisted but not-yet-ready function
 
     // Type descriptors (for struct/enum definitions)
     syntax TypeDef ::= structDef(String, Map)         // struct definition (name, field types)
                      | enumDef(String, Map)           // enum definition (name, variant -> type)
+
+    // TypeDef is a Val so it can be stored in the environment
+    syntax Val ::= TypeDef
 
     syntax Expr ::= Val
     syntax KResult ::= Val
@@ -67,12 +82,112 @@ module CADENZA
     // Configuration defines the runtime state
     configuration
         <k> $PGM:Program </k>
-        <env> .Map </env>      // Variable bindings: String -> Val
-        <store> .Map </store>  // Memory store (for future use)
-        <output> .List </output>  // Output for display
-        <file> "" </file>      // Current file path
-        <span-start> 0 </span-start>       // Current span start position
-        <span-end> 0 </span-end> // Current span end position
+        <scopes>
+            // Scope 0 is the root/global scope with no parent
+            0 |-> scope(-1, .Map)
+        </scopes>
+        <current-scope> 0 </current-scope>  // Currently active scope ID
+        <next-scope> 1 </next-scope>        // Next available scope ID
+        <store> .Map </store>               // Memory store (for Cell values)
+        <next-cell> 0 </next-cell>          // Next available cell ID
+        <output> .List </output>            // Output for display
+        <file> "" </file>                   // Current file path
+        <span-start> 0 </span-start>        // Current span start position
+        <span-end> 0 </span-end>            // Current span end position
+
+    // Scope structure: parent scope ID and local bindings
+    syntax Scope ::= scope(ScopeId, Map)  // parent, bindings
+
+    // ==========================================
+    // Scope Operations
+    // ==========================================
+
+    // Create a new child scope and return its ID
+    syntax KItem ::= pushScope()
+                   | popScope(ScopeId)  // restore to given scope ID
+
+    // Push creates a new scope with current as parent
+    rule <k> pushScope() => .K ... </k>
+         <scopes> Scopes:Map => Scopes[NextId <- scope(Current, .Map)] </scopes>
+         <current-scope> Current:Int => NextId </current-scope>
+         <next-scope> NextId:Int => NextId +Int 1 </next-scope>
+
+    // Pop restores to the given scope ID
+    rule <k> popScope(SavedScope:Int) => .K ... </k>
+         <current-scope> _ => SavedScope </current-scope>
+
+    // Bind a variable in the current scope
+    syntax KItem ::= bindInScope(String, Val)
+
+    rule <k> bindInScope(Name:String, V:Val) => .K ... </k>
+         <scopes> ... Current |-> scope(Parent, Bindings:Map) => Current |-> scope(Parent, Bindings[Name <- V]) ... </scopes>
+         <current-scope> Current:Int </current-scope>
+
+    // Look up a variable by walking the scope chain
+    // Note: If we find a `pending` value, continue looking in parent scopes
+    // This allows recursive calls to find the actual closure in outer scopes
+    syntax Val ::= lookupVar(String, ScopeId, Map) [function]
+
+    // Found in current scope and it's NOT pending - return it
+    rule lookupVar(Name:String, ScopeId:Int, (ScopeId |-> scope(_, Bindings:Map)) _:Map)
+         => {Bindings[Name]}:>Val
+         requires Name in_keys(Bindings)
+          andBool notBool isPendingVal({Bindings[Name]}:>Val)
+
+    // Found in current scope but it's pending - continue to parent to find actual value
+    rule lookupVar(Name:String, ScopeId:Int, Scopes:Map)
+         => lookupVar(Name, getParent(ScopeId, Scopes), Scopes)
+         requires ScopeId in_keys(Scopes)
+          andBool Name in_keys(getBindings(ScopeId, Scopes))
+          andBool isPendingVal({getBindings(ScopeId, Scopes)[Name]}:>Val)
+          andBool getParent(ScopeId, Scopes) >=Int 0
+
+    // Not in current scope, walk to parent (if parent exists)
+    rule lookupVar(Name:String, ScopeId:Int, Scopes:Map)
+         => lookupVar(Name, getParent(ScopeId, Scopes), Scopes)
+         requires ScopeId in_keys(Scopes)
+          andBool notBool (Name in_keys(getBindings(ScopeId, Scopes)))
+          andBool getParent(ScopeId, Scopes) >=Int 0
+         [owise]
+
+    // Helper to check if value is pending (for function version)
+    syntax Bool ::= isPendingVal(Val) [function]
+    rule isPendingVal(pending(_)) => true
+    rule isPendingVal(_) => false [owise]
+
+    // Helper to get bindings from a scope
+    syntax Map ::= getBindings(ScopeId, Map) [function]
+    rule getBindings(ScopeId:Int, (ScopeId |-> scope(_, Bindings:Map)) _:Map) => Bindings
+
+    // Helper to get parent from a scope
+    syntax Int ::= getParent(ScopeId, Map) [function]
+    rule getParent(ScopeId:Int, (ScopeId |-> scope(Parent:Int, _)) _:Map) => Parent
+
+    // Check if a variable exists in scope chain
+    syntax Bool ::= varExists(String, ScopeId, Map) [function]
+    rule varExists(Name:String, ScopeId:Int, Scopes:Map)
+         => Name in_keys(getBindings(ScopeId, Scopes))
+            orBool (getParent(ScopeId, Scopes) >=Int 0
+                    andBool varExists(Name, getParent(ScopeId, Scopes), Scopes))
+         requires ScopeId in_keys(Scopes)
+    rule varExists(_, ScopeId:Int, Scopes:Map) => false
+         requires notBool (ScopeId in_keys(Scopes))
+
+    // Capture environment: collect all visible variables into a Map
+    syntax Map ::= captureEnv(ScopeId, Map) [function]
+    rule captureEnv(ScopeId:Int, Scopes:Map)
+         => mergeMapInto(captureEnv(getParent(ScopeId, Scopes), Scopes), getBindings(ScopeId, Scopes))
+         requires ScopeId in_keys(Scopes) andBool getParent(ScopeId, Scopes) >=Int 0
+    rule captureEnv(ScopeId:Int, Scopes:Map)
+         => getBindings(ScopeId, Scopes)
+         requires ScopeId in_keys(Scopes) andBool getParent(ScopeId, Scopes) <Int 0
+    rule captureEnv(ScopeId:Int, _:Map) => .Map
+         requires ScopeId <Int 0
+
+    // Helper to merge all entries from second map into first map (second wins on conflict)
+    syntax Map ::= mergeMapInto(Map, Map) [function]
+    rule mergeMapInto(Base:Map, .Map) => Base
+    rule mergeMapInto(Base:Map, (K:KItem |-> V:KItem) Rest:Map) => mergeMapInto(Base[K <- V], Rest)
 
     // ==========================================
     // File and Span Handling
@@ -81,31 +196,27 @@ module CADENZA
     // Helper construct for sequential expression evaluation (not an Expr to avoid overlap)
     syntax KItem ::= seqExprs(Exprs)
 
-    // Process File node - set file path, hoist definitions, then evaluate non-definitions
-    // Hoisting: collect all function/struct/enum definitions first
-    rule <k> (File (Path P:Chars) Es:Exprs) => hoistDefs(Es) ~> seqExprs(filterDefs(Es)) ... </k>
+    // Process File node - set file path, hoist definitions, then evaluate all expressions in order
+    // Hoisting: collect all function/struct/enum names first (as pending placeholders)
+    // Then evaluate ALL expressions in source order (including definitions)
+    // This ensures let bindings are evaluated before function definitions that capture them
+    rule <k> (File (Path P:Chars) Es:Exprs) => hoistDefs(Es) ~> seqExprs(Es) ... </k>
          <file> _ => charsToString(P) </file>
 
-    // Filter out definitions from expression list (they were already hoisted)
-    syntax Exprs ::= filterDefs(Exprs) [function]
-    rule filterDefs(.Exprs) => .Exprs
-    rule filterDefs(E:Expr RestExprs:Exprs) => filterDefs(RestExprs)
-         requires isDefinition(E)
-    rule filterDefs(E:Expr RestExprs:Exprs) => E filterDefs(RestExprs)
-         requires notBool isDefinition(E)
-
-    // Hoisting: scan expressions for definitions and bind them
+    // Hoisting: scan expressions for definitions and bind placeholder names
+    // This makes names available but not yet callable
     syntax KItem ::= hoistDefs(Exprs)
 
     // Empty - done hoisting
     rule <k> hoistDefs(.Exprs) => .K ... </k>
 
-    // Hoist function definition
+    // Hoist through Span wrapper
     rule <k> hoistDefs((Span (_ _) E:Expr) RestExprs:Exprs)
           => hoistDefs(E RestExprs) ... </k>
 
-    rule <k> hoistDefs((Apply (Op EqOp:Chars) LHS:Expr Body:Expr) RestExprs:Exprs)
-          => hoistOneDef((Apply (Op EqOp) LHS Body)) ~> hoistDefs(RestExprs) ... </k>
+    // Hoist function/struct/enum definition - create pending placeholder
+    rule <k> hoistDefs((Apply (Op EqOp:Chars) LHS:Expr _Body:Expr) RestExprs:Exprs)
+          => hoistOneDef(LHS) ~> hoistDefs(RestExprs) ... </k>
          requires isKw(EqOp, "=") andBool (isFnDef(LHS) orBool isStructDef(LHS) orBool isEnumDef(LHS))
 
     // Skip non-definition expressions during hoisting
@@ -137,24 +248,23 @@ module CADENZA
     rule isEnumDef((Apply (Ident Chrs:Chars) _)) => isKw(Chrs, "enum")
     rule isEnumDef(_) => false [owise]
 
-    // Hoist a single definition
+    // Hoist a single definition - just bind the name with a pending placeholder
     syntax KItem ::= hoistOneDef(Expr)
 
-    // Hoist function definition - create closure and bind (discard the value)
-    rule <k> hoistOneDef((Apply (Op EqOp:Chars) LHS:Expr Body:Expr))
-          => closure(getFnName(LHS), getFnParams(LHS), Body, Env) ~> bindVarDiscard(getFnName(LHS)) ... </k>
-         <env> Env:Map </env>
-         requires isKw(EqOp, "=") andBool isFnDef(LHS)
+    // Hoist function definition - bind name as pending
+    rule <k> hoistOneDef(LHS:Expr) => bindInScope(getFnName(LHS), pending(getFnName(LHS))) ... </k>
+         requires isFnDef(LHS)
 
-    // Hoist struct definition
-    rule <k> hoistOneDef((Apply (Apply (Ident KwChrs:Chars) (Ident NameChrs:Chars)) _FieldDefs:Expr))
-          => structDef(charsToString(NameChrs), .Map) ~> bindVarDiscard(charsToString(NameChrs)) ... </k>
+    // Hoist struct definition - bind name as pending
+    rule <k> hoistOneDef((Apply (Ident KwChrs:Chars) (Ident NameChrs:Chars)))
+          => bindInScope(charsToString(NameChrs), pending(charsToString(NameChrs))) ... </k>
          requires isKw(KwChrs, "struct")
 
-    // Hoist enum definition
-    rule <k> hoistOneDef((Apply (Apply (Ident KwChrs:Chars) (Ident NameChrs:Chars)) _Variants:Expr))
-          => enumDef(charsToString(NameChrs), .Map) ~> bindVarDiscard(charsToString(NameChrs)) ... </k>
+    // Hoist enum definition - bind name as pending
+    rule <k> hoistOneDef((Apply (Ident KwChrs:Chars) (Ident NameChrs:Chars)))
+          => bindInScope(charsToString(NameChrs), pending(charsToString(NameChrs))) ... </k>
          requires isKw(KwChrs, "enum")
+
 
     // Span nodes - capture span info and unwrap for evaluation
     rule <k> (Span (Start:Int End:Int) E:Expr) => E ... </k>
@@ -236,39 +346,72 @@ module CADENZA
           => E ~> bindVar(charsToString(NameChrs)) ... </k>
          requires isKw(LetKw, "let") andBool isKw(EqOp, "=")
 
-    // After expression evaluates to a value, bind it in the environment
+    // After expression evaluates to a value, bind it in the current scope
     syntax KItem ::= bindVar(String)
-                   | bindVarDiscard(String)  // bind but discard result
 
     rule <k> V:Val ~> bindVar(Name:String) => V ... </k>
-         <env> Env:Map => Env[Name <- V] </env>
-
-    rule <k> V:Val ~> bindVarDiscard(Name:String) => .K ... </k>
-         <env> Env:Map => Env[Name <- V] </env>
+         <scopes> ... Current |-> scope(Parent, Bindings:Map) => Current |-> scope(Parent, Bindings[Name <- V]) ... </scopes>
+         <current-scope> Current:Int </current-scope>
 
     // ==========================================
     // Variable Lookup
     // ==========================================
 
-    // Look up variable in environment (non-function values)
-    rule <k> (Ident Chrs:Chars) => V ... </k>
-         <env> ... charsToString(Chrs) |-> V:Val ... </env>
-         requires notBool isBoolKeyword(Chrs) andBool notBool isClosure(V)
-
-    // Look up zero-arg function and auto-apply it
-    rule <k> (Ident Chrs:Chars) => applyFn(closure(Name, .List, Body, CapturedEnv), .List) ... </k>
-         <env> ... charsToString(Chrs) |-> closure(Name, .List, Body, CapturedEnv) ... </env>
+    // Variable lookup uses a helper to avoid repeated lookups
+    // First, we convert the identifier lookup into a helper that will do the actual lookup
+    rule <k> (Ident Chrs:Chars) => lookupIdent(charsToString(Chrs)) ... </k>
          requires notBool isBoolKeyword(Chrs)
 
+    // Helper construct to perform variable lookup
+    syntax KItem ::= lookupIdent(String)
+
+    // Look up variable in scope chain and handle based on value type
+    // Non-closure, non-pending: return the value directly
+    rule <k> lookupIdent(Name:String) => lookupVar(Name, Current, Scopes) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
+         requires varExists(Name, Current, Scopes)
+          andBool notBool isClosure(lookupVar(Name, Current, Scopes))
+          andBool notBool isPending(lookupVar(Name, Current, Scopes))
+
+    // Look up zero-arg function and auto-apply it
+    rule <k> lookupIdent(Name:String) => applyFn(lookupVar(Name, Current, Scopes), .List) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
+         requires varExists(Name, Current, Scopes)
+          andBool isClosure(lookupVar(Name, Current, Scopes))
+          andBool isZeroArgClosure(lookupVar(Name, Current, Scopes))
+
     // Look up function with params - return the closure as-is (will be applied later)
-    rule <k> (Ident Chrs:Chars) => closure(Name, Params, Body, CapturedEnv) ... </k>
-         <env> ... charsToString(Chrs) |-> closure(Name, Params, Body, CapturedEnv) ... </env>
-         requires notBool isBoolKeyword(Chrs) andBool size(Params) >Int 0
+    rule <k> lookupIdent(Name:String) => lookupVar(Name, Current, Scopes) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
+         requires varExists(Name, Current, Scopes)
+          andBool isClosure(lookupVar(Name, Current, Scopes))
+          andBool notBool isZeroArgClosure(lookupVar(Name, Current, Scopes))
+
+    // Error: trying to use a pending (not-yet-ready) function
+    // This should produce a runtime error - function captures not yet evaluated
+    rule <k> lookupIdent(Name:String) => (Error) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
+         requires varExists(Name, Current, Scopes)
+          andBool isPending(lookupVar(Name, Current, Scopes))
 
     // Helper to check if value is a closure
     syntax Bool ::= isClosure(Val) [function]
     rule isClosure(closure(_, _, _, _)) => true
     rule isClosure(_) => false [owise]
+
+    // Helper to check if value is a zero-arg closure
+    syntax Bool ::= isZeroArgClosure(Val) [function]
+    rule isZeroArgClosure(closure(_, .List, _, _)) => true
+    rule isZeroArgClosure(_) => false [owise]
+
+    // Helper to check if value is pending
+    syntax Bool ::= isPending(Val) [function]
+    rule isPending(pending(_)) => true
+    rule isPending(_) => false [owise]
 
     // ==========================================
     // Function Definition (fn)
@@ -309,12 +452,13 @@ module CADENZA
     rule isFnKeyword((Ident Chrs:Chars)) => isKw(Chrs, "fn")
     rule isFnKeyword(_) => false [owise]
 
-    // Main rule: function definition
+    // Main rule: function definition (non-hoisted, e.g., in expressions)
     // Pattern: (Apply (Op "=") LHS Body) where isFnDef(LHS)
     rule <k> (Apply (Op EqOp:Chars) LHS:Expr Body:Expr)
-          => closure(getFnName(LHS), getFnParams(LHS), Body, Env) 
+          => closure(getFnName(LHS), getFnParams(LHS), Body, captureEnv(CurrentScope, Scopes))
              ~> bindVar(getFnName(LHS)) ... </k>
-         <env> Env:Map </env>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> CurrentScope:Int </current-scope>
          requires isKw(EqOp, "=") andBool isFnDef(LHS)
 
     // ==========================================
@@ -328,9 +472,13 @@ module CADENZA
 
     // Apply function looked up from identifier with single argument
     rule <k> (Apply (Ident Chrs:Chars) Arg:Expr .Exprs) 
-          => Arg ~> evalArg(.List, closure(Name, Params, Body, CapturedEnv)) ... </k>
-         <env> ... charsToString(Chrs) |-> closure(Name, Params, Body, CapturedEnv) ... </env>
-         requires notBool isBoolKeyword(Chrs) andBool size(Params) >Int 0
+          => Arg ~> evalArg(.List, lookupVar(charsToString(Chrs), Current, Scopes)) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
+         requires notBool isBoolKeyword(Chrs)
+          andBool varExists(charsToString(Chrs), Current, Scopes)
+          andBool isClosure(lookupVar(charsToString(Chrs), Current, Scopes))
+          andBool notBool isZeroArgClosure(lookupVar(charsToString(Chrs), Current, Scopes))
 
     // After single argument evaluates
     syntax KItem ::= evalArg(List, Val)  // accumulated args, closure
@@ -339,9 +487,12 @@ module CADENZA
 
     // Apply function with multiple arguments - evaluate first, then rest
     rule <k> (Apply (Ident Chrs:Chars) Arg1:Expr Arg2:Expr RestArgs:Exprs) 
-          => Arg1 ~> evalArgs(Arg2 RestArgs, .List, closure(Name, Params, Body, CapturedEnv)) ... </k>
-         <env> ... charsToString(Chrs) |-> closure(Name, Params, Body, CapturedEnv) ... </env>
+          => Arg1 ~> evalArgs(Arg2 RestArgs, .List, lookupVar(charsToString(Chrs), Current, Scopes)) ... </k>
+         <scopes> Scopes:Map </scopes>
+         <current-scope> Current:Int </current-scope>
          requires notBool isBoolKeyword(Chrs)
+          andBool varExists(charsToString(Chrs), Current, Scopes)
+          andBool isClosure(lookupVar(charsToString(Chrs), Current, Scopes))
 
     // After arg evaluates, continue with remaining args or apply
     rule <k> V:Val ~> evalArgs(NextArg:Expr RestArgs:Exprs, AccArgs:List, Clos:Val)
@@ -351,33 +502,43 @@ module CADENZA
     rule <k> V:Val ~> evalArgs(.Exprs, AccArgs:List, Clos:Val)
           => applyFn(Clos, AccArgs ListItem(V)) ... </k>
 
-    // Apply closure: bind all params to args and evaluate body
-    // Save current env, switch to closure env with params bound, will restore after
-    // For hoisted functions (empty captured env), use calling environment for lookups
+    // Apply closure: create new scope and populate with captured env + args
+    // The new scope has the current scope as parent so recursive calls can find actual closures
     rule <k> applyFn(closure(_, Params:List, Body:Expr, CapturedEnv:Map), Args:List)
-          => Body ~> restoreEnv(OrigEnv) ... </k>
-         <env> OrigEnv:Map => bindParams(mergeEnvs(CapturedEnv, OrigEnv), Params, Args) </env>
+          => pushScopeWithEnvAndParent(CapturedEnv, CurrentScope) ~> bindParamsK(Params, Args) ~> Body ~> popScopeRestore(CurrentScope) ... </k>
+         <current-scope> CurrentScope:Int </current-scope>
          requires size(Params) ==Int size(Args)
 
-    // Merge environments: captured env takes precedence, but falls back to calling env
-    // This allows hoisted functions (with empty captured env) to access module-level bindings
-    syntax Map ::= mergeEnvs(Map, Map) [function]
-    rule mergeEnvs(CapturedEnv:Map, CallingEnv:Map) => mergeMapInto(CallingEnv, CapturedEnv)
+    // Create new scope with captured environment and parent for recursive lookups
+    syntax KItem ::= pushScopeWithEnvAndParent(Map, ScopeId)
+                   | popScopeRestore(ScopeId)
 
-    // Helper to merge all entries from second map into first map (second wins on conflict)
-    syntax Map ::= mergeMapInto(Map, Map) [function]
-    rule mergeMapInto(Base:Map, .Map) => Base
-    rule mergeMapInto(Base:Map, (K:KItem |-> V:KItem) Rest:Map) => mergeMapInto(Base[K <- V], Rest)
+    rule <k> pushScopeWithEnvAndParent(CapturedEnv:Map, ParentScope:Int) => .K ... </k>
+         <scopes> Scopes:Map => Scopes[NextId <- scope(ParentScope, CapturedEnv)] </scopes>
+         <current-scope> _ => NextId </current-scope>
+         <next-scope> NextId:Int => NextId +Int 1 </next-scope>
 
-    // Helper to restore environment after function call
-    syntax KItem ::= restoreEnv(Map)
-    rule <k> V:Val ~> restoreEnv(SavedEnv:Map) => V ... </k>
-         <env> _ => SavedEnv </env>
+    rule <k> V:Val ~> popScopeRestore(SavedScope:Int) => V ... </k>
+         <current-scope> _ => SavedScope </current-scope>
 
-    // Partial application: more params than args - create new closure with bound args
+    // Bind parameters to arguments in current scope
+    syntax KItem ::= bindParamsK(List, List)
+
+    rule <k> bindParamsK(.List, .List) => .K ... </k>
+
+    rule <k> bindParamsK(ListItem(P:String) RestParams:List, ListItem(A:Val) RestArgs:List)
+          => bindInScope(P, A) ~> bindParamsK(RestParams, RestArgs) ... </k>
+
+    // Partial application: more params than args - create new closure with bound args merged into captured env
     rule <k> applyFn(closure(Name, Params:List, Body:Expr, CapturedEnv:Map), Args:List)
-          => closure(Name, dropParams(Params, size(Args)), Body, bindParams(CapturedEnv, takeParams(Params, size(Args)), Args)) ... </k>
+          => closure(Name, dropParams(Params, size(Args)), Body, bindParamsToMap(CapturedEnv, takeParams(Params, size(Args)), Args)) ... </k>
          requires size(Params) >Int size(Args)
+
+    // Helper function to bind parameters to a map (for partial application)
+    syntax Map ::= bindParamsToMap(Map, List, List) [function]
+    rule bindParamsToMap(Env:Map, .List, .List) => Env
+    rule bindParamsToMap(Env:Map, ListItem(P:String) RestParams:List, ListItem(A:Val) RestArgs:List)
+         => bindParamsToMap(Env[P <- A], RestParams, RestArgs)
 
     // Helper functions for partial application
     syntax List ::= takeParams(List, Int) [function]
@@ -418,12 +579,6 @@ module CADENZA
                                                  orBool isKw(Chrs, "if") orBool isKw(Chrs, "then") orBool isKw(Chrs, "else")
     rule isSpecialFormKw((Apply E:Expr _)) => isSpecialFormKw(E)
     rule isSpecialFormKw(_) => false [owise]
-
-    // Helper function to bind parameters to arguments
-    syntax Map ::= bindParams(Map, List, List) [function]
-    rule bindParams(Env, .List, .List) => Env
-    rule bindParams(Env, ListItem(P:String) RestParams:List, ListItem(A:Val) RestArgs:List)
-         => bindParams(Env[P <- A], RestParams, RestArgs)
 
     // ==========================================
     // Arithmetic Operations
@@ -543,11 +698,16 @@ module CADENZA
     // ==========================================
 
     // Block evaluation: (Apply (Synthetic "__block__") exprs...)
-    // Creates a new scope, hoists definitions, evaluates expressions, restores scope
+    // Creates a new scope, hoists definitions, evaluates all expressions in order, restores scope
     rule <k> (Apply (Synthetic SynChrs:Chars) Es:Exprs)
-          => hoistDefs(Es) ~> seqExprs(filterDefs(Es)) ~> restoreEnv(Env) ... </k>
-         <env> Env:Map </env>
+          => pushScope() ~> hoistDefs(Es) ~> seqExprs(Es) ~> popScopeRestoreK(CurrentScope) ... </k>
+         <current-scope> CurrentScope:Int </current-scope>
          requires isKw(SynChrs, "__block__")
+
+    // Helper to pop scope and restore, consuming unit result
+    syntax KItem ::= popScopeRestoreK(ScopeId)
+    rule <k> V:Val ~> popScopeRestoreK(SavedScope:Int) => V ... </k>
+         <current-scope> _ => SavedScope </current-scope>
 
     // ==========================================
     // Compound Types

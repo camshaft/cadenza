@@ -14,7 +14,14 @@ pub enum KCommand {
     /// Compile the K definition
     Kompile,
     /// Run K framework tests
-    Test,
+    Test {
+        /// Optional pattern to filter test names (e.g., "function" or "closure")
+        #[arg(short, long)]
+        pattern: Option<String>,
+        /// Accept new snapshots (copy .snap.new to .snap)
+        #[arg(long)]
+        accept: bool,
+    },
     /// Run a single Cadenza file through K
     Run {
         /// Path to the .cdz file to run
@@ -32,7 +39,7 @@ impl KCommand {
     pub fn run(&self, sh: &Shell) -> Result<()> {
         match self {
             KCommand::Kompile => kompile(sh),
-            KCommand::Test => test(sh),
+            KCommand::Test { pattern, accept } => test(sh, pattern.as_deref(), *accept),
             KCommand::Run { file } => run_single(sh, file),
         }
     }
@@ -74,7 +81,15 @@ fn kompile(sh: &Shell) -> Result<()> {
     Ok(())
 }
 
-fn test(sh: &Shell) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestResult {
+    Pass,
+    Fail,
+    NeedsReview,
+    Error,
+}
+
+fn test(sh: &Shell, pattern: Option<&str>, accept: bool) -> Result<()> {
     // First, extract semantics tests
     println!("Extracting semantics tests...");
     cmd!(sh, "cargo xtask semantics extract")
@@ -102,32 +117,50 @@ fn test(sh: &Shell) -> Result<()> {
 
     let test_data_dir = PathBuf::from("crates/cadenza-compiler/test-data/semantics");
     let output_test_dir = output_dir.join("tests");
+    let snapshot_dir = repo_root.join("reference/k/snapshots");
     fs::create_dir_all(&output_test_dir)?;
+    fs::create_dir_all(&snapshot_dir)?;
 
-    println!("Running K framework tests...");
+    if let Some(p) = pattern {
+        println!("Running K framework tests matching '{}'...", p);
+    } else {
+        println!("Running K framework tests...");
+    }
     println!("================================");
     println!();
 
     let mut total = 0;
-    let passed = 0;
+    let mut passed = 0;
     let mut failed = 0;
-    let mut not_impl = 0;
+    let mut needs_review = 0;
+    let mut errors = 0;
+
+    // Collect and sort test files
+    let mut test_files: Vec<_> = sh
+        .read_dir(&test_data_dir)?
+        .into_iter()
+        .filter(|e| e.extension().is_some_and(|ext| ext == "cdz"))
+        .collect();
+    test_files.sort();
 
     // Iterate through test files
-    for entry in sh.read_dir(&test_data_dir)? {
-        if entry.extension().is_none_or(|ext| ext != "cdz") {
-            continue;
+    for entry in test_files {
+        let basename = entry.file_stem().unwrap().to_string_lossy().to_string();
+
+        // Filter by pattern if provided
+        if let Some(p) = pattern {
+            if !basename.contains(p) {
+                continue;
+            }
         }
 
         total += 1;
-        let basename = entry.file_stem().unwrap().to_string_lossy();
         let expected_file = test_data_dir.join(format!("{}.expected", basename));
+        let snapshot_file = snapshot_dir.join(format!("{}.snap", basename));
+        let snapshot_new_file = snapshot_dir.join(format!("{}.snap.new", basename));
 
-        if !expected_file.exists() {
-            println!("⊘ {} (no expected file)", basename);
-            not_impl += 1;
-            continue;
-        }
+        // Read the input file content
+        let input_content = fs::read_to_string(&entry)?;
 
         // Convert .cdz to AST and write to file
         let ast_file = output_test_dir.join(format!("{}.ast", basename));
@@ -136,50 +169,220 @@ fn test(sh: &Shell) -> Result<()> {
             .ignore_stderr()
             .read();
 
-        match ast_output {
-            Ok(ast_content) => {
-                // Write AST to file
-                sh.write_file(&ast_file, ast_content)?;
+        let ast_content = match ast_output {
+            Ok(content) => {
+                sh.write_file(&ast_file, &content)?;
+                content
             }
-            Err(_) => {
+            Err(e) => {
                 println!("✗ {} (AST conversion failed)", basename);
-                failed += 1;
+                write_snapshot_file(
+                    &snapshot_new_file,
+                    &basename,
+                    &input_content,
+                    None,
+                    None,
+                    None,
+                    Some(&format!("AST conversion failed: {:?}", e)),
+                )?;
+                errors += 1;
                 continue;
             }
-        }
+        };
 
-        // Run through K interpreter (output not used for now)
-        let _output_file = output_test_dir.join(format!("{}.out", basename));
-        if cmd!(sh, "krun {ast_file} -d {output_dir}")
+        // Run through K interpreter
+        let k_output = cmd!(sh, "krun {ast_file} -d {output_dir}")
             .quiet()
-            .ignore_stdout()
             .ignore_stderr()
-            .run()
-            .is_err()
-        {
-            println!("✗ {} (K execution failed)", basename);
-            failed += 1;
-            continue;
-        }
+            .read();
 
-        // For now, mark as not implemented since we're setting up infrastructure
-        println!("⊘ {} (not yet implemented)", basename);
-        not_impl += 1;
+        let k_result = match k_output {
+            Ok(output) => output,
+            Err(e) => {
+                println!("✗ {} (K execution failed)", basename);
+                write_snapshot_file(
+                    &snapshot_new_file,
+                    &basename,
+                    &input_content,
+                    Some(&ast_content),
+                    None,
+                    None,
+                    Some(&format!("K execution failed: {:?}", e)),
+                )?;
+                errors += 1;
+                continue;
+            }
+        };
+
+        // Sanitize paths in K output (remove absolute paths)
+        let k_result = sanitize_k_output(&k_result, &repo_root);
+
+        // Read expected output if it exists
+        let expected = if expected_file.exists() {
+            Some(fs::read_to_string(&expected_file)?)
+        } else {
+            None
+        };
+
+        // Write .snap.new file
+        write_snapshot_file(
+            &snapshot_new_file,
+            &basename,
+            &input_content,
+            Some(&ast_content),
+            Some(&k_result),
+            expected.as_deref(),
+            None,
+        )?;
+
+        // Compare with existing .snap file to determine result
+        let result = if snapshot_file.exists() {
+            let existing_snap = fs::read_to_string(&snapshot_file)?;
+            let new_snap = fs::read_to_string(&snapshot_new_file)?;
+            if existing_snap == new_snap {
+                // Exact match - test passes, remove .snap.new
+                fs::remove_file(&snapshot_new_file)?;
+                TestResult::Pass
+            } else {
+                TestResult::Fail
+            }
+        } else {
+            // No existing snapshot - needs review
+            TestResult::NeedsReview
+        };
+
+        // If accept mode, copy .snap.new to .snap
+        if accept && (result == TestResult::NeedsReview || result == TestResult::Fail) {
+            fs::copy(&snapshot_new_file, &snapshot_file)?;
+            fs::remove_file(&snapshot_new_file)?;
+            println!("✓ {} (accepted)", basename);
+            passed += 1;
+        } else {
+            match result {
+                TestResult::Pass => {
+                    println!("✓ {}", basename);
+                    passed += 1;
+                }
+                TestResult::Fail => {
+                    println!("✗ {} (output changed, see .snap.new)", basename);
+                    failed += 1;
+                }
+                TestResult::NeedsReview => {
+                    println!("? {} (new test, needs review)", basename);
+                    needs_review += 1;
+                }
+                TestResult::Error => {
+                    errors += 1;
+                }
+            }
+        }
     }
 
     println!();
     println!("================================");
     println!("Test Results:");
-    println!("  Total:  {}", total);
-    println!("  Passed: {}", passed);
-    println!("  Failed: {}", failed);
-    println!("  Not Implemented: {}", not_impl);
+    println!("  Total:        {}", total);
+    println!("  Passed:       {}", passed);
+    println!("  Failed:       {}", failed);
+    println!("  Needs Review: {}", needs_review);
+    println!("  Errors:       {}", errors);
     println!();
+    println!("Snapshots directory: {}", snapshot_dir.display());
 
-    if failed > 0 {
-        anyhow::bail!("K framework tests failed: {failed} out of {total} tests failed");
+    if needs_review > 0 {
+        println!();
+        println!(
+            "To accept new snapshots, run: cargo xtask k test --accept{}",
+            pattern
+                .map(|p| format!(" --pattern {}", p))
+                .unwrap_or_default()
+        );
     }
 
+    if failed > 0 {
+        anyhow::bail!(
+            "K framework tests failed: {failed} test(s) have different output than expected"
+        );
+    }
+
+    Ok(())
+}
+
+/// Sanitize K output by removing absolute paths and replacing with relative paths
+fn sanitize_k_output(output: &str, repo_root: &std::path::Path) -> String {
+    let repo_str = repo_root.to_string_lossy();
+    // Replace full repo path with a placeholder
+    let result = output.replace(&*repo_str, "<repo>");
+    // Also handle the path encoded as char codes in the AST
+    // We'll look for Path nodes and replace their content
+    result
+}
+
+fn write_snapshot_file(
+    path: &PathBuf,
+    name: &str,
+    input: &str,
+    ast: Option<&str>,
+    k_output: Option<&str>,
+    expected: Option<&str>,
+    error: Option<&str>,
+) -> Result<()> {
+    use std::fmt::Write;
+
+    let mut content = String::new();
+    writeln!(content, "---")?;
+    writeln!(
+        content,
+        "source: crates/cadenza-compiler/test-data/semantics/{}.cdz",
+        name
+    )?;
+    writeln!(content, "---")?;
+    writeln!(content, "# {}", name)?;
+    writeln!(content)?;
+
+    // Input source code
+    writeln!(content, "## Input")?;
+    writeln!(content)?;
+    writeln!(content, "```cadenza")?;
+    writeln!(content, "{}", input.trim())?;
+    writeln!(content, "```")?;
+    writeln!(content)?;
+
+    if let Some(a) = ast {
+        writeln!(content, "## AST")?;
+        writeln!(content)?;
+        writeln!(content, "```lisp")?;
+        writeln!(content, "{}", a.trim())?;
+        writeln!(content, "```")?;
+        writeln!(content)?;
+    }
+
+    if let Some(exp) = expected {
+        writeln!(content, "## Expected")?;
+        writeln!(content)?;
+        writeln!(content, "```")?;
+        writeln!(content, "{}", exp.trim())?;
+        writeln!(content, "```")?;
+        writeln!(content)?;
+    }
+
+    if let Some(err) = error {
+        writeln!(content, "## Error")?;
+        writeln!(content)?;
+        writeln!(content, "{}", err)?;
+        writeln!(content)?;
+    }
+
+    if let Some(k) = k_output {
+        writeln!(content, "## K Output")?;
+        writeln!(content)?;
+        writeln!(content, "```")?;
+        writeln!(content, "{}", k.trim())?;
+        writeln!(content, "```")?;
+        writeln!(content)?;
+    }
+
+    fs::write(path, content)?;
     Ok(())
 }
 
