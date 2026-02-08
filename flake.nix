@@ -8,7 +8,7 @@
     ];
     extra-trusted-public-keys = [
       "camshaft.cachix.org-1:NuMo5iCUNwDpNWJNlhCw/nFp3aQ7sxsVBXdlNtXs3CQ="
-      "k-framework.cachix.org-1:WpEOKYpADXVQzfecgUjSLujxxHPo35Y5aoa6P1B9MsE="
+      "k-framework.cachix.org-1:jeyMXB2h28gpNRjuVkehg+zLj62ma1RnyyopA/20yFE="
     ];
   };
 
