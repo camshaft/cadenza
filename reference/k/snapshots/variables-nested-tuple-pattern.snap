@@ -26,39 +26,37 @@ a + b + c
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    6 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "a" |-> 1
-    "b" |-> 2
-    "c" |-> 3 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/variables-nested-tuple-pattern.cdz"
-  </file>
-  <span-start>
-    30
-  </span-start>
-  <span-end>
-    39
-  </span-end>
-</generatedTop>
+<k>
+  6 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "a" |-> 1
+  "b" |-> 2
+  "c" |-> 3 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/variables-nested-tuple-pattern.cdz"
+</file>
+<span-start>
+  30
+</span-start>
+<span-end>
+  39
+</span-end>
 ```
 

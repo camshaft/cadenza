@@ -14,7 +14,7 @@ let extra = { z = 30, label = "point" }
 ## AST
 
 ```lisp
-(File (Path 47 85 115 101 114 115 47 98 121 116 104 101 119 99 47 80 114 111 106 101 99 116 115 47 99 97 109 115 104 97 102 116 47 99 97 100 101 110 122 97 47 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 99 111 109 112 111 117 110 100 45 116 121 112 101 115 45 114 101 99 111 114 100 45 109 101 114 103 101 46 99 100 122) (Span (0 30) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 98 97 115 101)) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 61) (Ident 120) (Integer 10)) (Apply (Op 61) (Ident 121) (Integer 20))))) (Span (30 70) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 101 120 116 114 97)) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 61) (Ident 122) (Integer 30)) (Apply (Op 61) (Ident 108 97 98 101 108) (String 112 111 105 110 116))))) (Span (70 91) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 46 46 46) (Ident 98 97 115 101)) (Apply (Op 46 46 46) (Ident 101 120 116 114 97)))))
+(File (Path 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 99 111 109 112 111 117 110 100 45 116 121 112 101 115 45 114 101 99 111 114 100 45 109 101 114 103 101 46 99 100 122) (Span (0 30) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 98 97 115 101)) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 61) (Ident 120) (Integer 10)) (Apply (Op 61) (Ident 121) (Integer 20))))) (Span (30 70) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 101 120 116 114 97)) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 61) (Ident 122) (Integer 30)) (Apply (Op 61) (Ident 108 97 98 101 108) (String 112 111 105 110 116))))) (Span (70 91) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 46 46 46) (Ident 98 97 115 101)) (Apply (Op 46 46 46) (Ident 101 120 116 114 97)))))
 ```
 
 ## Expected
@@ -28,43 +28,41 @@ let extra = { z = 30, label = "point" }
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    record ( "label" |-> "point"
-    "x" |-> 10
-    "y" |-> 20
-    "z" |-> 30 ) ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "base" |-> record ( "x" |-> 10
-    "y" |-> 20 )
-    "extra" |-> record ( "label" |-> "point"
-    "z" |-> 30 ) )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "<repo>/crates/cadenza-compiler/test-data/semantics/compound-types-record-merge.cdz"
-  </file>
-  <span-start>
-    70
-  </span-start>
-  <span-end>
-    91
-  </span-end>
-</generatedTop>
+<k>
+  record ( "label" |-> "point"
+  "x" |-> 10
+  "y" |-> 20
+  "z" |-> 30 ) ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "base" |-> record ( "x" |-> 10
+  "y" |-> 20 )
+  "extra" |-> record ( "label" |-> "point"
+  "z" |-> 30 ) )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/compound-types-record-merge.cdz"
+</file>
+<span-start>
+  70
+</span-start>
+<span-end>
+  91
+</span-end>
 ```
 

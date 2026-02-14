@@ -33,41 +33,39 @@ level1
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    6 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "a" |-> 1
-    "level1" |-> 6 )
-    1 |-> scope ( 0 , "b" |-> 2
-    "level2" |-> 6 )
-    2 |-> scope ( 1 , "c" |-> 3 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    3
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/variables-multiple-nesting-levels.cdz"
-  </file>
-  <span-start>
-    101
-  </span-start>
-  <span-end>
-    107
-  </span-end>
-</generatedTop>
+<k>
+  6 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "a" |-> 1
+  "level1" |-> 6 )
+  1 |-> scope ( 0 , "b" |-> 2
+  "level2" |-> 6 )
+  2 |-> scope ( 1 , "c" |-> 3 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  3
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/variables-multiple-nesting-levels.cdz"
+</file>
+<span-start>
+  101
+</span-start>
+<span-end>
+  107
+</span-end>
 ```
 

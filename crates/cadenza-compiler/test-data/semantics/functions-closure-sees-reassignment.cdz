@@ -1,5 +1,0 @@
-let x = 10
-fn get_x = x
-get_x
-x = 20
-get_x

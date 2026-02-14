@@ -26,38 +26,36 @@ compute
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    52 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "compute" |-> closure ( "compute" , .List , ( Apply ( Op 43  .Chars ) ( Apply ( Op 42  .Chars ) ( Integer 10 )  ( Integer 5 )  .Exprs )  ( Integer 2 )  .Exprs ) , "compute" |-> pending ( "compute" ) ) )
-    1 |-> scope ( 0 , "compute" |-> pending ( "compute" ) )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-function-with-expression-body.cdz"
-  </file>
-  <span-start>
-    24
-  </span-start>
-  <span-end>
-    31
-  </span-end>
-</generatedTop>
+<k>
+  52 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "compute" |-> closure ( "compute" , .List , ( Apply ( Op 43  .Chars ) ( Apply ( Op 42  .Chars ) ( Integer 10 )  ( Integer 5 )  .Exprs )  ( Integer 2 )  .Exprs ) , "compute" |-> pending ( "compute" ) ) )
+  1 |-> scope ( 0 , "compute" |-> pending ( "compute" ) )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-function-with-expression-body.cdz"
+</file>
+<span-start>
+  24
+</span-start>
+<span-end>
+  31
+</span-end>
 ```
 

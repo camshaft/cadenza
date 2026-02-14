@@ -24,37 +24,35 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-empty-record.
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    record ( .Map ) ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , .Map )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/compound-types-empty-record.cdz"
-  </file>
-  <span-start>
-    0
-  </span-start>
-  <span-end>
-    2
-  </span-end>
-</generatedTop>
+<k>
+  record ( .Map ) ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , .Map )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/compound-types-empty-record.cdz"
+</file>
+<span-start>
+  0
+</span-start>
+<span-end>
+  2
+</span-end>
 ```
 

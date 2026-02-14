@@ -1,3 +1,0 @@
-fn apply f x = f x
-fn double x = x * 2
-apply double 5

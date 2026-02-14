@@ -26,41 +26,39 @@ add 3 7
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    10 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "add" |-> closure ( "add" , ListItem ( "x" )
-    ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" ) ) )
-    1 |-> scope ( 0 , "add" |-> pending ( "add" )
-    "x" |-> 3
-    "y" |-> 7 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-multi-parameter-function.cdz"
-  </file>
-  <span-start>
-    19
-  </span-start>
-  <span-end>
-    26
-  </span-end>
-</generatedTop>
+<k>
+  10 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "add" |-> closure ( "add" , ListItem ( "x" )
+  ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" ) ) )
+  1 |-> scope ( 0 , "add" |-> pending ( "add" )
+  "x" |-> 3
+  "y" |-> 7 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-multi-parameter-function.cdz"
+</file>
+<span-start>
+  19
+</span-start>
+<span-end>
+  26
+</span-end>
 ```
 

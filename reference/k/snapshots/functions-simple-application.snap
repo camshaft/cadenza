@@ -26,39 +26,37 @@ triple 7
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    21 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "triple" |-> closure ( "triple" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Integer 3 )  .Exprs ) , "triple" |-> pending ( "triple" ) ) )
-    1 |-> scope ( 0 , "triple" |-> pending ( "triple" )
-    "x" |-> 7 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-simple-application.cdz"
-  </file>
-  <span-start>
-    20
-  </span-start>
-  <span-end>
-    28
-  </span-end>
-</generatedTop>
+<k>
+  21 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "triple" |-> closure ( "triple" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Integer 3 )  .Exprs ) , "triple" |-> pending ( "triple" ) ) )
+  1 |-> scope ( 0 , "triple" |-> pending ( "triple" )
+  "x" |-> 7 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-simple-application.cdz"
+</file>
+<span-start>
+  20
+</span-start>
+<span-end>
+  28
+</span-end>
 ```
 

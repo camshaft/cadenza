@@ -30,39 +30,37 @@ result
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    300 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "outer" |-> 100
-    "result" |-> 300 )
-    1 |-> scope ( 0 , "inner" |-> 200 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/variables-inner-scope-accesses-outer.cdz"
-  </file>
-  <span-start>
-    67
-  </span-start>
-  <span-end>
-    73
-  </span-end>
-</generatedTop>
+<k>
+  300 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "outer" |-> 100
+  "result" |-> 300 )
+  1 |-> scope ( 0 , "inner" |-> 200 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/variables-inner-scope-accesses-outer.cdz"
+</file>
+<span-start>
+  67
+</span-start>
+<span-end>
+  73
+</span-end>
 ```
 

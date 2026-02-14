@@ -30,41 +30,39 @@ capture_fn
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    10 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "capture_fn" |-> closure ( "capture_fn" , .List , ( Ident 120  .Chars ) , "capture_fn" |-> pending ( "capture_fn" )
-    "x" |-> 10 )
-    "x" |-> 20 )
-    1 |-> scope ( 0 , "capture_fn" |-> pending ( "capture_fn" )
-    "x" |-> 10 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-closure-preserves-captured-value.cdz"
-  </file>
-  <span-start>
-    40
-  </span-start>
-  <span-end>
-    50
-  </span-end>
-</generatedTop>
+<k>
+  10 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "capture_fn" |-> closure ( "capture_fn" , .List , ( Ident 120  .Chars ) , "capture_fn" |-> pending ( "capture_fn" )
+  "x" |-> 10 )
+  "x" |-> 20 )
+  1 |-> scope ( 0 , "capture_fn" |-> pending ( "capture_fn" )
+  "x" |-> 10 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-closure-preserves-captured-value.cdz"
+</file>
+<span-start>
+  40
+</span-start>
+<span-end>
+  50
+</span-end>
 ```
 

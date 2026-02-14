@@ -26,38 +26,36 @@ get_value
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    42 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "get_value" |-> closure ( "get_value" , .List , ( Integer 42 ) , "get_value" |-> pending ( "get_value" ) ) )
-    1 |-> scope ( 0 , "get_value" |-> pending ( "get_value" ) )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-zero-parameter-function.cdz"
-  </file>
-  <span-start>
-    18
-  </span-start>
-  <span-end>
-    27
-  </span-end>
-</generatedTop>
+<k>
+  42 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "get_value" |-> closure ( "get_value" , .List , ( Integer 42 ) , "get_value" |-> pending ( "get_value" ) ) )
+  1 |-> scope ( 0 , "get_value" |-> pending ( "get_value" ) )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-zero-parameter-function.cdz"
+</file>
+<span-start>
+  18
+</span-start>
+<span-end>
+  27
+</span-end>
 ```
 

@@ -28,55 +28,53 @@ apply double 5
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    10 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "apply" |-> closure ( "apply" , ListItem ( "f" )
-    ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs ) , "apply" |-> pending ( "apply" )
-    "double" |-> pending ( "double" ) )
-    "double" |-> closure ( "double" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Integer 2 )  .Exprs ) , "apply" |-> closure ( "apply" , ListItem ( "f" )
-    ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs ) , "apply" |-> pending ( "apply" )
-    "double" |-> pending ( "double" ) )
-    "double" |-> pending ( "double" ) ) )
-    1 |-> scope ( 0 , "apply" |-> pending ( "apply" )
-    "double" |-> pending ( "double" )
-    "f" |-> closure ( "double" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Integer 2 )  .Exprs ) , "apply" |-> closure ( "apply" , ListItem ( "f" )
-    ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs ) , "apply" |-> pending ( "apply" )
-    "double" |-> pending ( "double" ) )
-    "double" |-> pending ( "double" ) )
-    "x" |-> 5 )
-    2 |-> scope ( 1 , "apply" |-> closure ( "apply" , ListItem ( "f" )
-    ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs ) , "apply" |-> pending ( "apply" )
-    "double" |-> pending ( "double" ) )
-    "double" |-> pending ( "double" )
-    "x" |-> 5 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    3
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-call-before-eval.cdz"
-  </file>
-  <span-start>
-    39
-  </span-start>
-  <span-end>
-    53
-  </span-end>
-</generatedTop>
+<k>
+  10 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "apply" |-> closure ( "apply" , ListItem ( "f" )
+  ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs ) , "apply" |-> pending ( "apply" )
+  "double" |-> pending ( "double" ) )
+  "double" |-> closure ( "double" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Integer 2 )  .Exprs ) , "apply" |-> closure ( "apply" , ListItem ( "f" )
+  ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs ) , "apply" |-> pending ( "apply" )
+  "double" |-> pending ( "double" ) )
+  "double" |-> pending ( "double" ) ) )
+  1 |-> scope ( 0 , "apply" |-> pending ( "apply" )
+  "double" |-> pending ( "double" )
+  "f" |-> closure ( "double" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Integer 2 )  .Exprs ) , "apply" |-> closure ( "apply" , ListItem ( "f" )
+  ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs ) , "apply" |-> pending ( "apply" )
+  "double" |-> pending ( "double" ) )
+  "double" |-> pending ( "double" ) )
+  "x" |-> 5 )
+  2 |-> scope ( 1 , "apply" |-> closure ( "apply" , ListItem ( "f" )
+  ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs ) , "apply" |-> pending ( "apply" )
+  "double" |-> pending ( "double" ) )
+  "double" |-> pending ( "double" )
+  "x" |-> 5 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  3
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-call-before-eval.cdz"
+</file>
+<span-start>
+  39
+</span-start>
+<span-end>
+  53
+</span-end>
 ```
 

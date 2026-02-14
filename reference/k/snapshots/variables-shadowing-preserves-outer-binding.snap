@@ -32,39 +32,37 @@ x
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    1 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "outer_result" |-> 2
-    "x" |-> 1 )
-    1 |-> scope ( 0 , "x" |-> 2 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/variables-shadowing-preserves-outer-binding.cdz"
-  </file>
-  <span-start>
-    62
-  </span-start>
-  <span-end>
-    63
-  </span-end>
-</generatedTop>
+<k>
+  1 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "outer_result" |-> 2
+  "x" |-> 1 )
+  1 |-> scope ( 0 , "x" |-> 2 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/variables-shadowing-preserves-outer-binding.cdz"
+</file>
+<span-start>
+  62
+</span-start>
+<span-end>
+  63
+</span-end>
 ```
 

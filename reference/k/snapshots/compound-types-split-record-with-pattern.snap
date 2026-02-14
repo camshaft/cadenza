@@ -1,0 +1,72 @@
+---
+source: crates/cadenza-compiler/test-data/semantics/compound-types-split-record-with-pattern.cdz
+---
+# compound-types-split-record-with-pattern
+
+## Input
+
+```cadenza
+let person = { name = "Alice", age = 30, email = "alice@example.com", active = true }
+let { name, age, ...rest } = person
+name
+rest
+```
+
+## AST
+
+```lisp
+(File (Path 99 114 97 116 101 115 47 99 97 100 101 110 122 97 45 99 111 109 112 105 108 101 114 47 116 101 115 116 45 100 97 116 97 47 115 101 109 97 110 116 105 99 115 47 99 111 109 112 111 117 110 100 45 116 121 112 101 115 45 115 112 108 105 116 45 114 101 99 111 114 100 45 119 105 116 104 45 112 97 116 116 101 114 110 46 99 100 122) (Span (0 86) (Apply (Op 61) (Apply (Ident 108 101 116) (Ident 112 101 114 115 111 110)) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Apply (Op 61) (Ident 110 97 109 101) (String 65 108 105 99 101)) (Apply (Op 61) (Ident 97 103 101) (Integer 30)) (Apply (Op 61) (Ident 101 109 97 105 108) (String 97 108 105 99 101 64 101 120 97 109 112 108 101 46 99 111 109)) (Apply (Op 61) (Ident 97 99 116 105 118 101) (Ident 116 114 117 101))))) (Span (86 122) (Apply (Op 61) (Apply (Ident 108 101 116) (Apply (Synthetic 95 95 114 101 99 111 114 100 95 95) (Ident 110 97 109 101) (Ident 97 103 101) (Apply (Op 46 46 46) (Ident 114 101 115 116)))) (Ident 112 101 114 115 111 110))) (Span (122 126) (Ident 110 97 109 101)) (Span (127 131) (Ident 114 101 115 116)))
+```
+
+## Expected
+
+```
+() : Unit
+() : Unit
+"Alice" : String
+{ email = "alice@example.com", active = true } : { email: String, active: Bool }
+```
+
+## K Output
+
+```
+<k>
+  record ( "active" |-> true
+  "email" |-> "alice@example.com" ) ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "age" |-> 30
+  "name" |-> "Alice"
+  "person" |-> record ( "active" |-> true
+  "age" |-> 30
+  "email" |-> "alice@example.com"
+  "name" |-> "Alice" )
+  "rest" |-> record ( "active" |-> true
+  "email" |-> "alice@example.com" ) )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/compound-types-split-record-with-pattern.cdz"
+</file>
+<span-start>
+  127
+</span-start>
+<span-end>
+  131
+</span-end>
+```
+

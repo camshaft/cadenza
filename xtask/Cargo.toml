@@ -7,4 +7,5 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "4.0", features = ["derive"] }
+rayon = "1"
 xshell = "0.2"

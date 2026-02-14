@@ -25,37 +25,35 @@ Line 2	Tabbed" : String
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    "Line 1\nLine 2\tTabbed" ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , .Map )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/literals-string-with-escape-sequences.cdz"
-  </file>
-  <span-start>
-    0
-  </span-start>
-  <span-end>
-    24
-  </span-end>
-</generatedTop>
+<k>
+  "Line 1\nLine 2\tTabbed" ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , .Map )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/literals-string-with-escape-sequences.cdz"
+</file>
+<span-start>
+  0
+</span-start>
+<span-end>
+  24
+</span-end>
 ```
 

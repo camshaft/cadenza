@@ -26,39 +26,37 @@ square 5
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    25 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "square" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "square" |-> pending ( "square" ) ) )
-    1 |-> scope ( 0 , "square" |-> pending ( "square" )
-    "x" |-> 5 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-function-definition-and-call.cdz"
-  </file>
-  <span-start>
-    20
-  </span-start>
-  <span-end>
-    28
-  </span-end>
-</generatedTop>
+<k>
+  25 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "square" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "square" |-> pending ( "square" ) ) )
+  1 |-> scope ( 0 , "square" |-> pending ( "square" )
+  "x" |-> 5 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-function-definition-and-call.cdz"
+</file>
+<span-start>
+  20
+</span-start>
+<span-end>
+  28
+</span-end>
 ```
 

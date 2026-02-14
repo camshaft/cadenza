@@ -26,38 +26,36 @@ x + y
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    30 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "x" |-> 10
-    "y" |-> 20 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/variables-record-destructuring.cdz"
-  </file>
-  <span-start>
-    34
-  </span-start>
-  <span-end>
-    39
-  </span-end>
-</generatedTop>
+<k>
+  30 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "x" |-> 10
+  "y" |-> 20 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/variables-record-destructuring.cdz"
+</file>
+<span-start>
+  34
+</span-start>
+<span-end>
+  39
+</span-end>
 ```
 

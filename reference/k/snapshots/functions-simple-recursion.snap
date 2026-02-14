@@ -27,55 +27,53 @@ factorial 5
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    120 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "factorial" |-> closure ( "factorial" , ListItem ( "n" ) , ( Apply ( Synthetic 95  95  98  108  111  99  107  95  95  .Chars ) ( Apply ( Apply ( Apply ( Apply ( Apply ( Ident 105  102  .Chars ) ( Apply ( Op 61  61  .Chars ) ( Ident 110  .Chars )  ( Integer 0 )  .Exprs )  .Exprs ) ( Ident 116  104  101  110  .Chars )  .Exprs ) ( Integer 1 )  .Exprs ) ( Ident 101  108  115  101  .Chars )  .Exprs ) ( Apply ( Op 42  .Chars ) ( Ident 110  .Chars )  ( Apply ( Ident 102  97  99  116  111  114  105  97  108  .Chars ) ( Apply ( Op 45  .Chars ) ( Ident 110  .Chars )  ( Integer 1 )  .Exprs )  .Exprs )  .Exprs )  .Exprs )  .Exprs ) , "factorial" |-> pending ( "factorial" ) ) )
-    1 |-> scope ( 0 , "factorial" |-> pending ( "factorial" )
-    "n" |-> 5 )
-    2 |-> scope ( 1 , .Map )
-    3 |-> scope ( 2 , "factorial" |-> pending ( "factorial" )
-    "n" |-> 4 )
-    4 |-> scope ( 3 , .Map )
-    5 |-> scope ( 4 , "factorial" |-> pending ( "factorial" )
-    "n" |-> 3 )
-    6 |-> scope ( 5 , .Map )
-    7 |-> scope ( 6 , "factorial" |-> pending ( "factorial" )
-    "n" |-> 2 )
-    8 |-> scope ( 7 , .Map )
-    9 |-> scope ( 8 , "factorial" |-> pending ( "factorial" )
-    "n" |-> 1 )
-    10 |-> scope ( 9 , .Map )
-    11 |-> scope ( 10 , "factorial" |-> pending ( "factorial" )
-    "n" |-> 0 )
-    12 |-> scope ( 11 , .Map )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    13
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-simple-recursion.cdz"
-  </file>
-  <span-start>
-    69
-  </span-start>
-  <span-end>
-    80
-  </span-end>
-</generatedTop>
+<k>
+  120 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "factorial" |-> closure ( "factorial" , ListItem ( "n" ) , ( Apply ( Synthetic 95  95  98  108  111  99  107  95  95  .Chars ) ( Apply ( Apply ( Apply ( Apply ( Apply ( Ident 105  102  .Chars ) ( Apply ( Op 61  61  .Chars ) ( Ident 110  .Chars )  ( Integer 0 )  .Exprs )  .Exprs ) ( Ident 116  104  101  110  .Chars )  .Exprs ) ( Integer 1 )  .Exprs ) ( Ident 101  108  115  101  .Chars )  .Exprs ) ( Apply ( Op 42  .Chars ) ( Ident 110  .Chars )  ( Apply ( Ident 102  97  99  116  111  114  105  97  108  .Chars ) ( Apply ( Op 45  .Chars ) ( Ident 110  .Chars )  ( Integer 1 )  .Exprs )  .Exprs )  .Exprs )  .Exprs )  .Exprs ) , "factorial" |-> pending ( "factorial" ) ) )
+  1 |-> scope ( 0 , "factorial" |-> pending ( "factorial" )
+  "n" |-> 5 )
+  2 |-> scope ( 1 , .Map )
+  3 |-> scope ( 2 , "factorial" |-> pending ( "factorial" )
+  "n" |-> 4 )
+  4 |-> scope ( 3 , .Map )
+  5 |-> scope ( 4 , "factorial" |-> pending ( "factorial" )
+  "n" |-> 3 )
+  6 |-> scope ( 5 , .Map )
+  7 |-> scope ( 6 , "factorial" |-> pending ( "factorial" )
+  "n" |-> 2 )
+  8 |-> scope ( 7 , .Map )
+  9 |-> scope ( 8 , "factorial" |-> pending ( "factorial" )
+  "n" |-> 1 )
+  10 |-> scope ( 9 , .Map )
+  11 |-> scope ( 10 , "factorial" |-> pending ( "factorial" )
+  "n" |-> 0 )
+  12 |-> scope ( 11 , .Map )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  13
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-simple-recursion.cdz"
+</file>
+<span-start>
+  69
+</span-start>
+<span-end>
+  80
+</span-end>
 ```
 

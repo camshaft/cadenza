@@ -28,57 +28,55 @@ add (double 3) (double 4)
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    14 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "add" |-> closure ( "add" , ListItem ( "x" )
-    ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" )
-    "double" |-> pending ( "double" ) )
-    "double" |-> closure ( "double" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Integer 2 )  .Exprs ) , "add" |-> closure ( "add" , ListItem ( "x" )
-    ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" )
-    "double" |-> pending ( "double" ) )
-    "double" |-> pending ( "double" ) ) )
-    1 |-> scope ( 0 , "add" |-> closure ( "add" , ListItem ( "x" )
-    ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" )
-    "double" |-> pending ( "double" ) )
-    "double" |-> pending ( "double" )
-    "x" |-> 3 )
-    2 |-> scope ( 0 , "add" |-> closure ( "add" , ListItem ( "x" )
-    ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" )
-    "double" |-> pending ( "double" ) )
-    "double" |-> pending ( "double" )
-    "x" |-> 4 )
-    3 |-> scope ( 0 , "add" |-> pending ( "add" )
-    "double" |-> pending ( "double" )
-    "x" |-> 6
-    "y" |-> 8 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    4
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-nested-application.cdz"
-  </file>
-  <span-start>
-    39
-  </span-start>
-  <span-end>
-    64
-  </span-end>
-</generatedTop>
+<k>
+  14 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "add" |-> closure ( "add" , ListItem ( "x" )
+  ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" )
+  "double" |-> pending ( "double" ) )
+  "double" |-> closure ( "double" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Integer 2 )  .Exprs ) , "add" |-> closure ( "add" , ListItem ( "x" )
+  ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" )
+  "double" |-> pending ( "double" ) )
+  "double" |-> pending ( "double" ) ) )
+  1 |-> scope ( 0 , "add" |-> closure ( "add" , ListItem ( "x" )
+  ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" )
+  "double" |-> pending ( "double" ) )
+  "double" |-> pending ( "double" )
+  "x" |-> 3 )
+  2 |-> scope ( 0 , "add" |-> closure ( "add" , ListItem ( "x" )
+  ListItem ( "y" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "add" |-> pending ( "add" )
+  "double" |-> pending ( "double" ) )
+  "double" |-> pending ( "double" )
+  "x" |-> 4 )
+  3 |-> scope ( 0 , "add" |-> pending ( "add" )
+  "double" |-> pending ( "double" )
+  "x" |-> 6
+  "y" |-> 8 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  4
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-nested-application.cdz"
+</file>
+<span-start>
+  39
+</span-start>
+<span-end>
+  64
+</span-end>
 ```
 

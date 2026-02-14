@@ -30,49 +30,47 @@ add_10 5
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    15 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "add_10" |-> closure ( "adder" , ListItem ( "x" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 110  .Chars )  .Exprs ) , "adder" |-> pending ( "adder" )
-    "make_adder" |-> pending ( "make_adder" )
-    "n" |-> 10 )
-    "make_adder" |-> closure ( "make_adder" , ListItem ( "n" ) , ( Apply ( Synthetic 95  95  98  108  111  99  107  95  95  .Chars ) ( Apply ( Op 61  .Chars ) ( Apply ( Apply ( Ident 102  110  .Chars ) ( Ident 97  100  100  101  114  .Chars )  .Exprs ) ( Ident 120  .Chars )  .Exprs )  ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 110  .Chars )  .Exprs )  .Exprs )  ( Ident 97  100  100  101  114  .Chars )  .Exprs ) , "make_adder" |-> pending ( "make_adder" ) ) )
-    1 |-> scope ( 0 , "make_adder" |-> pending ( "make_adder" )
-    "n" |-> 10 )
-    2 |-> scope ( 1 , "adder" |-> closure ( "adder" , ListItem ( "x" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 110  .Chars )  .Exprs ) , "adder" |-> pending ( "adder" )
-    "make_adder" |-> pending ( "make_adder" )
-    "n" |-> 10 ) )
-    3 |-> scope ( 0 , "adder" |-> pending ( "adder" )
-    "make_adder" |-> pending ( "make_adder" )
-    "n" |-> 10
-    "x" |-> 5 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    4
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-function-as-return-value.cdz"
-  </file>
-  <span-start>
-    78
-  </span-start>
-  <span-end>
-    86
-  </span-end>
-</generatedTop>
+<k>
+  15 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "add_10" |-> closure ( "adder" , ListItem ( "x" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 110  .Chars )  .Exprs ) , "adder" |-> pending ( "adder" )
+  "make_adder" |-> pending ( "make_adder" )
+  "n" |-> 10 )
+  "make_adder" |-> closure ( "make_adder" , ListItem ( "n" ) , ( Apply ( Synthetic 95  95  98  108  111  99  107  95  95  .Chars ) ( Apply ( Op 61  .Chars ) ( Apply ( Apply ( Ident 102  110  .Chars ) ( Ident 97  100  100  101  114  .Chars )  .Exprs ) ( Ident 120  .Chars )  .Exprs )  ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 110  .Chars )  .Exprs )  .Exprs )  ( Ident 97  100  100  101  114  .Chars )  .Exprs ) , "make_adder" |-> pending ( "make_adder" ) ) )
+  1 |-> scope ( 0 , "make_adder" |-> pending ( "make_adder" )
+  "n" |-> 10 )
+  2 |-> scope ( 1 , "adder" |-> closure ( "adder" , ListItem ( "x" ) , ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 110  .Chars )  .Exprs ) , "adder" |-> pending ( "adder" )
+  "make_adder" |-> pending ( "make_adder" )
+  "n" |-> 10 ) )
+  3 |-> scope ( 0 , "adder" |-> pending ( "adder" )
+  "make_adder" |-> pending ( "make_adder" )
+  "n" |-> 10
+  "x" |-> 5 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  4
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-function-as-return-value.cdz"
+</file>
+<span-start>
+  78
+</span-start>
+<span-end>
+  86
+</span-end>
 ```
 

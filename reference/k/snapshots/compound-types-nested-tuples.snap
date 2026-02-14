@@ -24,40 +24,38 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-nested-tuples
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    tuple ( ListItem ( tuple ( ListItem ( 1 )
-    ListItem ( 2 ) ) )
-    ListItem ( tuple ( ListItem ( 3 )
-    ListItem ( 4 ) ) ) ) ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , .Map )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/compound-types-nested-tuples.cdz"
-  </file>
-  <span-start>
-    1
-  </span-start>
-  <span-end>
-    16
-  </span-end>
-</generatedTop>
+<k>
+  tuple ( ListItem ( tuple ( ListItem ( 1 )
+  ListItem ( 2 ) ) )
+  ListItem ( tuple ( ListItem ( 3 )
+  ListItem ( 4 ) ) ) ) ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , .Map )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/compound-types-nested-tuples.cdz"
+</file>
+<span-start>
+  1
+</span-start>
+<span-end>
+  16
+</span-end>
 ```
 

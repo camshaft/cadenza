@@ -28,40 +28,38 @@ let y = 20
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    tuple ( ListItem ( 10 )
-    ListItem ( 20 )
-    ListItem ( 30 ) ) ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "x" |-> 10
-    "y" |-> 20 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/compound-types-tuple-from-expressions.cdz"
-  </file>
-  <span-start>
-    23
-  </span-start>
-  <span-end>
-    35
-  </span-end>
-</generatedTop>
+<k>
+  tuple ( ListItem ( 10 )
+  ListItem ( 20 )
+  ListItem ( 30 ) ) ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "x" |-> 10
+  "y" |-> 20 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/compound-types-tuple-from-expressions.cdz"
+</file>
+<span-start>
+  23
+</span-start>
+<span-end>
+  35
+</span-end>
 ```
 

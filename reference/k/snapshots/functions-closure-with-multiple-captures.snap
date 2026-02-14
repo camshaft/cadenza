@@ -30,45 +30,43 @@ sum_with_context 5
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    35 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "a" |-> 10
-    "b" |-> 20
-    "sum_with_context" |-> closure ( "sum_with_context" , ListItem ( "x" ) , ( Apply ( Op 43  .Chars ) ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 97  .Chars )  .Exprs )  ( Ident 98  .Chars )  .Exprs ) , "a" |-> 10
-    "b" |-> 20
-    "sum_with_context" |-> pending ( "sum_with_context" ) ) )
-    1 |-> scope ( 0 , "a" |-> 10
-    "b" |-> 20
-    "sum_with_context" |-> pending ( "sum_with_context" )
-    "x" |-> 5 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-closure-with-multiple-captures.cdz"
-  </file>
-  <span-start>
-    56
-  </span-start>
-  <span-end>
-    74
-  </span-end>
-</generatedTop>
+<k>
+  35 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "a" |-> 10
+  "b" |-> 20
+  "sum_with_context" |-> closure ( "sum_with_context" , ListItem ( "x" ) , ( Apply ( Op 43  .Chars ) ( Apply ( Op 43  .Chars ) ( Ident 120  .Chars )  ( Ident 97  .Chars )  .Exprs )  ( Ident 98  .Chars )  .Exprs ) , "a" |-> 10
+  "b" |-> 20
+  "sum_with_context" |-> pending ( "sum_with_context" ) ) )
+  1 |-> scope ( 0 , "a" |-> 10
+  "b" |-> 20
+  "sum_with_context" |-> pending ( "sum_with_context" )
+  "x" |-> 5 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-closure-with-multiple-captures.cdz"
+</file>
+<span-start>
+  56
+</span-start>
+<span-end>
+  74
+</span-end>
 ```
 

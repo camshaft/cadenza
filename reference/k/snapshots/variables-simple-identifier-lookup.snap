@@ -26,37 +26,35 @@ name
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    "Alice" ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "name" |-> "Alice" )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/variables-simple-identifier-lookup.cdz"
-  </file>
-  <span-start>
-    19
-  </span-start>
-  <span-end>
-    23
-  </span-end>
-</generatedTop>
+<k>
+  "Alice" ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "name" |-> "Alice" )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/variables-simple-identifier-lookup.cdz"
+</file>
+<span-start>
+  19
+</span-start>
+<span-end>
+  23
+</span-end>
 ```
 

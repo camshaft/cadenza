@@ -28,54 +28,52 @@ apply_twice square 3
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    81 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "apply_twice" |-> closure ( "apply_twice" , ListItem ( "f" )
-    ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
-    "square" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
-    "square" |-> pending ( "square" ) ) )
-    "square" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
-    "square" |-> pending ( "square" ) ) )
-    1 |-> scope ( 0 , "apply_twice" |-> pending ( "apply_twice" )
-    "f" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
-    "square" |-> pending ( "square" ) )
-    "square" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
-    "square" |-> pending ( "square" ) )
-    "x" |-> 3 )
-    2 |-> scope ( 1 , "apply_twice" |-> pending ( "apply_twice" )
-    "square" |-> pending ( "square" )
-    "x" |-> 3 )
-    3 |-> scope ( 1 , "apply_twice" |-> pending ( "apply_twice" )
-    "square" |-> pending ( "square" )
-    "x" |-> 9 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    4
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-application-as-argument.cdz"
-  </file>
-  <span-start>
-    49
-  </span-start>
-  <span-end>
-    69
-  </span-end>
-</generatedTop>
+<k>
+  81 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "apply_twice" |-> closure ( "apply_twice" , ListItem ( "f" )
+  ListItem ( "x" ) , ( Apply ( Ident 102  .Chars ) ( Apply ( Ident 102  .Chars ) ( Ident 120  .Chars )  .Exprs )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
+  "square" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
+  "square" |-> pending ( "square" ) ) )
+  "square" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
+  "square" |-> pending ( "square" ) ) )
+  1 |-> scope ( 0 , "apply_twice" |-> pending ( "apply_twice" )
+  "f" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
+  "square" |-> pending ( "square" ) )
+  "square" |-> closure ( "square" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 120  .Chars )  .Exprs ) , "apply_twice" |-> pending ( "apply_twice" )
+  "square" |-> pending ( "square" ) )
+  "x" |-> 3 )
+  2 |-> scope ( 1 , "apply_twice" |-> pending ( "apply_twice" )
+  "square" |-> pending ( "square" )
+  "x" |-> 3 )
+  3 |-> scope ( 1 , "apply_twice" |-> pending ( "apply_twice" )
+  "square" |-> pending ( "square" )
+  "x" |-> 9 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  4
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-application-as-argument.cdz"
+</file>
+<span-start>
+  49
+</span-start>
+<span-end>
+  69
+</span-end>
 ```
 

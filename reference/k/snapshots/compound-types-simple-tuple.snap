@@ -24,39 +24,37 @@ source: crates/cadenza-compiler/test-data/semantics/compound-types-simple-tuple.
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    tuple ( ListItem ( 1 )
-    ListItem ( 2 )
-    ListItem ( 3 ) ) ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , .Map )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/compound-types-simple-tuple.cdz"
-  </file>
-  <span-start>
-    1
-  </span-start>
-  <span-end>
-    9
-  </span-end>
-</generatedTop>
+<k>
+  tuple ( ListItem ( 1 )
+  ListItem ( 2 )
+  ListItem ( 3 ) ) ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , .Map )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/compound-types-simple-tuple.cdz"
+</file>
+<span-start>
+  1
+</span-start>
+<span-end>
+  9
+</span-end>
 ```
 

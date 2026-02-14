@@ -26,41 +26,39 @@ multiply 6 7
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    42 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "multiply" |-> closure ( "multiply" , ListItem ( "x" )
-    ListItem ( "y" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "multiply" |-> pending ( "multiply" ) ) )
-    1 |-> scope ( 0 , "multiply" |-> pending ( "multiply" )
-    "x" |-> 6
-    "y" |-> 7 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-application-with-multiple-arguments.cdz"
-  </file>
-  <span-start>
-    24
-  </span-start>
-  <span-end>
-    36
-  </span-end>
-</generatedTop>
+<k>
+  42 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "multiply" |-> closure ( "multiply" , ListItem ( "x" )
+  ListItem ( "y" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 121  .Chars )  .Exprs ) , "multiply" |-> pending ( "multiply" ) ) )
+  1 |-> scope ( 0 , "multiply" |-> pending ( "multiply" )
+  "x" |-> 6
+  "y" |-> 7 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-application-with-multiple-arguments.cdz"
+</file>
+<span-start>
+  24
+</span-start>
+<span-end>
+  36
+</span-end>
 ```
 

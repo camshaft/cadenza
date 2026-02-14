@@ -24,37 +24,35 @@ false : Bool
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    false ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , .Map )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/literals-false-literal.cdz"
-  </file>
-  <span-start>
-    0
-  </span-start>
-  <span-end>
-    5
-  </span-end>
-</generatedTop>
+<k>
+  false ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , .Map )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/literals-false-literal.cdz"
+</file>
+<span-start>
+  0
+</span-start>
+<span-end>
+  5
+</span-end>
 ```
 

@@ -30,37 +30,35 @@ counter
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    2 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "counter" |-> 2 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    1
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/variables-shadowing-uses-previous-value.cdz"
-  </file>
-  <span-start>
-    68
-  </span-start>
-  <span-end>
-    75
-  </span-end>
-</generatedTop>
+<k>
+  2 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "counter" |-> 2 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  1
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/variables-shadowing-uses-previous-value.cdz"
+</file>
+<span-start>
+  68
+</span-start>
+<span-end>
+  75
+</span-end>
 ```
 

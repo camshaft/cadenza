@@ -28,42 +28,40 @@ multiply_by_factor 5
 ## K Output
 
 ```
-<generatedTop>
-  <k>
-    50 ~> .K
-  </k>
-  <scopes>
-    0 |-> scope ( -1 , "factor" |-> 10
-    "multiply_by_factor" |-> closure ( "multiply_by_factor" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 102  97  99  116  111  114  .Chars )  .Exprs ) , "factor" |-> 10
-    "multiply_by_factor" |-> pending ( "multiply_by_factor" ) ) )
-    1 |-> scope ( 0 , "factor" |-> 10
-    "multiply_by_factor" |-> pending ( "multiply_by_factor" )
-    "x" |-> 5 )
-  </scopes>
-  <current-scope>
-    0
-  </current-scope>
-  <next-scope>
-    2
-  </next-scope>
-  <store>
-    .Map
-  </store>
-  <next-cell>
-    0
-  </next-cell>
-  <output>
-    .List
-  </output>
-  <file>
-    "crates/cadenza-compiler/test-data/semantics/functions-simple-closure.cdz"
-  </file>
-  <span-start>
-    53
-  </span-start>
-  <span-end>
-    73
-  </span-end>
-</generatedTop>
+<k>
+  50 ~> .K
+</k>
+<scopes>
+  0 |-> scope ( -1 , "factor" |-> 10
+  "multiply_by_factor" |-> closure ( "multiply_by_factor" , ListItem ( "x" ) , ( Apply ( Op 42  .Chars ) ( Ident 120  .Chars )  ( Ident 102  97  99  116  111  114  .Chars )  .Exprs ) , "factor" |-> 10
+  "multiply_by_factor" |-> pending ( "multiply_by_factor" ) ) )
+  1 |-> scope ( 0 , "factor" |-> 10
+  "multiply_by_factor" |-> pending ( "multiply_by_factor" )
+  "x" |-> 5 )
+</scopes>
+<current-scope>
+  0
+</current-scope>
+<next-scope>
+  2
+</next-scope>
+<store>
+  .Map
+</store>
+<next-cell>
+  0
+</next-cell>
+<output>
+  .List
+</output>
+<file>
+  "crates/cadenza-compiler/test-data/semantics/functions-simple-closure.cdz"
+</file>
+<span-start>
+  53
+</span-start>
+<span-end>
+  73
+</span-end>
 ```
 
