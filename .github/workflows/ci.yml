@@ -89,6 +89,32 @@ jobs:
         env:
           RUSTC_WRAPPER: ""
 
+  cachegrind-callgrind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes valgrind
+
+      - name: Install toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install stable --component rustfmt
+          rustup override set stable
+
+      - uses: camshaft/rust-cache@v1
+
+      - name: Run cachegrind smoke check
+        run: |
+          valgrind --tool=cachegrind --quiet --error-exitcode=1 cargo run --bin cadenza -- --help
+
+      - name: Run callgrind smoke check
+        run: |
+          valgrind --tool=callgrind --quiet --error-exitcode=1 cargo run --bin cadenza -- --help
+
   test:
     runs-on: ${{ matrix.os }}
     needs: env
