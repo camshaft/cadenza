@@ -35,7 +35,9 @@ A generator for a value of a refined type MUST produce only values satisfying th
 
 When a property fails, the harness MUST search for a smaller input that still fails.
 
-The shrinking search MUST terminate and report a minimal failing input rather than search unboundedly.
+The shrinking search MUST terminate rather than search unboundedly.
+
+The shrinking search MUST report a minimal failing input.
 
 ## Contracts As Oracles
 

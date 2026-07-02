@@ -50,7 +50,9 @@ The build tool MUST NOT be part of any minimal root whose only responsibilities 
 
 ### A New Source Language Is A New Tool
 
-Introducing a build tool for a different source language MUST be expressible as providing a new tool without changing what a minimal load-verify-run root contains.
+A minimal root whose only responsibilities are to load, verify, and run components MUST NOT contain a compiler for any source language.
+
+A minimal load-verify-run root MUST be unchanged by the introduction of a build tool for a different source language.
 
 ## Derivation By Embedding The Reference Interpreter
 

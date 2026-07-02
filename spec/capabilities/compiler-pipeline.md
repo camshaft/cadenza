@@ -29,7 +29,9 @@ Each phase MUST produce output that is a deterministic function of its input.
 
 ### Phases Recover From Errors
 
-A phase that encounters an error in one part of a program MUST record a diagnostic and continue processing the well-formed remainder rather than abort the whole compilation.
+A phase that encounters an error in one part of a program MUST record a diagnostic for that error.
+
+A phase that encounters an error in one part of a program MUST continue processing the well-formed remainder rather than abort the whole compilation.
 
 The compiler MUST report all diagnostics it can produce for a program rather than stop at the first.
 

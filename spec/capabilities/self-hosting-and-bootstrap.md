@@ -31,7 +31,7 @@ The reference interpreter MUST be the single behavioral oracle against which a c
 
 ### A Compiled Program Agrees With The Oracle
 
-A compiled program's observable behavior MUST agree with the reference interpreter over the same input.
+Oracle agreement is required by Core Principle XIV: a compiled program's observable behavior agrees with the reference interpreter over the same input.
 
 A generation whose compiled output disagrees with the reference interpreter on any executable-semantics case MUST NOT be promoted.
 
@@ -59,12 +59,18 @@ The seed compiler MUST derive a component that satisfies the same guarantees as 
 
 Each generation of the toolchain after the seed MUST be derivable by the generation before it.
 
-Reaching self-hosting MUST mean the Cadenza compiler is authored in Cadenza and derivable by the previous Cadenza compiler.
+A self-hosting generation MUST be a Cadenza compiler authored in Cadenza.
+
+A self-hosting generation MUST be derivable by the previous Cadenza compiler.
 
 ## Turning The Flywheel Means Execution
 
 ### A Regeneration Is Derived, Gated, And Run
 
-A claim that a new generation exists MUST be backed by a component that was actually derived, passed both gates, and ran, rather than by the emission of the events that would accompany a regeneration.
+A claim that a new generation exists MUST be backed by a component that was actually derived, rather than by the emission of the events that would accompany a regeneration.
+
+A new generation MUST have passed both gates before it is claimed to exist.
+
+A new generation MUST have run before it is claimed to exist.
 
 A generation whose behaving is demonstrated only by a stand-in that never executed the derived component MUST NOT be treated as a conforming generation.

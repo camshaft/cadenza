@@ -46,7 +46,7 @@ The reference interpreter MUST be authored in Cadenza once the seed toolchain ca
 
 ### Compiled Output Agrees With The Interpreter
 
-A compiled program's observable behavior MUST agree with the reference interpreter over the same input.
+An ignition MUST demonstrate that the compiled output of a program exhibits the same observable behavior as the reference interpreter over the same input, so that oracle agreement (Core Principle XIV) is exercised rather than assumed.
 
 ## Derivation Modes At Bootstrap
 
@@ -82,7 +82,9 @@ A subsystem whose specification can be satisfied without executing it MUST be ex
 
 A new generation MUST be produced by reading this specification, synthesizing Cadenza source, deriving it with the previous generation, and passing both gates, rather than by hand-editing an emitted component.
 
-The claim that the system has evolved MUST be backed by a component that was actually derived and is now running, rather than by the appearance of a regeneration.
+The claim that the system has evolved MUST be backed by a component that was actually derived, rather than by the appearance of a regeneration.
+
+The claim that the system has evolved MUST be backed by a derived component that is now running.
 
 ### The Whole Regeneration Is Auditable
 

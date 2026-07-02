@@ -112,7 +112,9 @@ A generation MUST pass both the requirement gate and the behavior gate before it
 
 ### The Requirement And Code Sides Are Separated
 
-The requirement side of the gate configuration MUST list the specification files and be owned by hand rather than regenerated.
+The requirement side of the gate configuration MUST list the specification files.
+
+The requirement side of the gate configuration MUST be owned by hand rather than regenerated.
 
 The code side of the gate configuration MUST be regenerated per target language.
 

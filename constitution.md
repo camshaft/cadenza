@@ -101,7 +101,9 @@ The structure of a program MUST be manipulable through a documented structural i
 
 ### XI. Diagnostics Are Machine-Actionable
 
-Every diagnostic the compiler emits MUST carry a stable machine-readable code and a precise source span.
+Every diagnostic the compiler emits MUST carry a stable machine-readable code.
+
+Every diagnostic the compiler emits MUST carry a precise source span.
 
 Every diagnostic the compiler emits MUST name the rule or requirement it enforces so that an agent can act on it programmatically.
 
