@@ -149,7 +149,7 @@ else
   ULTRA_PREAMBLE=""
 fi
 
-KICKOFF="${ULTRA_PREAMBLE}Run the /build command (commands/build.md, installed as the /build slash command). You are taking this spec-driven repository from specification to a working implementation. Read the spec first and proceed on the authority of the specification under spec/ and constitution.md. ${MODE_INSTRUCTION}"
+KICKOFF="${ULTRA_PREAMBLE}Run the /build command (commands/build.md, installed as the /build slash command). You are taking this spec-driven repository from specification to a working Cadenza compiler. Read the spec first and proceed on the authority of the specification under spec/ and constitution.md. ${MODE_INSTRUCTION}"
 
 # --effort passes through to claude; it is a real CLI flag (low|medium|high|xhigh|max).
 CLAUDE_ARGS=(--effort "$EFFORT")
