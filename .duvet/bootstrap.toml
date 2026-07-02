@@ -1,0 +1,109 @@
+'$schema' = "https://awslabs.github.io/duvet/config/v0.4.0.json"
+
+# =============================================================================
+# BOOTSTRAP-SUBSET gate — the seed-toolchain ignition subset.
+#
+# Same shape as config.toml, but the [[specification]] half lists ONLY the subset
+# the seed toolchain must satisfy to clear the ignition bar in spec/bootstrap.md
+# § "The Ignition Bar": derive one real Cadenza source program to a
+# content-addressed component whose imports mirror its manifest, run it, and
+# reproduce it byte-for-byte. That subset is the constitution, all frozen
+# contracts, bootstrap.md, and the capability specs the seed compiler itself must
+# satisfy to perform one real end-to-end derivation:
+#
+#     core-semantics             — evaluate the program's constructs
+#     type-system                — reject the ill-typed; erase types
+#     capabilities-and-effects   — the mandatory capability declaration (not the
+#                                  opt-in effect layer, which is a later capability)
+#     compiler-pipeline          — the phases and the two gates
+#     conformance-gate           — the gate that judges the generation
+#     self-hosting-and-bootstrap — the oracle, the derivation modes, the staging
+#
+# The richer capabilities (memory-and-resource-model, numeric-model,
+# modules-and-namespaces, metaprogramming, verification-layers,
+# property-based-testing, diagnostics, tooling-and-lsp, agent-authoring,
+# units-of-measure) are intentionally NOT in the ignition subset: they are
+# realized by later generations of the Cadenza-authored toolchain, so their
+# coverage belongs to the full-regeneration gate in config.toml.
+#
+# INVARIANT: every [[specification]] block here MUST also appear in config.toml —
+# the ignition subset is a strict subset of the full set, never a superset.
+#
+# Run with:  duvet report --config-path .duvet/bootstrap.toml
+# Source paths are relative to the PROJECT ROOT, not to .duvet/.
+# =============================================================================
+
+# Generated seed compiler lives under implementation/ (gitignored); default is Rust.
+[[source]]
+pattern = "implementation/**/*.rs"
+
+# ---- ignition-subset requirement side ---------------------------------------
+
+[[specification]]
+source = "constitution.md"
+format = "markdown"
+
+# all frozen contracts are in the ignition subset
+[[specification]]
+source = "spec/contracts/source-tree-encoding.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/component-abi.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/deterministic-value-form.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/host-interface-binding.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/determinism-and-fuel.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/reproducible-derivation.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/build-tool-interface.md"
+format = "markdown"
+
+# the ignition-set capabilities (seed-compiler-provided)
+[[specification]]
+source = "spec/capabilities/core-semantics.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/type-system.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/capabilities-and-effects.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/compiler-pipeline.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/conformance-gate.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/self-hosting-and-bootstrap.md"
+format = "markdown"
+
+# bootstrap
+[[specification]]
+source = "spec/bootstrap.md"
+format = "markdown"
+
+[report.json]
+enabled = true
+
+[report.snapshot]
+enabled = true

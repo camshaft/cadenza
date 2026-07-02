@@ -1,0 +1,75 @@
+# Frozen Contract — Host Interface Binding
+
+> **FROZEN CONTRACT.** This document pins the exact relationship between a program's declared
+> capability manifest and the imports of the component the compiler emits — the boundary that
+> makes "no ambient authority" a property of the artifact rather than a convention. It is versioned
+> and changed only by the coordinated act described in the constitution's Governance Floors. Its
+> requirements realize [Core Principle IV](../../constitution.md) and
+> [Core Principle VI](../../constitution.md) and trace to [overview §6](../overview.md) and
+> [overview §8](../overview.md).
+>
+> RFC-2119 key words are normative. Each requirement is a single self-contained sentence under a
+> stable heading. This contract names the interface operations by their function, not by a concrete
+> engine; the concrete host interface is pinned at the declared-default location.
+
+## Purpose And Scope
+
+A component interacts with its runtime only through host operations it imports, and it may reach
+only what it imports. This contract fixes that a component's imports are exactly the capabilities
+its manifest enumerates — no more, so there is no latent authority, and no fewer, so the manifest
+does not overstate what the component can do. It binds the core host operations to their manifest
+declarations and forbids a fold-role component from importing any source of nondeterminism. It does
+not fix the concrete host interface, which is a declared default, nor the manifest's own encoding,
+which the capability specifications govern.
+
+## Imports Mirror The Manifest
+
+### Imports Mirror The Manifest Exactly
+
+The set of host operations a component imports MUST equal the set of capabilities its manifest enumerates.
+
+The compiler MUST NOT emit an import for a host operation the manifest does not enumerate.
+
+The compiler MUST NOT emit a manifest entry for which no corresponding import is generated.
+
+### Ungranted Access Is Rejected At Compile Time
+
+A program that reaches a host operation its manifest does not enumerate MUST be rejected at compile time.
+
+The compiler MUST NOT emit a component that would fail to instantiate because it imports an operation absent from its manifest.
+
+## Core Host Operations
+
+### Each Core Host Operation Has A Fixed Binding
+
+An operation that reads a projection MUST be bound only when the manifest grants that projection.
+
+An operation that emits an event MUST be bound only when the manifest grants that event's kind.
+
+An operation that reads a content-addressed blob MUST be bound only when the manifest grants the blob-reading capability.
+
+An operation that invokes a tool MUST be bound only when the manifest grants that tool.
+
+## The Fold Role
+
+### The Fold Role Is Granted No Nondeterminism
+
+A component in the fold role MUST NOT import an operation that reads a wall-clock time.
+
+A component in the fold role MUST NOT import an operation that returns randomness.
+
+A component in the fold role MUST NOT import an operation that performs ambient input or output beyond reading its granted projections.
+
+## Interface Versioning
+
+### Manifest And Interface Version Travel Together
+
+The emitted component MUST name the exact host-interface version its imports are bound against.
+
+A component MUST NOT be bound against a host-interface version its manifest does not name.
+
+## Additive Evolution
+
+### Additive Evolution Of This Contract
+
+A change to this contract MUST be additive with respect to already-derived components, or else carry an explicit version increment and a stated migration path.

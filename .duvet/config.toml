@@ -1,0 +1,150 @@
+'$schema' = "https://awslabs.github.io/duvet/config/v0.4.0.json"
+
+# =============================================================================
+# Cadenza conformance gate — the requirement -> code/test coverage map.
+#
+# TWO HALVES, split by who owns them:
+#
+#   [[specification]]  — STABLE. Hand-owned. One block per NORMATIVE spec file.
+#                        This is the requirement side: duvet extracts every
+#                        RFC-2119 sentence from these files. `format = "markdown"`
+#                        is REQUIRED (the default is IETF and extracts nothing
+#                        from our prose). A requirement's identity is
+#                        (spec file, section slug, quoted sentence) — there are
+#                        no invented IDs; editing a sentence flags every stale
+#                        citation as a hard error. Source paths are relative to
+#                        the PROJECT ROOT (the parent of this .duvet/ directory).
+#
+#                        Only NORMATIVE files are listed. The descriptive files
+#                        (overview, glossary, traceability, learnings/) carry no
+#                        RFC-2119 requirements and are intentionally omitted. The
+#                        executable-semantics corpus under spec/semantics/ is
+#                        gated by EXECUTION (the behavior gate), not by extraction,
+#                        and is likewise omitted here.
+#
+#   [[source]]         — REGENERATED per target language by the generation that
+#                        synthesizes the compiler. This is the code side: the
+#                        globs for whatever language a given regeneration targets.
+#                        A regeneration rewrites ONLY these blocks; it never
+#                        touches the [[specification]] half. The generated
+#                        compiler lives under implementation/ (gitignored).
+# =============================================================================
+
+# ---- code side (regenerated per-language; the compiler lives here) ----------
+[[source]]
+pattern = "implementation/**/*"
+
+# ---- requirement side (stable; one [[specification]] per normative spec) ----
+
+[[specification]]
+source = "constitution.md"
+format = "markdown"
+
+# frozen contracts
+[[specification]]
+source = "spec/contracts/source-tree-encoding.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/component-abi.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/deterministic-value-form.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/host-interface-binding.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/determinism-and-fuel.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/reproducible-derivation.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/contracts/build-tool-interface.md"
+format = "markdown"
+
+# capability specifications
+[[specification]]
+source = "spec/capabilities/core-semantics.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/type-system.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/capabilities-and-effects.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/memory-and-resource-model.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/numeric-model.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/modules-and-namespaces.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/metaprogramming.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/self-hosting-and-bootstrap.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/verification-layers.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/property-based-testing.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/diagnostics.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/compiler-pipeline.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/conformance-gate.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/tooling-and-lsp.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/agent-authoring.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/units-of-measure.md"
+format = "markdown"
+
+# bootstrap
+[[specification]]
+source = "spec/bootstrap.md"
+format = "markdown"
+
+# ---- reports ----------------------------------------------------------------
+[report.json]
+enabled = true
+
+[report.html]
+enabled = true
+
+[report.snapshot]
+enabled = true
