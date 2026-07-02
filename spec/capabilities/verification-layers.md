@@ -51,6 +51,50 @@ A statically discharged obligation MUST be recorded as a certificate whose valid
 
 A verifier MUST be able to check a discharge certificate reproducibly, obtaining the same result on every conforming run.
 
+## The Contract Layer
+
+### A Contract States A Checkable Condition
+
+A precondition MUST state a condition required to hold when a function is entered.
+
+A postcondition MUST state a condition required to hold of a function's result.
+
+An invariant MUST state a condition required to hold of a type's every value.
+
+### A Contract Is Discharged Dynamically Or Statically
+
+A contract that is not statically discharged MUST be checked at runtime, and its violation MUST raise a trap of a defined kind.
+
+## The Refinement-Type Layer
+
+### A Refinement Constrains A Base Type's Values
+
+A refinement type MUST denote the values of a base type that satisfy the refinement's predicate.
+
+A value MUST be admissible at a refinement type only when it satisfies the refinement's predicate.
+
+### Refinement Coercions Are Checked
+
+Narrowing a base-type value to a refinement MUST be discharged, either statically or by a runtime check whose failure raises a trap of a defined kind.
+
+Widening a refinement to its base type MUST require no check.
+
+### A Refinement Erases To Its Base Type
+
+A refinement MUST erase to its base type in the emitted component, so that it carries no runtime representation of its own.
+
+## The Proof Layer
+
+### A Proof Obligation Is Explicit
+
+A machine-checked proof MUST discharge an explicitly stated obligation rather than an inferred one.
+
+### A Proof Is A Reproducibly Checkable Witness
+
+A discharged proof obligation MUST be recorded as a witness a verifier can check reproducibly, obtaining the same result on every conforming run.
+
+A proof witness MUST be checkable without re-running the search that produced it.
+
 ## Optionality
 
 ### The Verification Layers Are Optional

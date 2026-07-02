@@ -35,6 +35,12 @@ The language MUST expose a documented interface to read and rewrite a program's 
 
 A structural query or edit MUST operate without re-parsing code unrelated to its target.
 
+### Structural Addressing Is Deterministic
+
+The address by which the structural interface identifies a node MUST be a deterministic function of the canonical representation.
+
+A structural query MUST return a result that is a deterministic function of the canonical representation, so that an agent can target and re-target edits reproducibly.
+
 ### Structural Edits Preserve Well-Formedness Or Report
 
 A structural edit MUST either yield a well-formed program or report a machine-readable rejection.
