@@ -45,6 +45,8 @@ A name a macro introduces MUST NOT capture, or be captured by, a name at the mac
 
 Expanding the same program MUST produce the same expanded representation on every conforming compiler.
 
+### Expansion Terminates
+
 Macro expansion MUST terminate, halting at a defined point if it exceeds the deterministic resource measure.
 
 ## Meaning After Expansion

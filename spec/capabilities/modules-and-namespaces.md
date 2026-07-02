@@ -44,3 +44,19 @@ Dependency resolution MUST NOT depend on a mutable version range whose resolutio
 ### Resolution Introduces No Authority
 
 The set of capabilities a program requires MUST NOT be enlarged by dependency resolution beyond the union its modules declare.
+
+## Composition
+
+### Cyclic Module Dependencies Are Rejected
+
+A set of modules whose import relationships form a cycle MUST be rejected at compile time.
+
+### Initialization Order Is Deterministic
+
+The order in which modules' top-level definitions are initialized MUST be a deterministic function of the source.
+
+The initialization order of modules MUST follow their import dependencies, so that a module is initialized after the modules it imports.
+
+### Colliding Imported Names Are Rejected
+
+Importing two definitions under the same name into one scope MUST be a compile-time error rather than resolved by an implicit precedence.

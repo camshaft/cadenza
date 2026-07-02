@@ -47,6 +47,10 @@ Ahead-of-time compilation MUST be treated as an optimization over interpreted de
 
 A component derived by embedding the reference interpreter MUST satisfy the determinism, capability-binding, bounded-termination, and reproducibility guarantees identically to a compiled component.
 
+### The Compiled Path Is Exercised Before It Is Trusted
+
+Ahead-of-time compilation MUST be exercised against the oracle on a real derived-and-run component before a generation relies on it, so that the compiled path is proven to materialize rather than deferred indefinitely.
+
 ## The Staged Path
 
 ### The Seed Compiler Is The One Step Outside The Loop
@@ -74,3 +78,9 @@ A new generation MUST have passed both gates before it is claimed to exist.
 A new generation MUST have run before it is claimed to exist.
 
 A generation whose behaving is demonstrated only by a stand-in that never executed the derived component MUST NOT be treated as a conforming generation.
+
+### Every Generation Re-Demonstrates The End-To-End Path
+
+Every promoted generation MUST demonstrate, on a real derived-and-run component, that its imports mirror its manifest.
+
+Every promoted generation MUST demonstrate, on a real derived-and-run component, that re-deriving the same source reproduces a byte-identical component.

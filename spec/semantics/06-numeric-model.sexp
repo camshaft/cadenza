@@ -28,9 +28,10 @@
 
 (case "exact rational arithmetic is exact and normalized"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact; the result is reduced
-           to lowest terms per options/numeric-model/.")
+           to lowest terms per options/numeric-model/. The output is the canonical
+           rational value form 1/2, not a constructor call.")
   (input  (+ (Rational.of 1 3) (Rational.of 1 6)))
-  (output (: (Rational.of 1 2) Rational)))
+  (output (: 1/2 Rational)))
 
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode

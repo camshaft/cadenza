@@ -6,8 +6,8 @@
 > one generation of the compiler interoperate with a component derived by another. It is versioned
 > and changed only by the coordinated act described in the constitution's Governance Floors. Its
 > requirements realize [Core Principle VI](../../constitution.md) and
-> [Core Principle VII](../../constitution.md) and trace to [overview §5](../overview.md) and
-> [overview §6](../overview.md).
+> [Core Principle VII](../../constitution.md) and trace to [overview §5](../overview.md),
+> [overview §6](../overview.md), and [overview §8](../overview.md).
 >
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence under a
 > stable heading. This contract states the mapping's properties; the concrete type table that

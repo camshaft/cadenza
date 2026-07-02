@@ -39,6 +39,10 @@
 - **Structural interface** — the documented interface through which an agent reads and rewrites the
   canonical representation of a program without textual patching and without re-parsing unrelated
   code.
+- **Macro** — a compile-time transformation that receives and produces values of the canonical
+  representation, transforming a program as data before it is type-checked and compiled.
+- **Hygiene** — the property of a macro that a name it introduces neither captures nor is captured by
+  a name at its use site unless the macro explicitly requests it.
 
 ## Types and values
 
@@ -63,6 +67,10 @@
 - **Structural equality** — the equality under which two values are equal when they share a type and
   their contents are equal component-wise; the equality the canonical byte form agrees with, treating
   a negative zero as distinct from a positive zero and all not-a-number values as equal.
+- **Scrutinee** — the value a match examines to select a branch.
+- **Aliasing** — the existence of more than one reference to the same value; the memory model
+  disciplines it so a value is never observably mutated through one reference while read through
+  another in a way the executable semantics leaves unspecified.
 - **Canonical byte form** — the single byte encoding of a value used wherever the value is
   hashed, compared across a boundary, or serialized; values equal under structural equality encode to
   identical bytes.
@@ -93,6 +101,12 @@
 - **Capability honesty** — the property that a component's imports mirror its manifest exactly and
   the compiler adds none of its own, so the system running the component can decide what to permit
   from the manifest alone.
+- **Capability-safety** — the guarantee that a program can reach a host operation only through a
+  capability it declares, so a component carries no authority beyond its manifest; one of the three
+  mandatory core guarantees, alongside static typing and determinism.
+- **Effect** — an observable action a function performs through a capability; the opt-in effect-
+  tracking layer annotates functions with the effects they perform and checks that they perform no
+  other.
 
 ## The runnable form
 
@@ -137,7 +151,7 @@
 
 ## The executable semantics and the oracle
 
-- **Executable semantics** — the single source of truth for what every surface construct does,
+- **Executable semantics** — the single source of truth for what every language construct does,
   expressed as runnable cases; the compiler and every tool agree with it rather than encoding
   their own behavior.
 - **Semantics corpus** — the collected executable-semantics cases, held as s-expression files

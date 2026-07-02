@@ -63,7 +63,9 @@ An invariant MUST state a condition required to hold of a type's every value.
 
 ### A Contract Is Discharged Dynamically Or Statically
 
-A contract that is not statically discharged MUST be checked at runtime, and its violation MUST raise a trap of a defined kind.
+A contract that is not statically discharged MUST be checked at runtime.
+
+A runtime contract check that fails MUST raise a trap of a defined kind.
 
 ## The Refinement-Type Layer
 
