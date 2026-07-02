@@ -91,6 +91,10 @@ source = "spec/capabilities/numeric-model.md"
 format = "markdown"
 
 [[specification]]
+source = "spec/capabilities/collections-and-text.md"
+format = "markdown"
+
+[[specification]]
 source = "spec/capabilities/modules-and-namespaces.md"
 format = "markdown"
 

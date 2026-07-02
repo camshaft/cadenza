@@ -19,9 +19,10 @@ Every value that enters or leaves a component crosses a boundary between Cadenza
 host interface's types. For a component to be a stable, content-addressed artifact that outlives
 the compiler that produced it, that crossing must be fixed: the same exported signature must lower
 and lift the same bytes regardless of which compiler generation emitted it. This contract pins the
-type mapping, the calling convention, and the boundary layout. It does not pin the internal
-representation a component uses for values that never cross a boundary, which the compiler is free
-to choose.
+type mapping, the calling convention, the boundary layout, and the component's entry — the export
+through which it is invoked. It does not pin the internal representation a component uses for values
+that never cross a boundary, which the compiler is free to choose, nor the concrete entry signature
+of each program shape, which is a declared-default choice.
 
 ## The Boundary Type Mapping
 
@@ -48,6 +49,24 @@ The lowering of a Cadenza value to its boundary representation MUST be a total f
 The lifting of a boundary representation to a Cadenza value MUST be the inverse of the pinned lowering for every value in the lowering's range.
 
 The calling convention across the boundary MUST be a function of the declared signature alone, independent of compiler internals.
+
+## The Component Entry
+
+### A Component Exports A Defined Entry
+
+A derived component MUST export an entry through which the runtime invokes it.
+
+The compiler MUST determine a program's entry from the program rather than leave it implicit.
+
+### The Entry Signature Crosses The Boundary By The Same Rules
+
+The entry's parameter and result types MUST each have a boundary representation fixed by this contract.
+
+The entry's input and output MUST lower and lift across the boundary by the same calling convention as any other boundary value.
+
+### The Entry Defines The Input For Oracle Agreement
+
+The input over which a compiled program's behavior is compared to the reference interpreter MUST be the input to the program's entry.
 
 ## Boundary Memory Layout
 

@@ -56,8 +56,12 @@
   data; the basis for typed results and error handling.
 - **Refinement** — a predicate attached to a type that constrains which of its values are
   admissible; part of the verification layers, not the mandatory core.
+- **Structural equality** — the equality under which two values are equal when they share a type and
+  their contents are equal component-wise; the equality the canonical byte form agrees with, treating
+  a negative zero as distinct from a positive zero and all not-a-number values as equal.
 - **Canonical byte form** — the single byte encoding of a value used wherever the value is
-  hashed, compared across a boundary, or serialized; equal values encode to identical bytes.
+  hashed, compared across a boundary, or serialized; values equal under structural equality encode to
+  identical bytes.
 
 ## Determinism, capabilities, and resources
 
@@ -142,9 +146,14 @@
   interpreter that serves as the behavioral oracle for the language.
 - **Oracle** — the authority against which a compiled program's observable behavior is checked;
   the reference interpreter is the oracle.
-- **Observable behavior** — the input-to-output relation and emitted events of a program, as
-  distinct from how it is represented internally; what must agree between a compiled program and
-  the oracle.
+- **Observable behavior** — the defined projection of a program run compared against the oracle: its
+  terminal condition, the value it produces on normal termination in canonical value form, and the
+  ordered sequence of events it emitted; it excludes internal representation, timing, and diagnostics.
+- **Terminal condition** — the one way a program run ends: a normal result, a trap of a defined kind,
+  or exhaustion of the resource measure.
+- **Trap** — a defined-kind halt of a program at a defined point, raised by a partial operation or an
+  overflow, distinct from normal termination and from resource-measure exhaustion; part of observable
+  behavior.
 
 ## Verification layers
 

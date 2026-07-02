@@ -34,6 +34,24 @@
 
 ## Host-interface operations (the `cadenza-host/1` world)
 
+The `cadenza-host/1` interface is a component-model (WIT-shaped) world. Each operation's parameter,
+result, and error shapes are given below in a WIT-like sketch; the bytes of each type follow the
+[type-mapping](../type-mapping/) choice. An operation is bound only when the component's manifest
+grants it.
+
+```wit
+// cadenza-host/1 (sketch)
+type projection-id = string          // names a projection the manifest grants
+type kind = string                   // names an event kind the manifest grants
+type blob-hash = list<u8>            // a content address
+type tool-id = string                // names a tool the manifest grants
+
+read-projection:  func(p: projection-id)          -> result<list<u8>, host-error>
+emit-event:       func(k: kind, payload: list<u8>) -> result<_, host-error>
+read-blob:        func(h: blob-hash)               -> result<list<u8>, host-error>
+invoke-tool:      func(t: tool-id, request: list<u8>) -> result<list<u8>, host-error>
+```
+
 - **`read-projection`** — read a projection the manifest grants, returning its current value as
   opaque bytes consistent with the events folded up to the point the component runs.
 - **`emit-event`** — propose an event of a kind the manifest grants; the runtime stamps its
@@ -47,6 +65,27 @@ The running system decides which of these operations a component may hold, from 
 manifest. A system may, for example, bind a log-folding component none of the operations that would
 introduce nondeterminism and let it read only its granted projections — but that restriction is the
 system's policy over the manifest, not a rule the compiler enforces.
+
+## Component entry shapes (per program shape)
+
+A component exports a defined entry (component-abi.md §"The Component Entry"); its concrete signature
+is pinned here per program shape. The entry's parameter and result cross the boundary by the type
+mapping, and the entry's input is "the input" over which oracle agreement is judged.
+
+```wit
+// a fold-shaped program: prior projection state + a batch of events -> new state
+fold:  func(state: list<u8>, events: list<list<u8>>) -> result<list<u8>, trap>
+
+// a step-shaped program: a request -> emitted outcome (via emit-event) and a result
+step:  func(request: list<u8>) -> result<list<u8>, trap>
+
+// a tool-shaped program (e.g. Cadenza itself): a request -> a response
+run:   func(request: list<u8>) -> result<list<u8>, trap>
+```
+
+A program shape and its entry name are a declared-default choice; a new shape is added here without
+touching the frozen contract, which requires only that *some* defined entry exists and crosses the
+boundary by the pinned rules.
 
 ## What is frozen vs. chosen
 

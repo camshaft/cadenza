@@ -29,7 +29,7 @@ The type of an arithmetic result MUST be determined by the operand types and the
 
 ### Overflow Is Defined
 
-An integer operation that overflows its type MUST have a defined, deterministic result fixed by the numeric model.
+An integer operation that overflows its type MUST have a defined, deterministic outcome fixed by the numeric model, whether that outcome is a value or a trap.
 
 The compiler MUST NOT emit an integer operation whose overflow behavior is undefined.
 

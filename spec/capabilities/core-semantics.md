@@ -1,12 +1,13 @@
 # Capability — Core Semantics
 
 > **CAPABILITY SPECIFICATION.** Behavior and invariants, free of implementation detail. This
-> document defines evaluation, binding, scope, control flow, and pattern matching, and binds their
+> document defines evaluation, binding, scope, control flow, pattern matching, failure and
+> termination, equality and ordering, and the observable-behavior projection, and binds their
 > behavior to the single executable-semantics corpus. Requirements realize
 > [Core Principle III](../../constitution.md), [Core Principle V](../../constitution.md),
 > [Core Principle IX](../../constitution.md), and [Core Principle XIV](../../constitution.md) and
-> trace to [overview §3](../overview.md), [overview §10](../overview.md), and
-> [overview §11](../overview.md).
+> trace to [overview §3](../overview.md), [overview §4](../overview.md),
+> [overview §10](../overview.md), and [overview §11](../overview.md).
 >
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence carrying
 > exactly one obligation, under a stable heading.
@@ -71,3 +72,57 @@ A match MUST evaluate the branch of the first pattern that matches the scrutinee
 ### Bindings Introduced By A Pattern Are Scoped To Its Branch
 
 A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
+
+## Failure And Termination
+
+### A Program Terminates In Exactly One Terminal Condition
+
+A program run MUST end in exactly one terminal condition: a normal result, a trap of a defined kind, or exhaustion of the deterministic resource measure.
+
+The terminal condition of a program run MUST be a deterministic function of its input and its declared capabilities' responses.
+
+### A Trap Halts Execution At A Defined Point
+
+A trap MUST halt the program at a defined point rather than continue with an unspecified value.
+
+A trap MUST carry a defined kind that identifies why the program halted.
+
+The kind of trap a given operation raises MUST be a deterministic function of the operation and its inputs.
+
+### Partial Operations Have A Defined Outcome
+
+An operation that has no result for some inputs MUST, on those inputs, either evaluate to a value the executable semantics defines or raise a trap of a defined kind.
+
+An operation that has no result for some inputs MUST NOT produce an unspecified value.
+
+## Equality And Ordering
+
+### Equality Is Structural
+
+Two values MUST be equal when they have the same type and their contents are equal component-wise.
+
+Value equality MUST agree with the canonical byte form, so that two values are equal exactly when their canonical byte forms are identical.
+
+### Floating-Point Equality Follows The Canonical Byte Form
+
+A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
+
+### Ordering Where Offered Is Total
+
+A type that offers an ordering MUST offer a total order over its values.
+
+The ordering a type offers MUST be a deterministic function of the values compared.
+
+## Observable Behavior
+
+### Observable Behavior Is A Defined Projection Of A Run
+
+The observable behavior of a program run MUST comprise its terminal condition, the value it produces on normal termination in canonical value form, and the ordered sequence of events it emitted.
+
+The observable behavior of a program run MUST NOT include its internal representation, its timing, or its diagnostics.
+
+### Emitted Events Are Ordered And Part Of Observable Behavior
+
+The sequence of events a program emits MUST be observed in the order the program emitted them.
+
+Two runs whose observable behaviors differ in any emitted event, in event order, or in terminal condition MUST be treated as behaving differently.

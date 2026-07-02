@@ -26,9 +26,9 @@ component's emitted output.
 
 Each serializable value MUST have exactly one canonical byte encoding.
 
-Two values that the language considers equal MUST have identical canonical byte encodings.
+Two values that are equal under the language's structural equality MUST have identical canonical byte encodings.
 
-Two values that the language considers distinct MUST have distinct canonical byte encodings.
+Two values that are not equal under the language's structural equality MUST have distinct canonical byte encodings.
 
 ### Ordering Of Aggregate Members Is Fixed
 
@@ -42,9 +42,11 @@ The canonical encoding of an ordered aggregate MUST preserve its element order.
 
 An exact numeric value MUST serialize to a byte form that is independent of how the value was computed.
 
-A floating-point value MUST serialize under a rule that maps every distinguishable value to distinct bytes and every equal value to identical bytes.
+A floating-point value MUST serialize so that two floating-point values equal under structural equality encode to identical bytes and two that are not encode to distinct bytes.
 
-A floating-point not-a-number value MUST serialize to a single canonical byte form so that distinct not-a-number bit patterns do not produce distinct output.
+A floating-point negative zero MUST serialize distinctly from a positive zero, consistent with structural equality treating them as distinct.
+
+Every floating-point not-a-number value MUST serialize to one canonical byte form, consistent with structural equality treating all not-a-number values as equal.
 
 ## Additive Evolution
 

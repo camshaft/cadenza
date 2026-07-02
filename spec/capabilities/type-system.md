@@ -37,6 +37,34 @@ An explicit type annotation MUST be checked against the type the system would ot
 
 A program whose annotation conflicts with the type the system determines MUST be rejected rather than have the annotation silently override inference.
 
+## The Declarable Type Universe
+
+### User Types Are Declarable As Nominal Or Structural
+
+A program MUST be able to declare a nominal type whose identity is its declared name, distinct from any structurally identical type of a different name.
+
+A program MUST be able to declare a structural type whose identity is its shape, equal to any type of the same shape.
+
+### Sum Types Are Declarable, Constructed, And Deconstructed
+
+A program MUST be able to declare a sum type as a set of named variants, each optionally carrying data.
+
+A value of a sum type MUST be constructed through one of its variants.
+
+A value of a sum type MUST be deconstructed only through a match that the exhaustiveness rule governs.
+
+### Generics Are Parameterized And Monomorphized
+
+A definition MUST be able to take type parameters so that it applies to more than one concrete type.
+
+A type parameter MUST be able to carry the constraints the definition's body requires of it.
+
+The compiler MUST monomorphize a generic definition to concrete types before it crosses a component boundary, consistent with the component ABI.
+
+### Subtyping Is Explicit Or Absent
+
+The type system MUST NOT introduce an implicit subtyping coercion that the program did not write.
+
 ## Soundness
 
 ### A Well-Typed Program Does Not Go Wrong
