@@ -66,17 +66,29 @@ this command is the procedure that runs them.
 
 ## The behavior gate
 
-1. Execute every case in `spec/semantics/*.sexp` through the reference interpreter
-   (conformance-gate.md §"Every Case Executes To Its Recorded Output",
-   compiler-pipeline.md §"The Corpus Is A Gate").
-2. For each case, compare the run's terminal condition and result against the
-   recorded expectation — the `output` value form under the canonical value form, or
-   the expected `error` code, or the `trap` (per `spec/semantics/README.md`).
+1. Execute the corpus cases the generation **realizes** through the reference
+   interpreter (conformance-gate.md §"Every Case Executes To Its Recorded Output",
+   §"A Generation Is Judged Against The Capabilities It Realizes", compiler-pipeline.md
+   §"The Corpus Is A Gate"). The corpus is one flat set (`spec/semantics/*.sexp`);
+   inline annotations select what a generation runs (`spec/semantics/README.md`
+   §"Which cases a generation runs"): run every case whose `(needs <capability>)` the
+   generation realizes (a case with no `(needs …)` is core). For the **seed** — a
+   dynamic interpreter — check each case's **primary** result clause (the interpreter
+   oracle) and IGNORE `(compiler …)` annotations; a generation that realizes static
+   typing additionally checks the `(compiler (error …))` clause.
+2. For each case, compare the run against its recorded primary clause — the `output`
+   value form under the canonical value form, the front-end `error` code, the `trap`,
+   or `exhausted`, plus any `events` sequence — and, for a typed generation, that a
+   `(compiler (error …))`-annotated program is rejected with that code (per
+   `spec/semantics/README.md`).
 3. Fail the generation if any case does not reproduce its recorded output.
-4. Confirm the corpus is complete: every behavioral requirement of an included
-   capability is witnessed by at least one case (conformance-gate.md §"Every
-   Behavioral Requirement Is Witnessed By A Case"). A generation whose corpus omits
-   a witnessing case for a load-bearing behavioral requirement MUST NOT be promoted.
+4. Confirm the corpus is complete for the realized set: every behavioral requirement
+   of a capability the generation **realizes** is witnessed by at least one case it
+   runs (conformance-gate.md §"Every Behavioral Requirement Is Witnessed By A Case",
+   §"A Generation Is Judged Against The Capabilities It Realizes"). A generation whose
+   corpus omits a witnessing case for a load-bearing behavioral requirement it
+   realizes MUST NOT be promoted; a requirement of a capability it does not realize is
+   not load-bearing for it.
 5. Judge the compiled derivation against the oracle where applicable: a compiled
    generation's observable behavior MUST agree with the reference interpreter over
    every case before it is promoted (`spec/bootstrap.md` §"Compiled Derivation Is An

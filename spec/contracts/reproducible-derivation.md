@@ -55,4 +55,6 @@ A verifier MUST be able to confirm that a component matches its source without t
 
 ### Additive Evolution Of This Contract
 
-A change to this contract MUST be additive with respect to already-derived components, or else carry an explicit version increment and a stated migration path.
+A change to this contract MUST be additive with respect to already-derived components, or else carry an explicit version increment.
+
+A change to this contract that is not additive with respect to already-derived components MUST carry a stated migration path.

@@ -71,7 +71,7 @@ A runtime contract check that fails MUST raise a trap of a defined kind.
 
 ### A Refinement Constrains A Base Type's Values
 
-A refinement type MUST denote the values of a base type that satisfy the refinement's predicate.
+A value that satisfies a refinement's predicate MUST be admissible at that refinement type.
 
 A value MUST be admissible at a refinement type only when it satisfies the refinement's predicate.
 

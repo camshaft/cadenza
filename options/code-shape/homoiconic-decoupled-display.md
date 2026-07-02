@@ -90,6 +90,48 @@ trivia, so it survives the round-trip in either direction (agent-authoring.md §
   and choice of syntax cannot affect a program's identity, and the byte-identical round-trip the
   constitution requires is immediate.
 
+## The core symbol set (the ignition surface)
+
+A node names its kind by referencing a symbol in the `cadenza/core` namespace (ast-encoding.md
+§"A Prelude Symbol Is Namespaced And May Be Versioned"; `options/ast-encoding/binary-sexpr.md`). The
+meaning of each symbol is the executable-semantics corpus; this table pins the **minimal core symbol
+set the ignition corpus references**, so that every head symbol in a `spec/semantics/*.sexp` case
+resolves to a named core construct rather than an invented one. It is a code-shape choice (the
+representation's surface), not a frozen contract; a later generation adds symbols without touching any
+contract, exactly as adding a construct adds a prelude symbol rather than bumping the container version.
+
+| Symbol (`cadenza/core`) | Arity / shape | Construct it names |
+|---|---|---|
+| `module` | `(module <name> <form>…)` | a module: a named unit of definitions and capability declarations |
+| `def` | `(def (<name> <param>…) <form>…)` | a definition (value or function) |
+| `doc` | `(doc "<text>")` | documentation attached to the enclosing definition/module (a node, not trivia) |
+| `use` | `(use (capability <cap>))` | a capability declaration, contributing `<cap>` to the module's manifest |
+| `capability` | `(capability <cap-name>)` | names a host capability inside a `use` |
+| `:` | `(: <expr> <Type>)` / `(: (-> <T>… <R>))` | a type annotation; also the corpus value-form head `(: <value> <Type>)` |
+| `->` | `(-> <T>… <R>)` | a function type |
+| `let` | `(let ((<name> <expr>)…) <body>)` | a lexical binding form |
+| `if` | `(if <cond> <then> <else>)` | a two-branch conditional; evaluates only the selected branch |
+| `match` | `(match <scrutinee> (<pattern> <body>)…)` | pattern matching, governed by the exhaustiveness rule |
+| `else` | `else` (a match pattern) | the catch-all match pattern |
+| `record` | `(record (<field> <expr>)…)` | a structural record constructor |
+| `list` | `(list <expr>…)` | a list literal |
+| `map` | `(map (<key> <value>)…)` | a map literal |
+| `=` | `(= <a> <b>)` | structural-equality comparison |
+| `+` `+%` | `(+ <a> <b>)` / `(+% <a> <b>)` | checked addition; wrapping addition (distinct wrapping type) |
+| field access | `<expr>.<field>` | record/nominal field projection (e.g. `p.x`) |
+
+Names, sum-type variants, and the numeric/collection operations a program calls (`Sign.Neg`,
+`Some`/`None`, `List.at`, `Rational.of`, `Float64.of-int`, `Int64.max`, `Wrapping64.max`, the built-in
+type names `Int64`/`Float64`/`Bool`/`String`/`Rational`/`Wrapping64`) are ordinary bound names and
+constructors resolved by their declarations, not additional core syntax; the corpus grounds each where
+it is used. The floating-point not-a-number literal is written `nan` and denotes the canonical
+not-a-number value (deterministic-value-form.md §"Numeric Values Serialize Deterministically").
+
+Sum types the ignition corpus uses are declared where the corpus references them: `Sign` as
+`(Neg | Zero | Pos)` (nullary variants), and an `Option` with a payload-carrying variant as
+`(Some <value> | None)`, so a pattern that binds a variant's payload (`(Some n)`) has a grounded
+declaration (core-semantics.md §"Bindings Introduced By A Pattern Are Scoped To Its Branch").
+
 ## What this choice fixes vs. leaves to the spec
 
 - **Fixed by the spec (requirements):** that a canonical form exists and round-trips, and that a

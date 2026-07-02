@@ -175,6 +175,11 @@
 - **Observable behavior** — the defined projection of a program run compared against the oracle: its
   terminal condition, the value it produces on normal termination in canonical value form, and the
   ordered sequence of events it emitted; it excludes internal representation, timing, and diagnostics.
+- **Event** — a datum a program emits through a capability its manifest grants, carrying a kind and a
+  content payload; the ordered sequence of a run's events is a constituent of its observable behavior,
+  and two events are the same event exactly when they have the same kind and their content is equal
+  under the canonical byte form. Distinct from an **effect**, which is the compile-time annotation the
+  opt-in effect-tracking layer checks, not a runtime-observed datum.
 - **Terminal condition** — the one way a program run ends: a normal result, a trap of a defined kind,
   or exhaustion of the resource measure.
 - **Trap** — a defined-kind halt of a program at a defined point, raised by a partial operation or an

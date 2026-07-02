@@ -25,7 +25,9 @@ affordances as obligations, not the interface's concrete surface.
 
 A program's canonical form MUST be the binary AST fixed by the ast-encoding contract, so that its identity is independent of any textual rendering.
 
-An agent MUST be able to read and construct a program's canonical binary AST directly, without going through a textual syntax.
+An agent MUST be able to read a program's canonical binary AST directly, without going through a textual syntax.
+
+An agent MUST be able to construct a program's canonical binary AST directly, without going through a textual syntax.
 
 ### Textual Syntaxes Round-Trip Through The Canonical Form
 
@@ -37,7 +39,9 @@ Printing a program's canonical binary AST in a textual syntax MUST yield text th
 
 ### A Structural Interface Exists
 
-The language MUST expose a documented interface to read and rewrite a program's canonical representation without textual patching.
+The language MUST expose a documented interface to read a program's canonical representation without textual patching.
+
+The language MUST expose a documented interface to rewrite a program's canonical representation without textual patching.
 
 A structural query or edit MUST operate without re-parsing code unrelated to its target.
 

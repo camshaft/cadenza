@@ -25,7 +25,9 @@ surface is governed by the code-shape default.
 
 Code evaluated at compile time MUST NOT perform ambient input or output.
 
-Code evaluated at compile time MUST NOT depend on a wall-clock time or a source of randomness.
+Code evaluated at compile time MUST NOT depend on a wall-clock time.
+
+Code evaluated at compile time MUST NOT depend on a source of randomness.
 
 ### Compile-Time Evaluation Is Bounded
 
@@ -35,7 +37,9 @@ Compile-time evaluation MUST be accountable against the deterministic resource m
 
 ### Expansion Operates On The Canonical Representation
 
-A macro MUST receive and produce values of the canonical representation, so that it transforms a program as data rather than as text.
+A macro MUST receive values of the canonical representation, so that it transforms a program as data rather than as text.
+
+A macro MUST produce values of the canonical representation, so that it transforms a program as data rather than as text.
 
 ### Macros Are Hygienic
 
@@ -53,6 +57,10 @@ Macro expansion MUST terminate, halting at a defined point if it exceeds the det
 
 ### Expansion Precedes And Feeds The Core Guarantees
 
-The expanded representation MUST be subject to type checking, capability checking, and the determinism guarantees exactly as if it had been written directly.
+The expanded representation MUST be subject to type checking exactly as if it had been written directly.
+
+The expanded representation MUST be subject to capability checking exactly as if it had been written directly.
+
+The expanded representation MUST be subject to the determinism guarantees exactly as if it had been written directly.
 
 A macro MUST NOT be able to produce an expanded representation that reaches a capability the program's manifest does not enumerate.

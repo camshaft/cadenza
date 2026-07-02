@@ -35,7 +35,9 @@ An operation that derives a dimension MUST produce the dimension the operation's
 
 ### Dimensional Analysis Does Not Alter The Numeric Core
 
-Adding a unit to a numeric value MUST NOT change the value's numeric byte form or its runtime behavior.
+Adding a unit to a numeric value MUST NOT change the value's numeric byte form.
+
+Adding a unit to a numeric value MUST NOT change the value's runtime behavior.
 
 ## Optionality
 

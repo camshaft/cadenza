@@ -57,6 +57,19 @@ When a function carries an effect annotation, the compiler MUST reject the progr
 
 Adding an effect annotation to a program that already compiles MUST NOT change the program's runtime meaning.
 
+> **Open question — effect *checking* vs. effect *handling* (deferred).** The requirements above pin
+> only the *checking* flavor of effects: an annotation is verified and, per "The Layer Preserves
+> Meaning", is inert at runtime. They deliberately do **not** yet decide whether effect tracking also
+> includes an *operational* flavor — establishing a context that is threaded implicitly through the
+> call stack and accessed by a callee deep within it (as algebraic-effect handlers, an implicit reader
+> context, or capability-passing provide), which *would* have runtime meaning. This is distinct from
+> the mandatory capability declaration, which is about **host imports crossing the component boundary**;
+> effects here are an **intra-program** concern. Because effect tracking is an optional capability the
+> seed does not realize (`options/realized-capability-set/`), this distinction need not be resolved to
+> bootstrap; it is an open point for the generation that first realizes effect tracking, and its
+> resolution is a declared default recorded under `options/` at that time (per build-modes.md §"An Open
+> Point Carries A Declared Default"). This note is descriptive; it adds no requirement.
+
 ## Optionality
 
 ### Effect Tracking Is Optional

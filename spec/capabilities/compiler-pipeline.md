@@ -39,7 +39,7 @@ The compiler MUST report all diagnostics it can produce for a program rather tha
 
 ### The Corpus Is A Gate
 
-A build MUST fail if any executable-semantics case does not reproduce its recorded output.
+A build MUST fail if any executable-semantics case whose required capabilities the generation realizes does not reproduce its recorded output.
 
 A behavior requirement MUST be discharged by executing the behavior and observing its output rather than by inspecting the shape of the code that implements it.
 

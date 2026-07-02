@@ -42,7 +42,9 @@ The canonical encoding of an ordered aggregate MUST preserve its element order.
 
 An exact numeric value MUST serialize to a byte form that is independent of how the value was computed.
 
-A floating-point value MUST serialize so that two floating-point values equal under structural equality encode to identical bytes and two that are not encode to distinct bytes.
+Two floating-point values equal under structural equality MUST have identical canonical byte encodings.
+
+Two floating-point values that are not equal under structural equality MUST have distinct canonical byte encodings.
 
 A floating-point negative zero MUST serialize distinctly from a positive zero, consistent with structural equality treating them as distinct.
 
@@ -52,6 +54,8 @@ Every floating-point not-a-number value MUST serialize to one canonical byte for
 
 ### Additive Evolution Of This Contract
 
-A change to this contract that alters the canonical byte form of an already-serializable value MUST carry a version increment and a stated migration path.
+A change to this contract that alters the canonical byte form of an already-serializable value MUST carry a version increment.
+
+A change to this contract that alters the canonical byte form of an already-serializable value MUST carry a stated migration path.
 
 A change to this contract that only defines a canonical byte form for a value that previously had none MUST be permitted as an additive change.

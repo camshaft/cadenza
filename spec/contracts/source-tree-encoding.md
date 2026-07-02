@@ -55,4 +55,6 @@ A third party MUST be able to recompute a program's source hash from the program
 
 ### Additive Evolution Of This Contract
 
-A change to this contract MUST be additive with respect to already-hashed source trees, or else carry an explicit version increment and a stated migration path.
+A change to this contract MUST be additive with respect to already-hashed source trees, or else carry an explicit version increment.
+
+A change to this contract that is not additive with respect to already-hashed source trees MUST carry a stated migration path.

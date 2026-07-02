@@ -62,4 +62,6 @@ The point at which exhaustion halts execution MUST be a deterministic function o
 
 ### Additive Evolution Of This Contract
 
-A change to this contract MUST be additive with respect to already-derived components, or else carry an explicit version increment and a stated migration path.
+A change to this contract MUST be additive with respect to already-derived components, or else carry an explicit version increment.
+
+A change to this contract that is not additive with respect to already-derived components MUST carry a stated migration path.

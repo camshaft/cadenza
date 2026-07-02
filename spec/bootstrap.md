@@ -64,7 +64,9 @@ Ahead-of-time compilation MUST agree with the reference interpreter on every exe
 
 ### Ignition Demonstrates A Real End-To-End Derivation
 
-An ignition MUST demonstrate that a Cadenza source program is derived to a content-addressed component and that the component is actually run to produce its output.
+An ignition MUST demonstrate that a Cadenza source program is derived to a content-addressed component.
+
+An ignition MUST demonstrate that the derived component is actually run to produce its output.
 
 An ignition MUST demonstrate that the derived component's imports mirror its declared capability manifest, so that the capability-binding is exercised rather than merely configured.
 

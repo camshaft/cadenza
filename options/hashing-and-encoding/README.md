@@ -17,7 +17,7 @@ migration path.
 ## Choices
 
 - [`sha256-deterministic-cbor`](./sha256-deterministic-cbor.md) — SHA-256, deterministic CBOR for
-  the canonical value form, NFC text normalization, and a sorted-path source-tree encoding, aligned
-  with the host's content addressing. **The default.**
+  the canonical value form, NFC normalization of string-value contents, and a sorted-path source-tree
+  encoding over per-module binary ASTs, aligned with the host's content addressing. **The default.**
 
 DEFAULT: sha256-deterministic-cbor

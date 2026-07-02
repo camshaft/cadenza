@@ -82,6 +82,8 @@ Padding and alignment inserted into a boundary aggregate MUST be a fixed functio
 
 ### Additive Evolution Of This Contract
 
-A change to this contract that alters the boundary representation, calling convention, or layout of an already-defined type MUST carry a version increment and a stated migration path, per the constitution's Governance Floor on the component ABI.
+A change to this contract that alters the boundary representation, calling convention, or layout of an already-defined type MUST carry a version increment, per the constitution's Governance Floor on the component ABI.
+
+A change to this contract that alters the boundary representation, calling convention, or layout of an already-defined type MUST carry a stated migration path, per the constitution's Governance Floor on the component ABI.
 
 A change to this contract that only adds a boundary representation for a type that previously had none MUST be permitted as an additive change.

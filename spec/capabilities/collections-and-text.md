@@ -51,7 +51,9 @@ An operation that indexes a list outside its bounds MUST raise a trap of a defin
 
 ### A Map Associates Keys With Values
 
-A map MUST associate keys of one type with values of one type, with each key present at most once.
+A map MUST associate keys of one type with values of one type.
+
+A map MUST contain each key at most once.
 
 Two maps MUST be equal exactly when they associate the same keys with equal values, independent of insertion order.
 

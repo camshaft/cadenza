@@ -24,6 +24,12 @@ Every diagnostic the compiler emits MUST carry a machine-readable code that is s
 
 The code a diagnostic carries MUST NOT change when the diagnostic's human-readable wording changes.
 
+### The Code Set Is Pinned Outside The Specification
+
+The set of diagnostic codes and the rejection each code names MUST be pinned at the declared-default location so that two builds emit the same code for the same rejection.
+
+A diagnostic code that an executable-semantics case references MUST resolve to an entry in that pinned code set.
+
 ### Every Diagnostic Has A Precise Span
 
 Every diagnostic the compiler emits MUST carry a source span identifying the construct it concerns.

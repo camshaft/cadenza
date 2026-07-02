@@ -25,3 +25,6 @@ generations of Cadenza taught these lessons the expensive way; the specification
 - [A modeled subsystem passes a shape check](./2026-07-02-a-modeled-subsystem-passes-a-shape-check.md)
   — why behavior requirements are discharged by execution and every requirement binds to an enforcing
   line. (Adopted from the host project's own hard-won lesson.)
+- [The seed is a dynamic interpreter](./2026-07-02-seed-is-a-dynamic-interpreter.md) — why the seed
+  generation defers static typing and realizes evaluation dynamically to get the flywheel turning, and
+  the Core Principle VII bootstrap carve-out that records the amendment.

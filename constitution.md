@@ -75,6 +75,12 @@ The compiler MUST reject a program that is not well-typed rather than emit a com
 
 The compiler MUST erase types from the emitted component so that the runnable form carries no runtime type reflection.
 
+The operator-synthesized seed generation MAY defer the static-typing obligations of this section and realize evaluation dynamically, because it is the one toolchain not itself derived by a Cadenza compiler and exists only to bootstrap the flywheel.
+
+A generation that defers the static-typing obligations of this section MUST record that deferral in its decision record so that the deferral is auditable rather than silent.
+
+The static-typing obligations of this section MUST be realized by a generation derived after the seed, so that the deferral is a bootstrap stage rather than a permanent downgrade.
+
 ### VIII. Verification Is Progressive And Meaning-Preserving
 
 A program MUST be compilable when only the core guarantees — static typing, determinism, and capability-safety — are satisfied.
@@ -89,7 +95,9 @@ The behavior of every language construct MUST be defined by exactly one executab
 
 A conformance test for a construct MUST be derivable from that executable semantics.
 
-The compiler and every tool MUST agree with the executable semantics rather than encode a behavior of their own.
+The compiler MUST agree with the executable semantics rather than encode a behavior of its own.
+
+Every tool MUST agree with the executable semantics rather than encode a behavior of its own.
 
 ### X. Programs Are Readable By Agents And Humans
 
@@ -147,7 +155,9 @@ These are the minimum-process floors that no evolution policy may lower. They ex
 
 ### The Component ABI Changes Only By Coordinated Act
 
-A change to the component ABI that alters the bytes produced from unchanged source MUST carry a version increment and a stated migration path.
+A change to the component ABI that alters the bytes produced from unchanged source MUST carry a version increment.
+
+A change to the component ABI that alters the bytes produced from unchanged source MUST carry a stated migration path.
 
 A change to the component ABI MUST be evaluated against already-derived components before it ships.
 
@@ -171,4 +181,10 @@ An amendment that weakens a governance floor MUST require explicit human approva
 
 This constitution supersedes all other specifications where they conflict on an invariant. The frozen contracts under `spec/contracts/` pin the byte- and ABI-level forms these invariants govern; the capability specifications under `spec/capabilities/` describe behavior that must satisfy these invariants; the executable semantics under `spec/semantics/` is the single source of truth for behavior. Compliance is checked by two gates: the requirement gate, under which every load-bearing requirement here must carry an implementation citation and a test citation in any promoted generation, and the behavior gate, under which every executable-semantics case must reproduce its recorded output. Amendments follow the Amendment Discipline above and are traced against the architecture in [spec/traceability.md](./spec/traceability.md).
 
-**Version**: 0.1.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-02
+**Version**: 0.2.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-02
+
+> **Amendment 0.2.0 (2026-07-02).** Core Principle VII gains a bootstrap carve-out: the
+> operator-synthesized seed generation MAY defer static typing and realize evaluation dynamically,
+> provided the deferral is recorded and static typing is realized by a generation derived after the
+> seed. Rationale in [spec/learnings/2026-07-02-seed-is-a-dynamic-interpreter.md](./spec/learnings/2026-07-02-seed-is-a-dynamic-interpreter.md).
+> This does not touch the never-downgradable Governance Floor (determinism and capability-safety).

@@ -44,7 +44,9 @@ The component the build tool produces MUST have imports that mirror the manifest
 
 ### The Tool Is Itself A Verified Component
 
-The build tool MUST be a content-addressed component that is itself reproducibly derivable from its own source.
+The build tool MUST be a content-addressed component.
+
+The build tool MUST itself be reproducibly derivable from its own source.
 
 The build tool MUST NOT be part of any minimal root whose only responsibilities are to load, verify, and run components.
 
@@ -60,7 +62,11 @@ A minimal load-verify-run root MUST be unchanged by the introduction of a build 
 
 The build tool MAY derive a component by embedding the reference interpreter over the program's canonical source rather than by ahead-of-time compilation.
 
-A component derived by embedding the reference interpreter MUST satisfy the determinism, capability-binding, and reproducibility guarantees identically to a component produced by ahead-of-time compilation.
+A component derived by embedding the reference interpreter MUST satisfy the determinism guarantee identically to a component produced by ahead-of-time compilation.
+
+A component derived by embedding the reference interpreter MUST satisfy the capability-binding guarantee identically to a component produced by ahead-of-time compilation.
+
+A component derived by embedding the reference interpreter MUST satisfy the reproducibility guarantee identically to a component produced by ahead-of-time compilation.
 
 A component derived by embedding the reference interpreter MUST exhibit the observable behavior the reference interpreter defines for the program, so that the two derivation modes are behaviorally indistinguishable.
 
@@ -68,4 +74,6 @@ A component derived by embedding the reference interpreter MUST exhibit the obse
 
 ### Additive Evolution Of This Contract
 
-A change to this contract MUST be additive with respect to already-derived components and already-invoked tool interfaces, or else carry an explicit version increment and a stated migration path.
+A change to this contract MUST be additive with respect to already-derived components and already-invoked tool interfaces, or else carry an explicit version increment.
+
+A change to this contract that is not additive with respect to already-derived components and already-invoked tool interfaces MUST carry a stated migration path.

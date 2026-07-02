@@ -17,8 +17,8 @@
 | Cryptographic hash | **SHA-256** | content addressing of components and blobs; the source hash |
 | Canonical value encoding | **deterministic CBOR** (RFC 8949 §4.2 core deterministic encoding) | deterministic-value-form.md §"The Canonical Byte Form" |
 | Map/set member order | **byte-wise ordering of canonically-encoded members** | deterministic-value-form.md §"Ordering Of Aggregate Members Is Fixed" |
-| Text normalization | **Unicode Normalization Form C**; line endings normalized to a single line-feed | source-tree-encoding.md §"Text Normalization Is Pinned" |
-| Source-tree encoding | a deterministic sequence of `(tree-relative-path, contents)` entries ordered byte-wise by path | source-tree-encoding.md §"A Source Tree Has One Canonical Encoding" |
+| String-value text normalization | **Unicode Normalization Form C** applied to a string value's scalar-value contents before it is compared or serialized | collections-and-text.md §"String Equality Follows Normalized Contents"; deterministic-value-form.md §"A Value Has One Canonical Byte Form" |
+| Source-tree encoding | a deterministic sequence of `(tree-relative-path, per-module binary AST)` entries ordered byte-wise by path | source-tree-encoding.md §"A Source Tree Has One Canonical Encoding" |
 | Source hash | **SHA-256 over the canonical source-tree encoding** | source-tree-encoding.md §"The Source Hash Is A Function Of The Canonical Encoding" |
 
 ## Alignment with the host
@@ -35,5 +35,8 @@ addressing without translation.
 - **Deterministic CBOR** gives every value exactly one byte encoding with a fixed member order,
   which is precisely the "one canonical byte form; equal values encode identically" the value-form
   contract requires — and it is binary, compact, and widely implementable.
-- **NFC + single line-feed** makes "the same source" robust to editor and platform differences that
-  would otherwise change a source hash without changing meaning.
+- **NFC on string-value contents** makes "the same string" robust to Unicode normalization
+  differences that would otherwise make two equal-looking strings encode to distinct bytes. Because a
+  module is stored as its binary AST rather than as text (source-tree-encoding.md §"A Module Is Stored
+  As Its Canonical Binary AST"), there is no source line-ending to normalize: a program's identity is
+  its tree, so whitespace and line endings never enter the source hash in the first place.

@@ -38,7 +38,9 @@ The selected build mode MUST be recorded in the build's decision record.
 
 ### Attended Mode Halts And Hardens The Specification
 
-In attended mode, a build that reaches a specification ambiguity MUST halt and surface the ambiguity to a human or another agent to resolve rather than choosing silently.
+In attended mode, a build that reaches a specification ambiguity MUST halt rather than choose a resolution silently.
+
+In attended mode, a build that halts on a specification ambiguity MUST surface that ambiguity to a human or another agent to resolve.
 
 A resolution reached in attended mode MUST be folded into the specification as a new requirement before the build proceeds, so that the same ambiguity cannot recur.
 
@@ -50,9 +52,15 @@ After folding a resolution into the specification, an attended build MUST restar
 
 In autonomous mode, a build that reaches a specification ambiguity MUST NOT halt to ask a human to resolve it.
 
-An autonomous build MUST resolve a specification ambiguity by applying the point's declared default and recording that it applied it.
+An autonomous build MUST resolve a specification ambiguity by applying the point's declared default.
 
-An autonomous build that reaches an open point carrying no declared default MUST record the missing default as a specification defect and proceed on a conforming choice, rather than halting to a human.
+An autonomous build that applies a declared default MUST record that it applied it.
+
+An autonomous build that reaches an open point carrying no declared default MUST NOT halt to a human.
+
+An autonomous build that reaches an open point carrying no declared default MUST record the missing default as a specification defect.
+
+An autonomous build that reaches an open point carrying no declared default MUST proceed on a conforming choice.
 
 ## Open Points Carry Declared Defaults
 

@@ -15,7 +15,8 @@ schema does not alter any component's bytes.
 ## Choices
 
 - [`coded-span-record`](./coded-span-record.md) — a diagnostic record of code, severity, span (line/
-  column/offset), message, rule reference, and related spans, serialized in the canonical encoding.
-  **The default.**
+  column/offset), message, rule reference, and related spans, serialized in the canonical encoding,
+  plus the **diagnostic-code registry** (the pinned `CDZ####` code set and the rule each names, which
+  diagnostics.md §"The Code Set Is Pinned Outside The Specification" points at). **The default.**
 
 DEFAULT: coded-span-record

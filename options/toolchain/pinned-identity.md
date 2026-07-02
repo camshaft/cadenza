@@ -25,7 +25,7 @@
 
 | Pin | Default |
 |---|---|
-| Seed host language | **Rust** (see [`bootstrap-strategy.md`](./bootstrap-strategy.md)) |
+| Seed host language | **Rust** (see [`bootstrap-strategy`](../bootstrap-strategy/)) |
 | Host-language toolchain identity | the pinned compiler version and target, recorded as a content hash over the toolchain manifest |
 | Compiler component identity | the SHA-256 content hash of the derived Cadenza compiler component |
 | Toolchain-identity record | recorded alongside each produced component as `{ compiler-component-hash, host-toolchain-hash }` |

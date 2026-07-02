@@ -29,7 +29,11 @@ references, which the capability specifications and the executable semantics gov
 
 A Cadenza program's canonical stored form MUST be the binary serialization of its abstract syntax tree.
 
-A program MUST be stored, hashed, and supplied to the compiler as its binary AST rather than as a textual rendering.
+A program MUST be stored as its binary AST rather than as a textual rendering.
+
+A program MUST be hashed as its binary AST rather than as a textual rendering.
+
+A program MUST be supplied to the compiler as its binary AST rather than as a textual rendering.
 
 ### The Encoding Is A Bijection With One Canonical Byte Form
 
@@ -79,7 +83,9 @@ A comment or documentation carried by the tree MUST survive encoding and decodin
 
 ### A Textual Syntax Parses To And Prints From The Canonical Form
 
-A textual syntax MUST be defined as a parser that converts its text to the canonical binary AST and a printer that converts the canonical binary AST to its text.
+A textual syntax MUST provide a parser that converts its text to the canonical binary AST.
+
+A textual syntax MUST provide a printer that converts the canonical binary AST to its text.
 
 No textual syntax MUST be privileged as the stored form, so that a program's identity is its binary AST and not any one rendering of it.
 
@@ -105,4 +111,6 @@ A file that references a symbol or symbol version a reader does not understand M
 
 ### Additive Evolution Of This Contract
 
-A change to this contract MUST be additive with respect to already-stored binary ASTs, or else carry an explicit version increment and a stated migration path.
+A change to this contract MUST be additive with respect to already-stored binary ASTs, or else carry an explicit version increment.
+
+A change to this contract that is not additive with respect to already-stored binary ASTs MUST carry a stated migration path.

@@ -86,13 +86,13 @@ A requirement that pins the shape of an artifact MUST NOT be counted as covered 
 
 ### Every Case Executes To Its Recorded Output
 
-The behavior gate MUST execute every case in the executable-semantics corpus.
+The behavior gate MUST execute every case in the executable-semantics corpus whose required capabilities the generation realizes.
 
-The behavior gate MUST fail a generation for which any case does not reproduce its recorded output.
+The behavior gate MUST fail a generation for which any case it executes does not reproduce its recorded output.
 
 ### Every Behavioral Requirement Is Witnessed By A Case
 
-Every behavioral requirement of an included capability MUST be witnessed by at least one case in the executable-semantics corpus.
+Every behavioral requirement of a capability the generation realizes MUST be witnessed by at least one case in the executable-semantics corpus.
 
 A generation whose corpus omits a witnessing case for a load-bearing behavioral requirement MUST NOT be promoted.
 
@@ -131,6 +131,16 @@ A requirement belonging to an optional capability a build included MUST be load-
 A gate run MUST record which optional capabilities the build included, so that the load-bearing set it judged against is reproducible.
 
 A build that is not told whether to include an optional capability MUST be judged as having included it.
+
+### A Generation Is Judged Against The Capabilities It Realizes
+
+A generation's behavioral-witnessing obligation MUST range over the capabilities that generation realizes rather than over every capability the language includes, so that a generation is not required to witness a capability it does not yet realize.
+
+A behavioral requirement of a capability the language includes but the generation does not realize MUST NOT be counted as load-bearing for that generation, in the same way an excluded optional capability's requirement is not.
+
+A generation MUST record the set of capabilities it realizes, so that the behavioral-witnessing set it was judged against is reproducible.
+
+The set of capabilities the seed generation realizes MUST be pinned at the declared-default location, so that two seed builds judge behavioral witnessing against an identical realized set.
 
 ## Judging Against An Immutable Specification
 
