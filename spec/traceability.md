@@ -33,6 +33,7 @@
 | `spec/capabilities/diagnostics.md` | §13 |
 | `spec/capabilities/compiler-pipeline.md` | §7, §10, §14 |
 | `spec/capabilities/conformance-gate.md` | §14 |
+| `spec/capabilities/build-modes.md` | §15 |
 | `spec/capabilities/tooling-and-lsp.md` | §10, §13 |
 | `spec/capabilities/agent-authoring.md` | §13 |
 | `spec/capabilities/units-of-measure.md` | §5, §12 |
@@ -56,5 +57,5 @@
 | §12 Progressive verification | constitution.md; capabilities-and-effects.md; verification-layers.md; property-based-testing.md; units-of-measure.md |
 | §13 Authored for agents | constitution.md; metaprogramming.md; diagnostics.md; tooling-and-lsp.md; agent-authoring.md |
 | §14 Conformance by two gates | constitution.md; compiler-pipeline.md; conformance-gate.md |
-| §15 Self-regeneration: the flywheel | constitution.md; self-hosting-and-bootstrap.md; bootstrap.md |
+| §15 Self-regeneration: the flywheel | constitution.md; self-hosting-and-bootstrap.md; bootstrap.md; build-modes.md |
 | §16 What earlier generations taught | (descriptive; served by `spec/learnings/`) |

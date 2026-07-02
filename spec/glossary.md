@@ -245,6 +245,18 @@
   in a requirement.
 - **Open point** — a specification point a conforming generation could resolve in more than one
   way; each is a decision carrying a declared default.
+- **Attended mode** — a build driven by an author who can resolve ambiguity: it halts at a
+  specification ambiguity, has it resolved and folded into the specification as a requirement, and
+  restarts from the corrected specification.
+- **Autonomous mode** — a build driven by a user who cannot resolve internals: it never halts on a
+  specification ambiguity and instead applies the point's declared default and records that it did.
+- **Decision record** — the durable record of the mode, declared defaults, user-facing choices, and
+  optional capabilities a build applied, so the assumptions behind the produced compiler are
+  auditable.
+- **Operator-gated point** — a specification point whose resolution the constitution reserves to an
+  operator (the core symbol namespace, a frozen-contract byte-level pin); it must be resolved in the
+  committed specification before an autonomous build can run, and an autonomous build never invents
+  it.
 
 ---
 

@@ -131,6 +131,10 @@ source = "spec/capabilities/conformance-gate.md"
 format = "markdown"
 
 [[specification]]
+source = "spec/capabilities/build-modes.md"
+format = "markdown"
+
+[[specification]]
 source = "spec/capabilities/tooling-and-lsp.md"
 format = "markdown"
 

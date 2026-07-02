@@ -100,7 +100,21 @@ duvet extract -f markdown -o /tmp/ex ./spec/contracts/<name>.md
 duvet report
 ```
 
-## Authoring order
+## The build loop
+
+`./start.sh` is the front door: it installs the neutral commands in `commands/` as Claude Code slash
+commands (into the gitignored `.claude/commands/`), scaffolds the gitignored `implementation/`
+workspace, and launches a session that runs [`/build`](commands/build.md) in the selected mode
+(autonomous by default; `--author` for attended). `/build` orchestrates the rest: `constitution` /
+`specify` / `clarify` to author the spec, `analyze` to check it is gate-ready, `setup-gate` / `gate`
+to run the two gates, and `ignite` / `regen` / `promote` / `learn` to synthesize the seed toolchain,
+produce a generation, promote a gated candidate, and feed a spec gap back into the specification. The
+commands are agent-agnostic prompt bodies and are the durable, committed way to drive a build; the
+build modes they obey are fixed by [spec/capabilities/build-modes.md](spec/capabilities/build-modes.md).
+
+After any spec edit, run `analyze` and confirm it ends `ANALYZE: PASS`.
+
+## Authoring order (of the specification itself)
 
 Author for internal consistency: glossary + constitution together, then `overview.md`, then
 the frozen contracts (ABI first), then the `options/` decisions each contract points at, then the
@@ -112,6 +126,7 @@ never pinned first.
 
 ## What not to commit
 
-`implementation/` (the regenerable compiler), `.duvet/reports/`, and any agent-local
-directories are ignored. `.duvet/config.toml` and `.duvet/bootstrap.toml` (the gate
-configuration) ARE committed, as are `templates/` and the entire specification tree.
+`implementation/` (the regenerable compiler), `.claude/` (the local slash-command install target and
+agent-local files), and `.duvet/reports/` are ignored. `.duvet/config.toml` and
+`.duvet/bootstrap.toml` (the gate configuration), `commands/` and `start.sh` (the build loop),
+`templates/`, and the entire specification tree ARE committed.

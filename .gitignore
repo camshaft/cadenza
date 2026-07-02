@@ -1,8 +1,10 @@
 # =============================================================================
-# This is the Cadenza specification branch. It contains ONLY the specification
-# tree — the durable source of truth. The Cadenza compiler is a disposable,
-# regenerable projection of these specs and is NEVER committed here; it is
-# regenerated into implementation/ (below).
+# This is the Cadenza specification branch. It holds the durable source of truth:
+# the specification tree, the neutral build-loop commands (commands/), and the
+# entry point (start.sh). The Cadenza compiler itself is a disposable, regenerable
+# projection of these specs and is NEVER committed here; it is regenerated into
+# implementation/ (below), and the commands are installed into .claude/commands/
+# as a local, generated target.
 # =============================================================================
 
 # The generated compiler / any synthesized implementation.
