@@ -45,6 +45,10 @@ format = "markdown"
 
 # all frozen contracts are in the ignition subset
 [[specification]]
+source = "spec/contracts/ast-encoding.md"
+format = "markdown"
+
+[[specification]]
 source = "spec/contracts/source-tree-encoding.md"
 format = "markdown"
 

@@ -42,6 +42,10 @@ format = "markdown"
 
 # frozen contracts
 [[specification]]
+source = "spec/contracts/ast-encoding.md"
+format = "markdown"
+
+[[specification]]
 source = "spec/contracts/source-tree-encoding.md"
 format = "markdown"
 

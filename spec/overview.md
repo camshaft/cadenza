@@ -46,17 +46,20 @@ it runs — determinism, capability-safety, bounded termination, reproducible de
 addressing — are the constraints this language is designed around. They are not a burden Cadenza
 tolerates; they are the specification it fulfills.
 
-## 3. Source, programs, and the canonical tree
+## 3. Source, programs, and the canonical form
 
 A program is a set of source modules that compile together into one component. The authoritative
-form of a program is its source, and the source has a single canonical encoding, so that "the same
-program" is a byte-exact, third-party-checkable notion. A program's durable form is a homoiconic,
-typed, code-as-data representation, and *display is decoupled from representation*: a human-readable
-conventional display and the direct code-as-data display are both deterministic projections of the
-one representation, which is what an agent manipulates, what is hashed, and what the semantics and
-verification operate on. One display is designated the canonical textual form, and formatting
-round-trips it byte-for-byte, so a program an agent generates structurally and a program a human
-writes converge on the same representation.
+form of a program is its source, and *the canonical stored form of that source is a stable binary
+serialization of its abstract syntax tree* — not text. That binary AST is what a program is stored
+as, hashed as, and handed to the compiler as, so "the same program" is a byte-exact,
+third-party-checkable notion with no dependence on whitespace, line endings, or which syntax it was
+typed in. Because the stored form is the tree, *text is only a projection*: a textual syntax is a
+parser that converts text to the binary AST and a printer that renders the AST back, and there may be
+many — a human-readable conventional syntax, a direct code-as-data syntax, or any a deployment adds —
+none of them the program's identity. An agent generates and transforms a program by constructing the
+tree directly; a human reads and writes it through whichever syntax they prefer; both converge on the
+same binary AST. The tree carries everything a program means to keep, including comments and
+documentation, so nothing is lost by storing the tree rather than a rendering.
 
 ## 4. Determinism and bounded execution
 

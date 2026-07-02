@@ -93,9 +93,9 @@ The compiler and every tool MUST agree with the executable semantics rather than
 
 ### X. Programs Are Readable By Agents And Humans
 
-The language MUST define a canonical textual form such that formatting a well-formed program yields a byte-identical canonical rendering.
+The canonical form of a program MUST be a stable binary serialization of its abstract syntax tree, such that a program has one canonical byte form independent of any textual rendering.
 
-Parsing a program and then canonically formatting it MUST reproduce the canonical bytes.
+A textual syntax MUST be a lossless projection of the canonical form, such that parsing its text yields the canonical form and printing the canonical form yields text that parses back to the same canonical form.
 
 The structure of a program MUST be manipulable through a documented structural interface without re-parsing unrelated code.
 

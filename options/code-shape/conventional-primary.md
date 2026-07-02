@@ -6,18 +6,17 @@
 
 ## The choice
 
-The **canonical representation is a typed tree**, and the **primary display is a conventional
-ML/Rust-family surface** (expression-oriented, keyword- and brace-delimited, indentation-insensitive)
-— the form authors read and write by default. A homoiconic literal display exists as a *secondary*
-view for metaprogramming, but it is not the primary form. The conventional display is the canonical
-textual form for the round-trip.
+The **canonical stored form is the binary AST**, as in every choice, but the **primary textual syntax
+is a conventional ML/Rust-family surface** (expression-oriented, keyword- and brace-delimited,
+indentation-insensitive) — the form authors read and write by default. An s-expression syntax exists
+as a *secondary* view for metaprogramming, but it is not the primary one.
 
 ## How it satisfies the requirements
 
-- **Canonical textual form round-trips:** the conventional display is delimiter-explicit and
-  indentation-insensitive, so formatting is idempotent and parse-then-format is byte-identical.
-- **Structural interface:** operates on the typed tree, as in the default.
-- **Reproducible codegen:** unaffected — the hash is over the source's canonical textual form.
+- **Canonical form round-trips:** the conventional syntax is delimiter-explicit and
+  indentation-insensitive, so it parses to and prints from the binary AST losslessly.
+- **Structural interface:** operates on the binary AST, as in the default.
+- **Reproducible codegen:** unaffected — the hash is over the binary AST, not any textual rendering.
 
 ## Trade-off vs. the default
 

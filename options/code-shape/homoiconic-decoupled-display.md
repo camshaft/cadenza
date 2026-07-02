@@ -3,7 +3,7 @@
 > **A choice for the `code-shape` decision** (see [README.md](./README.md) for the decision and the
 > requirements a choice must satisfy). This is the **default** choice. It is a declared choice, not a
 > requirement; the whole specification is written against "the canonical representation" and "the
-> canonical textual form," so adopting a different choice touches no frozen contract and no capability
+> binary AST," so adopting a different choice touches no frozen contract and no capability
 > requirement.
 
 ## The insight: homoiconicity decouples display from representation
@@ -18,20 +18,21 @@ through different projections of the same core.
 
 ## The choice: a homoiconic canonical representation with decoupled displays
 
-The **canonical representation is a homoiconic, typed term** — a uniform code-as-data structure that
-is content-addressable and is the sole target of structural manipulation, hashing, the executable
-semantics, and verification. **Display is decoupled from it:** a program is shown through a
-projection of the representation, and more than one projection may exist —
+The **canonical representation is a homoiconic, typed term**, and its **canonical stored form is the
+binary AST** (ast-encoding.md) — the uniform code-as-data structure that is content-addressed and is
+the sole target of structural manipulation, hashing, the executable semantics, and verification.
+**Text is decoupled from it:** a program is *stored* as the binary AST and merely *shown* through a
+textual syntax, and more than one textual syntax may exist —
 
-- a **conventional display** in the ML/Rust family (expression-oriented, keyword- and
-  brace-delimited, indentation-insensitive) for humans to read and write comfortably;
-- the **homoiconic display** itself, the direct code-as-data rendering, for metaprogramming and for
-  agents that manipulate structure literally.
+- a **conventional syntax** in the ML/Rust family (expression-oriented, keyword- and brace-delimited,
+  indentation-insensitive) for humans to read and write comfortably;
+- an **s-expression syntax**, the direct code-as-data rendering, for metaprogramming and for agents
+  that manipulate structure literally;
+- any further syntax a deployment adds, as a parser and printer to and from the binary AST.
 
-Exactly one display is designated the **canonical textual form** for the round-trip the constitution
-requires; the others are alternative renderings of the same representation. Every display admits a
-lossless projection to and from the canonical representation, so moving between displays never
-changes the program.
+No textual syntax is the stored form; each is a lossless projection that parses to and prints from the
+binary AST, so moving between syntaxes never changes the program. The one canonical byte form is the
+binary AST, not any rendering, which is what the constitution's round-trip requires.
 
 ## The two displays, shown
 
@@ -84,11 +85,10 @@ trivia, so it survives the round-trip in either direction (agent-authoring.md §
 - **Verify properties (priority #3):** verification, the type system, and the executable-semantics
   corpus all operate on the uniform homoiconic representation — the property a homoiconic core is
   prized for — while humans still get a conventional display.
-- **Reproducible codegen:** the hash and the round-trip are defined against the canonical
-  representation and its one canonical textual form; because the representation is uniform and the
-  canonical display is indentation-insensitive and delimiter-explicit, the byte-identical round-trip
-  the constitution requires is straightforward, and alternative displays cannot affect a program's
-  identity.
+- **Reproducible codegen:** the hash and the round-trip are defined against the binary AST, the one
+  canonical byte form; because identity is the tree and not any rendering, whitespace, line endings,
+  and choice of syntax cannot affect a program's identity, and the byte-identical round-trip the
+  constitution requires is immediate.
 
 ## What this choice fixes vs. leaves to the spec
 

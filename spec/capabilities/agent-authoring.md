@@ -21,11 +21,17 @@ affordances as obligations, not the interface's concrete surface.
 
 ## Canonical Form
 
-### The Canonical Form Round-Trips
+### The Canonical Form Is The Binary AST
 
-Formatting a well-formed program MUST yield its byte-identical canonical textual form.
+A program's canonical form MUST be the binary AST fixed by the ast-encoding contract, so that its identity is independent of any textual rendering.
 
-Parsing a program's canonical textual form and formatting the result MUST reproduce the same bytes.
+An agent MUST be able to read and construct a program's canonical binary AST directly, without going through a textual syntax.
+
+### Textual Syntaxes Round-Trip Through The Canonical Form
+
+Parsing a textual rendering of a program MUST yield its canonical binary AST.
+
+Printing a program's canonical binary AST in a textual syntax MUST yield text that parses back to the same canonical binary AST.
 
 ## Structural Editing
 
@@ -57,7 +63,7 @@ Any definition MUST be able to carry documentation, so that every part of a prog
 
 ### Documentation Survives Round-Trip And Edits
 
-Documentation MUST be preserved when a program is formatted to its canonical textual form and parsed back.
+Documentation MUST be preserved when a program's binary AST is printed to a textual syntax and parsed back.
 
 A structural edit MUST preserve the documentation attached to a part of the program it does not change.
 

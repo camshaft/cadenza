@@ -23,15 +23,19 @@
 - **Documentation** — prose attached to a definition, carried in the canonical representation rather
   than as discarded lexical trivia; preserved through round-trip and structural edits, exposed
   machine-readably, and never affecting a program's runtime meaning.
-- **Canonical representation** — the homoiconic, typed, code-as-data structure that is a program's
-  durable form: the sole target of structural manipulation, hashing, the executable semantics, and
-  verification. Every display is a projection of it.
-- **Display** — a deterministic rendering of the canonical representation for reading or writing;
-  more than one display may exist, and moving between displays never changes the program.
-- **Canonical textual form** — the one display designated for the byte-for-byte round-trip;
-  formatting is idempotent and parse-then-format reproduces it byte-for-byte.
+- **Canonical representation** — the homoiconic, typed, code-as-data abstract syntax tree that is a
+  program's durable form: the sole target of structural manipulation, hashing, the executable
+  semantics, and verification. Every textual syntax is a projection of it.
+- **Binary AST** — the stable binary serialization of the canonical representation; the canonical
+  stored form of a program, and the form a program is hashed as and handed to the compiler as. Fixed
+  by the ast-encoding contract.
+- **Textual syntax** — a parser that converts text to the binary AST and a printer that converts the
+  binary AST to text; more than one may exist, none is the stored form, and moving between them never
+  changes the program.
+- **Display** — a textual syntax used for reading or writing; a rendering of the canonical
+  representation, not the program's identity.
 - **Homoiconicity** — the property that a program is itself a value of the uniform data structure the
-  language manipulates, so that display and representation decouple and code is data.
+  language manipulates, so that textual syntax and stored form decouple and code is data.
 - **Structural interface** — the documented interface through which an agent reads and rewrites the
   canonical representation of a program without textual patching and without re-parsing unrelated
   code.

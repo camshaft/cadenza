@@ -5,15 +5,15 @@
 
 ## The choice
 
-The **canonical representation is homoiconic**, and s-expressions are the **sole display** — there is
-no conventional human-facing surface. The homoiconic display is the canonical textual form.
+The **canonical stored form is the binary AST**, as in every choice, and the **s-expression syntax is
+the sole textual syntax** — there is no conventional human-facing surface.
 
 ## How it satisfies the requirements
 
-- **Canonical textual form round-trips:** s-expressions are delimiter-explicit; formatting is
-  idempotent and parse-then-format is byte-identical.
-- **Structural interface:** operates on the homoiconic representation directly, as in the default.
-- **Reproducible codegen:** unaffected.
+- **Canonical form round-trips:** s-expressions are delimiter-explicit, so the syntax parses to and
+  prints from the binary AST losslessly.
+- **Structural interface:** operates on the binary AST directly, as in the default.
+- **Reproducible codegen:** unaffected — the hash is over the binary AST.
 
 ## Trade-off vs. the default
 
