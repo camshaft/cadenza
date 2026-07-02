@@ -1,41 +1,14 @@
 # =============================================================================
 # This is the Cadenza specification branch. It contains ONLY the specification
 # tree — the durable source of truth. The Cadenza compiler is a disposable,
-# regenerable projection of these specs and is NEVER committed here.
+# regenerable projection of these specs and is NEVER committed here; it is
+# regenerated into implementation/ (below).
 # =============================================================================
 
 # The generated compiler / any synthesized implementation.
 /implementation/
 
-# Duvet regenerates its reports; only the requirement side and the coverage
-# snapshot are durable and committed.
-/.duvet/reports/
-
-# Prior-generation source that still lives on disk from earlier branches — it is
-# reference-only and must not be committed to the spec branch. The prior docs/
-# tree is informative prior art; its executable-semantics corpus is migrated into
-# spec/semantics/ rather than committed as-is.
-/crates/
-/docs/
-/xtask/
-/wasmtime/
-/Carp/
-/reference/
-/hooks/
-/build/
-/target/
-Cargo.toml
-Cargo.lock
-rust-toolchain
-flake.nix
-_flake.lock
-tsconfig.json
-kore-exec.tar.gz
-/.cargo/
-/.clinerules/
-/.github/
-
-# Editor / OS
+# Editor / OS / agent-local
 .vscode/
 .idea/
 *.swp
@@ -43,3 +16,4 @@ kore-exec.tar.gz
 .DS_Store
 .direnv/
 result
+.claude/
