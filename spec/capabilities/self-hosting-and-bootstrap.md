@@ -67,6 +67,14 @@ A self-hosting generation MUST be a Cadenza compiler authored in Cadenza.
 
 A self-hosting generation MUST be derivable by the previous Cadenza compiler.
 
+### The Interpreter Is Proven As A Component Before It Is Iterated On
+
+The reference interpreter MUST be exercised as a runnable component that a host drives, rather than only as a function of the toolchain that produced it, so that the artifact the flywheel iterates on is the one that has been proven.
+
+The host that drives the reference-interpreter component MUST reproduce every executable-semantics case the generation realizes by running each case's program through that component, so that a green semantics suite proves the interpreter-as-component works.
+
+Once the reference interpreter is proven as a component, a later generation MAY author an interpreter in Cadenza and derive it with the proven toolchain, so that the interpreter itself becomes a Cadenza artifact the flywheel improves.
+
 ## Turning The Flywheel Means Execution
 
 ### A Regeneration Is Derived, Gated, And Run

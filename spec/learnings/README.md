@@ -31,3 +31,7 @@ generations of Cadenza taught these lessons the expensive way; the specification
 - [The ignition path is de-risked](./2026-07-02-ignition-path-de-risked.md) — the two Phase-2 spikes:
   duvet's quoted-sentence gate works for Rust (but exits 0 on citation errors), and the
   source→derive→run→re-derive path is real and byte-reproducible in this environment.
+- [Decouple the interpreter-wasm from the host](./2026-07-02-decouple-interpreter-wasm-from-host.md) —
+  interpreted derivation embeds the interpreter *component* over the program's AST (so the component
+  actually interprets, not replays a transcript); the host providing capability functions is a
+  separate minimal artifact. Avoids the modeled-derivation trap.

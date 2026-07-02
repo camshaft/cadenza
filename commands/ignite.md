@@ -40,6 +40,23 @@ Cadenza toolchain yet exists to derive it.
    Next Generation, Not Itself At Genesis"), and there is no compiler-free root to
    stand up — Cadenza is itself the build tool, outside any minimal
    load-verify-run root (`build-tool-interface.md` §"The Tool Is Replaceable").
+
+   **Decouple two concerns, and do NOT collapse them (see
+   `spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md`):**
+   (a) **the interpreter compiled to a component** — the reference interpreter is
+   compiled to WebAssembly, and interpreted derivation binds *that interpreter
+   component* together with *the program's canonical AST as embedded data* into one
+   content-addressed component (`options/bootstrap-strategy/…` §"Interpreter
+   packaging"), so the derived component **actually interprets its embedded AST at
+   run time**; and (b) **a minimal host** that provides only the capability functions
+   a component imports, a separate artifact from the interpreter, binding exactly the
+   manifest's capabilities. Running the interpreter in the host at derivation time and
+   emitting a component that only *replays* the precomputed output is a **modeled
+   derivation** and MUST NOT be used (`spec/bootstrap.md` §"A Modeled Derivation Is Not
+   An Ignition"). The distinguishing check: deriving two different programs MUST reuse
+   the *same* interpreter component and differ only in the embedded AST, so behavior
+   comes from the component interpreting, not from program-specific code the derivation
+   emitted.
 2. Run `setup-gate` for that host language so the bootstrap gate's `[[source]]`
    half points at `implementation/`, and cite every frozen-contract and
    ignition-subset requirement the seed satisfies by quoting its sentence. Derive
@@ -73,6 +90,12 @@ End-To-End Derivation" and §"A Modeled Derivation Is Not An Ignition":
 - A real Cadenza source program was derived to a content-addressed component and
   that component was **actually run to produce its output** — not stood in for by
   emitting the artifacts a derivation would produce.
+- **The component itself performed the interpretation** — the derived component
+  embeds the interpreter over the program's AST and evaluates it at run time; it is
+  NOT a transcript of output the host precomputed. Confirm by deriving two different
+  programs, observing that the same interpreter component is reused and only the
+  embedded AST differs, and that their behaviors differ purely from that AST (see
+  `spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md`).
 - The derived component's imports mirror its declared capability manifest, so the
   capability-binding is exercised rather than merely configured
   (`build-tool-interface.md` §"The Tool Produces A Component, A Manifest, And

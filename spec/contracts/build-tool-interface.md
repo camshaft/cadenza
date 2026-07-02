@@ -70,6 +70,20 @@ A component derived by embedding the reference interpreter MUST satisfy the repr
 
 A component derived by embedding the reference interpreter MUST exhibit the observable behavior the reference interpreter defines for the program, so that the two derivation modes are behaviorally indistinguishable.
 
+### The Embedded Interpreter Executes In The Component
+
+A component derived by embedding the reference interpreter MUST compute the program's observable behavior by executing the interpreter over the program's canonical form when the component runs, rather than by replaying an observable behavior computed before the component ran.
+
+A build tool MUST NOT emit, in place of the embedded interpreter, a component that reproduces only a pre-recorded transcript of the program's observable behavior.
+
+The interpreter a derivation embeds MUST be the same across the programs it derives, so that a derived component's behavior is a function of the embedded program rather than of behavior-specific code the derivation emitted.
+
+### The Interpreter And The Host Are Distinct Artifacts
+
+The reference interpreter a component embeds MUST be an artifact distinct from the host that provides the capability operations the component imports.
+
+The host that provides a component's imported capability operations MUST provide only the operations the component's manifest enumerates.
+
 ## Additive Evolution
 
 ### Additive Evolution Of This Contract

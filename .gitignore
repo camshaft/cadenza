@@ -19,3 +19,6 @@
 .direnv/
 result
 .claude/
+
+# stray editor/rust-analyzer flycheck output at repo root
+/target/

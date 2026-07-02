@@ -43,7 +43,9 @@ A macro MUST produce values of the canonical representation, so that it transfor
 
 ### Macros Are Hygienic
 
-A name a macro introduces MUST NOT capture, or be captured by, a name at the macro's use site unless the macro explicitly requests it.
+A name a macro introduces MUST NOT capture a name at the macro's use site unless the macro explicitly requests it.
+
+A name a macro introduces MUST NOT be captured by a name at the macro's use site unless the macro explicitly requests it.
 
 ### Expansion Is Reproducible
 
