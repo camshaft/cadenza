@@ -31,11 +31,15 @@ The compiler MUST NOT embed a wall-clock time, an absolute filesystem path, or a
 
 The compiler MUST emit its output in an order that is a function of the source alone, independent of filesystem enumeration order or nondeterministic collection iteration.
 
-### III. Execution Is Deterministic
+### III. The Compiler Introduces No Undeclared Nondeterminism
 
-A compiled component MUST produce byte-identical output for the same input on every conforming runtime.
+A compiled component MUST produce byte-identical output given the same input and the same responses to its declared capabilities, on every conforming runtime.
 
-The compiler MUST NOT emit an operation whose result depends on a wall-clock time, a source of randomness, uninitialized memory, or thread scheduling.
+The compiler MUST NOT introduce into a component a source of nondeterminism that the program did not obtain through a declared capability.
+
+The compiler MUST NOT emit an operation whose result depends on uninitialized memory.
+
+The compiler MUST NOT emit an operation whose result depends on thread scheduling.
 
 The compiler MUST emit each numeric operation with a fully specified result so that the operation does not vary between conforming runtimes.
 

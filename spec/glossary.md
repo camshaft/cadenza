@@ -60,11 +60,12 @@
 
 ## Determinism, capabilities, and resources
 
-- **Determinism** — the property that the same input produces byte-identical output on every
-  conforming runtime; achieved primarily by denying a program any source of nondeterminism.
-- **Nondeterminism** — any dependence of a result on something other than declared inputs: a
-  wall-clock time, a source of randomness, uninitialized memory, thread scheduling, or an
-  unspecified numeric result.
+- **Determinism** — the property that the same input and the same responses to a program's declared
+  capabilities produce byte-identical output on every conforming runtime; made legible by requiring
+  every source of nondeterminism to be a declared capability rather than forbidding it.
+- **Nondeterminism** — any dependence of a result on something a program did not obtain through its
+  declared inputs and capabilities: uninitialized memory, thread scheduling, an unspecified numeric
+  result, or an outside influence such as a clock or randomness reached without declaring it.
 - **Capability** — an authority a program must declare in order to reach a host operation; the
   unit of what a program is permitted to do.
 - **Capability manifest** — the enumeration a program carries of every capability it requires;
@@ -80,10 +81,9 @@
   that termination does not depend on wall-clock time; commonly called fuel.
 - **Fuel** — the resource measure a running component consumes; exhausting it halts execution
   at a defined point.
-- **Fold** — a pure, deterministic reduction of prior state and inputs into new state; the most
-  constrained role, granted no source of nondeterminism at all.
-- **Role** — the kind of behavior a component fills, which determines how constrained it is;
-  the fold role is the most constrained.
+- **Capability honesty** — the property that a component's imports mirror its manifest exactly and
+  the compiler adds none of its own, so the system running the component can decide what to permit
+  from the manifest alone.
 
 ## The runnable form
 

@@ -60,14 +60,19 @@ writes converge on the same representation.
 
 ## 4. Determinism and bounded execution
 
-A compiled component produces byte-identical output for the same input on every conforming runtime,
-and its execution is bounded by a deterministic resource measure rather than by wall-clock time.
-This is achieved primarily by **absence**: the language and its runtime grant a program no clock, no
-randomness, no ambient input or output, and no concurrency beyond what its role permits, so a
-program cannot depend on anything but its declared inputs. What a sandbox does not remove on its own
-— the result of a numeric operation, the order of emission — the compiler pins, so that determinism
-is a property of the emitted bytes, not an aspiration about the source. Every value has one
-canonical byte form, so "the output" and "the identity of a value" are exact.
+A compiled component produces byte-identical output given the same input and the same responses to
+its declared capabilities, on every conforming runtime, and its execution is bounded by a
+deterministic resource measure rather than by wall-clock time. Cadenza's discipline is not to forbid
+nondeterminism but to make it **legible and never latent**: a program obtains a clock, randomness, or
+any other outside influence only through a capability it declares, so its determinism is readable from
+its manifest — a program that declares no such capability is deterministic, and a program that declares
+one has said so where anyone can see it. The compiler's own contribution is to add **none of its own**:
+it emits no operation whose result depends on uninitialized memory or thread scheduling, and what a
+sandbox does not pin on its own — the result of a numeric operation, the order of emission — the
+compiler pins, so that any residual variation is one the program explicitly asked for. Every value has
+one canonical byte form, so "the output" and "the identity of a value" are exact. What a *particular
+kind of program* is permitted to declare — for instance, that a program folding a shared log may hold
+no nondeterministic capability at all — is a policy of the system that runs it, not of the language.
 
 ## 5. Types
 
@@ -84,8 +89,10 @@ A program declares, up front, every capability it requires — every host operat
 component the compiler emits imports exactly those operations and no others, because the means to
 reach anything undeclared is simply not present in the component. The manifest is therefore both a
 description and an enforcement boundary. A program that reaches an operation it did not declare is
-rejected at compile time; it is never compiled to a component with a latent import. The most
-constrained role, a fold, is granted no source of nondeterminism at all.
+rejected at compile time; it is never compiled to a component with a latent import. Because the
+manifest is exhaustive, the system that runs a component can decide from it alone what to allow — for
+instance, that a program in a given role may hold no nondeterministic or outward-facing capability —
+without the language having to bake that policy in.
 
 ## 7. Derivation and reproducibility
 

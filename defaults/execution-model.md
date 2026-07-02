@@ -18,9 +18,9 @@
   build-tool-interface.md §"The Tool Produces A Component, A Manifest, And Diagnostics").
 - **Imports mirror the manifest exactly; no ambient authority** (constitution IV;
   host-interface-binding.md §"Imports Mirror The Manifest").
-- **Deterministic execution; no clock, randomness, ambient I/O, or concurrency for a fold**
-  (constitution III; host-interface-binding.md §"The Fold Role Is Granted No Nondeterminism";
-  determinism-and-fuel.md).
+- **The compiler introduces no undeclared nondeterminism; a source of nondeterminism is reachable
+  only through a declared capability** (constitution III; host-interface-binding.md §"Capability
+  Honesty"; determinism-and-fuel.md).
 - **Bounded termination by a deterministic resource measure** (constitution V;
   determinism-and-fuel.md §"Resource Accounting").
 
@@ -30,10 +30,10 @@
 |---|---|---|
 | Component format | **WebAssembly Component Model** | Sandboxed, binary, content-addressable; imports are explicit and typed (maps directly to capability-scoping); no ambient authority by construction. |
 | Runtime engine | an **embeddable component-model runtime** (default: **Wasmtime**) | Embeddable; supports the component model; supports a deterministic configuration (no wall-clock or entropy imports bound) and a deterministic resource bound (fuel metering). |
-| Determinism config | wall-clock and entropy host calls **not bound**; execution **fuel-metered**; deterministic floating-point mode on | Realizes "no ambient nondeterminism" and "a deterministic resource measure so termination does not depend on wall-clock timing". |
+| Determinism config | execution **fuel-metered**; deterministic floating-point mode on; which nondeterministic capabilities a component may hold is left to the running system's per-role policy | The compiler introduces no undeclared nondeterminism and surfaces every requested capability; the running system decides from the manifest what to bind (for example, binding no clock or entropy for a log-folding role). |
 | Resource measure | **fuel** (a deterministic per-instruction/per-call unit) | The deterministic resource measure the determinism-and-fuel contract requires; exhaustion halts at a defined point. |
 | Host interface | **`cadenza-host/1`** | The single interface version generation 0 provides; a component names it explicitly and a runtime refuses any other. |
-| Core host operations | `read-projection`, `emit-event`, `read-blob`, `invoke-tool` | The four operations a module needs to participate in the fold-and-dispatch model; each bound only when the manifest grants it. |
+| Core host operations | `read-projection`, `emit-event`, `read-blob`, `invoke-tool` | Representative operations a component may request; each bound only when the manifest grants it. The set is the host's, not the language's, and extends as the host interface grows. |
 
 ## Host-interface operations (the `cadenza-host/1` world)
 
@@ -46,8 +46,10 @@
   work, including deriving another program's source with Cadenza itself, is carried to a
   participant equipped to run it.
 
-A fold-role component is granted none of the operations that would introduce nondeterminism; it may
-read only its granted projections.
+The running system decides which of these operations a component may hold, from the component's
+manifest. A system may, for example, bind a log-folding component none of the operations that would
+introduce nondeterminism and let it read only its granted projections — but that restriction is the
+system's policy over the manifest, not a rule the compiler enforces.
 
 ## What is frozen vs. chosen
 

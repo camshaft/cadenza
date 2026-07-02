@@ -28,9 +28,11 @@ The observable behavior of every surface construct MUST match the construct's ca
 
 The compiler MUST NOT implement a construct's behavior in a way that disagrees with the corpus.
 
-### Evaluation Is Deterministic
+### Evaluation Is Deterministic Given Its Inputs And Capabilities
 
-Evaluation of an expression MUST depend only on the expression and the bindings in scope, and on no source of nondeterminism.
+Evaluation of an expression MUST depend only on the expression, the bindings in scope, and the responses to the capabilities the expression invokes.
+
+Evaluation MUST NOT depend on any outside influence the expression did not obtain through a binding in scope or a declared capability.
 
 Evaluation of an expression MUST NOT observe an order among independent subexpressions beyond the order their data dependencies impose.
 
