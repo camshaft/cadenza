@@ -29,6 +29,14 @@
 - **Binary AST** — the stable binary serialization of the canonical representation; the canonical
   stored form of a program, and the form a program is hashed as and handed to the compiler as. Fixed
   by the ast-encoding contract.
+- **Symbol prelude** — the list, carried by a binary AST, of the symbols its nodes reference; it makes
+  a file self-contained, since a node names its kind by referencing a prelude symbol by index rather
+  than by an external registry.
+- **Symbol** — a namespaced, optionally versioned name a node references to say what kind of node it
+  is; language-defined symbols live in the core namespace, and a macro introduces symbols in its own
+  namespace so the two cannot collide.
+- **Namespace** — the qualifier that scopes a symbol or an imported name, so that a name defined by
+  the language, by a module, or by a macro is distinct from an identical name elsewhere.
 - **Textual syntax** — a parser that converts text to the binary AST and a printer that converts the
   binary AST to text; more than one may exist, none is the stored form, and moving between them never
   changes the program.
