@@ -18,7 +18,7 @@
 
 (case "overflow of the default integer traps deterministically"
   (doc    "Witnesses numeric-model.md #Overflow Is Defined with the checked-and-trapping
-           default pinned in defaults/numeric-model.md.")
+           default pinned in options/numeric-model/.")
   (input  (+ Int64.max 1))
   (trap   "integer overflow"))
 
@@ -28,7 +28,7 @@
 
 (case "exact rational arithmetic is exact and normalized"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact; the result is reduced
-           to lowest terms per defaults/numeric-model.md.")
+           to lowest terms per options/numeric-model/.")
   (input  (+ (Rational.of 1 3) (Rational.of 1 6)))
   (output (: (Rational.of 1 2) Rational)))
 

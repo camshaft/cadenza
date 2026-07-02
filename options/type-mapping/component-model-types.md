@@ -1,14 +1,14 @@
-# Type Mapping — Declared Default
+# Type Mapping — Choice: component-model-types
 
-> **What this file is.** The concrete Cadenza-to-host-interface type table that realizes the
-> component-abi.md frozen contract's requirement that "each Cadenza type that may appear in an
-> exported or imported signature has a single stable representation in the host interface's type
-> system." The contract states the property technology-neutrally; this file pins the table.
+> **The default choice for the `type-mapping` decision** (see [README.md](./README.md) for the
+> decision and the requirements a choice must satisfy). It pins the concrete Cadenza-to-host-interface
+> type table that realizes the component-abi.md frozen contract's requirement that each Cadenza type
+> appearing in an exported or imported signature has a single stable representation in the host
+> interface's type system.
 >
-> This is a **declared default** at the ABI level: a change to an existing row alters bytes produced
-> from unchanged source and is therefore a coordinated ABI change under the constitution's
-> Governance Floors. Adding a row for a type that previously had no boundary representation is an
-> additive change.
+> This is an ABI-level choice: a change to an existing row alters bytes produced from unchanged source
+> and is therefore a coordinated ABI change under the constitution's Governance Floors. Adding a row
+> for a type that previously had no boundary representation is an additive change.
 
 ## The table (Cadenza type → component-model / WIT type)
 

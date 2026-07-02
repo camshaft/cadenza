@@ -1,15 +1,13 @@
-# Bootstrap Strategy — Declared Default
+# Bootstrap Strategy — Choice: rust-seed-interpreted-first
 
-> **What this file is.** The concrete realization of the self-hosting *requirements* the
-> specification states technology-neutrally (constitution XIV; bootstrap.md;
-> self-hosting-and-bootstrap.md; build-tool-interface.md §"Derivation By Embedding The Reference
-> Interpreter"). The spec fixes that a reference interpreter is the oracle, that a compiled
-> program's behavior agrees with it, and that a staged path leads from a foreign-language seed to a
-> Cadenza-authored compiler; this file names the seed language, the derivation modes, and the
-> staging plan.
+> **The default choice for the `bootstrap-strategy` decision** (see [README.md](./README.md) for the
+> decision and the requirements a choice must satisfy). It names the concrete realization of the
+> self-hosting requirements the specification states technology-neutrally (constitution XIV;
+> bootstrap.md; self-hosting-and-bootstrap.md; build-tool-interface.md §"Derivation By Embedding The
+> Reference Interpreter"): the seed language, the derivation modes, and the staging plan.
 >
-> This is a **declared default**. The seed language and derivation-mode default are replaceable; the
-> guarantees they must satisfy are not.
+> The seed language and the derivation-mode default are replaceable; the guarantees they must satisfy
+> are not.
 
 ## The default choices
 

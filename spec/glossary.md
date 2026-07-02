@@ -199,17 +199,21 @@
   regeneration; changed only additively or by a coordinated version increment with a migration
   path.
 - **Governance floor** — a minimum-process rule that no evolution policy may lower.
-- **Declared default** — the concrete choice recorded outside the normative prose that resolves
-  an open point, so an autonomous build proceeds without halting.
-- **Declared-default location** — the committed `defaults/` directory where a declared default's
-  concrete, technology-named realization is pinned, used because the standalone rule forbids
-  naming an implementation choice in a requirement.
+- **Decision** — an open point recorded as a directory under the declared-default location, whose
+  README states the requirements a choice must satisfy and names the default choice.
+- **Choice** — one candidate realization of a decision; a build adopts a decision's default choice,
+  selects another listed choice, or authors a new choice for that one decision.
+- **Declared default** — the choice a decision names as the one an autonomous build applies when
+  nothing else resolves the decision, so two unattended builds resolve it identically.
+- **Declared-default location** — the committed `options/` directory where each decision's choices
+  and default are recorded, used because the standalone rule forbids naming an implementation choice
+  in a requirement.
 - **Open point** — a specification point a conforming generation could resolve in more than one
-  way; each carries a declared default.
+  way; each is a decision carrying a declared default.
 
 ---
 
 *Informative references (never cited normatively): the design vocabulary of earlier Cadenza
 generations and the surrounding literature — Hindley-Milner inference, linear types, algebraic
 effects, SMT solving, the WebAssembly component model — inform these terms but are named only
-here and in `defaults/` and `learnings/`, never in a requirement.*
+here and in `options/` and `learnings/`, never in a requirement.*

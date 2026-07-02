@@ -1,16 +1,13 @@
-# Execution Model — Declared Default
+# Execution Model — Choice: wasm-component-model
 
-> **What this file is.** The concrete, technology-named realization of the execution-model
-> *requirements* the specification states technology-neutrally. The specification says the runnable
-> form of a program is a content-addressed binary component that imports only its declared host
-> operations, runs behind a versioned host interface, executes deterministically, and is bounded by
-> a deterministic resource measure (constitution IV, V, VI; host-interface-binding.md;
-> determinism-and-fuel.md; build-tool-interface.md). It does not name an engine or a format, because
-> a good specification states requirements and does not overprescribe a technology. This file names
-> the default choice that satisfies those requirements.
->
-> This is a **declared default**, not a requirement. Accept it, tune it, or delete `defaults/` to
-> reinvestigate from first principles.
+> **The default choice for the `execution-model` decision** (see [README.md](./README.md) for the
+> decision and the requirements a choice must satisfy). It is the concrete, technology-named
+> realization of the execution-model requirements the specification states technology-neutrally: the
+> runnable form of a program is a content-addressed binary component that imports only its declared
+> host operations, runs behind a versioned host interface, executes with no undeclared
+> nondeterminism, and is bounded by a deterministic resource measure (constitution IV, V, VI;
+> host-interface-binding.md; determinism-and-fuel.md; build-tool-interface.md). It is a declared
+> choice, not a requirement.
 
 ## The requirements this choice must satisfy (from the spec — do not weaken)
 

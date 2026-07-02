@@ -1,15 +1,14 @@
-# Hashing And Encoding — Declared Default
+# Hashing And Encoding — Choice: sha256-deterministic-cbor
 
-> **What this file is.** The concrete hash function and canonical encodings that realize three
-> frozen contracts: the source-tree hashing rule (source-tree-encoding.md), the canonical value
-> byte form (deterministic-value-form.md), and the content addressing that reproducible derivation
-> depends on (reproducible-derivation.md). Those contracts state the *properties*
-> technology-neutrally; this file names the algorithms.
+> **The default choice for the `hashing-and-encoding` decision** (see [README.md](./README.md) for
+> the decision and the requirements a choice must satisfy). It names the concrete hash function and
+> canonical encodings that realize three frozen contracts: the source-tree hashing rule
+> (source-tree-encoding.md), the canonical value byte form (deterministic-value-form.md), and the
+> content addressing that reproducible derivation depends on (reproducible-derivation.md).
 >
-> This is a **declared default** at the ABI/wire level: these choices fix bytes and hashes that
-> identify source and components, so a change to them is a coordinated change under the
-> constitution's Governance Floors, evaluated against already-derived components with a migration
-> path.
+> This is an ABI/wire-level choice: these choices fix bytes and hashes that identify source and
+> components, so a change is a coordinated change under the constitution's Governance Floors,
+> evaluated against already-derived components with a migration path.
 
 ## The default choices
 

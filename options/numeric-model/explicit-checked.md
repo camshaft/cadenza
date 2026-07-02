@@ -1,15 +1,13 @@
-# Numeric Model — Declared Default
+# Numeric Model — Choice: explicit-checked
 
-> **What this file is.** The concrete numeric widths, representations, and modes that realize the
-> numeric *behavior* the specification states technology-neutrally (numeric-model.md capability;
-> deterministic-value-form.md §"Numeric Serialization"; determinism-and-fuel.md §"Floating-Point
-> Emission Is Determinism-Constrained"). The spec fixes that numeric types do not silently promote,
-> that overflow is defined, that exact arithmetic is exact, and that floats are deterministic; this
-> file pins the concrete choices.
+> **The default choice for the `numeric-model` decision** (see [README.md](./README.md) for the
+> decision and the requirements a choice must satisfy). It names the concrete numeric widths,
+> representations, and modes that realize the numeric behavior the specification states
+> technology-neutrally (numeric-model.md capability; deterministic-value-form.md §"Numeric
+> Serialization"; determinism-and-fuel.md §"Floating-Point Emission Is Determinism-Constrained").
 >
-> This is a **declared default**. Because these choices fix bytes that cross the boundary and enter
-> the canonical value form, a change to them is an ABI-level change under the constitution's
-> Governance Floors.
+> Because this choice fixes bytes that cross the boundary and enter the canonical value form, a
+> change to it is an ABI-level change under the constitution's Governance Floors.
 
 ## The default choices
 

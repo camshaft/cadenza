@@ -30,7 +30,7 @@
   (output (: "hello" String)))
 
 (case "a string literal is normalized to the canonical text form"
-  (doc    "Stored in the pinned text normalization form (defaults/hashing-and-encoding.md),
+  (doc    "Stored in the pinned text normalization form (options/hashing-and-encoding/),
            so two literals differing only in normalization are one value.")
   (input  "café")
   (output (: "café" String)))

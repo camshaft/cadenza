@@ -1,15 +1,15 @@
-# Toolchain — Declared Default
+# Toolchain — Choice: pinned-identity
 
-> **What this file is.** The pinned toolchain identity that realizes reproducible-derivation.md's
-> requirement that "the same canonical source with the same pinned toolchain produces a
-> byte-identical component" and that "the compiler records the identity of the toolchain that
-> produced a component alongside that component." This is the pin that makes reproducibility
-> checkable at *both* levels: the compiler reproducing a user's program, and the toolchain
-> reproducing the compiler itself.
+> **The default choice for the `toolchain` decision** (see [README.md](./README.md) for the decision
+> and the requirements a choice must satisfy). It pins the toolchain identity that realizes
+> reproducible-derivation.md's requirement that the same canonical source with the same pinned
+> toolchain produces a byte-identical component, and that the compiler records the identity of the
+> toolchain that produced a component alongside it. It makes reproducibility checkable at both
+> levels: the compiler reproducing a user's program, and the toolchain reproducing the compiler
+> itself.
 >
-> This is a **declared default**. Changing the pinned toolchain in a way that alters the bytes
-> produced from unchanged source is a coordinated change under reproducible-derivation.md §"Toolchain
-> Change Discipline"-style handling.
+> Changing the pinned toolchain in a way that alters the bytes produced from unchanged source is a
+> coordinated change under the constitution's Governance Floors.
 
 ## The two levels this pins
 

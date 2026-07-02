@@ -21,4 +21,4 @@ and is the behavioral oracle a compiled program must agree with; a component may
 embedding that interpreter over source, so a working component exists before ahead-of-time
 compilation is complete; and each generation of the toolchain after the operator-synthesized seed is
 derivable by the one before it, until the compiler is authored in Cadenza. The
-[bootstrap-strategy.md](../../defaults/bootstrap-strategy.md) default pins the staged plan.
+[bootstrap-strategy/](../../options/bootstrap-strategy/) default pins the staged plan.

@@ -32,7 +32,7 @@ source of truth.
    algorithm, a numeric width, a prior prototype, a library, or a source-file path. Describe
    the runnable form as "component", the execution environment as "runtime" / "sandbox", the
    bound on execution as "a deterministic resource measure". A concrete technology choice
-   lives in [defaults/](defaults/) as a declared default, never in a requirement. The only
+   lives in [options/](options/) as a declared-default choice, never in a requirement. The only
    exception is [spec/learnings/](spec/learnings/), whose entries may name prior
    implementations as historical reference.
 
@@ -57,10 +57,13 @@ source of truth.
    in [spec/traceability.md](spec/traceability.md), and every `overview.md` section is served
    by at least one normative section.
 
-7. **Every open point carries a declared default.** When you resolve a specification point a
-   conforming generation could decide more than one way, record the resolution as a declared
-   default in [defaults/](defaults/) with its rationale. This is what lets an autonomous build
-   proceed without halting.
+7. **Every open point is a decision with choices and a declared default.** When you resolve a
+   specification point a conforming generation could decide more than one way, record it as a
+   decision under [options/](options/): a `options/<decision>/` directory whose README states the
+   requirements a choice must satisfy and names the default with a `DEFAULT: <choice>` line, plus one
+   `<choice>.md` per candidate realization. This is what lets an autonomous build apply the default
+   without halting, and lets an attended build surface the choices or accept an operator-authored
+   choice for that one decision.
 
 ## The two gates
 
@@ -100,7 +103,7 @@ duvet report
 ## Authoring order
 
 Author for internal consistency: glossary + constitution together, then `overview.md`, then
-the frozen contracts (ABI first), then the `defaults/` each contract points at, then the
+the frozen contracts (ABI first), then the `options/` decisions each contract points at, then the
 capability specs (core semantics and type system first), then migrate the executable-semantics
 corpus, then `bootstrap.md`, and finally `traceability.md` and the gate wiring. Freeze the
 component ABI and the determinism contracts *before* writing capabilities — a capability

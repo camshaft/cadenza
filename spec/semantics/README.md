@@ -22,7 +22,7 @@ not the full surface parser. This is deliberately the easiest thing to bootstrap
 `NN-feature.sexp` files, one feature per file.
 
 A case is a small fixed test-DSL vocabulary wrapping program fragments that are themselves written in
-Cadenza's **canonical homoiconic representation** (see [`defaults/code-shape.md`](../../defaults/code-shape.md)):
+Cadenza's **canonical homoiconic representation** (see [`options/code-shape/`](../../options/code-shape/)):
 
 ```
 (case "integer addition"
@@ -45,7 +45,7 @@ Cadenza's **canonical homoiconic representation** (see [`defaults/code-shape.md`
 - `(input <program>)` — the program to run, in the canonical representation.
 - `(output <value-form>)` — the exact result its execution must produce.
 - `(error <CODE>)` — for a program that must be rejected at compile time, the expected diagnostic code
-  ([`defaults/diagnostics-schema.md`](../../defaults/diagnostics-schema.md)).
+  ([`options/diagnostics-schema/`](../../options/diagnostics-schema/)).
 - `(trap "<reason>")` — for a program that must halt at runtime (for example, a checked overflow).
 - `(doc "<text>")` — optional prose attached to the case; documentation, never affecting the check.
 

@@ -1,12 +1,12 @@
-# Diagnostics Schema — Declared Default
+# Diagnostics Schema — Choice: coded-span-record
 
-> **What this file is.** The concrete machine-readable diagnostic record that realizes the
-> diagnostics.md capability's requirements that every diagnostic carry a stable code, a precise
-> span, and the rule it enforces. The capability states the properties; this file pins the record
-> shape.
+> **The default choice for the `diagnostics-schema` decision** (see [README.md](./README.md) for the
+> decision and the requirements a choice must satisfy). It pins the concrete machine-readable
+> diagnostic record that realizes the diagnostics.md capability's requirements that every diagnostic
+> carry a stable code, a precise span, and the rule it enforces.
 >
-> This is a **declared default**. Diagnostics are a compile-time and tool-time output, not part of a
-> derived component, so tuning this schema does not alter any component's bytes.
+> Diagnostics are a compile-time and tool-time output, not part of a derived component, so tuning
+> this choice does not alter any component's bytes.
 
 ## The diagnostic record
 

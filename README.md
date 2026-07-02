@@ -55,8 +55,9 @@ constraints this language is designed around.
   every construct *does*, gated by execution.
 - `spec/bootstrap.md` — the seed toolchain and the line of sight to self-hosting.
 - `spec/learnings/` — dated post-mortems that drove this design.
-- `defaults/` — concrete technology choices (component format, engine, hashing, numeric model,
-  code shape) as **declared defaults** — accept, tune, or delete to reinvestigate.
+- `options/` — the open **decisions** (component format, engine, hashing, numeric model, code shape,
+  …), each a directory of candidate **choices** with a **declared default** — accept the default,
+  pick another choice, or author your own for that one decision.
 - `templates/` — authoring templates for contracts, capability specs, learnings, and semantics
   cases.
 - `.duvet/` — the conformance gate: every normative sentence extracted and mapped to the code

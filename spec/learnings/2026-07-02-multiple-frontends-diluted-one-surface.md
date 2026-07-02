@@ -13,7 +13,7 @@ surfaces from. Without a single durable representation as the thing that *is* th
 surface was a parallel definition of the language rather than a view onto one, and there was no
 principled place to add or drop a surface.
 
-**The requirement it drove.** The [`code-shape.md`](../../defaults/code-shape.md) declared default:
+**The requirement it drove.** The [`code-shape`](../../options/code-shape/) declared default:
 one **homoiconic canonical representation** with **display decoupled from representation**. A program
 *is* the representation; a display — conventional for humans, homoiconic for metaprogramming, or any
 other — is a deterministic projection of it, and adding or removing a display touches no contract and
