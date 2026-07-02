@@ -15,8 +15,9 @@
 This capability fixes what makes Cadenza a language an agent can write and read well: that the
 canonical form round-trips byte-for-byte, that a structural interface lets an agent read and rewrite
 a program's canonical representation without textual patching, that a structural edit either yields a
-well-formed program or reports a machine-readable rejection, and that every output of the compiler is
-machine-readable. It states these affordances as obligations, not the interface's concrete surface.
+well-formed program or reports a machine-readable rejection, that documentation is a first-class part
+of the representation, and that every output of the compiler is machine-readable. It states these
+affordances as obligations, not the interface's concrete surface.
 
 ## Canonical Form
 
@@ -39,6 +40,26 @@ A structural query or edit MUST operate without re-parsing code unrelated to its
 A structural edit MUST either yield a well-formed program or report a machine-readable rejection.
 
 A structural edit MUST NOT yield a program that is malformed without reporting why.
+
+## Documentation
+
+### Documentation Is Part Of The Representation
+
+Documentation attached to a definition MUST be carried in the canonical representation rather than discarded as lexical trivia.
+
+Any definition MUST be able to carry documentation, so that every part of a program can be documented.
+
+### Documentation Survives Round-Trip And Edits
+
+Documentation MUST be preserved when a program is formatted to its canonical textual form and parsed back.
+
+A structural edit MUST preserve the documentation attached to a part of the program it does not change.
+
+### Documentation Is Machine-Readable
+
+The compiler MUST expose the documentation attached to a definition in a machine-readable form.
+
+Documentation MUST NOT change the runtime meaning of a program.
 
 ## Machine-Readable Output
 

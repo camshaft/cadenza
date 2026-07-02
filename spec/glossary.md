@@ -20,8 +20,9 @@
   the unit of namespacing and import.
 - **Definition** — a named binding introduced by a module: a value, function, type, or
   capability declaration.
-- **Surface** — the human- and agent-readable textual form of a program: the concrete syntax
-  a person or agent reads and writes.
+- **Documentation** — prose attached to a definition, carried in the canonical representation rather
+  than as discarded lexical trivia; preserved through round-trip and structural edits, exposed
+  machine-readably, and never affecting a program's runtime meaning.
 - **Canonical representation** — the homoiconic, typed, code-as-data structure that is a program's
   durable form: the sole target of structural manipulation, hashing, the executable semantics, and
   verification. Every display is a projection of it.
@@ -131,10 +132,12 @@
 - **Executable semantics** — the single source of truth for what every surface construct does,
   expressed as runnable cases; the compiler and every tool agree with it rather than encoding
   their own behavior.
-- **Semantics corpus** — the collected executable-semantics cases; each case is an input paired
-  with its expected output, and a promoted compiler reproduces every recorded output.
-- **Case** — one executable-semantics entry: a program input and the exact output its execution
-  must produce.
+- **Semantics corpus** — the collected executable-semantics cases, held as s-expression files
+  parseable by a minimal reader; each case pairs an input with its expected result, and a promoted
+  compiler reproduces every recorded result.
+- **Case** — one executable-semantics entry, written as an s-expression in a small test-DSL
+  (`case`/`input`/`output`/`error`/`trap`/`doc`) wrapping a program in the canonical representation,
+  pairing an input with the exact result its execution must produce.
 - **Reference interpreter** — the realization of the executable semantics as a runnable
   interpreter that serves as the behavioral oracle for the language.
 - **Oracle** — the authority against which a compiled program's observable behavior is checked;

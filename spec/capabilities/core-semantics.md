@@ -24,7 +24,7 @@ authoritative and the invariant is corrected to match.
 
 ### Evaluation Is Deferred To The Corpus
 
-The observable behavior of every surface construct MUST match the construct's case in the executable-semantics corpus.
+The observable behavior of every language construct MUST match the construct's case in the executable-semantics corpus.
 
 The compiler MUST NOT implement a construct's behavior in a way that disagrees with the corpus.
 

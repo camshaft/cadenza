@@ -127,7 +127,7 @@ component satisfies every guarantee a fully compiled one does and behaves identi
 
 ## 10. One executable semantics
 
-The behavior of every surface construct is defined by exactly one executable semantics, which is the
+The behavior of every language construct is defined by exactly one executable semantics, which is the
 single source of truth for what a program does. The compiler and every tool agree with that semantics
 rather than each encoding their own, and every conformance test for a construct derives from it. This
 is the structural answer to a language whose meaning had previously been scattered across an

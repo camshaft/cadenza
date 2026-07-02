@@ -85,7 +85,7 @@ The compiler MUST reject a program that states a verification obligation the com
 
 ### IX. Behavior Has One Executable Semantics
 
-The behavior of every surface construct MUST be defined by exactly one executable semantics that is its single source of truth.
+The behavior of every language construct MUST be defined by exactly one executable semantics that is its single source of truth.
 
 A conformance test for a construct MUST be derivable from that executable semantics.
 

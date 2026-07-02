@@ -14,58 +14,63 @@ There is now one place a construct's meaning lives, and it is runnable. The refe
 (see [capabilities/self-hosting-and-bootstrap.md](../capabilities/self-hosting-and-bootstrap.md)) is
 the realization of this corpus and the behavioral oracle; the compiler and every tool agree with it.
 
-## Case format
+## The form: s-expression cases
 
-Each feature is one markdown file. Each case is an **Input** paired with the **Output** its execution
-must produce:
+Each case is an **s-expression**, so the whole corpus is parseable by a minimal reader — the seed
+toolchain needs only an s-expression reader plus the reference interpreter to run the behavior gate,
+not the full surface parser. This is deliberately the easiest thing to bootstrap. Cases live in
+`NN-feature.sexp` files, one feature per file.
 
-````markdown
-### Case: a short description
-
-**Input:**
-
-```cadenza
-<a program in the canonical display>
-```
-
-**Output:**
+A case is a small fixed test-DSL vocabulary wrapping program fragments that are themselves written in
+Cadenza's **canonical homoiconic representation** (see [`defaults/code-shape.md`](../../defaults/code-shape.md)):
 
 ```
-<the exact output its execution produces>
-```
-````
+(case "integer addition"
+  (input  (+ 2 3))
+  (output (: 5 Int64)))
 
-The Input is written in the **canonical display** of the homoiconic representation (see
-[`defaults/code-shape.md`](../../defaults/code-shape.md)). Because display is decoupled from
-representation, a case's meaning is a property of the representation the display denotes, not of the
-display's surface; a build that offers an alternative display renders the same case identically after
-projecting through the representation. A case's Output is the observable result the reference
-interpreter produces, serialized under the canonical value form
-([`contracts/deterministic-value-form.md`](../contracts/deterministic-value-form.md)).
+(case "no implicit promotion between numeric types"
+  (input  (+ 2 2.0))
+  (error  CDZ0301))
+
+(case "a documented case"
+  (doc    "Notes for humans and agents; part of the case, not stripped.")
+  (input  (let ((x 10)) x))
+  (output (: 10 Int64)))
+```
+
+### The test-DSL vocabulary
+
+- `(case "<description>" <clause>...)` — one case; the description is a short human/agent-readable label.
+- `(input <program>)` — the program to run, in the canonical representation.
+- `(output <value-form>)` — the exact result its execution must produce.
+- `(error <CODE>)` — for a program that must be rejected at compile time, the expected diagnostic code
+  ([`defaults/diagnostics-schema.md`](../../defaults/diagnostics-schema.md)).
+- `(trap "<reason>")` — for a program that must halt at runtime (for example, a checked overflow).
+- `(doc "<text>")` — optional prose attached to the case; documentation, never affecting the check.
+
+The result value form is `(: <value> <Type>)` — a value paired with its type — serialized under the
+canonical value form ([`contracts/deterministic-value-form.md`](../contracts/deterministic-value-form.md)),
+so a case's expected output is byte-exact.
 
 ## Authoring rules
 
 - **A case is executable.** Every case must be runnable by the reference interpreter and produce a
-  definite output; a case with no definite output is not a case.
+  definite `output`, `error`, or `trap`; a case with no definite result is not a case.
 - **A case covers one behavior.** Prefer many small cases over one large program, so a behavior-gate
   failure names the construct that broke.
 - **The corpus is complete per capability.** Every behavioral requirement in a capability spec is
-  witnessed by at least one case here, so that the behavior gate exercises what the requirement gate
-  cites.
+  witnessed by at least one case here, so the behavior gate exercises what the requirement gate cites.
 - **Determinism is part of the check.** A case's output is byte-exact; a construct whose output could
   vary is either given a deterministic specification or is not admitted.
 
 ## Files
 
-The corpus is organized by feature, numbered for a natural reading order. It is migrated and
-re-derived from the executable specification of earlier Cadenza generations against the canonical
-representation this specification defines; the numbering below grows as capabilities are specified.
+The corpus is organized by feature, numbered for a natural reading order. It grows as capabilities are
+specified.
 
-- `01-literals.md` — literals and their types
-- `02-binding-and-scope.md` — binding, lexical scope, shadowing
-- `03-functions.md` — definition, application, closures
-- `04-pattern-matching.md` — matching, exhaustiveness, bindings
-- `05-compound-types.md` — records, tuples, sums, lists
-- `06-numeric-model.md` — exactness, conversions, overflow, no implicit promotion
-- `07-capabilities.md` — capability declaration and rejection of undeclared reach
-- `08-verification.md` — contracts and refinements as an opt-in layer
+- `01-literals.sexp` — literals and their types
+- `06-numeric-model.sexp` — exactness, conversions, overflow, no implicit promotion
+
+Planned as the capabilities they witness are filled in: binding and scope, functions and closures,
+pattern matching, compound types, capabilities, documentation, verification.
