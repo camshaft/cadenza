@@ -28,6 +28,7 @@
 | `spec/capabilities/modules-and-namespaces.md` | §2, §7 |
 | `spec/capabilities/metaprogramming.md` | §3, §13 |
 | `spec/capabilities/self-hosting-and-bootstrap.md` | §10, §11, §15 |
+| `spec/capabilities/bootstrap-interpreter.md` | §10, §11, §15 |
 | `spec/capabilities/verification-layers.md` | §12 |
 | `spec/capabilities/property-based-testing.md` | §12 |
 | `spec/capabilities/diagnostics.md` | §13 |
@@ -52,10 +53,10 @@
 | §7 Derivation and reproducibility | source-tree-encoding.md; reproducible-derivation.md; build-tool-interface.md; modules-and-namespaces.md; compiler-pipeline.md |
 | §8 The component boundary | component-abi.md; host-interface-binding.md |
 | §9 Cadenza as a replaceable build tool | build-tool-interface.md |
-| §10 One executable semantics | constitution.md; core-semantics.md; self-hosting-and-bootstrap.md; compiler-pipeline.md; tooling-and-lsp.md |
-| §11 The reference interpreter as oracle | constitution.md; core-semantics.md; self-hosting-and-bootstrap.md; bootstrap.md |
+| §10 One executable semantics | constitution.md; core-semantics.md; self-hosting-and-bootstrap.md; bootstrap-interpreter.md; compiler-pipeline.md; tooling-and-lsp.md |
+| §11 The reference interpreter as oracle | constitution.md; core-semantics.md; self-hosting-and-bootstrap.md; bootstrap-interpreter.md; bootstrap.md |
 | §12 Progressive verification | constitution.md; capabilities-and-effects.md; verification-layers.md; property-based-testing.md; units-of-measure.md |
 | §13 Authored for agents | constitution.md; metaprogramming.md; diagnostics.md; tooling-and-lsp.md; agent-authoring.md |
 | §14 Conformance by two gates | constitution.md; compiler-pipeline.md; conformance-gate.md |
-| §15 Self-regeneration: the flywheel | constitution.md; self-hosting-and-bootstrap.md; bootstrap.md; build-modes.md |
+| §15 Self-regeneration: the flywheel | constitution.md; self-hosting-and-bootstrap.md; bootstrap-interpreter.md; bootstrap.md; build-modes.md |
 | §16 What earlier generations taught | (descriptive; served by `spec/learnings/`) |

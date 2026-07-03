@@ -114,6 +114,10 @@ source = "spec/capabilities/self-hosting-and-bootstrap.md"
 format = "markdown"
 
 [[specification]]
+source = "spec/capabilities/bootstrap-interpreter.md"
+format = "markdown"
+
+[[specification]]
 source = "spec/capabilities/verification-layers.md"
 format = "markdown"
 

@@ -27,20 +27,20 @@
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact (2nd sentence): the conversion
            Float64.of-int is written explicitly. Needs the numeric-model capability (conversions +
            float arithmetic), which the seed does not realize.")
-  (needs  numeric-model)
+  (needs numeric-model)
   (input  (+ (Float64.of-int 1) 2.0))
   (output (: 3.0 Float64)))
 
 (case "wrapping arithmetic uses the distinct wrapping type"
   (doc    "Witnesses numeric-model.md #Overflow Is Defined via the distinct wrapping type.")
-  (needs  numeric-model)
+  (needs numeric-model)
   (input  (+% Wrapping64.max 1))
   (output (: -9223372036854775808 Wrapping64)))
 
 (case "exact rational arithmetic is exact and normalized"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact; reduced to lowest terms per
            options/numeric-model/. The output is the canonical rational value form 1/2.")
-  (needs  numeric-model)
+  (needs numeric-model)
   (input  (+ (Rational.of 1 3) (Rational.of 1 6)))
   (output (: 1/2 Rational)))
 
@@ -48,6 +48,6 @@
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode
            (contracts/determinism-and-fuel.md); byte-identical on every conforming runtime. The seed
            realizes Float64 literals and equality, not floating-point arithmetic.")
-  (needs  numeric-model)
+  (needs numeric-model)
   (input  (+ 0.1 0.2))
   (output (: 0.30000000000000004 Float64)))

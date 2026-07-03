@@ -57,6 +57,8 @@ any future generation.
 | [`bootstrap-strategy`](./bootstrap-strategy/) | rust-seed-interpreted-first | bootstrap.md; self-hosting-and-bootstrap.md |
 | [`structural-interface`](./structural-interface/) | content-addressed-nodes | agent-authoring.md |
 | [`gate-non-load-bearing`](./gate-non-load-bearing/) | change-process-and-excluded | conformance-gate.md |
+| [`realized-capability-set`](./realized-capability-set/) | seed-ignition-set | conformance-gate.md; self-hosting-and-bootstrap.md |
+| [`bootstrap-interpreter-surface`](./bootstrap-interpreter-surface/) | minimal-reflective-surface | bootstrap-interpreter.md; self-hosting-and-bootstrap.md |
 
 ## Change discipline
 

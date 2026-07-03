@@ -40,6 +40,11 @@
 - **Textual syntax** — a parser that converts text to the binary AST and a printer that converts the
   binary AST to text; more than one may exist, none is the stored form, and moving between them never
   changes the program.
+- **Reader** — the parser half of a textual syntax: a function that converts the text of a program to
+  its canonical representation; kept out of the compiler's trusted derivation path.
+- **Printer** — the inverse of the reader: a function that renders a program's canonical
+  representation as text that the reader converts back to the same canonical representation, so that
+  reader and printer round-trip.
 - **Display** — a textual syntax used for reading or writing; a rendering of the canonical
   representation, not the program's identity.
 - **Homoiconicity** — the property that a program is itself a value of the uniform data structure the

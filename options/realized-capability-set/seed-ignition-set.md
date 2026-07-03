@@ -71,6 +71,10 @@ realizes them and adds their witnessing cases:
 - **effect-tracking** (the optional layer of capabilities-and-effects), **verification-layers**,
   **property-based-testing**, **units-of-measure** — optional capabilities, included by default,
   realized later.
+- **bootstrap-interpreter** — the reader/printer and the interpreter authored *in Cadenza*
+  (bootstrap-interpreter.md). The seed is the foreign-language interpreter; the Cadenza-authored one
+  is a later rung (`spec/capabilities/self-hosting-and-bootstrap.md` §"The Interpreter Is Proven As A
+  Component Before It Is Iterated On"). Corpus cases carry `(needs bootstrap-interpreter)`.
 - **metaprogramming** (macros), **modules-and-namespaces** beyond a single module, the
   **memory-and-resource-model** surface, the full **diagnostics** tooling beyond coded rejections,
   **tooling-and-lsp**, and **agent-authoring** beyond direct binary-AST read/construct.

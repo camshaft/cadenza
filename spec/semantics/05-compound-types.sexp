@@ -32,20 +32,20 @@
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
            Needs the primitive collections the seed realizes to build an AST (list/map/record).")
-  (needs  collections)
+  (needs collections)
   (input  (= (list 1 2 3) (list 1 2 3)))
   (output (: true Bool)))
 
 (case "indexing a list out of bounds traps"
   (doc    "Witnesses collections-and-text.md #List Operations Are Total Or Trap. The seed traps at
            runtime — a total-or-trap operation, not a static check.")
-  (needs  collections)
+  (needs collections)
   (input  (List.at (list 1 2 3) 5))
   (trap   "list index out of bounds"))
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
-  (needs  collections)
+  (needs collections)
   (input  (= (map (a 1) (b 2)) (map (b 2) (a 1))))
   (output (: true Bool)))
 
