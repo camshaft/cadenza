@@ -4,7 +4,7 @@
 > for the decision and the requirements a choice must satisfy). It pins the smallest concrete surface
 > that lets the reference interpreter be authored in Cadenza as a dynamic tree-walker, per the
 > reference-interpreter bootstrap model (constitution IX/XIV; NOT compiler-first — see
-> `spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md`).
+> `spec/learnings/2026-07-02-interpreter-first-not-compiler-first.md`).
 
 ## The insight: a meta-circular interpreter reuses the language, it does not reimplement it
 

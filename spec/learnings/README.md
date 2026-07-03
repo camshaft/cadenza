@@ -35,3 +35,7 @@ generations of Cadenza taught these lessons the expensive way; the specification
   interpreted derivation embeds the interpreter *component* over the program's AST (so the component
   actually interprets, not replays a transcript); the host providing capability functions is a
   separate minimal artifact. Avoids the modeled-derivation trap.
+- [Bootstrap is interpreter-first, not compiler-first](./2026-07-02-interpreter-first-not-compiler-first.md)
+  — why a compiler-first self-hosting proposal was considered and rejected (it has no behavioral
+  oracle and revives the meaning-in-the-compiler failure), while its compatible ideas were adopted;
+  switching would be a deliberate constitution IX/XIV amendment.
