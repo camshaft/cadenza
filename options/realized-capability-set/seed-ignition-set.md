@@ -22,9 +22,12 @@ The seed is a **dynamic tree-walking interpreter** (constitution §VII bootstrap
 `spec/learnings/2026-07-02-seed-is-a-dynamic-interpreter.md`). It realizes exactly the capabilities its
 reference interpreter must evaluate to reproduce the seed corpus and clear the ignition bar:
 
-- **core-semantics** — evaluation, lexical binding, scope, shadowing, conditionals, runtime pattern
+- **core-semantics** — evaluation, lexical binding, scope, shadowing, **first-class functions and
+  closures** (function values that capture their scope, application, higher-order use, recursion
+  bounded by the resource measure — core-semantics.md §Functions), conditionals, runtime pattern
   matching, traps, terminal conditions, structural equality, ordering, and the observable-behavior
-  projection (including emitted events and resource-measure exhaustion).
+  projection (including emitted events and resource-measure exhaustion). Functions are realized by the
+  seed because the first Cadenza artifact is a **compiler**, which is not expressible without them.
 - **capabilities-and-effects** — the **mandatory capability-declaration floor** only (declare, reach,
   reject-undeclared at compile time, manifest-union). This is the one static rejection the seed
   performs, because it is what makes a derived component *safe* — capability-safety is a

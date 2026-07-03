@@ -73,7 +73,7 @@ Two abstract syntax trees that reference the same set of symbols MUST produce id
 
 ### The Tree Carries Comments And Documentation
 
-The abstract syntax tree MUST be able to carry a comment attached to the node it annotates.
+The abstract syntax tree MUST be able to carry a comment as a node of the tree, attached to the node it annotates, so that a comment is preserved in the stored binary form rather than only in a textual rendering.
 
 The abstract syntax tree MUST be able to carry documentation attached to a definition, as required by the agent-authoring capability.
 

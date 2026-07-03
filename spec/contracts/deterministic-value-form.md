@@ -36,6 +36,12 @@ The canonical encoding of an unordered aggregate MUST place its members in a fix
 
 The canonical encoding of an ordered aggregate MUST preserve its element order.
 
+### The Unit Value Has A Canonical Byte Form
+
+The unit value MUST have exactly one canonical byte encoding, so that a program that produces no value other than its emitted events has a serializable normal-termination value.
+
+The canonical byte encoding of the unit value MUST be distinct from that of every other value, consistent with structural equality treating the unit value as equal only to itself.
+
 ## Numeric Serialization
 
 ### Numeric Values Serialize Deterministically

@@ -1,9 +1,9 @@
 # Capability — Bootstrap Interpreter
 
 > **CAPABILITY SPECIFICATION.** Behavior and invariants, free of implementation detail. This
-> document defines what the reference interpreter is as an artifact and what the language must expose
-> so that the reference interpreter can itself be authored in Cadenza — the rung from the
-> operator-synthesized seed to a Cadenza-authored interpreter (`spec/bootstrap.md`,
+> document defines what the reference interpreter is as an artifact and the **self-hosting surface**:
+> what the language must expose so that a Cadenza toolchain — the compiler the bootstrap targets — can
+> be authored in Cadenza and walk a program as data (`spec/bootstrap.md`,
 > `spec/capabilities/self-hosting-and-bootstrap.md`). Requirements realize
 > [Core Principle IX](../../constitution.md), [Core Principle X](../../constitution.md), and
 > [Core Principle XIV](../../constitution.md) and trace to [overview §10](../overview.md),
@@ -16,15 +16,16 @@
 ## Purpose And Scope
 
 The single executable semantics is realized as a reference interpreter that is the behavioral oracle
-(self-hosting-and-bootstrap.md), and that interpreter must eventually be authored in Cadenza so the
-semantics is a Cadenza artifact the flywheel improves (bootstrap.md §"The Interpreter Realizes The One
-Semantics"). This capability fixes the shape that makes that possible: the interpreter is a pure
-function from a program's canonical representation to its observable behavior; the language exposes its
-own abstract syntax as ordinary values so an interpreter can walk it; a program in canonical
-representation is reachable from text by a reader and rendered by a printer that round-trip; and the
-observable behavior the interpreter computes crosses the component boundary as bytes, not as
-interpreter-internal values. It states these invariants; the concrete primitive set the interpreter
-needs, the reader/printer, and how a derived component embeds the interpreter are declared defaults.
+(self-hosting-and-bootstrap.md). The bootstrap targets a Cadenza-authored **compiler** as its first
+Cadenza artifact — not a Cadenza-authored interpreter — so this capability fixes the surface a toolchain
+that walks a program as data needs, whether that toolchain interprets or compiles: the reference
+interpreter is a pure function from a program's canonical representation to its observable behavior; the
+language exposes its own abstract syntax as ordinary values so a toolchain authored in it can walk a
+program; a program in canonical representation is reachable from text by a reader and rendered by a
+printer that round-trip; and the observable behavior the interpreter computes crosses the component
+boundary as bytes, not as interpreter-internal values. It states these invariants; the concrete
+primitive set, the reader/printer, and how a derived component embeds the interpreter are declared
+defaults.
 
 ## The Interpreter Is A Pure Function To Observable Behavior
 

@@ -110,11 +110,14 @@ them under `implementation/spikes/`).
    This proves the quoted-text identity model works for the chosen language.
 2. **Reproducible derivation spike (the ignition bar in miniature).** Take a trivial Cadenza program
    as a binary AST (per `spec/contracts/ast-encoding.md` and `options/ast-encoding/`), derive it to a
-   WebAssembly component via interpreted derivation (embed the reference interpreter over the AST, per
-   `spec/contracts/build-tool-interface.md` §"Derivation By Embedding The Reference Interpreter"),
-   confirm the component's imports mirror its manifest, run it and observe its output, then re-derive
-   and confirm byte-identical output. This proves the source→component→run path is real and
-   reproducible.
+   component by compiled codegen — the seed's derivation mode (`options/bootstrap-strategy/`): the
+   compiler generates a core module and wraps it into a real component whose interface world declares
+   exactly the program's manifest, per `spec/bootstrap.md` §"Compiled Derivation Produces The
+   Component And Agrees With The Oracle" — confirm the component's imports mirror its manifest, run it
+   and observe its output, confirm the output agrees with the native reference interpreter (the
+   oracle) over the same input, then re-derive and confirm byte-identical output. This proves the
+   source→component→run path is real and reproducible. (Interpreted derivation — embedding the
+   interpreter over the AST — is the optional/later mode, not what the seed spikes.)
 
 If either spike fails: in **attended** mode, stop and report — the failing assumption must be resolved
 (a `learn` entry and a spec change) before the toolchain is worth building, then restart. In
@@ -129,10 +132,12 @@ Follow `commands/ignite.md` exactly. In summary:
 1. Run `setup-gate` for the chosen host language so the gate's `[[source]]` half points at
    `implementation/` and uses the language's citation comment style.
 2. Synthesize the seed compiler source into `implementation/`: a reader for the binary AST and its
-   symbol prelude; the reference interpreter that realizes the executable-semantics corpus and is the
-   behavioral oracle; interpreted derivation that emits a component embedding the interpreter over a
-   program's AST, with imports that mirror the program's manifest; and the machine-readable
-   diagnostics. Cite every frozen-contract and ignition-subset requirement you satisfy.
+   symbol prelude; the native reference interpreter that realizes the executable-semantics corpus and
+   is the behavioral oracle; compiled derivation (the seed's mode, `options/bootstrap-strategy/`) that
+   generates a component — a core module wrapped into a real component whose interface world declares
+   exactly the program's manifest, so its imports mirror the manifest natively — whose observable
+   behavior agrees with the oracle; and the machine-readable diagnostics. Cite every frozen-contract
+   and ignition-subset requirement you satisfy.
 3. Gate against the ignition subset: `duvet report --config-path .duvet/bootstrap.toml`, iterating
    until every MUST/SHALL in the subset is covered and there are zero broken citations. Coverage must
    be *honest*, per `conformance-gate.md` §"A Citation Discharges Its Own Requirement": each citation

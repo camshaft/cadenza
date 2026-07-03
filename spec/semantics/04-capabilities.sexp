@@ -6,11 +6,14 @@
 (case "a declared capability lets a program reach its host operation"
   (doc    "Witnesses capabilities-and-effects.md #Capabilities Are Declared Up Front: main reaches
            emit-event, and the module declares (capability emit-event), so the operation is bound
-           (host-interface-binding.md #Imports Mirror The Manifest Exactly) and the run emits.")
+           (host-interface-binding.md #Imports Mirror The Manifest Exactly) and the run emits, then
+           terminates normally with the unit value (core-semantics.md #An Effect-Only Expression
+           Yields The Unit Value). The (output …) clause pins the terminal condition.")
   (input  (module m
             (use (capability emit-event))
             (def (main)
               (emit-event "k" "v"))))
+  (output (: unit Unit))
   (events (event "k" (: "v" String))))
 
 (case "reaching an undeclared host operation is rejected at compile time"
@@ -26,9 +29,12 @@
 (case "the program manifest is the union of its modules' declared capabilities"
   (doc    "Witnesses capabilities-and-effects.md #The Program Manifest Is The Union Of Its Modules:
            main reaches emit-event, declared in this module, so the manifest grants it and the run
-           emits — the union includes each module's declaration.")
+           emits — the union includes each module's declaration — then terminates normally with the
+           unit value (core-semantics.md #An Effect-Only Expression Yields The Unit Value). The
+           (output …) clause pins the terminal condition.")
   (input  (module m
             (use (capability emit-event))
             (def (main)
               (emit-event "ready" "1"))))
+  (output (: unit Unit))
   (events (event "ready" (: "1" String))))

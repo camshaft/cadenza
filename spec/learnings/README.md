@@ -39,3 +39,18 @@ generations of Cadenza taught these lessons the expensive way; the specification
   — why a compiler-first self-hosting proposal was considered and rejected (it has no behavioral
   oracle and revives the meaning-in-the-compiler failure), while its compatible ideas were adopted;
   switching would be a deliberate constitution IX/XIV amendment.
+- [An effect-only program had no normal-termination value](./2026-07-02-effect-only-programs-need-a-unit-value.md)
+  — why a Unit value was pinned (additively) so event-emitting programs carry a definite terminal
+  condition; surfaced by four corpus cases that had only an `(events …)` observation and no primary
+  result clause.
+- [Real components, not a bespoke module model](./2026-07-03-real-components-not-a-bespoke-module-model.md)
+  — why the bootstrap uses real WebAssembly components (`wit-bindgen` core module → `wasm-tools
+  component new`) rather than a hand-managed `wasm32-unknown-unknown` core module with an AST slot and
+  trimmed imports; the WIT world makes "imports mirror the manifest" hold natively, which reverted the
+  short-lived 0.3.0 import amendment. Includes the offline de-risk-spike findings.
+- [The seed needs first-class functions](./2026-07-03-the-seed-needs-first-class-functions.md) — why the
+  seed realizes functions and closures (core-semantics.md §Functions): the first Cadenza artifact is a
+  compiler, which is not expressible without them.
+- [Bootstrap targets the compiler directly](./2026-07-03-bootstrap-targets-the-compiler-directly.md) —
+  why the staged path collapsed to seed interpreter → Cadenza compiler → self-hosting, dropping the
+  re-author-the-interpreter-in-Cadenza rung; the reference interpreter stays the oracle, so IX/XIV hold.

@@ -2,6 +2,19 @@
 
 *2026-07-02*
 
+> **Annotation (2026-07-03) — the derivation *mechanism* changed; the de-risked findings still hold.**
+> Spike 2 below embedded a tiny interpreter over an AST into a wasm artifact (interpreted derivation).
+> The seed no longer derives that way: the seed reference interpreter is a **native** program (the
+> oracle) and derivation is the **compiler's codegen** to a real component, checked against the oracle
+> ([bootstrap targets the compiler directly](./2026-07-03-bootstrap-targets-the-compiler-directly.md);
+> [real components, not a bespoke module model](./2026-07-03-real-components-not-a-bespoke-module-model.md)).
+> The findings that carry forward regardless: **duvet exits 0 even when citations fail** (parse its
+> output/JSON, do not trust `$?`); **an embeddable wasm runtime + the component model are available in
+> this environment**; and **reproducible derivation is immediate when codegen order is
+> source-determined**. The specific "embed a tiny interpreter and re-derive byte-identically" mechanic
+> is superseded for the seed by "generate a component and re-generate byte-identically," re-de-risked by
+> the real-component spike in the 2026-07-03 learning.
+
 **What happened.** Before synthesizing the Rust seed, two throwaway spikes de-risked the load-bearing
 assumptions the whole toolchain rests on (build.md Phase 2). Both passed, and their findings are
 recorded here so a later build inherits the resolved assumptions instead of re-running the spikes.

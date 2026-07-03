@@ -47,6 +47,7 @@ any future generation.
 
 | Decision | Default choice | Realizes requirements in |
 |---|---|---|
+| [`ast-encoding`](./ast-encoding/) | binary-sexpr | ast-encoding.md; source-tree-encoding.md |
 | [`execution-model`](./execution-model/) | wasm-component-model | host-interface-binding.md; determinism-and-fuel.md; build-tool-interface.md |
 | [`code-shape`](./code-shape/) | homoiconic-decoupled-display | constitution X; core-semantics.md; agent-authoring.md |
 | [`numeric-model`](./numeric-model/) | explicit-checked | numeric-model.md; deterministic-value-form.md |

@@ -14,8 +14,11 @@ build-tool-interface.md §Derivation By Embedding The Reference Interpreter).
 
 ## Choices
 
-- [`rust-seed-interpreted-first`](./rust-seed-interpreted-first.md) — a Rust seed compiler,
-  interpreted derivation as the initial default with ahead-of-time compilation as maturation, and the
-  four-stage plan to self-hosting. **The default.**
+- [`rust-seed-interpreted-first`](./rust-seed-interpreted-first.md) — a **native Rust** seed reference
+  interpreter (the oracle) that runs the Cadenza compiler's source; the compiler's codegen generates
+  real components (compiled derivation), checked against the oracle; interpreted derivation retained as
+  an optional/later mode; and the short plan to self-hosting (seed interpreter → Cadenza compiler →
+  self-host). **The default.** (The slug's "interpreted-first" is historical — see the choice file's
+  naming note.)
 
 DEFAULT: rust-seed-interpreted-first

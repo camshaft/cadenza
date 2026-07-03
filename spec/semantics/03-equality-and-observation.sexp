@@ -29,21 +29,28 @@
 (case "a program that emits an event has that event in its observable behavior"
   (doc    "Witnesses core-semantics.md #Emitted Events Are Ordered And Part Of Observable Behavior.
            The module declares the emit-event capability, so the emit-event host operation is bound
-           (host-interface-binding.md); the run emits one event and returns.")
+           (host-interface-binding.md); the run emits one event and returns the unit value — the
+           normal-termination value of an effect-only program (core-semantics.md #An Effect-Only
+           Expression Yields The Unit Value). The (output …) primary clause pins the terminal
+           condition; the (events …) observation pins the emitted sequence.")
   (input  (module m
             (use (capability emit-event))
             (def (main)
               (emit-event "greeting" "hello"))))
+  (output (: unit Unit))
   (events (event "greeting" (: "hello" String))))
 
 (case "emitted events are observed in the order they were emitted"
   (doc    "Witnesses core-semantics.md #Emitted Events Are Ordered And Part Of Observable Behavior:
-           the sequence is observed in emission order.")
+           the sequence is observed in emission order. The run terminates normally with the unit
+           value (core-semantics.md #An Effect-Only Expression Yields The Unit Value); the (output …)
+           clause pins that terminal condition and the (events …) observation pins the order.")
   (input  (module m
             (use (capability emit-event))
             (def (main)
               (let ((_ (emit-event "step" "first")))
                 (emit-event "step" "second")))))
+  (output (: unit Unit))
   (events (event "step" (: "first" String))
           (event "step" (: "second" String))))
 

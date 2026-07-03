@@ -66,6 +66,25 @@ manifest. A system may, for example, bind a log-folding component none of the op
 introduce nondeterminism and let it read only its granted projections — but that restriction is the
 system's policy over the manifest, not a rule the compiler enforces.
 
+### Derivation produces a real component whose world matches the manifest
+
+Derivation produces a **real WebAssembly component** (not a bespoke core module): the compiler's codegen
+emits a core module and wraps it (e.g. via `wasm-tools component new`) into a component whose WIT world
+declares exactly the host operations the program's manifest grants. A program that declares `emit-event`
+yields a component whose world imports `emit-event`; a program that declares no capability yields a world
+with no import. So "imports mirror the manifest exactly" (host-interface-binding.md) holds **natively** —
+the world *is* the import set — with no per-program import surgery
+(spec/learnings/2026-07-03-real-components-not-a-bespoke-module-model.md).
+
+The **seed reference interpreter is a native program, not a component** — its role is to be the oracle
+and to run the Cadenza compiler's source, so the seed's derivation mode is compiled codegen, not
+embedding the interpreter (spec/learnings/2026-07-03-bootstrap-targets-the-compiler-directly.md). Where a
+generation *does* offer **interpreted derivation** as an optional mode, the same packaging applies with
+the program's canonical AST embedded as component data the interpreter reads at run time, and the
+interpreter code is identical across derived programs, so behavior comes from the embedded AST rather
+than derivation-emitted per-program logic
+(spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md).
+
 ## Component entry shapes (per program shape)
 
 A component exports a defined entry (component-abi.md §"The Component Entry"); its concrete signature

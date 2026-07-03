@@ -15,12 +15,16 @@
 
 ## The Line Of Sight
 
-The path from this specification to a Cadenza that builds itself is: a seed compiler in a foreign
-language derives the first Cadenza toolchain to a component; the reference interpreter is authored in
-Cadenza and derived by that seed, becoming the executable semantics' realization and the behavioral
-oracle; agents extend the Cadenza source of the language and compiler, each generation derived by the
-one before it and passed through both gates; and self-hosting is reached when the compiler is itself
-authored in Cadenza. The concrete realization of each step is the declared bootstrap-strategy default.
+The path from this specification to a Cadenza that builds itself is direct: a reference interpreter in
+a foreign language realizes the executable semantics and is the behavioral oracle; that interpreter
+derives a component from Cadenza source by embedding itself over the source, and the first Cadenza
+source it derives is the Cadenza-authored compiler; agents extend the Cadenza source of the language
+and its compiler, each generation derived by the one before it and passed through both gates; and
+self-hosting is reached when the Cadenza compiler is itself derived by the previous Cadenza compiler,
+with the foreign-language interpreter no longer on the critical path. The reference interpreter is the
+one foreign-language artifact; the compiler is the first Cadenza artifact, authored directly rather
+than by way of a Cadenza-authored interpreter. The concrete realization of each step is the declared
+bootstrap-strategy default.
 
 ## The Human-Versus-Toolchain Seam
 
@@ -42,7 +46,7 @@ The seed toolchain MUST NOT be required to compile itself, so that the regress o
 
 The reference interpreter MUST implement exactly the behavior the executable-semantics corpus records.
 
-The reference interpreter MUST be authored in Cadenza once the seed toolchain can derive it, so that the single semantics is a Cadenza artifact rather than foreign-language prose.
+The reference interpreter MAY remain authored in the foreign seed language, because the first Cadenza artifact the bootstrap targets is the compiler rather than a Cadenza-authored interpreter.
 
 ### Compiled Output Agrees With The Interpreter
 
@@ -50,15 +54,23 @@ An ignition MUST demonstrate that the compiled output of a program exhibits the 
 
 ## Derivation Modes At Bootstrap
 
-### Interpreted Derivation Is Available First
+### The Seed Reference Interpreter Is Native And Is The Oracle
 
-The toolchain MUST be able to derive a working component by embedding the reference interpreter over a program's canonical source before ahead-of-time compilation is complete.
+The seed reference interpreter MAY be a native program of the foreign seed language rather than a component, because its role is to define behavior and to run the Cadenza source of the first compiler, not to be a derived artifact itself.
 
-A component derived by embedding the reference interpreter MUST satisfy every guarantee a compiled component satisfies.
+The seed reference interpreter MUST be the behavioral oracle against which a derived component's observable behavior is judged.
 
-### Compiled Derivation Is An Oracle-Checked Optimization
+### Compiled Derivation Produces The Component And Agrees With The Oracle
 
-Ahead-of-time compilation MUST agree with the reference interpreter on every executable-semantics case before a generation using it is promoted.
+The toolchain MUST be able to derive a working component from a program's canonical source by generating the component, so that a runnable component exists without requiring the reference interpreter to be embedded in it.
+
+A component the toolchain derives MUST exhibit the same observable behavior as the reference interpreter over the same input, on every executable-semantics case the generation realizes, before that generation is promoted.
+
+### Interpreted Derivation Is An Optional Mode
+
+The toolchain MAY additionally derive a component by embedding the reference interpreter over a program's canonical source, as an alternative to generating the component.
+
+A component derived by embedding the reference interpreter MUST satisfy every guarantee a generated component satisfies.
 
 ## The Ignition Bar
 

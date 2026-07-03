@@ -144,7 +144,8 @@ behavioral oracle: a compiled program's observable behavior must agree with the 
 over the same input. This makes "one executable semantics" a shippable artifact rather than only
 prose, and it turns ahead-of-time compilation into an optimization that must match the oracle rather
 than a second, independent definition of the language. It is also the seam through which the language
-reaches self-hosting: the interpreter is authored in Cadenza and derived by the compiler that came
+reaches self-hosting: the interpreter, authored once in a foreign seed language, derives the first
+Cadenza-authored compiler directly, and each later generation of the compiler is derived by the one
 before it.
 
 ## 12. Progressive verification

@@ -2,6 +2,17 @@
 
 *2026-07-02*
 
+> **Annotation (2026-07-03) — scope narrowed to the optional interpreted-derivation mode.** The seed no
+> longer uses interpreted derivation: the seed reference interpreter is a **native** program (the
+> oracle) and the seed's derivation mode is **compiled** — the Cadenza compiler's codegen generates the
+> component ([bootstrap targets the compiler directly](./2026-07-03-bootstrap-targets-the-compiler-directly.md)).
+> This learning still holds **wherever a generation offers interpreted derivation** (an optional mode,
+> bootstrap.md §"Interpreted Derivation Is An Optional Mode"): if the interpreter is embedded, it must
+> genuinely interpret the embedded AST at run time rather than replay a precomputed transcript, and the
+> host remains a separate artifact. What the seed relies on instead — that behavior comes from the one
+> semantics, not from program-specific emitted code — is now enforced by ordinary oracle agreement: the
+> compiler's generated component must match the native reference interpreter on every realized case.
+
 **What happened.** The first cut of the seed's interpreted derivation took a shortcut: it ran the
 reference interpreter *in the host (Rust) at derivation time*, computed the program's observable
 behavior, and emitted a WebAssembly module that merely **replayed** the pre-computed events through

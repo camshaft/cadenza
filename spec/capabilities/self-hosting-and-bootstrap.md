@@ -37,43 +37,45 @@ A generation whose compiled output disagrees with the reference interpreter on a
 
 ## Derivation Modes
 
-### Two Modes Produce One Behavior
+### A Derived Component Agrees With The Oracle
 
-A component derived by embedding the reference interpreter and a component derived by ahead-of-time compilation MUST exhibit the same observable behavior for the same program.
+A component the toolchain derives MUST exhibit, for a given program, the same observable behavior as the reference interpreter over the same input.
 
-Ahead-of-time compilation MUST be treated as an optimization over interpreted derivation that agrees with the oracle, not as a second definition of the language.
+Generating a component MUST be treated as producing the runnable form of the program under the one semantics, not as a second definition of the language.
 
-### Interpreted Derivation Satisfies Every Guarantee
+### An Offered Interpreted Derivation Agrees With A Generated One
 
-A component derived by embedding the reference interpreter MUST satisfy the determinism, capability-binding, bounded-termination, and reproducibility guarantees identically to a compiled component.
+When a generation offers interpreted derivation in addition to generating components, a component derived by embedding the reference interpreter and a component derived by generation MUST exhibit the same observable behavior for the same program.
 
-### The Compiled Path Is Exercised Before It Is Trusted
+A component derived by embedding the reference interpreter MUST satisfy the determinism, capability-binding, bounded-termination, and reproducibility guarantees identically to a generated component.
 
-Ahead-of-time compilation MUST be exercised against the oracle on a real derived-and-run component before a generation relies on it, so that the compiled path is proven to materialize rather than deferred indefinitely.
+### The Generated Path Is Exercised Before It Is Trusted
+
+Component generation MUST be exercised against the oracle on a real derived-and-run component before a generation relies on it, so that the generated path is proven to materialize rather than deferred indefinitely.
 
 ## The Staged Path
 
-### The Seed Compiler Is The One Step Outside The Loop
+### The Seed Interpreter Is The One Step Outside The Loop
 
-The first Cadenza toolchain MAY be authored in a foreign language because no Cadenza toolchain yet exists to derive it.
+The seed reference interpreter MAY be authored in a foreign language because no Cadenza toolchain yet exists to derive it.
 
-The seed compiler MUST derive a component that satisfies the same guarantees as any later generation's output.
+The seed reference interpreter MUST derive a component that satisfies the same guarantees as any later generation's output.
 
 ### Each Generation Is Derived By The Previous
 
 Each generation of the toolchain after the seed MUST be derivable by the generation before it.
 
+The first Cadenza artifact the bootstrap targets MUST be a compiler authored in Cadenza, derived by running the seed reference interpreter over its source, rather than a Cadenza-authored interpreter.
+
 A self-hosting generation MUST be a Cadenza compiler authored in Cadenza.
 
 A self-hosting generation MUST be derivable by the previous Cadenza compiler.
 
-### The Interpreter Is Proven As A Component Before It Is Iterated On
+### The Interpreter Is Proven Before It Is Relied On
 
-The reference interpreter MUST be exercised as a runnable component that a host drives, rather than only as a function of the toolchain that produced it, so that the artifact the flywheel iterates on is the one that has been proven.
+The reference interpreter MUST reproduce every executable-semantics case the generation realizes, so that a green semantics suite proves the oracle before any generation is judged against it.
 
-The host that drives the reference-interpreter component MUST reproduce every executable-semantics case the generation realizes by running each case's program through that component, so that a green semantics suite proves the interpreter-as-component works.
-
-Once the reference interpreter is proven as a component, a later generation MAY author an interpreter in Cadenza and derive it with the proven toolchain, so that the interpreter itself becomes a Cadenza artifact the flywheel improves.
+The reference interpreter MUST be exercisable directly over a program's canonical representation, so that proving it does not depend on first packaging it as a derived component.
 
 ## Turning The Flywheel Means Execution
 

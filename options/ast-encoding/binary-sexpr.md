@@ -60,6 +60,68 @@ tree encodes.
   reader refuses a container version it does not implement, and refuses a file that references a
   symbol or symbol version it does not understand.
 
+## Structural schema (CDDL)
+
+The container grammar restates cleanly as CDDL (RFC 8610), the schema language for CBOR. This schema
+is a machine-checkable statement of the *shape* pinned above — a fast well-formedness gate a reader or
+fuzzer can run — but it is not the definition of canonicality: three invariants below live outside
+what CDDL can express and remain the reader's job.
+
+```cddl
+; Cadenza binary-sexpr — container grammar (RFC 8610 CDDL).
+; Well-formedness only; see "What the schema does not pin" for the rest.
+
+stored-file       = [container-version, prelude, root]
+container-version = uint          ; refused if the reader does not implement it
+prelude           = [* symbol]    ; canonical order is enforced by the reader
+root              = node
+
+; A prelude symbol: [namespace, name] or [namespace, name, version].
+symbol = [namespace: tstr, name: tstr, ? version: uint]
+
+; A node is a leaf atom or an application. In node position an array is always
+; an application (uint head) and an atom is never an array, so the choice is
+; unambiguous; a bare symbol never appears in node position.
+node = atom / application
+
+; A symbol applied to an ordered sequence of children; zero children is a
+; well-formed nullary construct.
+application = [head: uint, * node]   ; head is an index into `prelude`
+
+; A leaf primitive, encoded per the canonical value form.
+atom       = atom-int / atom-float / atom-text / atom-bool / atom-char
+atom-int   = int      ; CBOR major type 0/1
+atom-float = float    ; binary64 (numeric-model.md)
+atom-text  = tstr     ; UTF-8, NFC-normalized (hashing-and-encoding)
+atom-bool  = bool
+; A Unicode scalar carried under the value form's char tag, which keeps a
+; character atom distinct from an integer atom in node position. CHAR_TAG is a
+; placeholder for the concrete tag the value form pins — it is not fixed here.
+atom-char  = #6.CHAR_TAG(uint)
+```
+
+### What the schema does not pin
+
+The schema constrains structure; three properties that the bijection depends on are outside CDDL and
+MUST be enforced by the reader:
+
+- **The deterministic-CBOR encoding profile.** CDDL describes the data model, not the bytes. One byte
+  form per tree comes from deterministic CBOR (RFC 8949 §4.2 — shortest-form integers,
+  definite-length arrays, canonical float/NaN); the same structure has non-deterministic encodings
+  the schema would still accept (ast-encoding.md §"The Encoding Is A Bijection With One Canonical Byte
+  Form").
+- **The canonical prelude order.** `[* symbol]` accepts any order; the sort by
+  `(namespace, name, version)` that makes two trees over the same symbol set encode identically is not
+  a predicate CDDL can state (ast-encoding.md §"The Prelude Order Is Canonical").
+- **Symbol-index referential integrity.** CDDL cannot relate one field's values to another field's
+  cardinality, so it cannot require that every `head` index is in-bounds for the prelude, nor that the
+  prelude is exactly the referenced set — no unused symbols, none missing (ast-encoding.md §"The File
+  Carries Its Own Symbol Prelude").
+
+So the reader is a deterministic-CBOR decoder that validates against this schema and then checks those
+three invariants — still small, and no node-kind table, keeping the "cheap to bootstrap" property
+below.
+
 ## Worked example
 
 A documented `classify` function, shown first in a textual s-expression display and then as the

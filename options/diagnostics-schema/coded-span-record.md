@@ -73,6 +73,7 @@ the corpus by `(trap "<reason>")`. The reason strings the ignition corpus pins:
 | `"list index out of bounds"` | a list is indexed outside its bounds | collections-and-text.md §"List Operations Are Total Or Trap" |
 | `"numeric type mismatch"` | the dynamic interpreter evaluates arithmetic on two different numeric types | a typed generation instead rejects at compile time with `CDZ0301` / `CDZ0201` before running |
 | `"no matching pattern"` | the dynamic interpreter reaches a `match` whose scrutinee hits no branch | a typed generation instead rejects the non-exhaustive match at compile time with `CDZ0210` before running |
+| `"arity mismatch"` | a function is applied to a number of arguments other than the number of parameters it declares | the dynamic interpreter traps at runtime (core-semantics.md §"Applying A Function Binds Its Parameters To Its Arguments"); a typed generation rejects at compile time before running |
 
 The last two are the dynamic seed's runtime halts on programs a typed generation refuses statically;
 they are the interpreter primary clause paired with a `(compiler (error …))` annotation in the corpus

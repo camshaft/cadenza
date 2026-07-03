@@ -1,8 +1,9 @@
 # Cadenza — Glossary
 
 > **What this document is.** The controlled vocabulary for the whole specification. Every
-> term used normatively in the constitution, the frozen contracts, and the capability
-> specifications is defined here exactly once, so the specs use words consistently. This
+> term used normatively in the constitution, the frozen contracts, the capability
+> specifications, and the bootstrap specification is defined here exactly once, so the specs use
+> words consistently. This
 > document is descriptive, not normative: it carries no RFC-2119 requirements. When a term is
 > defined here, other specs use it with this meaning and do not redefine it.
 
@@ -23,6 +24,11 @@
 - **Documentation** — prose attached to a definition, carried in the canonical representation rather
   than as discarded lexical trivia; preserved through round-trip and structural edits, exposed
   machine-readably, and never affecting a program's runtime meaning.
+- **Comment** — a human annotation attached to the part of a program it describes, parsed into the
+  canonical representation as a node rather than discarded as lexical trivia, so that it is stored in
+  the binary AST and preserved through round-trip and structural edits; semantically inert, affecting
+  neither a program's runtime meaning nor its types. Distinct from **documentation**, which is prose
+  attached specifically to a definition and exposed machine-readably by the compiler.
 - **Canonical representation** — the homoiconic, typed, code-as-data abstract syntax tree that is a
   program's durable form: the sole target of structural manipulation, hashing, the executable
   semantics, and verification. Every textual syntax is a projection of it.
@@ -151,11 +157,12 @@
   alongside the component it produces.
 - **Provenance** — build-environment information such as a timestamp, an absolute path, or a
   producer string; stripped or normalized so it cannot vary the output.
-- **Interpreted derivation** — deriving a component by emitting the reference interpreter over
-  the program's canonical source; the initial derivation mode, satisfying every guarantee a
-  compiled derivation must.
-- **Compiled derivation** — deriving a component by ahead-of-time compilation of source to
-  native component code; the maturation of the toolchain, which must agree with the oracle.
+- **Compiled derivation** — deriving a component by compiling the program's canonical source to
+  component code that the component itself runs; the seed's derivation mode, which must agree with
+  the oracle over the same input.
+- **Interpreted derivation** — deriving a component by embedding the reference interpreter over the
+  program's canonical source so the component interprets it at run time; an optional derivation mode a
+  generation may offer, satisfying every guarantee a compiled derivation must.
 - **Phase** — a stage of the compiler with a defined input and output contract; each phase is a
   deterministic function of its input.
 - **Diagnostic** — a machine-readable message the compiler emits about a program, carrying a
@@ -222,6 +229,16 @@
 - **Flywheel** — the loop in which the running system reads the specification, synthesizes the
   next generation of the language as source, derives it, gates it, and activates it, so the
   system builds the system.
+- **Ignition** — the demonstration that the seed toolchain performs a real, executed end-to-end
+  derivation: a Cadenza source program derived to a content-addressed component whose imports mirror
+  its manifest, actually run to produce its output, byte-identically re-derivable, and in agreement
+  with the reference interpreter; the appearance of a derivation without a component that was actually
+  derived and run is not an ignition.
+- **Ignition bar** — the bar an ignition must clear, fixed by the bootstrap specification; clearing it
+  is the point at which the seed toolchain can produce the next generation.
+- **Ignition subset** — the subset of requirements the seed toolchain must cite to clear the ignition
+  bar — the constitution, the frozen contracts, the bootstrap specification, and the capability
+  specifications the seed itself realizes — a strict subset of the full requirement set.
 
 ## Conformance and change
 

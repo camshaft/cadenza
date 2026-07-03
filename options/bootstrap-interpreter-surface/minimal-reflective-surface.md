@@ -24,9 +24,12 @@ generation already realizes. That keeps the added surface tiny.
 | **Lists** | construct, head, tail, length, index (total-or-trap) | argument lists, environments as assoc-lists, event sequences |
 | **Strings** | equality and concatenation | dispatch on a node's head-symbol name; build diagnostic and qualified-name text |
 | **Integers/bools** | the arithmetic and comparison the seed already realizes | delegated to when interpreting `+`, `<`, `if` |
+| **First-class functions/closures** | `fn` values that capture their scope, applied by `(f arg…)` | authoring a **compiler** in Cadenza needs first-class functions — passing, returning, and storing them (core-semantics.md §Functions); the seed realizes them |
 
-Higher-order functions/closures are **not** required at this rung: the interpreter is written with
-explicit recursion, not `map`/`fold` over lambdas. They enter when the language matures.
+The seed realizes first-class functions and closures because the first Cadenza artifact is a
+**compiler**, not merely a meta-circular interpreter, and a compiler is not expressible without them
+(higher-order passes, environments of closures, continuation-passing). This is a change from an
+interpreter-only rung, which could have gotten by with explicit top-level recursion alone.
 
 ## Reflection: the AST is an ordinary value
 
@@ -49,7 +52,8 @@ Event    = record { kind: String, payload: Value }
 - `eval` **returns** `Behavior` as data; it does **not** call `emit-event` itself. So `eval` is a pure
   function and the semantics suite can be run **through it with zero host capabilities** — the
   cheapest possible proof that the interpreter works (self-hosting-and-bootstrap.md §"The Interpreter
-  Is Proven As A Component Before It Is Iterated On").
+  Is Proven Before It Is Relied On"). At the seed this proof runs natively; the boundary shim below
+  applies only where a generation offers interpreted derivation as a component.
 - Capabilities enter only in the **derived component's boundary shim**: `run(input: list<u8>)` decodes
   the embedded AST, calls `eval` to get a `Behavior`, then **emits the recorded events through the
   real host imports** and returns the terminal. The events were computed by interpreting inside the
@@ -82,16 +86,20 @@ Event    = record { kind: String, payload: Value }
   is the same rule as "interpret, not replay" wearing a second hat: keeping values inside is exactly
   what makes the boundary bytes-only.
 
-## Packaging: embed the interpreter over the AST, trim imports to the manifest
+## Packaging: a real component whose WIT world matches the manifest
 
-- Interpreted derivation produces one content-addressed component = **the interpreter wasm** (compiled
-  to `wasm32-unknown-unknown`, so its only imports are host capabilities) **+ the program's AST
-  embedded as data**, with the import table trimmed to exactly the program's manifest
-  (host-interface-binding.md §"Imports Mirror The Manifest Exactly"); ungranted host ops are absent.
-- The **same interpreter wasm** is reused across all derived programs; only the embedded AST and the
-  trimmed import set differ — the distinguishing check that behavior comes from the embedded program,
-  not from derivation-emitted per-program logic (build-tool-interface.md §"The Embedded Interpreter
-  Executes In The Component").
+- Interpreted derivation produces one content-addressed **real WebAssembly component**: the interpreter
+  is compiled to a core module (`wasm32-unknown-unknown`, so its only imports are host capabilities and
+  never WASI) and wrapped by `wasm-tools component new` into a component whose **WIT world declares
+  exactly the program's granted capabilities**, with the program's AST embedded as component data.
+  Because the world *is* the import set, "imports mirror the manifest exactly"
+  (host-interface-binding.md) holds natively — a program that grants `emit-event` yields a world
+  importing `emit-event`; a program that grants nothing yields a world with no import — with no
+  per-program import surgery on the core module.
+- The **same interpreter** is reused across all derived programs; only the embedded AST and the world's
+  import set (which matches each program's manifest) differ — the distinguishing check that behavior
+  comes from the embedded program, not from derivation-emitted per-program logic
+  (build-tool-interface.md §"The Embedded Interpreter Executes In The Component").
 
 ## The tower and fuel
 

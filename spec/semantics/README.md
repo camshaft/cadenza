@@ -145,6 +145,9 @@ differences are inline annotations, not separate files. It grows as capabilities
 - `05-compound-types.sexp` — records, sum types, lists, maps; structural equality (runtime) with `(compiler …)` for the static nominal/structural and exhaustiveness rejections
 - `06-numeric-model.sexp` — checked `Int64` core; `(compiler …)` for compile-time no-promotion; `(needs numeric-model)` for rational/wrapping/floating-point arithmetic
 - `07-type-system.sexp` — annotation-vs-inference and ill-typedness, as `(compiler …)` divergences over inputs the dynamic interpreter still runs
+- `08-bootstrap-interpreter.sexp` — reader/printer round-trip and `eval` over a program's AST, as `(needs bootstrap-interpreter)` cases a later generation realizes
+- `09-functions.sexp` — first-class functions and closures: `fn` values, application, closure capture, higher-order functions, recursion, and resource-measure exhaustion on unbounded recursion (core; the seed realizes these)
 
-Planned as the capabilities they witness are filled in: functions and closures, documentation,
+Planned as the capabilities they witness are filled in: documentation and
+comments (each a node the interpreter sees through, witnessing that it is semantically inert),
 verification.

@@ -14,6 +14,7 @@
 
 | Cadenza type | Boundary representation |
 |---|---|
+| Unit | the empty result payload (`result<_, …>` success, or an empty `tuple`/`record {}`), carrying no bytes |
 | Boolean | `bool` |
 | Signed integer (8/16/32/64-bit) | `s8` / `s16` / `s32` / `s64` |
 | Unsigned integer (8/16/32/64-bit) | `u8` / `u16` / `u32` / `u64` |

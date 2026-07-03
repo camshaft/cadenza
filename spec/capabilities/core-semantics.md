@@ -53,6 +53,24 @@ A reference to a name with no enclosing binding MUST be a compile-time error.
 
 A binding that shadows an outer binding of the same name MUST take effect for references in its scope as defined by the corpus.
 
+## Functions
+
+### A Function Is A First-Class Value
+
+A function MUST be a value that can be bound to a name, passed as an argument, returned as a result, and stored in a data structure, like any other value.
+
+A function value MUST capture the bindings in scope at the point it is created, so that applying it later observes those captured bindings rather than the bindings in scope at the point of application.
+
+### Applying A Function Binds Its Parameters To Its Arguments
+
+Applying a function to arguments MUST evaluate the function body in an environment that extends the function's captured environment with each parameter bound to the corresponding argument.
+
+Applying a function to a number of arguments other than the number of parameters it declares MUST trap of a defined kind rather than produce an unspecified value.
+
+### Recursion Is Accountable Against The Resource Measure
+
+A function that applies itself, directly or indirectly, MUST consume the deterministic resource measure so that unbounded recursion halts at a defined point rather than running unboundedly.
+
 ## Control Flow
 
 ### Conditionals Evaluate One Branch
@@ -126,3 +144,11 @@ The observable behavior of a program run MUST NOT include its internal represent
 The sequence of events a program emits MUST be observed in the order the program emitted them.
 
 Two runs whose observable behaviors differ in any emitted event, in event order, or in terminal condition MUST be treated as behaving differently.
+
+## The Unit Value
+
+### An Effect-Only Expression Yields The Unit Value
+
+An expression evaluated only for the event it emits MUST yield the unit value as its result.
+
+A program that terminates normally without producing a value other than through its emitted events MUST produce the unit value as its normal-termination value.

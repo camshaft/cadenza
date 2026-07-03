@@ -91,8 +91,8 @@ this command is the procedure that runs them.
    not load-bearing for it.
 5. Judge the compiled derivation against the oracle where applicable: a compiled
    generation's observable behavior MUST agree with the reference interpreter over
-   every case before it is promoted (`spec/bootstrap.md` §"Compiled Derivation Is An
-   Oracle-Checked Optimization", constitution §XIV).
+   every case before it is promoted (`spec/bootstrap.md` §"Compiled Derivation
+   Produces The Component And Agrees With The Oracle", constitution §XIV).
 
 ## Judging against an immutable specification
 

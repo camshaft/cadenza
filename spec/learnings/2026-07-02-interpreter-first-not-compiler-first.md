@@ -2,6 +2,31 @@
 
 *2026-07-02*
 
+> **Annotation (2026-07-03) — staging collapsed; this learning still holds, with one refinement.**
+> The staging was later shortened: the intermediate rung "re-author the reference interpreter *in
+> Cadenza*" was **dropped**, and the **first Cadenza artifact is now the compiler**, derived directly
+> by running the foreign-language (Rust) seed reference interpreter over the compiler's source
+> ([bootstrap.md](../bootstrap.md) §"The Line Of Sight";
+> [self-hosting-and-bootstrap.md](../capabilities/self-hosting-and-bootstrap.md) §"Each Generation Is
+> Derived By The Previous"). This does **not** revive compiler-first, because the distinction this
+> learning draws is preserved: the **reference interpreter remains the single behavioral oracle** (it
+> stays authored in the foreign seed language and defines behavior; the compiler must *agree* with it),
+> so Core Principles IX and XIV are intact. What changed is only *which Cadenza artifact is authored
+> first* — the compiler, not a redundant Cadenza re-implementation of the interpreter — which removes a
+> rung with no consumer, exactly the "no throwaway meta-circular interpreter" point this learning
+> already endorsed. The sentence below asserting "the first Cadenza-authored artifact is the reference
+> interpreter" is superseded by "…is the compiler". **Two other points below are also superseded:** the
+> body says ahead-of-time compilation "stays a later, oracle-checked optimization … never the
+> bootstrap's critical path" and cites bootstrap.md §"Compiled Derivation Is An Oracle-Checked
+> Optimization" — but the seed's derivation mode is now **compiled codegen** (that section was renamed
+> to §"Compiled Derivation Produces The Component And Agrees With The Oracle"), so component generation
+> *is* the seed's path, not a deferred optimization; and "interpreted derivation … is the first working
+> derivation mode" is superseded by interpreted derivation being **optional/later** (bootstrap.md
+> §"Interpreted Derivation Is An Optional Mode"). What still stands is this learning's load-bearing
+> claim: the **reference interpreter remains the single behavioral oracle**, so this is not
+> compiler-first. See [bootstrap targets the compiler directly](./2026-07-03-bootstrap-targets-the-compiler-directly.md)
+> and [real components, not a bespoke module model](./2026-07-03-real-components-not-a-bespoke-module-model.md).
+
 **What happened.** While synthesizing the seed, a reviewing agent proposed replacing the
 reference-interpreter bootstrap with a **compiler-first** one: write the ahead-of-time compiler
 (`ast → component bytes`) in Cadenza directly, run it on the foreign-language seed interpreter, and

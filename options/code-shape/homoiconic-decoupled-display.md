@@ -73,6 +73,11 @@ fn classify(n: Int64) -> Sign =
 
 Documentation is a node in the representation (the `doc` form / `///` projection), not lexical
 trivia, so it survives the round-trip in either direction (agent-authoring.md §Documentation).
+A comment is likewise a node (the `comment` form / `//` projection), attached to the part it
+annotates and parsed into the tree rather than dropped, so it too survives the round-trip and is
+stored in the binary AST — the canonical stored form is the tree, so a comment the parser discarded
+would not be stored at all (agent-authoring.md §Comments; ast-encoding.md §"The Tree Carries
+Comments And Documentation").
 
 ## Why this choice, against the north star
 
@@ -105,11 +110,13 @@ contract, exactly as adding a construct adds a prelude symbol rather than bumpin
 | `module` | `(module <name> <form>…)` | a module: a named unit of definitions and capability declarations |
 | `def` | `(def (<name> <param>…) <form>…)` | a definition (value or function) |
 | `doc` | `(doc "<text>")` | documentation attached to the enclosing definition/module (a node, not trivia) |
+| `comment` | `(comment "<text>" <annotated>)` | a human comment attached to the node it annotates (a node, not trivia); semantically inert |
 | `use` | `(use (capability <cap>))` | a capability declaration, contributing `<cap>` to the module's manifest |
 | `capability` | `(capability <cap-name>)` | names a host capability inside a `use` |
 | `:` | `(: <expr> <Type>)` / `(: (-> <T>… <R>))` | a type annotation; also the corpus value-form head `(: <value> <Type>)` |
 | `->` | `(-> <T>… <R>)` | a function type |
 | `let` | `(let ((<name> <expr>)…) <body>)` | a lexical binding form |
+| `fn` | `(fn (<param>…) <body>)` | a function value (lambda): captures its enclosing scope, applied by `(<fn-expr> <arg>…)` |
 | `if` | `(if <cond> <then> <else>)` | a two-branch conditional; evaluates only the selected branch |
 | `match` | `(match <scrutinee> (<pattern> <body>)…)` | pattern matching, governed by the exhaustiveness rule |
 | `else` | `else` (a match pattern) | the catch-all match pattern |
@@ -118,14 +125,27 @@ contract, exactly as adding a construct adds a prelude symbol rather than bumpin
 | `map` | `(map (<key> <value>)…)` | a map literal |
 | `=` | `(= <a> <b>)` | structural-equality comparison |
 | `+` `+%` | `(+ <a> <b>)` / `(+% <a> <b>)` | checked addition; wrapping addition (distinct wrapping type) |
+| `unit` | `unit` | the unit value, the normal-termination value of an effect-only program (e.g. one whose `main` only emits events); its type is `Unit` |
 | field access | `<expr>.<field>` | record/nominal field projection (e.g. `p.x`) |
+
+**Function application** is written `(<fn-expr> <arg>…)` where the head is an *expression that
+evaluates to a function* (a name bound to a `fn`, a `def`, or an inline `(fn …)`), rather than a
+`cadenza/core` construct symbol. This is how a program applies a first-class function value
+(core-semantics.md §"A Function Is A First-Class Value", §"Applying A Function Binds Its Parameters To
+Its Arguments"); a top-level `(def (<name> <param>…) <body>…)` is sugar for binding `<name>` to a
+`(fn (<param>…) <body>…)`. A head that resolves to a core construct symbol names that construct; a head
+that resolves to a bound function value applies it.
 
 Names, sum-type variants, and the numeric/collection operations a program calls (`Sign.Neg`,
 `Some`/`None`, `List.at`, `Rational.of`, `Float64.of-int`, `Int64.max`, `Wrapping64.max`, the built-in
-type names `Int64`/`Float64`/`Bool`/`String`/`Rational`/`Wrapping64`) are ordinary bound names and
+type names `Int64`/`Float64`/`Bool`/`String`/`Rational`/`Wrapping64`/`Unit`) are ordinary bound names and
 constructors resolved by their declarations, not additional core syntax; the corpus grounds each where
 it is used. The floating-point not-a-number literal is written `nan` and denotes the canonical
-not-a-number value (deterministic-value-form.md §"Numeric Values Serialize Deterministically").
+not-a-number value (deterministic-value-form.md §"Numeric Values Serialize Deterministically"). The
+unit value is written `unit` and is the sole value of the `Unit` type — the normal-termination value of
+a program that produces no value other than through its emitted events (deterministic-value-form.md
+§"The Unit Value Has A Canonical Byte Form"; core-semantics.md §"An Effect-Only Expression Yields The
+Unit Value").
 
 Sum types the ignition corpus uses are declared where the corpus references them: `Sign` as
 `(Neg | Zero | Pos)` (nullary variants), and an `Option` with a payload-carrying variant as

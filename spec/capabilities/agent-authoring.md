@@ -15,9 +15,10 @@
 This capability fixes what makes Cadenza a language an agent can write and read well: that the
 canonical form round-trips byte-for-byte, that a structural interface lets an agent read and rewrite
 a program's canonical representation without textual patching, that a structural edit either yields a
-well-formed program or reports a machine-readable rejection, that documentation is a first-class part
-of the representation, and that every output of the compiler is machine-readable. It states these
-affordances as obligations, not the interface's concrete surface.
+well-formed program or reports a machine-readable rejection, that documentation and comments are
+first-class parts of the representation carried through the round-trip rather than discarded as
+trivia, and that every output of the compiler is machine-readable. It states these affordances as
+obligations, not the interface's concrete surface.
 
 ## Canonical Form
 
@@ -76,6 +77,26 @@ A structural edit MUST preserve the documentation attached to a part of the prog
 The compiler MUST expose the documentation attached to a definition in a machine-readable form.
 
 Documentation MUST NOT change the runtime meaning of a program.
+
+## Comments
+
+### Comments Are Parsed Into The Representation
+
+A textual syntax's parser MUST represent a comment it reads as a node of the canonical representation rather than discard it as lexical trivia, because the canonical stored form is the binary AST and a comment not carried by the tree is not stored.
+
+A comment MUST be attached in the canonical representation to the part of the program it annotates, so that its position relative to that part is recovered on printing.
+
+### Comments Survive Round-Trip And Edits
+
+A comment MUST be preserved when a program's binary AST is printed to a textual syntax and parsed back.
+
+A structural edit MUST preserve a comment attached to a part of the program it does not change.
+
+### Comments Are Semantically Inert
+
+A comment MUST NOT change the runtime meaning of a program.
+
+A comment MUST NOT change the type a program's expressions are assigned.
 
 ## Machine-Readable Output
 

@@ -30,33 +30,40 @@ Cadenza toolchain yet exists to derive it.
    declared seed host language (`options/bootstrap-strategy/`) because no Cadenza
    toolchain yet exists to derive it: a reader for the binary AST and its
    self-contained symbol prelude (`spec/contracts/ast-encoding.md`,
-   `options/ast-encoding/binary-sexpr.md`), the reference interpreter that
+   `options/ast-encoding/binary-sexpr.md`), the **native** reference interpreter that
    realizes the executable-semantics corpus and is the behavioral oracle,
-   interpreted derivation that emits a WebAssembly component embedding the
-   interpreter over a program's AST with imports that mirror its manifest
-   (`spec/contracts/build-tool-interface.md` §"Derivation By Embedding The
-   Reference Interpreter"), and the machine-readable diagnostics. No ahead-of-time
-   compiler is required at genesis (`spec/bootstrap.md` §"The Toolchain Builds The
-   Next Generation, Not Itself At Genesis"), and there is no compiler-free root to
-   stand up — Cadenza is itself the build tool, outside any minimal
-   load-verify-run root (`build-tool-interface.md` §"The Tool Is Replaceable").
+   **compiled derivation** — the seed's derivation mode — that generates a component
+   whose imports mirror its manifest (`spec/bootstrap.md` §"Compiled Derivation
+   Produces The Component And Agrees With The Oracle"), and the machine-readable
+   diagnostics. No pre-existing Cadenza compiler is required at genesis
+   (`spec/bootstrap.md` §"The Toolchain Builds The Next Generation, Not Itself At
+   Genesis"), and there is no compiler-free root to stand up — Cadenza is itself the
+   build tool, outside any minimal load-verify-run root
+   (`build-tool-interface.md` §"The Tool Is Replaceable").
 
-   **Decouple two concerns, and do NOT collapse them (see
-   `spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md`):**
-   (a) **the interpreter compiled to a component** — the reference interpreter is
-   compiled to WebAssembly, and interpreted derivation binds *that interpreter
-   component* together with *the program's canonical AST as embedded data* into one
-   content-addressed component (`options/bootstrap-strategy/…` §"Interpreter
-   packaging"), so the derived component **actually interprets its embedded AST at
-   run time**; and (b) **a minimal host** that provides only the capability functions
-   a component imports, a separate artifact from the interpreter, binding exactly the
-   manifest's capabilities. Running the interpreter in the host at derivation time and
-   emitting a component that only *replays* the precomputed output is a **modeled
+   **Two distinct artifacts, and do NOT collapse them (see
+   `spec/learnings/2026-07-03-real-components-not-a-bespoke-module-model.md`,
+   `spec/learnings/2026-07-03-bootstrap-targets-the-compiler-directly.md`):**
+   (a) **the compiler's codegen** — the compiler generates a core module and wraps it
+   into a **real component** (`options/execution-model/`) whose interface world
+   declares exactly the program's granted capabilities, so "imports mirror the
+   manifest exactly" holds natively (the world *is* the import set), with no
+   per-program import surgery; and (b) **a minimal host** that provides only the
+   capability functions a component imports, a separate artifact from the compiler and
+   the interpreter, binding exactly the manifest's capabilities. Emitting a component
+   that only *replays* an output precomputed at derivation time is a **modeled
    derivation** and MUST NOT be used (`spec/bootstrap.md` §"A Modeled Derivation Is Not
-   An Ignition"). The distinguishing check: deriving two different programs MUST reuse
-   the *same* interpreter component and differ only in the embedded AST, so behavior
-   comes from the component interpreting, not from program-specific code the derivation
-   emitted.
+   An Ignition"); the guard for compiled derivation is **oracle agreement** — the
+   generated component's observable behavior MUST match the native reference
+   interpreter over the same input (`spec/bootstrap.md` §"Compiled Output Agrees With
+   The Interpreter"). The distinguishing check: deriving two different programs MUST
+   reuse the *same* codegen and differ only in the compiled program logic, so behavior
+   comes from the program, not from a transcript the derivation baked in.
+   (Interpreted derivation — embedding the interpreter over the AST — is the
+   optional/later mode, `spec/bootstrap.md` §"Interpreted Derivation Is An Optional
+   Mode"; where a generation offers it, the anti-transcript rule in
+   `build-tool-interface.md` §"The Embedded Interpreter Executes In The Component" and
+   `spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md` apply.)
 2. Run `setup-gate` for that host language so the bootstrap gate's `[[source]]`
    half points at `implementation/`, and cite every frozen-contract and
    ignition-subset requirement the seed satisfies by quoting its sentence. Derive
@@ -90,12 +97,15 @@ End-To-End Derivation" and §"A Modeled Derivation Is Not An Ignition":
 - A real Cadenza source program was derived to a content-addressed component and
   that component was **actually run to produce its output** — not stood in for by
   emitting the artifacts a derivation would produce.
-- **The component itself performed the interpretation** — the derived component
-  embeds the interpreter over the program's AST and evaluates it at run time; it is
-  NOT a transcript of output the host precomputed. Confirm by deriving two different
-  programs, observing that the same interpreter component is reused and only the
-  embedded AST differs, and that their behaviors differ purely from that AST (see
-  `spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md`).
+- **The component itself computed the output** — the derived component executes the
+  program's compiled logic at run time; it is NOT a transcript of output the host
+  precomputed. Confirm by deriving two different programs, observing that the same
+  codegen is reused and only the compiled program logic differs, and that their
+  behaviors differ purely from that program (see
+  `spec/learnings/2026-07-03-real-components-not-a-bespoke-module-model.md`). Where a
+  generation instead offers the optional interpreted-derivation mode, the equivalent
+  guard is that the same interpreter component is reused and only the embedded AST
+  differs (`spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md`).
 - The derived component's imports mirror its declared capability manifest, so the
   capability-binding is exercised rather than merely configured
   (`build-tool-interface.md` §"The Tool Produces A Component, A Manifest, And

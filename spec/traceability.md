@@ -36,7 +36,7 @@
 | `spec/capabilities/conformance-gate.md` | §14 |
 | `spec/capabilities/build-modes.md` | §15 |
 | `spec/capabilities/tooling-and-lsp.md` | §10, §13 |
-| `spec/capabilities/agent-authoring.md` | §13 |
+| `spec/capabilities/agent-authoring.md` | §3, §13 |
 | `spec/capabilities/units-of-measure.md` | §5, §12 |
 | `spec/bootstrap.md` | §11, §15 |
 
@@ -50,7 +50,7 @@
 | §4 Determinism and bounded execution | constitution.md; deterministic-value-form.md; determinism-and-fuel.md; memory-and-resource-model.md; numeric-model.md; collections-and-text.md; core-semantics.md |
 | §5 Types | constitution.md; component-abi.md; type-system.md; numeric-model.md; collections-and-text.md; units-of-measure.md |
 | §6 Capabilities and no ambient authority | constitution.md; component-abi.md; host-interface-binding.md; capabilities-and-effects.md |
-| §7 Derivation and reproducibility | source-tree-encoding.md; reproducible-derivation.md; build-tool-interface.md; modules-and-namespaces.md; compiler-pipeline.md |
+| §7 Derivation and reproducibility | constitution.md; source-tree-encoding.md; reproducible-derivation.md; build-tool-interface.md; modules-and-namespaces.md; compiler-pipeline.md |
 | §8 The component boundary | component-abi.md; host-interface-binding.md |
 | §9 Cadenza as a replaceable build tool | build-tool-interface.md |
 | §10 One executable semantics | constitution.md; core-semantics.md; self-hosting-and-bootstrap.md; bootstrap-interpreter.md; compiler-pipeline.md; tooling-and-lsp.md |
