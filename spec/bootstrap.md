@@ -66,6 +66,24 @@ The toolchain MUST be able to derive a working component from a program's canoni
 
 A component the toolchain derives MUST exhibit the same observable behavior as the reference interpreter over the same input, on every executable-semantics case the generation realizes, before that generation is promoted.
 
+### The Compiler Is Authored In Cadenza, Not In The Seed
+
+The bytes of a component the toolchain derives MUST be produced by evaluating the Cadenza-authored compiler over the program's canonical representation.
+
+The seed reference interpreter MUST NOT contain a translation of a program's canonical representation to component bytes, so that the seed contributes evaluation and the Cadenza-authored compiler contributes compilation.
+
+The Cadenza-authored compiler MUST be able to construct component bytes as an ordinary value of a byte-sequence value form the seed realizes, whose realized set is pinned at the declared-default location.
+
+The bytes the Cadenza-authored compiler produces MUST be the complete runnable component rather than a partial artifact that a separate tool completes into the component, so that a derivation's byte output is a function of the Cadenza-authored compiler alone.
+
+The seed MUST invoke the Cadenza-authored compiler through an interface typed as a byte sequence to a byte sequence, the program's binary AST in and the component's bytes out, so that the compiler's derivation interface is statically typed and the seed's dynamic evaluation of it is not part of that interface.
+
+The seed MUST NOT require the Cadenza-authored compiler's derivation interface to consume or produce a value of the seed's dynamic value representation, so that the interface carries no assumption that the language is dynamically typed and a later generation may type-check the same interface without changing it.
+
+The Cadenza source the bootstrap authors MUST be written as a well-typed static program, as if the static-typing obligations of Core Principle VII were already enforced, even though the seed defers enforcing them, so that the source is accepted unchanged by a later type-checking generation rather than rewritten.
+
+The Cadenza source the bootstrap authors MUST NOT rely on a dynamic idiom that a static type discipline would reject, such as runtime kind-reflection over a value in place of a sum type and a match, so that deferring type-checking in the seed is a stage the language climbs out of rather than an assumption its source is built on.
+
 ### Interpreted Derivation Is An Optional Mode
 
 The toolchain MAY additionally derive a component by embedding the reference interpreter over a program's canonical source, as an alternative to generating the component.

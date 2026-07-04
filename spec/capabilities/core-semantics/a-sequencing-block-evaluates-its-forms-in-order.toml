@@ -1,0 +1,28 @@
+target = "spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order"
+
+# A Sequencing Block Evaluates Its Forms In Order
+#
+# A sequencing block MUST evaluate each of its forms in the order they are written.
+# 
+# A sequencing block MUST evaluate to the value of its last form.
+# 
+# An event a form in a sequencing block emits MUST be observed before an event emitted by a later form in the same block.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A sequencing block MUST evaluate each of its forms in the order they are written.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A sequencing block MUST evaluate to the value of its last form.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An event a form in a sequencing block emits MUST be observed before an event emitted by a later form in the same block.
+'''
+

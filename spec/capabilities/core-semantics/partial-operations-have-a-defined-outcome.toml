@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#partial-operations-have-a-defined-outcome"
+
+# Partial Operations Have A Defined Outcome
+#
+# An operation that has no result for some inputs MUST, on those inputs, either evaluate to a value the executable semantics defines or raise a trap of a defined kind.
+# 
+# An operation that has no result for some inputs MUST NOT produce an unspecified value.
+
+[[spec]]
+level = "MUST"
+quote = '''
+An operation that has no result for some inputs MUST, on those inputs, either evaluate to a value the executable semantics defines or raise a trap of a defined kind.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An operation that has no result for some inputs MUST NOT produce an unspecified value.
+'''
+

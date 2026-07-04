@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#a-module-binds-its-name-in-its-enclosing-scope"
+
+# A Module Binds Its Name In Its Enclosing Scope
+#
+# Evaluating a module MUST bind the module's declared name in the enclosing scope to the record of the module's exports, so that a module is named by its declaration without a separate binding form.
+# 
+# A reference to a module's name in its enclosing scope MUST resolve to that export record under the same lexical scope and shadowing rules as any other binding.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Evaluating a module MUST bind the module's declared name in the enclosing scope to the record of the module's exports, so that a module is named by its declaration without a separate binding form.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A reference to a module's name in its enclosing scope MUST resolve to that export record under the same lexical scope and shadowing rules as any other binding.
+'''
+

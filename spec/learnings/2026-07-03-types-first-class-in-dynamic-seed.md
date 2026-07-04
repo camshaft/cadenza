@@ -1,0 +1,15 @@
+# Types first-class in the dynamic seed sets up static self-hosting
+
+*2026-07-03*
+
+**What happened.** Planning the self-hosting path with the seed as a dynamic interpreter (§VII bootstrap carve-out) and a later generation as statically typed, I realized: compiling a dynamically-written compiler to static code is incredibly difficult. The seed's dynamic implementation would need wholesale rewriting when the type system arrives — type annotations would have to be inferred/inserted, type errors would surface late, and the compiler's own logic would fight the static checker. Additionally, the current compiler uses string-tagged instruction lists (`(list "i64.const" 42)`) and `Ast.is-*` reflection rather than proper sum types and pattern matching, because the AST wasn't exposed as a sum type with quote/unquote.
+
+**Why.** The §VII carve-out says the seed *defers static type-checking*, not that it's *authored dynamically*. Runtime-checked types are still types — they're just validated during execution rather than at compile time. Making types first-class values (Type as a value kind, type annotations as data) and exposing the AST as a quotable sum type means Cadenza source can be written *as if static* even though the seed doesn't enforce it. The compiler can pattern-match over AST sums instead of reflecting on kind predicates. Instructions can be AST sums instead of string-tagged lists. The transition from "runtime-checked types" to "compile-time-checked types" is an optimization (move checking earlier), not a rewrite (infer what wasn't written). And quote/unquote lets the compiler manipulate AST values natively rather than using host-side reflection.
+
+**The requirement it drove.** 
+
+`spec/capabilities/core-semantics.md` §"Types Are First-Class Values": A Type MUST be a first-class value that can be bound to a name, passed as an argument, returned from a function, and inspected at runtime. A type annotation `(: <expr> <Type>)` MUST carry its type as a value, not as a syntactic marker. The dynamic interpreter MUST validate type annotations at runtime, trapping on mismatch. The static type-checker MUST validate the same annotations at compile-time, rejecting ill-typed programs before they run.
+
+`spec/capabilities/metaprogramming.md` §"Quote Produces An AST Value": The expression `(quote <expr>)` MUST evaluate to an AST sum type value representing the structure of `<expr>`, without evaluating `<expr>` itself. The expression `(unquote <ast-value>)` MUST evaluate the AST value as code, producing the result the quoted expression would have produced. The AST MUST be a sum type with variants for each syntactic form (Int, Name, List, etc.), deconstructible by pattern matching.
+
+`spec/capabilities/compiler-pipeline.md` §"The Compiler Operates On AST Values": The compiler MUST receive the program as an AST value (via quote or decode), emit instructions as AST sum type values, and serialize those instruction ASTs to bytes. The compiler MUST NOT rely on string-tagged pseudo-structures; instructions are proper sum types pattern-matchable like any other Cadenza value.

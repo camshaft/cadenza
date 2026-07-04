@@ -1,0 +1,28 @@
+target = "spec/capabilities/core-semantics.md#member-access-projects-a-record-field"
+
+# Member Access Projects A Record Field
+#
+# Member access MUST project the field named by its key from the record it is applied to, evaluating to the value that field holds.
+# 
+# Member access applied to a value that is not a record MUST raise a trap of a defined kind rather than produce an unspecified value.
+# 
+# Member access naming a field the record does not contain MUST raise a trap of a defined kind rather than produce an unspecified value.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Member access MUST project the field named by its key from the record it is applied to, evaluating to the value that field holds.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Member access applied to a value that is not a record MUST raise a trap of a defined kind rather than produce an unspecified value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Member access naming a field the record does not contain MUST raise a trap of a defined kind rather than produce an unspecified value.
+'''
+

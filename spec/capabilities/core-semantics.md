@@ -105,6 +105,18 @@ A match MUST evaluate the branch of the first pattern that matches the scrutinee
 
 A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
 
+## Types As First-Class Values
+
+### Types Are First-Class Values
+
+A Type MUST be a first-class value that can be bound to a name, passed as an argument, returned from a function, and inspected at runtime.
+
+A type annotation `(: <expr> <Type>)` MUST carry its type as a value, not as a syntactic marker erased before evaluation.
+
+The dynamic interpreter MUST validate type annotations at runtime, trapping on mismatch between the value's runtime type and the annotation's declared type.
+
+The static type-checker MUST validate the same annotations at compile-time, rejecting ill-typed programs before they run, so that the seed's runtime checking and a later generation's static checking enforce the same type system.
+
 ## Sum Types
 
 ### A Sum Type Constructor Is A Single-Arity Function Producing The Tagged Variant

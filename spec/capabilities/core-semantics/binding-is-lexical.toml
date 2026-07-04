@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#binding-is-lexical"
+
+# Binding Is Lexical
+#
+# A name MUST resolve to the nearest enclosing binding of that name.
+# 
+# A reference to a name with no enclosing binding MUST be a compile-time error.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A name MUST resolve to the nearest enclosing binding of that name.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A reference to a name with no enclosing binding MUST be a compile-time error.
+'''
+

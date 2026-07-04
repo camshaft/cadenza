@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#a-program-terminates-in-exactly-one-terminal-condition"
+
+# A Program Terminates In Exactly One Terminal Condition
+#
+# A program run MUST end in exactly one terminal condition: a normal result, a trap of a defined kind, or exhaustion of the deterministic resource measure.
+# 
+# The terminal condition of a program run MUST be a deterministic function of its input and its declared capabilities' responses.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A program run MUST end in exactly one terminal condition: a normal result, a trap of a defined kind, or exhaustion of the deterministic resource measure.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The terminal condition of a program run MUST be a deterministic function of its input and its declared capabilities' responses.
+'''
+

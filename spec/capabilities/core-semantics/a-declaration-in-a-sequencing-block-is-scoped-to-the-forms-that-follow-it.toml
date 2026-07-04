@@ -1,0 +1,12 @@
+target = "spec/capabilities/core-semantics.md#a-declaration-in-a-sequencing-block-is-scoped-to-the-forms-that-follow-it"
+
+# A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It
+#
+# A declaration form in a sequencing block MUST bind its name for the forms that follow it in that block, so that a name a declaration introduces is in scope without a separate binding form.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A declaration form in a sequencing block MUST bind its name for the forms that follow it in that block, so that a name a declaration introduces is in scope without a separate binding form.
+'''
+

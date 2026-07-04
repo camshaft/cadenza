@@ -1,0 +1,12 @@
+target = "spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch"
+
+# Bindings Introduced By A Pattern Are Scoped To Its Branch
+#
+# A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
+'''
+

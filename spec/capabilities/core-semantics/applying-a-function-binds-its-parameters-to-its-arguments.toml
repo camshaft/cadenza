@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#applying-a-function-binds-its-parameters-to-its-arguments"
+
+# Applying A Function Binds Its Parameters To Its Arguments
+#
+# Applying a function to arguments MUST evaluate the function body in an environment that extends the function's captured environment with each parameter bound to the corresponding argument.
+# 
+# Applying a function to a number of arguments other than the number of parameters it declares MUST trap of a defined kind rather than produce an unspecified value.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Applying a function to arguments MUST evaluate the function body in an environment that extends the function's captured environment with each parameter bound to the corresponding argument.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Applying a function to a number of arguments other than the number of parameters it declares MUST trap of a defined kind rather than produce an unspecified value.
+'''
+

@@ -1,0 +1,12 @@
+target = "spec/capabilities/core-semantics.md#shadowing-is-well-defined"
+
+# Shadowing Is Well-Defined
+#
+# A binding that shadows an outer binding of the same name MUST take effect for references in its scope as defined by the corpus.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A binding that shadows an outer binding of the same name MUST take effect for references in its scope as defined by the corpus.
+'''
+

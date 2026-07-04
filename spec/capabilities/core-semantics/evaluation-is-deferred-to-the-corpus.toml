@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#evaluation-is-deferred-to-the-corpus"
+
+# Evaluation Is Deferred To The Corpus
+#
+# The observable behavior of every language construct MUST match the construct's case in the executable-semantics corpus.
+# 
+# The compiler MUST NOT implement a construct's behavior in a way that disagrees with the corpus.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The observable behavior of every language construct MUST match the construct's case in the executable-semantics corpus.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The compiler MUST NOT implement a construct's behavior in a way that disagrees with the corpus.
+'''
+

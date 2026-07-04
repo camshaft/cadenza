@@ -1,0 +1,28 @@
+target = "spec/capabilities/core-semantics.md#evaluation-is-deterministic-given-its-inputs-and-capabilities"
+
+# Evaluation Is Deterministic Given Its Inputs And Capabilities
+#
+# Evaluation of an expression MUST depend only on the expression, the bindings in scope, and the responses to the capabilities the expression invokes.
+# 
+# Evaluation MUST NOT depend on any outside influence the expression did not obtain through a binding in scope or a declared capability.
+# 
+# Evaluation of an expression MUST NOT observe an order among independent subexpressions beyond the order their data dependencies impose.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Evaluation of an expression MUST depend only on the expression, the bindings in scope, and the responses to the capabilities the expression invokes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Evaluation MUST NOT depend on any outside influence the expression did not obtain through a binding in scope or a declared capability.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Evaluation of an expression MUST NOT observe an order among independent subexpressions beyond the order their data dependencies impose.
+'''
+

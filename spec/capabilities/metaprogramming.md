@@ -19,6 +19,24 @@ the affordance that makes Cadenza structurally malleable by agents, cannot becom
 determinism, capability-safety, or reproducibility. It states the invariants; the concrete macro
 surface is governed by the code-shape default.
 
+## Quoting And The AST As A Sum Type
+
+### Quote Produces An AST Value
+
+The expression `(quote <expr>)` MUST evaluate to an AST sum type value representing the structure of `<expr>`, without evaluating `<expr>` itself.
+
+The AST MUST be a sum type with variants for each syntactic form, deconstructible by pattern matching like any other sum type.
+
+### Unquote Evaluates An AST Value As Code
+
+The expression `(unquote <ast-value>)` MUST evaluate the AST value as code, producing the result the quoted expression would have produced.
+
+Unquoting an AST value that does not represent a well-formed expression MUST trap of a defined kind.
+
+### Quote And Unquote Are Inverses
+
+Evaluating `(unquote (quote <expr>))` MUST produce the same result as evaluating `<expr>` directly, so that quote and unquote are inverses.
+
 ## Compile-Time Evaluation
 
 ### Compile-Time Evaluation Is Pure

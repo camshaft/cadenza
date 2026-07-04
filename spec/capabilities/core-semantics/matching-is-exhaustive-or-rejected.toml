@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#matching-is-exhaustive-or-rejected"
+
+# Matching Is Exhaustive Or Rejected
+#
+# A match whose patterns do not cover every value of the scrutinee's type MUST be a compile-time error.
+# 
+# A match MUST evaluate the branch of the first pattern that matches the scrutinee, as defined by the corpus.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A match whose patterns do not cover every value of the scrutinee's type MUST be a compile-time error.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A match MUST evaluate the branch of the first pattern that matches the scrutinee, as defined by the corpus.
+'''
+

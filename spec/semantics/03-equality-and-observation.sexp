@@ -41,14 +41,17 @@
   (events (event "greeting" (: "hello" String))))
 
 (case "emitted events are observed in the order they were emitted"
-  (doc    "Witnesses core-semantics.md #Emitted Events Are Ordered And Part Of Observable Behavior:
-           the sequence is observed in emission order. The run terminates normally with the unit
-           value (core-semantics.md #An Effect-Only Expression Yields The Unit Value); the (output …)
-           clause pins that terminal condition and the (events …) observation pins the order.")
+  (doc    "Witnesses core-semantics.md #Emitted Events Are Ordered And Part Of Observable Behavior and
+           #A Sequencing Block Evaluates Its Forms In Order (3rd sentence: an earlier form's event is
+           observed before a later form's): the two emit-event forms are sequenced by a (do …) block, so
+           \"first\" is observed before \"second\". The run terminates normally with the unit value
+           (core-semantics.md #An Effect-Only Expression Yields The Unit Value); the (output …) clause
+           pins that terminal condition and the (events …) observation pins the order.")
   (input  (module m
             (use (capability emit-event))
             (def (main)
-              (let ((_ (emit-event "step" "first")))
+              (do
+                (emit-event "step" "first")
                 (emit-event "step" "second")))))
   (output (: unit Unit))
   (events (event "step" (: "first" String))

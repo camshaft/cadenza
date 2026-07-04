@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#ordering-where-offered-is-total"
+
+# Ordering Where Offered Is Total
+#
+# A type that offers an ordering MUST offer a total order over its values.
+# 
+# The ordering a type offers MUST be a deterministic function of the values compared.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A type that offers an ordering MUST offer a total order over its values.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The ordering a type offers MUST be a deterministic function of the values compared.
+'''
+

@@ -94,3 +94,9 @@ generations of Cadenza taught these lessons the expensive way; the specification
   rather than nullary-as-pre-applied-Sums vs unary-as-Constructors, eliminating arity-based special cases in
   pattern matching, type synthesis, and compilation; the dual representation compounded (each feature checked
   "which kind?"), and adding unit broke all tests when one check was missed.
+- [Types first-class in the dynamic seed sets up static self-hosting](./2026-07-03-types-first-class-in-dynamic-seed.md)
+  — why the seed makes types first-class values even though it's dynamically checked (§VII defers checking,
+  not types themselves), and why the AST is quotable as a sum type: compiling dynamically-written code to
+  static is incredibly hard, but runtime-checked types written with type annotations transition smoothly to
+  compile-time checking (move validation earlier, not infer what wasn't written); quote/unquote lets the
+  compiler operate on AST values natively rather than string-tagged reflection.

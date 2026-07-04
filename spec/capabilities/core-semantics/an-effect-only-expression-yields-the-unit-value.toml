@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#an-effect-only-expression-yields-the-unit-value"
+
+# An Effect-Only Expression Yields The Unit Value
+#
+# An expression evaluated only for the event it emits MUST yield the unit value as its result.
+# 
+# A program that terminates normally without producing a value other than through its emitted events MUST produce the unit value as its normal-termination value.
+
+[[spec]]
+level = "MUST"
+quote = '''
+An expression evaluated only for the event it emits MUST yield the unit value as its result.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A program that terminates normally without producing a value other than through its emitted events MUST produce the unit value as its normal-termination value.
+'''
+

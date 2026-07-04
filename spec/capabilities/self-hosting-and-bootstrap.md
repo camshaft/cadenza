@@ -43,6 +43,18 @@ A component the toolchain derives MUST exhibit, for a given program, the same ob
 
 Generating a component MUST be treated as producing the runnable form of the program under the one semantics, not as a second definition of the language.
 
+### Exhaustion Is Observed As A Trap In A Derived Component
+
+A derived component that exhausts the deterministic resource measure MUST halt as a trap, so that the reference interpreter's exhaustion terminal condition and the derived component's trap are judged as agreement rather than as a divergence when a compiled program is checked against the oracle.
+
+A derived component MUST NOT be required to distinguish exhaustion from a trap in its observable behavior, because the component boundary signals a bounded halt as a trap and carries no separate exhaustion outcome.
+
+### An Unsupported Construct Is Declined, Not Miscompiled
+
+A generation whose compiler does not yet compile a construct a program uses MUST decline to derive a component for that program rather than emit a component whose observable behavior diverges from the reference interpreter.
+
+The set of programs a generation's compiler declines to derive MUST be observably distinct from the set whose derived component diverges from the oracle, so that a compiler grown incrementally is measured by the programs it compiles in agreement rather than by masking a divergence as an absence.
+
 ### An Offered Interpreted Derivation Agrees With A Generated One
 
 When a generation offers interpreted derivation in addition to generating components, a component derived by embedding the reference interpreter and a component derived by generation MUST exhibit the same observable behavior for the same program.
@@ -52,6 +64,8 @@ A component derived by embedding the reference interpreter MUST satisfy the dete
 ### The Generated Path Is Exercised Before It Is Trusted
 
 Component generation MUST be exercised against the oracle on a real derived-and-run component before a generation relies on it, so that the generated path is proven to materialize rather than deferred indefinitely.
+
+The generated path MUST be exercised against the oracle over every executable-semantics case the generation's compiler compiles, so that oracle agreement is measured across the corpus as the compiler grows rather than on a single derived component.
 
 ## The Staged Path
 
@@ -66,6 +80,12 @@ The seed reference interpreter MUST derive a component that satisfies the same g
 Each generation of the toolchain after the seed MUST be derivable by the generation before it.
 
 The first Cadenza artifact the bootstrap targets MUST be a compiler authored in Cadenza, derived by running the seed reference interpreter over its source, rather than a Cadenza-authored interpreter.
+
+The translation of a program's canonical representation to component bytes MUST be authored in Cadenza rather than in the seed language, so that the seed contributes only evaluation and the compiler it runs contributes the compilation.
+
+Every stage that lowers a program toward component bytes, including any assembly of a textual or structured instruction form into its binary encoding, MUST be authored in Cadenza rather than performed by a seed-language or external tool, so that no part of the translation escapes the Cadenza-authored compiler.
+
+The seed MUST realize a byte-sequence value form, so that the Cadenza-authored compiler it runs can construct component bytes as an ordinary value rather than through a seed-language translation.
 
 A self-hosting generation MUST be a Cadenza compiler authored in Cadenza.
 

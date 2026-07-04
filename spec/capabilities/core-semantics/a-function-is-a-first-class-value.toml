@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#a-function-is-a-first-class-value"
+
+# A Function Is A First-Class Value
+#
+# A function MUST be a value that can be bound to a name, passed as an argument, returned as a result, and stored in a data structure, like any other value.
+# 
+# A function value MUST capture the bindings in scope at the point it is created, so that applying it later observes those captured bindings rather than the bindings in scope at the point of application.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A function MUST be a value that can be bound to a name, passed as an argument, returned as a result, and stored in a data structure, like any other value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A function value MUST capture the bindings in scope at the point it is created, so that applying it later observes those captured bindings rather than the bindings in scope at the point of application.
+'''
+

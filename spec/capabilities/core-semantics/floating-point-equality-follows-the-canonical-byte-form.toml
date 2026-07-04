@@ -1,0 +1,12 @@
+target = "spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form"
+
+# Floating-Point Equality Follows The Canonical Byte Form
+#
+# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
+'''
+

@@ -1,0 +1,28 @@
+target = "spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point"
+
+# A Trap Halts Execution At A Defined Point
+#
+# A trap MUST halt the program at a defined point rather than continue with an unspecified value.
+# 
+# A trap MUST carry a defined kind that identifies why the program halted.
+# 
+# The kind of trap a given operation raises MUST be a deterministic function of the operation and its inputs.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A trap MUST halt the program at a defined point rather than continue with an unspecified value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A trap MUST carry a defined kind that identifies why the program halted.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The kind of trap a given operation raises MUST be a deterministic function of the operation and its inputs.
+'''
+

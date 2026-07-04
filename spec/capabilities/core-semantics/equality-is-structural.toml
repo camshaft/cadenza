@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#equality-is-structural"
+
+# Equality Is Structural
+#
+# Two values MUST be equal when they have the same type and their contents are equal component-wise.
+# 
+# Value equality MUST agree with the canonical byte form, so that two values are equal exactly when their canonical byte forms are identical.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Two values MUST be equal when they have the same type and their contents are equal component-wise.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Value equality MUST agree with the canonical byte form, so that two values are equal exactly when their canonical byte forms are identical.
+'''
+

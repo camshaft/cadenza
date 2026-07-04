@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#a-module-carries-its-manifest-and-entry-as-metadata"
+
+# A Module Carries Its Manifest And Entry As Metadata
+#
+# A module MUST carry the capabilities it declares as metadata separate from its exported fields, so that a declared capability is not itself an export.
+# 
+# A module's metadata MUST be reachable by a metadata key distinct from every export name, so that metadata access cannot collide with an export.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A module MUST carry the capabilities it declares as metadata separate from its exported fields, so that a declared capability is not itself an export.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A module's metadata MUST be reachable by a metadata key distinct from every export name, so that metadata access cannot collide with an export.
+'''
+

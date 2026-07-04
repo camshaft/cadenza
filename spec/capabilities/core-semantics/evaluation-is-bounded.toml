@@ -1,0 +1,12 @@
+target = "spec/capabilities/core-semantics.md#evaluation-is-bounded"
+
+# Evaluation Is Bounded
+#
+# Evaluation MUST be accountable against the deterministic resource measure so that a non-terminating program halts at a defined point rather than running unboundedly.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Evaluation MUST be accountable against the deterministic resource measure so that a non-terminating program halts at a defined point rather than running unboundedly.
+'''
+

@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#observable-behavior-is-a-defined-projection-of-a-run"
+
+# Observable Behavior Is A Defined Projection Of A Run
+#
+# The observable behavior of a program run MUST comprise its terminal condition, the value it produces on normal termination in canonical value form, and the ordered sequence of events it emitted.
+# 
+# The observable behavior of a program run MUST NOT include its internal representation, its timing, or its diagnostics.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The observable behavior of a program run MUST comprise its terminal condition, the value it produces on normal termination in canonical value form, and the ordered sequence of events it emitted.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The observable behavior of a program run MUST NOT include its internal representation, its timing, or its diagnostics.
+'''
+

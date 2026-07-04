@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields"
+
+# A Record Has A Fixed Set Of Named Fields
+#
+# A record MUST associate a fixed set of statically-known field names each with a value, where distinct fields may hold values of distinct types.
+# 
+# A map MUST associate keys with values as a dynamic homogeneous collection whose set of keys is not fixed by the value's form, distinct from a record's fixed field set.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A record MUST associate a fixed set of statically-known field names each with a value, where distinct fields may hold values of distinct types.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A map MUST associate keys with values as a dynamic homogeneous collection whose set of keys is not fixed by the value's form, distinct from a record's fixed field set.
+'''
+

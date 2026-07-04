@@ -19,6 +19,16 @@ implementation and a test) and the behavior gate (every executable-semantics cas
 output). It states the obligations phases carry; it does not prescribe the phase decomposition beyond
 requiring that one exist and be respected.
 
+## Representation
+
+### The Compiler Operates On AST Values
+
+The compiler MUST receive the program as an AST value obtained via quote or decode from the binary form.
+
+The compiler MUST emit instructions as AST sum type values, not as string-tagged pseudo-structures.
+
+The compiler MUST serialize instruction AST values to bytes through a recursive function operating on the AST sum type, so that instruction representation is deconstructible by pattern matching like any other Cadenza value.
+
 ## Phases
 
 ### The Pipeline Has Defined Phases

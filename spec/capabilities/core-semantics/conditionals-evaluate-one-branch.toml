@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#conditionals-evaluate-one-branch"
+
+# Conditionals Evaluate One Branch
+#
+# A conditional MUST evaluate only the branch its condition selects.
+# 
+# Every branch of a conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated branch cannot carry a deferred error.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A conditional MUST evaluate only the branch its condition selects.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Every branch of a conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated branch cannot carry a deferred error.
+'''
+

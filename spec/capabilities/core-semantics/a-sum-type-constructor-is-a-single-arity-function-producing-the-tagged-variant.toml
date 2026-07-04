@@ -1,0 +1,60 @@
+target = "spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant"
+
+# A Sum Type Constructor Is A Single-Arity Function Producing The Tagged Variant
+#
+# A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
+# 
+# A "nullary" variant MUST be a constructor whose argument type is Unit, not a pre-constructed Sum value.
+# 
+# Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
+# 
+# A pattern matching a sum type constructor MUST have the form `(Ctor binder)` in all cases: `(Some x)`, `(None _)`, `(Sign.Zero _)`.
+# 
+# The prelude MUST bind Constructor values only for sum type variants, not pre-applied Sum values.
+# 
+# The pattern matcher MUST NOT special-case "nullary" vs "unary+" constructors by arity.
+# 
+# The pattern matcher MUST handle all constructor patterns uniformly as single-arity applications.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A "nullary" variant MUST be a constructor whose argument type is Unit, not a pre-constructed Sum value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A pattern matching a sum type constructor MUST have the form `(Ctor binder)` in all cases: `(Some x)`, `(None _)`, `(Sign.Zero _)`.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The prelude MUST bind Constructor values only for sum type variants, not pre-applied Sum values.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The pattern matcher MUST NOT special-case "nullary" vs "unary+" constructors by arity.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The pattern matcher MUST handle all constructor patterns uniformly as single-arity applications.
+'''
+

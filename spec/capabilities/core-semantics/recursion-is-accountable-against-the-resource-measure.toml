@@ -1,0 +1,12 @@
+target = "spec/capabilities/core-semantics.md#recursion-is-accountable-against-the-resource-measure"
+
+# Recursion Is Accountable Against The Resource Measure
+#
+# A function that applies itself, directly or indirectly, MUST consume the deterministic resource measure so that unbounded recursion halts at a defined point rather than running unboundedly.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A function that applies itself, directly or indirectly, MUST consume the deterministic resource measure so that unbounded recursion halts at a defined point rather than running unboundedly.
+'''
+

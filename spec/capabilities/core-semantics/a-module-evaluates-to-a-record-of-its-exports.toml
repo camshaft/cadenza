@@ -1,0 +1,28 @@
+target = "spec/capabilities/core-semantics.md#a-module-evaluates-to-a-record-of-its-exports"
+
+# A Module Evaluates To A Record Of Its Exports
+#
+# Evaluating a module MUST produce a record whose fields are the names its definitions export bound to their values.
+# 
+# Each definition in a module MUST register its name and value as a field of the module's record.
+# 
+# A module's exported definition MUST be reachable by member access on the module's record.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Evaluating a module MUST produce a record whose fields are the names its definitions export bound to their values.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Each definition in a module MUST register its name and value as a field of the module's record.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A module's exported definition MUST be reachable by member access on the module's record.
+'''
+

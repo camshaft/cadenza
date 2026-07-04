@@ -139,14 +139,16 @@ The corpus is organized by feature, numbered for a natural reading order — one
 differences are inline annotations, not separate files. It grows as capabilities are specified.
 
 - `01-literals.sexp` — literals and their types
-- `02-binding-and-control.sexp` — lexical binding, shadowing, conditionals, pattern bindings, unbound-name rejection
+- `02-binding-and-control.sexp` — lexical binding, shadowing, `do` sequencing (in-order evaluation, last-form value), conditionals, pattern bindings, unbound-name rejection
 - `03-equality-and-observation.sexp` — structural/float equality, ordering, emitted events, resource-measure exhaustion
 - `04-capabilities.sexp` — the mandatory capability-declaration floor and undeclared-capability rejection
-- `05-compound-types.sexp` — records, sum types, lists, maps; structural equality (runtime) with `(compiler …)` for the static nominal/structural and exhaustiveness rejections
+- `05-compound-types.sexp` — records, sum types, lists, maps; member access (the `.` accessor: field read, non-record trap, missing-field trap); structural equality (runtime) with `(compiler …)` for the static nominal/structural and exhaustiveness rejections
 - `06-numeric-model.sexp` — checked `Int64` core; `(compiler …)` for compile-time no-promotion; `(needs numeric-model)` for rational/wrapping/floating-point arithmetic
 - `07-type-system.sexp` — annotation-vs-inference and ill-typedness, as `(compiler …)` divergences over inputs the dynamic interpreter still runs
 - `08-bootstrap-interpreter.sexp` — reader/printer round-trip and `eval` over a program's AST, as `(needs bootstrap-interpreter)` cases a later generation realizes
 - `09-functions.sexp` — first-class functions and closures: `fn` values, application, closure capture, higher-order functions, recursion, and resource-measure exhaustion on unbounded recursion (core; the seed realizes these)
+- `10-bytes.sexp` — the `Bytes` byte-sequence value form (construction, equality, length, concatenation, total-or-trap indexing, out-of-range trap), tagged `(needs bytes)`; the seed realizes it so the Cadenza-authored compiler can build a component's wasm bytes as an ordinary value (bootstrap.md §"The Compiler Is Authored In Cadenza, Not In The Seed"; `options/realized-capability-set/`)
+- `11-modules.sexp` — single-module semantics: a module declaration binds its name in the enclosing scope (used via a `do` block, no `let` wrapping) to a record of its exports (each `def` a reachable export field), and carries its capability manifest and entry as metadata reached by a `(meta …)` key distinct from every export, so a declared capability is not an export and a like-named export and metadata key do not collide (core-semantics.md §Modules); multi-module composition (imports, visibility, cycles) is deferred beyond a single module (`options/realized-capability-set/`)
 
 Planned as the capabilities they witness are filled in: documentation and
 comments (each a node the interpreter sees through, witnessing that it is semantically inert),

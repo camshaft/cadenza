@@ -1,0 +1,20 @@
+target = "spec/capabilities/core-semantics.md#emitted-events-are-ordered-and-part-of-observable-behavior"
+
+# Emitted Events Are Ordered And Part Of Observable Behavior
+#
+# The sequence of events a program emits MUST be observed in the order the program emitted them.
+# 
+# Two runs whose observable behaviors differ in any emitted event, in event order, or in terminal condition MUST be treated as behaving differently.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The sequence of events a program emits MUST be observed in the order the program emitted them.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Two runs whose observable behaviors differ in any emitted event, in event order, or in terminal condition MUST be treated as behaving differently.
+'''
+
