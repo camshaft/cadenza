@@ -54,3 +54,43 @@ generations of Cadenza taught these lessons the expensive way; the specification
 - [Bootstrap targets the compiler directly](./2026-07-03-bootstrap-targets-the-compiler-directly.md) —
   why the staged path collapsed to seed interpreter → Cadenza compiler → self-hosting, dropping the
   re-author-the-interpreter-in-Cadenza rung; the reference interpreter stays the oracle, so IX/XIV hold.
+- [The seed realizes a byte-sequence form so the Cadenza compiler emits component bytes](./2026-07-03-seed-realizes-bytes-so-the-compiler-emits-components.md)
+  — why the codegen is authored in Cadenza (not the seed) and the seed realizes a `Bytes` value form:
+  an attended halt when the build was about to write the codegen in Rust, and the seed↔compiler seam it
+  hardened (bootstrap.md §"The Compiler Is Authored In Cadenza, Not In The Seed").
+- [The Cadenza compiler emits the whole component](./2026-07-03-the-compiler-emits-the-whole-component.md)
+  — why the compiler emits the complete component binary as a value rather than a core module a tool
+  completes, so a derivation's bytes are a function of the Cadenza compiler alone and self-hosting is a
+  clean fixpoint (no external wrapping tool in the byte path).
+- [One accessor, everything is a record](./2026-07-03-one-accessor-modules-are-records.md) — why `.` is
+  the sole record accessor (`a.b` is sugar for `(. a b)`), why modules/records/prelude namespaces are
+  all records while maps stay dynamic, and the `(meta …)` metadata channel; killed a lowercase/uppercase
+  dotted-atom heuristic that re-parsed meaning from an atom's spelling.
+- [Exhaustion is a trap across the compiled seam](./2026-07-03-exhaustion-is-a-trap-across-the-compiled-seam.md)
+  — why a derived component that exhausts the resource measure halts as a trap and is judged as agreeing
+  with the interpreter's `exhausted` terminal condition; surfaced by the differential gate before growing
+  the compiler to recursion, so the two recursion cases don't flip to a false `disagree`.
+- [Decline, do not miscompile](./2026-07-03-decline-do-not-miscompile.md) — why a compiler grown
+  incrementally MUST trap/decline a construct it cannot yet compile rather than emit divergent bytes or
+  silently skip it, keeping "cannot yet" and "does wrong" observably distinct so a green differential gate
+  means every compiled program agrees.
+- [The corpus is a differential gate](./2026-07-03-the-corpus-is-a-differential-gate.md) — why the
+  generated path is exercised against the oracle over every corpus case the compiler compiles, turning the
+  executable-semantics corpus into a live regression surface as the compiler grows (agree/todo/skip/disagree).
+- [The assembler lives in Cadenza](./2026-07-03-the-assembler-lives-in-cadenza.md) — why even the
+  instruction-to-bytes assembly step is authored in Cadenza (a WAT-like structured layer folded to bytes),
+  not delegated to a host `wat`-crate pass, so no part of the translation escapes the Cadenza compiler.
+- [The compile seam is statically typed](./2026-07-03-the-compile-seam-is-statically-typed.md) — why the
+  seed invokes the Cadenza compiler through a byte-to-byte interface (`compile : list<u8> -> list<u8>`)
+  rather than through its dynamic value type, so no dynamic-language assumption is baked into the
+  compiler's contract and a later generation can type-check the same seam; surfaced when the self-hosting
+  harness needed the interpreted and compiled compilers to share one static type to be comparable.
+- [Author Cadenza as static even though the seed is dynamic](./2026-07-03-author-cadenza-as-static-even-though-the-seed-is-dynamic.md)
+  — why every line of Cadenza source is written as a well-typed static program (sum types + `match`, not
+  runtime `Ast.is-*` kind-reflection) even though the seed defers type-checking, so the source is accepted
+  unchanged by the later type-checking generation rather than rewritten and the §VII deferral stays a stage.
+- [Uniform single-arity constructors eliminate cascading special cases](./2026-07-03-uniform-single-arity-constructors.md)
+  — why all sum type constructors are single-arity functions (including "nullary" variants that take Unit),
+  rather than nullary-as-pre-applied-Sums vs unary-as-Constructors, eliminating arity-based special cases in
+  pattern matching, type synthesis, and compilation; the dual representation compounded (each feature checked
+  "which kind?"), and adding unit broke all tests when one check was missed.

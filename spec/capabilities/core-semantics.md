@@ -79,6 +79,20 @@ A conditional MUST evaluate only the branch its condition selects.
 
 Every branch of a conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated branch cannot carry a deferred error.
 
+## Sequencing
+
+### A Sequencing Block Evaluates Its Forms In Order
+
+A sequencing block MUST evaluate each of its forms in the order they are written.
+
+A sequencing block MUST evaluate to the value of its last form.
+
+An event a form in a sequencing block emits MUST be observed before an event emitted by a later form in the same block.
+
+### A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It
+
+A declaration form in a sequencing block MUST bind its name for the forms that follow it in that block, so that a name a declaration introduces is in scope without a separate binding form.
+
 ## Pattern Matching
 
 ### Matching Is Exhaustive Or Rejected
@@ -90,6 +104,62 @@ A match MUST evaluate the branch of the first pattern that matches the scrutinee
 ### Bindings Introduced By A Pattern Are Scoped To Its Branch
 
 A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
+
+## Sum Types
+
+### A Sum Type Constructor Is A Single-Arity Function Producing The Tagged Variant
+
+A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
+
+A "nullary" variant MUST be a constructor whose argument type is Unit, not a pre-constructed Sum value.
+
+Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
+
+A pattern matching a sum type constructor MUST have the form `(Ctor binder)` in all cases: `(Some x)`, `(None _)`, `(Sign.Zero _)`.
+
+The prelude MUST bind Constructor values only for sum type variants, not pre-applied Sum values.
+
+The pattern matcher MUST NOT special-case "nullary" vs "unary+" constructors by arity.
+
+The pattern matcher MUST handle all constructor patterns uniformly as single-arity applications.
+
+## Records, Maps, And Member Access
+
+### A Record Has A Fixed Set Of Named Fields
+
+A record MUST associate a fixed set of statically-known field names each with a value, where distinct fields may hold values of distinct types.
+
+A map MUST associate keys with values as a dynamic homogeneous collection whose set of keys is not fixed by the value's form, distinct from a record's fixed field set.
+
+### Member Access Projects A Record Field
+
+Member access MUST project the field named by its key from the record it is applied to, evaluating to the value that field holds.
+
+Member access applied to a value that is not a record MUST raise a trap of a defined kind rather than produce an unspecified value.
+
+Member access naming a field the record does not contain MUST raise a trap of a defined kind rather than produce an unspecified value.
+
+## Modules
+
+### A Module Binds Its Name In Its Enclosing Scope
+
+Evaluating a module MUST bind the module's declared name in the enclosing scope to the record of the module's exports, so that a module is named by its declaration without a separate binding form.
+
+A reference to a module's name in its enclosing scope MUST resolve to that export record under the same lexical scope and shadowing rules as any other binding.
+
+### A Module Evaluates To A Record Of Its Exports
+
+Evaluating a module MUST produce a record whose fields are the names its definitions export bound to their values.
+
+Each definition in a module MUST register its name and value as a field of the module's record.
+
+A module's exported definition MUST be reachable by member access on the module's record.
+
+### A Module Carries Its Manifest And Entry As Metadata
+
+A module MUST carry the capabilities it declares as metadata separate from its exported fields, so that a declared capability is not itself an export.
+
+A module's metadata MUST be reachable by a metadata key distinct from every export name, so that metadata access cannot collide with an export.
 
 ## Failure And Termination
 
