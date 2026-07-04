@@ -151,6 +151,56 @@
   (input  (let ((ctor None)) (ctor unit)))
   (output (: None (Option Any))))
 
+(case "a sum type is declared with named variants"
+  (doc    "Witnesses type-system.md #Sum Types Are Declarable Constructed And Deconstructed (1st
+           sentence): a program declares a sum type as a set of named variants. Syntax TBD
+           (options/sum-type-declaration/); this case uses (type Color (Red | Green | Blue)) to
+           declare Color with three nullary constructors. Each constructor is single-arity taking
+           Unit per the uniform constructor requirement. The constructors bind in a Color record:
+           Color.Red, Color.Green, Color.Blue.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Color (Red | Green | Blue))
+            (Color.Red unit)))
+  (output (: Color.Red Color)))
+
+(case "a sum type variant can carry data"
+  (doc    "Witnesses type-system.md #Sum Types Are Declarable Constructed And Deconstructed (1st
+           sentence: 'each optionally carrying data'). Syntax (type Result (Ok Int64 | Err))
+           declares Result where Ok carries an Int64 and Err carries Unit (nullary). Both are
+           single-arity: Ok takes Int64, Err takes Unit. Constructors: Result.Ok, Result.Err.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Result (Ok Int64 | Err))
+            (Result.Ok 42)))
+  (output (: (Result.Ok 42) Result)))
+
+(case "sum type constructors are in scope after declaration"
+  (doc    "Witnesses type-system.md #Sum Types Are Declarable: declaring a sum type binds its
+           constructors in the enclosing scope as members of a record named after the type.
+           After (type Status (Ready | Waiting)), both Status.Ready and Status.Waiting are
+           Constructor values accessible via member access.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Status (Ready | Waiting))
+            (match (Status.Ready unit)
+              ((Status.Ready _)   1)
+              ((Status.Waiting _) 0))))
+  (output (: 1 Int64)))
+
+(case "a sum type can mix nullary and payload-carrying variants"
+  (doc    "Witnesses type-system.md #Sum Types Are Declarable and the uniform constructor
+           requirement: a sum can have both nullary (take Unit) and payload-carrying (take data)
+           constructors. (type Maybe (Just Int64 | Nothing)) declares Maybe where Just takes
+           Int64 and Nothing takes Unit — both single-arity, uniformly handled.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Maybe (Just Int64 | Nothing))
+            (match (Maybe.Just 7)
+              ((Maybe.Just n)    n)
+              ((Maybe.Nothing _) 0))))
+  (output (: 7 Int64)))
+
 (case "same-shape nominal types are distinct to the compiler, structural to the dynamic interpreter"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural. Point and
            Vector share a shape; a typed generation tracks nominal identity and rejects comparing them

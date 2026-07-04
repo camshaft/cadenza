@@ -27,6 +27,25 @@
   (input  y)
   (error  CDZ0101))
 
+(case "a sequencing block yields the value of its last form"
+  (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (2nd sentence:
+           a block evaluates to its last form's value). The earlier forms are pure here, so the block's
+           only observable result is the last form; ordering of effects is witnessed in
+           03-equality-and-observation.sexp.")
+  (input  (do 1 2 3))
+  (output (: 3 Int64)))
+
+(case "a single-form body admits a sequence by holding a do block"
+  (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order in a
+           single-form body position: a `let` body is one form, so a sequence of forms is written as a
+           `(do …)` there. The prefix form is pure, so the block yields the value of its last form (the
+           binding x), showing the do is the sequencing point and let scope is unchanged.")
+  (input  (let ((x 4))
+            (do
+              (+ x 1)
+              x)))
+  (output (: 4 Int64)))
+
 (case "a conditional evaluates only the selected branch"
   (doc    "Witnesses core-semantics.md #Conditionals Evaluate One Branch. The unselected branch would
            trap on overflow if it were evaluated; the normal result proves it was not.")
@@ -41,8 +60,9 @@
 (case "a pattern binds a name scoped to its branch"
   (doc    "Witnesses core-semantics.md #Bindings Introduced By A Pattern Are Scoped To Its Branch.
            Option is declared where used as (Some <value> | None) (options/code-shape/); the Some
-           branch binds n to the payload, in scope only in that branch.")
+           branch binds n to the payload, in scope only in that branch. Patterns are uniform:
+           (Some n) for unary, (None _) for nullary — both single-arity.")
   (input  (match (Some 5)
             ((Some n) n)
-            (None     0)))
+            ((None _) 0)))
   (output (: 5 Int64)))
