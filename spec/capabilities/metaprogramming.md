@@ -37,6 +37,20 @@ Unquoting an AST value that does not represent a well-formed expression MUST tra
 
 Evaluating `(unquote (quote <expr>))` MUST produce the same result as evaluating `<expr>` directly, so that quote and unquote are inverses.
 
+## Quasiquote For Programmatic AST Construction
+
+### Quasiquote Allows Selective Evaluation
+
+The expression `` `<template>`` (quasiquote) MUST produce an AST value like `quote`, but with selective evaluation at marked positions.
+
+Any subexpression `,<expr>` (unquote) within a quasiquote template MUST be evaluated and its result inserted into the AST at that position.
+
+Any subexpression `,@<list-expr>` (unquote-splicing) within a quasiquote template MUST be evaluated to a list whose elements are spliced into the parent list at that position, not nested as a single element.
+
+Quasiquote MUST nest, so that ``` ``(+ ,,x)``` evaluates the inner unquote to produce `` `(+ ,<x-value>)``.
+
+Unquote and unquote-splicing outside a quasiquote context MUST be a syntax error.
+
 ## Compile-Time Evaluation
 
 ### Compile-Time Evaluation Is Pure

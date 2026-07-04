@@ -100,3 +100,8 @@ generations of Cadenza taught these lessons the expensive way; the specification
   static is incredibly hard, but runtime-checked types written with type annotations transition smoothly to
   compile-time checking (move validation earlier, not infer what wasn't written); quote/unquote lets the
   compiler operate on AST values natively rather than string-tagged reflection.
+- [Quasiquote for programmatic AST construction](./2026-07-03-quasiquote-for-programmatic-ast-construction.md)
+  — why quasiquote with selective evaluation (`,` unquote, `,@` splice) is necessary once the compiler
+  operates on AST values: `quote` is uniform (never evaluates), but instruction construction needs to embed
+  computed values; without quasiquote, building `(+ x 10)` where `x` varies means verbose
+  `(Ast.List (list ...))` calls; `` `(+ ,x 10)`` reads like the instruction and makes the compiler maintainable.

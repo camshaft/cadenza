@@ -29,6 +29,10 @@ The compiler MUST emit instructions as AST sum type values, not as string-tagged
 
 The compiler MUST serialize instruction AST values to bytes through a recursive function operating on the AST sum type, so that instruction representation is deconstructible by pattern matching like any other Cadenza value.
 
+### The Compiler Constructs Instructions Via Quasiquote
+
+The compiler MUST use quasiquote to construct instruction AST values programmatically, so that instruction-building code is readable and maintainable rather than a wall of manual AST constructor calls.
+
 ## Phases
 
 ### The Pipeline Has Defined Phases

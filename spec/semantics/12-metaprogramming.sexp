@@ -46,3 +46,53 @@
            no elements is malformed (no operator), so unquoting it traps.")
   (input  (unquote (Ast.List (list))))
   (trap   "malformed AST"))
+
+(case "quasiquote quotes with selective evaluation via unquote"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation (1st-2nd sentences):
+           `<template> quotes like quote, but ,<expr> (unquote) evaluates <expr> and inserts result.
+           `(+ ,x 10) with x=2 produces AST for (+ 2 10), not (+ x 10).")
+  (input  (let ((x 2)) `(+ ,x 10)))
+  (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
+
+(case "unquote evaluates and inserts the result"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation: unquote inserts
+           the evaluated result. `(+ ,(+ 1 1) 10) evaluates (+ 1 1) to 2, then inserts 2.")
+  (input  `(+ ,(+ 1 1) 10))
+  (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
+
+(case "unquote-splicing splices a list into the parent"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation (3rd sentence):
+           ,@<list-expr> splices list elements into parent, not nested. `(+ ,@args) with
+           args=(list 1 2 3) produces (+ 1 2 3), not (+ (1 2 3)).")
+  (input  (let ((args (list 1 2 3))) `(+ ,@args)))
+  (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2) (Ast.Int 3))) Ast)))
+
+(case "unquote-splicing vs unquote differ in list handling"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation: unquote nests the
+           list as one element; unquote-splicing flattens it. `(f ,x) vs `(f ,@x) with x=(list 1 2).")
+  (input  (let ((x (list 1 2)))
+            (= `(f ,x) `(f (list 1 2)))))
+  (output (: true Bool)))
+
+(case "quasiquote nests"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation (4th sentence):
+           quasiquote nests, so ``(+ ,,x) evaluates inner unquote to produce `(+ ,<x-value>).
+           With x=2, ``(+ ,,x) produces `(+ ,2), which when evaluated produces (+ 2).")
+  (input  (let ((x 2)) ``(+ ,,x)))
+  (output (: (Ast.List (list (Ast.Name "quasiquote")
+                             (Ast.List (list (Ast.Name "+")
+                                           (Ast.List (list (Ast.Name "unquote") (Ast.Int 2)))))))
+             Ast)))
+
+(case "unquote outside quasiquote is an error"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation (5th sentence):
+           unquote and unquote-splicing are only valid inside quasiquote. Bare ,x is a syntax error.")
+  (input    ,x)
+  (compiler (error CDZ0401)))
+
+(case "quasiquote makes instruction construction readable"
+  (doc    "Witnesses compiler-pipeline.md #The Compiler Constructs Instructions Via Quasiquote:
+           building instructions via quasiquote is readable. Compare `(i64.const ,n) vs
+           (Ast.List (list (Ast.Name \"i64.const\") n)) — quasiquote reads like the instruction.")
+  (input  (let ((n 42)) `(i64.const ,n)))
+  (output (: (Ast.List (list (Ast.Name "i64.const") (Ast.Int 42))) Ast)))
