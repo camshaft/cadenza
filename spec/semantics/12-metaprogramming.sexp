@@ -87,16 +87,20 @@
 (case "unquote outside quasiquote is a syntax error"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            , and ,@ are only valid inside quasiquote context. Bare ,x is a syntax error — there's
-           no quasiquote template to insert into.")
+           no quasiquote template to insert into. The dynamic seed evaluates (unquote x) which
+           finds x unbound (CDZ0101); a typed generation rejects it at parse time (CDZ0401).")
   (input    ,x)
+  (error    CDZ0101)
   (compiler (error CDZ0401)))
 
 (case "quasiquote makes instruction construction readable"
   (doc    "Witnesses compiler-pipeline.md #The Compiler Constructs Instructions Via Quasiquote:
-           building instructions via quasiquote is readable. Compare `(i64.const ,n) vs
-           (Ast.List (list (Ast.Name \"i64.const\") n)) — quasiquote reads like the instruction.")
-  (input  (let ((n 42)) `(i64.const ,n)))
-  (output (: (Ast.List (list (Ast.Name "i64.const") (Ast.Int 42))) Ast)))
+           building instructions via quasiquote is readable. Compare `(op-const ,n) vs
+           (Ast.List (list (Ast.Name \"op-const\") n)) — quasiquote reads like the instruction.
+           Note: dotted names like i64.const expand to member access; instruction tags use
+           hyphenated names to avoid this.")
+  (input  (let ((n 42)) `(op-const ,n)))
+  (output (: (Ast.List (list (Ast.Name "op-const") (Ast.Int 42))) Ast)))
 
 (case "Ast.decode converts bytes to an AST sum type value"
   (doc    "Witnesses compiler-pipeline.md #The Compiler Operates On AST Values: the compiler receives

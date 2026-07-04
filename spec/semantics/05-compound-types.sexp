@@ -45,7 +45,7 @@
            variant. Construction is via application: Sign.Pos is a Constructor (function), and
            (Sign.Pos unit) applies it to unit, producing the Sum value.")
   (input  (let ((s (Sign.Pos unit))) s))
-  (output (: Sign.Pos Sign)))
+  (output (: (Sign.Pos unit) Sign)))
 
 (case "a sum-type value is deconstructed by an exhaustive match"
   (doc    "Patterns are uniform: `(Ctor _)` for nullary constructors. The binder `_` matches the
@@ -94,7 +94,7 @@
            produces the Sum value. No pre-applied Sums in the prelude — the constructor is the value
            bound to Sign.Zero, not the already-constructed variant.")
   (input  (Sign.Zero unit))
-  (output (: Sign.Zero Sign)))
+  (output (: (Sign.Zero unit) Sign)))
 
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
@@ -149,7 +149,7 @@
            cannot use bare `None` as a value; you must apply it: `(None unit)`. The bound value is
            the constructor, not the variant.")
   (input  (let ((ctor None)) (ctor unit)))
-  (output (: None (Option Any))))
+  (output (: (None unit) (Option Any))))
 
 (case "a sum type is declared with named variants"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable Constructed And Deconstructed (1st

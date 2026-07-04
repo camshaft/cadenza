@@ -43,13 +43,12 @@
             ((adder 10) 5)))
   (output (: 15 Int64)))
 
-(case "applying a function to the wrong number of arguments traps"
-  (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments
-           (arity sentence): the dynamic interpreter has no result for a mismatched-arity application,
-           so it traps of a defined kind rather than producing an unspecified value. A typed generation
-           rejects this at compile time before running.")
-  (input  ((fn (x y) (+ x y)) 1))
-  (trap   "arity mismatch"))
+(case "applying a non-function traps"
+  (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameter To Its Argument:
+           applying a non-function value traps. With curried functions, partial application is
+           natural (returns a closure), so the error case is applying a non-function like an integer.")
+  (input  (5 3))
+  (trap   "applied a non-function"))
 
 (case "a recursive def computes over its argument"
   (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments and

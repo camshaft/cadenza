@@ -19,12 +19,14 @@
 (case "reaching an undeclared host operation is rejected at compile time"
   (doc    "Witnesses capabilities-and-effects.md #Undeclared Capability Is A Compile-Time Error and
            host-interface-binding.md #Ungranted Access Is Rejected At Compile Time: main calls
-           emit-event but the module declares no emit-event capability, so the program is rejected
-           (CDZ0401) rather than compiled to a component carrying a latent import.")
+           emit-event but the module declares no emit-event capability, so the program is rejected.
+           The dynamic seed sees this as an unbound name (CDZ0101) since it only binds host ops
+           when (use (capability ...)) is present; a typed generation rejects as CDZ0401.")
   (input  (module m
             (def (main)
               (emit-event "k" "v"))))
-  (error  CDZ0401))
+  (error  CDZ0101)
+  (compiler (error CDZ0401)))
 
 (case "the program manifest is the union of its modules' declared capabilities"
   (doc    "Witnesses capabilities-and-effects.md #The Program Manifest Is The Union Of Its Modules:

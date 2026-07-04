@@ -28,7 +28,7 @@
   (input  (do
             (module m
               (def (answer) 42))
-            ((. m answer))))
+            ((. m answer) unit)))
   (output (: 42 Int64)))
 
 (case "each definition in a module registers a reachable export field"
@@ -41,7 +41,7 @@
             (module m
               (def (one) 1)
               (def (two) 2))
-            (+ ((. m one)) ((. m two)))))
+            (+ ((. m one) unit) ((. m two) unit))))
   (output (: 3 Int64)))
 
 (case "a module's declared capability is reachable as metadata, not as an export"
@@ -84,7 +84,7 @@
             (module m
               (use (capability emit-event))
               (def (capabilities) 7))
-            (if (= ((. m capabilities)) 7)
+            (if (= ((. m capabilities) unit) 7)
                 (= (. m (meta capabilities)) (list "emit-event"))
                 false)))
   (output (: true Bool)))

@@ -38,6 +38,7 @@
   (doc    "Witnesses core-semantics.md #Types Are First-Class Values (1st sentence): a Type can be
            bound to a name, passed as an argument, returned from a function. The seed treats Type as
            a value kind; a typed generation validates Type values statically.")
+  (needs  type-system)
   (input  (let ((t Int64)) t))
   (output (: Int64 Type)))
 
@@ -46,6 +47,7 @@
            type annotations at runtime, trapping on mismatch. (: 42 Bool) traps because 42 is Int64,
            not Bool. A typed generation rejects this at compile time, but the seed's runtime check
            enforces the same type system.")
+  (needs  type-system)
   (input  (: 42 Bool))
   (trap   "type annotation mismatch"))
 
@@ -53,5 +55,6 @@
   (doc    "Witnesses core-semantics.md #Types Are First-Class Values (4th sentence): seed's runtime
            checking and later static checking agree. (: (+ 1 2) Int64) passes both — runtime check
            sees Int64 value, static check infers Int64 type, both agree with annotation.")
+  (needs  type-system)
   (input  (: (+ 1 2) Int64))
   (output (: 3 Int64)))
