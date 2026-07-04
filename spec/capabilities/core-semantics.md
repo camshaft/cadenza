@@ -61,11 +61,19 @@ A function MUST be a value that can be bound to a name, passed as an argument, r
 
 A function value MUST capture the bindings in scope at the point it is created, so that applying it later observes those captured bindings rather than the bindings in scope at the point of application.
 
-### Applying A Function Binds Its Parameters To Its Arguments
+### Functions Are Single-Arity
 
-Applying a function to arguments MUST evaluate the function body in an environment that extends the function's captured environment with each parameter bound to the corresponding argument.
+A function MUST take exactly one argument and return exactly one value.
 
-Applying a function to a number of arguments other than the number of parameters it declares MUST trap of a defined kind rather than produce an unspecified value.
+Multi-parameter syntax `(fn (x y) body)` MUST desugar to curried form `(fn x (fn y body))`.
+
+Multi-argument application `(f a b)` MUST desugar to curried application `((f a) b)`.
+
+Partial application MUST be natural: applying a curried function to fewer arguments than its full chain returns a closure awaiting the remaining arguments.
+
+### Applying A Function Binds Its Parameter To Its Argument
+
+Applying a function to its argument MUST evaluate the function body in an environment that extends the function's captured environment with its parameter bound to the argument.
 
 ### Recursion Is Accountable Against The Resource Measure
 
@@ -116,6 +124,18 @@ A type annotation `(: <expr> <Type>)` MUST carry its type as a value, not as a s
 The dynamic interpreter MUST validate type annotations at runtime, trapping on mismatch between the value's runtime type and the annotation's declared type.
 
 The static type-checker MUST validate the same annotations at compile-time, rejecting ill-typed programs before they run, so that the seed's runtime checking and a later generation's static checking enforce the same type system.
+
+## Tuples
+
+### A Tuple Is A Fixed-Size Positional Product
+
+A tuple MUST be a fixed-size value whose elements are accessed positionally.
+
+A tuple MAY hold elements of distinct types.
+
+The empty tuple MUST be the unit value, so that unit and `()` are the same value.
+
+A tuple MUST be deconstructible by pattern matching, so that `(tuple a b)` in pattern position binds the elements.
 
 ## Sum Types
 
