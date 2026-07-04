@@ -90,3 +90,31 @@
 (case "left shift"
   (input  (<< 1 7))
   (output (: 128 Int64)))
+
+(case "greater-than comparison"
+  (doc    "The compiler uses > for bounds checking and conditional logic.")
+  (input  (> 5 3))
+  (output (: true Bool)))
+
+(case "less-than-or-equal"
+  (input  (<= 3 3))
+  (output (: true Bool)))
+
+(case "greater-than-or-equal"
+  (input  (>= 4 3))
+  (output (: true Bool)))
+
+(case "integer to byte (truncate to 0-255)"
+  (doc    "The compiler needs to convert integers to single bytes for wasm encoding.
+           Int.to-byte truncates to the low 8 bits (0-255).")
+  (input  (Int.to-byte 200))
+  (output (: 200 Int64)))
+
+(case "integer to byte wraps on overflow"
+  (doc    "Values > 255 wrap to low 8 bits. The compiler uses this for byte encoding.")
+  (input  (Int.to-byte 256))
+  (output (: 0 Int64)))
+
+(case "negative integer to byte uses two's complement"
+  (input  (Int.to-byte -1))
+  (output (: 255 Int64)))

@@ -96,3 +96,34 @@
             (1 "one")
             (else "other")))
   (output (: "other" String)))
+
+(case "nested patterns deconstruct recursively"
+  (doc    "Witnesses core-semantics.md #Pattern Matching: patterns can nest — a constructor pattern
+           inside another constructor pattern. (Some (tuple a b)) matches a Some whose payload is a
+           tuple, binding both elements. The compiler uses this to deconstruct nested AST structures.")
+  (input  (match (Some (tuple 3 7))
+            ((Some (tuple a b)) (+ a b))
+            ((None _)           0)))
+  (output (: 10 Int64)))
+
+(case "nested patterns with literals"
+  (doc    "Witnesses core-semantics.md #Pattern Matching: nested patterns can combine constructors
+           and literals. (Some 0) matches Some carrying exactly 0 — the literal refines the match.")
+  (input  (match (Some 0)
+            ((Some 0) "zero")
+            ((Some _) "nonzero")
+            ((None _) "none")))
+  (output (: "zero" String)))
+
+(case "deeply nested pattern matching"
+  (doc    "The compiler pattern-matches over nested AST: a list node containing a name node.
+           Patterns nest arbitrarily deep.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Expr (Lit Int64 | Add (Tuple Expr Expr)))
+            (let ((e (Expr.Add (tuple (Expr.Lit 1) (Expr.Lit 2)))))
+              (match e
+                ((Expr.Lit n) n)
+                ((Expr.Add (tuple (Expr.Lit a) (Expr.Lit b))) (+ a b))
+                ((Expr.Add _) 0)))))
+  (output (: 3 Int64)))

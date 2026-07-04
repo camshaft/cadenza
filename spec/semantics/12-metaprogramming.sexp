@@ -97,3 +97,21 @@
            (Ast.List (list (Ast.Name \"i64.const\") n)) — quasiquote reads like the instruction.")
   (input  (let ((n 42)) `(i64.const ,n)))
   (output (: (Ast.List (list (Ast.Name "i64.const") (Ast.Int 42))) Ast)))
+
+(case "Ast.decode converts bytes to an AST sum type value"
+  (doc    "Witnesses compiler-pipeline.md #The Compiler Operates On AST Values: the compiler receives
+           a program as binary bytes and decodes it to an AST sum type value. Ast.decode takes Bytes
+           and returns an Ast value (the same sum type quote produces). The compiler then pattern-matches
+           over the decoded AST.")
+  (input  (match (Ast.decode (Ast.encode (quote 42)))
+            ((Ast.Int n) n)
+            (else        0)))
+  (output (: 42 Int64)))
+
+(case "Ast.encode and Ast.decode round-trip"
+  (doc    "Witnesses contracts/ast-encoding.md: encoding an AST to binary and decoding it back
+           produces the same AST value. The compiler relies on this: it decodes the input, operates
+           on AST values, and the encoding is faithful.")
+  (input  (= (Ast.decode (Ast.encode (quote (+ 1 2))))
+             (quote (+ 1 2))))
+  (output (: true Bool)))
