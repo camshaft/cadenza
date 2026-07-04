@@ -66,3 +66,33 @@
             ((Some n) n)
             ((None _) 0)))
   (output (: 5 Int64)))
+
+(case "matching on integer literals"
+  (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: a match can branch on
+           literal values, not just constructors. Integer literal patterns match by equality. The
+           compiler uses this to dispatch on instruction opcodes and section IDs.")
+  (input  (match 2
+            (0 "zero")
+            (1 "one")
+            (2 "two")
+            (else "many")))
+  (output (: "two" String)))
+
+(case "matching on string literals"
+  (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: string literal patterns
+           match by equality. The compiler uses this heavily to dispatch on instruction tags like
+           'i64.const', 'i64.add', etc. — replacing nested if/= chains with readable match.")
+  (input  (match "hello"
+            ("hello" 1)
+            ("world" 2)
+            (else    0)))
+  (output (: 1 Int64)))
+
+(case "matching falls through to else when no literal matches"
+  (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: when no literal pattern
+           matches, the else (wildcard) catches it. Without else, a non-exhaustive match traps.")
+  (input  (match 99
+            (0 "zero")
+            (1 "one")
+            (else "other")))
+  (output (: "other" String)))

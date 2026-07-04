@@ -201,6 +201,69 @@
               ((Maybe.Nothing _) 0))))
   (output (: 7 Int64)))
 
+(case "Result type for fallible operations"
+  (doc    "The compiler returns Result values for operations that can fail (parse errors, validation).
+           Result is a sum type with Ok carrying success and Err carrying failure. Both are single-arity
+           constructors. This replaces trapping for recoverable errors.")
+  (input  (match (Ok 42)
+            ((Ok n)  (+ n 1))
+            ((Err _) 0)))
+  (output (: 43 Int64)))
+
+(case "Result propagates errors without trapping"
+  (doc    "With Result, a function that encounters an error returns (Err ...) instead of trapping.
+           The caller matches and decides how to handle it. This is essential for a compiler that
+           needs to report diagnostics rather than crash on the first error.")
+  (input  (match (Err "parse error")
+            ((Ok _)  "success")
+            ((Err e) e)))
+  (output (: "parse error" String)))
+
+(case "unit is the empty tuple"
+  (doc    "Witnesses core-semantics.md: unit is the 0-element tuple. There is no separate Unit concept
+           — unit and () are the same value. This unifies the type system: nullary constructors take the
+           empty tuple, functions that 'return nothing' return the empty tuple.")
+  (input  (= unit ()))
+  (output (: true Bool)))
+
+(case "a tuple is constructed with positional elements"
+  (doc    "Witnesses core-semantics.md: tuples are the product type — fixed-size, heterogeneous,
+           positionally accessed. A 2-tuple (pair): (tuple 1 true) produces a value of type
+           (Tuple Int64 Bool). Tuples are how multi-field constructors pass 'multiple arguments'
+           to a single-arity function/constructor.")
+  (input  (tuple 1 true))
+  (output (: (tuple 1 true) (Tuple Int64 Bool))))
+
+(case "tuple elements are accessed by index"
+  (doc    "Witnesses core-semantics.md: tuple elements are accessed positionally. (tuple.0 t) gets
+           the first element, (tuple.1 t) the second, etc. Access is bounds-checked at compile time
+           (a typed generation rejects out-of-bounds; the seed traps at runtime).")
+  (input  (let ((t (tuple 1 "hello" true)))
+            (tuple.1 t)))
+  (output (: "hello" String)))
+
+(case "tuples are deconstructed by pattern matching"
+  (doc    "Witnesses core-semantics.md: tuple patterns bind positional elements. The pattern
+           (tuple a b) binds a and b to the first and second elements respectively. This is how
+           you 'multi-argument pattern match' with single-arity constructors — the payload is a tuple.")
+  (input  (let ((pair (tuple 3 7)))
+            (match pair
+              ((tuple a b) (+ a b)))))
+  (output (: 10 Int64)))
+
+(case "a recursive sum type works with pattern matching"
+  (doc    "Witnesses type-system.md #Sum Types Are Declarable: sum types can be recursive — a variant
+           can carry the type itself. (type IntList (Cons (Tuple Int64 IntList) | Nil)) is a linked list.
+           Pattern matching deconstructs recursively. This is critical: the AST is a recursive sum type.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (let ((xs (IntList.Cons (tuple 1 (IntList.Cons (tuple 2 (IntList.Nil ())))))))
+              (match xs
+                ((IntList.Cons (tuple head _)) head)
+                ((IntList.Nil _)               0)))))
+  (output (: 1 Int64)))
+
 (case "same-shape nominal types are distinct to the compiler, structural to the dynamic interpreter"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural. Point and
            Vector share a shape; a typed generation tracks nominal identity and rejects comparing them

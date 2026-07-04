@@ -1,8 +1,11 @@
 ; Functions and closures — witnesses core-semantics.md §Functions. Functions are
-; first-class values (fn), applied by (fn-expr arg…), capturing their enclosing
-; scope. These are CORE cases (no (needs …)): the seed realizes them, because a
-; compiler authored in Cadenza is built from functions and closures. Results are
-; (: <value> <Type>); unbounded recursion halts as (exhausted).
+; first-class values (fn), applied by (fn-expr arg), capturing their enclosing
+; scope. Functions are SINGLE-ARITY: each function takes exactly one argument.
+; Multi-parameter syntax (fn (x y) body) is sugar for currying: (fn x (fn y body)).
+; Application (f a b) is sugar for ((f a) b). These are CORE cases (no (needs …)):
+; the seed realizes them, because a compiler authored in Cadenza is built from
+; functions and closures. Results are (: <value> <Type>); unbounded recursion halts
+; as (exhausted).
 
 (case "a function applied to an argument"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value and §Applying A Function
@@ -66,3 +69,28 @@
             (def (spin n) (spin (+ n 1)))
             (def (main) (spin 0))))
   (exhausted))
+
+(case "functions are single-arity and curried"
+  (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one
+           argument. Multi-parameter syntax (fn (x y) body) desugars to (fn x (fn y body)). Partial
+           application is natural: applying a two-param function to one argument returns a closure.")
+  (input  (let ((add (fn (x y) (+ x y))))
+            (let ((add3 (add 3)))
+              (add3 7))))
+  (output (: 10 Int64)))
+
+(case "multi-argument application is curried application"
+  (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: application (f a b) desugars
+           to ((f a) b). Each application passes one argument; the result of (f a) is a closure
+           that accepts b.")
+  (input  ((fn (x y) (+ x y)) 2 3))
+  (output (: 5 Int64)))
+
+(case "a curried function can be partially applied"
+  (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: since functions are single-arity
+           and multi-param is sugar for currying, partial application works naturally. map-inc applies
+           inc to each element — inc is (add 1), a partial application of add.")
+  (input  (let ((add (fn (x y) (+ x y))))
+            (let ((inc (add 1)))
+              (inc 41))))
+  (output (: 42 Int64)))

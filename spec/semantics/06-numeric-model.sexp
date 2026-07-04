@@ -51,3 +51,42 @@
   (needs numeric-model)
   (input  (+ 0.1 0.2))
   (output (: 0.30000000000000004 Float64)))
+
+(case "subtraction"
+  (input  (- 10 3))
+  (output (: 7 Int64)))
+
+(case "multiplication"
+  (input  (* 6 7))
+  (output (: 42 Int64)))
+
+(case "integer division truncates toward zero"
+  (input  (/ 7 2))
+  (output (: 3 Int64)))
+
+(case "modulo gives the remainder"
+  (doc    "The compiler needs modulo for LEB128 encoding: extract 7-bit groups from an integer.")
+  (input  (% 130 128))
+  (output (: 2 Int64)))
+
+(case "bitwise AND masks bits"
+  (doc    "The compiler needs bitwise AND to extract low bits for LEB128 encoding: (& n 127)
+           extracts the low 7 bits of n.")
+  (input  (& 255 127))
+  (output (: 127 Int64)))
+
+(case "bitwise OR combines bits"
+  (doc    "The compiler needs bitwise OR to set the continuation bit in LEB128: (| byte 128)
+           sets bit 7.")
+  (input  (| 42 128))
+  (output (: 170 Int64)))
+
+(case "arithmetic right shift"
+  (doc    "The compiler needs right shift for LEB128 encoding: (>> n 7) shifts n right by 7 bits,
+           extracting the next group. Arithmetic shift preserves sign for signed LEB128.")
+  (input  (>> 256 7))
+  (output (: 2 Int64)))
+
+(case "left shift"
+  (input  (<< 1 7))
+  (output (: 128 Int64)))
