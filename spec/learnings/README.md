@@ -105,3 +105,8 @@ generations of Cadenza taught these lessons the expensive way; the specification
   operates on AST values: `quote` is uniform (never evaluates), but instruction construction needs to embed
   computed values; without quasiquote, building `(+ x 10)` where `x` varies means verbose
   `(Ast.List (list ...))` calls; `` `(+ ,x 10)`` reads like the instruction and makes the compiler maintainable.
+- [AST construction vs AST evaluation: the compiler needs construction only](./2026-07-03-ast-construction-vs-ast-evaluation.md)
+  — why the compiler needs quasiquote (AST construction) but not `eval` (AST execution): inside quasiquote,
+  `,expr` evaluates `expr` normally to embed its value (statically checkable); top-level `(eval ast-value)`
+  executes AST as code (meta-interpretation, needs embedded interpreter, hard to do statically). The compiler
+  constructs and analyzes AST but never executes dynamically-constructed AST. Eval is optional for macros/REPL.

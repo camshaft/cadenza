@@ -1,25 +1,22 @@
-; Metaprogramming — quote/unquote and the AST as a sum type. Witnesses metaprogramming.md.
-; Quote produces an AST value without evaluating; unquote evaluates an AST as code. The AST is a
-; sum type deconstructible by pattern matching, so the compiler operates on AST values natively
-; rather than using string-tagged reflection.
+; Metaprogramming — quote/quasiquote and the AST as a sum type. Witnesses metaprogramming.md.
+; Quote produces an AST value without evaluating; quasiquote allows selective evaluation for
+; construction. The AST is a sum type deconstructible by pattern matching, so the compiler
+; operates on AST values natively rather than using string-tagged reflection. Eval (executing
+; AST as code) is optional for macros/REPL, not needed by the core compiler.
 
 (case "quote produces an AST value without evaluating"
-  (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (1st sentence): (quote <expr>)
-           returns an AST sum type value representing <expr>'s structure, without evaluating <expr>.
+  (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value: (quote <expr>) returns an
+           AST sum type value representing <expr>'s structure, without evaluating <expr>.
            (quote (+ 1 2)) produces an AST value, not 3.")
   (input  (quote (+ 1 2)))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))) Ast)))
 
-(case "unquote evaluates an AST value as code"
-  (doc    "Witnesses metaprogramming.md #Unquote Evaluates An AST Value As Code (1st sentence):
-           (unquote <ast-value>) evaluates the AST as code. Unquoting the AST of (+ 1 2) produces 3.")
-  (input  (unquote (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))))
-  (output (: 3 Int64)))
-
-(case "quote and unquote are inverses"
-  (doc    "Witnesses metaprogramming.md #Quote And Unquote Are Inverses: (unquote (quote <expr>))
-           equals <expr>. Quoting then unquoting (+ 1 2) produces 3, same as evaluating (+ 1 2).")
-  (input  (unquote (quote (+ 1 2))))
+(case "eval is optional for macros and interactive use"
+  (doc    "Witnesses metaprogramming.md #Eval Is Optional For Macros And Interactive Use: (eval <ast>)
+           executes AST as code, optional for macros/REPL. Seed provides it; static generations need
+           not. (eval (quote (+ 1 2))) produces 3.")
+  (needs  eval)
+  (input  (eval (quote (+ 1 2))))
   (output (: 3 Int64)))
 
 (case "the AST is a sum type deconstructible by pattern matching"
@@ -40,53 +37,57 @@
             ((Ast.Int _)      0)))
   (output (: 3 Int64)))
 
-(case "unquoting a malformed AST traps"
-  (doc    "Witnesses metaprogramming.md #Unquote Evaluates An AST Value As Code (2nd sentence):
-           unquoting an AST that doesn't represent a well-formed expression traps. An Ast.List with
-           no elements is malformed (no operator), so unquoting it traps.")
-  (input  (unquote (Ast.List (list))))
+(case "eval on malformed AST traps"
+  (doc    "Witnesses metaprogramming.md #Eval Is Optional: eval on malformed AST traps. An Ast.List
+           with no elements is malformed (no operator), so eval traps.")
+  (needs  eval)
+  (input  (eval (Ast.List (list))))
   (trap   "malformed AST"))
 
-(case "quasiquote quotes with selective evaluation via unquote"
-  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation (1st-2nd sentences):
-           `<template> quotes like quote, but ,<expr> (unquote) evaluates <expr> and inserts result.
-           `(+ ,x 10) with x=2 produces AST for (+ 2 10), not (+ x 10).")
+(case "quasiquote constructs AST with selective evaluation"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
+           `<template> quotes like quote, but ,<expr> evaluates <expr> normally and inserts result
+           into the AST being constructed. `(+ ,x 10) with x=2 produces AST for (+ 2 10), not (+ x 10).
+           This is construction, not eval — ,x evaluates the variable x, not an AST.")
   (input  (let ((x 2)) `(+ ,x 10)))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
 
-(case "unquote evaluates and inserts the result"
-  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation: unquote inserts
-           the evaluated result. `(+ ,(+ 1 1) 10) evaluates (+ 1 1) to 2, then inserts 2.")
+(case "unquote in quasiquote evaluates normally and embeds"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
+           ,<expr> evaluates <expr> normally (not as AST) and embeds the result.
+           `(+ ,(+ 1 1) 10) evaluates (+ 1 1) to 2, constructs AST with that value.")
   (input  `(+ ,(+ 1 1) 10))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
 
-(case "unquote-splicing splices a list into the parent"
-  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation (3rd sentence):
-           ,@<list-expr> splices list elements into parent, not nested. `(+ ,@args) with
-           args=(list 1 2 3) produces (+ 1 2 3), not (+ (1 2 3)).")
+(case "unquote-splicing splices list elements into parent"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
+           ,@<list-expr> evaluates <list-expr> to a list and splices its elements into the parent,
+           not nested. `(+ ,@args) with args=(list 1 2 3) produces AST for (+ 1 2 3), not (+ (1 2 3)).")
   (input  (let ((args (list 1 2 3))) `(+ ,@args)))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2) (Ast.Int 3))) Ast)))
 
-(case "unquote-splicing vs unquote differ in list handling"
-  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation: unquote nests the
-           list as one element; unquote-splicing flattens it. `(f ,x) vs `(f ,@x) with x=(list 1 2).")
+(case "splice flattens where unquote nests"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
+           , nests the value; ,@ splices it. `(f ,x) embeds x as one element; `(f ,@x) with
+           x=(list 1 2) splices to produce (f 1 2).")
   (input  (let ((x (list 1 2)))
-            (= `(f ,x) `(f (list 1 2)))))
+            (= `(f ,@x) `(f 1 2))))
   (output (: true Bool)))
 
-(case "quasiquote nests"
-  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation (4th sentence):
-           quasiquote nests, so ``(+ ,,x) evaluates inner unquote to produce `(+ ,<x-value>).
-           With x=2, ``(+ ,,x) produces `(+ ,2), which when evaluated produces (+ 2).")
+(case "quasiquote nests with inner unquote evaluated"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
+           quasiquote nests, so ``(+ ,,x) evaluates the inner , to produce `(+ ,<x-value>).
+           With x=2, ``(+ ,,x) constructs an AST representing `(+ ,2).")
   (input  (let ((x 2)) ``(+ ,,x)))
   (output (: (Ast.List (list (Ast.Name "quasiquote")
                              (Ast.List (list (Ast.Name "+")
                                            (Ast.List (list (Ast.Name "unquote") (Ast.Int 2)))))))
              Ast)))
 
-(case "unquote outside quasiquote is an error"
-  (doc    "Witnesses metaprogramming.md #Quasiquote Allows Selective Evaluation (5th sentence):
-           unquote and unquote-splicing are only valid inside quasiquote. Bare ,x is a syntax error.")
+(case "unquote outside quasiquote is a syntax error"
+  (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
+           , and ,@ are only valid inside quasiquote context. Bare ,x is a syntax error — there's
+           no quasiquote template to insert into.")
   (input    ,x)
   (compiler (error CDZ0401)))
 

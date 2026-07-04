@@ -19,7 +19,7 @@ the affordance that makes Cadenza structurally malleable by agents, cannot becom
 determinism, capability-safety, or reproducibility. It states the invariants; the concrete macro
 surface is governed by the code-shape default.
 
-## Quoting And The AST As A Sum Type
+## AST Construction
 
 ### Quote Produces An AST Value
 
@@ -27,29 +27,31 @@ The expression `(quote <expr>)` MUST evaluate to an AST sum type value represent
 
 The AST MUST be a sum type with variants for each syntactic form, deconstructible by pattern matching like any other sum type.
 
-### Unquote Evaluates An AST Value As Code
-
-The expression `(unquote <ast-value>)` MUST evaluate the AST value as code, producing the result the quoted expression would have produced.
-
-Unquoting an AST value that does not represent a well-formed expression MUST trap of a defined kind.
-
-### Quote And Unquote Are Inverses
-
-Evaluating `(unquote (quote <expr>))` MUST produce the same result as evaluating `<expr>` directly, so that quote and unquote are inverses.
-
-## Quasiquote For Programmatic AST Construction
-
-### Quasiquote Allows Selective Evaluation
+### Quasiquote Constructs AST With Selective Evaluation
 
 The expression `` `<template>`` (quasiquote) MUST produce an AST value like `quote`, but with selective evaluation at marked positions.
 
-Any subexpression `,<expr>` (unquote) within a quasiquote template MUST be evaluated and its result inserted into the AST at that position.
+Any subexpression `,<expr>` (unquote) within a quasiquote template MUST evaluate `<expr>` normally and insert its result into the AST being constructed at that position.
 
-Any subexpression `,@<list-expr>` (unquote-splicing) within a quasiquote template MUST be evaluated to a list whose elements are spliced into the parent list at that position, not nested as a single element.
+Any subexpression `,@<list-expr>` (unquote-splicing) within a quasiquote template MUST evaluate `<list-expr>` to a list whose elements are spliced into the parent list at that position, not nested as a single element.
 
-Quasiquote MUST nest, so that ``` ``(+ ,,x)``` evaluates the inner unquote to produce `` `(+ ,<x-value>)``.
+Quasiquote MUST nest, so that ``` ``(+ ,,x)``` evaluates the inner `,` to produce `` `(+ ,<x-value>)``.
 
 Unquote and unquote-splicing outside a quasiquote context MUST be a syntax error.
+
+Quote and quasiquote are construction primitives that produce AST data.
+
+## AST Evaluation (Optional)
+
+### Eval Is Optional For Macros And Interactive Use
+
+The expression `(eval <ast-value>)` evaluating an AST value as code is an optional metaprogramming affordance for macros and interactive evaluation, not a core compiler requirement.
+
+A generation that realizes macros or a REPL MAY provide `eval` to execute compile-time or interactive code.
+
+A generation that does not realize macros or interactive evaluation need not provide `eval`.
+
+The compiler MUST NOT require `eval` to compile programs — the compiler constructs and analyzes AST but does not execute dynamically-constructed AST.
 
 ## Compile-Time Evaluation
 
