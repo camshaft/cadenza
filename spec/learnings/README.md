@@ -253,6 +253,24 @@ generations of Cadenza taught these lessons the expensive way; the specification
   offer an order; an adversarial corpus case `(< true false)` had no definite outcome because Bool's ordering was never
   stated. Drove a sentence in core-semantics.md §"Ordering Where Offered Is Total" (Bool is totally ordered, false < true),
   witnessed by cases in the equality-and-observation corpus.
+- [The value-heap runtime is a shared component](./2026-07-05-the-value-heap-runtime-is-a-shared-component.md)
+  — why a program's runtime values (tuples, records, sums, …) do not live in each program's own component but in a single
+  shared value-heap runtime the program imports and the host composes: the heap/reference-counting machinery is growing
+  code better authored once and linked than open-coded per compound type, and because the runtime owns the storage behind
+  an opaque handle its representation can evolve (Perceus RC, CHAMP/RRB) with no change to emitted programs. Drove
+  component-abi.md v3 §"The Value-Heap Runtime" and the pin-by-content-address / build-pair rules.
+- [The runtime is name-free; rendering is type-directed](./2026-07-05-the-runtime-is-name-free-rendering-is-type-directed.md)
+  — why `render` was removed from the runtime: at run time a record is a positional product and a sum an integer tag, so
+  the runtime holds no field or variant names and cannot render; rendering is type-directed code the compiler emits into
+  the program, which walks the value through the runtime's accessors and returns an ordinary string. Refined
+  component-abi.md v3 (§"The Runtime Does Not Name Or Render Values", §"A Compound Result Is Rendered By Compiler-Emitted
+  Code").
+- [Emitting a component that imports is a fixed envelope around a variable core module](./2026-07-05-emitting-a-component-with-an-import-is-a-fixed-envelope.md)
+  — the engineering technique for self-contained component emission with an import: bake a `wasm-tools`-validated
+  reference as fixed HEAD/TAIL byte constants around a compiler-built core module (no compile-time tooling), and shift
+  every defined-function index by a fixed base because imports occupy the low index space. Realizes
+  reproducible-derivation.md §"Derivation Is A Function Of Source And Toolchain" and component-abi.md §"The Value-Heap
+  Runtime Crosses By A Well-Known Import" in the emitter.
 
 ## Open spec gaps (found by adversarial-corpus probing; awaiting a clarity pass)
 
