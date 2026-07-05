@@ -18,6 +18,68 @@
   (input  (+ 2 2.0))
   (error  CDZ0301))
 
+; --- No silent promotion holds for EVERY Int64-operand operator, not only `+` --------------
+; numeric-model.md #Numeric Types Do Not Silently Promote applies to any operation on two numeric
+; values of different types — "The type of an arithmetic result MUST be determined by the operand
+; types and the operation, not by an implicit widening the author did not write." The `+` case above
+; is the only witness; but `-` `*` `/` `%` `&` `|` `<<` `>>` all take Int64 operands and each is a
+; natural place a reimplementation could coerce a Float64 operand to f64 (or truncate it to i64) and
+; proceed. Each MUST reject an Int64/Float64 mix (CDZ0301) exactly as `+` does — the bitwise and shift
+; operators especially, whose operands are bit patterns with no float meaning at all. A generation
+; that does not yet cover the rule for a given operator declines rather than coercing
+; (reject-don't-miscompile); the gate scores a decline as todo, not disagreement.
+
+(case "subtraction of an integer and a float does not silently promote"
+  (doc    "`(- 5 2.0)` mixes Int64 and Float64, rejected (CDZ0301) exactly as `(+ 2 2.0)` is. Pins the
+           no-promotion rule for `-`.")
+  (input  (- 5 2.0))
+  (error  CDZ0301))
+
+(case "multiplication of an integer and a float does not silently promote"
+  (doc    "`(* 5 2.0)` mixes two numeric types, rejected (CDZ0301). Pins no-promotion for `*`.")
+  (input  (* 5 2.0))
+  (error  CDZ0301))
+
+(case "division of an integer and a float does not silently promote"
+  (doc    "`(/ 5 2.0)` mixes Int64 and Float64, rejected (CDZ0301) rather than performing a float
+           division of a promoted 5.0 — the author did not write the conversion. Pins no-promotion for
+           `/`.")
+  (input  (/ 5 2.0))
+  (error  CDZ0301))
+
+(case "modulo of an integer and a float does not silently promote"
+  (doc    "`(% 5 2.0)` mixes two numeric types, rejected (CDZ0301). Pins no-promotion for `%`, which
+           has no defined meaning across a mixed Int64/Float64 pair.")
+  (input  (% 5 2.0))
+  (error  CDZ0301))
+
+(case "bitwise AND of an integer and a float does not silently promote"
+  (doc    "`(& 1 2.0)` applies a bitwise operator to an Int64 and a Float64 — a Float64 is not a bit
+           pattern to mask, so the mix is rejected (CDZ0301), not coerced. Pins no-promotion for `&`,
+           where a silent conversion is especially wrong (a float has no meaningful low bits to AND).")
+  (input  (& 1 2.0))
+  (error  CDZ0301))
+
+(case "bitwise OR of an integer and a float does not silently promote"
+  (doc    "`(| 1 2.0)` mixes Int64 and Float64 in a bitwise OR, rejected (CDZ0301). Pins no-promotion
+           for `|`, the companion of the bitwise AND case.")
+  (input  (| 1 2.0))
+  (error  CDZ0301))
+
+(case "a left shift by a floating-point count does not silently promote"
+  (doc    "`(<< 1 2.0)` supplies a Float64 shift count where a shift count is an Int64 bit position —
+           a numeric-type mismatch rejected (CDZ0301), not a coerced `<< 2`. Pins no-promotion for the
+           shift count of `<<`.")
+  (input  (<< 1 2.0))
+  (error  CDZ0301))
+
+(case "a right shift by a floating-point count does not silently promote"
+  (doc    "`(>> 1 2.0)` mixes an Int64 value with a Float64 shift count, rejected (CDZ0301). Pins
+           no-promotion for `>>`, completing the eight Int64-operand operators against the rule the
+           `(+ 2 2.0)` case introduces.")
+  (input  (>> 1 2.0))
+  (error  CDZ0301))
+
 (case "overflow of the default integer traps deterministically"
   (doc    "Witnesses numeric-model.md #Overflow Is Defined with the checked-and-trapping default
            pinned in options/numeric-model/. The seed realizes checked Int64.")
@@ -57,6 +119,64 @@
   (input  (- 10 3))
   (output (: 7 Int64)))
 
+; --- Subtraction and multiplication overflow trap, exactly as addition does --------------
+; #Overflow Is Defined is stated for "an integer operation that overflows its type", not only
+; for `+`. Addition overflow (`(+ Int64.max 1)`) and division overflow (`(/ Int64.min -1)`)
+; are already witnessed; subtraction and multiplication are the remaining checked operations
+; whose overflow must reach the same defined outcome (a trap under the checked-Int64 default).
+; The seed routes `-`/`*` through the same overflow-checked helpers as `+`, so these must trap
+; rather than wrap to a wrong value — a silent two's-complement wrap is the classic C-style
+; undefined behavior the numeric model forbids ("The compiler MUST NOT emit an integer operation
+; whose overflow behavior is undefined").
+
+(case "subtraction below the minimum integer overflows and traps"
+  (doc    "`(- Int64.min 1)` = -2^63 - 1, one below the checked Int64 range, so it overflows and MUST
+           trap (numeric-model.md #Overflow Is Defined) — the subtraction companion of the addition
+           overflow `(+ Int64.max 1)`. A naive lowering wraps to Int64.max (9223372036854775807); the
+           checked default traps instead of producing that wrong value.")
+  (input  (- Int64.min 1))
+  (trap   "integer overflow"))
+
+(case "multiplication past the maximum integer overflows and traps"
+  (doc    "`(* Int64.max 2)` is ~2^64, well outside the checked Int64 range, so it overflows and MUST
+           trap (numeric-model.md #Overflow Is Defined). Multiplication is the remaining checked
+           arithmetic operation whose overflow must reach the same defined outcome as `+` and `/`. A
+           wrapping `i64.mul` answers -2 (Int64.max * 2 mod 2^64); the checked default traps.")
+  (input  (* Int64.max 2))
+  (trap   "integer overflow"))
+
+(case "multiplication of the minimum integer by -1 overflows and traps"
+  (doc    "`(* Int64.min -1)` = +2^63, one past Int64.max — the same out-of-range value the division
+           `(/ Int64.min -1)` forms — so multiplication overflows and MUST trap. Pins that the
+           Int64.min / -1 overflow the numeric model already fixes for `/` holds for the equivalent
+           multiplication too, rather than wrapping back to Int64.min.")
+  (input  (* -9223372036854775808 -1))
+  (trap   "integer overflow"))
+
+; A RUNTIME subtraction/multiplication (parameter operands) must trap identically to the constant
+; fold above — the overflow check belongs on the emitted operation, not only in the constant folder.
+; These runtime companions pin that the checked helper is emitted for `-`/`*` on runtime operands,
+; so the const and runtime paths agree (the same const-vs-runtime discipline the shift cases pin).
+
+(case "a runtime multiplication that overflows traps"
+  (doc    "The runtime companion of `(* Int64.max 2)`: with the operands supplied as parameters, the
+           multiplication still overflows the checked Int64 range and MUST trap (numeric-model.md
+           #Overflow Is Defined), exactly as the constant fold does. Pins that the overflow-checked
+           multiply is emitted on the runtime path, not only folded at compile time.")
+  (input  (module m
+            (def (mul a b) (* a b))
+            (def (main) (mul 9223372036854775807 2))))
+  (trap   "integer overflow"))
+
+(case "a runtime subtraction that overflows traps"
+  (doc    "The runtime companion of `(- Int64.min 1)`: a subtraction below Int64.min on parameter
+           operands overflows and MUST trap, matching the constant fold. Pins the checked subtract on
+           the runtime path.")
+  (input  (module m
+            (def (sub a b) (- a b))
+            (def (main) (sub -9223372036854775808 1))))
+  (trap   "integer overflow"))
+
 (case "multiplication"
   (input  (* 6 7))
   (output (: 42 Int64)))
@@ -64,6 +184,79 @@
 (case "integer division truncates toward zero"
   (input  (/ 7 2))
   (output (: 3 Int64)))
+
+; --- Division and remainder for negative operands: truncate toward zero, remainder follows -
+; --- the dividend's sign ----------------------------------------------------------------
+; Integer division "truncates toward zero" (witnessed above for `(/ 7 2)` = 3). Truncation toward
+; zero is a definite rule that differs from flooring (toward -∞) precisely on negative operands:
+; `(/ -7 2)` truncates to -3 (floor would give -4). The remainder is then fixed by the identity
+; `a = (/ a b)*b + (% a b)`, so `(% a b)` takes the sign of the DIVIDEND `a` — `(% -7 2)` = -1,
+; `(% 7 -2)` = 1. These pin the sign conventions the LEB128/section-encoding math depends on; a
+; lowering that floored (or took the divisor's sign for the remainder) would encode wrong bytes.
+; The ASCII `(/ 7 2)` case above cannot witness this — both operands are non-negative there.
+
+(case "integer division of a negative dividend truncates toward zero, not toward negative infinity"
+  (doc    "`(/ -7 2)` truncates toward zero to -3, NOT floors to -4. Truncation toward zero is the
+           pinned rule (the `(/ 7 2)` = 3 case states it); it diverges from flooring only for negative
+           operands, so this is the case that actually distinguishes the two. wasm's i64.div_s
+           truncates toward zero, matching this.")
+  (input  (/ -7 2))
+  (output (: -3 Int64)))
+
+(case "integer division by a negative divisor truncates toward zero"
+  (doc    "`(/ 7 -2)` = -3: the quotient's magnitude is 3 (truncated, not 4) and its sign is negative.
+           Pins that truncation toward zero holds when the DIVISOR is the negative operand too.")
+  (input  (/ 7 -2))
+  (output (: -3 Int64)))
+
+(case "the remainder takes the sign of the dividend for a negative dividend"
+  (doc    "`(% -7 2)` = -1: from the identity a = (a/b)*b + (a%b) with (/ -7 2) = -3, the remainder is
+           -7 - (-3*2) = -1, taking the DIVIDEND's sign. (A flooring modulo would give +1.) Pins the
+           remainder-sign convention wasm's i64.rem_s follows.")
+  (input  (% -7 2))
+  (output (: -1 Int64)))
+
+(case "the remainder takes the sign of the dividend for a negative divisor"
+  (doc    "`(% 7 -2)` = 1: with (/ 7 -2) = -3, the remainder is 7 - (-3*-2) = 1 — positive, the sign of
+           the dividend 7, not the divisor. Pins that the remainder sign follows the dividend
+           regardless of the divisor's sign.")
+  (input  (% 7 -2))
+  (output (: 1 Int64)))
+
+; --- Division and modulo by zero have no result: they trap -------------------------------
+; core-semantics.md #Partial Operations Have A Defined Outcome: an operation with no result for some
+; inputs MUST raise a trap of a defined kind rather than produce an unspecified value. Division and
+; modulo by zero have no result, so they MUST trap — the seed realizes this runtime trap (a trap
+; that survives type-checking, README.md §"Which cases a generation runs": "division by zero"). This
+; is distinct from the OVERFLOW trap `(/ Int64.min -1)`: divide-by-zero has no quotient at all, at
+; any dividend. A lowering that emitted a value (0, or the dividend) would be an unspecified value the
+; contract forbids; wasm's i64.div_s / i64.rem_s trap on a zero divisor, matching this.
+
+(case "division by zero traps"
+  (doc    "`(/ 5 0)` has no quotient — division by zero has no result — so it MUST trap
+           (core-semantics.md #Partial Operations Have A Defined Outcome), not produce an unspecified
+           value. A defined runtime trap the seed realizes, distinct from the overflow trap: this fails
+           for its divisor being zero, at any dividend.")
+  (input  (/ 5 0))
+  (trap   "division by zero"))
+
+(case "modulo by zero traps"
+  (doc    "`(% 5 0)` likewise has no remainder when the divisor is zero — the identity a = (a/b)*b +
+           (a%b) has no (a/b) — so it MUST trap (core-semantics.md #Partial Operations Have A Defined
+           Outcome). The modulo companion of division by zero; both fail on a zero divisor rather than
+           yielding an unspecified value.")
+  (input  (% 5 0))
+  (trap   "division by zero"))
+
+(case "a runtime division by zero traps"
+  (doc    "The runtime companion: with a zero divisor supplied as a parameter, `(div 5 0)` still has no
+           quotient and MUST trap, exactly as the constant `(/ 5 0)` does. Pins that the divide-by-zero
+           trap holds on the emitted i64.div_s (the runtime path), not only in the constant folder — a
+           compiler dividing by a runtime-computed value depends on it.")
+  (input  (module m
+            (def (div a b) (/ a b))
+            (def (main) (div 5 0))))
+  (trap   "division by zero"))
 
 (case "modulo gives the remainder"
   (doc    "The compiler needs modulo for LEB128 encoding: extract 7-bit groups from an integer.")
@@ -112,6 +305,29 @@
            extracting the next group. Arithmetic shift preserves sign for signed LEB128.")
   (input  (>> 256 7))
   (output (: 2 Int64)))
+
+; The right shift is ARITHMETIC (sign-preserving), which the doc above asserts but the `(>> 256 7)`
+; case — a non-negative operand — cannot witness: a logical shift would give the same 2. The
+; distinguishing case is a NEGATIVE operand: an arithmetic `(>> -256 7)` fills with the sign bit and
+; yields -2 (floor division by 2^7), where a LOGICAL shift (wasm's i64.shr_u) would fill with zeros
+; and yield a large positive number. The seed emits i64.shr_s (arithmetic); this pins that it must not
+; be a logical shift. Signed LEB128 decoding depends on the sign-extending behavior.
+
+(case "arithmetic right shift preserves the sign bit for a negative operand"
+  (doc    "`(>> -256 7)` = -2: an arithmetic (sign-preserving) right shift fills the vacated high bits
+           with the sign bit, so shifting the negative -256 right by 7 yields -2, not a large positive
+           value. This is the case the non-negative `(>> 256 7)` cannot distinguish — a logical shift
+           (i64.shr_u) would answer 144115188075855870. Pins that `>>` is the arithmetic shift the
+           `arithmetic right shift` doc promises, which signed LEB128 relies on.")
+  (input  (>> -256 7))
+  (output (: -2 Int64)))
+
+(case "arithmetic right shift of negative one is negative one"
+  (doc    "`(>> -1 1)` = -1: -1 is all-ones in two's complement, and an arithmetic right shift
+           sign-extends, so every shift of -1 stays -1. A logical shift would give a large positive
+           value (2^63 - 1). The degenerate witness that `>>` sign-extends.")
+  (input  (>> -1 1))
+  (output (: -1 Int64)))
 
 (case "left shift"
   (input  (<< 1 7))
@@ -178,6 +394,40 @@
   (input  (module m
             (def (sh a b) (<< a b))
             (def (main) (sh 4611686018427387904 1))))
+  (trap   "integer overflow"))
+
+; The out-of-range shift-count rule (#Overflow Is Defined: "a shift count outside the type's bit
+; width has no defined value") applies to the RIGHT shift too, not only the left — the cases above
+; all shift LEFT. wasm's i64.shr_s masks the count mod 64 exactly as i64.shl does, so `(>> n 64)`
+; would silently become `(>> n 0)` and a negative count would mask into 0..63. A right shift never
+; overflows (it only discards low bits), so the ONLY defined-outcome concern for `>>` is the count
+; range — these pin that an out-of-range count traps for `>>` as it does for `<<`, at compile time
+; and at run time.
+
+(case "a right shift by the bit width or more traps rather than masking"
+  (doc    "`(>> 256 64)` has a shift count equal to the bit width — out of range, no defined value.
+           wasm's i64.shr_s masks 64 mod 64 = 0 and would answer 256 (a shift by 0); the numeric model
+           requires the defined outcome (a trap), matching the left-shift `(<< 1 64)` case. Pins the
+           out-of-range-count rule for the RIGHT shift, which the left-shift cases do not cover.")
+  (input  (>> 256 64))
+  (trap   "integer overflow"))
+
+(case "a negative right-shift count traps rather than masking"
+  (doc    "`(>> 256 -1)` has a negative count — no defined value. wasm's i64.shr_s masks -1 into 63,
+           silently answering `256 >> 63` = 0; the numeric model requires a trap instead (the right-
+           shift companion of the negative left-shift-count case `(<< 1 -1)`).")
+  (input  (>> 256 -1))
+  (trap   "integer overflow"))
+
+(case "a runtime right shift by the bit width or more traps"
+  (doc    "The runtime companion of `(>> 256 64)`: with the right shift emitted for parameter operands,
+           a count equal to the bit width MUST trap, exactly as the constant fold does. Pins that the
+           count guard is emitted on the runtime i64.shr_s path — the seed's `gen_shift` guards both
+           shift directions, so the right shift must trap on an out-of-range runtime count just as the
+           left shift does.")
+  (input  (module m
+            (def (sh a b) (>> a b))
+            (def (main) (sh 256 64))))
   (trap   "integer overflow"))
 
 (case "greater-than comparison"

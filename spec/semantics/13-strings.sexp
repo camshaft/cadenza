@@ -79,9 +79,101 @@
   (input  (String.at "hello" 1))
   (output (: "e" String)))
 
+; --- String indexing is by Unicode scalar value, not by byte -----------------------------
+; collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values ("its contents are
+; independent of any byte encoding") + #A String's Length MUST Be Counted In Unicode Scalar Values:
+; String.at addresses the string by SCALAR position, not byte offset. The ASCII `(String.at "hello"
+; 1)` above cannot witness this — for ASCII the scalar index and byte offset coincide. A multi-byte
+; string distinguishes them: in "café" (scalars c,a,f,é; é is 2 UTF-8 bytes) scalar index 3 is "é",
+; whereas byte offset 3 lands in the MIDDLE of é's two-byte encoding (an invalid scalar boundary). A
+; byte-indexing lowering would slice a partial code unit or trap; the scalar semantics must return "é".
+
+(case "string indexing addresses Unicode scalar values, not bytes"
+  (doc    "`(String.at \"café\" 3)` = \"é\": the string is four scalar values (c, a, f, é) and
+           index 3 is the last, é — even though é occupies bytes 3–4 of the five-byte UTF-8 encoding,
+           so byte offset 3 would be a partial code unit. Pins that String.at indexes by scalar value
+           (collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), the companion
+           of String.len counting scalars; the ASCII `(String.at \"hello\" 1)` cannot distinguish
+           scalar index from byte offset.")
+  (input  (String.at "café" 3))
+  (output (: "é" String)))
+
+(case "string indexing past a supplementary-plane scalar lands on the next scalar"
+  (doc    "`(String.at \"😀b\" 1)` = \"b\": 😀 (U+1F600) is ONE scalar value occupying four UTF-8
+           bytes (and two UTF-16 code units), so scalar index 1 is the character AFTER it, \"b\". A
+           byte- or UTF-16-based index would land inside 😀's encoding. Pins scalar-value addressing
+           at the boundary that most tempts a byte/UTF-16 miscount (the indexing companion of the
+           supplementary-plane length case).")
+  (input  (String.at "😀b" 1))
+  (output (: "b" String)))
+
+; --- String.at and String.slice are total-or-trap: an out-of-range index has no result ----
+; collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values gives a string a defined
+; scalar length, and core-semantics.md #Partial Operations Have A Defined Outcome requires an
+; operation with no result for some inputs to trap rather than produce an unspecified value. So
+; String.at at a scalar index at or beyond the length, or at a NEGATIVE index, has no character to
+; return and MUST trap — exactly as List.at / Bytes.at do out of bounds (05-compound-types,
+; 10-bytes). A negative index is the classic miscompile: a lowering that casts the index to an
+; unsigned width turns -1 into a huge in-range-looking offset; the scalar-index bounds check must
+; catch it as out of range and trap.
+
+(case "string indexing at or beyond the length traps"
+  (doc    "`(String.at \"hi\" 5)` indexes scalar position 5 of a two-scalar string — out of range, no
+           character to return — so it MUST trap (core-semantics.md #Partial Operations Have A Defined
+           Outcome), the String companion of the List.at / Bytes.at out-of-bounds traps.")
+  (input  (String.at "hi" 5))
+  (trap   "string index out of bounds"))
+
+(case "a negative string index traps rather than wrapping to a large offset"
+  (doc    "`(String.at \"hi\" -1)` uses a negative scalar index — no defined character — so it MUST
+           trap, NOT wrap. A lowering that casts the index to an unsigned integer would turn -1 into a
+           huge positive offset (either reading out of bounds or, worse, an unspecified in-range byte);
+           the total-or-trap discipline requires a trap (core-semantics.md #Partial Operations Have A
+           Defined Outcome). The negative-index companion of the out-of-range case above.")
+  (input  (String.at "hi" -1))
+  (trap   "string index out of bounds"))
+
 (case "string slicing"
   (input  (String.slice "hello world" 0 5))
   (output (: "hello" String)))
+
+; --- String.slice bounds are checked: reversed, out-of-range, and negative bounds trap; ----
+; --- an empty slice is a value ----------------------------------------------------------
+; String.slice takes a start and an end scalar index. A well-defined slice needs 0 ≤ start ≤ end ≤
+; length; any bounds outside that have no defined substring and MUST trap (core-semantics.md #Partial
+; Operations Have A Defined Outcome), while a degenerate but in-range slice where start = end is the
+; empty string — a value, not a trap. These pin the boundary the encoder relies on when it slices
+; instruction/name substrings: a reversed or over-long range is a trap, an empty range is "".
+
+(case "a slice whose end is beyond the string length traps"
+  (doc    "`(String.slice \"hi\" 0 5)` asks for scalars 0..5 of a two-scalar string — the end 5 is
+           beyond the length — so the slice has no defined substring and MUST trap (core-semantics.md
+           #Partial Operations Have A Defined Outcome).")
+  (input  (String.slice "hi" 0 5))
+  (trap   "string slice out of bounds"))
+
+(case "a slice whose end precedes its start traps"
+  (doc    "`(String.slice \"hello\" 3 1)` has end 1 before start 3 — a reversed range with no defined
+           substring — so it MUST trap rather than return an empty or reversed string. Pins that the
+           start ≤ end constraint is checked, not silently normalized.")
+  (input  (String.slice "hello" 3 1))
+  (trap   "string slice out of bounds"))
+
+(case "a slice with a negative start traps"
+  (doc    "`(String.slice \"hello\" -1 3)` has a negative start index — outside 0..length — so it MUST
+           trap, not wrap a negative bound to a large unsigned offset (the same negative-index
+           miscompile the String.at case guards). Pins that both slice bounds are range-checked as
+           signed values.")
+  (input  (String.slice "hello" -1 3))
+  (trap   "string slice out of bounds"))
+
+(case "a slice whose start equals its end is the empty string"
+  (doc    "`(String.slice \"hello\" 2 2)` is a degenerate but in-range slice (0 ≤ 2 ≤ 2 ≤ 5): it
+           selects zero scalars, so it is the empty string \"\" — a value, NOT a trap. Pins that the
+           bounds check admits start = end (an empty result) rather than rejecting it, the boundary
+           just inside the reversed-range trap above.")
+  (input  (String.slice "hello" 2 2))
+  (output (: "" String)))
 
 ; --- A string operation consumes a string SELECTED by runtime control flow -----------------
 ; A string operation (String.len/at/slice/concat) takes a string ARGUMENT; that argument may be a

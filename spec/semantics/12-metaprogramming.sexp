@@ -83,6 +83,97 @@
   (input  (let ((x 1)) (= `(f ,x) `(f ,1))))
   (output (: true Bool)))
 
+; --- A quoted AST equals the same AST built by applying the Ast.* constructors -------------
+; `quote` produces an AST SUM value (metaprogramming.md #Quote Produces An AST Value: "MUST evaluate
+; to an AST sum type value"; type-system.md #The Abstract Syntax Tree Is An Ordinary Sum Type). The
+; AST's variants are the ordinary constructors `Ast.Int` / `Ast.Name` / `Ast.List` / …, so a value
+; `quote` builds and the SAME value built by applying those constructors are ONE sum value — the
+; corpus already records `(quote (+ 1 2))`'s value form AS `(Ast.List (list (Ast.Name "+") (Ast.Int 1)
+; (Ast.Int 2)))` (the first case in this file) and matches `(quote 42)` against `(Ast.Int n)` binding
+; n=42. Structural equality (core-semantics.md #Equality Is Structural) must therefore see the two as
+; equal: `(= (quote 42) (Ast.Int 42))` is true, exactly as `(= (quote (f 1)) (quote (f 1)))` and
+; `(= (Ast.Int 42) (Ast.Int 42))` are. Pattern matching already normalizes the two — `(match (quote
+; 42) ((Ast.Int n) n) …)` binds 42 — so equality must agree, or the AST is a sum value under `match`
+; but a distinct thing under `=`, splitting the one value form the encoding is a bijection over
+; (ast-encoding.md #The Encoding Is A Bijection With One Canonical Byte Form).
+
+(case "a quoted integer equals the same node built by the Ast.Int constructor"
+  (doc    "`(quote 42)` is the AST sum value `(Ast.Int 42)` (metaprogramming.md #Quote Produces An AST
+           Value — quote evaluates to an AST SUM value). The corpus records quote outputs in exactly
+           this constructor form and matches `(quote 42)` as `(Ast.Int n)` binding 42, so the two
+           denote ONE sum value and structural equality MUST be true. A representation that stores a
+           quote result differently from an applied Ast.* constructor — comparing them unequal — splits
+           the single AST value form the encoding bijection is defined over. MUST be true.")
+  (input  (= (quote 42) (Ast.Int 42)))
+  (output (: true Bool)))
+
+(case "a quoted name equals the same node built by the Ast.Name constructor"
+  (doc    "The Name companion: `(quote foo)` is `(Ast.Name \"foo\")` — a quoted bare name is the
+           Ast.Name sum value carrying the name as a String payload (metaprogramming.md #Quote Produces
+           An AST Value). `(= (quote foo) (Ast.Name \"foo\"))` MUST be true, exactly as the Int case.
+           Pins that the quote-vs-constructor equality holds for the leaf name node too.")
+  (input  (= (quote foo) (Ast.Name "foo")))
+  (output (: true Bool)))
+
+(case "a quoted compound form equals the same AST built by the Ast.List constructor"
+  (doc    "The list companion, and the sharpest case: `(quote (+ 1 2))` is
+           `(Ast.List (list (Ast.Name \"+\") (Ast.Int 1) (Ast.Int 2)))` — the very value form the FIRST
+           case in this file records as `(quote (+ 1 2))`'s output. So comparing the quote against that
+           hand-built Ast.List MUST be true (core-semantics.md #Equality Is Structural), because they
+           are the same sum value. This equality is the compiler's own idiom: it builds an instruction
+           AST by quasiquote and compares it against an expected AST built by constructors.")
+  (input  (= (quote (+ 1 2)) (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))))
+  (output (: true Bool)))
+
+(case "quote-vs-constructor AST equality holds regardless of operand order"
+  (doc    "The order-flipped companion: `(= (Ast.Int 42) (quote 42))` is the same comparison of one
+           sum value against itself and MUST be true. Pins that neither operand order (constructor-built
+           vs quote-built) is treated as a distinct type — structural equality is symmetric over the
+           one AST value form.")
+  (input  (= (Ast.Int 42) (quote 42)))
+  (output (: true Bool)))
+
+; --- Ast.encode / Ast.decode consume an AST built by the Ast.* constructors too ------------
+; The encoding is a bijection over THE abstract syntax tree value (ast-encoding.md #The Encoding Is A
+; Bijection With One Canonical Byte Form: "Decoding a canonical binary encoding MUST yield the abstract
+; syntax tree it was encoded from"; "Two abstract syntax trees that are equal MUST have identical binary
+; encodings"). Since an AST built by applying the Ast.* constructors is the same value form `quote`
+; produces (the cases above), `Ast.encode` and `Ast.decode` must consume it exactly as they consume a
+; quote-built AST — the round-trip is over AST VALUES, not over one privileged construction path. These
+; are the encode/decode companions of the equality cases above: the same representation must reach the
+; encoder however the AST was built. The seed encodes/decodes a quote-built AST (the round-trip cases
+; earlier in this file) but declines a constructor-built one ("unsupported dotted-application") — the
+; encoder resolves a quote value but not an applied Ast.* constructor, the same construct/consume split
+; the equality cases expose, here on the encode path. A generation that does not yet bridge the two
+; declines rather than miscompiling (reject-don't-miscompile); the gate scores it todo.
+
+(case "encoding and decoding a constructor-built AST round-trips to an equal value"
+  (doc    "`(Ast.Int 7)` is an AST value (the same form `(quote 7)` produces); encoding then decoding it
+           MUST yield an equal AST (ast-encoding.md #The Encoding Is A Bijection — decode(encode t) is t).
+           The quote-built round-trip is witnessed earlier in this file; a constructor-built AST is the
+           same value form, so it MUST round-trip identically. The seed declines (\"unsupported
+           dotted-application\") — Ast.encode consumes a quote value but not an applied Ast.* constructor.")
+  (input  (= (Ast.decode (Ast.encode (Ast.Int 7))) (Ast.Int 7)))
+  (output (: true Bool)))
+
+(case "encoding and decoding a constructor-built compound AST round-trips"
+  (doc    "The compound companion: a hand-built `(Ast.List (list (Ast.Name \"g\") (Ast.Int 5)))` MUST
+           encode and decode back to an equal AST, exactly as a quote-built list does. Pins that the
+           bijection round-trip reaches a constructor-built compound AST, not only a leaf node.")
+  (input  (= (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
+             (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
+  (output (: true Bool)))
+
+(case "a quote-built and constructor-built AST of the same tree encode to identical bytes"
+  (doc    "ast-encoding.md #The Encoding Is A Bijection With One Canonical Byte Form: \"Two abstract
+           syntax trees that are equal MUST have identical binary encodings.\" `(quote 42)` and
+           `(Ast.Int 42)` are the same AST (the equality cases above), so their encodings MUST be
+           byte-identical. This is the encode-path witness of the one-canonical-byte-form requirement:
+           the encoder must produce the same bytes for the one AST value however it was constructed. The
+           seed declines the constructor-built operand, so it cannot yet witness the agreement.")
+  (input  (= (Ast.encode (quote 42)) (Ast.encode (Ast.Int 42))))
+  (output (: true Bool)))
+
 (case "unquote-splicing splices list elements into parent"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            ,@<list-expr> evaluates <list-expr> to a list and splices its elements into the parent,

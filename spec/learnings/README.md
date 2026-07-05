@@ -248,3 +248,39 @@ generations of Cadenza taught these lessons the expensive way; the specification
   — why the seed's implementation language is orthogonal to Cadenza's verification aims (the seed is disposable, off the
   critical path, and independence comes from two compilers agreeing against the corpus, not a trusted verified seed);
   Rust's wasm/bytes/component ecosystem wins on fit; Lean is admissible only as an optional third oracle. Confirms the default.
+- [Bool offers a total order, with false less than true](./2026-07-05-bool-offers-a-total-order.md)
+  — why the conditional "ordering where offered is total" invariant needed a ground clause fixing which primitive types
+  offer an order; an adversarial corpus case `(< true false)` had no definite outcome because Bool's ordering was never
+  stated. Drove a sentence in core-semantics.md §"Ordering Where Offered Is Total" (Bool is totally ordered, false < true),
+  witnessed by cases in the equality-and-observation corpus.
+
+## Open spec gaps (found by adversarial-corpus probing; awaiting a clarity pass)
+
+These entries record behavior the specification has **not yet fixed** — an adversarial corpus run reached
+a construct with two or more defensible, observably-distinct outcomes and no requirement selecting between
+them, so the corpus records no oracle for it. Unlike the resolved learnings above, each of these defers its
+requirement edit to a follow-up clarity agent: the entry names the gap, the candidate readings, and the
+recommended resolution, but does not itself change a requirement. Resolving one means adding the RFC-2119
+sentence the entry describes and the witnessing corpus case, then moving it into the resolved list above.
+
+- [Spec gap: `let` binding sequencing is unspecified](./2026-07-05-spec-gap-let-binding-sequencing.md)
+  — whether multiple bindings in one `let` are sequential (`let*`, each initializer sees the earlier names) or
+  parallel (each evaluated in the enclosing scope) is undetermined; `(let ((x 1) (y (+ x 1))) y)` is 2 under one
+  reading and an unbound-name rejection under the other. Recommended: sequential (matches the seed and the
+  functional-language default).
+- [Spec gap: duplicate pattern binder](./2026-07-05-spec-gap-duplicate-pattern-binder.md)
+  — whether a pattern may bind the same name twice (`(tuple x x)`), and if so whether it shadows, errors, or
+  imposes an equality constraint, is unspecified. Recommended: a repeated binder is a compile-time error
+  (linear patterns).
+- [Spec gap: String/Bytes indexing lacks a total-or-trap requirement](./2026-07-05-spec-gap-string-bytes-total-or-trap.md)
+  — only *list* indexing has a dedicated total-or-trap MUST; String and Bytes out-of-bounds reads rely on the
+  weaker general partial-operations clause, which permits a trap *or* a defined value, so the corpus's recorded
+  traps are one permitted choice rather than required behavior. Recommended: add a total-or-trap requirement
+  covering String and Bytes indexing (or generalize the list one).
+- [The behavior gate is not byte-exact for floats](./2026-07-05-behavior-gate-not-byte-exact-for-floats.md)
+  — the whole-float renderer uses `f as i64`, which *saturates*, so distinct floats ≥ 2^63 (1e19, 1e20, 1e100)
+  collapse to one canonical form — violating deterministic-value-form injectivity. The gate can't catch it: it
+  renders both sides through the same `display_float`, so it is not byte-exact for floats (contradicting the
+  corpus README's "byte-exact" claim), and the existing anti-saturation case is a false guard. Needs BOTH a
+  renderer fix (`{:.0}` not `f as i64`) AND a gate that compares float output byte-exact against the recorded
+  literal text. No corpus case can express this until the gate is fixed.

@@ -30,9 +30,9 @@
 | Determinism config | execution **fuel-metered**; deterministic floating-point mode on; which nondeterministic capabilities a component may hold is left to the running system's per-role policy | The compiler introduces no undeclared nondeterminism and surfaces every requested capability; the running system decides from the manifest what to bind (for example, binding no clock or entropy for a log-folding role). |
 | Resource measure | **fuel** (a deterministic per-instruction/per-call unit) | The deterministic resource measure the determinism-and-fuel contract requires; exhaustion halts at a defined point. |
 | Host interface | a **versioned WIT-shaped world** the target defines; a component names its exact version explicitly and a runtime refuses any other | The mechanism, not a fixed vocabulary: a component imports the WIT-typed host functions its manifest enumerates from the world it names (host-interface-binding.md §Imports Are WIT-Typed Host Functions). |
-| Host functions | **none fixed by the language**; a target's world defines its own | Which host functions exist is the target's concern (host-interface-binding.md §Which Host Functions Exist Is The Target's Concern). The illustrative `hivemind-host` world below is one target's set, not the language's — a program that imports none of them is pure (an empty manifest). |
+| Host functions | **none fixed by the language**; a target's world defines its own | Which host functions exist is the target's concern (host-interface-binding.md §Which Host Functions Exist Is The Target's Concern). The illustrative `example-host` world below is one target's set, not the language's — a program that imports none of them is pure (an empty manifest). |
 
-## A target's host world is WIT-shaped (illustrative: `hivemind-host`)
+## A target's host world is WIT-shaped (illustrative: `example-host`)
 
 The host interface a component targets is a component-model (WIT-shaped) world the *target* defines,
 not the language. Cadenza fixes only the mechanism: a program declares each host function it imports
@@ -41,12 +41,12 @@ component names (host-interface-binding.md §Imports Are WIT-Typed Host Function
 type follow the [type-mapping](../type-mapping/) choice. A function is bound only when the component's
 manifest enumerates it.
 
-The world below is **illustrative** — the set one target, Hivemind, offers — shown so the mechanism is
+The world below is **illustrative** — one example target's set — shown so the mechanism is
 concrete, not because the language fixes these functions. Another target defines a different world, and
 a program that imports none of a world's functions is pure (an empty manifest).
 
 ```wit
-// hivemind-host (one target's world — illustrative, NOT the language's vocabulary)
+// example-host (one target's world — illustrative, NOT the language's vocabulary)
 type projection-id = string          // names a projection the manifest grants
 type kind = string                   // names an event kind the manifest grants
 type blob-hash = list<u8>            // a content address

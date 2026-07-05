@@ -239,6 +239,71 @@
             (def (main) (fib 10))))
   (output (: 55 Int64)))
 
+; --- Overflow checking holds THROUGH a recursive call chain, not only at the top level ----
+; numeric-model.md #Overflow Is Defined: an integer operation that overflows traps under the checked
+; default. The `(+ Int64.max 1)` and `(* Int64.max 2)` cases (06-numeric-model) pin this for a top-level
+; operation on constant operands; here the overflowing `*` is buried inside a RECURSION, reached only
+; after the call chain unwinds. `fact(20)` = 2432902008176640000 is the largest factorial that fits
+; Int64; `fact(21)` = 21·fact(20) ≈ 5.1e19 overflows, and the checked `*` MUST trap when the recursion
+; multiplies up to it — not wrap to a garbage value. A generation that emits a checked `*` at the top
+; level but an unchecked one inside a recursive helper would compute a wrong `fact(21)` and pass every
+; small-input recursion case; this pins the boundary.
+
+(case "the largest factorial that fits the integer type computes exactly"
+  (doc    "fact(20) = 2432902008176640000, the largest factorial within Int64 (fact(21) overflows). The
+           recursion multiplies 20·19·…·1 with the checked `*`, and every intermediate product stays in
+           range, so it computes the exact value — the passing companion of the overflow case below.")
+  (input  (module m
+            (def (fact n)
+              (match n
+                (0 1)
+                (_ (* n (fact (- n 1))))))
+            (def (main) (fact 20))))
+  (output (: 2432902008176640000 Int64)))
+
+(case "a factorial that overflows the integer type traps through the recursion"
+  (doc    "fact(21) = 21·fact(20) ≈ 5.1e19, which overflows Int64. The overflowing `*` sits INSIDE the
+           recursion, reached as the call chain unwinds; the checked-Int64 default MUST trap there
+           (numeric-model.md #Overflow Is Defined), not wrap to a wrong value. Pins that overflow
+           checking is emitted on the recursive arithmetic path, not only for a top-level constant
+           operation — the recursion companion of `(* Int64.max 2)`.")
+  (input  (module m
+            (def (fact n)
+              (match n
+                (0 1)
+                (_ (* n (fact (- n 1))))))
+            (def (main) (fact 21))))
+  (trap   "integer overflow"))
+
+; --- Two functions may recurse through EACH OTHER (mutual recursion) ----------------------
+; core-semantics.md §Recursion + §A Function Is A First-Class Value: recursion need not be
+; self-recursion — two top-level defs may call each other, each in scope in the other's body (the same
+; lexical resolution that makes a single recursive def work, extended to a pair). `even`/`odd` count
+; down through one another; the base case is reached only after the mutual chain unwinds. The existing
+; recursion cases are all SELF-recursive; this pins that a mutually-recursive pair resolves and
+; terminates too, and returns the Bool result faithfully.
+
+(case "two functions defined by mutual recursion compute a result"
+  (doc    "`even` and `odd` are mutually recursive: each calls the other with n-1 until n reaches 0.
+           even(10) counts 10→9→…→0 alternating between the two defs and returns true (10 is even). Pins
+           that mutual recursion resolves (each def is in scope in the other's body) and terminates via
+           the shared base case, carrying the Bool result across the run boundary.")
+  (input  (module m
+            (def (even n) (if (= n 0) true  (odd  (- n 1))))
+            (def (odd  n) (if (= n 0) false (even (- n 1))))
+            (def (main) (even 10))))
+  (output (: true Bool)))
+
+(case "the other parity of a mutually-recursive pair"
+  (doc    "The companion on the other outcome: even(7) alternates even→odd→…→base and returns false (7
+           is odd). Confirms the mutual recursion follows the runtime count to the correct base-case
+           result for both parities, not a fixed answer.")
+  (input  (module m
+            (def (even n) (if (= n 0) true  (odd  (- n 1))))
+            (def (odd  n) (if (= n 0) false (even (- n 1))))
+            (def (main) (even 7))))
+  (output (: false Bool)))
+
 (case "unbounded recursion halts by exhausting the resource measure"
   (doc    "Witnesses core-semantics.md §Recursion Is Accountable Against The Resource Measure: a
            function that applies itself with no base case consumes the deterministic resource measure

@@ -34,13 +34,13 @@ can be rebuilt from these specs at any time.
 
 ## Why Cadenza exists
 
-Cadenza is the source language and derivation tool for **hivemind** — a pool of agents over
+Cadenza is a source language and derivation tool for a target system — a pool of agents over
 one durable event log, where behavior itself is data published on the log as source plus a
 capability manifest, and the runnable form of that behavior is a sandboxed, content-addressed
-component derived from the source. hivemind's frozen root only loads, verifies, and runs
+component derived from the source. That system's frozen root only loads, verifies, and runs
 components; it contains no compiler. Cadenza is the replaceable, capability-gated build tool
-that turns Cadenza source into hivemind-conformant components — and is itself such a
-component. The constraints hivemind places on the behavior it runs — determinism,
+that turns source into components the target can run — and is itself such a
+component. The constraints the target places on the behavior it runs — determinism,
 capability-safety, bounded termination, reproducible derivation, content-addressing — are the
 constraints this language is designed around.
 

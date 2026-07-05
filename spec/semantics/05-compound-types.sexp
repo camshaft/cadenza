@@ -147,6 +147,50 @@
   (input  (= (record (x 1) (y 2)) (record (x 1) (y 2))))
   (output (: true Bool)))
 
+; --- Record equality is by field-name SET, so it is independent of the order fields are written ---
+; core-semantics.md #A Record Has A Fixed Set Of Named Fields (a record's fields are a SET) together
+; with deterministic-value-form.md #Ordering Of Aggregate Members Is Fixed ("The canonical encoding of
+; an unordered aggregate MUST place its members in a fixed order derived from the members themselves,
+; not from the order in which they were inserted or discovered"). A record's fields are an unordered
+; set, so two records with the same field-name set and equal values are EQUAL regardless of the order
+; the fields are written — exactly as the map order-independence case (above) requires for maps. The
+; equality case above compares records in the SAME written order and so cannot witness this; a
+; comparison that naively matched field lists positionally would wrongly report these unequal. This
+; pins that record `=` normalizes field order (compares as a set), the record companion of "map equality
+; is independent of insertion order".
+
+(case "record equality is independent of the order fields are written"
+  (doc    "`(record (a 1) (b 2))` and `(record (b 2) (a 1))` have the same field-name set {a, b} with the
+           same values, so they are EQUAL (core-semantics.md #A Record Has A Fixed Set Of Named Fields;
+           a set is unordered) — true regardless of the written order. Pins that record `=` compares
+           field SETS, not positional field lists, mirroring the map order-independence case. MUST be
+           true.")
+  (input  (= (record (a 1) (b 2)) (record (b 2) (a 1))))
+  (output (: true Bool)))
+
+(case "projecting a field is independent of the order fields are written"
+  (doc    "Member access finds a field by NAME, not by position, so `(. (record (b 2) (a 1)) a)`
+           projects `a` = 1 even though `a` is written second. Pins that projection resolves the field
+           name against the record's set, not by the order of construction — the projection companion of
+           the order-independent equality case.")
+  (input  (. (record (b 2) (a 1)) a))
+  (output (: 1 Int64)))
+
+; --- Member access chains: projecting a field of a projected record ----------------------
+; core-semantics.md #Member Access Projects A Record Field applies to a record however it was
+; obtained — including one that is itself the result of a projection. So `(. (. r outer) inner)`
+; projects `outer` from `r` (yielding a record) then `inner` from that. The single-projection and
+; conditionally-selected-record cases (above) do not witness a projection whose operand is another
+; projection; this pins that a projection's result is an ordinary record that member access consumes.
+
+(case "member access chains through a nested record"
+  (doc    "`(. (. (record (outer (record (inner 7)))) outer) inner)` projects the inner record via
+           `outer`, then `inner` from it, yielding 7. Pins that member access composes — the operand of
+           a `.` may itself be a `.` projection, exactly as it may be a conditional-selected or
+           function-returned record (witnessed elsewhere).")
+  (input  (. (. (record (outer (record (inner 7)))) outer) inner))
+  (output (: 7 Int64)))
+
 (case "a sum-type value is constructed through a variant"
   (doc    "Sign is declared where used as (Neg | Zero | Pos) (options/code-shape/); a value is one
            variant. Construction is via application: Sign.Pos is a Constructor (function), and
@@ -283,6 +327,29 @@
   (input  (List.at (list 1 2 3) 5))
   (trap   "list index out of bounds"))
 
+; A NEGATIVE index is out of bounds exactly as an over-large one is — no element sits at position -1.
+; It is the classic total-or-trap miscompile: a lowering that casts the signed index to an unsigned
+; width (wasm addresses memory with u32/u64 offsets) turns -1 into a huge in-range-looking offset,
+; reading an unspecified value instead of trapping. #List Operations Are Total Or Trap requires the
+; trap; this pins the negative side of the bounds check the `5` case only exercises on the high side.
+
+(case "indexing a list with a negative index traps"
+  (doc    "`(List.at (list 1 2 3) -1)` uses a negative index — no element at position -1 — so it MUST
+           trap (collections-and-text.md #List Operations Are Total Or Trap), NOT wrap the negative
+           index to a large unsigned offset and read an unspecified element. The negative-index
+           companion of the out-of-bounds `5` case above; both must trap.")
+  (needs collections)
+  (input  (List.at (list 1 2 3) -1))
+  (trap   "list index out of bounds"))
+
+(case "indexing an empty list traps"
+  (doc    "`(List.at (list) 0)` indexes position 0 of a list with no elements — out of bounds, since
+           an empty list has no element at any index — so it MUST trap. Pins the degenerate boundary:
+           index 0 is valid only when the list is non-empty.")
+  (needs collections)
+  (input  (List.at (list) 0))
+  (trap   "list index out of bounds"))
+
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
   (needs collections)
@@ -364,6 +431,52 @@
   (needs      collections)
   (input      (= (map) (record)))
   (error      CDZ0201))
+
+; --- Two maps with different KEY SETS are comparable: the result is false, not a type error ---
+; type-system.md #Structural Values Are Comparable Only When Their Shapes Match restricts comparison
+; for RECORDS (by field-name set), TUPLES (by arity), and SUMS (by variant set) — shapes fixed
+; statically by a value's FORM. A map's key set is NOT such a shape: a map's type is Map<KeyType,
+; ValueType>, and its keys are a runtime COLLECTION, not a fixed part of its type (the existing "map vs
+; record" case above turns on exactly this — "a map's key set is a collection"). So two maps with the
+; SAME key and value TYPES but DIFFERENT keys are the SAME TYPE, and comparing them is well-typed. Its
+; result is fixed by collections-and-text.md #A Map Associates Keys With Values ("Two maps MUST be equal
+; exactly when they associate the same keys with equal values"): different keys ⇒ they do not associate
+; the same keys ⇒ the comparison is FALSE, not a compile-time rejection. The seed wrongly applies the
+; record/tuple/sum shape-match rule to a map's key set and REJECTS the comparison (CDZ0201, "comparison
+; between values of different shapes") — a miscompile: it refuses a valid program that must run and
+; yield false. The recorded false is the correct oracle; the seed's rejection is the bug.
+
+(case "two maps with different keys are unequal, not a type error"
+  (doc    "`(map (a 1) (b 2))` and `(map (a 1) (c 2))` have the same key and value types but different
+           key sets. A map's key set is runtime data, not part of its type (unlike a record's fixed
+           field set), so the two maps are the SAME type and the comparison is well-typed. They do not
+           associate the same keys, so `=` is FALSE (collections-and-text.md #A Map Associates Keys With
+           Values), NOT a type error. The seed wrongly treats the key set as a shape and rejects the
+           comparison (CDZ0201) — a miscompile that refuses a valid program. MUST be false.")
+  (needs      collections)
+  (input      (= (map (a 1) (b 2)) (map (a 1) (c 2))))
+  (output     (: false Bool)))
+
+(case "two maps of different sizes are unequal, not a type error"
+  (doc    "`(map (a 1))` and `(map (a 1) (b 2))` differ in their number of entries. A map's entry count
+           is runtime data, not part of its type, so the comparison is well-typed and FALSE — they do
+           not associate the same keys (collections-and-text.md #A Map Associates Keys With Values). The
+           size-difference companion of the case above; the seed rejects it (CDZ0201) rather than
+           yielding false — the same miscompile. Contrast records `(= (record (a 1)) (record (a 1) (b
+           2)))`, which IS a type error, because a record's field set IS its shape.")
+  (needs      collections)
+  (input      (= (map (a 1)) (map (a 1) (b 2))))
+  (output     (: false Bool)))
+
+(case "an empty map is unequal to a non-empty map, not a type error"
+  (doc    "The degenerate companion: an empty map and a one-entry map are the same map type (both
+           Map<…>), so comparing them is well-typed and FALSE — they associate different keys. Pins that
+           emptiness on one side of a map comparison yields false, not a shape-mismatch rejection
+           (contrast the empty-map-vs-empty-record case above, which IS a type error because map and
+           record are different types). MUST be false.")
+  (needs      collections)
+  (input      (= (map) (map (a 1))))
+  (output     (: false Bool)))
 
 (case "member access on a map is a type error"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field: member access projects
@@ -567,12 +680,16 @@
            (options/sum-type-declaration/); this case uses (type Color (Red | Green | Blue)) to
            declare Color with three nullary constructors. Each constructor is single-arity taking
            Unit per the uniform constructor requirement. The constructors bind in a Color record:
-           Color.Red, Color.Green, Color.Blue.")
+           Color.Red, Color.Green, Color.Blue. Applying the nullary constructor `(Color.Red unit)`
+           yields the Sum value that renders `(Color.Red unit)` — the same `(Variant unit)` form
+           every nullary variant takes ((None unit), (Sign.Pos unit)); a nullary variant carries
+           unit, so its one canonical value form is the constructor applied to unit, never a bare
+           tag (deterministic-value-form.md #A Value Has One Canonical Byte Form).")
   (needs  sum-type-declaration)
   (input  (do
             (type Color (Red | Green | Blue))
             (Color.Red unit)))
-  (output (: Color.Red Color)))
+  (output (: (Color.Red unit) Color)))
 
 (case "a sum type variant can carry data"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable Constructed And Deconstructed (1st

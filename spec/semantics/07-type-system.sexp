@@ -49,6 +49,68 @@
   (input  (+ 1 "two"))
   (error  CDZ0201))
 
+; --- The comparison operators type-check their operands exactly as = and + do -------------
+; An ordering comparison (`<` `>` `<=` `>=`) offers a total order over ONE type's values
+; (core-semantics.md #Ordering Where Offered Is Total; type-system.md #Structural Values Are
+; Comparable Only When Their Shapes Match). Comparing two DIFFERENT numeric types is the same
+; silent-promotion the arithmetic operators forbid (numeric-model.md #Numeric Types Do Not
+; Silently Promote), so `(< 5 2.0)` is rejected (CDZ0301) exactly as `(+ 5 2.0)` and `(= 5 2.0)`
+; are — an ordering is not a licence to promote Int64 to Float64 where + may not. Comparing two
+; UNRELATED kinds (Int64 vs Bool, Int64 vs String) has no shared order at all, a general type
+; error (CDZ0201), exactly as `(= 1 true)` is. These pin that the ordering operators are held to
+; the SAME operand-typing rule as equality and arithmetic — a comparison must not be the one
+; arithmetic-shaped operator that silently accepts a cross-type pair (the compiler either rejects
+; with the code below or, for a rule it does not yet cover, declines rather than comparing across
+; types — reject-don't-miscompile).
+
+(case "ordering an integer against a float is rejected, not silently promoted"
+  (doc    "`(< 5 2.0)` compares an Int64 and a Float64 — the numeric no-promotion rule the
+           arithmetic operators obey applies to the ordering operators too, so the compiler rejects
+           it (CDZ0301) rather than promoting 5 to 5.0 and answering. The passing companions are
+           `(+ 5 2.0)` → CDZ0301 and `(= 5 2.0)` → CDZ0301; `<` must be held to the same rule.")
+  (input  (< 5 2.0))
+  (error  CDZ0301))
+
+(case "greater-than of an integer and a float is rejected"
+  (doc    "The `>` companion: `(> 5 2.0)` mixes Int64 and Float64, rejected (CDZ0301) like `<`.
+           Pins that the no-promotion check covers `>`, not only `<`.")
+  (input  (> 5 2.0))
+  (error  CDZ0301))
+
+(case "less-than-or-equal of an integer and a float is rejected"
+  (doc    "The `<=` companion: `(<= 5 2.0)` mixes two numeric types, rejected (CDZ0301). Pins the
+           check for the inclusive ordering operator.")
+  (input  (<= 5 2.0))
+  (error  CDZ0301))
+
+(case "greater-than-or-equal of an integer and a float is rejected"
+  (doc    "The `>=` companion: `(>= 5 2.0)` mixes two numeric types, rejected (CDZ0301). Completes
+           the four ordering operators against the no-promotion rule.")
+  (input  (>= 5 2.0))
+  (error  CDZ0301))
+
+(case "ordering an integer against a boolean is a type error"
+  (doc    "`(< 1 true)` compares an Int64 with a Bool — unrelated kinds with no shared order, a
+           general type error the compiler rejects (CDZ0201), exactly as `(= 1 true)` is. An
+           ordering operator is not a coercion to a common type; a Bool has no position in Int64's
+           order.")
+  (input  (< 1 true))
+  (error  CDZ0201))
+
+(case "ordering an integer against a string is a type error"
+  (doc    "`(< 1 \"x\")` compares an Int64 with a String — two different types, rejected (CDZ0201)
+           like the equality companion `(= 1 \"x\")`. Pins that the ordering operators reject a
+           cross-kind comparison rather than declining silently or comparing representations.")
+  (input  (< 1 "x"))
+  (error  CDZ0201))
+
+(case "ordering a string against an integer is a type error regardless of operand order"
+  (doc    "The order-flipped companion: `(> \"x\" 1)` is the same cross-type comparison (String vs
+           Int64) and rejected (CDZ0201). Pins that the operand-type check does not depend on which
+           side carries which type.")
+  (input  (> "x" 1))
+  (error  CDZ0201))
+
 (case "Type is a first-class value"
   (doc    "Witnesses core-semantics.md #Types Are First-Class Values (1st sentence): a Type can be
            bound to a name, passed as an argument, returned from a function. A Type is an ordinary

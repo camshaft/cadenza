@@ -233,6 +233,8 @@ A type that offers an ordering MUST offer a total order over its values.
 
 The ordering a type offers MUST be a deterministic function of the values compared.
 
+The Bool type MUST offer a total order in which false is less than true.
+
 ## Observable Behavior
 
 ### Observable Behavior Is A Defined Projection Of A Run
