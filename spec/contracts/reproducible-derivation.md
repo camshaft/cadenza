@@ -33,6 +33,10 @@ The identity of the value-heap runtime a program is emitted against MUST be the 
 
 A program that is run or resumed against the value-heap runtime MUST be run against the runtime whose content address is the one pinned for that program, so that execution is deterministic in the pair (program, runtime content address) and a runtime built from different bytes is a distinct, explicitly-identified execution environment rather than a silent substitution.
 
+The compiler and the runtime it targets MUST be built as one versioned pair — the runtime derived first, its content address computed, and the compiler built against that content address — so that a compiler and the runtime it emits programs against are never independently versioned and the pairing is a build-order invariant rather than a hand-maintained coincidence.
+
+Both the runtime and the compiler MUST be placed in a content-addressed store keyed by their content address, so that a host resolves a program's required runtime, and a verifier re-derives either artifact, by content address from one store (component-abi.md §The Host Resolves The Runtime By Content Address).
+
 ### Codegen Order Is Source-Determined
 
 The order in which the compiler emits definitions, data, and interface entries MUST be a deterministic function of the source.

@@ -56,6 +56,25 @@ exception. Because this touches a never-downgradable floor's auditability, it re
   a continuation is canonical data, and the runtime it ran against is just another content-address
   in that data.
 
+**How the pin travels (operator design, same amendment).** The compiler and runtime are ONE
+versioned pair, and the pin is self-describing end to end:
+- The compiler is BUILT against a fixed runtime interface + a fixed runtime content hash (change the
+  runtime → new hash → rebuild the compiler → new generation).
+- Each emitted component RECORDS the required runtime's content hash in itself (alongside its
+  `cadenza:runtime/heap` import), so the artifact carries both *what interface* and *which exact
+  implementation*.
+- The host RESOLVES by hash: reads the required hash from the component, looks it up in a
+  content-addressed store (`<store>/<hash>.wasm`), composes; refuses (does not substitute) if the
+  hash is absent. Programs pinned to different runtime versions coexist.
+- Build choreography is an **xtask**: compile runtime → hash it → compile compiler passing that hash
+  → both land in the content-addressed store. Build ORDER encodes the dependency; this is the
+  concrete realization of "versioned together" (component-abi.md §The Emitted Component Records Its
+  Required Runtime, §The Host Resolves The Runtime By Content Address; reproducible-derivation.md
+  build-pair invariant).
+Payoff: the handle boundary is stable, so the runtime REPRESENTATION can evolve (Phase D RC, Phase E
+CHAMP/RRB) — each change is just a new hash a new compiler generation targets, no ambiguity about
+which runtime a given program expects.
+
 **Debt.** The runtime is authored in Rust now; at self-hosting (M8/M9) it must be re-authored in
 Cadenza — a foreign-language artifact the self-hosted compiler cannot itself derive is a gap to
 close, tracked, not blocking.

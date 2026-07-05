@@ -117,6 +117,18 @@ The identity of that runtime interface MUST be fixed at the declared-default loc
 
 The concrete runtime a program is emitted against MUST be identified by the content address of that runtime component, so that a program's execution is deterministic in the pair (program, runtime content address) and a runtime built from different bytes is a distinct, explicitly-identified environment rather than a silent substitution (reproducible-derivation.md §Derivation Is A Function Of Source And Toolchain).
 
+### The Emitted Component Records Its Required Runtime
+
+A compiler MUST be built against a fixed runtime interface and a fixed runtime content address, so that which runtime a generation targets is a property of the compiler rather than a per-invocation choice, and the compiler and its runtime are one versioned pair.
+
+A derived program MUST record, in the emitted component itself, the content address of the runtime it requires, so that the component is self-describing: what interface it imports and which exact runtime implementation satisfies that import both travel with the artifact.
+
+### The Host Resolves The Runtime By Content Address
+
+A host MUST resolve a program's runtime import by reading the required runtime content address the component records and locating the runtime component of that content address in a content-addressed store, rather than by assuming a single ambient runtime, so that programs pinned to different runtime versions coexist and each resolves the exact runtime it was emitted against.
+
+A host that cannot locate a runtime of the content address a component requires MUST refuse to run the component rather than substitute a different runtime, so that a mismatched runtime is a detected error rather than a silent change in observable behavior.
+
 ### The Runtime Owns The Value Heap And Its Representation
 
 The value-heap runtime MUST own the entire storage of a program's runtime values — their allocation, their in-memory layout, their reference-count discipline, and their reclamation — so that a program component holds no value storage of its own and the representation of every compound value is the runtime's private concern.
