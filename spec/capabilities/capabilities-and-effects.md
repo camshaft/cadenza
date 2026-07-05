@@ -54,7 +54,7 @@ Purity MUST be the empty effect row: a program that imports no host function MUS
 
 ### The Value-Heap Runtime Is The One Import That Is Not A Capability
 
-The single, well-known value-heap runtime interface a program imports to construct and render its runtime values MUST NOT be counted as a host function, so that importing it adds nothing to the escaping effect row and a program that imports only it remains pure with an empty manifest.
+The single, well-known value-heap runtime interface a program imports to construct and inspect its runtime values MUST NOT be counted as a host function, so that importing it adds nothing to the escaping effect row and a program that imports only it remains pure with an empty manifest.
 
 Exactly one such runtime interface MUST be exempt — the value-heap runtime the compiler emits programs against, fixed at the declared-default location — and every other import a program carries MUST be treated as a host function and therefore a capability, so that the exemption is a closed allowlist of one and not an open class of non-effect imports.
 
