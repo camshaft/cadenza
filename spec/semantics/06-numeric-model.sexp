@@ -538,19 +538,24 @@
   (input  (& (>> 65535 8) 255))
   (output (: 255 Int64)))
 
-; ═══ The fixed-width integer family: {Int, UInt} × {8, 16, 32, 64} ═══════════════════════
-; numeric-model.md #Integer Types Have Fixed Widths: the language provides integer types of distinct
-; fixed widths and signedness, each a distinct type that does not silently convert to another; the
-; concrete family is pinned at options/numeric-model/ (explicit-checked): Int8/16/32/64 and
-; UInt8/16/32/64, all CHECKED (each traps on overflow of its own range, numeric-model.md #Overflow Is
-; Defined), reached from a bare Int64 literal by an annotation, a per-width bound, or an explicit
-; conversion. `Int64` stays the default a bare literal takes (the cases above); these witness the
-; SEVEN other widths and the two explicit conversion forms. All carry (needs numeric-model): the seed
-; realizes only the 64-bit checked Int64 core (options/realized-capability-set/) and lowers every
-; integer as an i64, so it SKIPS these; the M4 generation that realizes the fixed-width family runs
-; them. A compiler needs UInt8 (a module's bytes) and UInt32 (section sizes, LEB128 operands, table
-; and memory indices), which is why this is the highest-value numeric increment on the self-hosting
-; path even though it is off the ignition path.
+; ═══ Width-indexed integers: (Int N) / (UInt N) over a compile-time width N in 1..=64 ═════
+; numeric-model.md #An Integer Type Is Indexed By A Compile-Time Width: an integer type is identified
+; by a signedness and a bit width, resolved from a COMPILE-TIME value (never runtime data), with an
+; out-of-range width rejected at compile time. The concrete form is pinned at options/numeric-model/
+; (explicit-checked): the two width-indexed type constructors `Int` and `UInt`, applied to a width N in
+; 1..=64 — `(Int 64)`, `(UInt 8)`, `(UInt 48)`, `(UInt 62)` — each a distinct CHECKED type (traps on
+; overflow of its own range, numeric-model.md #Overflow Is Defined). `Int8/16/32/64` and `UInt8/16/32/64`
+; are ALIASES for the eight aliased widths (`Int64` ≡ `(Int 64)`), not separate primitives; those eight
+; are the ones with a boundary representation, so a non-aliased width like `(UInt 48)` is internal-only.
+; `Int64` stays the type a bare literal takes (the cases above); these witness the other widths, the
+; alias equivalence, the width constraint (CDZ0302), and the two explicit conversion forms. All carry
+; (needs numeric-model): the seed realizes only the 64-bit checked Int64 core
+; (options/realized-capability-set/) and lowers every integer as an i64 with no width-indexed types, so
+; it SKIPS these; the M4 generation that realizes width-indexed integers (riding on generics —
+; a compile-time width as a type-constructor argument) runs them. A compiler needs UInt8 (a module's
+; bytes) and UInt32 (section sizes, LEB128 operands, table and memory indices); an unusual width like
+; `(UInt 48)` (a packed timestamp) is a first-class type the compiler COMPUTES rather than a wrapper the
+; author hand-writes — the point of indexing the width rather than fixing a set of primitives.
 
 ; --- Construction and per-width bounds ---------------------------------------------------
 
@@ -737,3 +742,115 @@
   (needs  numeric-model)
   (input  (+ UInt32.max (: 1 UInt32)))
   (trap   "integer overflow"))
+
+; --- The named widths are ALIASES for the width-indexed constructors ------------------------
+; `Int8/16/32/64` and `UInt8/16/32/64` are ordinary aliases for `(Int 8)`…`(UInt 64)`, not distinct
+; primitives (options/numeric-model/ #Integers are width-indexed). The alias and its expansion name the
+; SAME type, so a value annotated one way equals the same value annotated the other and the two
+; annotations do not conflict. These pin that `UInt8` is nothing more than `(UInt 8)`.
+
+(case "a named width alias and its width-indexed expansion name the same type"
+  (doc    "`(: 200 (UInt 8))` is the unsigned 8-bit value 200, exactly as `(: 200 UInt8)` is — `UInt8` is
+           the alias `(UInt 8)`. The value form is the integer 200 at the unsigned 8-bit type either way;
+           the canonical output is written with the aliased name. Pins that the width-indexed constructor
+           applied to 8 is the same type the alias names, not a distinct one.")
+  (needs  numeric-model)
+  (input  (: 200 (UInt 8)))
+  (output (: 200 UInt8)))
+
+(case "the width-indexed and aliased annotations of one value do not conflict"
+  (doc    "`(: (: 5 (UInt 32)) UInt32)` annotates a value first as `(UInt 32)` then as `UInt32` — the
+           same type under two names, so the annotations agree and the value is well-typed (NOT a CDZ0203
+           annotation conflict). Pins the alias equivalence through the annotation-conflict checker: an
+           alias and its expansion are interchangeable, never contradictory.")
+  (needs  numeric-model)
+  (input  (: (: 5 (UInt 32)) UInt32))
+  (output (: 5 UInt32)))
+
+; --- A NON-ALIASED in-range width is an equally first-class, internal-only type -------------
+; The whole point of indexing the width: `(UInt 48)`, `(UInt 62)`, `(UInt 12)` are ordinary types with
+; no shorter name, whose bounds, mask, and operations the compiler COMPUTES from N — not wrappers the
+; author hand-writes (options/numeric-model/ #Why these choices). They have no boundary representation
+; (only the eight aliased widths do), so they are internal-only; these cases construct and overflow one
+; inside a program, where the packing wins live.
+
+(case "an unusual in-range width is a first-class type"
+  (doc    "`(: 281474976710655 (UInt 48))` is `(UInt 48).max` = 2^48 - 1, the largest value a 48-bit
+           unsigned integer holds — a packed-timestamp width with no aliased name. It is an ordinary
+           well-typed value of `(UInt 48)`, its bound computed from N=48 (numeric-model.md #An Integer
+           Type Is Indexed By A Compile-Time Width). Pins that a non-aliased in-range width is
+           first-class, not a special case the language lacks.")
+  (needs  numeric-model)
+  (input  (: 281474976710655 (UInt 48)))
+  (output (: 281474976710655 (UInt 48))))
+
+(case "an unusual-width value that overflows its computed range traps"
+  (doc    "`(+ (: 281474976710655 (UInt 48)) (: 1 (UInt 48)))` = 2^48, one past `(UInt 48).max`, so it
+           overflows the checked 48-bit range and MUST trap — the overflow bound is COMPUTED from N=48,
+           not drawn from a fixed width table. Pins that a non-aliased width is checked at its own width
+           exactly as an aliased one is; a naive lowering that only checked the 8/16/32/64 boundaries
+           would carry 2^48 as a wrong value.")
+  (needs  numeric-model)
+  (input  (+ (: 281474976710655 (UInt 48)) (: 1 (UInt 48))))
+  (trap   "integer overflow"))
+
+(case "a truncating conversion to an unusual width keeps that width's low bits"
+  (doc    "`((UInt 48).wrap (: -1 Int64))` = 281474976710655: the truncating conversion keeps the low 48
+           bits of -1's two's-complement representation (48 ones) = 2^48 - 1. Pins that `T.wrap` computes
+           its mask from N for a non-aliased width too — the low-N-bits rule is uniform across every
+           width, aliased or not (options/numeric-model/ #Conversions are explicit).")
+  (needs  numeric-model)
+  (input  ((UInt 48).wrap (: -1 Int64)))
+  (output (: 281474976710655 (UInt 48))))
+
+; --- The width is a COMPILE-TIME constant in 1..=64; an out-of-range width is CDZ0302 -------
+; numeric-model.md #An Integer Type Is Indexed By A Compile-Time Width: the width is resolved from a
+; compile-time value, and a width outside the admitted range is rejected at compile time with the
+; unsatisfied-width-constraint diagnostic (CDZ0302, options/diagnostics-schema/) — the same
+; compile-time-constraint rejection any generic instantiation gets (type-system.md #A Generic Constraint
+; Is A Compile-Time Predicate Over Type-Values), NOT a runtime trap. The 1..=64 ceiling is the range a
+; single core-wasm register holds; a width above 64 is reserved to the big-integer layer, so it too is
+; a CDZ0302 rejection today, not a valid type.
+
+(case "a zero-bit integer width is rejected"
+  (doc    "`(: 0 (UInt 0))` names a zero-bit integer, which holds no values — a width of 0 is outside the
+           admitted 1..=64 range, so the type is rejected at compile time (CDZ0302), the width analogue of
+           any generic instantiation whose argument fails its constraint. Not a runtime trap: the type
+           itself is ill-formed.")
+  (needs  numeric-model)
+  (input  (: 0 (UInt 0)))
+  (error  CDZ0302))
+
+(case "an integer width above the 64-bit ceiling is rejected"
+  (doc    "`(: 5 (UInt 65))` names a 65-bit integer, one past the 1..=64 ceiling — a width a single
+           core-wasm register cannot hold. It is rejected at compile time (CDZ0302); a fixed-size integer
+           wider than 64 bits is reserved to the opt-in big-integer layer, not the width-indexed
+           constructor (options/numeric-model/ #Widths above 64 are reserved). Pins the upper boundary of
+           the width constraint.")
+  (needs  numeric-model)
+  (input  (: 5 (UInt 65)))
+  (error  CDZ0302))
+
+(case "a wide fixed-size integer width is reserved, not yet a valid type"
+  (doc    "`(: 5 (UInt 128))` names a 128-bit integer — beyond the 1..=64 register-width ceiling, so it is
+           rejected (CDZ0302) today rather than silently accepted. The notation is reserved: a later
+           optional increment MAY realize wide fixed-size integers as a multi-word representation and lift
+           the ceiling, at which point `(UInt 128)` becomes valid with no surface-syntax change. Until
+           then, more than 64 bits uses the big-integer type. Pins that the ceiling is a constraint, not a
+           parse error.")
+  (needs  numeric-model)
+  (input  (: 5 (UInt 128)))
+  (error  CDZ0302))
+
+(case "an integer width from runtime data is rejected, keeping widths non-dependent"
+  (doc    "`(UInt n)` with `n` a runtime function parameter puts a runtime value in a type-determining
+           position, which the type system forbids (numeric-model.md #An Integer Type Is Indexed By A
+           Compile-Time Width: the width MUST be resolved from a compile-time value and MUST NOT be
+           determined by runtime data; type-system.md #Generics Are Type-Valued Parameters). It is
+           rejected at compile time (CDZ0302), keeping the feature at indexed types over compile-time
+           naturals rather than dependent types — no runtime value ever determines a type.")
+  (needs  numeric-model)
+  (input  (module m
+            (def (mk n) (: 5 (UInt n)))
+            (def (main) (mk 8))))
+  (error  CDZ0302))

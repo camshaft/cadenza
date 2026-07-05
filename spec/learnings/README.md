@@ -303,9 +303,10 @@ sentence the entry describes and the witnessing corpus case, then moving it into
   traps are one permitted choice rather than required behavior. Recommended: add a total-or-trap requirement
   covering String and Bytes indexing (or generalize the list one).
 - [The behavior gate is not byte-exact for floats](./2026-07-05-behavior-gate-not-byte-exact-for-floats.md)
-  — the whole-float renderer uses `f as i64`, which *saturates*, so distinct floats ≥ 2^63 (1e19, 1e20, 1e100)
-  collapse to one canonical form — violating deterministic-value-form injectivity. The gate can't catch it: it
-  renders both sides through the same `display_float`, so it is not byte-exact for floats (contradicting the
-  corpus README's "byte-exact" claim), and the existing anti-saturation case is a false guard. Needs BOTH a
-  renderer fix (`{:.0}` not `f as i64`) AND a gate that compares float output byte-exact against the recorded
-  literal text. No corpus case can express this until the gate is fixed.
+  — the whole-float renderer used `f as i64`, which *saturates*, so distinct floats ≥ 2^63 (1e19, 1e20, 1e100)
+  collapsed to one canonical form — violating deterministic-value-form injectivity — and the gate couldn't catch
+  it because it rendered both sides through the same `display_float` (testing the renderer against itself).
+  **RESOLVED 2026-07-05:** both renderers now use `format!("{f:.0}.0")` (injective), and the gate gained an
+  INDEPENDENT round-trip oracle — a float output's observed text must `parse` back to the recorded f64
+  bit-identically. General lesson: a canonical-form / injectivity requirement cannot be discharged by comparing
+  two outputs of the same function; the gate needs an oracle computed by an independent path (the parse inverse).

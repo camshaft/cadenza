@@ -24,7 +24,21 @@ choice.
 A string MUST be a sequence of Unicode scalar values, so that its contents are independent of any byte
 encoding.
 
-A string's length MUST be counted in Unicode scalar values.
+### A String Offers Both A Scalar Length And A Byte Length
+
+A string MUST offer a length counted in Unicode scalar values and a length counted in the bytes of its
+UTF-8 encoding as two separately-named operations, so that neither meaning is the unqualified default an
+author could confuse for the other.
+
+The scalar length and the byte length MUST count the string's normalized contents, so that a length is a
+function of the string's value rather than of an incidental byte spelling that normalization removes.
+
+A string MUST NOT offer an unqualified length operation, so that every length query names whether it
+counts scalar values or bytes.
+
+The byte length MUST be obtainable without materializing the UTF-8 encoding as a separate value, so that
+a size query an author expects to be cheap is not defined only in terms of an intermediate byte
+sequence.
 
 ### String Equality Follows Normalized Contents
 
@@ -34,6 +48,19 @@ normalization the hashing-and-encoding choice pins.
 ### String Comparison Is Defined On Scalar Values
 
 An ordering over strings MUST be the lexicographic order of their Unicode scalar value sequences.
+
+### Decoding Bytes To A String Is Total, Not Trapping
+
+Decoding a byte sequence to a string MUST yield a result that distinguishes a successful decode from a
+byte sequence that is not well-formed UTF-8, rather than trapping on ill-formed input, so that ill-formed
+bytes are an ordinary value a program handles rather than a halt.
+
+A pattern that decodes a string from a byte sequence MUST treat ill-formed UTF-8 as a non-match that the
+match's exhaustiveness obligation forces the program to handle, so that the ill-formed case is covered by
+a branch rather than by a trap.
+
+Encoding a string to its UTF-8 byte sequence MUST be the inverse of decoding a well-formed byte sequence,
+so that a string decoded from bytes and re-encoded yields those same bytes.
 
 ## Lists
 

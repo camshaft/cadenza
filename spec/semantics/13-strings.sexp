@@ -9,27 +9,60 @@
   (output (: "hello world" String)))
 
 (case "string length"
-  (input  (String.len "hello"))
+  (input  (String.scalar-len "hello"))
   (output (: 5 Int64)))
 
-(case "string length counts Unicode scalar values, not bytes"
-  (doc    "Witnesses collections-and-text.md #A String's Length MUST Be Counted In Unicode Scalar
-           Values. \"café\" is four scalar values (c, a, f, é) but FIVE UTF-8 bytes — é encodes as
-           two bytes. String.len is the scalar count (4), NOT the byte count (5). The byte count is
-           what String.to-bytes → Bytes.len yields (the case just below), and the two differ here
-           precisely because the string is multi-byte. `String.len \"hello\"` above cannot witness
+(case "scalar length counts Unicode scalar values, not bytes"
+  (doc    "Witnesses collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length.
+           \"café\" is four scalar values (c, a, f, é) but FIVE UTF-8 bytes — é encodes as
+           two bytes. String.scalar-len is the scalar count (4), NOT the byte count (5). The byte count is
+           what String.byte-len yields (the byte-len case below), and the two differ here
+           precisely because the string is multi-byte. `String.scalar-len \"hello\"` above cannot witness
            this — ASCII makes the two counts coincide.")
-  (input  (String.len "café"))
+  (input  (String.scalar-len "café"))
   (output (: 4 Int64)))
 
-(case "string length of a supplementary-plane character is one scalar value"
-  (doc    "Witnesses collections-and-text.md #A String's Length MUST Be Counted In Unicode Scalar
-           Values at the boundary that most tempts a byte- or UTF-16-based miscount: \"😀\" (U+1F600)
-           is a single Unicode scalar value — length 1 — even though it is four UTF-8 bytes (and two
-           UTF-16 code units). A length implementation counting bytes would report 4, UTF-16 units 2;
+(case "scalar length of a supplementary-plane character is one scalar value"
+  (doc    "Witnesses collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length
+           at the boundary that most tempts a byte- or UTF-16-based miscount: \"😀\" (U+1F600)
+           is a single Unicode scalar value — scalar length 1 — even though it is four UTF-8 bytes (and
+           two UTF-16 code units). A length implementation counting bytes would report 4, UTF-16 units 2;
            the scalar count is 1.")
-  (input  (String.len "😀"))
+  (input  (String.scalar-len "😀"))
   (output (: 1 Int64)))
+
+; --- Byte length is the UTF-8 byte count, obtained directly ------------------------------
+; collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length: alongside the scalar
+; length, a string offers its length in the bytes of its UTF-8 encoding as a SEPARATELY-NAMED op —
+; String.byte-len — obtainable WITHOUT first materializing the bytes (it need not go through
+; `String.to-bytes → Bytes.len`, though it MUST agree with that composition). There is no unqualified
+; `String.len`: every length query names whether it counts scalars or bytes, so the café case that
+; tempts the "which length?" confusion is a compile-time-explicit choice, not a silent default.
+
+(case "byte length is the UTF-8 byte count"
+  (doc    "`(String.byte-len \"café\")` is 5 — the number of bytes in the UTF-8 encoding (é is two
+           bytes), NOT the scalar count 4 (String.scalar-len \"café\" = 4, above). Pins the byte length
+           as a first-class, directly-obtained op distinct from the scalar length
+           (collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length).")
+  (input  (String.byte-len "café"))
+  (output (: 5 Int64)))
+
+(case "byte length agrees with the length of the encoded bytes"
+  (doc    "`(String.byte-len s)` MUST equal `(Bytes.len (String.to-bytes s))` — the direct byte length
+           agrees with materializing the UTF-8 bytes and counting them; only the cost differs. Pins the
+           two paths as the same number, so byte-len is a cheap shortcut, not a second answer.")
+  (input  (= (String.byte-len "café") (Bytes.len (String.to-bytes "café"))))
+  (output (: true Bool)))
+
+(case "byte length counts the normalized form, not the source spelling"
+  (doc    "The decomposed \"café\" (c, a, f, e + U+0301 combining acute — SIX UTF-8 bytes as written)
+           normalizes to NFC (c, a, f, é — FIVE bytes) before it is a String value, so its byte length
+           is 5, the byte count of the NORMALIZED contents (collections-and-text.md #A String Offers
+           Both A Scalar Length And A Byte Length, 2nd sentence). Pins that byte-len is a function of the
+           string's value, not of the incidental byte spelling normalization removes — the byte-length
+           companion of the scalar-length-after-normalization case below.")
+  (input  (String.byte-len "café"))
+  (output (: 5 Int64)))
 
 (case "string to bytes (UTF-8)"
   (doc    "The compiler encodes export names as UTF-8 bytes for wasm sections. String.to-bytes
@@ -59,10 +92,10 @@
 ; empty-byte-sequence cluster (10-bytes.sexp) and the empty-map/empty-list cases.
 
 (case "the empty string has length zero"
-  (doc    "`(String.len \"\")` is 0 — the empty string has no Unicode scalar values
-           (collections-and-text.md #A String's Length MUST Be Counted In Unicode Scalar Values). Pins
+  (doc    "`(String.scalar-len \"\")` is 0 — the empty string has no Unicode scalar values
+           (collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length). Pins
            that length handles the zero-length string, not underflowing or reading a phantom scalar.")
-  (input  (String.len ""))
+  (input  (String.scalar-len ""))
   (output (: 0 Int64)))
 
 (case "two empty strings are equal"
@@ -119,9 +152,9 @@
 
 (case "string length counts scalar values after normalization"
   (doc    "The length of the decomposed \"café\" MUST be 4 — after normalization it is the four
-           scalar values c, a, f, é, the same as the composed form (String.len \"café\" = 4,
+           scalar values c, a, f, é, the same as the composed form (String.scalar-len \"café\" = 4,
            witnessed above). The seed counts the un-normalized e + combining acute as 5 scalar values.")
-  (input  (String.len "café"))
+  (input  (String.scalar-len "café"))
   (output (: 4 Int64)))
 
 (case "string indexing returns a character"
@@ -130,7 +163,7 @@
 
 ; --- String indexing is by Unicode scalar value, not by byte -----------------------------
 ; collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values ("its contents are
-; independent of any byte encoding") + #A String's Length MUST Be Counted In Unicode Scalar Values:
+; independent of any byte encoding") + #A String Offers Both A Scalar Length And A Byte Length:
 ; String.at addresses the string by SCALAR position, not byte offset. The ASCII `(String.at "hello"
 ; 1)` above cannot witness this — for ASCII the scalar index and byte offset coincide. A multi-byte
 ; string distinguishes them: in "café" (scalars c,a,f,é; é is 2 UTF-8 bytes) scalar index 3 is "é",
@@ -142,7 +175,7 @@
            index 3 is the last, é — even though é occupies bytes 3–4 of the five-byte UTF-8 encoding,
            so byte offset 3 would be a partial code unit. Pins that String.at indexes by scalar value
            (collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), the companion
-           of String.len counting scalars; the ASCII `(String.at \"hello\" 1)` cannot distinguish
+           of String.scalar-len counting scalars; the ASCII `(String.at \"hello\" 1)` cannot distinguish
            scalar index from byte offset.")
   (input  (String.at "café" 3))
   (output (: "é" String)))
@@ -225,31 +258,110 @@
   (output (: "" String)))
 
 ; --- A string operation consumes a string SELECTED by runtime control flow -----------------
-; A string operation (String.len/at/slice/concat) takes a string ARGUMENT; that argument may be a
+; A string operation (String.scalar-len/at/slice/concat) takes a string ARGUMENT; that argument may be a
 ; string SELECTED at run time by an `if` or a `match`, not only a literal. The seed resolves a string
-; operation's argument through a runtime `if` — `(String.len (if b "hello" "hi"))` computes the
-; selected string's length — but NOT through a runtime `match`: `(String.len (match n (0 "zero") (_
+; operation's argument through a runtime `if` — `(String.scalar-len (if b "hello" "hi"))` computes the
+; selected string's length — but NOT through a runtime `match`: `(String.scalar-len (match n (0 "zero") (_
 ; "other")))` declines. Both `if` and `match` select a string value the same way, so a string
 ; operation must consume either. (This is about CONSUMING a runtime-selected string in an operation,
 ; distinct from RETURNING one across the run boundary — the latter needs the compound-value output ABI.)
 
-(case "String.len of a string selected by a runtime match"
-  (doc    "`(match n (0 \"zero\") (_ \"other\"))` selects a string by the runtime value n; `String.len`
+(case "String.scalar-len of a string selected by a runtime match"
+  (doc    "`(match n (0 \"zero\") (_ \"other\"))` selects a string by the runtime value n; `String.scalar-len`
            of that selected string is its scalar length — with n=5 the wildcard picks \"other\", length
            5. A string operation must consume a match-selected string exactly as it consumes an
            if-selected one (the control below, which the seed runs). The seed declines the match case
            (\"unsupported dotted-application\") — its string-op argument resolution follows a runtime
            `if` but not a runtime `match`.")
   (input   (module m
-             (def (f n) (String.len (match n (0 "zero") (_ "other"))))
+             (def (f n) (String.scalar-len (match n (0 "zero") (_ "other"))))
              (def (main) (f 5))))
   (output  (: 5 Int64)))
 
-(case "String.len of a string selected by a runtime if"
-  (doc    "The control the case above must match: `String.len` of a string chosen by a runtime `if`
+(case "String.scalar-len of a string selected by a runtime if"
+  (doc    "The control the case above must match: `String.scalar-len` of a string chosen by a runtime `if`
            computes the selected string's length — `(if b \"hello\" \"hi\")` with b=true is \"hello\",
            length 5. The seed runs this; the match companion must behave identically.")
   (input   (module m
-             (def (f b) (String.len (if b "hello" "hi")))
+             (def (f b) (String.scalar-len (if b "hello" "hi")))
              (def (main) (f true))))
   (output  (: 5 Int64)))
+
+; --- Decoding bytes to a string is TOTAL, never trapping ---------------------------------------
+; collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping. Cadenza's String is
+; guaranteed-well-formed (a sequence of Unicode scalar values, never invalid UTF-8), so turning a Bytes
+; into a String is a CHECKED, PARTIAL operation — some byte sequences are not well-formed UTF-8. The
+; language's rule is that this partiality is HANDLED, not trapped: `String.from-bytes` yields an
+; `Option<String>` (`(Some s)` for well-formed input, `None` for ill-formed), and the `bin`-pattern
+; `(utf8 s)` segment (options/binary-syntax/) is a NON-MATCH on ill-formed bytes so a match's
+; exhaustiveness obligation (CDZ0210) forces a branch that handles the bad case. This is the principled
+; alternative to a trapping decode: where a type can make the partiality explicit and force it to be
+; handled, the language prefers that over a trap (it REFINES total-or-trap — a trap is what remains for
+; partialities a type cannot surface, not the first resort). Tagged `(needs binary-matching)`: the
+; `from-bytes`/`utf8`-segment decode is realized with the `bin` form (options/realized-capability-set/).
+
+(case "decoding well-formed UTF-8 bytes yields the string"
+  (doc    "`(String.from-bytes (Bytes.of (list 99 97 102 195 169)))` decodes the UTF-8 bytes of \"café\"
+           (c a f, then é as the two bytes 0xC3 0xA9 = 195 169) to `(Some \"café\")`. Pins that a
+           well-formed byte sequence decodes to `(Some s)` — the success arm of the total decode
+           (collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping).")
+  (needs  binary-matching)
+  (input  (= (String.from-bytes (Bytes.of (list 99 97 102 195 169))) (Some "café")))
+  (output (: true Bool)))
+
+(case "decoding ill-formed UTF-8 bytes yields none, not a trap"
+  (doc    "`(String.from-bytes (Bytes.of (list 255)))` is given 0xFF, which is not a well-formed UTF-8
+           sequence (0xFF never appears in valid UTF-8), so the decode yields `None` — NOT a trap and NOT
+           an unspecified string with a replacement character. Pins the failure arm as an ordinary value
+           the program handles (collections-and-text.md #Decoding Bytes To A String Is Total, Not
+           Trapping). This is the whole point of the total decode: ill-formed input is data, not a halt.")
+  (needs  binary-matching)
+  (input  (= (String.from-bytes (Bytes.of (list 255))) None))
+  (output (: true Bool)))
+
+(case "encoding a decoded string round-trips to the same bytes"
+  (doc    "For well-formed bytes `b`, decoding then re-encoding yields `b`: matching the `(Some s)` arm of
+           `(String.from-bytes b)` and taking `(String.to-bytes s)` gives back the original UTF-8 bytes.
+           Pins encode as the inverse of decode-of-well-formed (collections-and-text.md #Decoding Bytes To
+           A String Is Total, Not Trapping, 3rd sentence).")
+  (needs  binary-matching)
+  (input  (match (String.from-bytes (Bytes.of (list 99 97 102 195 169)))
+            ((Some s) (= (String.to-bytes s) (Bytes.of (list 99 97 102 195 169))))
+            ((None _) false)))
+  (output (: true Bool)))
+
+(case "a utf8 bin segment binds a decoded string when the bytes are well-formed"
+  (doc    "The `bin` pattern `(bin (u8 n) (utf8 name n))` reads a length byte n, then decodes exactly the
+           next n bytes as UTF-8 into `name : String`. Against `(list 3 102 111 111)` — n=3, then the
+           ASCII bytes of \"foo\" — the `utf8` segment matches and binds name = \"foo\". Pins the
+           string-typed binary segment (options/binary-syntax/), the decode built into pattern matching.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 3 102 111 111))
+            ((bin (u8 n) (utf8 name n)) name)
+            (_ "invalid")))
+  (output (: "foo" String)))
+
+(case "a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all"
+  (doc    "The same pattern `(bin (u8 n) (utf8 name n))` against `(list 1 255)` — n=1, then the byte 0xFF,
+           which is not well-formed UTF-8 — does NOT match the `utf8` segment, so control falls to the
+           catch-all and yields \"invalid\". The decode failure is a NON-MATCH, never a trap; because the
+           match must be exhaustive (CDZ0210), a catch-all is required, so the ill-formed case is
+           necessarily handled (collections-and-text.md #Decoding Bytes To A String Is Total, Not
+           Trapping — the exhaustiveness clause). This is how binary matching absorbs invalid UTF-8.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 1 255))
+            ((bin (u8 n) (utf8 name n)) name)
+            (_ "invalid")))
+  (output (: "invalid" String)))
+
+(case "a utf8-decoding bin match with no catch-all is non-exhaustive"
+  (doc    "A `bin` pattern with a `(utf8 …)` segment can fail to match on ill-formed bytes, so a match
+           whose only arm is such a pattern does not cover every byte sequence and is rejected CDZ0210 —
+           the same exhaustiveness rule every `bin` match obeys, made pointed by the fact that the decode
+           itself is a source of non-match. Pins that the ill-formed-UTF-8 case cannot be silently
+           dropped: the compiler forces a branch for it (collections-and-text.md #Decoding Bytes To A
+           String Is Total, Not Trapping).")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 3 102 111 111))
+            ((bin (u8 n) (utf8 name n)) name)))
+  (error  CDZ0210))

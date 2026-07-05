@@ -33,22 +33,27 @@ The existing corpus case "a large whole-valued float renders its full value, not
 passes not because the renderer produces that text but because both sides produce the same *saturated*
 text, whatever it is. The case reads as coverage of the anti-saturation requirement while providing none.
 
-**The requirement it drove.** *Deferred to a clarity/gate-fix pass* (this entry is the hand-off, per the
-operator's practice of documenting gaps for a follow-up agent). Two changes are needed and they are
-separable:
-1. **Fix the renderer** (implementation, tracked in the memory bug note
-   `quote-vs-ast…`-style entry `float-render-saturates-…`): render a whole float without the `f as i64`
-   cast — e.g. `format!("{:.0}", f)` with the `.0` suffix, which prints the exact f64 integer value and
-   is injective — in both `codegen::display_float_text` and `host::display_float`, keeping the two in
-   lock-step. This restores `deterministic-value-form.md` injectivity.
-2. **Make the gate byte-exact for floats** (gate harness): compare a float output against the case's
-   recorded *literal text* rather than re-rendering the recorded form through the implementation's own
-   `display_float`. Only an independent comparison can discharge a canonical-form requirement — otherwise
-   the gate tests the renderer against itself. A candidate: store the recorded float form's raw source
-   text at parse time and compare it to the component's rendered output verbatim (with a defined
-   normalization the spec pins), or have `deterministic-value-form.md` fix the exact float grammar and
-   compare against that grammar rather than a Rust format call.
+**The requirement it drove.** Two separable changes, and BOTH LANDED 2026-07-05 (in the order that keeps
+the gate honest: renderer first so the gate hardening turns nothing red):
+1. **Fix the renderer (DONE).** The whole-float branch of both `codegen::display_float_text` and
+   `host::display_float` now renders `format!("{f:.0}.0")` instead of `format!("{}.0", f as i64)`. `{:.0}`
+   prints the exact f64 integer value with no fractional digits and is injective across all finite whole
+   floats; the `f as i64` cast saturated at `i64::MAX` (`9223372036854775807`), collapsing every whole
+   float ≥ 2^63 to one string. The two renderers are kept in lock-step. This restores
+   `deterministic-value-form.md` injectivity: 1e19, 1e20, 1e100, 1.5e300 now render to distinct decimals.
+2. **Make the gate independent for floats (DONE).** The gate harness (`corpus.rs::compare`) gained a second
+   check for a float scalar output that must hold ALONGSIDE the render-string equality:
+   `float_output_round_trips(form, observed)` requires the observed text to `parse::<f64>()` back to the
+   recorded f64 *bit-identically* (NaN self-equal). `parse` is the inverse of the renderer's `format`,
+   computed by DIFFERENT code, so it discharges the canonical-form requirement WITHOUT testing the renderer
+   against itself — a saturating renderer emits `9223…807.0`, which parses to 9.22e18 ≠ 1e19 and fails the
+   check even though both sides of the string compare agreed. This was chosen over "store the raw source
+   text and compare verbatim" because parse-round-trip needs no reader change and tolerates
+   representation-equivalent spellings (`1e19` vs `10000000000000000000.0`) while still being injective.
+   The check is vacuously true for non-float / compound outputs (already byte-exact via the string compare).
 
-Until both land, the float canonical-form requirement is unwitnessed and the saturation defect is latent.
-No corpus case can currently express it — a case recording the correct full-decimal form passes anyway,
-because the gate laminates both sides through the buggy renderer.
+The former false-guard case ("a large whole-valued float renders its full value, not an integer
+saturation", 01-literals.sexp) is now a REAL guard — the round-trip oracle backs it, so a regression to a
+saturating (or otherwise non-injective) renderer turns it RED. The general lesson stands and generalizes
+beyond floats: **a canonical-form / injectivity requirement cannot be discharged by comparing two outputs
+of the same function; the gate needs an oracle computed by an independent path (here, the parse inverse).**

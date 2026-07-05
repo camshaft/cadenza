@@ -84,19 +84,23 @@ realizes them and adds their witnessing cases:
   the whole structural/nominal universe) and generics/monomorphization. The seed realizes the
   static-typing floor (above, under "Realized by the seed"); the richer inference and generics land in
   a later increment.
-- **numeric-model beyond the primitive core** — the **fixed-width integer family** beyond the default
-  `Int64` (`Int8/16/32` and `UInt8/16/32/64` — the eight-type set the numeric-model default declares,
-  options/numeric-model/), the explicit checked (`T.of`) and truncating (`T.wrap`) integer conversions,
-  exact **rational** arithmetic, arbitrary-precision **big-integers**, **wrapping** integer types, and
-  deterministic floating-point **arithmetic** (rounding/FMA). The seed realizes only `Int64` (checked,
-  trapping on overflow — every integer it lowers is 64-bit) and `Float64` literals and equality; it does
-  not realize the other integer widths, integer conversions, rational, bignum, wrapping, or float
-  arithmetic. The fixed-width family is the numeric-model increment scheduled for M4
-  (roadmap-to-self-hosting): a compiler needs `UInt8` for a module's bytes and `UInt32` for its section
-  sizes and indices, so it is the highest-value numeric increment on the self-hosting path, but it is
-  not on the *ignition* path (the seed clears ignition with `Int64` and `Bytes`), so it is realized by a
-  later generation. Its corpus witnesses carry `(needs numeric-model)` and are skipped by the seed until
-  then.
+- **numeric-model beyond the primitive core** — the **width-indexed integer types** beyond the default
+  `Int64` (the constructors `(Int N)` / `(UInt N)` over a compile-time width `N` in `1..=64`, of which
+  `Int8/16/32/64` and `UInt8/16/32/64` are the aliased widths — options/numeric-model/), the explicit
+  checked (`T.of`) and truncating (`T.wrap`) integer conversions, exact **rational** arithmetic,
+  arbitrary-precision **big-integers**, **wrapping** integer types, and deterministic floating-point
+  **arithmetic** (rounding/FMA). The seed realizes only `Int64` (checked, trapping on overflow — every
+  integer it lowers is 64-bit) and `Float64` literals and equality; it does not realize the other integer
+  widths, integer conversions, rational, bignum, wrapping, or float arithmetic. The width-indexed integer
+  types are the numeric-model increment scheduled for M4 (roadmap-to-self-hosting): a compiler needs
+  `UInt8` for a module's bytes and `UInt32` for its section sizes and indices, so it is the highest-value
+  numeric increment on the self-hosting path, but it is not on the *ignition* path (the seed clears
+  ignition with `Int64` and `Bytes`), so it is realized by a later generation. Realizing it depends on
+  the type-system increment that admits a **compile-time value (a width) as a type-constructor argument**
+  and evaluates its `1..=64` constraint (`CDZ0302`), which rides on the same generics/monomorphization
+  work; the seed today has no width-indexed types. Its corpus witnesses carry `(needs numeric-model)` and
+  are skipped by the seed until then. Widths above 64 stay reserved to the big-integer layer and are not
+  part of this increment.
 - **collections-and-text beyond the primitive collections slice** — string Unicode-scalar semantics
   and length, string lexicographic ordering, string NFC equality, and map iteration-order determinism.
   The seed realizes the primitive `list`/`map` slice (above) for building an AST; the full capability's

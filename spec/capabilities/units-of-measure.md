@@ -29,6 +29,8 @@ A unit or dimension MUST NOT appear in the emitted component, being erased after
 
 Combining quantities of incompatible dimension MUST be a compile-time error.
 
+A combination of quantities of incompatible dimension MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied dimensional constraint, rather than accepted or deferred to runtime.
+
 An operation that derives a dimension MUST produce the dimension the operation's rule defines rather than discard dimensional information.
 
 ## Layered, Not Core

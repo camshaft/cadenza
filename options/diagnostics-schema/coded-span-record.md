@@ -63,8 +63,11 @@ Diagnostic Has A Stable Code").
 | `CDZ0220` | a binary form that is not byte-aligned or is otherwise ill-formed — bit-field widths that do not close a byte, a non-final unsized bytes segment, or a bit-field width that is not a compile-time constant | `options/binary-syntax/README.md` |
 | **`CDZ03xx` — numeric model** | | |
 | `CDZ0301` | an operation on two different numeric types without an explicit conversion | `spec/capabilities/numeric-model.md#numeric-types-do-not-silently-promote` |
+| `CDZ0302` | an integer type indexed by a width outside the admitted range — e.g. `(UInt 0)`, `(UInt 65)`, a negative width, or a non-natural width — a specialization of the compile-time-constraint rejection (type-system.md §"A Generic Constraint Is A Compile-Time Predicate Over Type-Values") for the integer width constructor | `spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width` |
 | **`CDZ04xx` — capabilities and effects** | | |
 | `CDZ0401` | a program that reaches a host operation its manifest does not enumerate | `spec/capabilities/capabilities-and-effects.md#undeclared-capability-is-a-compile-time-error` |
+| **`CDZ05xx` — verification layers (dimensional analysis, refinements, contracts, proofs)** | | |
+| `CDZ0501` | a combination of quantities whose dimensions are incompatible — adding, subtracting, or comparing quantities of unlike dimension, or annotating a quantity at a dimension the operation does not derive | `spec/capabilities/units-of-measure.md#dimensional-mismatch-is-an-error` |
 
 Traps are a distinct, **runtime** category: a trap is not a diagnostic code but a defined-kind halt
 carrying a reason string (core-semantics.md §"A Trap Halts Execution At A Defined Point"), witnessed in

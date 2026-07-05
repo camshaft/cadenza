@@ -27,11 +27,17 @@ The type of an arithmetic result MUST be determined by the operand types and the
 
 ## Integer Widths
 
-### Integer Types Have Fixed Widths
+### An Integer Type Is Indexed By A Compile-Time Width
 
-The language MUST provide a family of integer types of distinct fixed widths and signedness, each a distinct type that does not silently convert to another.
+An integer type MUST be identified by a signedness and a bit width, so that two integer types of different width or signedness are distinct types that do not silently convert to one another.
 
-A conversion between two integer types MUST be written explicitly, as either a range-checked conversion that traps on an out-of-range value or a truncating conversion that keeps the low bits, never an implicit widening or narrowing.
+The bit width of an integer type MUST be resolved from a compile-time value and MUST NOT be determined by runtime data, so that an integer's width is fixed before the program runs rather than dependent on a value computed at runtime.
+
+A bit width that is outside the range the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
+
+### A Conversion Between Integer Types Is Explicit
+
+A conversion between two integer types MUST be written explicitly, as either a range-checked conversion that traps on a value outside the target type's range or a truncating conversion that keeps the target type's low bits, never an implicit widening or narrowing.
 
 ## Overflow
 
