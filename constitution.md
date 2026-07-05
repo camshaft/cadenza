@@ -191,7 +191,7 @@ An amendment that weakens a governance floor MUST require explicit human approva
 
 This constitution supersedes all other specifications where they conflict on an invariant. The frozen contracts under `spec/contracts/` pin the byte- and ABI-level forms these invariants govern; the capability specifications under `spec/capabilities/` describe behavior that must satisfy these invariants; the executable semantics under `spec/semantics/` is the single source of truth for behavior. Compliance is checked by two gates: the requirement gate, under which every load-bearing requirement here must carry an implementation citation and a test citation in any promoted generation, and the behavior gate, under which every executable-semantics case must reproduce its recorded output. Amendments follow the Amendment Discipline above and are traced against the architecture in [spec/traceability.md](./spec/traceability.md).
 
-**Version**: 0.5.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-05
+**Version**: 0.6.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-05
 
 > **Amendment 0.2.0 (2026-07-02).** Core Principle VII gains a bootstrap carve-out: the
 > operator-synthesized seed generation MAY defer static typing and realize evaluation dynamically,
@@ -230,3 +230,20 @@ This constitution supersedes all other specifications where they conflict on an 
 > weakens no governance floor (determinism and capability-safety are untouched), so it needs no
 > human-approval floor beyond the operator's decision. Rationale in
 > [spec/learnings/2026-07-04-a-rejection-carries-a-verified-route-to-a-compliant-program.md](./spec/learnings/2026-07-04-a-rejection-carries-a-verified-route-to-a-compliant-program.md).
+>
+> **Amendment 0.6.0 (2026-07-05).** The compiler emits a program against a single, well-known
+> **value-heap runtime** — a shared component the program imports and the host composes — that owns the
+> entire storage, layout, reference-count discipline, reclamation, and rendering of the program's runtime
+> values; a runtime value crosses as an opaque handle the program never interprets, and a compound result
+> is obtained by the host invoking the runtime's render over the returned handle. This carries a Component
+> ABI version increment (v2→v3, with a migration path) per the Governance Floor "The Component ABI Changes
+> Only By Coordinated Act." It refines — and, by the operator's explicit approval, is permitted to refine —
+> the *auditability* of the capability-safety floor: capability-safety was verifiable by counting a
+> component's imports, and it is now verifiable as "every import **other than the one well-known runtime
+> interface** is a capability the manifest enumerates." The guarantee itself is NOT downgraded — reaching an
+> undeclared host operation remains a compile-time rejection that no configuration can reduce to a warning,
+> the exemption is a closed allowlist of exactly one interface (not an open class of non-effect imports),
+> and the runtime import is neither a host function nor a suspension point. Because it touches a
+> never-downgradable floor's audit rule, it required and received explicit human approval per the Amendment
+> Discipline. Rationale in
+> [spec/learnings/2026-07-05-the-value-heap-runtime-is-a-shared-component.md](./spec/learnings/2026-07-05-the-value-heap-runtime-is-a-shared-component.md).

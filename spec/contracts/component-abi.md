@@ -21,6 +21,18 @@
 > representation, so a component that reaches no host function crosses the boundary exactly as under
 > version 1; the increment is recorded because the entry's result type gains an arm. This precedes any
 > deployed component, so no in-the-wild artifact requires re-derivation.
+>
+> **Contract version: 3.** Version 3 adds the value-heap runtime import (§The Value-Heap Runtime Crosses
+> By A Well-Known Import): a derived program imports the single, well-known value-heap runtime interface
+> to construct and render its runtime values, and a program's runtime values live in that runtime's
+> linear memory and cross the internal runtime boundary as opaque handles, so the compiler emits programs
+> against a shared runtime rather than open-coding a heap into every component. This runtime import is not
+> a host function and not a capability (capabilities-and-effects.md §The Value-Heap Runtime Is The One
+> Import That Is Not A Capability). **Migration:** the runtime import is a new, closed boundary — a
+> program that produces only scalar/unit results and imports neither a host function nor the runtime
+> crosses exactly as under version 2 — and the compound-result output convention changes from a
+> component-owned `display()` resource to the runtime's `render` over a returned handle; this precedes any
+> deployed compound-returning component, so no in-the-wild artifact requires re-derivation.
 
 ## Purpose And Scope
 
@@ -94,6 +106,36 @@ The byte layout of an aggregate value that crosses the boundary MUST be determin
 The byte layout of an aggregate value that crosses the boundary MUST NOT depend on the order in which the compiler discovered or emitted its fields.
 
 Padding and alignment inserted into a boundary aggregate MUST be a fixed function of the aggregate's declared type.
+
+## The Value-Heap Runtime
+
+### The Value-Heap Runtime Crosses By A Well-Known Import
+
+A derived program MUST reach its runtime values — constructing a compound value and rendering a value to its canonical text — through the single, well-known value-heap runtime interface it imports, rather than by open-coding a value heap into its own component, so that the heap representation is one shared artifact the compiler emits programs against.
+
+The identity of that runtime interface MUST be fixed at the declared-default location and MUST be the same for every program a generation emits, so that any conforming host can satisfy the import and the interface is a stable part of the ABI rather than a per-program choice.
+
+The concrete runtime a program is emitted against MUST be identified by the content address of that runtime component, so that a program's execution is deterministic in the pair (program, runtime content address) and a runtime built from different bytes is a distinct, explicitly-identified environment rather than a silent substitution (reproducible-derivation.md §Derivation Is A Function Of Source And Toolchain).
+
+### The Runtime Owns The Value Heap And Its Representation
+
+The value-heap runtime MUST own the entire storage of a program's runtime values — their allocation, their in-memory layout, their reference-count discipline, and their reclamation — so that a program component holds no value storage of its own and the representation of every compound value is the runtime's private concern.
+
+The internal representation a value has within the runtime MUST NOT be observable across the runtime boundary, so that the runtime may change how it lays out, shares, counts, or reclaims a value without altering any program's observable behavior or requiring a program to be re-derived.
+
+### A Runtime Value Crosses As An Opaque Handle
+
+A runtime value that crosses between a program and the value-heap runtime MUST cross as an opaque handle whose interpretation belongs solely to the runtime, so that the value's byte representation is the runtime's internal concern and never a layout the program or the host depends on.
+
+The program MUST NOT dereference or interpret a runtime handle, so that the acyclic reference-counted heap the runtime owns is not aliased by another linear memory and the handle is a capability-free token rather than a pointer into shared state.
+
+A runtime handle MUST be meaningful only within the single run and runtime instance that produced it, so that a handle is never part of a program's durable continuation (capabilities-and-effects.md §A Durable Continuation Is Canonical Data) and a resumed or replayed run reconstructs its values through the runtime rather than by carrying a handle across the boundary.
+
+### A Compound Result Is Rendered By The Runtime
+
+The observable result of a program that produces a compound value MUST be obtained by the host invoking the runtime's render over the program's returned handle, rather than by the program's own component owning a display of that value, so that the rendering of a value to its canonical text lives in the shared runtime the compiler emits (host-interface-binding.md §The Host Does Not Format A Component's Values).
+
+The text the runtime's render produces MUST be the value's canonical text form under deterministic-value-form.md, so that a compound result crossing the boundary is byte-identical to the same value's recorded corpus form.
 
 ## Additive Evolution
 

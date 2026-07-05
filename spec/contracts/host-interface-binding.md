@@ -71,6 +71,8 @@ A program's escaping effect row MUST equal the set of host functions it imports,
 
 A component that reaches no host function MUST have an empty manifest, so that a program's purity is the empty row and is legible from an empty manifest.
 
+The single, well-known value-heap runtime interface the compiler emits programs against MUST NOT be counted among a component's host-function imports for the purpose of this projection, so that a component whose only import is that runtime interface still has an empty manifest and every other import remains a host function the manifest enumerates (capabilities-and-effects.md §The Value-Heap Runtime Is The One Import That Is Not A Capability).
+
 ## Capability Honesty
 
 ### The Manifest Makes Nondeterminism Legible

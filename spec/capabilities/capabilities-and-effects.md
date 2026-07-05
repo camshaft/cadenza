@@ -52,6 +52,14 @@ A program's escaping effect row MUST equal the set of host functions it imports,
 
 Purity MUST be the empty effect row: a program that imports no host function MUST reach no effect that escapes to the host and MUST run to normal termination without suspending, so that a program's determinism is legible from an empty manifest.
 
+### The Value-Heap Runtime Is The One Import That Is Not A Capability
+
+The single, well-known value-heap runtime interface a program imports to construct and render its runtime values MUST NOT be counted as a host function, so that importing it adds nothing to the escaping effect row and a program that imports only it remains pure with an empty manifest.
+
+Exactly one such runtime interface MUST be exempt — the value-heap runtime the compiler emits programs against, fixed at the declared-default location — and every other import a program carries MUST be treated as a host function and therefore a capability, so that the exemption is a closed allowlist of one and not an open class of non-effect imports.
+
+An import of the value-heap runtime interface MUST NOT be a suspension point and MUST NOT appear in the manifest, so that reaching the runtime is an internal linkage the compiler controls rather than an effect that escapes to the host, and capability-safety stays auditable as "every import other than the one well-known runtime interface is a capability the manifest enumerates."
+
 ### Every Host Call Is A Suspension Point
 
 A host call MUST be a suspension point at which the program yields control to the host rather than blocking inside the component, so that resolving a host call is the host's concern and the program holds no in-flight host operation.

@@ -95,9 +95,11 @@ The reader, printer, and display conversion MUST be exports of the compiler's ow
 
 ### The Compiler Imports No Host Function
 
-The compiler component MUST reach no host function to derive a program, read text, print the canonical source tree, or render a result, so that its import world is empty and its derivation is a pure function of its input.
+The compiler component MUST reach no host function to derive a program, read text, print the canonical source tree, or render a result, so that its host-import world is empty and its derivation is a pure function of its input.
 
-The empty import world of the compiler MUST be the same "purity is the empty row" property every program with an empty manifest has, so that the compiler is not a special case of the capability model but an instance of it.
+The compiler MAY import the single, well-known value-heap runtime interface to construct and render the compound values it forms (ASTs, diagnostics, results), because that import is not a host function and not a capability (capabilities-and-effects.md §The Value-Heap Runtime Is The One Import That Is Not A Capability), so the compiler's manifest stays empty and its runtime import is the same one every program carries.
+
+The empty host-import world of the compiler MUST be the same "purity is the empty row" property every program with an empty manifest has, so that the compiler is not a special case of the capability model but an instance of it.
 
 ### A Typed Result Crosses The Boundary As Its Proper Type
 
