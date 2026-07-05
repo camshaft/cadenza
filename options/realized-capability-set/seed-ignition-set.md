@@ -84,14 +84,37 @@ realizes them and adds their witnessing cases:
   the whole structural/nominal universe) and generics/monomorphization. The seed realizes the
   static-typing floor (above, under "Realized by the seed"); the richer inference and generics land in
   a later increment.
-- **numeric-model beyond the primitive core** — exact **rational** arithmetic, arbitrary-precision
-  **big-integers**, **wrapping** integer types, and deterministic floating-point **arithmetic**
-  (rounding/FMA). The seed realizes `Int64` (checked, trapping on overflow) and `Float64` literals and
-  equality; it does not realize rational/bignum/wrapping/float arithmetic.
+- **numeric-model beyond the primitive core** — the **fixed-width integer family** beyond the default
+  `Int64` (`Int8/16/32` and `UInt8/16/32/64` — the eight-type set the numeric-model default declares,
+  options/numeric-model/), the explicit checked (`T.of`) and truncating (`T.wrap`) integer conversions,
+  exact **rational** arithmetic, arbitrary-precision **big-integers**, **wrapping** integer types, and
+  deterministic floating-point **arithmetic** (rounding/FMA). The seed realizes only `Int64` (checked,
+  trapping on overflow — every integer it lowers is 64-bit) and `Float64` literals and equality; it does
+  not realize the other integer widths, integer conversions, rational, bignum, wrapping, or float
+  arithmetic. The fixed-width family is the numeric-model increment scheduled for M4
+  (roadmap-to-self-hosting): a compiler needs `UInt8` for a module's bytes and `UInt32` for its section
+  sizes and indices, so it is the highest-value numeric increment on the self-hosting path, but it is
+  not on the *ignition* path (the seed clears ignition with `Int64` and `Bytes`), so it is realized by a
+  later generation. Its corpus witnesses carry `(needs numeric-model)` and are skipped by the seed until
+  then.
 - **collections-and-text beyond the primitive collections slice** — string Unicode-scalar semantics
   and length, string lexicographic ordering, string NFC equality, and map iteration-order determinism.
   The seed realizes the primitive `list`/`map` slice (above) for building an AST; the full capability's
   text and ordering semantics are realized later.
+- **binary-matching** — the `(bin …)` binary construction-and-matching form (options/binary-syntax/):
+  fixed-width integer segments with explicit endianness and signedness, sub-byte bit-fields, and
+  dependent-size `bytes` segments, in both expression (construct) and pattern (destructure) position.
+  The seed realizes the primitive `Bytes` slice (construction, equality, length, concatenation,
+  total-or-trap indexing) it needs to build a component's wasm bytes; the richer `bin` grammar that
+  subsumes it lands in a later increment. Corpus cases carry `(needs binary-matching)`.
+- **symbols** — the `Symbol` interned-name value form (options/symbol-interning/): `Symbol.of` interns
+  a `String` to a `Symbol`, `Symbol.to-string` recovers it, and `=` compares two Symbols by content in
+  constant time, with a `#"<text>"` reader literal. A Symbol is a nominal value over `String`, so its
+  equality reuses String equality and its nominal boundary reuses `CDZ0202` (no new code, no new trap).
+  A self-hosting compiler keys its symbol table on Symbols so a name comparison is a handle compare
+  rather than an O(N) byte scan; it is the highest-leverage representation win on the self-hosting path
+  but is not on the *ignition* path (the seed clears ignition with `Int64`, `Bytes`, and `String`), so
+  it is realized by a later generation. Corpus cases carry `(needs symbols)`.
 - **effect-tracking** (the optional layer of capabilities-and-effects), **verification-layers**,
   **property-based-testing**, **units-of-measure** — optional capabilities, included by default,
   realized later.

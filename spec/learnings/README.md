@@ -271,6 +271,13 @@ generations of Cadenza taught these lessons the expensive way; the specification
   every defined-function index by a fixed base because imports occupy the low index space. Realizes
   reproducible-derivation.md §"Derivation Is A Function Of Source And Toolchain" and component-abi.md §"The Value-Heap
   Runtime Crosses By A Well-Known Import" in the emitter.
+- [The runtime is tag-free; rendering walks a static shape, not a runtime tag](./2026-07-05-the-runtime-is-tag-free-rendering-walks-a-static-shape.md)
+  — M2 Phase C removed the per-object type tag entirely: with no type erasure the compiler knows the static type at every
+  use site, so a type-directed renderer walks a known `Shape` and never dispatches on a runtime tag. One positional array
+  backs tuple/record/list; a sum keeps only a variant discriminant (runtime data, not a type tag). Deletes `tag-of` and the
+  shared `mod tag`; the compiler-emitted renderer became per-program (one fn per distinct shape) rather than a fixed body.
+  Pushes the name-free learning one level deeper (no type identity either). Gate 326→369, IGNITION byte-identical,
+  COMPONENT-CHECK 412 agree.
 
 ## Open spec gaps (found by adversarial-corpus probing; awaiting a clarity pass)
 

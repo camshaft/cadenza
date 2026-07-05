@@ -79,6 +79,37 @@
   (input  (do (def (f n) (+ n 1)) (f 9)))
   (output (: 10 Int64)))
 
+; The two cases above declare ONE name and use it in a later form. The scoping rule is that a
+; declaration binds its name for EVERY following form — including a LATER DECLARATION, so a chain of
+; `def`s each sees the ones before it (core-semantics.md #A Declaration In A Sequencing Block Is Scoped
+; To The Forms That Follow It). These pin the chain: a `def` whose value references an earlier `def`, a
+; `def`-fn whose body calls an earlier sibling `def`, and a `def` that shadows an outer `let` binding —
+; the declaration-scope behavior a prelude or a group of top-level helpers relies on.
+
+(case "a later declaration in a do block sees an earlier one"
+  (doc    "`(do (def x 5) (def y (+ x 1)) y)`: the second declaration's value `(+ x 1)` references `x`
+           from the first declaration, so `y` = 6 and the block yields 6. Pins that a declaration is in
+           scope for a LATER DECLARATION, not only for a plain expression form — the chaining that makes
+           a sequence of `def`s (a prelude) resolve.")
+  (input  (do (def x 5) (def y (+ x 1)) y))
+  (output (: 6 Int64)))
+
+(case "a function declaration in a do block calls an earlier sibling declaration"
+  (doc    "`(do (def base 10) (def (add-base n) (+ n base)) (add-base 5))`: the function `add-base`
+           closes over the earlier declaration `base`, so `(add-base 5)` = 15. Pins that a `def`-fn's
+           body sees the declarations that precede it in the block, exactly as a module function sees
+           its siblings.")
+  (input  (do (def base 10) (def (add-base n) (+ n base)) (add-base 5)))
+  (output (: 15 Int64)))
+
+(case "a declaration in a do block shadows an outer binding"
+  (doc    "`(let ((x 1)) (do (def x 99) x))`: the `def x 99` inside the `do` shadows the outer `let`
+           binding of `x` for the forms that follow it, so the block yields 99. Pins that a do-block
+           declaration follows the same lexical shadowing rules as any other binding (core-semantics.md
+           #Shadowing Is Well-Defined), taking effect for references in its scope.")
+  (input  (let ((x 1)) (do (def x 99) x)))
+  (output (: 99 Int64)))
+
 (case "a single-form body admits a sequence by holding a do block"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order in a
            single-form body position: a `let` body is one form, so a sequence of forms is written as a
@@ -122,6 +153,30 @@
 (case "a conditional selects the false branch when the condition is false"
   (doc    "Witnesses core-semantics.md #Conditionals Evaluate One Branch.")
   (input  (if false 1 2))
+  (output (: 2 Int64)))
+
+; The single-level case above shields a top-level unselected branch. The guarantee holds at DEPTH too:
+; a trapping expression inside a NESTED unselected branch must not be evaluated either — and, dually, a
+; conditional's CONDITION may itself be a conditional (an ordinary Bool-valued expression). These pin
+; #Conditionals Evaluate One Branch where the single-level case cannot: the shielding is recursive, and
+; the condition position accepts a computed Bool, not only a literal or a direct comparison.
+
+(case "a conditional shields a trap in a nested unselected branch"
+  (doc    "`(if true (if true 5 (/ 1 0)) 9)`: the outer `if` selects its then-branch, which is another
+           `if` selecting 5; the innermost else `(/ 1 0)` (a division-by-zero trap) is in a branch that
+           is never selected at either level, so it is NOT evaluated and the result is 5. Pins that
+           #Conditionals Evaluate One Branch shields a trap NESTED two levels deep, not only a
+           top-level unselected branch (the `(+ Int64.max 1)` case above).")
+  (input  (if true (if true 5 (/ 1 0)) 9))
+  (output (: 5 Int64)))
+
+(case "a conditional's condition may itself be a conditional"
+  (doc    "`(if (if true false true) 1 2)`: the condition is an `if` that evaluates to `false`, so the
+           outer conditional selects its else-branch, yielding 2. Pins that the condition position
+           accepts an arbitrary Bool-valued expression — here a nested `if` — not only a literal or a
+           direct comparison (core-semantics.md #Conditionals Evaluate One Branch: a conditional selects
+           by its condition, whatever Bool expression computes it).")
+  (input  (if (if true false true) 1 2))
   (output (: 2 Int64)))
 
 ; --- A conditional's branches must have the same type ------------------------------------
@@ -543,6 +598,34 @@
             (def (f n) (match n (0 (match n (0 7) (_ 8))) (_ 9)))
             (def (main) (f 0))))
   (output (: 7 Int64)))
+
+; The case above nests a match in a match ARM (both on the same scrutinee). A match may also take
+; another match's RESULT as its SCRUTINEE — `(match (match …) …)` — the outer match dispatching on the
+; value the inner match produced. This is the compiler idiom of dispatching on a sub-dispatch's result
+; (classify, then act on the classification). The inner match's selected value crosses into the outer as
+; an ordinary scrutinee value; core-semantics.md #Matching Is Exhaustive Or Rejected applies at each
+; level. Distinct from the same-scrutinee nesting above: here the inner match is EVALUATED and its value
+; consumed, not a body reached after the outer already matched.
+
+(case "a match takes another match's result as its scrutinee"
+  (doc    "The scrutinee of the outer match is itself a match: `(match 1 (1 (Some 7)) (_ (None unit)))`
+           evaluates to `(Some 7)`, which the outer match deconstructs, binding x=7. Pins that a match's
+           scrutinee may be a match RESULT — the sub-dispatch is evaluated and its value consumed as an
+           ordinary scrutinee, the compiler idiom of dispatching on a classification.")
+  (input  (match (match 1 (1 (Some 7)) (_ (None unit)))
+            ((Some x) x)
+            ((None _) 0)))
+  (output (: 7 Int64)))
+
+(case "a wildcard in a nested pattern position ignores that element"
+  (doc    "core-semantics.md #Pattern Matching: a `_` wildcard may appear at a NESTED position, matching
+           anything there without binding. `(Some (tuple _ b))` matches a Some whose payload is a pair,
+           ignoring the first element and binding `b` to the second — here 2. Pins that the wildcard is
+           positional inside a compound pattern, not only a top-level catch-all arm.")
+  (input  (match (Some (tuple 1 2))
+            ((Some (tuple _ b)) b)
+            ((None _)           0)))
+  (output (: 2 Int64)))
 
 (case "a runtime scrutinee matching no arm traps"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: a match on an Int64 arming only 1

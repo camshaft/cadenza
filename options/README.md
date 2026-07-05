@@ -63,6 +63,7 @@ any future generation.
 | [`effects-model`](./effects-model/) | algebraic-one-shot | capabilities-and-effects.md; host-interface-binding.md |
 | [`memory-ownership-model`](./memory-ownership-model/) | reference-counting-perceus | memory-and-resource-model.md |
 | [`ad-hoc-polymorphism`](./ad-hoc-polymorphism/) | explicit-dictionaries | type-system.md |
+| [`symbol-interning`](./symbol-interning/) | interned-string-symbol | collections-and-text.md; type-system.md; memory-and-resource-model.md |
 | [`verification-strategy`](./verification-strategy/) | liquid-refinements-extrinsic-proofs | verification-layers.md; property-based-testing.md |
 
 ## Change discipline

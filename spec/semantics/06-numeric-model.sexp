@@ -443,6 +443,50 @@
   (input  (>= 4 3))
   (output (: true Bool)))
 
+; The comparison cases above use small, unequal, positive operands. Two boundaries they cannot witness:
+; (1) a STRICT comparison of EQUAL operands — `(< 5 5)` is false, `(> 5 5)` is false — distinguishing
+; strict `<`/`>` from the inclusive `<=`/`>=` (a lowering that confused the two would flip these); and
+; (2) SIGNED comparison, which the ordering must be (core-semantics.md #Ordering Where Offered Is Total,
+; over Int64's signed values). A NEGATIVE operand and, most sharply, the Int64 EXTREMES expose an
+; unsigned-comparison miscompile: `(< Int64.min Int64.max)` MUST be true, but Int64.min's two's-complement
+; bit pattern is the LARGEST unsigned value, so a naive `i64.lt_u` lowering answers false. These pin the
+; ordering as signed and strict-vs-inclusive as distinct.
+
+(case "a strict less-than of equal operands is false"
+  (doc    "`(< 5 5)` is false — a strict `<` does not hold between equal values (contrast `(<= 3 3)`
+           above, which is true). Pins that `<` is strict, distinct from `<=`, at the equal-operand
+           boundary a small-unequal-operand case cannot reach.")
+  (input  (< 5 5))
+  (output (: false Bool)))
+
+(case "a strict greater-than of equal operands is false"
+  (doc    "`(> 5 5)` is false — the strict-`>` companion of the case above. Pins `>` strict vs `>=`.")
+  (input  (> 5 5))
+  (output (: false Bool)))
+
+(case "less-than compares negative operands by signed order"
+  (doc    "`(< -3 -1)` is true: -3 is less than -1 under the signed integer order (core-semantics.md
+           #Ordering Where Offered Is Total). Pins that the comparison is signed for negative operands,
+           not a magnitude or unsigned comparison (which would rank -3 above -1).")
+  (input  (< -3 -1))
+  (output (: true Bool)))
+
+(case "less-than at the integer extremes is signed, not unsigned"
+  (doc    "`(< -9223372036854775808 9223372036854775807)` (Int64.min < Int64.max) is true — the sharpest
+           signed-vs-unsigned discriminator. Int64.min's two's-complement bit pattern
+           (0x8000000000000000) is the LARGEST value read as unsigned, so a lowering that emits an
+           unsigned compare (i64.lt_u) would wrongly answer false. Pins that the ordering is SIGNED
+           (core-semantics.md #Ordering Where Offered Is Total over Int64's signed values).")
+  (input  (< -9223372036854775808 9223372036854775807))
+  (output (: true Bool)))
+
+(case "greater-than at the integer extremes is signed"
+  (doc    "The `>` companion: `(> 9223372036854775807 -9223372036854775808)` (Int64.max > Int64.min) is
+           true under signed comparison. Confirms both strict ordering operators use the signed compare
+           at the extremes, not only `<`.")
+  (input  (> 9223372036854775807 -9223372036854775808))
+  (output (: true Bool)))
+
 (case "integer to byte (truncate to 0-255)"
   (doc    "The compiler needs to convert integers to single bytes for wasm encoding.
            Int.to-byte truncates to the low 8 bits (0-255).")
@@ -457,3 +501,239 @@
 (case "negative integer to byte uses two's complement"
   (input  (Int.to-byte -1))
   (output (: 255 Int64)))
+
+; --- The bitwise/shift/to-byte primitives COMPOSE into the LEB128 encoding step ----------
+; The cases above exercise `&`, `|`, `>>`, and `Int.to-byte` INDIVIDUALLY on constant operands. The
+; compiler's actual use is to COMPOSE them: one LEB128 byte is `(| (& n 127) 128)` when a continuation
+; byte follows (the low 7 bits of n, with bit 7 set), or `(& n 127)` for the final byte, and the next
+; group is `(>> n 7)`. Composing the operators exercises their interaction — each intermediate is an
+; Int64 fed to the next, in evaluation order — which an isolated single-operator case cannot witness. A
+; miscompile in operator interaction (a wrong intermediate type, a mis-sequenced fold) would surface
+; here where it hides in the isolated cases. These pin the compiler's own encoding arithmetic
+; (numeric-model.md #Overflow Is Defined for the exact bit operations; compiler-pipeline.md relies on
+; LEB128 for wasm section sizes).
+
+(case "a LEB128 non-final byte composes mask, continuation bit, and to-byte"
+  (doc    "One LEB128 continuation byte of 300: `(& 300 127)` = 44 (low 7 bits), `(| 44 128)` = 172 (set
+           bit 7), `Int.to-byte` leaves it (already in 0..=255). The composed
+           `(Int.to-byte (| (& 300 127) 128))` = 172 — the exact byte a LEB128 encoder emits for the
+           first group of 300. Pins that the three operators compose to the encoder's non-final byte,
+           not just that each works alone.")
+  (input  (Int.to-byte (| (& 300 127) 128)))
+  (output (: 172 Int64)))
+
+(case "a LEB128 final byte is the shifted remainder masked to seven bits"
+  (doc    "The final group of 300: `(>> 300 7)` = 2 (the remaining bits after the low 7), and
+           `(& 2 127)` = 2 (final byte, continuation bit clear). The composed `(& (>> 300 7) 127)` = 2 —
+           the encoder's terminating byte. Together with the case above, `300` encodes as the two LEB128
+           bytes 172, 2. Pins the shift-then-mask composition for the final group.")
+  (input  (& (>> 300 7) 127))
+  (output (: 2 Int64)))
+
+(case "extracting a high byte composes shift and mask"
+  (doc    "`(& (>> 65535 8) 255)` shifts 0xFFFF right by 8 (yielding 0xFF = 255) then masks the low 8
+           bits (255) — the byte-extraction the compiler uses to lay out a multi-byte little-endian
+           field. Pins that shift and mask compose to select an arbitrary byte, exercising their
+           interaction on a value wider than one byte.")
+  (input  (& (>> 65535 8) 255))
+  (output (: 255 Int64)))
+
+; ═══ The fixed-width integer family: {Int, UInt} × {8, 16, 32, 64} ═══════════════════════
+; numeric-model.md #Integer Types Have Fixed Widths: the language provides integer types of distinct
+; fixed widths and signedness, each a distinct type that does not silently convert to another; the
+; concrete family is pinned at options/numeric-model/ (explicit-checked): Int8/16/32/64 and
+; UInt8/16/32/64, all CHECKED (each traps on overflow of its own range, numeric-model.md #Overflow Is
+; Defined), reached from a bare Int64 literal by an annotation, a per-width bound, or an explicit
+; conversion. `Int64` stays the default a bare literal takes (the cases above); these witness the
+; SEVEN other widths and the two explicit conversion forms. All carry (needs numeric-model): the seed
+; realizes only the 64-bit checked Int64 core (options/realized-capability-set/) and lowers every
+; integer as an i64, so it SKIPS these; the M4 generation that realizes the fixed-width family runs
+; them. A compiler needs UInt8 (a module's bytes) and UInt32 (section sizes, LEB128 operands, table
+; and memory indices), which is why this is the highest-value numeric increment on the self-hosting
+; path even though it is off the ignition path.
+
+; --- Construction and per-width bounds ---------------------------------------------------
+
+(case "an annotated value takes a narrower integer width"
+  (doc    "`(: 200 UInt8)` is the unsigned 8-bit value 200 — an annotation reaches a width other than
+           the default Int64 (numeric-model.md #Integer Types Have Fixed Widths). Its canonical value
+           form is the integer 200 at type UInt8; the boundary maps UInt8 to the component model's u8
+           (options/numeric-model/ boundary mapping).")
+  (needs  numeric-model)
+  (input  (: 200 UInt8))
+  (output (: 200 UInt8)))
+
+(case "the maximum unsigned 8-bit value is its per-width bound"
+  (doc    "`UInt8.max` is 255 — the largest value UInt8 holds, the per-width analogue of Int64.max.
+           Each fixed-width type carries its own bounds (numeric-model.md #Integer Types Have Fixed
+           Widths); a compiler laying out a byte reaches for exactly this bound.")
+  (needs  numeric-model)
+  (input  UInt8.max)
+  (output (: 255 UInt8)))
+
+(case "the minimum signed 8-bit value is its per-width bound"
+  (doc    "`Int8.min` is -128 — the smallest value the two's-complement Int8 holds (its range is
+           -128..=127, asymmetric like every signed two's-complement width). Pins that a signed narrow
+           width carries its own signed bounds.")
+  (needs  numeric-model)
+  (input  Int8.min)
+  (output (: -128 Int8)))
+
+(case "a UInt64 holds a value above the signed 64-bit maximum"
+  (doc    "`UInt64.max` is 18446744073709551615 = 2^64 - 1, above Int64.max (2^63 - 1) — the value that
+           distinguishes UInt64 from Int64. It is a well-typed UInt64 value, not an out-of-range
+           literal, because the annotation names the unsigned width. The boundary maps it to the
+           component model's u64.")
+  (needs  numeric-model)
+  (input  UInt64.max)
+  (output (: 18446744073709551615 UInt64)))
+
+; --- Checked overflow per width (numeric-model.md #Overflow Is Defined, at each width) ----
+
+(case "unsigned 8-bit addition that overflows its width traps"
+  (doc    "`(+ (: 255 UInt8) (: 1 UInt8))` = 256, one past UInt8.max, so it overflows the checked UInt8
+           range and MUST trap — the per-width analogue of `(+ Int64.max 1)`. Each fixed-width type is
+           checked at its OWN range, not only at 64 bits; a naive lowering that computed in i32 and
+           kept 256 would produce a value outside UInt8.")
+  (needs  numeric-model)
+  (input  (+ (: 255 UInt8) (: 1 UInt8)))
+  (trap   "integer overflow"))
+
+(case "unsigned subtraction below zero traps rather than wrapping"
+  (doc    "`(- (: 0 UInt8) (: 1 UInt8))` would be -1, which UInt8 cannot represent (its range is
+           0..=255), so the subtraction overflows the unsigned range and MUST trap. The unsigned-
+           underflow companion of the overflow case: a checked unsigned type traps below zero, it does
+           not wrap to 255.")
+  (needs  numeric-model)
+  (input  (- (: 0 UInt8) (: 1 UInt8)))
+  (trap   "integer overflow"))
+
+(case "signed 8-bit addition that overflows its width traps"
+  (doc    "`(+ (: 127 Int8) (: 1 Int8))` = 128, one past Int8.max (127), so it overflows the checked
+           Int8 range and MUST trap. Pins that the narrow SIGNED width is checked at its own boundary
+           too — a wrap would give -128 (Int8.min), the classic signed-overflow wrong value.")
+  (needs  numeric-model)
+  (input  (+ (: 127 Int8) (: 1 Int8)))
+  (trap   "integer overflow"))
+
+; --- No silent promotion ACROSS widths or signedness (numeric-model.md #Numeric ... Promote) --
+; The no-promotion rule the `(+ 2 2.0)` case pins for Int64/Float64 applies equally to two integer
+; types of different WIDTH or SIGNEDNESS: they are distinct types, so mixing them without an explicit
+; conversion is rejected (CDZ0301), exactly as an Int/Float mix is. A lowering that silently widened
+; the UInt8 to Int32 (or reinterpreted signedness) would be the implicit widening the author did not
+; write.
+
+(case "mixing two integer widths without a conversion does not silently promote"
+  (doc    "`(+ (: 1 UInt8) (: 2 Int32))` mixes a UInt8 and an Int32 — two distinct integer types — so
+           it is rejected (CDZ0301) rather than silently widening the UInt8 to Int32. The width analogue
+           of the `(+ 2 2.0)` Int/Float no-promotion case (numeric-model.md #Numeric Types Do Not
+           Silently Promote).")
+  (needs  numeric-model)
+  (input  (+ (: 1 UInt8) (: 2 Int32)))
+  (error  CDZ0301))
+
+(case "mixing signed and unsigned of the same width does not silently promote"
+  (doc    "`(+ (: 1 Int32) (: 2 UInt32))` mixes Int32 and UInt32 — same width, different signedness,
+           still distinct types — so it is rejected (CDZ0301). Signedness is not silently reinterpreted;
+           the author must convert one side explicitly. Pins that no-promotion holds across signedness,
+           not only across width.")
+  (needs  numeric-model)
+  (input  (+ (: 1 Int32) (: 2 UInt32)))
+  (error  CDZ0301))
+
+; --- Explicit conversions: T.of is checked, T.wrap truncates (options/numeric-model/) --------
+; A conversion between integer types is always explicit (numeric-model.md #Integer Types Have Fixed
+; Widths). `T.of x` is range-CHECKED — it traps when x does not fit T. `T.wrap x` TRUNCATES — it keeps
+; the low bits under T's two's-complement representation. These systematize the seed's `Int.to-byte`
+; (which is exactly UInt8.wrap) under one naming rule.
+
+(case "a checked integer conversion that fits succeeds"
+  (doc    "`(UInt8.of (: 200 Int32))` converts the Int32 200 to UInt8 — 200 is within 0..=255, so the
+           checked conversion succeeds and yields the UInt8 200. Pins that T.of is the explicit,
+           range-checked conversion the no-silent-promotion rule requires between widths.")
+  (needs  numeric-model)
+  (input  (UInt8.of (: 200 Int32)))
+  (output (: 200 UInt8)))
+
+(case "a checked integer conversion that does not fit traps"
+  (doc    "`(UInt8.of (: 256 Int32))` converts 256 to UInt8, but 256 is outside 0..=255, so the CHECKED
+           conversion MUST trap rather than silently truncate to 0 (numeric-model.md #Integer Types Have
+           Fixed Widths — a checked conversion traps on an out-of-range value). Contrast UInt8.wrap
+           below, which keeps the low bits.")
+  (needs  numeric-model)
+  (input  (UInt8.of (: 256 Int32)))
+  (trap   "integer overflow"))
+
+(case "a checked conversion of a negative value into an unsigned type traps"
+  (doc    "`(UInt8.of (: -1 Int32))` converts -1 to UInt8, but UInt8 has no negative values, so the
+           checked conversion MUST trap. Contrast `(UInt8.wrap -1)` = 255 below. Pins that T.of checks
+           the sign boundary, not only the magnitude boundary.")
+  (needs  numeric-model)
+  (input  (UInt8.of (: -1 Int32)))
+  (trap   "integer overflow"))
+
+(case "a truncating conversion keeps the low bits rather than trapping"
+  (doc    "`(UInt8.wrap (: 256 Int32))` = 0: the truncating conversion keeps the low 8 bits of 256
+           (0x100 -> 0x00), so it yields 0 rather than trapping. This is exactly the seed's
+           `Int.to-byte` on 256 (06-numeric #integer to byte wraps on overflow), now typed as UInt8.
+           Pins T.wrap as the low-bits conversion distinct from the checked T.of.")
+  (needs  numeric-model)
+  (input  (UInt8.wrap (: 256 Int32)))
+  (output (: 0 UInt8)))
+
+(case "a truncating conversion of a negative value uses two's complement"
+  (doc    "`(UInt8.wrap (: -1 Int32))` = 255: truncating keeps the low 8 bits of -1's two's-complement
+           representation (all ones), so it yields 255 — exactly the seed's `(Int.to-byte -1)` = 255
+           (06-numeric #negative integer to byte uses two's complement), now the typed UInt8.wrap.
+           Pins that T.wrap reinterprets the low bits, where T.of would trap on the negative value.")
+  (needs  numeric-model)
+  (input  (UInt8.wrap (: -1 Int32)))
+  (output (: 255 UInt8)))
+
+; --- Signedness selects the operation: unsigned compare and unsigned right shift ------------
+; The width family's SIGNEDNESS is observable, not just a label: an unsigned type's ordering and right
+; shift are UNSIGNED where the signed type's are signed. The sharpest witness is a bit pattern that is
+; negative read as signed but large read as unsigned — the dual of the `(< Int64.min Int64.max)` case
+; that pins Int64's ordering as SIGNED.
+
+(case "unsigned comparison orders by magnitude, not by signed interpretation"
+  (doc    "`(< (: 0 UInt64) UInt64.max)` is true: UInt64.max = 2^64 - 1 is the LARGEST unsigned value,
+           above 0, so the unsigned ordering ranks 0 below it. Read as a SIGNED Int64, UInt64.max's bit
+           pattern is -1 (which would rank below 0) — so this pins that UInt64's ordering is UNSIGNED
+           (i64.lt_u), the dual of `(< Int64.min Int64.max)` which pins Int64's ordering as signed
+           (i64.lt_s). Signedness selects the compare.")
+  (needs  numeric-model)
+  (input  (< (: 0 UInt64) UInt64.max))
+  (output (: true Bool)))
+
+(case "an unsigned right shift fills with zeros, not the sign bit"
+  (doc    "`(>> UInt8.max (: 1 UInt8))` = 127: a UInt8 right shift is LOGICAL (zero-filling), so shifting
+           255 (0xFF) right by 1 yields 127 (0x7F). The signed `>>` on Int64 sign-extends (06-numeric
+           #arithmetic right shift preserves the sign bit — `(>> -256 7)` = -2); on an UNSIGNED type the
+           same operator is the logical shift (i64.shr_u). Pins that signedness selects arithmetic vs
+           logical shift, the property signed/unsigned LEB128 both depend on.")
+  (needs  numeric-model)
+  (input  (>> UInt8.max (: 1 UInt8)))
+  (output (: 127 UInt8)))
+
+; --- The compiler's own use: a UInt32 wasm section size and a UInt8 module byte -------------
+; These pin the family at the exact widths the self-hosting compiler needs — a section size / index is
+; a UInt32, a module byte is a UInt8 — so the M4 generation's own encoding arithmetic is well-typed
+; rather than an untyped i64 masked by hand (options/numeric-model/ #Why these choices).
+
+(case "a UInt32 holds a wasm section size at the width boundary"
+  (doc    "`UInt32.max` = 4294967295 = 2^32 - 1, the largest 32-bit unsigned value — the width a wasm
+           section size, LEB128 operand, and table/memory index occupy. Pins UInt32 at its boundary; a
+           compiler that carried this as an i64 would lose the width the module format actually uses.")
+  (needs  numeric-model)
+  (input  UInt32.max)
+  (output (: 4294967295 UInt32)))
+
+(case "a UInt32 addition that overflows the 32-bit width traps"
+  (doc    "`(+ UInt32.max (: 1 UInt32))` = 2^32, one past UInt32.max, so it overflows the checked UInt32
+           range and MUST trap — even though 2^32 fits comfortably in the i64 the seed would use. Pins
+           that UInt32 is checked at 32 bits, not at 64: a compiler computing a section size must trap
+           on a 32-bit overflow, not silently carry a value the wasm format cannot encode.")
+  (needs  numeric-model)
+  (input  (+ UInt32.max (: 1 UInt32)))
+  (trap   "integer overflow"))

@@ -162,6 +162,55 @@
   (input  (=))
   (error  CDZ0201))
 
+(case "an arithmetic operator with a single operand is rejected, not a crash"
+  (doc    "`(+ 5)` supplies one operand to the two-operand `+`. The compiler rejects it (CDZ0201), never
+           panicking reaching for the missing second operand — the arithmetic-operator companion of the
+           `(= 5)` equality-arity case above.")
+  (input  (+ 5))
+  (error  CDZ0201))
+
+(case "a bare arithmetic keyword is rejected, not a crash"
+  (doc    "`(+)` with no operands is ill-formed. Rejected (CDZ0201), never a crash — the `+` companion
+           of the bare `(=)` case.")
+  (input  (+))
+  (error  CDZ0201))
+
+(case "an ordering operator with a single operand is rejected, not a crash"
+  (doc    "`(< 5)` supplies one operand to the two-operand `<`. Rejected (CDZ0201), never a crash. Pins
+           that the arity check covers the ordering operators too, not only `=`/`+`.")
+  (input  (< 5))
+  (error  CDZ0201))
+
+(case "a conditional with too many operands is rejected, not a crash"
+  (doc    "`(if true 1 2 3)` supplies a fourth operand to `if`, which takes exactly three (condition,
+           then, else). The compiler rejects it (CDZ0201), never silently ignoring the extra operand nor
+           crashing — the over-application companion of the missing-branch `(if true 1)` case above.")
+  (input  (if true 1 2 3))
+  (error  CDZ0201))
+
+(case "a member access with no field operand is rejected, not a crash"
+  (doc    "`(. 5)` supplies the record operand but no field name: member access `(. <record> <field>)`
+           takes exactly two operands. The compiler rejects it (CDZ0201), never panicking reaching for
+           the absent field node — the member-access companion of the `(tuple.0)` accessor-with-no-operand
+           case below.")
+  (input  (. 5))
+  (error  CDZ0201))
+
+(case "a bare binding form with no bindings and no body is rejected, not a crash"
+  (doc    "`(let)` supplies neither a binding list nor a body: `let` is `(let (<binding>…) <body>)`. The
+           compiler rejects it (CDZ0201), never panicking reaching for the absent binding list or body
+           node — the binding-form companion of the bare-keyword `(=)`/`(if)` cases.")
+  (input  (let))
+  (error  CDZ0201))
+
+(case "a binding form with bindings but no body is rejected, not a crash"
+  (doc    "`(let ((x 1)))` supplies a well-formed binding list but no body form to evaluate in its
+           scope. Ill-formed — `let` requires a body — so the compiler rejects it (CDZ0201), never
+           panicking reaching for the absent body node. Distinct from `(let ((x)) x)` above (a binding
+           with no VALUE); this is a `let` with no BODY.")
+  (input  (let ((x 1))))
+  (error  CDZ0201))
+
 (case "a let binding with no value expression is rejected, not a crash"
   (doc    "A binding `(x)` names `x` but supplies no value expression: `(let ((x)) x)` is ill-formed.
            The compiler rejects it (CDZ0201), never panicking reaching for the absent value node.")

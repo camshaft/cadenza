@@ -25,6 +25,14 @@ An operation on two numeric values of different types MUST require an explicit c
 
 The type of an arithmetic result MUST be determined by the operand types and the operation, not by an implicit widening the author did not write.
 
+## Integer Widths
+
+### Integer Types Have Fixed Widths
+
+The language MUST provide a family of integer types of distinct fixed widths and signedness, each a distinct type that does not silently convert to another.
+
+A conversion between two integer types MUST be written explicitly, as either a range-checked conversion that traps on an out-of-range value or a truncating conversion that keeps the low bits, never an implicit widening or narrowing.
+
 ## Overflow
 
 ### Overflow Is Defined

@@ -60,6 +60,7 @@ Diagnostic Has A Stable Code").
 | `CDZ0202` | a value used at a nominal type that is only structurally identical to its declared type | `spec/capabilities/type-system.md#user-types-are-declarable-as-nominal-or-structural` |
 | `CDZ0203` | an explicit annotation that conflicts with the type inference determines | `spec/capabilities/type-system.md#annotations-constrain-never-contradict` |
 | `CDZ0210` | a match whose patterns do not cover every value of the scrutinee's type | `spec/capabilities/core-semantics.md#matching-is-exhaustive-or-rejected` |
+| `CDZ0220` | a binary form that is not byte-aligned or is otherwise ill-formed — bit-field widths that do not close a byte, a non-final unsized bytes segment, or a bit-field width that is not a compile-time constant | `options/binary-syntax/README.md` |
 | **`CDZ03xx` — numeric model** | | |
 | `CDZ0301` | an operation on two different numeric types without an explicit conversion | `spec/capabilities/numeric-model.md#numeric-types-do-not-silently-promote` |
 | **`CDZ04xx` — capabilities and effects** | | |
@@ -75,6 +76,8 @@ the corpus by `(trap "<reason>")`. The reason strings the ignition corpus pins:
 | `"list index out of bounds"` | a list is indexed outside its bounds | collections-and-text.md §"List Operations Are Total Or Trap" |
 | `"byte value out of range"` | a `Bytes` value is constructed from an integer outside `0..=255` | self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous" (the seed-realized `Bytes` form; `options/realized-capability-set/`) |
 | `"bytes index out of bounds"` | a `Bytes` value is indexed outside its bounds | self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous" (total-or-trap `Bytes` indexing) |
+| `"bytes slice out of bounds"` | a `Bytes` slice's start or length runs outside the sequence's bounds, or its start is negative | `spec/capabilities/memory-and-resource-model.md#sharing-is-not-observable` (total-or-trap `Bytes` slicing) |
+| `"binary value does not fit segment"` | a `(bin …)` construction is given a value with no encoding in its segment — a value above an unsigned segment's range, a negative value in an unsigned segment, or a value wider than a bit-field's width | `options/binary-syntax/README.md` (total-or-trap `bin` construction) |
 | `"member access on a non-record"` | member access `(. v k)` is applied to a value `v` that is not a record | core-semantics.md §"Member Access Projects A Record Field" |
 | `"no such field"` | member access `(. r k)` names a field `k` the record `r` does not contain | core-semantics.md §"Member Access Projects A Record Field" |
 

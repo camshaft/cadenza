@@ -77,6 +77,83 @@
             (def (main) (f 41))))
   (output (: 42 Int64)))
 
+; --- Radix-prefixed integer literals: hexadecimal (0x) and binary (0b) --------------------
+; A hexadecimal literal `0x…` and a binary literal `0b…` are alternate RADICES for the same Int64
+; value a decimal literal denotes — the radix is a lexical convenience, not a distinct type or value:
+; `0xFF`, `0b1111_1111`, and `255` all denote the one Int64 255, whose canonical value form serializes
+; the integer, not its source spelling (contracts/deterministic-value-form.md). A hex literal's digits
+; are case-insensitive (`0xAB` = `0xab`), and the pinned digit-separator `_` composes with both radices
+; (`0b1010_1010`, `0xFF_FF`) under the same between-digits rule as decimal (the reader treats `_` as
+; meaningful only between digits). A radix literal is STRICT NON-NEGATIVE: it denotes its face value in
+; `0..=Int64.max`, exactly as decimal does — a literal always means its value, so a leading `-` is
+; ordinary negation (`-0xFF` = -255) and a radix literal that overflows Int64 is a malformed literal
+; (CDZ0201), never a two's-complement bit pattern that turns a positive-looking literal negative. (The
+; all-ones mask idiom belongs to the wrapping/unsigned numeric layer, a deferred numeric-model
+; capability, not to a literal's meaning.) These are CORE cases — every generation, including the seed,
+; reads them — the same reader-boundary class as the decimal out-of-range and `_`-prefixed cases above.
+
+(case "a hexadecimal integer literal"
+  (doc    "`0xFF` denotes the Int64 255 — hex is another radix for the same integer value a decimal
+           literal denotes, not a distinct type. Pins that the reader classifies a `0x`-prefixed
+           digit-led token as a numeric literal, not as a name.")
+  (input  0xFF)
+  (output (: 255 Int64)))
+
+(case "a hexadecimal literal is case-insensitive"
+  (doc    "`0xab` and `0xAB` denote the one value 171: hex digits `a`–`f` are case-insensitive. Pins that
+           digit case does not change a hex literal's value.")
+  (input  (= 0xab 0xAB))
+  (output (: true Bool)))
+
+(case "a binary integer literal"
+  (doc    "`0b1010` denotes the Int64 10 — binary is another radix for the same integer value. Pins that
+           the reader classifies a `0b`-prefixed token as a numeric literal.")
+  (input  0b1010)
+  (output (: 10 Int64)))
+
+(case "a binary literal with digit separators"
+  (doc    "`0b1010_1010` denotes 170: the digit separator `_` composes with the binary radix under the
+           same between-digits rule as decimal (`1_000_000`). Pins that separators group binary digits.")
+  (input  0b1010_1010)
+  (output (: 170 Int64)))
+
+(case "a hexadecimal literal with digit separators"
+  (doc    "`0xFF_FF` denotes 65535: the separator groups hex digits, exactly as it groups decimal and
+           binary digits. Pins separator composition with the hex radix.")
+  (input  0xFF_FF)
+  (output (: 65535 Int64)))
+
+(case "hexadecimal, binary, and decimal spellings of one value are equal"
+  (doc    "`0x2A`, `0b101010`, and `42` all denote the one Int64 42 — the radix is a spelling of the
+           source, erased in the value. Pins that a value's identity is independent of the radix it was
+           written in, so pattern matching and equality see one value across spellings.")
+  (input  (= 0x2A 0b101010))
+  (output (: true Bool)))
+
+(case "a negative hexadecimal literal negates its value"
+  (doc    "`-0xFF` denotes -255: a leading `-` is ordinary negation of the literal's face value, not a
+           bit pattern. Pins that a radix literal is strict non-negative and the sign is applied on top,
+           consistent with decimal `-255`.")
+  (input  -0xFF)
+  (output (: -255 Int64)))
+
+(case "the maximum Int64 in hexadecimal reads as an integer"
+  (doc    "`0x7FFFFFFFFFFFFFFF` is Int64.max (9223372036854775807), the largest value the checked Int64
+           default holds — it reads as that integer. The companion below pins that the next hex value up,
+           which would set the sign bit, is out of range rather than a negative two's-complement pattern.")
+  (input  0x7FFFFFFFFFFFFFFF)
+  (output (: 9223372036854775807 Int64)))
+
+(case "a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern"
+  (doc    "`0xFFFFFFFFFFFFFFFF` is 18446744073709551615 = Int64.max·2+1, outside the Int64 range. Under
+           the strict-non-negative rule a radix literal denotes its face value, so this overflows and is
+           a malformed literal (CDZ0201) — NOT -1 via a 64-bit two's-complement reinterpretation, and NOT
+           an unbound name (the reader must classify a `0x`-prefixed token as numeric, so the honest
+           diagnostic is out-of-range, not CDZ0101). Same reader-boundary class as the decimal
+           out-of-range case above, at the radix boundary.")
+  (input  0xFFFFFFFFFFFFFFFF)
+  (error  CDZ0201))
+
 (case "a floating-point literal"
   (input  3.5)
   (output (: 3.5 Float64)))

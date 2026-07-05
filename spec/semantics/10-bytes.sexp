@@ -125,3 +125,117 @@
   (needs  bytes)
   (input  (= (Bytes.concat (Bytes.of (list)) (Bytes.of (list 3 4))) (Bytes.of (list 3 4))))
   (output (: true Bool)))
+
+; --- Concatenation is associative by content --------------------------------------------
+; `Bytes.concat` groups two operands, but the byte sequence it denotes depends only on the bytes in
+; order, not on how the concatenations were grouped. Pinning associativity BY CONTENT (not by identity)
+; is what lets a representation defer or re-group the concatenation work — a deferred-concatenation
+; representation may hold `(concat (concat a b) c)` as a tree grouped either way and MUST denote the same
+; value (memory-and-resource-model.md #Sharing Is Not Observable, the deferral clause). This is the
+; observable law the optimization is measured against; it holds today under eager copy semantics too.
+
+(case "concatenation is associative by content"
+  (doc    "`(concat (concat a b) c)` and `(concat a (concat b c))` denote the same byte sequence: concat
+           depends only on the bytes in order, not on grouping. Pins the associativity law a
+           deferred-concatenation representation must preserve — re-grouping the concatenation tree is
+           unobservable (memory-and-resource-model.md #Sharing Is Not Observable).")
+  (needs  bytes)
+  (input  (= (Bytes.concat (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) (Bytes.of (list 5 6)))
+             (Bytes.concat (Bytes.of (list 1 2)) (Bytes.concat (Bytes.of (list 3 4)) (Bytes.of (list 5 6))))))
+  (output (: true Bool)))
+
+; --- A slice is a byte sequence, indistinguishable from a copy ---------------------------
+; `(Bytes.slice b start length)` yields the `length` bytes of `b` beginning at `start` as an ordinary
+; Bytes value. A representation MAY realize the slice by sharing `b`'s storage (a view into it) rather
+; than by copying those bytes — but memory-and-resource-model.md #Sharing Is Not Observable requires the
+; shared-storage slice and a freshly-constructed copy of the same bytes to be indistinguishable by EVERY
+; operation: equality, length, and indexing. These cases pin that contract under copy semantics, so a
+; later view representation lands as a pure optimization that MUST keep them green. Slicing is
+; total-or-trap on the same footing as `Bytes.at`: a start or length that runs past the end has no
+; defined result and traps rather than reading beyond the sequence.
+
+(case "slicing yields the bytes at that range"
+  (doc    "`(Bytes.slice b 1 2)` is the 2-byte sequence starting at index 1 — equal by its bytes in order
+           to the freshly-constructed `(Bytes.of (list 20 30))`. A slice is an ordinary Bytes value; a
+           representation that shares the parent's storage to realize it MUST be indistinguishable from
+           this copy (memory-and-resource-model.md #Sharing Is Not Observable).")
+  (needs  bytes)
+  (input  (= (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) (Bytes.of (list 20 30))))
+  (output (: true Bool)))
+
+(case "the length of a slice is the slice's byte count"
+  (doc    "`(Bytes.len (Bytes.slice b 1 2))` = 2: length reads the slice's OWN byte count, not the
+           parent's. A view representation that stored a length must report the slice's length, never the
+           backing sequence's — the sharing is not observable through length.")
+  (needs  bytes)
+  (input  (Bytes.len (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2)))
+  (output (: 2 Int64)))
+
+(case "indexing a slice is relative to the slice's start"
+  (doc    "`(Bytes.at (Bytes.slice b 1 2) 0)` = 20: index 0 of the slice is the byte at the slice's start,
+           not the parent's start. Pins that a view representation adds its offset — indexing is relative
+           to the slice, so sharing the parent's storage is not observable through indexing.")
+  (needs  bytes)
+  (input  (Bytes.at (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) 0))
+  (output (: 20 Int64)))
+
+(case "a slice spanning a concatenation sees the logical bytes"
+  (doc    "Slicing across the seam of `(concat a b)` — `(Bytes.slice (concat (list 1 2) (list 3 4)) 1 2)`
+           = `(Bytes.of (list 2 3))` — reads the LOGICAL bytes in order, independent of how the sequence
+           was assembled. Pins that a slice over a deferred-concatenation representation crosses leaf
+           boundaries correctly, seeing bytes not physical layout (#Sharing Is Not Observable).")
+  (needs  bytes)
+  (input  (= (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2)
+             (Bytes.of (list 2 3))))
+  (output (: true Bool)))
+
+(case "a zero-length slice is the empty byte sequence"
+  (doc    "`(Bytes.slice b 2 0)` is the empty byte sequence — equal to `(Bytes.of (list))`. Pins the
+           degenerate slice: taking zero bytes at an in-bounds start yields the identity of
+           concatenation, not a trap.")
+  (needs  bytes)
+  (input  (= (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) (Bytes.of (list))))
+  (output (: true Bool)))
+
+(case "slicing past the end of a byte sequence traps"
+  (doc    "`(Bytes.slice b 2 3)` on a 4-byte sequence asks for 3 bytes starting at index 2 — running one
+           byte past the end — so it MUST trap rather than read beyond the sequence or return a short
+           result (total-or-trap, on the same footing as Bytes.at out-of-bounds).")
+  (needs  bytes)
+  (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 3))
+  (trap   "bytes slice out of bounds"))
+
+(case "slicing with a negative start traps"
+  (doc    "`(Bytes.slice b -1 2)` uses a start below 0 — no byte at position -1 — so it MUST trap, NOT
+           cast the negative start to a large unsigned offset. The negative-index companion of the
+           past-the-end case, mirroring the Bytes.at negative-index trap.")
+  (needs  bytes)
+  (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) -1 2))
+  (trap   "bytes slice out of bounds"))
+
+; --- Compacting a slice preserves its value while releasing shared storage ---------------
+; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
+; parent alive). `(Bytes.compact b)` derives a value equal to `b` whose storage is independent of what
+; `b` was derived from — the value-preserving materialization memory-and-resource-model.md #Retained
+; Storage Is Accounted For What It Holds Live requires, letting a program drop a large parent while
+; keeping a small slice. Compacting changes RESOURCE USE, never the VALUE: the compacted slice is equal
+; to the slice by its bytes in order (#Equality Is Structural), so `compact` is observable only through
+; the resource measure, not through any value operation.
+
+(case "compacting a slice preserves its bytes"
+  (doc    "`(Bytes.compact (Bytes.slice b 1 2))` = `(Bytes.slice b 1 2)`: compacting materializes the
+           slice into independent storage, changing resource use but not the value. Pins that compact is
+           value-preserving — equal by bytes in order to the un-compacted slice (memory-and-resource
+           -model.md #Retained Storage Is Accounted For What It Holds Live).")
+  (needs  bytes)
+  (input  (= (Bytes.compact (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2))
+             (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2)))
+  (output (: true Bool)))
+
+(case "compacting is the identity on value for a whole byte sequence"
+  (doc    "`(Bytes.compact b)` = `b`: compacting a sequence that already owns its storage changes
+           nothing observable. Pins that compact is always value-preserving, whether or not the operand
+           shares storage — it never alters the bytes, only (possibly) the storage backing them.")
+  (needs  bytes)
+  (input  (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))))
+  (output (: true Bool)))

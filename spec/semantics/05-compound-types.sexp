@@ -223,6 +223,113 @@
             (def (main) (tuple 3 1))))
   (output (: (tuple 3 1) (Tuple Int64 Int64))))
 
+; The `(tuple n 1)` case above carries ONE runtime element beside a constant. A runtime compound built
+; on the heap must carry the general shape too: EVERY element computed at run time, MORE than two
+; elements, a NON-Int64 element (mixed-type heap layout), a NESTED runtime compound (a heap cell holding
+; a reference to another), and it must be PROJECTABLE after construction. These pin the runtime-compound
+; construction path (the resource-with-display output ABI over a heap-allocated value) across the shapes
+; the single-element case does not reach — each must produce its exact value, not a wrong element,
+; truncated tuple, or misread layout.
+
+(case "a tuple with every element computed at run time is returned as a result"
+  (doc    "`(tuple (+ a 1) (* b 2))` — BOTH elements are runtime expressions, not one runtime and one
+           constant. `(f 3 4)` produces `(tuple 4 8)`, which must cross the run boundary intact. Pins
+           that the runtime-tuple construction handles all-computed elements, not only a single runtime
+           element beside a literal (the `(tuple n 1)` case above).")
+  (input  (module m
+            (def (f a b) (tuple (+ a 1) (* b 2)))
+            (def (main) (f 3 4))))
+  (output (: (tuple 4 8) (Tuple Int64 Int64))))
+
+(case "a three-element runtime tuple is returned as a result"
+  (doc    "`(tuple n (+ n 1) (+ n 2))` with n=10 produces `(tuple 10 11 12)`. Pins that a runtime tuple
+           of arity > 2 lays out and returns all its elements — a construction that hard-coded a pair
+           would drop the third.")
+  (input  (module m
+            (def (f n) (tuple n (+ n 1) (+ n 2)))
+            (def (main) (f 10))))
+  (output (: (tuple 10 11 12) (Tuple Int64 Int64 Int64))))
+
+(case "a runtime tuple with a boolean element is returned as a result"
+  (doc    "`(tuple n (= n 0))` with n=0 produces `(tuple 0 true)` — a mixed Int64/Bool runtime tuple. A
+           tuple element's type is whatever that position holds, so the heap layout must carry a Bool
+           beside an Int64 and render both across the run boundary (the runtime companion of the
+           constant boolean-tuple-element case). Pins that a runtime compound is not uniformly Int64.")
+  (input  (module m
+            (def (f n) (tuple n (= n 0)))
+            (def (main) (f 0))))
+  (output (: (tuple 0 true) (Tuple Int64 Bool))))
+
+(case "a nested runtime tuple is returned as a result"
+  (doc    "`(tuple n (tuple n n))` with n=2 produces `(tuple 2 (tuple 2 2))` — a runtime tuple whose
+           element is itself a runtime tuple (a heap cell referencing another). Pins that runtime
+           compound construction nests: an inner heap value is built and referenced by the outer, and
+           the whole structure renders across the run boundary.")
+  (input  (module m
+            (def (f n) (tuple n (tuple n n)))
+            (def (main) (f 2))))
+  (output (: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
+
+(case "an element is projected from a runtime-constructed tuple"
+  (doc    "`(tuple.1 (tuple n (+ n 1)))` with n=5 projects element 1 of a runtime-built tuple, yielding
+           6. Pins that positional access reads the correct element of a heap-allocated runtime tuple —
+           a layout or offset error would return the wrong element (5) or a garbage value. Companion of
+           the constant tuple-access cases, on the runtime construction path.")
+  (input  (module m
+            (def (f n) (tuple.1 (tuple n (+ n 1))))
+            (def (main) (f 5))))
+  (output (: 6 Int64)))
+
+; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
+; A record and a list carrying a runtime element are, at run time, the SAME positional heap
+; array a tuple is — field names and the tuple/list/record distinction are static type
+; information the compiler holds and the (name-free, tag-free) runtime does not. The compiler
+; emits a TYPE-DIRECTED renderer that walks the array through the runtime's accessors and bakes
+; the right keyword/names, so `(record (a 3) (b 1))`, `(list 1 2 3)` render distinctly from the
+; identical underlying array (component-abi.md §A Compound Result Is Rendered By Compiler-Emitted
+; Code; §The Runtime Does Not Name Or Render Values).
+
+(case "a record with a runtime field is returned as a program result"
+  (doc    "`(record (a n) (b 1))` with n=3 produces `(record (a 3) (b 1))` — a record one of whose
+           fields is a runtime value. Pins that a record is constructed on the value heap as a
+           positional product and rendered with its field NAMES (which the runtime does not hold —
+           the compiler-emitted renderer bakes them from the static type). Companion of the runtime
+           tuple result, distinguished only by its static type / rendering.")
+  (input  (module m
+            (def (f n) (record (a n) (b 1)))
+            (def (main) (f 3))))
+  (output (: (record (a 3) (b 1)) (Record (a Int64) (b Int64)))))
+
+(case "record fields render in canonical (key-sorted) order regardless of source order"
+  (doc    "`(record (b n) (a 1))` with n=2 renders `(record (a 1) (b 2))` — fields in sorted key
+           order, not source order (deterministic-value-form.md). Pins that the runtime array slots
+           and the emitted renderer AGREE on the sorted field order, so a field value lands under its
+           correct name; a slot/name misalignment would render `(record (a 2) (b 1))`.")
+  (input  (module m
+            (def (f n) (record (b n) (a 1)))
+            (def (main) (f 2))))
+  (output (: (record (a 1) (b 2)) (Record (a Int64) (b Int64)))))
+
+(case "a list with a runtime element is returned as a program result"
+  (doc    "`(list n 2 3)` with n=1 produces `(list 1 2 3)` — a list one of whose elements is a runtime
+           value. Pins that a list is constructed on the value heap and rendered `(list …)`,
+           distinct from a tuple's `(tuple …)` though the underlying heap array is identical (the
+           distinction is the static type the renderer walks).")
+  (input  (module m
+            (def (f n) (list n 2 3))
+            (def (main) (f 1))))
+  (output (: (list 1 2 3) (List Int64))))
+
+(case "a record whose field is a runtime tuple nests across the boundary"
+  (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
+           record field that is itself a runtime compound. Pins that the type-directed renderer
+           recurses through a heterogeneous nesting (record → tuple), dispatching each sub-shape to
+           its own renderer.")
+  (input  (module m
+            (def (f n) (record (x n) (y (tuple n 1))))
+            (def (main) (f 5))))
+  (output (: (record (x 5) (y (tuple 5 1))) (Record (x Int64) (y (Tuple Int64 Int64))))))
+
 ; --- A constructor whose payload is itself a constructor keeps its own variant tag -------
 ; A Sum value is (variant-tag, payload); its canonical form is `(Variant payload)`
 ; (deterministic-value-form.md; core-semantics.md #A Constructor Applied To An Argument Is A Sum
@@ -252,6 +359,94 @@
             ((Some inner) (match inner ((Some y) y) ((None _) 0)))
             ((None _)     -1)))
   (output (: 5 Int64)))
+
+; --- Runtime SUM results (a constructor applied to a RUNTIME payload, returned as the result) ---
+; A Sum value is a (variant, payload); its canonical form is `(Variant payload)`
+; (deterministic-value-form.md). The const cases above fold to that text; these build the SAME
+; value at RUN TIME (the payload is a function parameter, not a constant), so the value lives on
+; the heap as a (discriminant, payload-handle) and the compiler-emitted renderer walks it —
+; switching on the runtime discriminant to write the correct variant name, then rendering the
+; payload — to reproduce the identical canonical text. Companion of the runtime tuple/record/list
+; results above, on the sum shape. The rendering is already pinned (it must match the const form),
+; so these record the correct oracle for the runtime-sum construction path.
+
+(case "a unary constructor applied to a runtime value is returned as a program result"
+  (doc    "`(Some n)` with n=42 a runtime parameter produces `(Some 42)` — a Sum built at run time
+           whose payload is a runtime value. Pins that a runtime sum is constructed on the value heap
+           (a discriminant plus the boxed payload) and rendered `(Some 42)`, identical to the constant
+           `(Some 42)` form; the renderer switches on the runtime discriminant to recover the variant
+           name `Some` (which the tag-free runtime does not hold).")
+  (input  (module m
+            (def (f n) (Some n))
+            (def (main) (f 42))))
+  (output (: (Some 42) (Option Int64))))
+
+(case "a conditionally-selected variant is returned as a runtime sum result"
+  (doc    "`(if (= n 0) (None unit) (Some n))` with n=5 produces `(Some 5)` — the branch selects which
+           variant is built at run time, so the discriminant is genuinely runtime data. Pins that the
+           renderer's discriminant switch recovers the correct variant name for whichever arm ran; the
+           n=0 companion below takes the `None` arm.")
+  (input  (module m
+            (def (f n) (if (= n 0) (None unit) (Some n)))
+            (def (main) (f 5))))
+  (output (: (Some 5) (Option Int64))))
+
+(case "a conditionally-selected nullary variant is returned as a runtime sum result"
+  (doc    "The `None` companion of the case above: with n=0 the branch selects `(None unit)`, whose
+           canonical form is `(None unit)` (a nullary variant carries the unit value). Pins that the
+           runtime discriminant switch renders a nullary variant's name and its unit payload correctly,
+           distinct from the `Some` arm.")
+  (input  (module m
+            (def (f n) (if (= n 0) (None unit) (Some n)))
+            (def (main) (f 0))))
+  (output (: (None unit) (Option Any))))
+
+(case "a runtime sum whose payload is a runtime tuple nests across the boundary"
+  (doc    "`(Some (tuple n 1))` with n=7 produces `(Some (tuple 7 1))` — a runtime sum carrying a
+           runtime compound payload. Pins that the type-directed renderer recurses from the sum's
+           payload into the tuple renderer, dispatching each sub-shape, and that construction nests a
+           heap tuple inside a heap sum.")
+  (input  (module m
+            (def (f n) (Some (tuple n 1)))
+            (def (main) (f 7))))
+  (output (: (Some (tuple 7 1)) (Option (Tuple Int64 Int64)))))
+
+; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
+; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
+; whose payload is an Ok, binding the innermost payload directly (02-binding "nested patterns
+; deconstruct recursively", here across TWO sum types). These pin two-sum nesting the `(Some (Some …))`
+; cases do not: Result-of-Result (same sum both levels, both inner arms reachable) and Option-of-Result
+; (DIFFERENT sums nested), each a single arm carrying two constructor patterns.
+
+(case "a Result carrying a Result is matched by a nested pattern to its inner value"
+  (doc    "`(Ok (Ok 5))` is an Ok whose payload is an Ok; the nested pattern `(Ok (Ok n))` deconstructs
+           both tags in one arm, binding n=5. Pins two-level Result nesting matched directly (not via a
+           second `match`), the deep-pattern companion of the `(Ok (Some 3))` construction case above.")
+  (input  (match (Ok (Ok 5))
+            ((Ok (Ok n))  n)
+            ((Ok (Err _)) -1)
+            ((Err _)      -2)))
+  (output (: 5 Int64)))
+
+(case "a nested Result pattern selects the inner Err arm"
+  (doc    "The inner-Err companion: `(Ok (Err 9))` matches the `(Ok (Err e))` arm, binding e=9, not the
+           `(Ok (Ok n))` arm. Confirms the nested pattern discriminates the INNER variant, not only the
+           outer — both inner arms of an Ok-carrying-Result are reachable.")
+  (input  (match (Ok (Err 9))
+            ((Ok (Ok n))  n)
+            ((Ok (Err e)) e)
+            ((Err _)      -2)))
+  (output (: 9 Int64)))
+
+(case "an Option carrying a Result is matched across two different sum types"
+  (doc    "`(Some (Ok 3))` nests a Result inside an Option — DIFFERENT sum types at the two levels. The
+           nested pattern `(Some (Ok n))` deconstructs both, binding n=3. Pins that nested matching
+           crosses sum-type boundaries, not only same-sum nesting like `(Some (Some …))`.")
+  (input  (match (Some (Ok 3))
+            ((Some (Ok n))  n)
+            ((Some (Err _)) -1)
+            ((None _)       0)))
+  (output (: 3 Int64)))
 
 (case "a sum-type value is deconstructed by an exhaustive match"
   (doc    "Patterns are uniform: `(Ctor _)` for nullary constructors. The binder `_` matches the
@@ -318,6 +513,28 @@
   (needs     collections)
   (input     (list (tuple 1 2) (tuple 1 2 3)))
   (error     CDZ0201))
+
+; The two cases above reject a list whose RECORD/TUPLE elements differ in shape, because a record's
+; field set and a tuple's arity ARE their type. A MAP is the crucial counterpoint: two maps with
+; different KEY SETS are the SAME type (Map<KeyType, ValueType>) — a map's keys are runtime data, not
+; part of its type (the same distinction the map-comparison cases below turn on). So a list whose
+; elements are maps with different keys IS homogeneous, and building it is well-typed — NOT a CDZ0201
+; rejection. The seed shares one `shapes_incompatible` check across records and maps (it treats a map's
+; key set like a record's field set), so it wrongly rejects this list "elements do not share one shape"
+; — the SAME miscompile as the different-keyset map COMPARISON, surfacing here on the list-homogeneity
+; path. The recorded true is the correct oracle; the seed's rejection is the bug.
+
+(case "a list of maps with different keys is homogeneous, not a type error"
+  (doc    "`(map (a 1))` and `(map (b 2))` are both maps — the SAME type (Map), since a map's key set is
+           runtime data, not part of its type (unlike a record's field set). A list of them is therefore
+           homogeneous, and comparing two such lists is well-typed and true (identical lists of identical
+           maps). The seed wrongly rejects it (CDZ0201 \"list elements do not share one shape\") — the
+           list-homogeneity manifestation of the different-keyset map-comparison bug (shapes_incompatible
+           shares one arm for Record and Map). MUST be true. Contrast the record/tuple cases above, which
+           ARE non-homogeneous because field set / arity IS the type.")
+  (needs     collections)
+  (input     (= (list (map (a 1)) (map (b 2))) (list (map (a 1)) (map (b 2)))))
+  (output    (: true Bool)))
 
 (case "indexing a list out of bounds traps"
   (doc    "Witnesses collections-and-text.md #List Operations Are Total Or Trap: a well-typed list
@@ -783,6 +1000,42 @@
                           ((Ok v)  (+ v 1))
                           ((Err e) e)))))
   (output (: 43 Int64)))
+
+; The runtime-sum cases above return one of TWO variants (Some/None, Ok/Err). A classifier that returns
+; one of THREE variants selected at run time — the `Sign` (Neg | Zero | Pos) shape — must dispatch to
+; the correct arm of a three-way match, not just a two-way one. This pins that runtime variant selection
+; and match dispatch scale past two variants: `classify` picks Neg/Zero/Pos by nested `if`, and the
+; match distinguishes all three at run time (core-semantics.md #Sum Types Are Declarable Constructed And
+; Deconstructed + #Matching Is Exhaustive Or Rejected over a three-variant sum whose variant is runtime).
+
+(case "a runtime three-variant classifier dispatches to the negative arm"
+  (doc    "`classify` returns one of three Sign variants by nested `if`; classify(-5) is `(Sign.Neg
+           unit)`, so the three-way match selects the Neg arm and yields -1. Pins that a runtime variant
+           chosen among THREE (not two) reaches the right arm — the three-variant companion of the
+           Some/None and Ok/Err runtime classifiers above.")
+  (input  (module m
+            (def (classify n)
+              (if (< n 0) (Sign.Neg unit)
+                  (if (= n 0) (Sign.Zero unit) (Sign.Pos unit))))
+            (def (main) (match (classify -5)
+                          ((Sign.Neg _)  -1)
+                          ((Sign.Zero _) 0)
+                          ((Sign.Pos _)  1)))))
+  (output (: -1 Int64)))
+
+(case "a runtime three-variant classifier dispatches to the middle arm"
+  (doc    "The middle-variant companion: classify(0) is `(Sign.Zero unit)`, selecting the Zero arm for 0.
+           Confirms the three-way runtime dispatch reaches the MIDDLE variant, not only the first or
+           last — the arm most likely to be mis-ordered in a cascade of comparisons.")
+  (input  (module m
+            (def (classify n)
+              (if (< n 0) (Sign.Neg unit)
+                  (if (= n 0) (Sign.Zero unit) (Sign.Pos unit))))
+            (def (main) (match (classify 0)
+                          ((Sign.Neg _)  -1)
+                          ((Sign.Zero _) 0)
+                          ((Sign.Pos _)  1)))))
+  (output (: 0 Int64)))
 
 (case "unit is the empty tuple"
   (doc    "Witnesses core-semantics.md: unit is the 0-element tuple. There is no separate Unit concept

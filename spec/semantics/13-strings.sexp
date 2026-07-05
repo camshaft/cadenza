@@ -50,6 +50,55 @@
   (input  (= "hello" "world"))
   (output (: false Bool)))
 
+; --- The empty string is an ordinary String value ---------------------------------------
+; `""` is the zero-length string — a first-class String the compiler needs (an empty error message, an
+; empty name). Its length is 0 (counted in Unicode scalar values, of which it has none), it is equal
+; only to another empty string, and it is the identity element of concatenation on both sides. The
+; non-empty string cases above cannot witness the degenerate boundary where a length computation
+; underflows or a concat assumes a non-empty operand; these pin it, the String companion of the
+; empty-byte-sequence cluster (10-bytes.sexp) and the empty-map/empty-list cases.
+
+(case "the empty string has length zero"
+  (doc    "`(String.len \"\")` is 0 — the empty string has no Unicode scalar values
+           (collections-and-text.md #A String's Length MUST Be Counted In Unicode Scalar Values). Pins
+           that length handles the zero-length string, not underflowing or reading a phantom scalar.")
+  (input  (String.len ""))
+  (output (: 0 Int64)))
+
+(case "two empty strings are equal"
+  (doc    "`(= \"\" \"\")` is true: two empty strings have identical (empty) normalized contents, so
+           they are equal (collections-and-text.md #String Equality Follows Normalized Contents). Pins
+           that string equality treats the empty string as a genuine value equal to itself.")
+  (input  (= "" ""))
+  (output (: true Bool)))
+
+(case "an empty string is unequal to a non-empty string"
+  (doc    "`(= \"\" \"x\")` is false — the empty string and a one-character string have different
+           contents. Pins that emptiness on one side is an ordinary inequality, not a special case.")
+  (input  (= "" "x"))
+  (output (: false Bool)))
+
+(case "concatenating an empty string on the right is the identity"
+  (doc    "`(String.concat \"hi\" \"\")` = \"hi\": appending the empty string changes nothing. Pins the
+           right identity of String.concat — a concat that mishandles a zero-length operand would break
+           the compiler's error-message and name assembly.")
+  (input  (= (String.concat "hi" "") "hi"))
+  (output (: true Bool)))
+
+(case "concatenating an empty string on the left is the identity"
+  (doc    "The left-identity companion: `(String.concat \"\" \"hi\")` = \"hi\". Pins that concatenation
+           handles a zero-length LEFT operand too, mirroring the empty-byte-sequence concat cases.")
+  (input  (= (String.concat "" "hi") "hi"))
+  (output (: true Bool)))
+
+(case "an empty-range slice of a non-empty string is the empty string"
+  (doc    "`(String.slice \"hello\" 2 2)` has start = end, so it selects no scalar values — the empty
+           string (the in-bounds degenerate companion of the empty-range slice at index 0 already
+           witnessed, here at an interior index). A slice whose start equals its end is empty, not a
+           trap: the range [2,2) is valid and empty. MUST equal \"\".")
+  (input  (= (String.slice "hello" 2 2) ""))
+  (output (: true Bool)))
+
 ; --- String equality and length follow Unicode normalization -------------------------------
 ; collections-and-text.md #String Equality Follows Normalized Contents: "Two strings MUST be equal
 ; exactly when their NORMALIZED contents are identical, under the text normalization the hashing-

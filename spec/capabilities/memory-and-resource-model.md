@@ -61,6 +61,12 @@ Allocation performed by a running component MUST be accountable against the dete
 
 A program MUST NOT be able to allocate unboundedly without consuming the deterministic resource measure.
 
+### Retained Storage Is Accounted For What It Holds Live
+
+The storage a value retains MUST be accounted against the deterministic resource measure by the storage its representation actually holds live, so that a value that shares another value's storage keeps the shared storage accounted rather than hidden.
+
+A program MUST be able to derive from a value another value equal to it whose storage is independent of the storage the value was derived from, so that a value retaining a small part of a larger value's storage can release the larger value's storage, changing resource use without changing the value.
+
 ## Aliasing
 
 ### Aliasing Is Statically Disciplined
@@ -76,3 +82,13 @@ The aliasing discipline MUST be one the compiler applies internally to reclaim a
 When the compiler reuses a value's storage in place because no other reference to that value can observe the difference, that reuse MUST NOT change the program's observable behavior, so that reusing storage is a transparent optimization rather than a mutation of a value.
 
 A decision to reuse a value's storage or to allocate fresh storage MUST be a deterministic function of the source, so that reuse does not introduce nondeterminism into a program's observable behavior.
+
+### Sharing Is Not Observable
+
+When the compiler represents a value by sharing another value's storage rather than by copying it, that sharing MUST NOT change the program's observable behavior, so that sharing storage is a transparent optimization rather than a distinction between two equal values.
+
+A value that shares another value's storage and a value that copies it MUST be indistinguishable by every operation the executable semantics defines, including equality, length, indexing, and the value's canonical byte form, so that whether storage is shared is never observable.
+
+A decision to share a value's storage or to copy it MUST be a deterministic function of the source, so that sharing does not introduce nondeterminism into a program's observable behavior.
+
+A value the compiler derives by combining or narrowing existing values MAY defer the work of materializing its contents until an operation observes them, provided the deferral is not observable and is a deterministic function of the source, so that combining and narrowing values need not eagerly copy their contents.

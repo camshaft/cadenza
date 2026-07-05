@@ -15,8 +15,9 @@ to a chosen byte form is an ABI-level change under the constitution's Governance
 
 ## Choices
 
-- [`explicit-checked`](./explicit-checked.md) — checked-and-trapping signed-64 default integer,
-  distinct wrapping and unsigned types, opt-in big-integer and normalized rational, deterministic
-  binary64 float, no implicit promotion. **The default.**
+- [`explicit-checked`](./explicit-checked.md) — checked-and-trapping signed-64 default integer, the
+  full fixed-width integer family `{Int, UInt} × {8, 16, 32, 64}` (each checked and distinct), explicit
+  checked (`T.of`) and truncating (`T.wrap`) conversions, distinct wrapping type, opt-in big-integer and
+  normalized rational, deterministic binary64 float, no implicit promotion. **The default.**
 
 DEFAULT: explicit-checked

@@ -38,6 +38,15 @@
 > compound-result output convention changes from a component-owned `display()` resource to an ordinary
 > string result the program produces by walking the value through the runtime's accessors; this precedes
 > any deployed compound-returning component, so no in-the-wild artifact requires re-derivation.
+>
+> **Contract version 3, refinement.** Clarifies §The Runtime Does Not Name Or Render Values: the runtime
+> is not only name-free but TAG-FREE — it holds no per-value type identity, only structure and data (a
+> product's elements, a sum's variant discriminant, a leaf's payload). Because the language has no type
+> erasure, a reader (the compiler-emitted renderer, a consumer) always knows a value's static type and
+> never dispatches on a runtime tag. This narrows, not widens, the runtime's obligations, and it is a
+> representation concern behind the opaque handle, so no artifact requires re-derivation. **Migration:**
+> none — a runtime that carried a type tag internally would still satisfy the interface; the requirement
+> only forbids the interface from EXPOSING a type identity, which no version-3 interface did.
 
 ## Purpose And Scope
 
@@ -144,9 +153,11 @@ The runtime MUST expose the operations that construct a compound value from its 
 
 ### The Runtime Does Not Name Or Render Values
 
-The value-heap runtime MUST NOT hold the field names of a record, the variant names of a sum, or any other source-level name of a value, so that a record is a positional product and a sum is a tagged payload at run time and the association of a position with a name is compile-time knowledge the runtime does not carry.
+The value-heap runtime MUST NOT hold the field names of a record, the variant names of a sum, or any other source-level name of a value, so that a record is a positional product and a sum is a discriminated payload at run time and the association of a position with a name is compile-time knowledge the runtime does not carry.
 
-The value-heap runtime MUST NOT render a value to its canonical text, so that rendering — which requires the names the runtime does not hold — is type-directed code the compiler emits rather than a service the runtime provides.
+The value-heap runtime MUST NOT hold a value's TYPE as a per-value tag, so that — because the language has no type erasure and the compiler therefore knows a value's static type at every use site — the runtime stores only structure and data (a product's elements, a sum's variant discriminant, a leaf's payload) and never a type identity a reader would dispatch on. The variant discriminant a sum carries is the runtime datum recording WHICH variant a value is, not the sum's type; the compiler maps a discriminant to a variant name.
+
+The value-heap runtime MUST NOT render a value to its canonical text, so that rendering — which requires the names and the type the runtime does not hold — is type-directed code the compiler emits (walking a value of statically-known shape through the runtime's accessors) rather than a service the runtime provides.
 
 ### A Runtime Value Crosses As An Opaque Handle
 
