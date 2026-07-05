@@ -19,9 +19,8 @@ Cadenza is a build tool: something invokes it with a program's source and receiv
 component. This contract fixes that interface — the canonical source tree in, the component and its
 manifest and diagnostics out — and the properties that make Cadenza a *replaceable* tool: it is
 itself a verified, reproducibly-derived component, and it is not part of any minimal root that only
-loads, verifies, and runs components. It also fixes that the component Cadenza produces may be
-realized by embedding the reference interpreter over the source, so that a working component exists
-before ahead-of-time compilation is complete. It does not fix the concrete invocation surface,
+loads, verifies, and runs components. It also fixes that the build tool derives a component by
+lowering the source to a component. It does not fix the concrete invocation surface,
 which is a declared default.
 
 ## What The Tool Consumes And Produces
@@ -37,6 +36,8 @@ The build tool MUST reject an input that is not a well-formed canonical source t
 The build tool MUST produce, on success, a content-addressed component together with the capability manifest against which its imports are bound.
 
 The build tool MUST produce, on failure, machine-readable diagnostics rather than an opaque error.
+
+The build tool's derivation entry MUST have a result-typed signature whose success arm carries the component bytes and whose failure arm carries the diagnostics, so that success and failure are distinguished by the interface's type rather than by an in-band sentinel such as an empty byte sequence.
 
 The component the build tool produces MUST have imports that mirror the manifest it produces, as fixed by the host-interface-binding contract.
 
@@ -56,35 +57,53 @@ A minimal root whose only responsibilities are to load, verify, and run componen
 
 A minimal load-verify-run root MUST be unchanged by the introduction of a build tool for a different source language.
 
-## Derivation By Embedding The Reference Interpreter
+## Derivation By Compilation
 
-### The Reference Interpreter May Be Bundled Or Linked
+### The Tool Lowers Source To A Component
 
-The build tool MAY derive a component by embedding the reference interpreter over the program's canonical source rather than by ahead-of-time compilation.
+The build tool MUST derive a component by lowering the program's canonical source to a component.
 
-A component derived by embedding the reference interpreter MUST satisfy the determinism guarantee identically to a component produced by ahead-of-time compilation.
+A derived component MUST satisfy the determinism guarantee.
 
-A component derived by embedding the reference interpreter MUST satisfy the capability-binding guarantee identically to a component produced by ahead-of-time compilation.
+A derived component MUST satisfy the capability-binding guarantee.
 
-A component derived by embedding the reference interpreter MUST satisfy the reproducibility guarantee identically to a component produced by ahead-of-time compilation.
+A derived component MUST satisfy the reproducibility guarantee.
 
-A component derived by embedding the reference interpreter MUST exhibit the observable behavior the reference interpreter defines for the program, so that the two derivation modes are behaviorally indistinguishable.
+A derived component MUST exhibit the observable behavior the executable-semantics corpus records for the program.
 
-### The Embedded Interpreter Executes In The Component
+### A Derived Component Computes Its Behavior When It Runs
 
-A component derived by embedding the reference interpreter MUST compute the program's observable behavior by executing the interpreter over the program's canonical form when the component runs, rather than by replaying an observable behavior computed before the component ran.
+A derived component MUST compute the program's observable behavior when it runs rather than replay an observable behavior recorded before it ran.
 
-A build tool MUST NOT emit, in place of the embedded interpreter, a component that reproduces only a pre-recorded transcript of the program's observable behavior.
+A build tool MUST NOT emit a component that reproduces only a pre-recorded transcript of the program's observable behavior.
 
-The interpreter a derivation embeds MUST be the same across the programs it derives, so that a derived component's behavior is a function of the embedded program rather than of behavior-specific code the derivation emitted.
+A derived component's behavior MUST be a function of the compiled program rather than of behavior-specific code the derivation emitted.
 
-### The Interpreter And The Host Are Distinct Artifacts
+### The Component And The Host Are Distinct Artifacts
 
-The reference interpreter a component embeds MUST be an artifact distinct from the host that provides the capability operations the component imports.
+A derived component MUST be an artifact distinct from the host that provides the capability operations it imports.
 
 The host that provides a component's imported capability operations MUST provide only the operations the component's manifest enumerates.
 
-## Additive Evolution
+## The Compiler Exposes Reader, Printer, And Display As Exports
+
+### The Compiler's Interface Exports Derivation, Reading, Printing, And Display
+
+The compiler component's interface MUST export, alongside its derivation entry, a reader that converts program text to the canonical source tree, a printer that renders the canonical source tree as re-readable text, and a display conversion that renders a typed result as its canonical text.
+
+The reader, printer, and display conversion MUST be exports of the compiler's own interface rather than operations any host performs, so that the knowledge of a value's textual form lives in the compiler and a host stays value-agnostic (host-interface-binding.md §The Host Formats Nothing).
+
+### The Compiler Imports No Host Function
+
+The compiler component MUST reach no host function to derive a program, read text, print the canonical source tree, or render a result, so that its import world is empty and its derivation is a pure function of its input.
+
+The empty import world of the compiler MUST be the same "purity is the empty row" property every program with an empty manifest has, so that the compiler is not a special case of the capability model but an instance of it.
+
+### A Typed Result Crosses The Boundary As Its Proper Type
+
+A compiled program's entry MUST export its result as the result's proper component type rather than collapse it to an untyped string at the boundary, so that the boundary is strictly, statically typed.
+
+The display conversion the compiler exports MUST be the path by which a harness obtains a result's canonical text, so that rendering a value is a compiler-exported operation over the typed result rather than a formatting rule the harness carries.
 
 ### Additive Evolution Of This Contract
 

@@ -45,6 +45,10 @@ The shrinking search MUST report a minimal failing input.
 
 A declared postcondition MUST be usable as a property oracle without the author restating it as a separate assertion.
 
+### Permutation Invariance Is A Property
+
+A statement that a permutation of a fold's inputs produces a byte-identical result MUST be expressible as a property the generator exercises, so that order-independence can be checked by property testing as one rung in discharging it.
+
 ## Optionality
 
 ### Property-Based Testing Is Optional

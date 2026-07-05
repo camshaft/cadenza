@@ -106,9 +106,11 @@ duvet report
 commands (into the gitignored `.claude/commands/`), scaffolds the gitignored `implementation/`
 workspace, and launches a session that runs [`/build`](commands/build.md) in the selected mode
 (autonomous by default; `--author` for attended). `/build` orchestrates the rest: `constitution` /
-`specify` / `clarify` to author the spec, `analyze` to check it is gate-ready, `setup-gate` / `gate`
-to run the two gates, and `ignite` / `regen` / `promote` / `learn` to synthesize the seed toolchain,
-produce a generation, promote a gated candidate, and feed a spec gap back into the specification. The
+`specify` / `clarify` to author the spec, `analyze` to check it is gate-ready, `plan` to derive the
+ordered climb from the seed to the full realized language once the choices are made, `setup-gate` /
+`gate` to run the two gates, and `ignite` / `regen` / `promote` / `learn` to synthesize the seed
+toolchain, produce a generation, promote a gated candidate, and feed a spec gap back into the
+specification. The
 commands are agent-agnostic prompt bodies and are the durable, committed way to drive a build; the
 build modes they obey are fixed by [spec/capabilities/build-modes.md](spec/capabilities/build-modes.md).
 

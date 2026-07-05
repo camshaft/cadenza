@@ -51,15 +51,14 @@ regenerated from the durable spec.
 ### Phase 4 — gate
 
 - Invoke both gates against the full config (`.duvet/config.toml`): the
-  requirement gate (`duvet report`) and the behavior gate that executes every
-  `spec/semantics/*.sexp` case through the reference interpreter and confirms it
-  reproduces its recorded output (`conformance-gate.md` §"The Behavior Gate"). On
-  either gate's failure, stop; the pipeline may be resumed at `--from generate`
-  after fixes without re-planning.
-- If the generation uses ahead-of-time compilation, confirm the compiled output
-  agrees with the reference interpreter on every executable-semantics case before
-  proposing it (`self-hosting-and-bootstrap.md` §"The Compiled Path Is Exercised
-  Before It Is Trusted").
+  requirement gate (`duvet report`) and the behavior gate that derives and runs every
+  `spec/semantics/*.sexp` case and confirms it reproduces its recorded output
+  (`conformance-gate.md` §"The Behavior Gate"). On either gate's failure, stop; the
+  pipeline may be resumed at `--from generate` after fixes without re-planning.
+- Confirm the compiled output agrees with the recorded corpus semantics on every
+  executable-semantics case before proposing it
+  (`self-hosting-and-bootstrap.md` §"The Generated Path Is Exercised Before It Is
+  Trusted").
 
 ### Phase 5 — propose
 

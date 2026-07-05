@@ -67,17 +67,17 @@ Run every check and report all findings; do not stop at the first failure.
   config resolve relative to the project root (the parent of `.duvet/`), not to the
   config file's directory.
 - The bootstrap subset in `.duvet/bootstrap.toml` lists exactly the constitution,
-  all frozen contracts under `spec/contracts/`, `spec/bootstrap.md`, and the five
+  all frozen contracts under `spec/contracts/`, `spec/bootstrap.md`, and the six
   ignition-set capabilities the seed compiler must satisfy to clear the ignition bar
   (`spec/bootstrap.md` §"The Ignition Bar"), enumerated in `.duvet/bootstrap.toml`:
-  `core-semantics`, `capabilities-and-effects`, `compiler-pipeline`,
+  `core-semantics`, `type-system`, `capabilities-and-effects`, `compiler-pipeline`,
   `conformance-gate`, `self-hosting-and-bootstrap` — and does NOT list any capability
-  outside that ignition set. `type-system` is intentionally NOT in the seed subset:
-  the seed is a dynamic interpreter that defers static typing (constitution §VII
-  bootstrap carve-out; `options/realized-capability-set/`), so type-system re-enters
-  the subset for the first generation that realizes it. The richer capabilities
+  outside that ignition set. `type-system` IS in the seed subset: post-pivot the seed
+  is a compiler that MUST realize the static-typing floor incrementally
+  (reject-don't-miscompile), so it carries citations for `type-system.md` (constitution
+  §VII; Amendment 0.4.0; `options/realized-capability-set/`). The richer capabilities
   realized by still-later generations (e.g. `numeric-model`, `verification-layers`,
-  `diagnostics`, `tooling-and-lsp`) are likewise absent.
+  `diagnostics`, `tooling-and-lsp`) are absent.
 - Every `[[specification]]` `source` in `.duvet/bootstrap.toml` also appears in
   `.duvet/config.toml` — the ignition subset is a strict subset of the full set,
   never a superset (bootstrap.toml's stated INVARIANT). Diff the two source lists and

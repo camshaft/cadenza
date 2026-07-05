@@ -26,10 +26,11 @@ can be rebuilt from these specs at any time.
    determinism, capability-safety — hold. Contracts, refinement types, effect tracking, and
    machine-checked proofs are opt-in layers a program adds as it matures, and adding a layer
    never changes what a program already means.
-4. **The language can build itself.** A reference interpreter is the single executable
-   semantics and the behavioral oracle. A foreign-language seed compiler derives the first
-   Cadenza toolchain to a component; from there each generation of the language is authored in
-   Cadenza and derived by the one before it — the flywheel.
+4. **The language can build itself.** The executable-semantics corpus is the single source of
+   truth for behavior and the behavioral oracle; independence comes from two implementations of
+   the compiler — a foreign-language seed and the Cadenza-authored compiler — that must agree. The
+   seed compiler derives the first Cadenza toolchain to a component; from there each generation of
+   the language is authored in Cadenza and derived by the one before it — the flywheel.
 
 ## Why Cadenza exists
 

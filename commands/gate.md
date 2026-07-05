@@ -4,9 +4,9 @@
 generation by **two** gates, and this command runs both: the **requirement gate**
 (extract every requirement from the specification tree and check that each
 load-bearing one is discharged by an implementation citation and a test citation),
-and the **behavior gate** (execute every case in the executable-semantics corpus
-through the reference interpreter and confirm each reproduces its recorded output).
-Both must pass. This is the bar a regeneration must clear before it is promoted.
+and the **behavior gate** (derive and run every case in the executable-semantics
+corpus and confirm each reproduces its recorded output). Both must pass. This is the
+bar a regeneration must clear before it is promoted.
 
 **Agent-agnostic.** Neutral prompt body; assumes a shell and the `duvet` CLI.
 The meaning of the gates is fixed normatively in
@@ -20,7 +20,7 @@ this command is the procedure that runs them.
 - The generated compiler under `[[source]]` (in `implementation/`) with its
   requirement citations.
 - The executable-semantics corpus: `spec/semantics/*.sexp`.
-- The reference interpreter the generation realizes (the behavioral oracle,
+- The executable-semantics corpus's recorded results (the behavioral oracle,
   `spec/capabilities/self-hosting-and-bootstrap.md`).
 - The pinned non-load-bearing set at `options/gate-non-load-bearing/`, subtracted
   from the load-bearing total.
@@ -66,21 +66,22 @@ this command is the procedure that runs them.
 
 ## The behavior gate
 
-1. Execute the corpus cases the generation **realizes** through the reference
-   interpreter (conformance-gate.md §"Every Case Executes To Its Recorded Output",
+1. Execute the corpus cases the generation **realizes** by deriving and running each
+   as a component (conformance-gate.md §"Every Case Executes To Its Recorded Output",
    §"A Generation Is Judged Against The Capabilities It Realizes", compiler-pipeline.md
    §"The Corpus Is A Gate"). The corpus is one flat set (`spec/semantics/*.sexp`);
    inline annotations select what a generation runs (`spec/semantics/README.md`
    §"Which cases a generation runs"): run every case whose `(needs <capability>)` the
-   generation realizes (a case with no `(needs …)` is core). For the **seed** — a
-   dynamic interpreter — check each case's **primary** result clause (the interpreter
-   oracle) and IGNORE `(compiler …)` annotations; a generation that realizes static
-   typing additionally checks the `(compiler (error …))` clause.
-2. For each case, compare the run against its recorded primary clause — the `output`
-   value form under the canonical value form, the front-end `error` code, the `trap`,
-   or `exhausted`, plus any `events` sequence — and, for a typed generation, that a
-   `(compiler (error …))`-annotated program is rejected with that code (per
-   `spec/semantics/README.md`).
+   generation realizes (a case with no `(needs …)` is core). The **seed** is a compiler
+   that realizes the static-typing floor incrementally: for a case carrying
+   `(compiler (error …))` for a rule it covers, confirm it **rejects** with that code;
+   for a rule it does not yet cover, confirm it **declines** rather than running the
+   program; otherwise confirm the run reproduces the primary clause.
+2. For each case, compare the run against its recorded result — a `(compiler (error …))`
+   rejection code where the case records one for a rule the generation realizes,
+   otherwise the primary clause (the `output` value form under the canonical value
+   form, the front-end `error` code, the `trap`, or `exhausted`, plus any `events`
+   sequence) — per `spec/semantics/README.md`.
 3. Fail the generation if any case does not reproduce its recorded output.
 4. Confirm the corpus is complete for the realized set: every behavioral requirement
    of a capability the generation **realizes** is witnessed by at least one case it
@@ -89,10 +90,11 @@ this command is the procedure that runs them.
    corpus omits a witnessing case for a load-bearing behavioral requirement it
    realizes MUST NOT be promoted; a requirement of a capability it does not realize is
    not load-bearing for it.
-5. Judge the compiled derivation against the oracle where applicable: a compiled
-   generation's observable behavior MUST agree with the reference interpreter over
-   every case before it is promoted (`spec/bootstrap.md` §"Compiled Derivation
-   Produces The Component And Agrees With The Oracle", constitution §XIV).
+5. Judge the compiled derivation against the oracle: a compiled generation's
+   observable behavior MUST agree with the recorded corpus semantics over every case,
+   and the two compiler implementations MUST agree with each other, before it is
+   promoted (`spec/bootstrap.md` §"Compiled Output Agrees With The Recorded Semantics",
+   §"Two Compilers Supply The Independence Of The Judgment", constitution §XIV).
 
 ## Judging against an immutable specification
 
@@ -121,9 +123,9 @@ Gate Is The Promotion Bar", constitution §XII).
   never from a language toolchain. Only the `[[source]]` half of the config is
   language-specific, and `setup-gate` owns that half.
 - The behavior gate is language-agnostic in a different sense: it reads meaning from
-  the corpus and the reference interpreter, never from the compiler's own encoding of
-  behavior, so the compiler and every tool agree with the corpus rather than with
-  themselves (constitution §IX).
+  the corpus's recorded results, never from the compiler's own encoding of behavior,
+  so the compiler and every tool agree with the corpus rather than with themselves
+  (constitution §IX).
 - Pinned to stable duvet report types (`json`, `snapshot`). The report JSON is the
   machine-readable input the requirement gate reads. The snapshot is a local
   coverage-regression check regenerated per build; it is gitignored, not a committed

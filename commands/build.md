@@ -99,6 +99,20 @@ Items 1–5 are user-facing choices: ask them only when interactive, and otherwi
 defaults (for item 4, the default posture is **accept**; for item 5, each capability's own default).
 Record all answers and every default applied in `implementation/DECISIONS.md`.
 
+## Phase 1.5 — Derive the climb (`plan`)
+
+Now that the choices are resolved and recorded in `implementation/DECISIONS.md`, run `plan` (see
+`commands/plan.md`) to derive `implementation/PLAN.md`: the ordered sequence of generations that
+carries this build from the seed to the full realized language, with each rung bound to the concrete
+option choices just made and each step naming the command that executes it (`ignite` for the seed,
+then `regen`/`gate`/`promote`, with `specify`/`clarify`/`learn` for the author-decision and
+fold-learning steps a later rung needs). The plan is a disposable, gitignored projection of the
+end-state spec × the resolved choices — it is derived here, *after* Phase 1 fixes the choices and
+before synthesis, and re-derived (or `plan --check`ed) whenever an input changes. This build's front
+door only needs to clear the ignition bar (the seed rung), but the plan makes the whole climb past it
+explicit so execution of each later generation is a matter of taking the next rung, not re-planning
+from scratch. Confirm it ends `PLAN: DERIVED` before proceeding.
+
 ## Phase 2 — De-risk (unless the user chose to skip)
 
 These spikes validate the assumptions the whole design rests on. Keep them tiny and throwaway (build
@@ -112,12 +126,12 @@ them under `implementation/spikes/`).
    as a binary AST (per `spec/contracts/ast-encoding.md` and `options/ast-encoding/`), derive it to a
    component by compiled codegen — the seed's derivation mode (`options/bootstrap-strategy/`): the
    compiler generates a core module and wraps it into a real component whose interface world declares
-   exactly the program's manifest, per `spec/bootstrap.md` §"Compiled Derivation Produces The
-   Component And Agrees With The Oracle" — confirm the component's imports mirror its manifest, run it
-   and observe its output, confirm the output agrees with the native reference interpreter (the
-   oracle) over the same input, then re-derive and confirm byte-identical output. This proves the
-   source→component→run path is real and reproducible. (Interpreted derivation — embedding the
-   interpreter over the AST — is the optional/later mode, not what the seed spikes.)
+   exactly the program's manifest, per `spec/bootstrap.md` §"Compiled Output Agrees With The Recorded
+   Semantics" — confirm the component's imports mirror its manifest, run it
+   and observe its output, confirm the output agrees with the recorded corpus semantics (the oracle)
+   over the same input, then re-derive and confirm byte-identical output. This proves the
+   source→component→run path is real and reproducible. (An optional reference interpreter — embedding
+   the interpreter over the AST — is an independent oracle only, never what the seed spikes.)
 
 If either spike fails: in **attended** mode, stop and report — the failing assumption must be resolved
 (a `learn` entry and a spec change) before the toolchain is worth building, then restart. In
@@ -132,12 +146,13 @@ Follow `commands/ignite.md` exactly. In summary:
 1. Run `setup-gate` for the chosen host language so the gate's `[[source]]` half points at
    `implementation/` and uses the language's citation comment style.
 2. Synthesize the seed compiler source into `implementation/`: a reader for the binary AST and its
-   symbol prelude; the native reference interpreter that realizes the executable-semantics corpus and
-   is the behavioral oracle; compiled derivation (the seed's mode, `options/bootstrap-strategy/`) that
-   generates a component — a core module wrapped into a real component whose interface world declares
-   exactly the program's manifest, so its imports mirror the manifest natively — whose observable
-   behavior agrees with the oracle; and the machine-readable diagnostics. Cite every frozen-contract
-   and ignition-subset requirement you satisfy.
+   symbol prelude; the static-typing floor that rejects an ill-typed program at compile time
+   (constitution §VII), realized incrementally; compiled derivation (the seed's mode,
+   `options/bootstrap-strategy/`) that generates a component — a core module wrapped into a real
+   component whose interface world declares exactly the program's manifest, so its imports mirror the
+   manifest natively — whose observable behavior agrees with the recorded corpus semantics (the
+   oracle); and the machine-readable diagnostics. Cite every frozen-contract and ignition-subset
+   requirement you satisfy.
 3. Gate against the ignition subset: `duvet report --config-path .duvet/bootstrap.toml`, iterating
    until every MUST/SHALL in the subset is covered and there are zero broken citations. Coverage must
    be *honest*, per `conformance-gate.md` §"A Citation Discharges Its Own Requirement": each citation
@@ -161,7 +176,7 @@ derivation, per `spec/bootstrap.md` §"The Ignition Bar":
    binding exercised, not merely configured.
 3. Re-derive the same source with the same toolchain and confirm a byte-identical component —
    reproducibility exercised, not asserted.
-4. Confirm the compiled output agrees with the reference interpreter (the oracle) over the same input.
+4. Confirm the compiled output agrees with the recorded corpus semantics (the oracle) over the same input.
 
 A build demonstrated only by emitting the artifacts a derivation would produce, without a component
 that was actually derived and run, is a model of an ignition, not an ignition, and MUST NOT be

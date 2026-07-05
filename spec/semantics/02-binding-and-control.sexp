@@ -21,9 +21,8 @@
 
 (case "a reference to an unbound name is rejected before running"
   (doc    "Witnesses core-semantics.md #Binding Is Lexical: a reference to a name with no enclosing
-           binding is refused. This is a front-end rejection EVERY generation makes, including the
-           dynamic seed — scope resolution needs no static typing — so (error CDZ0101) is the primary
-           clause, not a (compiler …) divergence.")
+           binding is refused. This is a front-end rejection every generation makes — scope resolution
+           needs no static typing — so (error CDZ0101) is the recorded outcome.")
   (input  y)
   (error  CDZ0101))
 
@@ -34,6 +33,51 @@
            03-equality-and-observation.sexp.")
   (input  (do 1 2 3))
   (output (: 3 Int64)))
+
+(case "a sequencing block discards a pure compound intermediate"
+  (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (\"evaluate each
+           of its forms\" then \"evaluate to the value of its last form\"): a non-final form is
+           evaluated and its value discarded, whatever its type. A pure compound value — a record here —
+           in a non-final position has no observable effect, so the block yields its last form (42). The
+           earlier `do` cases only drop scalars; this pins that a COMPOUND intermediate is dropped the
+           same way rather than blocking the block.")
+  (needs  collections)
+  (input  (do (record (a 1)) 42))
+  (output (: 42 Int64)))
+
+(case "a sequencing block discards a pure list intermediate"
+  (doc    "Companion of the case above with a list intermediate: `(do (list 1 2 3) 7)` evaluates the
+           list, discards it (no effect), and yields the last form 7.")
+  (needs  collections)
+  (input  (do (list 1 2 3) 7))
+  (output (: 7 Int64)))
+
+; --- A declaration in a sequencing block binds for the following forms -------------------
+; core-semantics.md #A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It:
+; "A declaration form in a sequencing block MUST bind its name for the forms that follow it in
+; that block, so that a name a declaration introduces is in scope without a separate binding
+; form." This is how a module declaration binds its name (11-modules.sexp relies on it for
+; `(do (module m …) <uses-m>)`), and it applies to a `def` declaration too — a `def` in a `do`
+; binds its name for the later forms, no enclosing `let` needed. The seed does not yet recognize
+; `def` as a declaration in do-block position: it treats the `def` head as a name to resolve and
+; declines "unbound name: def" (a misleading code — `def` is a declaration keyword, not a name).
+
+(case "a value declaration in a do block is in scope for the following forms"
+  (doc    "Witnesses core-semantics.md #A Declaration In A Sequencing Block Is Scoped To The Forms
+           That Follow It: `(def x 5)` as a form of a `do` binds `x` for the following form, so
+           `(+ x 1)` sees it without a `let`. The block yields the last form's value, 6. This is the
+           same declaration-binds-its-name rule a module declaration uses; a `def` declaration in a
+           sequencing block is in scope exactly like one.")
+  (input  (do (def x 5) (+ x 1)))
+  (output (: 6 Int64)))
+
+(case "a function declaration in a do block is callable by the following forms"
+  (doc    "The function-declaration companion: `(def (f n) (+ n 1))` in a `do` binds `f` for the
+           following forms, so `(f 9)` calls it and the block yields 10. A declaration introduces its
+           name into the rest of the block without a separate binding form, whether it declares a
+           value or a function.")
+  (input  (do (def (f n) (+ n 1)) (f 9)))
+  (output (: 10 Int64)))
 
 (case "a single-form body admits a sequence by holding a do block"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order in a
@@ -46,6 +90,29 @@
               x)))
   (output (: 4 Int64)))
 
+(case "a sequencing block whose last form is unit yields unit"
+  (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order together with
+           #An Effect-Only Expression Yields The Unit Value: a `do` yields its last form's value, and
+           when that is `unit` the block — and the program — yields the unit value. The earlier form is
+           pure and dropped. This is the shape of every effect-only body: a sequence of effects ending
+           in unit; it must run and yield unit as the normal-termination value.")
+  (input  (do 1 unit))
+  (output (: unit Unit)))
+
+(case "a let body of unit yields unit"
+  (doc    "Witnesses core-semantics.md #An Effect-Only Expression Yields The Unit Value: binding a
+           value and then yielding `unit` produces the unit value as the program result. Unit is an
+           ordinary value that a binding form can carry to the run boundary.")
+  (input  (let ((x 1)) unit))
+  (output (: unit Unit)))
+
+(case "a conditional whose branches are unit yields unit"
+  (doc    "Witnesses core-semantics.md #Conditionals Evaluate One Branch with a unit result: both
+           branches yield the unit value, so the conditional yields unit whichever is taken. Pins that
+           the unit value flows through `if` and crosses the run boundary as the program's result.")
+  (input  (if true unit unit))
+  (output (: unit Unit)))
+
 (case "a conditional evaluates only the selected branch"
   (doc    "Witnesses core-semantics.md #Conditionals Evaluate One Branch. The unselected branch would
            trap on overflow if it were evaluated; the normal result proves it was not.")
@@ -56,6 +123,65 @@
   (doc    "Witnesses core-semantics.md #Conditionals Evaluate One Branch.")
   (input  (if false 1 2))
   (output (: 2 Int64)))
+
+; --- A conditional's branches must have the same type ------------------------------------
+; core-semantics.md #Conditionals Evaluate One Branch, 2nd sentence: "Every branch of a
+; conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated
+; branch cannot carry a deferred error." So a conditional whose branches have DIFFERENT types
+; is ill-typed even when the condition is a compile-time constant that never evaluates the
+; mismatched branch — the compiler MUST reject it (CDZ0201). The rejection is the recorded
+; outcome; the program does not run, so it has no branch value. A generation that does not yet
+; type-check the unevaluated branch declines rather than emitting a component
+; (reject-don't-miscompile).
+
+(case "a conditional with an integer then-branch and a boolean else-branch is a type error"
+  (doc    "The then-branch is Int64, the else-branch is Bool — different types. Even with a constant
+           condition selecting the Int64 branch, the compiler MUST type-check BOTH branches and reject
+           the mismatch (CDZ0201) rather than run the program.")
+  (input  (if true 1 false))
+  (error  CDZ0201))
+
+(case "a conditional type error is caught even when the mismatched branch is the one taken"
+  (doc    "The companion with the condition false, selecting the Bool branch: the branches still
+           disagree in type (Int64 vs Bool), so the compiler MUST reject (CDZ0201). Pins that the
+           check is on the pair of branch types, not on which branch would run.")
+  (input  (if false 1 false))
+  (error  CDZ0201))
+
+(case "a conditional with integer and floating-point branches is a type error"
+  (doc    "Int64 and Float64 are distinct numeric types that do not silently unify (numeric-model.md
+           #Numeric Types Do Not Silently Promote). A conditional with an Int64 branch and a Float64
+           branch is therefore ill-typed and the compiler MUST reject it (CDZ0201).")
+  (input  (if true 1 3.5))
+  (error  CDZ0201))
+
+; --- A conditional's condition must be a Bool --------------------------------------------
+; core-semantics.md #Conditionals Evaluate One Branch: a conditional selects a branch by its
+; condition, which is a Bool. A condition of any other type is ill-typed — the compiler MUST
+; reject it (CDZ0201). A COMPOUND condition (a tuple/record/list) must be rejected as a not-a-Bool
+; type error with the constructor `tuple`/`record`/`list` intact — it is a recognized form (it
+; builds a value everywhere else), so a diagnostic of "unbound name: tuple" would be a misleading
+; code (CDZ0101) for what is plainly a not-a-Bool type error, the same wrong-diagnostic class as an
+; out-of-range integer literal reported as an unbound name (01-literals.sexp).
+
+(case "an integer if condition is a type error, not a running conditional"
+  (doc    "1 is Int64, not Bool. A conditional's condition selects a branch and MUST be a Bool; an
+           Int64 condition is ill-typed (CDZ0201). A C-like language treats a nonzero int as true —
+           Cadenza does not silently coerce (numeric-model.md #Numeric Types Do Not Silently
+           Promote); there is no truthiness. A generation that does not yet wire the CDZ0201 code
+           declines rather than running the program (reject-don't-miscompile).")
+  (input  (if 1 10 20))
+  (error  CDZ0201))
+
+(case "a compound if condition is a type error, not an unbound name"
+  (doc    "A tuple is not a Bool, so `(if (tuple 1 2) …)` is ill-typed (CDZ0201). The constructor
+           `tuple` is a recognized form — `(tuple 1 2)` builds a value in every other position — so
+           reporting `unbound name: tuple` (CDZ0101) would mistake a not-a-Bool type error for a name
+           resolution failure. The condition's type is what is wrong, not the spelling of a name.
+           Pins that a compound condition is rejected as a type error with the constructor intact,
+           the same misleading-diagnostic class as an out-of-range literal reported as unbound.")
+  (input  (if (tuple 1 2) 10 20))
+  (error  CDZ0201))
 
 (case "a pattern binds a name scoped to its branch"
   (doc    "Witnesses core-semantics.md #Bindings Introduced By A Pattern Are Scoped To Its Branch.
@@ -78,6 +204,31 @@
             (else "many")))
   (output (: "two" String)))
 
+; --- A literal pattern's type must match the scrutinee's type ----------------------------
+; A literal pattern matches the scrutinee by equality (above), and equality is only defined between
+; values of the SAME type (core-semantics.md #Equality Is Structural; a cross-type comparison is a
+; type error). So a literal pattern whose type differs from the scrutinee's — a `true` (Bool) pattern
+; against an Int64 scrutinee, an integer pattern against a Bool scrutinee — can never meaningfully
+; match: it is a static type mismatch between the arm and the scrutinee, a type error (CDZ0201), the
+; same class as a tuple pattern of the wrong arity or a `(Some x)` pattern against an Int64. The
+; compiler rejects the ill-typed arm; a generation that does not yet check the pattern's type against
+; the scrutinee's declines rather than running the program (reject-don't-miscompile).
+
+(case "a boolean literal pattern against an integer scrutinee is a type error"
+  (doc    "The scrutinee `5` is Int64; the pattern `true` is Bool. A literal pattern matches by
+           equality, which is only defined within one type, so a Bool pattern can never match an Int64
+           value — the arm is ill-typed and the compiler MUST reject the match (CDZ0201). Pins that a
+           literal pattern's type is checked against the scrutinee's, not silently failed to match.")
+  (input  (match 5 (true 1) (_ 0)))
+  (error  CDZ0201))
+
+(case "an integer literal pattern against a boolean scrutinee is a type error"
+  (doc    "The mirror: scrutinee `true` is Bool, pattern `5` is Int64 — a type mismatch, so the arm is
+           ill-typed (CDZ0201). Pins the check in both directions — the scrutinee and every literal
+           pattern must share a type.")
+  (input  (match true (5 1) (_ 0)))
+  (error  CDZ0201))
+
 (case "matching on string literals"
   (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: string literal patterns
            match by equality. The compiler uses this heavily to dispatch on instruction tags like
@@ -88,6 +239,29 @@
             (else    0)))
   (output (: 1 Int64)))
 
+(case "matching on a string produced by an expression"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: string literal patterns match by
+           equality against the scrutinee's VALUE, whether the scrutinee is written as a bare literal
+           (the case above) or produced by an expression. `(String.concat \"a\" \"b\")` evaluates to
+           \"ab\", which the \"ab\" arm matches, yielding 100 — not the wildcard. (That the two strings
+           are equal is independently witnessed: `(= (String.concat \"a\" \"b\") \"ab\")` is true. A
+           bare and a let-bound \"ab\" scrutinee already select the arm; a string-valued expression
+           must behave identically — the common compiler idiom of dispatching on a computed
+           instruction name.)")
+  (input  (match (String.concat "a" "b")
+            ("ab"  100)
+            (else  200)))
+  (output (: 100 Int64)))
+
+(case "matching on a sliced string selects the literal arm"
+  (doc    "Companion using another string-producing operation: `(String.slice \"hello\" 0 2)` is \"he\",
+           which the \"he\" arm matches, yielding 100. A slice result is a scrutinee value like any
+           other string.")
+  (input  (match (String.slice "hello" 0 2)
+            ("he"  100)
+            (else  200)))
+  (output (: 100 Int64)))
+
 (case "matching falls through to else when no literal matches"
   (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: when no literal pattern
            matches, the else (wildcard) catches it. Without else, a non-exhaustive match traps.")
@@ -96,6 +270,62 @@
             (1 "one")
             (else "other")))
   (output (: "other" String)))
+
+; --- A match must cover every value of the scrutinee's type ------------------------------
+; core-semantics.md #Matching Is Exhaustive Or Rejected: "A match whose patterns do not cover
+; every value of the scrutinee's type MUST be a compile-time error." A Bool has exactly two
+; values, true and false, so a match on a Bool that arms only ONE of them (and has no wildcard)
+; is non-exhaustive and the compiler MUST reject it (CDZ0210) — even though the missing case would
+; only be reached for one of the two inputs. The rejection is the recorded outcome; the program
+; does not run. A generation that does not yet check runtime-bool exhaustiveness declines rather
+; than emitting a component (reject-don't-miscompile).
+
+(case "a bool match missing the false arm is non-exhaustive"
+  (doc    "The scrutinee `b` is a Bool — its type has exactly two values. A match arming only `true`
+           leaves `false` uncovered and has no wildcard, so it is non-exhaustive and the compiler MUST
+           reject it (CDZ0210, coded-span-record.md). The rejection is the recorded outcome; the
+           program does not run. Pins runtime-bool exhaustiveness against a match whose scrutinee is a
+           function parameter, not a compile-time constant.")
+  (input  (module m
+            (def (f b) (match b (true 1)))
+            (def (main) (f false))))
+  (error  CDZ0210))
+
+(case "a bool match missing the true arm is non-exhaustive"
+  (doc    "The mirror of the case above: a match on a Bool arming only `false` leaves `true`
+           uncovered and the compiler MUST reject it as non-exhaustive (CDZ0210). Pins that
+           exhaustiveness is checked for BOTH bool values, not only the one the sole arm happens to
+           name.")
+  (input  (module m
+            (def (f b) (match b (false 0)))
+            (def (main) (f true))))
+  (error  CDZ0210))
+
+; A sum type's value set is its variant set, so exhaustiveness for a sum match is checked against
+; ALL its variants — not just the scrutinee's runtime value. `Option` has variants Some and None;
+; a match arming only `Some` leaves `None` uncovered, so it is non-exhaustive and the compiler MUST
+; reject it (CDZ0210) EVEN when the scrutinee happens to be a `Some`. Exhaustiveness is a
+; compile-time property of the arm set against the sum's variant set, not of which variant the
+; scrutinee holds. The bool cases above are the two-value instance of the same rule; these are the
+; general sum instance.
+
+(case "a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one"
+  (doc    "`Option` has variants Some and None. `(match (Some 5) ((Some x) x))` arms only Some, leaving
+           None uncovered and having no wildcard — non-exhaustive, so the compiler MUST reject it
+           (CDZ0210), independent of the scrutinee being a Some. Exhaustiveness is a compile-time
+           property of the arm set against the sum's variant set, not of which variant the scrutinee
+           holds.")
+  (input  (match (Some 5) ((Some x) x)))
+  (error  CDZ0210))
+
+(case "a Sign match missing two of three variants is non-exhaustive"
+  (doc    "Sign has three variants (Neg | Zero | Pos). `(match (Sign.Pos unit) ((Sign.Pos _) 1))`
+           arms only Pos, leaving Neg and Zero uncovered — non-exhaustive, so the compiler MUST reject
+           it (CDZ0210). Pins that a sum's exhaustiveness covers every declared variant, not only the
+           one the constant scrutinee names — a three-variant sum with a single arm is rejected just
+           as a two-variant one is.")
+  (input  (match (Sign.Pos unit) ((Sign.Pos _) 1)))
+  (error  CDZ0210))
 
 (case "nested patterns deconstruct recursively"
   (doc    "Witnesses core-semantics.md #Pattern Matching: patterns can nest — a constructor pattern
@@ -115,6 +345,87 @@
             ((None _) "none")))
   (output (: "zero" String)))
 
+(case "a literal inside a constructor pattern matches a runtime payload"
+  (doc    "core-semantics.md #Pattern Matching + #Matching Is Exhaustive Or Rejected: a literal nested
+           inside a constructor pattern must be tested against the payload's RUNTIME value, exactly as
+           a top-level literal pattern is. Here the payload `n` is a function parameter (not known at
+           compile time); `(Some n)` with n=0 must match `(Some 0)` and yield 100, not fall through to
+           the binding arm `(Some k)`. Companion to \"nested patterns with literals\" above, whose
+           scrutinee `(Some 0)` is a compile-time constant — this one pins the same refinement when the
+           payload is only known at run time.")
+  (input  (module m
+            (def (f n) (match (Some n) ((Some 0) 100) ((Some k) k)))
+            (def (main) (f 0))))
+  (output (: 100 Int64)))
+
+(case "a non-matching literal inside a constructor pattern binds the runtime payload"
+  (doc    "The companion of the case above: with n=7 the literal arm `(Some 0)` does not match, so the
+           binding arm `(Some k)` binds k=7 and yields 7. Confirms the nested literal is a genuine
+           runtime test (matching for 0, falling through otherwise) rather than always-taken or
+           always-skipped.")
+  (input  (module m
+            (def (f n) (match (Some n) ((Some 0) 100) ((Some k) k)))
+            (def (main) (f 7))))
+  (output (: 7 Int64)))
+
+(case "a literal inside a tuple pattern matches a runtime element"
+  (doc    "core-semantics.md #Pattern Matching: the same refinement inside a tuple pattern. `(tuple n
+           9)` with a runtime n; the arm `(tuple 0 y)` matches only when the first element is 0. With
+           n=0 it matches and yields 100; the literal element is tested against the runtime value, not
+           treated as a binder.")
+  (input  (module m
+            (def (f n) (match (tuple n 9) ((tuple 0 y) 100) ((tuple x y) x)))
+            (def (main) (f 0))))
+  (output (: 100 Int64)))
+
+; --- A tuple pattern's arity must match the scrutinee's tuple arity ----------------------
+; core-semantics.md #A Tuple Is Deconstructible By Pattern Matching (`(tuple a b)` binds the
+; elements): a tuple pattern deconstructs a tuple of the SAME arity. A pattern `(tuple a b c)` has a
+; three-element tuple shape, which can NEVER match a two-element tuple scrutinee — the pattern and
+; scrutinee shapes are statically incompatible, a type error (CDZ0201), exactly as a `(Some x)`
+; pattern against an Int64 scrutinee is. A wrong-arity tuple pattern is ill-typed, not a runtime
+; non-match: the compiler rejects it, and a generation that does not yet check a tuple pattern's
+; arity against the scrutinee's declines rather than running the program (reject-don't-miscompile).
+
+(case "a tuple pattern of the wrong arity is a type error"
+  (doc    "`(tuple a b c)` is a three-element tuple pattern; the scrutinee `(tuple 1 2)` is a
+           two-tuple. A three-element pattern can never match a two-element tuple — their shapes are
+           statically incompatible, so the arm is ill-typed and the compiler MUST reject the match
+           (CDZ0201). Pins that a tuple pattern's arity is checked against the scrutinee's, not
+           silently failed.")
+  (input  (match (tuple 1 2) ((tuple a b c) a) (_ 0)))
+  (error  CDZ0201))
+
+(case "a one-element tuple pattern against a two-tuple is a type error"
+  (doc    "The other direction: `(tuple a)` is a one-element tuple pattern, which cannot match the
+           two-tuple `(tuple 1 2)` — a static shape mismatch, CDZ0201. Pins that BOTH too-many and
+           too-few pattern elements are a type error, not a runtime non-match.")
+  (input  (match (tuple 1 2) ((tuple a) a) (_ 0)))
+  (error  CDZ0201))
+
+; A pattern's KIND must also match the scrutinee's kind, not only a tuple's arity: a tuple pattern
+; against a SUM scrutinee (or a sum/constructor pattern against a tuple) is a static shape mismatch.
+; A `(tuple a b)` pattern deconstructs a tuple; a `Some`/`Ok`/`Sign.Pos` value is a sum, so the tuple
+; pattern can never match it — CDZ0201, the same shape-mismatch class as a wrong-arity tuple pattern
+; or a type-mismatched literal pattern above. (A literal pattern vs a sum/tuple scrutinee, and a
+; constructor pattern vs a tuple/scalar scrutinee, are already rejected; this pins the tuple-pattern-
+; vs-sum-scrutinee direction.)
+
+(case "a tuple pattern against a sum scrutinee is a type error"
+  (doc    "`(tuple a b)` is a tuple pattern; the scrutinee `(Some 5)` is a sum value. A tuple pattern
+           deconstructs a tuple, so it can never match a sum — the arm's shape is statically
+           incompatible with the scrutinee, a type error (CDZ0201). Pins the pattern-KIND check
+           (tuple vs sum), the companion of the tuple-ARITY check above.")
+  (input  (match (Some 5) ((tuple a b) a) (_ 0)))
+  (error  CDZ0201))
+
+(case "a tuple pattern against a Sign scrutinee is a type error"
+  (doc    "The companion with a user-facing sum: `(Sign.Pos unit)` is a sum value, so a `(tuple a b)`
+           pattern against it is a shape mismatch (CDZ0201). Pins that the tuple-pattern-vs-sum check
+           holds for every sum, not only Option.")
+  (input  (match (Sign.Pos unit) ((tuple a b) a) (_ 0)))
+  (error  CDZ0201))
+
 (case "deeply nested pattern matching"
   (doc    "The compiler pattern-matches over nested AST: a list node containing a name node.
            Patterns nest arbitrarily deep.")
@@ -127,3 +438,140 @@
                 ((Expr.Add (tuple (Expr.Lit a) (Expr.Lit b))) (+ a b))
                 ((Expr.Add _) 0)))))
   (output (: 3 Int64)))
+
+; --- Matching a RUNTIME scrutinee ---------------------------------------------------
+; Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected for scrutinees whose
+; value is NOT known at compile time — a function parameter or a computed expression. The
+; matching arm must be selected from the scrutinee's RUNTIME value, exactly as when the
+; scrutinee is an inline literal (cases above). These are core (functions + match are core):
+; the compiler that dispatches instruction opcodes matches on runtime-computed byte values.
+
+(case "an integer literal pattern matches a runtime scrutinee"
+  (doc    "The scrutinee `n` is a function parameter — its value (0) is not known until run
+           time. The first arm's literal pattern 0 must match the runtime value 0 and select
+           its body, exactly as it would for an inline literal scrutinee. This is the base-case
+           dispatch every recursive function over integers relies on.")
+  (input  (module m
+            (def (classify n) (match n (0 100) (1 200) (else 900)))
+            (def (main) (classify 0))))
+  (output (: 100 Int64)))
+
+(case "a runtime scrutinee selects a non-first literal arm"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: arms are tried top-to-bottom
+           and the first whose pattern matches the runtime value wins. Here the runtime value 2
+           skips the 0 and 1 arms and selects the 2 arm — not the else.")
+  (input  (module m
+            (def (classify n) (match n (0 10) (1 20) (2 30) (else 99)))
+            (def (main) (classify 2))))
+  (output (: 30 Int64)))
+
+(case "a negative integer literal pattern matches a runtime scrutinee"
+  (doc    "A negative literal pattern matches by equality against the runtime value, like any
+           other integer literal.")
+  (input  (module m
+            (def (classify n) (match n (-1 100) (else 200)))
+            (def (main) (classify -1))))
+  (output (: 100 Int64)))
+
+(case "an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected + #Bindings Introduced By A
+           Pattern Are Scoped To Its Branch: a bare name pattern `k` matches anything and binds
+           the whole scrutinee, but only if reached. With the runtime value 0, the earlier
+           literal arm `0` matches first, so the name arm is never entered.")
+  (input  (module m
+            (def (f n) (match n (0 100) (k (+ k 1))))
+            (def (main) (f 0))))
+  (output (: 100 Int64)))
+
+(case "a name pattern binds the runtime scrutinee when no literal arm matches"
+  (doc    "The companion to the case above: with the runtime value 41 no literal arm matches,
+           so the name arm `k` binds k=41 and its body computes 42. Confirms the name arm and
+           the literal arm are selected consistently from the same runtime value.")
+  (input  (module m
+            (def (f n) (match n (0 100) (k (+ k 1))))
+            (def (main) (f 41))))
+  (output (: 42 Int64)))
+
+(case "a match on a computed runtime value dispatches on the result"
+  (doc    "The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 for an
+           even n) selects the literal arm 0. Exercises a match whose scrutinee is neither a
+           literal nor a variable but an arbitrary runtime expression — the parity dispatch a
+           LEB128 encoder performs.")
+  (input  (module m
+            (def (parity n) (match (% n 2) (0 0) (_ 1)))
+            (def (main) (parity 4))))
+  (output (: 0 Int64)))
+
+(case "a match on a record-field-access scrutinee dispatches on the field value"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected + #Member Access Projects A Record
+           Field: the match scrutinee is `(. r n)`, a member access whose value is 5. The literal arm
+           5 must match that value and yield 100 — the scrutinee's value is what is matched, whether it
+           is written as a literal, a variable, an arithmetic expression, or a field projection.
+           (Binding the field to a name first and matching that already works; matching the projection
+           directly must behave identically.)")
+  (input  (let ((r (record (n 5))))
+            (match (. r n)
+              (5 100)
+              (_ 200))))
+  (output (: 100 Int64)))
+
+(case "a match on a tuple-element-access scrutinee dispatches on the element value"
+  (doc    "The tuple companion of the case above: the scrutinee `(tuple.0 t)` projects element 0 (value
+           5), which the literal arm 5 must match, yielding 100. A positional access is a scrutinee
+           value like any other.")
+  (input  (let ((t (tuple 5 9)))
+            (match (tuple.0 t)
+              (5 100)
+              (_ 200))))
+  (output (: 100 Int64)))
+
+(case "a match on a record field selects a later literal arm"
+  (doc    "Confirms the field-access scrutinee is matched against EACH literal arm, not just skipped to
+           the wildcard: with r.n = 6, the 5 arm is passed over and the 6 arm selected, yielding 300.")
+  (input  (let ((r (record (n 6))))
+            (match (. r n)
+              (5 100)
+              (6 300)
+              (_ 200))))
+  (output (: 300 Int64)))
+
+(case "a nested match on a runtime scrutinee"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: a match body may itself be a
+           match on the same runtime scrutinee. Both selections are driven by the runtime value
+           0, so the inner match's 0 arm is chosen and the result is 7.")
+  (input  (module m
+            (def (f n) (match n (0 (match n (0 7) (_ 8))) (_ 9)))
+            (def (main) (f 0))))
+  (output (: 7 Int64)))
+
+(case "a runtime scrutinee matching no arm traps"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: a match on an Int64 arming only 1
+           and 2, with no wildcard/else, cannot be proven to cover every Int64 value, so it is
+           non-exhaustive and the compiler MUST reject it at compile time (CDZ0210) rather than emit a
+           component that could trap at run time. The rejection is the recorded outcome; the program
+           does not run.")
+  (input  (module m
+            (def (f n) (match n (1 10) (2 20)))
+            (def (main) (f 3))))
+  (error  CDZ0210))
+
+(case "a boolean literal pattern matches a runtime scrutinee"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected over the two Bool values, with
+           the scrutinee a runtime function parameter. `not` is a total match on true/false —
+           exhaustive, so no else is needed and no generation rejects it.")
+  (input  (module m
+            (def (negate b) (match b (true false) (false true)))
+            (def (main) (negate true))))
+  (output (: false Bool)))
+
+(case "a match on a runtime integer scrutinee producing a boolean"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: the scrutinee is a runtime integer
+           but the arm bodies are Bool — a match is an expression of whatever type its arms yield,
+           not restricted to the scrutinee's type. `is-zero` maps 0 → true, else → false; is-zero(0)
+           = true. The Bool result must cross the run boundary as the program's value (compare the
+           Bool-returning function cases in 09-functions.sexp — same result-kind requirement, reached
+           through a match rather than a call).")
+  (input  (module m
+            (def (is-zero n) (match n (0 true) (_ false)))
+            (def (main) (is-zero 0))))
+  (output (: true Bool)))

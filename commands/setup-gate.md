@@ -110,7 +110,7 @@ conformance-gate.md §"A Behavior Requirement Is Covered Only By Execution" and
 §"A Cited Behavioral Test Is Sensitive To Its Requirement" mean a citation whose
 test does not run the behavior and fail when it breaks does not discharge the
 requirement. For a behavioral requirement, the discharging path is a
-`spec/semantics/*.sexp` case that the reference interpreter executes to its recorded
+`spec/semantics/*.sexp` case that the generation derives and runs to its recorded
 output (the behavior gate — see `commands/gate.md`); the duvet `type=test` citation
 points at the code path that runs it.
 

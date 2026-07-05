@@ -10,16 +10,18 @@ its recorded output on a promoted compiler (see
 This corpus exists because earlier Cadenza let the meaning of the language live in several places at
 once — an interpreter, a separate document, a generated implementation, and a formal model — which
 drifted apart (see [learnings/2026-07-02-parallel-semantics-drifted.md](../learnings/2026-07-02-parallel-semantics-drifted.md)).
-There is now one place a construct's meaning lives, and it is runnable. The reference interpreter
-(see [capabilities/self-hosting-and-bootstrap.md](../capabilities/self-hosting-and-bootstrap.md)) is
-the realization of this corpus and the behavioral oracle; the compiler and every tool agree with it.
+There is now one place a construct's meaning lives, and it is runnable. This corpus itself is the
+behavioral oracle: its recorded results are the authority the compiler and every tool agree with. A
+reference interpreter (see
+[capabilities/self-hosting-and-bootstrap.md](../capabilities/self-hosting-and-bootstrap.md)) is an
+optional, independent realization that MAY cross-check those results, not the oracle.
 
 ## The form: s-expression cases
 
 Each case is an **s-expression**, so the whole corpus is parseable by a minimal reader — the seed
-toolchain needs only an s-expression reader plus the reference interpreter to run the behavior gate,
-not the full surface parser. This is deliberately the easiest thing to bootstrap. Cases live in
-`NN-feature.sexp` files, one feature per file.
+toolchain needs only an s-expression reader to run the behavior gate, not the full surface parser.
+This is deliberately the easiest thing to bootstrap. Cases live in `NN-feature.sexp` files, one
+feature per file.
 
 A case is a small fixed test-DSL vocabulary wrapping program fragments that are themselves written in
 Cadenza's **canonical homoiconic representation** (see [`options/code-shape/`](../../options/code-shape/)):
@@ -30,8 +32,9 @@ Cadenza's **canonical homoiconic representation** (see [`options/code-shape/`](.
   (output (: 5 Int64)))
 
 (case "no implicit promotion between numeric types"
-  (input  (+ 2 2.0))
-  (error  CDZ0301))
+  (input    (+ 2 2.0))
+  (trap     "numeric type mismatch")
+  (compiler (error CDZ0301)))
 
 (case "a documented case"
   (doc    "Notes for humans and agents; part of the case, not stripped.")
@@ -41,17 +44,18 @@ Cadenza's **canonical homoiconic representation** (see [`options/code-shape/`](.
 
 ### The test-DSL vocabulary
 
-Each case has one `input`, one **interpreter terminal clause** (the primary result — the behavior of
-the one executable semantics, which is the oracle), and optional annotations. The corpus is **one flat
-set**: differences between generations are annotated *inline* rather than split into separate files, so
-there is exactly one place a construct's meaning lives.
+Each case has one `input`, one **primary result clause** (the recorded behavior of the one executable
+semantics, which is the oracle), and optional annotations. The corpus is **one flat set**: differences
+between generations are annotated *inline* rather than split into separate files, so there is exactly
+one place a construct's meaning lives.
 
 - `(case "<description>" <clause>...)` — one case; the description is a short human/agent-readable label.
 - `(input <program>)` — the program to run, in the canonical representation.
 - `(doc "<text>")` — optional prose attached to the case; documentation, never affecting the check.
 
-**Primary result clause — exactly one, the oracle.** This is what the reference interpreter produces
-for `input`; every generation reproduces it for the cases it runs. Usually a *terminal clause* — the
+**Primary result clause — exactly one, the oracle.** This is the recorded result the corpus fixes for
+`input`; every generation that runs the case reproduces it, and the corpus's recorded value — not any
+one implementation — is the authority (constitution §IX; §XIV). Usually a *terminal clause* — the
 outcome of running the program:
 - `(output <value-form>)` — the value the run produces on normal termination.
 - `(trap "<reason>")` — the run halts at a defined point with this reason (for example, a checked overflow).
@@ -59,47 +63,71 @@ outcome of running the program:
   condition, distinct from a normal result and a trap — core-semantics.md §"A Program Terminates In
   Exactly One Terminal Condition").
 
-For a program the interpreter's own front-end refuses **before** running it — a rejection that needs
-no type system, namely an unbound name (core-semantics.md §"Binding Is Lexical") or an undeclared
-capability (capabilities-and-effects.md §"Undeclared Capability Is A Compile-Time Error", the
-mandatory floor) — the primary clause is instead:
-- `(error <CODE>)` — the diagnostic code the compile-time rejection carries (from the pinned registry,
-  [`options/diagnostics-schema/`](../../options/diagnostics-schema/)). This is a rejection *every*
-  generation makes, including the dynamic seed, because scope resolution and the capability floor are
-  intrinsic to evaluation and do not require static typing — distinct from the `(compiler …)`
-  annotation below, which only a *typed* generation checks.
+For a program the compiler **rejects at compile time** rather than runs — whether the rejection needs
+no type system (an unbound name, core-semantics.md §"Binding Is Lexical", or an undeclared capability,
+capabilities-and-effects.md §"Undeclared Capability Is A Compile-Time Error") or is a type rejection (a
+nominal-boundary comparison, a numeric mismatch, a non-exhaustive match, a contradicting annotation) —
+the primary clause is instead:
+- `(error <CODE>)` — the diagnostic code the rejection carries (from the pinned registry,
+  [`options/diagnostics-schema/`](../../options/diagnostics-schema/)). A rejection is the program's
+  recorded outcome: an ill-typed or ill-formed program has no run and therefore no terminal value, so
+  the corpus records the rejection itself rather than what some evaluator might have produced had the
+  program run. Cadenza has one implementation kind — a compiler — so there is no second, dynamic
+  outcome to record.
 
 **Observation clause — optional.**
-- `(events <event>...)` — the exact ordered sequence of events the run emits, each `<event>` written
-  `(event <kind> <payload-value-form>)`; part of observable behavior (core-semantics.md §"Emitted
-  Events Are Ordered And Part Of Observable Behavior"). `(events)` asserts none was emitted.
+- `(host-calls <call>...)` — the exact ordered sequence of host calls the run makes, each `<call>`
+  written `(call <fn> <arg-value-form>...)` where `<fn>` names an imported host function; part of
+  observable behavior (core-semantics.md §"Host Calls Are Ordered And Part Of Observable Behavior").
+  `(host-calls)` asserts none was made. Which host functions exist is the target's concern, not the
+  language's; a case names whatever WIT-typed host function it imports (see the `(import (host …))`
+  form below).
 
-**Generation-divergence annotations — optional, inline.**
-- `(compiler (error <CODE>))` — a generation with a static front-end **rejects** this `input` at
-  compile time with this diagnostic code (from the pinned registry,
-  [`options/diagnostics-schema/`](../../options/diagnostics-schema/)) *instead of* running it to the
-  interpreter terminal clause. A generation that realizes static typing checks this clause; a dynamic
-  generation (the seed) ignores it and checks the interpreter clause. The compiler may diverge **only
-  by rejecting** — if it runs a program at all, it MUST agree with the interpreter (constitution §XIV
-  oracle agreement), so there is no `(compiler (output …))`.
+**Host-response fixture — optional.**
+- `(host-responses <respond>...)` — the response each host call returns, supplied in call order, each
+  `<respond>` written `(respond <fn> <value-form>)`. Because a run's behavior is a deterministic
+  function of its input **and the responses to its host calls**, a case whose program consumes a host
+  call's return value fixes those responses here so the recorded result is reproducible. A host call
+  whose WIT signature returns unit needs no `respond`. This fixture is exactly the replay log the host
+  owns under the suspend-replay boundary (capabilities-and-effects.md §"Suspension Is Replay From The
+  Host's Log"): every generation feeds the responses in order and reproduces the recorded terminal.
+
+**Importing a host function.** A program that makes a host call declares the function it imports with a
+complete WIT-typed signature, so the compiler can emit the import into the component's world
+(host-interface-binding.md §"A Host Import Is A WIT-Typed Function The Manifest Enumerates"):
+`(import (host <name> (func (<param-type>...) <result-type>)))` inside a module, declared alongside
+`(use (capability <name>))`.
+
+**Incremental realization.** A `(error <CODE>)` primary is the outcome every generation must
+eventually produce, but the static-typing floor is realized **incrementally** over the type rules a
+generation's compiler covers (constitution §VII; Amendment 0.4.0). For a rule it does not *yet* cover,
+a generation MUST **decline** — refuse to derive a component — rather than run the ill-typed program to
+a wrong value (reject-don't-miscompile,
+[`spec/learnings/2026-07-03-decline-do-not-miscompile.md`](../learnings/2026-07-03-decline-do-not-miscompile.md)).
+The differential gate treats a decline as *todo*, not as disagreement, so a green gate still means
+every program a generation *does* compile agrees with the recorded outcome. There is no separate
+"dynamic" outcome recorded alongside the rejection: the `(error <CODE>)` clause is the whole story.
+
+**Generation-divergence annotation — optional, inline.**
 - `(needs <capability>)` — the `input` requires a capability to be evaluated at all (e.g.
-  `numeric-model` for rational/float arithmetic). A generation runs the case only if it realizes
-  `<capability>` (conformance-gate.md §"A Generation Is Judged Against The Capabilities It Realizes";
-  `options/realized-capability-set/`). A case with no `(needs …)` is core — every generation, including
-  the seed, runs it.
+  `numeric-model` for rational/float arithmetic, `effects` for the algebraic-handler layer). A
+  generation runs the case only if it realizes `<capability>` (conformance-gate.md §"A Generation Is
+  Judged Against The Capabilities It Realizes"; `options/realized-capability-set/`). A case with no
+  `(needs …)` is core — every generation, including the seed, runs it.
 
 The result value form is `(: <value> <Type>)` — a value paired with its type — serialized under the
 canonical value form ([`contracts/deterministic-value-form.md`](../contracts/deterministic-value-form.md)),
 so a case's expected output is byte-exact. A case that carries neither `(compiler …)` nor `(needs …)`
-is one where the compiler and interpreter agree and every generation realizes it — the common case,
-and the concrete meaning of "a well-typed program does not go wrong."
+is one every generation realizes and reproduces from the recorded oracle — the common case, and the
+concrete meaning of "a well-typed program does not go wrong."
 
 ## Authoring rules
 
-- **A case is executable.** Every case must be runnable by the reference interpreter and carry a
-  definite primary result clause — a terminal clause (`output`, `trap`, `exhausted`) or a front-end
-  `error` (unbound name or undeclared capability) — optionally with an `events` observation and inline
-  `(compiler …)` / `(needs …)` annotations; a case with no definite primary result is not a case.
+- **A case is executable.** Every case must be runnable — by a compiled component, and optionally by a
+  reference interpreter — and carry a definite primary result clause — a terminal clause (`output`,
+  `trap`, `exhausted`) or a front-end `error` (unbound name or undeclared capability) — optionally with
+  a `host-calls` observation, a `host-responses` fixture, and inline `(compiler …)` / `(needs …)`
+  annotations; a case with no definite primary result is not a case.
 - **A case covers one behavior.** Prefer many small cases over one large program, so a behavior-gate
   failure names the construct that broke.
 - **The corpus is complete per realized capability.** Every behavioral requirement of a capability a
@@ -113,25 +141,28 @@ and the concrete meaning of "a well-typed program does not go wrong."
 
 A generation's behavior gate runs the cases whose required capabilities it **realizes**, not every
 case ever authored (conformance-gate.md §"A Generation Is Judged Against The Capabilities It Realizes";
-`options/realized-capability-set/`). Because divergence is annotated inline, this is a per-case filter,
-not a directory split:
+`options/realized-capability-set/`). This is a per-case filter, not a directory split:
 
 - A case with **no** `(needs …)` is core — every generation runs it, including the seed.
 - A case with `(needs <capability>)` runs only on a generation that realizes `<capability>`.
-- The **interpreter** terminal clause (`output`/`trap`/`exhausted`) is the oracle every running
-  generation must reproduce.
-- A `(compiler (error …))` annotation is checked **only** by a generation that realizes static
-  typing; a dynamic generation (the seed — constitution §VII bootstrap carve-out;
-  `../learnings/2026-07-02-seed-is-a-dynamic-interpreter.md`) ignores it and checks the interpreter
-  clause. So the same case, e.g. mixed-type arithmetic `(+ 2 2.0)`, records **both** the seed's runtime
-  `(trap "numeric type mismatch")` and the typed generation's `(compiler (error CDZ0301))` — in one
-  place, not two files.
+- A `(output …)` / `(trap …)` / `(exhausted)` primary clause is the recorded result every running
+  generation must reproduce when it runs the program.
+- An `(error <CODE>)` primary clause is the rejection every generation that covers the relevant rule
+  must produce; a generation that does not yet cover the rule **declines** (reject-don't-miscompile)
+  and the gate scores that as todo, not disagreement. So mixed-type arithmetic `(+ 2 2.0)` records the
+  single outcome `(error CDZ0301)` — the rejection is the behavior, not a footnote to a value the
+  program never produces.
 
-The **seed** thus runs: every `(needs …)`-free case, checking interpreter clauses and the capability
-floor, and ignoring `(compiler …)` annotations. It is a dynamic tree-walking interpreter, so it
-realizes evaluation, binding, control flow, runtime matching, structural equality, traps, observable
-behavior, the mandatory capability floor, and the primitive value forms — and nothing that a
-`(needs …)` or `(compiler …)` marks as a later generation's.
+The **seed** is a compiler that realizes the static-typing floor incrementally
+(constitution §VII; Amendment 0.4.0;
+`../learnings/2026-07-04-static-typing-is-mandatory-post-pivot.md`). It thus runs every
+`(needs …)`-free case: producing the `(error <CODE>)` rejection where a case records one for a rule it
+covers, reproducing the terminal clause otherwise, and enforcing the capability floor. It
+realizes lowering, binding, control flow, matching, structural equality, the static-typing floor,
+runtime traps that survive type-checking (overflow, division by zero, index out of bounds,
+exhaustion), observable behavior, and the primitive value forms — and nothing that a `(needs …)`
+marks as a later generation's, nor a type rule it does not yet cover (which it declines rather than
+miscompiles).
 
 ## Files
 
@@ -140,16 +171,18 @@ differences are inline annotations, not separate files. It grows as capabilities
 
 - `01-literals.sexp` — literals and their types
 - `02-binding-and-control.sexp` — lexical binding, shadowing, `do` sequencing (in-order evaluation, last-form value), conditionals, pattern bindings, unbound-name rejection
-- `03-equality-and-observation.sexp` — structural/float equality, ordering, emitted events, resource-measure exhaustion
-- `04-capabilities.sexp` — the mandatory capability-declaration floor and undeclared-capability rejection
+- `03-equality-and-observation.sexp` — structural/float equality, ordering, ordered host calls, resource-measure exhaustion
+- `04-capabilities.sexp` — the mandatory capability-declaration floor: a program imports WIT-typed host functions, reaching an undeclared one is rejected, an empty manifest is pure, and a response-returning host call fixes its response with `(host-responses …)`
 - `05-compound-types.sexp` — records, sum types, lists, maps; member access (the `.` accessor: field read, non-record trap, missing-field trap); structural equality (runtime) with `(compiler …)` for the static nominal/structural and exhaustiveness rejections
 - `06-numeric-model.sexp` — checked `Int64` core; `(compiler …)` for compile-time no-promotion; `(needs numeric-model)` for rational/wrapping/floating-point arithmetic
-- `07-type-system.sexp` — annotation-vs-inference and ill-typedness, as `(compiler …)` divergences over inputs the dynamic interpreter still runs
-- `08-bootstrap-interpreter.sexp` — reader/printer round-trip and `eval` over a program's AST, as `(needs bootstrap-interpreter)` cases a later generation realizes
+- `07-type-system.sexp` — annotation-vs-inference and ill-typedness, as `(compiler …)` rejections the typed compiler makes; the primary clause records what an untyped dynamic evaluator would produce
+- `08-self-hosting-surface.sexp` — reader/printer round-trip over a program's AST, as `(needs self-hosting-surface)` cases a later generation realizes (no `eval`: the compiler needs AST construction, not execution)
 - `09-functions.sexp` — first-class functions and closures: `fn` values, application, closure capture, higher-order functions, recursion, and resource-measure exhaustion on unbounded recursion (core; the seed realizes these)
-- `10-bytes.sexp` — the `Bytes` byte-sequence value form (construction, equality, length, concatenation, total-or-trap indexing, out-of-range trap), tagged `(needs bytes)`; the seed realizes it so the Cadenza-authored compiler can build a component's wasm bytes as an ordinary value (bootstrap.md §"The Compiler Is Authored In Cadenza, Not In The Seed"; `options/realized-capability-set/`)
+- `10-bytes.sexp` — the `Bytes` byte-sequence value form (construction, equality, length, concatenation, total-or-trap indexing, out-of-range trap), tagged `(needs bytes)`; the seed realizes it so the Cadenza-authored compiler can build a component's wasm bytes as an ordinary value (bootstrap.md §"The Self-Hosted Compiler Is Authored In Cadenza"; `options/realized-capability-set/`)
 - `11-modules.sexp` — single-module semantics: a module declaration binds its name in the enclosing scope (used via a `do` block, no `let` wrapping) to a record of its exports (each `def` a reachable export field), and carries its capability manifest and entry as metadata reached by a `(meta …)` key distinct from every export, so a declared capability is not an export and a like-named export and metadata key do not collide (core-semantics.md §Modules); multi-module composition (imports, visibility, cycles) is deferred beyond a single module (`options/realized-capability-set/`)
+- `14-effects-and-handlers.sexp` — suspend-and-replay across a host call (the host owns the response log; a run holds no resume state), an intra-program effect discharged by a handler that does not escape to the manifest, one-shot continuations, and purity as the empty row; `(needs effects)` cases a later generation realizes
+- `15-rows-and-open-sums.sexp` — row-polymorphic open records (a function open over a record's extra fields; subset comparison as explicit projection), open sums with a mandatory open-tail arm, and schema-typed payload decoding to a typed result; `(needs rows)` / `(needs open-sums)` cases a later generation realizes
 
-Planned as the capabilities they witness are filled in: documentation and
-comments (each a node the interpreter sees through, witnessing that it is semantically inert),
-verification.
+Planned as the capabilities they witness are filled in: traits as explicitly-passed dictionaries,
+documentation and comments (each a node the compiler sees through, witnessing that it is semantically
+inert), verification.

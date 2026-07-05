@@ -5,8 +5,8 @@
 ; options/realized-capability-set/seed-ignition-set.md). Tagged (needs bytes): the
 ; seed realizes this capability, so it runs these cases; a generation that does not
 ; realize Bytes skips them. Results are (: <value> <Type>); an out-of-range byte or
-; an out-of-bounds index is a runtime trap (total-or-trap), not a static rejection —
-; consistent with the dynamic seed (constitution §VII bootstrap carve-out).
+; an out-of-bounds index is a runtime trap (total-or-trap) that survives type-checking,
+; not a static rejection — the compiler emits a component that traps at that point.
 
 (case "a byte sequence is constructed from a list of integers in range"
   (doc    "Witnesses that the seed realizes a Bytes value form: Bytes.of maps a list of
@@ -47,10 +47,9 @@
   (output (: 8 Int64)))
 
 (case "constructing a byte sequence with a value out of range traps"
-  (doc    "Witnesses that a byte outside 0..=255 has no defined result for the dynamic
-           interpreter, so it traps rather than producing an unspecified value
-           (core-semantics.md #Partial Operations Have A Defined Outcome). 256 is out
-           of range.")
+  (doc    "Witnesses that a byte outside 0..=255 has no defined result, so the program
+           traps rather than producing an unspecified value (core-semantics.md #Partial
+           Operations Have A Defined Outcome). 256 is out of range.")
   (needs  bytes)
   (input  (Bytes.of (list 0 256)))
   (trap   "byte value out of range"))

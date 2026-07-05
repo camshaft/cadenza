@@ -25,41 +25,167 @@ A program that is not well-typed MUST be rejected at compile time rather than co
 
 ## Inference
 
-### Inference Yields The Most General Type
+### Inference Is Principal-Type Inference By Unification
 
-Where the type system determines an expression's type without an annotation, the determined type MUST be the most general type consistent with the expression's uses.
+Type inference MUST determine types by unification over type variables — solving the equality constraints a program's structure imposes — so that a type is derived from how each binding is used rather than assumed or guessed from a single use site.
 
-An unannotated program that has a valid typing MUST be accepted without requiring the author to write that typing.
+The type inference determines for an expression MUST be its principal type: the most general type from which every other valid type of that expression is an instance, so that inference commits to no more than the program's uses require.
+
+Inference MUST propagate a determined type to every occurrence of the binding it constrains, so that a parameter used in one position is typed consistently at every other occurrence and at every call site.
+
+A program for which unification has no solution — a use that imposes contradictory constraints on a type variable — MUST be rejected at compile time with the machine-readable code for the conflicting-use type error, rather than compiled.
+
+### A Let-Bound Definition Is Generalized
+
+A let-bound definition whose inferred type contains free type variables MUST be generalized over those variables, so that the definition may be used at different instantiations within its scope, consistent with the generics being type-valued parameters.
+
+A type variable that is constrained by an enclosing binding MUST NOT be generalized, so that generalization does not escape the scope in which a variable is still being solved.
+
+### An Unannotated Program Is Accepted When It Has A Valid Typing
+
+An unannotated program that has a valid typing MUST be accepted without requiring the author to write that typing, so that inference relieves the author of restating what the structure already determines.
 
 ### Annotations Constrain, Never Contradict
 
-An explicit type annotation MUST be checked against the type the system would otherwise determine.
+An explicit type annotation MUST participate in inference as an additional constraint unified with the type the system infers, rather than override it.
 
-A program whose annotation conflicts with the type the system determines MUST be rejected rather than have the annotation silently override inference.
+A program whose annotation cannot be unified with the type inference determines MUST be rejected rather than have the annotation silently replace the inferred type.
+
+### Inference And First-Class Types Meet At A Bidirectional Boundary
+
+Unification-based inference MUST range over a non-computational term core, so that the type variables inference solves never carry a computation whose reduction principal-type inference cannot decide.
+
+A position that binds a type-valued parameter MUST be a bidirectional-checking boundary, at which a type is either synthesized by monomorphization from the concrete type-value supplied or checked against an explicit annotation, rather than solved by unification, so that first-class computable types are reconciled with principal-type inference instead of contradicting it.
+
+### A Type Rejection Reports The Minimal Conflict At Both Sites
+
+A rejection for a failed unification MUST report the minimal unsatisfiable set of constraints rather than the first constraint that failed, so that the diagnostic names the actual conflict and not an arbitrary casualty of it.
+
+A rejection for a failed unification MUST name both source locations whose requirements disagree, rather than blame one site, so that an agent sees both ends of the contradiction that together are the route to a fix.
 
 ## The Declarable Type Universe
 
-### User Types Are Declarable As Nominal Or Structural
+### The Structural Types Are Record, Tuple, And Sum
 
-A program MUST be able to declare a nominal type whose identity is its declared name, distinct from any structurally identical type of a different name.
+A program MUST be able to form a structural type — a record of named fields, a tuple of positional elements, or a sum of named variants — whose identity is its shape, equal to any type of the same shape.
 
-A program MUST be able to declare a structural type whose identity is its shape, equal to any type of the same shape.
+A structural type's shape MUST be its constituent types in their defining positions — a record's field names with their types, a tuple's element types in order, a sum's variant names with their payload types — so that two structural types are equal exactly when those constituents coincide.
 
-### Sum Types Are Declarable, Constructed, And Deconstructed
+### Records Are Rows, Open By Default Under Inference
 
-A program MUST be able to declare a sum type as a set of named variants, each optionally carrying data.
+A record type MUST be expressible as a row — a set of field-name-to-type associations that MAY carry a row variable standing for the fields not named — so that a function can accept any record that has at least the fields it uses.
+
+A function that uses only some of a record's fields MUST be inferrable at a row type open over the fields it does not use, so that row polymorphism, not a fixed record shape, is what inference assigns where the program does not pin the shape.
+
+The row variable of an open record type MUST be resolved to a closed set of fields before the value crosses a component boundary, so that the emitted component carries a concrete record shape and no row variable (consistent with monomorphization and the component ABI).
+
+Comparison of two records MUST remain a comparison of closed shapes: a program that compares a subset of one record against another MUST first project the compared fields explicitly and compare the projections, rather than rely on an equality overloaded to ignore extra fields, so that `=` is never silently widened by row polymorphism.
+
+### The Effect Row Is A Row Over The Same Machinery
+
+A function's effect row MUST be tracked by the same row machinery as an open record, so that principal-type inference over effects reuses row unification rather than a separate effect-inference system.
+
+A function polymorphic over its effect row MUST have that row resolved to a closed set — the empty row for a pure function — before it crosses a component boundary, so that the emitted component's import world is exactly the manifest and carries no effect-row variable (host-interface-binding.md §The Manifest Is A Projection Of The Escaping Effect Row).
+
+### Nominal Is An Orthogonal Modifier Over Any Structural Type
+
+A program MUST be able to declare a nominal type by tagging any structural type — record, tuple, or sum — with a name, so that nominal-versus-structural is one orthogonal choice available over every structural type rather than a property of one kind of type.
+
+A nominal type MUST be represented as its underlying structural value together with a compile-time tag naming the type, so that a nominal type and its underlying structural type are one runtime mechanism and the tag adds nothing to the value's runtime representation.
+
+A nominal type's identity MUST be its fully-qualified name — the module path in which it is declared together with its declared name — so that its identity is unique across the whole program and does not depend on its shape.
+
+Two nominal types MUST be distinct whenever their fully-qualified names differ, even when their underlying structures and their declared local names are identical, so that a module cannot forge a value of another module's nominal type by re-declaring a same-shape same-name type.
+
+### Nominal Types Are Not Comparable Across Their Boundary
+
+A comparison whose operands are of two different nominal types MUST be rejected by a type-tracking generation, because the purpose of declaring a type nominal is to give its values an identity that is not interchangeable with a same-shape value of another type.
+
+A comparison between a nominal value and the underlying structural value of the same shape MUST be rejected by a type-tracking generation, so that a nominal value never silently compares equal to the untagged shape it was declared distinct from.
+
+An untyped evaluation that does not track the name tag MUST compare two values by their shared structure alone, giving two same-shape values a defined outcome of equal, so that the dynamic semantics recorded for such a comparison is total where a type-tracking generation instead rejects the comparison as a type error.
+
+### A Nominal Value Is Convertible To Its Underlying Structural Value
+
+A program MUST be able to strip a nominal type's name tag to obtain the underlying structural value, so that a value declared nominal can be compared or used structurally when the program explicitly asks for it rather than silently.
+
+The stripped structural value MUST be the same value the nominal value already is at runtime, so that removing the tag is a compile-time reinterpretation and not a copy or conversion of the value.
+
+### Structural Values Are Comparable Only When Their Shapes Match
+
+Two records MUST be comparable only when their sets of field names are identical, two tuples only when their lengths are identical, and two sums only when their variant sets are identical, because values of different shapes have no meaningful equality.
+
+A comparison of two structural values whose shapes differ MUST be rejected by a type-tracking generation as a type error rather than reported as unequal, so that a shape mismatch is caught rather than answered.
+
+An untyped evaluation that does not track types MUST give such a mismatched comparison a defined dynamic outcome of not-equal rather than trapping, so that the dynamic semantics recorded for such a comparison is total while a type-tracking generation rejects the comparison earlier.
+
+### Sum Types Are Constructed And Deconstructed
 
 A value of a sum type MUST be constructed through one of its variants.
 
 A value of a sum type MUST be deconstructed only through a match that the exhaustiveness rule governs.
 
-### Generics Are Parameterized And Monomorphized
+### A Match Is Exhaustive Against The Sum Type's Variant Set
 
-A definition MUST be able to take type parameters so that it applies to more than one concrete type.
+The exhaustiveness rule governing a match MUST be checked against the scrutinee sum type's variant set, so that a match covering fewer than all variants is a compile-time rejection determined by that variant set rather than a runtime outcome.
 
-A type parameter MUST be able to carry the constraints the definition's body requires of it.
+### A Sum Type May Be Open, With A Mandatory Open-Tail Arm
 
-The compiler MUST monomorphize a generic definition to concrete types before it crosses a component boundary, consistent with the component ABI.
+A program MUST be able to declare an open sum — a variant set that MAY carry a row variable standing for variants not named — so that a value can range over an extensible vocabulary of variants the declaring module does not close, dual to an open record's extensible field set.
+
+A match on an open sum MUST carry an open-tail arm covering the variants not named, and a match that omits it MUST be a compile-time rejection, so that exhaustiveness holds for an open sum exactly as it does for a closed one and an unknown variant is handled rather than unmatched.
+
+A closed sum MUST remain the default: a sum declared without a row variable is closed, and the abstract syntax tree type MUST be a closed sum, so that a compiler's match over the AST is checked against a fixed, known variant set.
+
+### An Open Sum's Payload May Be Schema-Typed
+
+A program MUST be able to decode an open sum variant's payload against a schema resolved at run time, yielding a typed result rather than raw bytes, so that an extensible-vocabulary value carries a payload the program can use after a checked decode.
+
+A payload decode that does not match its schema MUST yield a typed failure result rather than a trap, so that a program folding an open vocabulary handles a malformed or unknown payload as data rather than halting.
+
+### The Abstract Syntax Tree Is An Ordinary Sum Type
+
+The abstract syntax tree type MUST be an ordinary sum type of the language — a variant per syntactic form (an integer, a float, a string, a boolean, a name, and a list of child nodes) with the list variant carrying a list of the same type — rather than a primitive the type system special-cases.
+
+The AST sum type MUST be constructed and deconstructed by the same variant-construction and match mechanisms as any other sum type, so that a compiler written in the language walks a program as data with no reflection primitive.
+
+### Types Are First-Class Values Whose Type Is The Type Of Types
+
+A type MUST be expressible as an ordinary first-class value that can be bound, passed, and returned, so that the language needs no separate term-and-type syntax to name a type.
+
+The type of a type-value MUST be the type of types, so that the kind level is itself a type in the system rather than an untyped meta-level.
+
+### Generics Are Type-Valued Parameters, Not A Separate Polymorphism Mechanism
+
+A generic definition MUST be expressed as an ordinary definition that takes type-valued parameters, so that generics reuse the first-class-type machinery rather than introducing a separate parametric-polymorphism construct.
+
+A type parameter MUST be resolvable to a concrete type at compile time, so that a type-value never flows from runtime data into a position that determines a type.
+
+A generic type constructor — a type parameterized by another type, such as a list of a given element type or an optional of a given type — MUST be a compile-time function from types to a type, applied by ordinary application, so that a parameterized type like an optional integer is the result of applying a type constructor rather than special syntax.
+
+### A Generic Constraint Is A Compile-Time Predicate Over Type-Values
+
+A type parameter's constraint MUST be expressed as a compile-time predicate over the type-value bound to the parameter, so that constraint checking reuses compile-time evaluation rather than a separate trait-resolution system.
+
+The compiler MUST reject a generic instantiation whose type argument fails the parameter's constraint, with the machine-readable diagnostic code for the unsatisfied constraint, so that a constraint violation is a compile-time rejection rather than a runtime failure.
+
+### Ad-Hoc Polymorphism Is An Explicitly Passed Dictionary
+
+A trait MUST be an ordinary record type whose fields are the operations it declares, and an instance MUST be an ordinary value of that record type, so that ad-hoc polymorphism reuses records and first-class values rather than a separate trait construct.
+
+A definition that is polymorphic over a trait MUST receive the instance as an ordinary explicit parameter, so that ad-hoc polymorphism is the existing type-valued-and-value-valued parameter mechanism rather than a separate resolution engine.
+
+The compiler MUST NOT resolve a trait instance from ambient or global scope, so that which implementation a use site gets is visible at the call and no orphan rule or global-coherence assumption is needed for ad-hoc polymorphism to compose with content-addressed modules.
+
+An explicitly passed instance MUST be monomorphized into the use site, so that a component carries no runtime dictionary lookup and no dispatch the manifest did not declare.
+
+An implicit resolution of a trait instance MAY be offered only as an optional elaboration that provably rewrites to the explicit passing above without changing emitted bytes, so that the mandatory mechanism stays explicit and any convenience layer is meaning-preserving.
+
+### A Generic Definition Is Monomorphized Before The Component Boundary
+
+The compiler MUST monomorphize a generic definition — specialize it to each concrete set of type arguments it is used with, by compile-time reduction with those type-values bound — before the definition crosses a component boundary, consistent with the component ABI.
+
+Monomorphization MUST be the same compile-time reduction by which the compiler specializes any definition applied to compile-time-known arguments, so that a generic instantiation is not a distinct lowering path from ordinary compile-time application.
 
 ### Subtyping Is Explicit Or Absent
 

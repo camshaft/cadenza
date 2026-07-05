@@ -30,12 +30,12 @@ Cadenza toolchain yet exists to derive it.
    declared seed host language (`options/bootstrap-strategy/`) because no Cadenza
    toolchain yet exists to derive it: a reader for the binary AST and its
    self-contained symbol prelude (`spec/contracts/ast-encoding.md`,
-   `options/ast-encoding/binary-sexpr.md`), the **native** reference interpreter that
-   realizes the executable-semantics corpus and is the behavioral oracle,
+   `options/ast-encoding/binary-sexpr.md`), the **static-typing floor** that rejects an
+   ill-typed program at compile time (constitution §VII), realized incrementally,
    **compiled derivation** — the seed's derivation mode — that generates a component
-   whose imports mirror its manifest (`spec/bootstrap.md` §"Compiled Derivation
-   Produces The Component And Agrees With The Oracle"), and the machine-readable
-   diagnostics. No pre-existing Cadenza compiler is required at genesis
+   whose imports mirror its manifest and whose observable behavior agrees with the
+   recorded corpus semantics (`spec/bootstrap.md` §"Compiled Output Agrees With The
+   Recorded Semantics"), and the machine-readable diagnostics. No pre-existing Cadenza compiler is required at genesis
    (`spec/bootstrap.md` §"The Toolchain Builds The Next Generation, Not Itself At
    Genesis"), and there is no compiler-free root to stand up — Cadenza is itself the
    build tool, outside any minimal load-verify-run root
@@ -54,15 +54,16 @@ Cadenza toolchain yet exists to derive it.
    that only *replays* an output precomputed at derivation time is a **modeled
    derivation** and MUST NOT be used (`spec/bootstrap.md` §"A Modeled Derivation Is Not
    An Ignition"); the guard for compiled derivation is **oracle agreement** — the
-   generated component's observable behavior MUST match the native reference
-   interpreter over the same input (`spec/bootstrap.md` §"Compiled Output Agrees With
-   The Interpreter"). The distinguishing check: deriving two different programs MUST
+   generated component's observable behavior MUST match the recorded corpus semantics
+   over the same input (`spec/bootstrap.md` §"Compiled Output Agrees With The Recorded
+   Semantics"). The distinguishing check: deriving two different programs MUST
    reuse the *same* codegen and differ only in the compiled program logic, so behavior
    comes from the program, not from a transcript the derivation baked in.
-   (Interpreted derivation — embedding the interpreter over the AST — is the
-   optional/later mode, `spec/bootstrap.md` §"Interpreted Derivation Is An Optional
-   Mode"; where a generation offers it, the anti-transcript rule in
-   `build-tool-interface.md` §"The Embedded Interpreter Executes In The Component" and
+   (An optional reference interpreter — embedding the interpreter over the AST — is an
+   independent oracle only, never the runtime, `spec/bootstrap.md` §"A Reference
+   Interpreter Is An Optional Independent Oracle"; where a generation offers it, the
+   anti-transcript rule in `build-tool-interface.md` §"A Derived Component Computes Its
+   Behavior When It Runs" and
    `spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md` apply.)
 2. Run `setup-gate` for that host language so the bootstrap gate's `[[source]]`
    half points at `implementation/`, and cite every frozen-contract and
@@ -79,10 +80,9 @@ Cadenza toolchain yet exists to derive it.
    every citation annotates the code that performs its behavior, and every cited
    test fails when that behavior is removed. A gate that passes on placeholder
    anchors or one-shared-exercise-per-file citations has NOT passed; regenerate the
-   coverage as real, per-requirement tests. Then the behavior gate: execute every
-   case in `spec/semantics/*.sexp` through the reference interpreter and confirm
-   each reproduces its recorded output (`conformance-gate.md` §"The Behavior
-   Gate"). Both MUST pass.
+   coverage as real, per-requirement tests. Then the behavior gate: derive and run every
+   case in `spec/semantics/*.sexp` and confirm each reproduces its recorded output
+   (`conformance-gate.md` §"The Behavior Gate"). Both MUST pass.
 4. Perform the ignition run: derive a real Cadenza source program to a
    content-addressed component and run it to produce its output, so the seed
    toolchain has demonstrably built and run a Cadenza program and can thereafter
@@ -114,8 +114,8 @@ End-To-End Derivation" and §"A Modeled Derivation Is Not An Ignition":
   component, so reproducibility is exercised rather than asserted
   (`reproducible-derivation.md` §"Derivation Is A Function Of Source And
   Toolchain").
-- The derived component's observable behavior agrees with the reference
-  interpreter (the oracle) over the same input, and the whole derivation is
+- The derived component's observable behavior agrees with the recorded corpus
+  semantics (the oracle) over the same input, and the whole derivation is
   reconstructable from its recorded steps (`spec/bootstrap.md` §"The Whole
   Regeneration Is Auditable").
 

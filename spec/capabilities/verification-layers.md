@@ -97,6 +97,14 @@ A discharged proof obligation MUST be recorded as a witness a verifier can check
 
 A proof witness MUST be checkable without re-running the search that produced it.
 
+## Convergence Properties
+
+### Order-Independence Is A Dischargeable Convergence Property
+
+A program MAY state that its result is independent of the order in which it folds its inputs — a permutation-invariance, or commutative-convergence, property — and the compiler MUST treat that statement as an obligation to be discharged or to cause the program's rejection like any other, so that order-independence is a first-class verifiable property rather than an untracked assumption.
+
+Discharging an order-independence obligation MUST NOT change the bytes of the emitted component, consistent with the layer's discharge-does-not-change-bytes rule, so that establishing order-independence sits off the reproducible byte path.
+
 ## Optionality
 
 ### The Verification Layers Are Optional

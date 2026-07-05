@@ -124,9 +124,9 @@ Cadenza is invoked as a build tool: it consumes a canonical source tree and prod
 manifest, and machine-readable diagnostics. It is itself a verified, reproducibly-derived component,
 and it is not part of any minimal root whose only job is to load, verify, and run components — a new
 build tool, for Cadenza or for another language, is introduced by providing the tool, not by changing
-that root. Because a working component must exist before ahead-of-time compilation is complete,
-Cadenza may derive a component by embedding a reference interpreter over the program's source; such a
-component satisfies every guarantee a fully compiled one does and behaves identically.
+that root. Cadenza derives a program's runnable form by lowering its canonical source to a
+WebAssembly component and running that component; that compiled component is the program's only
+executable projection, and it runs on the same single WebAssembly runtime as every other component.
 
 ## 10. One executable semantics
 
@@ -137,16 +137,20 @@ is the structural answer to a language whose meaning had previously been scatter
 interpreter, a separate document, a generated implementation, and a formal model that drifted apart:
 there is one place a construct's meaning lives, and it is runnable.
 
-## 11. The reference interpreter as oracle
+## 11. The executable-semantics corpus as oracle
 
-The executable semantics is realized as a reference interpreter, and that interpreter is the
-behavioral oracle: a compiled program's observable behavior must agree with the reference interpreter
-over the same input. This makes "one executable semantics" a shippable artifact rather than only
-prose, and it turns ahead-of-time compilation into an optimization that must match the oracle rather
-than a second, independent definition of the language. It is also the seam through which the language
-reaches self-hosting: the interpreter, authored once in a foreign seed language, derives the first
-Cadenza-authored compiler directly, and each later generation of the compiler is derived by the one
-before it.
+The executable semantics is realized as a conformance corpus — a set of cases together with their
+recorded observable results — and that corpus is the behavioral oracle: a compiled program's
+observable behavior agrees with the corpus's recorded result over the same input. This makes "one
+executable semantics" a shippable artifact rather than only prose: the corpus's recorded results are
+the shipped definition, and every compiler is checked against them rather than becoming a second,
+independent definition of the language. A reference interpreter over the source is not needed for
+this; where one exists, it serves only as an additional, independent oracle. The seam through which
+the language reaches self-hosting is a seed compiler, authored once in a foreign language, that
+derives the first Cadenza-authored compiler directly, with each later generation of the compiler
+derived by the one before it. The independence of the judgment comes from two implementations of the
+compiler — the foreign-language seed and the Cadenza-authored compiler — agreeing on the components
+they emit.
 
 ## 12. Progressive verification
 
@@ -205,5 +209,6 @@ determinism forms are frozen contracts written before the capabilities that depe
 meaning of the language lived in several places that drifted — hence one executable semantics.
 Verification was designed as always-on and coupled a simple language to a heavy prover — hence
 verification is layered. And there was never a concrete path from the language to the language
-building itself — hence the reference interpreter is the oracle and the seam to self-hosting. These
+building itself — hence the executable-semantics corpus is the oracle, and a seed compiler that must
+agree with the Cadenza-authored compiler is the seam to self-hosting. These
 lessons are recorded in [learnings](./learnings/).

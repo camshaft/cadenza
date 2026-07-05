@@ -29,18 +29,24 @@
 | Runtime engine | an **embeddable component-model runtime** (default: **Wasmtime**) | Embeddable; supports the component model; supports a deterministic configuration (no wall-clock or entropy imports bound) and a deterministic resource bound (fuel metering). |
 | Determinism config | execution **fuel-metered**; deterministic floating-point mode on; which nondeterministic capabilities a component may hold is left to the running system's per-role policy | The compiler introduces no undeclared nondeterminism and surfaces every requested capability; the running system decides from the manifest what to bind (for example, binding no clock or entropy for a log-folding role). |
 | Resource measure | **fuel** (a deterministic per-instruction/per-call unit) | The deterministic resource measure the determinism-and-fuel contract requires; exhaustion halts at a defined point. |
-| Host interface | **`cadenza-host/1`** | The single interface version generation 0 provides; a component names it explicitly and a runtime refuses any other. |
-| Core host operations | `read-projection`, `emit-event`, `read-blob`, `invoke-tool` | Representative operations a component may request; each bound only when the manifest grants it. The set is the host's, not the language's, and extends as the host interface grows. |
+| Host interface | a **versioned WIT-shaped world** the target defines; a component names its exact version explicitly and a runtime refuses any other | The mechanism, not a fixed vocabulary: a component imports the WIT-typed host functions its manifest enumerates from the world it names (host-interface-binding.md §Imports Are WIT-Typed Host Functions). |
+| Host functions | **none fixed by the language**; a target's world defines its own | Which host functions exist is the target's concern (host-interface-binding.md §Which Host Functions Exist Is The Target's Concern). The illustrative `hivemind-host` world below is one target's set, not the language's — a program that imports none of them is pure (an empty manifest). |
 
-## Host-interface operations (the `cadenza-host/1` world)
+## A target's host world is WIT-shaped (illustrative: `hivemind-host`)
 
-The `cadenza-host/1` interface is a component-model (WIT-shaped) world. Each operation's parameter,
-result, and error shapes are given below in a WIT-like sketch; the bytes of each type follow the
-[type-mapping](../type-mapping/) choice. An operation is bound only when the component's manifest
-grants it.
+The host interface a component targets is a component-model (WIT-shaped) world the *target* defines,
+not the language. Cadenza fixes only the mechanism: a program declares each host function it imports
+with a complete WIT-typed signature, and the compiler emits exactly those imports into the world the
+component names (host-interface-binding.md §Imports Are WIT-Typed Host Functions). The bytes of each
+type follow the [type-mapping](../type-mapping/) choice. A function is bound only when the component's
+manifest enumerates it.
+
+The world below is **illustrative** — the set one target, Hivemind, offers — shown so the mechanism is
+concrete, not because the language fixes these functions. Another target defines a different world, and
+a program that imports none of a world's functions is pure (an empty manifest).
 
 ```wit
-// cadenza-host/1 (sketch)
+// hivemind-host (one target's world — illustrative, NOT the language's vocabulary)
 type projection-id = string          // names a projection the manifest grants
 type kind = string                   // names an event kind the manifest grants
 type blob-hash = list<u8>            // a content address
@@ -52,37 +58,47 @@ read-blob:        func(h: blob-hash)               -> result<list<u8>, host-erro
 invoke-tool:      func(t: tool-id, request: list<u8>) -> result<list<u8>, host-error>
 ```
 
-- **`read-projection`** — read a projection the manifest grants, returning its current value as
-  opaque bytes consistent with the events folded up to the point the component runs.
-- **`emit-event`** — propose an event of a kind the manifest grants; the runtime stamps its
-  ordering, verified caller, and content hash rather than accepting them from the component.
-- **`read-blob`** — read a content-addressed blob, bound only when the manifest grants it.
-- **`invoke-tool`** — invoke a tool the manifest grants; the path by which heavy or specialized
-  work, including deriving another program's source with Cadenza itself, is carried to a
-  participant equipped to run it.
-
-The running system decides which of these operations a component may hold, from the component's
-manifest. A system may, for example, bind a log-folding component none of the operations that would
+The running system decides which of a world's functions a component may hold, from the component's
+manifest. A system may, for example, bind a log-folding component none of the functions that would
 introduce nondeterminism and let it read only its granted projections — but that restriction is the
 system's policy over the manifest, not a rule the compiler enforces.
 
+Note that the Cadenza **compiler** is itself a component with an *empty* import world: it derives
+programs as a pure `bytes → bytes` function and reaches no host function (build-tool-interface.md
+§The Compiler Exposes Reader, Printer, And Display As Exports). Where a target offers a host function
+that invokes another tool — including deriving a program's source with Cadenza itself — that is a
+function of *that target's* world available to programs the target runs, not an import the compiler
+holds.
+
 ### Derivation produces a real component whose world matches the manifest
 
-Derivation produces a **real WebAssembly component** (not a bespoke core module): the compiler's codegen
-emits a core module and wraps it (e.g. via `wasm-tools component new`) into a component whose WIT world
-declares exactly the host operations the program's manifest grants. A program that declares `emit-event`
-yields a component whose world imports `emit-event`; a program that declares no capability yields a world
-with no import. So "imports mirror the manifest exactly" (host-interface-binding.md) holds **natively** —
-the world *is* the import set — with no per-program import surgery
-(spec/learnings/2026-07-03-real-components-not-a-bespoke-module-model.md).
+Derivation produces a **real WebAssembly component** (not a bespoke core module): the Cadenza-authored
+compiler's codegen emits the **complete component binary** — a core module plus the component-model
+envelope (the component's type, canonical-ABI, and instance sections) — as an ordinary `Bytes` value,
+so a program that declares `emit-event` yields a component whose world imports `emit-event` and a
+program that declares no capability yields a world with no import. So "imports mirror the manifest
+exactly" (host-interface-binding.md) holds **natively** — the world *is* the import set — with no
+per-program import surgery (spec/learnings/2026-07-03-real-components-not-a-bespoke-module-model.md).
 
-The **seed reference interpreter is a native program, not a component** — its role is to be the oracle
-and to run the Cadenza compiler's source, so the seed's derivation mode is compiled codegen, not
-embedding the interpreter (spec/learnings/2026-07-03-bootstrap-targets-the-compiler-directly.md). Where a
-generation *does* offer **interpreted derivation** as an optional mode, the same packaging applies with
-the program's canonical AST embedded as component data the interpreter reads at run time, and the
-interpreter code is identical across derived programs, so behavior comes from the embedded AST rather
-than derivation-emitted per-program logic
+The whole component binary is produced by the Cadenza compiler itself (bootstrap.md §"The Compiler Is
+Authored In Cadenza, Not In The Seed"), not by a separate wrapping tool in the byte path: a derivation's
+byte output is a function of the Cadenza-authored compiler alone, which is what makes re-derivation
+reproducible from that compiler and makes self-hosting a clean fixpoint (the compiler that emits complete
+components can compile its own source into a compiler that does the same). The seed language provides
+only the `Bytes` value form and a runtime to execute a finished component (below); it contains no
+component encoder. `wasm-tools`/`wasm-encoder` may be used at the seed only as an out-of-band **oracle**
+to validate that the Cadenza-emitted bytes are a well-formed component, never as a step that produces or
+completes those bytes.
+
+The **seed reference compiler (`cdz-rustc`) is a native program, not a component** — its role is to
+lower Cadenza source to a real component and to compile `compiler.cdz`, so the seed's derivation is
+compiled codegen; the behavioral oracle is the conformance corpus
+(spec/learnings/2026-07-04-two-compilers-not-an-interpreter-and-a-compiler.md). Where a generation
+*optionally* offers **interpreted derivation** — never as the runtime of a promoted generation
+(bootstrap.md §"A Reference Interpreter Is An Optional Independent Oracle") — the same packaging
+applies with the program's canonical AST embedded as component data the interpreter reads at run
+time, and the interpreter code is identical across derived programs, so behavior comes from the
+embedded AST rather than derivation-emitted per-program logic
 (spec/learnings/2026-07-02-decouple-interpreter-wasm-from-host.md).
 
 ## Component entry shapes (per program shape)

@@ -79,6 +79,14 @@ The abstract syntax tree MUST be able to carry documentation attached to a defin
 
 A comment or documentation carried by the tree MUST survive encoding and decoding unchanged.
 
+### An Identifier May Carry A Scope Set For Hygiene
+
+An identifier node MUST be able to carry a set of scopes, so that macro hygiene can resolve a name by its scope set rather than by its spelling alone (metaprogramming.md §Macros Are Hygienic).
+
+An identifier that carries no scope set MUST decode identically to the same identifier before scope sets were expressible, so that the scope-set annotation is additive and a program written without it is unchanged.
+
+A scope set carried by an identifier MUST survive encoding and decoding unchanged, so that hygiene information is preserved in the stored binary form.
+
 ## Textual Syntaxes Are Conversions
 
 ### A Textual Syntax Parses To And Prints From The Canonical Form

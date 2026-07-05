@@ -20,6 +20,8 @@ Each diagnostic is a record with these fields:
 | `message` | string | the human-readable summary |
 | `rule` | string | the requirement or rule the diagnostic enforces, as a reference of the form `<spec-file>#<section-slug>` |
 | `related` | list of `{ span, message }` | secondary spans with explanatory labels |
+| `fix` | a structural edit of the program's binary AST (the ast-encoding edit shape), or absent | the proposed route to a compliant program — a structural AST edit, not a textual patch (diagnostics.md §"A Rejection Carries A Structural Fix") |
+| `fix_status` | `verified`, or `heuristic-<applicability>` where `<applicability>` is one of `maybe-incorrect`, `has-placeholders` | whether the compiler confirmed the fix recompiles clean and clears the diagnostic (`verified`) or could not, in which case it declares the fix a heuristic and carries the applicability marker an agent branches on (diagnostics.md §"A Confirmed Fix Is Marked Verified", §"An Unconfirmed Fix Carries An Applicability Marker") |
 
 ## Serialization and ordering
 
@@ -71,14 +73,19 @@ the corpus by `(trap "<reason>")`. The reason strings the ignition corpus pins:
 |---|---|---|
 | `"integer overflow"` | a checked integer operation overflows its type | numeric-model.md §"Overflow Is Defined" |
 | `"list index out of bounds"` | a list is indexed outside its bounds | collections-and-text.md §"List Operations Are Total Or Trap" |
-| `"numeric type mismatch"` | the dynamic interpreter evaluates arithmetic on two different numeric types | a typed generation instead rejects at compile time with `CDZ0301` / `CDZ0201` before running |
-| `"no matching pattern"` | the dynamic interpreter reaches a `match` whose scrutinee hits no branch | a typed generation instead rejects the non-exhaustive match at compile time with `CDZ0210` before running |
-| `"arity mismatch"` | a function is applied to a number of arguments other than the number of parameters it declares | the dynamic interpreter traps at runtime (core-semantics.md §"Applying A Function Binds Its Parameters To Its Arguments"); a typed generation rejects at compile time before running |
+| `"byte value out of range"` | a `Bytes` value is constructed from an integer outside `0..=255` | self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous" (the seed-realized `Bytes` form; `options/realized-capability-set/`) |
+| `"bytes index out of bounds"` | a `Bytes` value is indexed outside its bounds | self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous" (total-or-trap `Bytes` indexing) |
+| `"member access on a non-record"` | member access `(. v k)` is applied to a value `v` that is not a record | core-semantics.md §"Member Access Projects A Record Field" |
+| `"no such field"` | member access `(. r k)` names a field `k` the record `r` does not contain | core-semantics.md §"Member Access Projects A Record Field" |
 
-The last two are the dynamic seed's runtime halts on programs a typed generation refuses statically;
-they are the interpreter primary clause paired with a `(compiler (error …))` annotation in the corpus
-(see `spec/learnings/2026-07-02-seed-is-a-dynamic-interpreter.md`,
-`spec/semantics/README.md` §"Which cases a generation runs").
+Several conditions that a dynamic evaluator would have trapped on at runtime — arithmetic on two
+different numeric types, a non-exhaustive `match`, and applying a function to the wrong number of
+arguments — are **not** runtime traps under the seed: the seed is a compiler, so it rejects these at
+compile time with a diagnostic code (`CDZ0301`/`CDZ0201`, `CDZ0210`, and the arity/ill-typedness codes
+respectively) before the program runs (constitution §VII; Amendment 0.4.0). In the corpus these are
+the `(compiler (error …))` clauses the seed produces
+(see `spec/learnings/2026-07-04-static-typing-is-mandatory-post-pivot.md`,
+`spec/semantics/README.md` §"Which cases a generation runs"), not `(trap …)` reasons.
 
 The three codes the pre-existing corpus already references — `CDZ0202`, `CDZ0210`, `CDZ0301` — keep
 their numbers; the registry adds `CDZ0101`, `CDZ0201`, `CDZ0203`, and `CDZ0401` for the rejections the

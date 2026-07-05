@@ -44,37 +44,64 @@
             (+ ((. m one) unit) ((. m two) unit))))
   (output (: 3 Int64)))
 
+(case "a module function calls a sibling export by name"
+  (doc    "Witnesses core-semantics.md #A Module Binds Its Name In Its Enclosing Scope (2nd sentence:
+           module bindings resolve under the same lexical scope rules as any other binding) together
+           with #A Module Evaluates To A Record Of Its Exports: a module's exported definitions are in
+           scope in each other's bodies, exactly as top-level definitions are mutually visible. `f`
+           calls its sibling `dbl` by name; f(3) = dbl(3) + 1 = 7. Intra-module references are the norm
+           — a prelude or a group of compiler passes is a module whose functions call one another.")
+  (input  (do
+            (module lib
+              (def (dbl x) (* x 2))
+              (def (f x) (+ (dbl x) 1)))
+            ((. lib f) 3)))
+  (output (: 7 Int64)))
+
+(case "a module function is recursive"
+  (doc    "Witnesses core-semantics.md #A Module Evaluates To A Record Of Its Exports with a
+           self-reference: an exported function is in scope in its own body, so it may recurse.
+           `fac` calls itself; fac(5) = 120. A recursive export is the same lexical resolution as a
+           top-level recursive def, which already works.")
+  (input  (do
+            (module lib
+              (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))))
+            ((. lib fac) 5)))
+  (output (: 120 Int64)))
+
 (case "a module's declared capability is reachable as metadata, not as an export"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata:
            the capabilities are reached by the (meta …) key, distinct from the export
-           namespace, so they never collide with an export. The module declares emit-event;
-           its capabilities metadata contains \"emit-event\".")
+           namespace, so they never collide with an export. The module imports and declares the
+           host function `log`; its capabilities metadata contains \"log\".")
   (needs  collections)
   (input  (do
             (module m
-              (use (capability emit-event))
+              (import (host log (func (String) unit)))
+              (use (capability log))
               (def (answer) 42))
-            (= (. m (meta capabilities)) (list "emit-event"))))
+            (= (. m (meta capabilities)) (list "log"))))
   (output (: true Bool)))
 
 (case "a declared capability is not itself an export field"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata (1st
            sentence): a declared capability is carried as metadata SEPARATE from the exported fields,
-           so it is not itself an export. The module declares emit-event but exports only `answer`;
-           projecting `emit-event` as an export field finds no such field and traps (the capability
+           so it is not itself an export. The module declares the host function `log` but exports only
+           `answer`; projecting `log` as an export field finds no such field and traps (the capability
            lives in `(meta capabilities)`, witnessed by the case above), rather than resolving to the
-           manifest or to the host operation.")
+           manifest or to the host function.")
   (input  (do
             (module m
-              (use (capability emit-event))
+              (import (host log (func (String) unit)))
+              (use (capability log))
               (def (answer) 42))
-            (. m emit-event)))
+            (. m log)))
   (trap   "no such field"))
 
 (case "an export and a like-named metadata key do not collide"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata (2nd
            sentence): metadata is reached by a key distinct from every export name, so metadata access
-           cannot collide with an export. This module both declares the emit-event capability AND
+           cannot collide with an export. This module both declares the host function `log` AND
            exports a definition literally named `capabilities`. The export `(. m capabilities)` resolves
            to that definition (applied, it yields 7), while `(. m (meta capabilities))` resolves to the
            manifest — the same spelling in the two channels denotes two different things, which is the
@@ -82,9 +109,10 @@
   (needs  collections)
   (input  (do
             (module m
-              (use (capability emit-event))
+              (import (host log (func (String) unit)))
+              (use (capability log))
               (def (capabilities) 7))
             (if (= ((. m capabilities) unit) 7)
-                (= (. m (meta capabilities)) (list "emit-event"))
+                (= (. m (meta capabilities)) (list "log"))
                 false)))
   (output (: true Bool)))

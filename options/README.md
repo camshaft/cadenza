@@ -59,7 +59,11 @@ any future generation.
 | [`structural-interface`](./structural-interface/) | content-addressed-nodes | agent-authoring.md |
 | [`gate-non-load-bearing`](./gate-non-load-bearing/) | change-process-and-excluded | conformance-gate.md |
 | [`realized-capability-set`](./realized-capability-set/) | seed-ignition-set | conformance-gate.md; self-hosting-and-bootstrap.md |
-| [`bootstrap-interpreter-surface`](./bootstrap-interpreter-surface/) | minimal-reflective-surface | bootstrap-interpreter.md; self-hosting-and-bootstrap.md |
+| [`self-hosting-surface`](./self-hosting-surface/) | minimal-reflective-surface | self-hosting-surface.md; self-hosting-and-bootstrap.md |
+| [`effects-model`](./effects-model/) | algebraic-one-shot | capabilities-and-effects.md; host-interface-binding.md |
+| [`memory-ownership-model`](./memory-ownership-model/) | reference-counting-perceus | memory-and-resource-model.md |
+| [`ad-hoc-polymorphism`](./ad-hoc-polymorphism/) | explicit-dictionaries | type-system.md |
+| [`verification-strategy`](./verification-strategy/) | liquid-refinements-extrinsic-proofs | verification-layers.md; property-based-testing.md |
 
 ## Change discipline
 

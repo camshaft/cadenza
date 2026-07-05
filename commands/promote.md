@@ -35,10 +35,11 @@ generation, which component hash, and which gate reports justify the decision.
    - its imports mirror its declared capability manifest;
    - re-deriving the same source with the same toolchain reproduces a
      byte-identical component;
-   - its compiled output, if ahead-of-time compiled, agrees with the reference
-     interpreter (the oracle) on every executable-semantics case
-     (`self-hosting-and-bootstrap.md` §"A Compiled Program Agrees With The
-     Oracle").
+   - its compiled output agrees with the recorded corpus semantics (the oracle) on
+     every executable-semantics case, and the two compiler implementations agree with
+     each other
+     (`self-hosting-and-bootstrap.md` §"A Compiled Program Agrees With The Recorded
+     Semantics").
 3. Record the accepted generation as the current toolchain identity, recorded
    alongside the produced component so the next `regen` derives from it, and
    confirm the whole thing is reconstructable: which generation, which hash, which
@@ -53,9 +54,9 @@ generation, which component hash, and which gate reports justify the decision.
   produce, without a component that was actually derived and run, is not
   promotable (`spec/bootstrap.md` §"A Modeled Derivation Is Not An Ignition";
   `self-hosting-and-bootstrap.md` §"A Regeneration Is Derived, Gated, And Run").
-- A generation whose compiled output disagrees with the reference interpreter on
+- A generation whose compiled output disagrees with the recorded corpus semantics on
   any executable-semantics case MUST NOT be promoted
-  (`self-hosting-and-bootstrap.md` §"A Compiled Program Agrees With The Oracle").
+  (`self-hosting-and-bootstrap.md` §"A Compiled Program Agrees With The Recorded Semantics").
 - A change that would alter a frozen contract or weaken a governance floor is not
   a promotion; it MUST carry the explicit human approval the constitution's
   Governance Floors require — a promotion record alone does not substitute for it.

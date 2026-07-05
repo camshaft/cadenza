@@ -95,7 +95,7 @@ A sequencing block MUST evaluate each of its forms in the order they are written
 
 A sequencing block MUST evaluate to the value of its last form.
 
-An event a form in a sequencing block emits MUST be observed before an event emitted by a later form in the same block.
+A host call a form in a sequencing block makes MUST be observed before a host call made by a later form in the same block.
 
 ### A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It
 
@@ -121,9 +121,9 @@ A Type MUST be a first-class value that can be bound to a name, passed as an arg
 
 A type annotation `(: <expr> <Type>)` MUST carry its type as a value, not as a syntactic marker erased before evaluation.
 
-The dynamic interpreter MUST validate type annotations at runtime, trapping on mismatch between the value's runtime type and the annotation's declared type.
+The compiler MUST validate a type annotation against the annotated expression's static type at compile time.
 
-The static type-checker MUST validate the same annotations at compile-time, rejecting ill-typed programs before they run, so that the seed's runtime checking and a later generation's static checking enforce the same type system.
+The compiler MUST reject a program in which a type annotation's declared type does not match the annotated expression's static type before that program runs.
 
 ## Tuples
 
@@ -237,20 +237,20 @@ The ordering a type offers MUST be a deterministic function of the values compar
 
 ### Observable Behavior Is A Defined Projection Of A Run
 
-The observable behavior of a program run MUST comprise its terminal condition, the value it produces on normal termination in canonical value form, and the ordered sequence of events it emitted.
+The observable behavior of a program run MUST comprise its terminal condition, the value it produces on normal termination in canonical value form, and the ordered sequence of host calls it made with the arguments it passed.
 
 The observable behavior of a program run MUST NOT include its internal representation, its timing, or its diagnostics.
 
-### Emitted Events Are Ordered And Part Of Observable Behavior
+### Host Calls Are Ordered And Part Of Observable Behavior
 
-The sequence of events a program emits MUST be observed in the order the program emitted them.
+The sequence of host calls a program makes MUST be observed in the order the program made them.
 
-Two runs whose observable behaviors differ in any emitted event, in event order, or in terminal condition MUST be treated as behaving differently.
+Two runs whose observable behaviors differ in any host call, in host-call order, or in terminal condition MUST be treated as behaving differently.
 
 ## The Unit Value
 
-### An Effect-Only Expression Yields The Unit Value
+### An Expression Evaluated Only For Its Effect Yields The Unit Value
 
-An expression evaluated only for the event it emits MUST yield the unit value as its result.
+An expression evaluated only for the host call it makes MUST yield the value that host call returns, which is the unit value when the call's WIT signature returns unit.
 
-A program that terminates normally without producing a value other than through its emitted events MUST produce the unit value as its normal-termination value.
+A program that terminates normally without producing a value other than through the host calls it makes MUST produce the unit value as its normal-termination value.

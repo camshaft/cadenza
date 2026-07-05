@@ -70,13 +70,23 @@
 - **Type** — a static classification of expressions that the compiler determines before
   compilation; types are erased from the runnable form.
 - **Inference** — the process by which the compiler determines an expression's type without an
-  explicit annotation; where defined, it yields the most general type consistent with use.
+  explicit annotation, by unification over type variables that yields the principal (most general)
+  type consistent with every use, with let-generalization.
+- **Principal type** — the most general type of an expression, the one from which every other valid
+  type of that expression is an instance, so that inference commits to no more than the program's
+  uses require.
+- **Unification** — the solving of the type equalities a program's structure imposes by assigning
+  each unknown a type variable and reconciling every constraint on it, so that a type is derived from
+  all of a binding's uses at once rather than guessed from one.
 - **Annotation** — an explicit type written in source; it constrains inference and is rejected
   on conflict, never silently overridden.
 - **Erasure** — the property that no type information the compiler cannot remove survives into
   the runnable form, so the component carries no runtime type reflection.
-- **Nominal type** — a type whose identity is its declared name, distinct from any
-  structurally identical type of a different name.
+- **Nominal type** — a structural type tagged with a name, where nominal-versus-structural is an
+  orthogonal choice available over any structural type (record, tuple, or sum); its identity is its
+  fully-qualified name — the module path in which it is declared together with its declared name —
+  distinct from any same-shape type of a different qualified name, and the tag adds nothing to the
+  value's runtime representation.
 - **Structural type** — a type whose identity is its shape, equal to any type of the same
   shape.
 - **Sum type** — a type that is exactly one of several named variants, each optionally carrying
@@ -142,8 +152,12 @@
   representation.
 - **Lifting** — the inverse of lowering, converting a boundary representation back to a Cadenza
   value.
-- **Monomorphization** — replacing a generic definition with concrete specializations, done
-  before emitting a component interface because generics do not cross the boundary.
+- **Monomorphization** — replacing a generic definition with concrete specializations by the same
+  compile-time reduction that specializes any definition applied to compile-time-known arguments,
+  done before emitting a component interface because generics do not cross the boundary.
+- **Type-valued parameter** — a parameter whose argument is a type-value, by which a generic is
+  expressed as an ordinary definition taking types as arguments rather than through a separate
+  parametric-polymorphism construct.
 
 ## Compilation and derivation
 
@@ -157,12 +171,9 @@
   alongside the component it produces.
 - **Provenance** — build-environment information such as a timestamp, an absolute path, or a
   producer string; stripped or normalized so it cannot vary the output.
-- **Compiled derivation** — deriving a component by compiling the program's canonical source to
-  component code that the component itself runs; the seed's derivation mode, which must agree with
-  the oracle over the same input.
-- **Interpreted derivation** — deriving a component by embedding the reference interpreter over the
-  program's canonical source so the component interprets it at run time; an optional derivation mode a
-  generation may offer, satisfying every guarantee a compiled derivation must.
+- **Compiled derivation** — deriving a component by lowering the program's canonical source to
+  component code that runs on the one runtime; the sole normative derivation path, whose output must
+  agree with the conformance corpus and with the other compiler implementation over the same input.
 - **Phase** — a stage of the compiler with a defined input and output contract; each phase is a
   deterministic function of its input.
 - **Diagnostic** — a machine-readable message the compiler emits about a program, carrying a
@@ -174,24 +185,35 @@
 - **Executable semantics** — the single source of truth for what every language construct does,
   expressed as runnable cases; the compiler and every tool agree with it rather than encoding
   their own behavior.
-- **Semantics corpus** — the collected executable-semantics cases, held as s-expression files
-  parseable by a minimal reader; each case pairs an input with its expected result, and a promoted
-  compiler reproduces every recorded result.
+- **Conformance corpus** — the collected executable-semantics cases, held as s-expression files
+  parseable by a minimal reader; each case pairs an input with its expected result, a promoted
+  compiler reproduces every recorded result, and the corpus is the behavioral oracle for the
+  language.
 - **Case** — one executable-semantics entry, written as an s-expression in a small test-DSL
   (`case`/`input`/`output`/`error`/`trap`/`doc`) wrapping a program in the canonical representation,
   pairing an input with the exact result its execution must produce.
-- **Reference interpreter** — the realization of the executable semantics as a runnable
-  interpreter that serves as the behavioral oracle for the language.
-- **Oracle** — the authority against which a compiled program's observable behavior is checked;
-  the reference interpreter is the oracle.
+- **Reference interpreter** — an optional realization of the executable semantics as a runnable
+  interpreter that a generation MAY provide as an independent oracle to cross-check compiled output;
+  not required for the semantics to be defined or for a program to be judged, and never the runtime
+  of a promoted generation.
+- **Oracle** — the authority against which a compiled program's observable behavior is checked; the
+  oracle is the executable semantics as recorded by the conformance corpus, not any one program that
+  computes it.
+- **Two-compiler differential** — the independence of the behavioral judgment supplied by two
+  implementations of the compiler, the foreign-language seed compiler and the Cadenza-authored
+  compiler, which must agree on the observable behavior of every program a generation realizes, so
+  that no single implementation is both the definition of behavior and its own judge.
 - **Observable behavior** — the defined projection of a program run compared against the oracle: its
   terminal condition, the value it produces on normal termination in canonical value form, and the
-  ordered sequence of events it emitted; it excludes internal representation, timing, and diagnostics.
-- **Event** — a datum a program emits through a capability its manifest grants, carrying a kind and a
-  content payload; the ordered sequence of a run's events is a constituent of its observable behavior,
-  and two events are the same event exactly when they have the same kind and their content is equal
-  under the canonical byte form. Distinct from an **effect**, which is the compile-time annotation the
-  opt-in effect-tracking layer checks, not a runtime-observed datum.
+  ordered sequence of host calls it made with the arguments it passed; it excludes internal
+  representation, timing, and diagnostics.
+- **Host call** — an invocation a program makes of a WIT-typed host function its manifest enumerates,
+  carrying the arguments it passed and returning the function's result; the ordered sequence of a run's
+  host calls is a constituent of its observable behavior, and two host calls are the same exactly when
+  they name the same function and their arguments are equal under the canonical byte form. Which host
+  functions exist is the target's concern, not the language's (an *event* is one target's host call
+  that returns unit). Distinct from an **effect**, which is the type-system label — a program's escaping
+  effect row equals the host functions it imports.
 - **Terminal condition** — the one way a program run ends: a normal result, a trap of a defined kind,
   or exhaustion of the resource measure.
 - **Trap** — a defined-kind halt of a program at a defined point, raised by a partial operation or an
@@ -220,8 +242,9 @@
 ## Self-hosting and bootstrap
 
 - **Seed compiler** — the first Cadenza toolchain, authored in a foreign host language because
-  nothing yet exists to compile Cadenza; the operator-synthesized origin of the staged path to
-  self-hosting.
+  nothing yet exists to compile Cadenza; a native reference compiler that lowers Cadenza's canonical
+  representation to a runnable component and runs it, and the operator-synthesized origin
+  of the staged path to self-hosting.
 - **Self-hosting** — the state in which the Cadenza compiler is itself authored in Cadenza and
   derivable by the previous generation of the compiler.
 - **Generation** — one produced version of the language or its compiler; each generation is
@@ -232,8 +255,8 @@
 - **Ignition** — the demonstration that the seed toolchain performs a real, executed end-to-end
   derivation: a Cadenza source program derived to a content-addressed component whose imports mirror
   its manifest, actually run to produce its output, byte-identically re-derivable, and in agreement
-  with the reference interpreter; the appearance of a derivation without a component that was actually
-  derived and run is not an ignition.
+  with the conformance corpus (the behavioral oracle); the appearance of a derivation without a
+  component that was actually derived and run is not an ignition.
 - **Ignition bar** — the bar an ignition must clear, fixed by the bootstrap specification; clearing it
   is the point at which the seed toolchain can produce the next generation.
 - **Ignition subset** — the subset of requirements the seed toolchain must cite to clear the ignition

@@ -107,26 +107,47 @@ contract, exactly as adding a construct adds a prelude symbol rather than bumpin
 
 | Symbol (`cadenza/core`) | Arity / shape | Construct it names |
 |---|---|---|
-| `module` | `(module <name> <form>…)` | a module: a named unit of definitions and capability declarations |
-| `def` | `(def (<name> <param>…) <form>…)` | a definition (value or function) |
+| `module` | `(module <name> <form>…)` | a module: binds `<name>` in the enclosing scope to a **record** of its exported definitions, carrying its capability manifest and entry as metadata |
+| `def` | `(def (<name> <param>…) <form>…)` | a definition that registers a named export into the enclosing module's record |
 | `doc` | `(doc "<text>")` | documentation attached to the enclosing definition/module (a node, not trivia) |
 | `comment` | `(comment "<text>" <annotated>)` | a human comment attached to the node it annotates (a node, not trivia); semantically inert |
-| `use` | `(use (capability <cap>))` | a capability declaration, contributing `<cap>` to the module's manifest |
+| `use` | `(use (capability <cap>))` | a capability declaration, registering `<cap>` into the module's manifest metadata |
 | `capability` | `(capability <cap-name>)` | names a host capability inside a `use` |
 | `:` | `(: <expr> <Type>)` / `(: (-> <T>… <R>))` | a type annotation; also the corpus value-form head `(: <value> <Type>)` |
 | `->` | `(-> <T>… <R>)` | a function type |
 | `let` | `(let ((<name> <expr>)…) <body>)` | a lexical binding form |
+| `do` | `(do <form>…)` | a sequencing block: evaluates each form in order and yields the last form's value; a declaration form (`module`, `def`) binds its name for the forms that follow it in the block |
 | `fn` | `(fn (<param>…) <body>)` | a function value (lambda): captures its enclosing scope, applied by `(<fn-expr> <arg>…)` |
 | `if` | `(if <cond> <then> <else>)` | a two-branch conditional; evaluates only the selected branch |
 | `match` | `(match <scrutinee> (<pattern> <body>)…)` | pattern matching, governed by the exhaustiveness rule |
 | `else` | `else` (a match pattern) | the catch-all match pattern |
-| `record` | `(record (<field> <expr>)…)` | a structural record constructor |
+| `record` | `(record (<field> <expr>)…)` | a **record** constructor — a value with a fixed, statically-known set of named fields, each field a possibly-distinct type |
 | `list` | `(list <expr>…)` | a list literal |
-| `map` | `(map (<key> <value>)…)` | a map literal |
+| `map` | `(map (<key> <value>)…)` | a **map** literal — a dynamic, homogeneous key→value association (distinct from a record) |
+| `.` | `(. <record> <key>)` | **member access** — the sole accessor into a record: projects the field/export `<key>` of the record `<record>` |
+| `meta` | `(. <module> (meta <name>))` | a metadata key: reaches a module's non-export metadata (e.g. `capabilities`, `entry`) via `.`, kept out of the export namespace |
 | `=` | `(= <a> <b>)` | structural-equality comparison |
 | `+` `+%` | `(+ <a> <b>)` / `(+% <a> <b>)` | checked addition; wrapping addition (distinct wrapping type) |
 | `unit` | `unit` | the unit value, the normal-termination value of an effect-only program (e.g. one whose `main` only emits events); its type is `Unit` |
-| field access | `<expr>.<field>` | record/nominal field projection (e.g. `p.x`) |
+
+**Member access is `(. <record> <key>)`.** `.` is the single accessor into a **record** — a value
+with a fixed, statically-known set of named fields (a module's exports, a prelude namespace, a
+`record` literal). `(. p x)` projects field `x` of record `p`; `(. Sign Neg)` projects the `Neg`
+export of the prelude module-record `Sign`; `(. List at)` projects the `at` function of the `List`
+prelude record. A key of the form `(meta <name>)` reaches a module's metadata channel rather than an
+export — `(. m (meta capabilities))`, `(. m (meta entry))` — so metadata can never collide with an
+export named, say, `capabilities`. `.` **never** accesses a **map**: a map is a dynamic, homogeneous
+association whose lookup can fail, reached by a map operation (`(. Map at)` etc.) rather than by `.`,
+precisely so that static member access resolves against a known field set and a future type-checker can
+reject an unknown field. This record-versus-map distinction — fixed heterogeneous fields versus dynamic
+homogeneous entries — is load-bearing for the type system.
+
+The **dotted display form `a.b` is sugar**: a textual syntax renders `(. a b)` as `a.b` and a reader
+expands `a.b` back to `(. a b)`, so a qualified name (`Sign.Neg`, `Int64.max`, `List.at`) and a field
+projection (`p.x`) are the *same* construct — a member access node — with no lexical ambiguity in the
+canonical tree, which carries only `(. …)`. There is no separate "qualified name" atom kind: `Sign`,
+`Int64`, `List`, `Bytes`, `Option` are ordinary names bound (in the prelude) to record values, and the
+dot looks a member up in them.
 
 **Function application** is written `(<fn-expr> <arg>…)` where the head is an *expression that
 evaluates to a function* (a name bound to a `fn`, a `def`, or an inline `(fn …)`), rather than a
@@ -136,11 +157,26 @@ Its Arguments"); a top-level `(def (<name> <param>…) <body>…)` is sugar for 
 `(fn (<param>…) <body>…)`. A head that resolves to a core construct symbol names that construct; a head
 that resolves to a bound function value applies it.
 
-Names, sum-type variants, and the numeric/collection operations a program calls (`Sign.Neg`,
-`Some`/`None`, `List.at`, `Rational.of`, `Float64.of-int`, `Int64.max`, `Wrapping64.max`, the built-in
-type names `Int64`/`Float64`/`Bool`/`String`/`Rational`/`Wrapping64`/`Unit`) are ordinary bound names and
-constructors resolved by their declarations, not additional core syntax; the corpus grounds each where
-it is used. The floating-point not-a-number literal is written `nan` and denotes the canonical
+**Sequencing is explicit: `(do <form>…)`.** A single expression is a single value; when a scope needs to
+evaluate several forms in order — typically to emit events for their effect before yielding a result —
+it wraps them in a `do` block, which evaluates each form in order and yields the last form's value. This
+replaces the `(let ((_ <effect>)) <rest>)` idiom of binding an effect to a throwaway name purely to
+sequence it. A body that grammatically takes one form (`let`, `fn`, a `match` arm) admits a sequence by
+holding a `(do …)`; the multi-form bodies of `def` and `module` are read as an implicit `do` over their
+forms. Because a **declaration form binds its name in its enclosing scope** (a `module` binds its name to
+its export record — core-semantics.md §"A Module Binds Its Name In Its Enclosing Scope"; a nested `def`
+binds its name), the name a declaration introduces is in scope for the forms that follow it in the same
+`do` block. So a program is naturally a `do` block of module declarations followed by a form that uses
+them — `(do (module m …) ((. m main)))` — with no separate binding form wrapping each declaration.
+
+Names and the numeric/collection/byte operations a program calls resolve as **member accesses into
+prelude records** (via `.`, as sugar): `Sign.Neg` is `(. Sign Neg)`, `List.at` is `(. List at)`,
+`Int64.max` is `(. Int64 max)`, `Bytes.of` is `(. Bytes of)`, and so on. `Sign`, `Option`, `List`,
+`Int64`, `Float64`, `Rational`, `Wrapping64`, `Bytes`, `String`, `Bool`, `Unit` are ordinary names
+bound in the prelude to **record** values whose fields are the variants/constructors/operations named
+after the dot; `Some`/`None` are `Option`'s variant constructors. None of this is additional core
+syntax — it is `.` (member access) applied to prelude records — and the corpus grounds each prelude
+record where it is used. The floating-point not-a-number literal is written `nan` and denotes the canonical
 not-a-number value (deterministic-value-form.md §"Numeric Values Serialize Deterministically"). The
 unit value is written `unit` and is the sole value of the `Unit` type — the normal-termination value of
 a program that produces no value other than through its emitted events (deterministic-value-form.md

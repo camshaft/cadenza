@@ -107,3 +107,7 @@ The compiler MUST expose its diagnostics in a machine-readable form.
 The compiler MUST expose the types it inferred in a machine-readable form.
 
 The compiler MUST expose the capability manifest it produced in a machine-readable form.
+
+### A Diagnostic's Fix Is Machine-Readable
+
+A diagnostic's proposed fix and its verified-or-applicability status MUST be part of the compiler's machine-readable output, so an agent consumes the route to a compliant program programmatically.

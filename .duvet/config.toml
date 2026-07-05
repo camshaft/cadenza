@@ -114,7 +114,7 @@ source = "spec/capabilities/self-hosting-and-bootstrap.md"
 format = "markdown"
 
 [[specification]]
-source = "spec/capabilities/bootstrap-interpreter.md"
+source = "spec/capabilities/self-hosting-surface.md"
 format = "markdown"
 
 [[specification]]

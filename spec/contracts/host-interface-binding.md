@@ -9,20 +9,29 @@
 > [overview §8](../overview.md).
 >
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence under a
-> stable heading. This contract names the interface operations by their function, not by a concrete
-> engine; the concrete host interface is pinned at the declared-default location.
+> stable heading. This contract fixes only the *mechanism* — that a host import is a WIT-typed function
+> the manifest enumerates — and names no concrete host function; the concrete host interface a target
+> offers is pinned at the declared-default location.
+>
+> **Contract version: 2.** Version 1 enumerated four fixed core host operations (a projection read, an
+> event emit, a blob read, a tool invocation). Version 2 removes that enumeration: those were a concrete
+> choice of one target and are subsumed by the general rule that an import is any WIT-typed host function
+> the manifest enumerates. **Migration:** each former named binding is an instance of the general rule,
+> so every already-derived component still conforms — the change is additive with respect to derived
+> bytes (see §Additive Evolution) and requires no re-derivation.
 
 ## Purpose And Scope
 
 A component interacts with its runtime only through host operations it imports, and it may reach
 only what it imports. This contract fixes that a component's imports are exactly the capabilities
 its manifest enumerates — no more, so there is no latent authority, and no fewer, so the manifest
-does not overstate what the component can do. It binds the core host operations to their manifest
-declarations, and it fixes that the compiler adds no capability the program did not declare — so that
-the system running the component can decide what to allow from the manifest alone. It does not fix the
-concrete host interface, which is a declared default, nor the manifest's own encoding, which the
-capability specifications govern. Which capabilities a *particular kind of program* is permitted to
-declare is a policy of the system that runs the component, not of this contract.
+does not overstate what the component can do. It fixes that a host import is a WIT-typed function the
+manifest enumerates, and that the compiler adds no capability the program did not declare — so that
+the system running the component can decide what to allow from the manifest alone. It does not name a
+concrete host function nor fix the concrete host interface, which are the target's concern recorded at
+a declared default, nor the manifest's own encoding, which the capability specifications govern. Which
+capabilities a *particular kind of program* is permitted to declare is a policy of the system that
+runs the component, not of this contract.
 
 ## Imports Mirror The Manifest
 
@@ -40,17 +49,27 @@ A program that reaches a host operation its manifest does not enumerate MUST be 
 
 The compiler MUST NOT emit a component that would fail to instantiate because it imports an operation absent from its manifest.
 
-## Core Host Operations
+## Imports Are WIT-Typed Host Functions
 
-### Each Core Host Operation Has A Fixed Binding
+### A Host Import Is A WIT-Typed Function The Manifest Enumerates
 
-An operation that reads a projection MUST be bound only when the manifest grants that projection.
+A component's imports MUST be host functions declared in the WIT-shaped world it targets, each bound only when the manifest enumerates it.
 
-An operation that emits an event MUST be bound only when the manifest grants that event's kind.
+An imported host function MUST carry a complete WIT-typed signature — its parameter types, its result type, and its error type — sufficient for the compiler to emit that import into the component's world without consulting anything outside the program's source.
 
-An operation that reads a content-addressed blob MUST be bound only when the manifest grants the blob-reading capability.
+The compiler MUST reject a program that imports a host function whose declared signature it cannot emit as a well-formed WIT import, rather than emit a component whose import does not match the world it names.
 
-An operation that invokes a tool MUST be bound only when the manifest grants that tool.
+### Which Host Functions Exist Is The Target's Concern
+
+Which host functions a world offers MUST be fixed by the target a component runs against and recorded at the declared-default location, rather than enumerated by this contract.
+
+This contract MUST NOT name a concrete host function, so that the vocabulary of host operations can grow or differ per target without amending a frozen contract.
+
+### The Manifest Is A Projection Of The Escaping Effect Row
+
+A program's escaping effect row MUST equal the set of host functions it imports, so that the manifest is a projection of that row rather than a separately-asserted list.
+
+A component that reaches no host function MUST have an empty manifest, so that a program's purity is the empty row and is legible from an empty manifest.
 
 ## Capability Honesty
 
@@ -65,6 +84,18 @@ The compiler MUST NOT grant a program a source of nondeterminism the program did
 The compiler MUST surface a program's declared capabilities in its manifest without deciding which capabilities are permissible.
 
 The compiler MUST NOT refuse a program solely because a capability it declares would be disallowed by a particular runtime's policy.
+
+## The Host Formats Nothing
+
+### The Host Does Not Format A Component's Values
+
+The host MUST NOT format a component's result or arguments into a display form of its own, so that the host carries no per-type rendering rules for the language's values.
+
+The rendering of a value to its canonical text form and the reading of text to a value's canonical binary form MUST be operations the compiler exposes, not operations the host performs, so that "what a Cadenza value looks like" lives in the compiler rather than the host.
+
+A harness that needs a component's typed result in displayable form MUST obtain it by invoking a compiler-provided display conversion over that typed result, rather than by inspecting and formatting the result itself, so that the harness stays value-agnostic while the result crosses the boundary as its proper type.
+
+A tool that only loads, verifies, and runs components MUST remain unchanged by the addition of a new Cadenza value form, because it never renders those values, so that the value-form vocabulary can grow without touching the host.
 
 ## Interface Versioning
 

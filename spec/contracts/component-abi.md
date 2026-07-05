@@ -12,6 +12,15 @@
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence under a
 > stable heading. This contract states the mapping's properties; the concrete type table that
 > realizes it is pinned at the declared-default location.
+>
+> **Contract version: 2.** Version 2 adds the entry's suspension outcome (§The Entry May Suspend On A
+> Host Call): the entry's result distinguishes normal completion, a trap, and a suspension carrying the
+> pending host call, so that a host call is a suspension point resolved by replay
+> (capabilities-and-effects.md §Every Host Call Is A Suspension Point). **Migration:** the suspension
+> outcome is a new arm of the entry's result rather than a change to the normal-completion or trap
+> representation, so a component that reaches no host function crosses the boundary exactly as under
+> version 1; the increment is recorded because the entry's result type gains an arm. This precedes any
+> deployed component, so no in-the-wild artifact requires re-derivation.
 
 ## Purpose And Scope
 
@@ -66,7 +75,15 @@ The entry's input and output MUST lower and lift across the boundary by the same
 
 ### The Entry Defines The Input For Oracle Agreement
 
-The input over which a compiled program's behavior is compared to the reference interpreter MUST be the input to the program's entry.
+The input over which a compiled program's behavior is compared to the recorded corpus semantics MUST be the input to the program's entry.
+
+### The Entry May Suspend On A Host Call
+
+The entry's result MUST distinguish three outcomes — normal completion carrying the result value, a trap of a defined kind, and a suspension carrying the pending host call — so that a host call the run cannot resolve internally is returned to the host rather than blocked on inside the component.
+
+A suspension outcome MUST carry the identity of the pending host function and its arguments in their boundary representation, and nothing that identifies where in the program's execution the call arose, so that the continuation is the host's response log rather than a position recorded in the component.
+
+The host MUST resume a suspended run by re-invoking the entry with the same input, the run replaying to one host call further, so that the entry carries no resume parameter and re-invocation is the whole resume mechanism (capabilities-and-effects.md §Suspension Is Replay From The Host's Log).
 
 ## Boundary Memory Layout
 

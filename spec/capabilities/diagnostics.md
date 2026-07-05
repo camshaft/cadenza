@@ -49,3 +49,35 @@ The sequence of diagnostics the compiler emits for a program MUST be a determini
 ### Diagnostics Are Machine-Readable
 
 The compiler MUST expose its diagnostics in a machine-readable form rather than only as human-formatted text.
+
+## A Diagnostic Carries A Route To A Fix
+
+### A Rejection Carries A Structural Fix
+
+A diagnostic that reports a rejection MUST carry a proposed fix expressed as a structural edit of the program's abstract syntax tree, not a textual patch.
+
+### A Confirmed Fix Is Marked Verified
+
+A fix whose application the compiler has confirmed recompiles the program clean and clears the diagnostic MUST be marked verified.
+
+### An Unconfirmed Fix Carries An Applicability Marker
+
+A fix the compiler cannot so confirm MUST carry an applicability marker declaring it a heuristic, so an agent can branch on it.
+
+### A Fix Is A Deterministic Function Of The Source
+
+A proposed fix and its verified-or-heuristic status MUST be a deterministic function of the source.
+
+## Diagnosis Is Complete And Cascade-Aware
+
+### Diagnosis Reports The Maximal Independent Set In One Pass
+
+The compiler MUST recover from an error and report the maximal set of independent problems in one pass rather than only the first.
+
+### A Diagnostic Distinguishes Primary From Derived
+
+The compiler MUST mark each diagnostic as primary or as derived from another, so an agent fixes root causes rather than cascades.
+
+### A Diagnostic Names Its Kind
+
+The compiler MUST expose a machine-branchable kind for each outcome distinguishing a rejection (the program is ill-formed), a decline (the compiler does not yet handle the construct), and a trap (a runtime halt), so an agent routes around compiler limits rather than chasing them.

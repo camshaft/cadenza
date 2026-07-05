@@ -55,13 +55,17 @@ The compiler MUST NOT require `eval` to compile programs — the compiler constr
 
 ## Compile-Time Evaluation
 
+### Compile-Time Evaluation Is One Tier
+
+Macro expansion, generic reduction, monomorphization, and constant folding MUST be the same compile-time evaluation mechanism rather than separate subsystems, so that there is one place the meaning of compile-time computation lives and the four cannot drift apart.
+
+A macro MUST be an ordinary compile-time function over the abstract syntax tree, so that a macro is not a distinct construct but an application of the one compile-time tier to a program's data.
+
 ### Compile-Time Evaluation Is Pure
 
-Code evaluated at compile time MUST NOT perform ambient input or output.
+Code evaluated at compile time MUST run in the empty effect row, so that its purity is a consequence of the effect model rather than a rule stated only for compile time (capabilities-and-effects.md §The Manifest Is The Escaping Effect Row).
 
-Code evaluated at compile time MUST NOT depend on a wall-clock time.
-
-Code evaluated at compile time MUST NOT depend on a source of randomness.
+Code evaluated at compile time MUST NOT reach a host function, so that it performs no ambient input or output and depends on no wall-clock time or source of randomness.
 
 ### Compile-Time Evaluation Is Bounded
 
@@ -75,11 +79,31 @@ A macro MUST receive values of the canonical representation, so that it transfor
 
 A macro MUST produce values of the canonical representation, so that it transforms a program as data rather than as text.
 
+### A Macro Is Dispatched By Binding, Not By Spelling
+
+A macro MUST be dispatched by resolving the binding at the head of a form to a macro definition, so that whether a form is a macro use is determined by binding rather than by a heuristic over the head's spelling.
+
+The reader MUST NOT be extensible by a program: syntax MUST grow at the abstract-syntax-tree level through macros rather than through reader macros, so that the text-to-canonical-representation reader stays outside the compiler's trusted path.
+
+### A Typed Quote Carries The Type Of The Expression It Builds
+
+A quote used to build an expression MUST carry the type of the expression it constructs, so that a macro that produces an ill-typed expression is rejected at the macro rather than downstream at the macro's expansion site.
+
+The typed quote MUST layer over the untyped abstract-syntax-tree analysis substrate rather than replace it, so that a macro may still analyze arbitrary tree structure while the expression it emits is type-checked.
+
 ### Macros Are Hygienic
 
 A name a macro introduces MUST NOT capture a name at the macro's use site unless the macro explicitly requests it.
 
 A name a macro introduces MUST NOT be captured by a name at the macro's use site unless the macro explicitly requests it.
+
+Hygiene MUST be realized by tracking the set of scopes an identifier carries, so that a name's binding is resolved by its scope set rather than by its spelling alone.
+
+### Expansion Runs In Phases To A Fixpoint
+
+Macro expansion MUST run as a distinct phase that precedes type checking, expanding to a fixpoint so that a macro whose output is itself a macro use is fully expanded before the program is type-checked.
+
+A macro definition MUST be available in an earlier phase than the code that uses it, so that the phase in which a definition runs is distinct from the phase in which its expansion is checked.
 
 ### Expansion Is Reproducible
 

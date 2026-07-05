@@ -1,10 +1,12 @@
-# Bootstrap Interpreter Surface — Choice: minimal-reflective-surface
+# Self-Hosting Surface — Choice: minimal-reflective-surface
 
-> **The default choice for the `bootstrap-interpreter-surface` decision** (see [README.md](./README.md)
+> **The default choice for the `self-hosting-surface` decision** (see [README.md](./README.md)
 > for the decision and the requirements a choice must satisfy). It pins the smallest concrete surface
-> that lets the reference interpreter be authored in Cadenza as a dynamic tree-walker, per the
-> reference-interpreter bootstrap model (constitution IX/XIV; NOT compiler-first — see
-> `spec/learnings/2026-07-02-interpreter-first-not-compiler-first.md`).
+> that lets a compiler be authored in Cadenza — and, equivalently, the surface the *optional*
+> Cadenza-authored reference interpreter (a `MAY` independent oracle) would walk. The bootstrap path
+> itself is compiler-first — two compilers, not an interpreter (see
+> `spec/learnings/2026-07-04-two-compilers-not-an-interpreter-and-a-compiler.md`); the interpreter
+> illustration below is retained only because it exercises the same reflective surface a compiler needs.
 
 ## The insight: a meta-circular interpreter reuses the language, it does not reimplement it
 
@@ -44,21 +46,23 @@ interpreter-only rung, which could have gotten by with explicit top-level recurs
 ## Behavior is data; capabilities enter only at the boundary
 
 ```
-Behavior = record { terminal: Terminal, events: List(Event) }
-Terminal = Normal(Value) | Trap(String) | Exhausted
-Event    = record { kind: String, payload: Value }
+Behavior  = record { terminal: Terminal, host-calls: List(HostCall) }
+Terminal  = Normal(Value) | Trap(String) | Exhausted
+HostCall  = record { fn: Symbol, args: List(Value) }
 ```
 
-- `eval` **returns** `Behavior` as data; it does **not** call `emit-event` itself. So `eval` is a pure
-  function and the semantics suite can be run **through it with zero host capabilities** — the
-  cheapest possible proof that the interpreter works (self-hosting-and-bootstrap.md §"The Interpreter
-  Is Proven Before It Is Relied On"). At the seed this proof runs natively; the boundary shim below
-  applies only where a generation offers interpreted derivation as a component.
+- `eval` **returns** `Behavior` as data; it does **not** call any host function itself. So `eval` is a
+  pure function and the semantics suite can be run **through it with zero host capabilities** — the
+  cheapest possible proof that the interpreter works (self-hosting-and-bootstrap.md §"Both Compilers
+  Are Proven Against The Corpus Before They Are Relied On"). At the seed the compiler proof runs
+  natively; the boundary shim below applies only where a generation offers the optional interpreted
+  derivation as a component.
 - Capabilities enter only in the **derived component's boundary shim**: `run(input: list<u8>)` decodes
-  the embedded AST, calls `eval` to get a `Behavior`, then **emits the recorded events through the
-  real host imports** and returns the terminal. The events were computed by interpreting inside the
-  component, so this is real interpretation, not a replayed transcript
-  (build-tool-interface.md §"The Embedded Interpreter Executes In The Component").
+  the embedded AST and drives `eval` under the suspend-replay boundary — at each recorded host call it
+  yields to the host, which resolves it and re-invokes, so the host calls are made through the real
+  host imports rather than replayed from a transcript computed ahead of time
+  (build-tool-interface.md §"A Derived Component Computes Its Behavior When It Runs";
+  capabilities-and-effects.md §"Suspension Is Replay From The Host's Log").
 
 ## Reader and printer (in the seed first; the round-trip is the first test oracle)
 
@@ -93,13 +97,15 @@ Event    = record { kind: String, payload: Value }
   never WASI) and wrapped by `wasm-tools component new` into a component whose **WIT world declares
   exactly the program's granted capabilities**, with the program's AST embedded as component data.
   Because the world *is* the import set, "imports mirror the manifest exactly"
-  (host-interface-binding.md) holds natively — a program that grants `emit-event` yields a world
-  importing `emit-event`; a program that grants nothing yields a world with no import — with no
+  (host-interface-binding.md) holds natively — a program that grants a host function yields a world
+  importing that function; a program that grants nothing yields a world with no import — with no
   per-program import surgery on the core module.
 - The **same interpreter** is reused across all derived programs; only the embedded AST and the world's
   import set (which matches each program's manifest) differ — the distinguishing check that behavior
   comes from the embedded program, not from derivation-emitted per-program logic
-  (build-tool-interface.md §"The Embedded Interpreter Executes In The Component").
+  (build-tool-interface.md §"A Derived Component Computes Its Behavior When It Runs"). A program that
+  grants a host function yields a world importing it; a program that grants nothing yields a world with
+  no import.
 
 ## The tower and fuel
 
@@ -116,5 +122,10 @@ rather than relying on host recursion.
   by running the whole suite through it) is capability-free.
 - **One layer:** the interpreter is written directly over the seed; no interpreter-on-interpreter tower
   is required to be authored.
-- **Deferred everything else:** closures, a Cadenza-authored reader/printer, human display, byte
-  primitives, and AOT compilation all wait until the flywheel is turning.
+- **Deferred everything else:** a Cadenza-authored reader/printer, human display, and the
+  interpreter's own byte-decoding of an embedded AST (the interpreted-derivation glue) all wait until
+  the flywheel is turning. (Closures are **not** deferred — the seed realizes first-class functions
+  because the first Cadenza artifact is a compiler; see the surface table above. And the `Bytes` value
+  form the seed realizes for the **compiler's output** — options/realized-capability-set/ — is a
+  distinct concern from this interpreter surface: it lets the Cadenza-authored compiler build a
+  component's wasm bytes as a value, whereas `eval` here still never touches bytes.)

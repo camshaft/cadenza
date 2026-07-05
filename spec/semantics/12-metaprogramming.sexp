@@ -59,6 +59,30 @@
   (input  `(+ ,(+ 1 1) 10))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
 
+; An AST built by quasiquote-with-unquote is an ordinary AST VALUE: it must be structurally EQUAL to
+; the same AST built any other way, and encode to the same bytes (core-semantics.md #Equality Is
+; Structural; the AST is an ordinary sum type — type-system.md #The Abstract Syntax Tree Type Is An
+; Ordinary Sum Type). So `` `(f ,x) `` with x=1 equals `` `(f ,1) `` and `(quote (f 1))` — all three
+; are `(Ast.List (Ast.Name "f") (Ast.Int 1))`. An unquote that embeds a RUNTIME (let-bound) value
+; must build the same `(Ast.Int 1)` node a const fold produces, so structural equality and encoding
+; see the two as identical. This is the compiler's own idiom: it builds instruction ASTs by
+; quasiquoting runtime values, then compares/encodes them.
+
+(case "an AST from quasiquoting a runtime value equals the same AST built by quote"
+  (doc    "`` `(f ,x) `` with x bound to 1 builds `(Ast.List (Ast.Name \"f\") (Ast.Int 1))`, the same
+           AST `(quote (f 1))` builds — so they are structurally equal (core-semantics.md #Equality Is
+           Structural). An unquote that embeds a runtime value produces the same node as a const fold,
+           so the two compare equal. MUST be true.")
+  (input  (let ((x 1)) (= `(f ,x) (quote (f 1)))))
+  (output (: true Bool)))
+
+(case "quasiquotes unquoting a runtime variable and a literal build equal ASTs"
+  (doc    "The companion isolating the runtime-vs-const embedding: `` `(f ,x) `` (x=1, a runtime local)
+           and `` `(f ,1) `` (a literal) build the same AST and MUST be equal — the runtime-unquoted
+           node is structurally identical to the const-unquoted one.")
+  (input  (let ((x 1)) (= `(f ,x) `(f ,1))))
+  (output (: true Bool)))
+
 (case "unquote-splicing splices list elements into parent"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            ,@<list-expr> evaluates <list-expr> to a list and splices its elements into the parent,
@@ -74,6 +98,30 @@
             (= `(f ,@x) `(f 1 2))))
   (output (: true Bool)))
 
+; --- Splicing requires a list --------------------------------------------------------------
+; metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation (witnessed above): `,@`
+; "evaluates <list-expr> to a LIST and splices its elements into the parent." So splicing a value
+; that is NOT a list — a scalar, a tuple, a string — has no elements to splice and is ill-typed:
+; the compiler MUST reject it (CDZ0201) with the splice's non-list operand named — `unquote-splicing`
+; is a recognized form, not an unbound name. A generation that does not yet check the splice operand's
+; list type declines rather than running the program (reject-don't-miscompile).
+
+(case "splicing a non-list value into a quasiquote is a type error"
+  (doc    "`,@` splices the ELEMENTS of a list; splicing a non-list has no elements to splice.
+           `(f ,@x)` with x bound to the Int64 `5` is ill-typed — the compiler MUST reject it
+           (CDZ0201, metaprogramming.md: ,@ evaluates its operand to a LIST). A generation that does
+           not yet check the splice operand's list type declines rather than running the program.")
+  (input  (let ((x 5)) `(f ,@x)))
+  (error  CDZ0201))
+
+(case "splicing an integer literal directly is a type error"
+  (doc    "The directly-written companion: `(unquote-splicing 5)` inside a quasiquote splices the
+           literal `5`, which is not a list — a type error (CDZ0201). The rejection names the splice's
+           non-list operand; `unquote-splicing`/`quasiquote` are recognized forms, not names, so this
+           is not an unbound-name failure.")
+  (input  (quasiquote ((unquote-splicing 5) 3)))
+  (error  CDZ0201))
+
 (case "quasiquote nests with inner unquote evaluated"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            quasiquote nests, so ``(+ ,,x) evaluates the inner , to produce `(+ ,<x-value>).
@@ -87,11 +135,25 @@
 (case "unquote outside quasiquote is a syntax error"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            , and ,@ are only valid inside quasiquote context. Bare ,x is a syntax error — there's
-           no quasiquote template to insert into. The dynamic seed evaluates (unquote x) which
-           finds x unbound (CDZ0101); a typed generation rejects it at parse time (CDZ0401).")
-  (input    ,x)
-  (error    CDZ0101)
-  (compiler (error CDZ0401)))
+           no quasiquote template to insert into — so the compiler rejects it at parse time (CDZ0401)
+           rather than running the program.")
+  (input  ,x)
+  (error  CDZ0401))
+
+; `unquote` takes EXACTLY ONE operand — the expression to evaluate and embed. `(unquote 1 2)` supplies
+; two, so it is malformed and the compiler MUST reject it (CDZ0201), never index just the first and
+; drop the rest. The same arity check applies to an unquote encountered during quasiquote expansion as
+; to one outside a quasiquote, so `` `(unquote 1 2) `` is rejected rather than silently truncated to
+; `(Ast.Int 1)`. (Same class as over-applying a constructor `(Some 1 2)`, here for the `unquote` form
+; inside a template.)
+
+(case "unquote with more than one operand inside a quasiquote is malformed"
+  (doc    "`(unquote 1 2)` inside a quasiquote gives `unquote` two operands where it takes exactly one —
+           a malformed form the compiler MUST reject at compile time (CDZ0201) rather than silently
+           take the first operand and drop the rest to yield `(Ast.Int 1)`. The same arity check
+           applies during quasiquote expansion as outside a quasiquote.")
+  (input  (quasiquote (unquote 1 2)))
+  (error  CDZ0201))
 
 (case "quasiquote makes instruction construction readable"
   (doc    "Witnesses compiler-pipeline.md #The Compiler Constructs Instructions Via Quasiquote:

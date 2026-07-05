@@ -33,6 +33,20 @@ Whether a definition is visible outside its module MUST be determined by an expl
 
 A definition that is not made visible MUST NOT be importable by another module.
 
+## A Module's Role Bounds Its Effect Row
+
+### A Module's Role Fixes Its Mandatory Effect Profile
+
+A module MAY declare a role, and a declared role MUST fix the module's mandatory effect profile as a bound on its [escaping effect row](capabilities-and-effects.md) — for example, a fold role's mandatory profile is the empty effect row, purity — so that a module's role constrains which effects its body may reach.
+
+### A Role Violation Is A Compile-Time Rejection
+
+The compiler MUST reject a module whose body reaches an effect its declared role forbids, emitting a machine-readable diagnostic, so that a module reaching outside its role's effect profile fails to compile rather than reaching an effect at activation.
+
+### A Module's Role Compliance Is Certified
+
+The compiler MUST emit a machine-readable certificate that a module satisfies its declared role's effect profile, so that an activation review can trust the module's compliance — a fold role's purity, for instance — without re-deriving it from the module's body.
+
 ## Dependency Resolution
 
 ### Dependencies Resolve By Content Address

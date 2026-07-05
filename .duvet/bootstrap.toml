@@ -11,18 +11,22 @@
 # contracts, bootstrap.md, and the capability specs the seed compiler itself must
 # satisfy to perform one real end-to-end derivation:
 #
-#     core-semantics             — evaluate the program's constructs
+#     core-semantics             — lower and evaluate the program's constructs
+#     type-system                — reject an ill-typed program at compile time
+#                                  (the static-typing floor, realized incrementally,
+#                                  reject-don't-miscompile)
 #     capabilities-and-effects   — the mandatory capability declaration (not the
 #                                  opt-in effect layer, which is a later capability)
 #     compiler-pipeline          — the phases and the two gates
 #     conformance-gate           — the gate that judges the generation
 #     self-hosting-and-bootstrap — the oracle, the derivation modes, the staging
 #
-# type-system is DEFERRED past the seed: the seed is a DYNAMIC interpreter
-# (constitution VII bootstrap carve-out; learnings/2026-07-02-seed-is-a-dynamic-
-# interpreter.md), so it carries no static-typing implementation to cite. The first
-# generation derived AFTER the seed realizes static typing and adds type-system.md
-# to ITS requirement subset. See options/realized-capability-set/.
+# type-system IS in the seed subset: post-pivot (constitution VII; Amendment 0.4.0;
+# learnings/2026-07-04-static-typing-is-mandatory-post-pivot.md) the seed is a
+# COMPILER that MUST realize the static-typing floor incrementally, so it carries
+# implementation-and-test citations for the type-system rules it covers. Full
+# Hindley-Milner inference and generics/monomorphization land in later increments.
+# See options/realized-capability-set/.
 #
 # The richer capabilities' RFC-2119 REQUIREMENTS (memory-and-resource-model,
 # numeric-model, modules-and-namespaces, metaprogramming, verification-layers,
@@ -35,14 +39,14 @@
 # NOTE — the two gates have different scopes, deliberately (conformance-gate.md):
 # this file scopes only the REQUIREMENT gate (which sentences the seed must cite).
 # The BEHAVIOR gate is NOT scoped here — it runs EVERY case in spec/semantics/*.sexp
-# (compiler-pipeline.md §"The Corpus Is A Gate"), and the reference interpreter MUST
-# implement exactly the behavior the corpus records (bootstrap.md §"The Interpreter
-# Realizes The One Semantics"). Because the committed corpus already contains
-# numeric-model and compound-type cases, the SEED evaluator must realize records,
-# sum types, lists, maps, exact/rational/wrapping numerics, checked-overflow traps,
-# and deterministic float — even though those capabilities' REQUIREMENTS are not in
-# the citation subset above. "Not in the ignition requirement subset" means "not
-# yet separately cited," not "not implemented by the seed."
+# (compiler-pipeline.md §"The Corpus Is A Gate"), and the seed compiler's compiled
+# component MUST reproduce exactly the behavior the corpus records (the corpus is the
+# oracle; bootstrap.md §"The Conformance Corpus Is The Behavioral Oracle"). Because the
+# committed corpus already contains numeric-model and compound-type cases, the SEED
+# compiler must realize records, sum types, lists, maps, and the primitive Int64/Float64
+# numeric core with checked-overflow traps — even though the richer numeric-model
+# capability's REQUIREMENTS are not in the citation subset above. "Not in the ignition
+# requirement subset" means "not yet separately cited," not "not implemented by the seed."
 #
 # INVARIANT: every [[specification]] block here MUST also appear in config.toml —
 # the ignition subset is a strict subset of the full set, never a superset.
@@ -100,9 +104,11 @@ format = "markdown"
 source = "spec/capabilities/core-semantics.md"
 format = "markdown"
 
-# type-system.md is intentionally NOT in the seed's ignition subset — the seed is a
-# dynamic interpreter (constitution VII bootstrap carve-out). It re-enters the
-# requirement subset for the first generation that realizes static typing.
+# type-system.md IS in the seed's ignition subset — post-pivot the seed is a compiler
+# that realizes the static-typing floor incrementally (constitution VII; Amendment 0.4.0).
+[[specification]]
+source = "spec/capabilities/type-system.md"
+format = "markdown"
 
 [[specification]]
 source = "spec/capabilities/capabilities-and-effects.md"

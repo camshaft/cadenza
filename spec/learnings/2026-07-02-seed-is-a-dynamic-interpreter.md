@@ -2,6 +2,17 @@
 
 *2026-07-02*
 
+> **Annotation (2026-07-04) — SUPERSEDED by the two-compiler pivot.** This learning's core premise —
+> that the seed is a *dynamic interpreter* that defers static typing — no longer holds. The seed is now
+> a reference *compiler* that lowers Cadenza to a component and runs it
+> ([2026-07-04-two-compilers-not-an-interpreter-and-a-compiler.md](./2026-07-04-two-compilers-not-an-interpreter-and-a-compiler.md)),
+> and because there is no dynamic evaluator left to lean on, Constitution Amendment 0.4.0 **retired the
+> Principle VII bootstrap carve-out**: the seed compiler now enforces static typing (incrementally,
+> reject-don't-miscompile) rather than deferring it
+> ([2026-07-04-static-typing-is-mandatory-post-pivot.md](./2026-07-04-static-typing-is-mandatory-post-pivot.md)).
+> Retained as historical reference for why the carve-out once existed; do not cite it as current
+> architecture.
+
 **What happened.** While taking the specification to a working compiler in attended mode, the driver
 set a guiding principle: get to a working interpreter as fast as possible, bootstrap the compiler, and
 let it add features to itself, rather than building every language feature before the flywheel turns.

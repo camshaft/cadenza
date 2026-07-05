@@ -26,6 +26,20 @@
 > claim: the **reference interpreter remains the single behavioral oracle**, so this is not
 > compiler-first. See [bootstrap targets the compiler directly](./2026-07-03-bootstrap-targets-the-compiler-directly.md)
 > and [real components, not a bespoke module model](./2026-07-03-real-components-not-a-bespoke-module-model.md).
+>
+> **Annotation (2026-07-04) — the load-bearing claim above is now itself SUPERSEDED.** The two-compiler
+> pivot ([2026-07-04-two-compilers-not-an-interpreter-and-a-compiler.md](./2026-07-04-two-compilers-not-an-interpreter-and-a-compiler.md);
+> Constitution Amendment 0.3.0) drops the *seed* interpreter too: the seed is now a reference
+> *compiler*, the **behavioral oracle is the conformance corpus** (not a reference interpreter), and the
+> judgment's independence comes from **two implementations of the compiler** that must agree. The
+> bootstrap is therefore now **compiler-first** in shape (two compilers, no required interpreter), while
+> the deeper lesson this learning taught — never let meaning live in the compiler alone; keep an
+> independent behavioral authority — is *upheld*, now discharged by the corpus + two-compiler
+> differential rather than by an interpreter. The 2026-07-03 annotation's renamed-section citations are
+> also stale: §"Compiled Derivation Produces The Component And Agrees With The Oracle" is now
+> §"Compiled Output Agrees With The Recorded Semantics", and §"Interpreted Derivation Is An Optional
+> Mode" is now §"A Reference Interpreter Is An Optional Independent Oracle". Retained as historical
+> reference; do not cite the interpreter-as-oracle claim as current architecture.
 
 **What happened.** While synthesizing the seed, a reviewing agent proposed replacing the
 reference-interpreter bootstrap with a **compiler-first** one: write the ahead-of-time compiler

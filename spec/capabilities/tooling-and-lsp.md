@@ -39,3 +39,19 @@ An incremental analysis MUST NOT report a type, definition, or diagnostic that a
 A tooling query over source that does not fully parse MUST return a defined partial result rather than fail opaquely.
 
 A tooling query MUST NOT crash the editor session on malformed source.
+
+## The Compiler Is A Queryable Oracle
+
+### An Agent Queries The Compiler For Any Static Fact
+
+An agent MUST be able to query the compiler for any static fact about a program — the type of any node, a name's resolution, the inferred manifest/effect row, the solved constraints — and the answer MUST be total, deterministic, and equal to what a full compile determines, so that an agent learns a static fact by asking rather than by instrumenting the program.
+
+## Deterministic Replay Is The Debugger
+
+### A Runtime Fact Is Observed By Replay
+
+Because a run's observable behavior is a deterministic function of its input and its host-call responses, an agent MUST be able to observe any runtime fact of a run by replaying it from those recorded inputs rather than by inserting observation code.
+
+### A Replayed Debug View Is Semantically Inert
+
+A debug view reconstructed by replay MUST NOT be part of a program's observable behavior, so that debugging is a tool-time projection and does not change what the program means.
