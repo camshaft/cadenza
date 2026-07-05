@@ -76,6 +76,8 @@ the corpus by `(trap "<reason>")`. The reason strings the ignition corpus pins:
 | Trap reason | Raised when | Note |
 |---|---|---|
 | `"integer overflow"` | a checked integer operation overflows its type | numeric-model.md §"Overflow Is Defined" |
+| `"division by zero"` | an integer division or modulo has a zero divisor, which has no quotient or remainder | core-semantics.md §"Partial Operations Have A Defined Outcome" |
+| `"rational with zero denominator"` | an exact rational is constructed with a zero denominator, which denotes no number | numeric-model.md §"A Rational With A Zero Denominator Is Not A Value" |
 | `"list index out of bounds"` | a list is indexed outside its bounds | collections-and-text.md §"List Operations Are Total Or Trap" |
 | `"byte value out of range"` | a `Bytes` value is constructed from an integer outside `0..=255` | self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous" (the seed-realized `Bytes` form; `options/realized-capability-set/`) |
 | `"bytes index out of bounds"` | a `Bytes` value is indexed outside its bounds | self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous" (total-or-trap `Bytes` indexing) |

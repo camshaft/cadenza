@@ -111,6 +111,59 @@ representation, at which point `(UInt 128)` becomes a valid type with no change 
 only the constraint's upper bound and the representation move. Until then, a program needing more than 64
 bits uses the opt-in arbitrary-precision big-integer type.
 
+## Exact rational — a normalized pair of big-integers, opted into explicitly
+
+The exact rational type `Rational` is a **normalized pair of big-integers** — a numerator and a
+denominator — carrying a number with no loss of precision (numeric-model.md §"Exact Arithmetic Is
+Exact", §"An Exact Rational Has A Canonical Normalized Form"). It is a distinct numeric type opted into
+explicitly, exactly like the big-integer and wrapping types: no operation silently produces a
+`Rational`, and none silently consumes one — the old Cadenza behavior where integer `/` yielded a
+rational is precisely the silent promotion this model rejects.
+
+- **Construction.** `(Rational.of n d)` builds the rational `n/d` from two integers, immediately
+  normalized. `(Rational.of-int n)` is the whole rational `n/1`. The canonical *written* value form is
+  `n/d` in lowest terms (`1/2`, `-3/4`, `5/1`), as the corpus records it.
+- **Normalization is canonical.** A `Rational` is always kept in **lowest terms** (numerator and
+  denominator share no common factor, reduced by their gcd) with a **fixed sign convention** — the sign
+  lives on the numerator and the denominator is always strictly positive. So `(Rational.of 2 4)`,
+  `(Rational.of 1 2)`, and `(Rational.of -1 -2)` are **one value** with one canonical byte form
+  (`1/2`), and `(Rational.of 1 -2)` normalizes to `-1/2`. This makes rational equality structural over
+  the normalized pair (deterministic-value-form.md §"A Value Has One Canonical Byte Form") and keeps the
+  representation a function of the number, not of how it was written.
+- **A whole rational is not a bare integer.** `(Rational.of-int 5)` is `5/1 : Rational`, a distinct
+  type from `5 : Int64`; crossing between them is explicit (`Rational.of-int` in,
+  `Rational.to-int`-style checked/truncating conversions out), never implicit — the same
+  no-promotion discipline the integer widths obey.
+- **Zero denominator has no value.** `(Rational.of 1 0)` denotes no number, so it **traps**
+  (`"rational with zero denominator"`, numeric-model.md §"A Rational With A Zero Denominator Is Not A
+  Value") rather than producing a value — the rational analogue of integer division by zero. This is a
+  runtime trap on a runtime-computed denominator; a literal zero denominator a generation can see at
+  compile time MAY additionally be rejected there.
+- **Arithmetic is exact and closed.** `+`, `-`, `*`, `/` on two `Rational`s produce a normalized
+  `Rational` with no rounding (`(+ 1/3 1/6)` = `1/2`), and rational `/` by a nonzero rational is total
+  and exact (unlike integer `/`, which truncates, and float `/`, which rounds). Comparison
+  (`<`, `>`, `=`, …) is exact over the normalized pair.
+- **Representation.** Numerator and denominator are big-integers (the arbitrary-precision layer), so a
+  rational never overflows; it is exact at any magnitude, paying the big-integer cost only when used.
+- **Boundary.** `Rational` has **no primitive boundary representation** — like a non-aliased integer
+  width, it is an internal-only exact type. A rational crossing an exported signature crosses as an
+  explicit encoding a program chooses (e.g. a `{ num, den }` record of two big-integers, or a decimal
+  string), never as an implicit ABI primitive.
+
+## Relationship to units of measure
+
+The dimensional layer (units-of-measure.md, `options/units-of-measure/`) is **generic over the
+underlying numeric type `T`**: a quantity is `(Qty T u)`, and `Rational` is one admissible `T`. So the
+two layers **compose orthogonally** — units track the *dimension*, rationals track the *exactness of
+the magnitude* — and `(Qty Rational u)` is a quantity that is both dimensioned and exact. Dividing two
+such quantities, the model's `/` divides the *magnitudes* by exact rational division (no float
+rounding) **and** divides the *dimensions* by the unit-group quotient in one operation: `feet / seconds`
+over `Rational` magnitudes yields an exact `(Qty Rational feet·second⁻¹)`. Because units erase before
+emission and rationals do not, the erased value of `(Qty Rational u)` is exactly the underlying
+`Rational` — the dimension is checked and discarded, the exact magnitude remains. This is the payoff of
+keeping units generic over `T` rather than baking a fixed numeric type into the quantity: exactness and
+dimensional safety are independent choices a program combines freely.
+
 ## Why these choices, against the north star
 
 - **No silent promotion** (the sharpest departure from earlier Cadenza, where integer division

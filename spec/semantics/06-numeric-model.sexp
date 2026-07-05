@@ -100,12 +100,99 @@
   (input  (+% Wrapping64.max 1))
   (output (: -9223372036854775808 Wrapping64)))
 
+; --- Exact rationals: a normalized pair of big-integers, opted into explicitly ------------
+; The exact rational type `Rational` (options/numeric-model/) is a numerator/denominator pair kept in
+; CANONICAL NORMALIZED FORM — lowest terms, sign on the numerator, denominator strictly positive — so
+; two rationals denoting the same number are one value with one canonical byte form (numeric-model.md
+; #An Exact Rational Has A Canonical Normalized Form; deterministic-value-form.md #A Value Has One
+; Canonical Byte Form). Arithmetic is exact and closed: `+ - * /` on two Rationals yield a normalized
+; Rational with no rounding, and rational `/` by a nonzero rational is total and exact — unlike integer
+; `/` (truncates) and float `/` (rounds). A zero denominator denotes no number, so it traps. `Rational`
+; is a DISTINCT numeric type opted into explicitly; no operation silently produces or consumes one (the
+; old-Cadenza behavior where integer `/` yielded a rational is exactly the silent promotion this model
+; rejects). The written value form is `n/d` in lowest terms. `(needs numeric-model)`: the seed realizes
+; only the checked Int64 core and Float64 literals/equality.
+
 (case "exact rational arithmetic is exact and normalized"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact; reduced to lowest terms per
-           options/numeric-model/. The output is the canonical rational value form 1/2.")
+           options/numeric-model/. `(+ (Rational.of 1 3) (Rational.of 1 6))` = 1/3 + 1/6 = 1/2 exactly,
+           the canonical rational value form (no float rounding — a Float64 sum would not be exact).")
   (needs numeric-model)
   (input  (+ (Rational.of 1 3) (Rational.of 1 6)))
   (output (: 1/2 Rational)))
+
+(case "a rational is normalized to lowest terms on construction"
+  (doc    "`(Rational.of 2 4)` reduces to 1/2 — a Rational is kept in lowest terms (numerator and
+           denominator share no common factor), so 2/4 and 1/2 are ONE value with one canonical byte
+           form (numeric-model.md #An Exact Rational Has A Canonical Normalized Form). Normalization is a
+           function of the number, not of how it was written.")
+  (needs numeric-model)
+  (input  (Rational.of 2 4))
+  (output (: 1/2 Rational)))
+
+(case "two rationals denoting the same number are equal regardless of how they were written"
+  (doc    "`(= (Rational.of 2 4) (Rational.of 1 2))` is true: because both normalize to 1/2, rational
+           equality is structural over the normalized pair (deterministic-value-form.md #A Value Has One
+           Canonical Byte Form). Pins that equality compares canonical forms, not the raw numerator/
+           denominator a program supplied.")
+  (needs numeric-model)
+  (input  (= (Rational.of 2 4) (Rational.of 1 2)))
+  (output (: true Bool)))
+
+(case "a rational's sign is normalized onto the numerator"
+  (doc    "`(Rational.of 1 -2)` normalizes to -1/2 — the fixed sign convention puts the sign on the
+           numerator and keeps the denominator strictly positive (numeric-model.md #An Exact Rational
+           Has A Canonical Normalized Form). So `(Rational.of 1 -2)`, `(Rational.of -1 2)`, and
+           `(Rational.of -1 -2)`'s companions all resolve to one signed canonical form; here the result
+           is negative.")
+  (needs numeric-model)
+  (input  (Rational.of 1 -2))
+  (output (: -1/2 Rational)))
+
+(case "a rational with numerator and denominator both negative normalizes to positive"
+  (doc    "`(Rational.of -1 -2)` = 1/2: the two negatives cancel under the sign convention (denominator
+           forced strictly positive), so a both-negative pair is a positive rational. Companion of the
+           sign-on-numerator case, pinning that sign normalization is by the number's sign, not by which
+           component carried the minus.")
+  (needs numeric-model)
+  (input  (Rational.of -1 -2))
+  (output (: 1/2 Rational)))
+
+(case "exact rational division is total and exact for a nonzero divisor"
+  (doc    "`(/ (Rational.of 1 2) (Rational.of 3 4))` = (1/2)/(3/4) = 4/6 = 2/3 exactly. Rational `/` by
+           a NONZERO rational is total and exact — it neither truncates (as integer `/` does) nor rounds
+           (as float `/` does) — and the result is normalized to lowest terms. This is the exactness the
+           type is opted into for.")
+  (needs numeric-model)
+  (input  (/ (Rational.of 1 2) (Rational.of 3 4)))
+  (output (: 2/3 Rational)))
+
+(case "a whole rational carries a denominator of one"
+  (doc    "`(Rational.of-int 5)` is the whole rational 5/1 : Rational — a DISTINCT type from `5 : Int64`.
+           Crossing between the integer and the rational is explicit (`Rational.of-int` in), never an
+           implicit promotion, the same no-promotion discipline the integer widths obey. Its canonical
+           written form is 5/1.")
+  (needs numeric-model)
+  (input  (Rational.of-int 5))
+  (output (: 5/1 Rational)))
+
+(case "constructing a rational with a zero denominator traps"
+  (doc    "`(Rational.of 1 0)` denotes no number — a zero denominator has no rational value — so it
+           traps (numeric-model.md #A Rational With A Zero Denominator Is Not A Value), the rational
+           analogue of integer division by zero. A defined runtime trap, distinct from producing an
+           unspecified value.")
+  (needs numeric-model)
+  (input  (Rational.of 1 0))
+  (trap   "rational with zero denominator"))
+
+(case "a rational operation does not silently promote an integer operand"
+  (doc    "`(+ (Rational.of 1 2) 1)` mixes a Rational and an Int64 — two distinct numeric types — so it
+           is rejected (CDZ0301) rather than promoting the 1 to 1/1, exactly as an Int64/Float64 mix is
+           (numeric-model.md #Numeric Types Do Not Silently Promote). To add the integer, a program
+           writes the conversion explicitly: `(+ (Rational.of 1 2) (Rational.of-int 1))`.")
+  (needs numeric-model)
+  (input  (+ (Rational.of 1 2) 1))
+  (error  CDZ0301))
 
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode

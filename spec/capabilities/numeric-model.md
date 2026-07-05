@@ -55,6 +55,16 @@ An operation on values of a numeric type declared exact MUST NOT lose precision.
 
 A conversion that cannot preserve a value's exactness MUST be written explicitly rather than performed implicitly.
 
+### An Exact Rational Has A Canonical Normalized Form
+
+An exact rational value MUST be maintained in a canonical normalized form, so that two rationals denoting the same number have one representation and one canonical byte form.
+
+The normalization of an exact rational MUST reduce it to lowest terms and fix the placement of its sign, so that its canonical form is a deterministic function of the number it denotes rather than of how it was constructed.
+
+### A Rational With A Zero Denominator Is Not A Value
+
+Constructing an exact rational with a zero denominator MUST fail at a defined point rather than produce a value, because a rational with a zero denominator denotes no number.
+
 ## Floating-Point
 
 ### Floating-Point Follows The Determinism Contract
