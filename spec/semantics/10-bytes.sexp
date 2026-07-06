@@ -297,11 +297,13 @@
   (output (: 3 Int64)))
 
 (case "concatenating byte sequences built at run time appends their bytes in order"
-  (doc    "`Bytes.concat` of two runtime byte sequences copies each source byte into a fresh buffer via
-           the runtime's bytes-get/bytes-set, so the result is a genuine runtime value with the appended
-           bytes. `(Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9)))` = `(Bytes.of (list 7 8 9))`
-           for `a=7 b=8`. Pins runtime concatenation — how a compiler joins the byte fragments of its
-           output.")
+  (doc    "`Bytes.concat` of two runtime byte sequences yields a genuine runtime value with the appended
+           bytes. The representation MAY defer the concatenation — sharing the operands' storage under a
+           concatenation node rather than copying their bytes into a fresh buffer — as an unobservable
+           optimization (memory-and-resource-model.md #Sharing Is Not Observable), which keeps this case
+           green either way. `(Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9)))` = `(Bytes.of (list
+           7 8 9))` for `a=7 b=8`. Pins runtime concatenation — how a compiler joins the byte fragments of
+           its output.")
   (needs  bytes)
   (input  (module m
             (def (join a b) (Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9))))
@@ -322,3 +324,57 @@
                             (Bytes.concat (Bytes.of (list 88)) (rep (- n 1)))))
             (def (main)  (rep 4))))
   (output (: (Bytes.of (list 88 88 88 88)) Bytes)))
+
+; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
+; Slicing and compacting a byte sequence carrying a runtime value are the input-side companions of the
+; concat cases above: a compiler reading its input bytes takes sub-ranges (`Bytes.slice`) and, having
+; kept a small piece of a large buffer, re-bases it to release the parent (`Bytes.compact`). These pin
+; the fallible slice and the value-preserving compact on GENUINE runtime values (not compile-time
+; literals), exercising the shared-storage representation directly: slice is fallible exactly as at
+; compile time (Some in bounds, None past the end or below zero), and compact is the identity on value.
+
+(case "slicing a byte sequence built at run time yields Some of the sub-range"
+  (doc    "`(Bytes.slice b 1 2)` on a runtime-built `b` yields `(Some (Bytes.of (list 20 30)))`: the
+           runtime realizes the slice by sharing `b`'s storage (a view node over the parent leaf), which
+           is indistinguishable from a fresh copy (memory-and-resource-model.md #Sharing Is Not
+           Observable). Pins the fallible slice on a runtime value — how a compiler reads a sub-range of
+           its input bytes without copying.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
+            (def (main)     (sl 10 1 2))))
+  (output (: (Some (Bytes.of (list 20 30))) (Option Bytes))))
+
+(case "slicing a runtime byte sequence past the end yields None"
+  (doc    "`(Bytes.slice b 2 3)` on a runtime-built 4-byte sequence asks for 3 bytes from index 2 —
+           running one byte past the end — so it yields None, never reading beyond the sequence or
+           returning a short result. The runtime companion of the const past-the-end case, pinning that
+           the bound is checked on the value at run time.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
+            (def (main)     (sl 10 2 3))))
+  (output (: (None unit) (Option Bytes))))
+
+(case "slicing a runtime byte sequence with a negative start yields None"
+  (doc    "`(Bytes.slice b -1 2)` uses a start below 0 at run time — no byte at position -1 — so it
+           yields None, NOT a large unsigned offset from casting the negative start. The runtime
+           companion of the const negative-start case: the check is on the signed value, so a runtime
+           negative start is caught before it can wrap.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
+            (def (main)     (sl 10 -1 2))))
+  (output (: (None unit) (Option Bytes))))
+
+(case "compacting a byte sequence built at run time preserves its bytes"
+  (doc    "`(Bytes.compact b)` on a runtime-built `b` = `b`: compact re-bases the value into storage
+           independent of any larger buffer it was sliced from (memory-and-resource-model.md #Retained
+           Storage Is Accounted For What It Holds Live), changing resource use but never the value. Pins
+           that compact is value-preserving on a runtime value — how a compiler keeps a small slice of a
+           large input while letting the input be reclaimed. `(mk 1)` = `(Bytes.of (list 1 2 3))`.")
+  (needs  bytes)
+  (input  (module m
+            (def (mk n) (Bytes.compact (Bytes.of (list n 2 3))))
+            (def (main) (mk 1))))
+  (output (: (Bytes.of (list 1 2 3)) Bytes)))
