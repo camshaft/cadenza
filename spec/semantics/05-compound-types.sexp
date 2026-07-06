@@ -430,6 +430,29 @@
             (def (main) (sm (build 5)))))
   (output (: 15 Int64)))
 
+(case "a recursive function folds a linked list of runtime-determined length"
+  (doc    "The genuine self-hosting idiom, distinct from the case above: the list's LENGTH is decided at
+           run time, not by a fixed literal spine. `count` builds a descending list `[n, n-1, …, 1]` by
+           recursing on `(- n 1)` until `(< n 1)` — so how many `Cons` nodes exist is known only at run
+           time. `sm` then folds it, dispatching on the runtime discriminant of each node it did not
+           construct at compile time. `sm(count 5)` = 5+4+3+2+1 = 15. This is exactly the shape a
+           self-hosted compiler is written in — `(match node ((Ast.App …) …) ((Ast.Lam …) …))` where the
+           node came from a reader and its variant is known only at run time — and it CANNOT be resolved
+           by compile-time spine unrolling (the case above can). Pins runtime sum-match CONSUMPTION:
+           `sum-disc` selects the arm, `sum-payload`/`arr-get` bind the head and tail, and the recursive
+           call is a real runtime `call` rather than an unbounded compile-time inline.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (def (count n) (if (< n 1)
+                               (IntList.Nil ())
+                               (IntList.Cons (tuple n (count (- n 1))))))
+            (def (sm xs) (match xs
+                           ((IntList.Cons (tuple h t)) (+ h (sm t)))
+                           ((IntList.Nil _)            0)))
+            (def (main) (sm (count 5)))))
+  (output (: 15 Int64)))
+
 (case "a recursive user sum type is built at run time and renders with qualified variant names"
   (doc    "A QUALIFIED-constructor recursive sum type — the linked-list / AST shape a self-hosted
            compiler manipulates — constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))`
