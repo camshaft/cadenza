@@ -1259,3 +1259,64 @@
            is checked on either side of the comparison, not only the left.")
   (input    (= (record (x 0) (y 0)) (Point (x 0) (y 0))))
   (error    CDZ0202))
+
+; --- The persistent vector: a growable, structurally-shared runtime sequence --------------
+; A `Vec` is a persistent (immutable, structurally-shared) growable sequence — a 32-way radix trie in
+; the value-heap runtime — DISTINCT from a `list` (a flat fixed array backing small homogeneous
+; sequences). It is the representation a self-hosting compiler accumulates output in: `Vec.push` and
+; `Vec.update` are functional constructors that produce a NEW version while leaving the old one
+; untouched (persistence), with O(log₃₂ N) push/get/update and path-copying sharing. `Vec.len` reads
+; the element count; `Vec.get` reads an element by index. These cases pin the vector as a first-class
+; runtime value the seed realizes (the runtime exposes vec-empty/len/get/push/update; the compiler
+; imports them at the frozen envelope's indices 24–28). Tagged (needs persistent-vector).
+
+(case "an empty vector renders as an empty sequence"
+  (doc    "`(Vec.empty)` is the empty persistent vector — a genuine value, rendered `(vec)`. The base
+           case every incremental build starts from.")
+  (needs  persistent-vector)
+  (input  (Vec.empty))
+  (output (: (vec) Vec)))
+
+(case "pushing an element onto a vector appends it"
+  (doc    "`Vec.push` is a functional constructor: it produces a NEW vector with the element appended.
+           Pushing a runtime value `n` onto the empty vector, then two more elements, yields
+           `(vec 7 8 9)` for `n=7`. The elements are runtime values (the first is a parameter), so the
+           vector lives on the value heap, not folded.")
+  (needs  persistent-vector)
+  (input  (module m
+            (def (mk n) (Vec.push (Vec.push (Vec.push (Vec.empty) n) 8) 9))
+            (def (main)  (mk 7))))
+  (output (: (vec 7 8 9) Vec)))
+
+(case "the length of a vector is its element count"
+  (doc    "`Vec.len` reads the element count as a scalar — the fold-to-scalar half of the idiom, like
+           `Bytes.len`/`List.len`. `(Vec.len (push (push empty n) 8))` = 2 for any `n`.")
+  (needs  persistent-vector)
+  (input  (module m
+            (def (sz n) (Vec.len (Vec.push (Vec.push (Vec.empty) n) 8)))
+            (def (main)  (sz 7))))
+  (output (: 2 Int64)))
+
+(case "updating a vector index replaces that element, leaving others"
+  (doc    "`Vec.update` is a functional constructor producing a NEW vector with one index replaced —
+           the persistent update that path-copies the changed spine and shares the rest. Updating
+           index 0 of `(vec 1 2)` to a runtime `n` yields `(vec 99 2)` for `n=99`.")
+  (needs  persistent-vector)
+  (input  (module m
+            (def (put n) (Vec.update (Vec.push (Vec.push (Vec.empty) 1) 2) 0 n))
+            (def (main)  (put 99))))
+  (output (: (vec 99 2) Vec)))
+
+(case "a vector built by a runtime-length loop has that many elements"
+  (doc    "The genuine self-hosting idiom: a vector whose LENGTH is decided at run time, built by a
+           recursion that pushes an element per step, then measured. `build` pushes `0,1,…,n-1` onto
+           the empty vector — how many pushes happen is known only at run time — and `Vec.len` folds
+           the result to a scalar. `(Vec.len (build (Vec.empty) 0 5))` = 5. This is exactly how a
+           self-hosted compiler accumulates and then measures an output buffer: a runtime-length
+           functional sequence consumed to a scalar. Pins that a recursive builder's vector return
+           value flows through the recursion (its kind converges to a heap value) and is consumable.")
+  (needs  persistent-vector)
+  (input  (module m
+            (def (build v i n) (if (< i n) (build (Vec.push v i) (+ i 1) n) v))
+            (def (main)         (Vec.len (build (Vec.empty) 0 5)))))
+  (output (: 5 Int64)))
