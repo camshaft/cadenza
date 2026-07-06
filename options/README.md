@@ -64,6 +64,8 @@ any future generation.
 | [`memory-ownership-model`](./memory-ownership-model/) | reference-counting-perceus | memory-and-resource-model.md |
 | [`ad-hoc-polymorphism`](./ad-hoc-polymorphism/) | explicit-dictionaries | type-system.md |
 | [`symbol-interning`](./symbol-interning/) | interned-string-symbol | collections-and-text.md; type-system.md; memory-and-resource-model.md |
+| [`set-collection`](./set-collection/) | persistent-ordered-set | collections-and-text.md; type-system.md; deterministic-value-form.md |
+| [`char-literal-syntax`](./char-literal-syntax/) | hash-scalar-literal | collections-and-text.md; diagnostics.md |
 | [`verification-strategy`](./verification-strategy/) | liquid-refinements-extrinsic-proofs | verification-layers.md; property-based-testing.md |
 | [`units-of-measure`](./units-of-measure/) | erased-compile-time-quantity | units-of-measure.md; numeric-model.md; verification-layers.md |
 | [`module-pragmas`](./module-pragmas/) | keyed-registry-strict | modules-and-namespaces.md; numeric-model.md |

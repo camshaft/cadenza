@@ -168,25 +168,25 @@
            to realize it MUST be indistinguishable from this copy (memory-and-resource-model.md #Sharing
            Is Not Observable). `expect` unwraps the in-bounds slice.")
   (needs  fallible-access)
-  (input  (= (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")
+  (input  (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")
              (Bytes.of (list 20 30))))
   (output (: true Bool)))
 
 (case "the length of a slice is the slice's byte count"
-  (doc    "`(Bytes.len (expect (Bytes.slice b 1 2) …))` = 2: length reads the slice's OWN byte count, not
+  (doc    "`(Bytes.len (Option.expect (Bytes.slice b 1 2) …))` = 2: length reads the slice's OWN byte count, not
            the parent's. A view representation that stored a length must report the slice's length, never
            the backing sequence's — the sharing is not observable through length.")
   (needs  fallible-access)
-  (input  (Bytes.len (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
+  (input  (Bytes.len (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
   (output (: 2 Int64)))
 
 (case "indexing a slice is relative to the slice's start"
-  (doc    "`(Bytes.at (expect (Bytes.slice b 1 2) …) 0)` = Some 20: index 0 of the slice is the byte at
+  (doc    "`(Bytes.at (Option.expect (Bytes.slice b 1 2) …) 0)` = Some 20: index 0 of the slice is the byte at
            the slice's start, not the parent's start. Pins that a view representation adds its offset —
            indexing is relative to the slice, so sharing the parent's storage is not observable through
            indexing.")
   (needs  fallible-access)
-  (input  (Bytes.at (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds") 0))
+  (input  (Bytes.at (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds") 0))
   (output (: (Some 20) (Option Int64))))
 
 (case "a slice spanning a concatenation sees the logical bytes"
@@ -195,7 +195,7 @@
            sequence was assembled. Pins that a slice over a deferred-concatenation representation crosses
            leaf boundaries correctly, seeing bytes not physical layout (#Sharing Is Not Observable).")
   (needs  fallible-access)
-  (input  (= (expect (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2)
+  (input  (= (Option.expect (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2)
                      "slice is in bounds")
              (Bytes.of (list 2 3))))
   (output (: true Bool)))
@@ -205,7 +205,7 @@
            Pins the degenerate slice: taking zero bytes at an in-bounds start yields the identity of
            concatenation, present as Some, not None.")
   (needs  fallible-access)
-  (input  (= (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) "slice is in bounds")
+  (input  (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) "slice is in bounds")
              (Bytes.of (list))))
   (output (: true Bool)))
 
@@ -235,13 +235,13 @@
 ; the resource measure, not through any value operation.
 
 (case "compacting a slice preserves its bytes"
-  (doc    "`(Bytes.compact (expect (Bytes.slice b 1 2) …))` = the same in-bounds slice: compacting
+  (doc    "`(Bytes.compact (Option.expect (Bytes.slice b 1 2) …))` = the same in-bounds slice: compacting
            materializes the slice into independent storage, changing resource use but not the value.
            Pins that compact is value-preserving — equal by bytes in order to the un-compacted slice
            (memory-and-resource-model.md #Retained Storage Is Accounted For What It Holds Live).")
   (needs  fallible-access)
-  (input  (= (Bytes.compact (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds"))
-             (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
+  (input  (= (Bytes.compact (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds"))
+             (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
   (output (: true Bool)))
 
 (case "compacting is the identity on value for a whole byte sequence"

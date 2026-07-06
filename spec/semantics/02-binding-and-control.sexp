@@ -337,7 +337,7 @@
            100. A slice result is fallible (collections-and-text.md #Indexing And Lookup Are Fallible,
            Not Trapping), so the program names the in-bounds expectation before matching the substring.")
   (needs  fallible-access)
-  (input  (match (expect (String.slice "hello" 0 2) "slice is in bounds")
+  (input  (match (Option.expect (String.slice "hello" 0 2) "slice is in bounds")
             ("he"  100)
             (else  200)))
   (output (: 100 Int64)))

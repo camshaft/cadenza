@@ -21,14 +21,16 @@
 | Floating-point (binary64) | `f64` |
 | Big-integer | `list<u8>` in a fixed canonical two's-complement encoding |
 | Rational | `record { numerator: list<u8>, denominator: list<u8> }`, normalized |
-| Character (Unicode scalar) | `char` |
+| `Char` (a validated Unicode scalar) | `char` |
 | String (UTF-8) | `string` |
 | List of `T` | `list<T'>` where `T'` is the mapping of `T` |
+| Set of `T` | `list<T'>` in canonical element-sorted order (the same fixed element order the set's canonical byte form and iteration use) |
 | Tuple / structural record | `record { … }` with fields in canonical order |
 | Nominal struct | `record { … }` named by its declared name |
 | Sum type / enum | `variant { … }` |
 | Optional `T` | `option<T'>` |
 | Result of `T` or `E` | `result<T', E'>` |
+| `Never` (the empty sum) | no boundary representation — `Never` is uninhabited, so no value of it ever crosses the boundary |
 | Function | not directly representable; exposed as a resource handle where a boundary-crossing function is required |
 
 ## Notes
@@ -42,3 +44,14 @@
   as a resource, keeping the boundary first-order.
 - The big-integer and rational encodings are fixed here so that an exact numeric value has one
   boundary form regardless of how it was computed.
+- **`Char`** is the surface `Char` type — a validated Unicode scalar (collections-and-text.md §"A Char
+  Is A Single Unicode Scalar Value") — realizing this `char` row; the row is not an orphan the language
+  cannot produce (see `spec/learnings/2026-07-05-char-is-a-validated-unicode-scalar-the-boundary-already-promises.md`).
+- **`Set`** serializes as a `list<T'>` whose elements are in the fixed canonical order derived from the
+  elements (deterministic-value-form.md §"Ordering Of Aggregate Members Is Fixed" — a set is an
+  unordered aggregate), the same order set iteration visits (collections-and-text.md §"Set Iteration Is
+  Deterministic"), so a set has one boundary form regardless of insertion order — exactly as a map's
+  keys already do. Adding this row is additive (a value that previously had no boundary representation).
+- **`Never`** never appears at the boundary: it is the empty sum (type-system.md §"Never Is The Empty
+  Sum"), uninhabited, so no value of it is ever produced to cross — the table lists it only to record
+  that its absence is intentional, not an omission.

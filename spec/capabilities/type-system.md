@@ -71,6 +71,16 @@ A program MUST be able to form a structural type — a record of named fields, a
 
 A structural type's shape MUST be its constituent types in their defining positions — a record's field names with their types, a tuple's element types in order, a sum's variant names with their payload types — so that two structural types are equal exactly when those constituents coincide.
 
+### Never Is The Empty Sum
+
+The type universe MUST include the empty sum — a sum type with zero variants — as the dual of the unit type, which is the empty tuple, so that the zero of the sum constructor is a nameable type exactly as the zero of the product constructor is.
+
+The empty sum MUST be uninhabited — it MUST have no constructor and no value — because a sum over zero variants offers no variant to construct.
+
+The type of an expression that diverges rather than producing a value — a trap, or requiring the value of an absent optional — MUST be the empty sum, and that type MUST unify with any expected type, because a diverging expression yields no value that could be of the wrong type.
+
+A match on a scrutinee of the empty sum type MUST be exhaustive with zero arms, because there is no variant left to cover — the degenerate base case of the exhaustiveness rule, not an exception to it.
+
 ### Records Are Rows, Open By Default Under Inference
 
 A record type MUST be expressible as a row — a set of field-name-to-type associations that MAY carry a row variable standing for the fields not named — so that a function can accept any record that has at least the fields it uses.

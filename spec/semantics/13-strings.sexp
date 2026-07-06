@@ -130,7 +130,7 @@
            witnessed, here at an interior index). A slice whose start equals its end is present and
            empty, not None: the range [2,2) is valid and empty. The unwrapped slice MUST equal \"\".")
   (needs  fallible-access)
-  (input  (= (expect (String.slice "hello" 2 2) "slice is in bounds") ""))
+  (input  (= (Option.expect (String.slice "hello" 2 2) "slice is in bounds") ""))
   (output (: true Bool)))
 
 ; --- String equality and length follow Unicode normalization -------------------------------

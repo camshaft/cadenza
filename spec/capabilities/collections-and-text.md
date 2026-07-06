@@ -57,6 +57,22 @@ normalization the hashing-and-encoding choice pins.
 
 An ordering over strings MUST be the lexicographic order of their Unicode scalar value sequences.
 
+### A Char Is A Single Unicode Scalar Value
+
+A char MUST be a single Unicode scalar value — a code point in the range `U+0000..=U+10FFFF` excluding the surrogate range `U+D800..=U+DFFF` — so that the element type of a string's scalar sequence is exactly a char and a char can never hold a value that is not a scalar.
+
+A char's ordering MUST be the numeric order of its scalar value, so that a char order and the string order defined on scalar values agree by construction.
+
+### A String's Scalars Are Addressable
+
+Reading a string's scalar at a position MUST be total, yielding an optional char that is present when the position is in bounds and absent when it is out of bounds, so that scalar access is fallible in the same way list and byte indexing are rather than trapping.
+
+### A Char Converts To And From An Integer Totally
+
+Converting a char to its integer scalar value MUST be total, because every char is a scalar value that has an integer code point.
+
+Converting an integer to a char MUST yield an optional char that is absent when the integer is not a Unicode scalar value — outside `U+0000..=U+10FFFF` or within the surrogate range — so that an out-of-range integer is handled as data rather than producing a char that is not a valid scalar.
+
 ### Decoding Bytes To A String Is Total, Not Trapping
 
 Decoding a byte sequence to a string MUST yield a result that distinguishes a successful decode from a
@@ -101,3 +117,25 @@ Two maps MUST be equal exactly when they associate the same keys with equal valu
 Iterating a map MUST visit its entries in a deterministic order derived from the keys, not from insertion order.
 
 The order in which a map's entries are visited MUST agree with the order its canonical byte form places them in.
+
+## Sets
+
+### A Set Is A Collection Of Unique Elements
+
+A set MUST be a collection of elements of one type.
+
+A set MUST contain each element at most once.
+
+Two sets MUST be equal exactly when they contain equal elements, independent of insertion order.
+
+### Set Membership Is Total
+
+Testing whether a set contains an element MUST be total, yielding a boolean rather than trapping.
+
+A set MUST NOT offer access to an element by position, because a set is unordered and has no positional element to address.
+
+### Set Iteration Is Deterministic
+
+Iterating a set MUST visit its elements in a deterministic order derived from the elements, not from insertion order.
+
+The order in which a set's elements are visited MUST agree with the order its canonical byte form places them in.

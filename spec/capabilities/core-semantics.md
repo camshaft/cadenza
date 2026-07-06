@@ -251,6 +251,14 @@ The ordering a type offers MUST be a deterministic function of the values compar
 
 The Bool type MUST offer a total order in which false is less than true.
 
+### A Total Order Is Observed Through A Three-Way Comparison
+
+A type that offers a total order MUST offer a three-way comparison that yields an ordering value with exactly three variants — less, equal, and greater — so that a single comparison reports the full relation between two values rather than a single boolean bit of it.
+
+The ordering value's type MUST be an ordinary closed sum type of the language, so that a comparison result is deconstructed by the same exhaustive match as any other sum and every consumer handles all three cases.
+
+The boolean ordering operators MUST agree with the three-way comparison, so that a type has one total order surfaced two ways that cannot disagree.
+
 ## Observable Behavior
 
 ### Observable Behavior Is A Defined Projection Of A Run
