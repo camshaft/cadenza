@@ -278,6 +278,18 @@ generations of Cadenza taught these lessons the expensive way; the specification
   shared `mod tag`; the compiler-emitted renderer became per-program (one fn per distinct shape) rather than a fixed body.
   Pushes the name-free learning one level deeper (no type identity either). Gate 326→369, IGNITION byte-identical,
   COMPONENT-CHECK 412 agree.
+- [Self-hosting is gated on generics; the rest is libraries and scale](./2026-07-05-self-hosting-is-gated-on-generics-the-rest-is-libraries-and-scale.md)
+  — a three-front gap analysis (seed-compiler-as-a-program inventory, spec survey, realized-capability audit) for
+  authoring the Cadenza compiler in Cadenza. The self-host target is the pure `bytes → bytes` core
+  (`codegen.rs`+`ast.rs`+`diagnostics.rs`, ~7,300 lines), not the workspace; the seam is a pure function, so
+  effects/handlers and the text reader are OFF the critical path (the core consumes CBOR AST). Gaps sort into four
+  tiers: **Tier 1 language-level** (generics + full HM inference — the linchpin everything else waits on; deterministic
+  ordered maps; closure edge-declines; a growable-buffer story); **Tier 2 library-level, authored in Cadenza** (CBOR
+  codec, Unicode NFC, int→string/formatting, float-bits, baked envelope bytes) — the substance of the M8 re-authoring;
+  **Tier 3 seed scale defects** (no TCO/bounded stack, 2ⁿ nesting) that bite a 7,300-line self-compile; **Tier 4 defer**
+  (multi-module, traits, symbol interning, macros, `bin`, units, verification, width-indexed ints). Confirms the
+  operator M0–M9 ladder and names its single gate: **M3 (static types + rows) is where generics + HM inference lands,
+  and nothing polymorphic — containers, width-indexed ints, the port itself — moves until it does.**
 
 ## Open spec gaps (found by adversarial-corpus probing; awaiting a clarity pass)
 

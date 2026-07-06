@@ -40,6 +40,14 @@ The byte length MUST be obtainable without materializing the UTF-8 encoding as a
 a size query an author expects to be cheap is not defined only in terms of an intermediate byte
 sequence.
 
+### A String Literal's Escapes Are A Closed Set
+
+Within a string literal, a backslash MUST introduce an escape sequence rather than stand for itself.
+
+A conforming reader MUST recognize exactly these escape sequences: `\n` (U+000A), `\t` (U+0009), `\r` (U+000D), `\\` (U+005C), and `\"` (U+0022).
+
+A backslash followed by any character that does not begin one of the recognized escape sequences MUST be a compile-time error, so that an unrecognized escape is a rejected program rather than a silently-dropped backslash or an implementation-defined character.
+
 ### String Equality Follows Normalized Contents
 
 Two strings MUST be equal exactly when their normalized contents are identical, under the text
@@ -70,9 +78,13 @@ A list MUST be an ordered sequence whose elements share one type.
 
 Two lists MUST be equal exactly when they have equal elements in the same order.
 
-### List Operations Are Total Or Trap
+### Indexing And Lookup Are Fallible, Not Trapping
 
-An operation that indexes a list outside its bounds MUST raise a trap of a defined kind rather than produce an unspecified value.
+An operation that reads an element of a sequence by position — indexing a list, a string (by scalar or byte offset), or a `Bytes` value, or taking a sub-sequence slice — MUST be total, yielding an optional value that is present when the position is in bounds and absent when it is out of bounds, rather than trapping or producing an unspecified value.
+
+Looking a key up in a map MUST likewise be total, yielding an optional value that is present when the map contains the key and absent when it does not.
+
+A program that requires the present value of such a result MUST obtain it through the fallible-value combinator (core-semantics.md §"Requiring An Absent Fallible Value Traps"), so that the boundary between handling absence as data and halting on absence is explicit at the point the program crosses it, not hidden inside the access operation.
 
 ## Maps
 

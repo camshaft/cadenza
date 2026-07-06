@@ -53,6 +53,12 @@ A reference to a name with no enclosing binding MUST be a compile-time error.
 
 A binding that shadows an outer binding of the same name MUST take effect for references in its scope as defined by the corpus.
 
+### The Bindings Of One `let` Take Effect In Order
+
+The bindings of a single `let` MUST take effect in the order they are written: each binding's initializer MUST observe the bindings written before it in the same `let`, and MUST NOT observe the bindings written after it.
+
+A binding whose name repeats an earlier binding in the same `let` MUST shadow the earlier one for the initializers and body that follow it, in accordance with §"Shadowing Is Well-Defined".
+
 ## Functions
 
 ### A Function Is A First-Class Value
@@ -112,6 +118,8 @@ A match MUST evaluate the branch of the first pattern that matches the scrutinee
 ### Bindings Introduced By A Pattern Are Scoped To Its Branch
 
 A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
+
+A pattern MUST bind each name at most once; a pattern that binds the same name more than once MUST be a compile-time error (`CDZ0102`), so that a pattern is linear rather than silently shadowing an earlier binder or imposing a hidden equality constraint.
 
 ## Types As First-Class Values
 
@@ -214,6 +222,12 @@ The kind of trap a given operation raises MUST be a deterministic function of th
 An operation that has no result for some inputs MUST, on those inputs, either evaluate to a value the executable semantics defines or raise a trap of a defined kind.
 
 An operation that has no result for some inputs MUST NOT produce an unspecified value.
+
+### Requiring An Absent Fallible Value Traps
+
+A single fallible-value combinator MUST apply uniformly to any value that models presence-or-absence — an optional's present and absent cases, and a result's success and failure cases — returning the contained value when one is present and raising a trap of a defined kind when it is absent, so that turning absence into a halt is one explicit operation rather than a behavior wired into each fallible-producing operation.
+
+The trap this combinator raises when it is applied to an absent value MUST carry one defined kind regardless of which fallible-producing operation yielded the absence, so that the combinator — not the upstream operation — is the single named point at which a program chooses to halt on absence.
 
 ## Equality And Ordering
 

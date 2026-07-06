@@ -122,6 +122,13 @@ realizes them and adds their witnessing cases:
 - **effect-tracking** (the optional layer of capabilities-and-effects), **verification-layers**,
   **property-based-testing**, **units-of-measure** — optional capabilities, included by default,
   realized later.
+- **module-pragmas** — the `(pragma <key> …)` module-directive channel (modules-and-namespaces.md
+  §"Module Directives"; options/module-pragmas/), whose one registered key today is `default-integer`.
+  The seed does not parse pragmas, so the general-mechanism cases (unrecognized key `CDZ0601`, malformed
+  args `CDZ0602`) carry `(needs module-pragmas)` and the `default-integer` behavior cases carry
+  `(needs numeric-model)` (they also need the full numeric family the key names, e.g. `BigInt`); a later
+  generation realizes both. Note the seed still lowers a pragma-free module unchanged — the default
+  literal type stays `Int64` when no pragma is present, which is exactly the no-`(needs …)` module cases.
 - **self-hosting-surface** — the Cadenza-authored reader/printer round-trip and the *optional*
   reference interpreter authored *in Cadenza* (self-hosting-surface.md). The seed is the
   foreign-language **compiler** and provides the reader/printer natively; a Cadenza-authored

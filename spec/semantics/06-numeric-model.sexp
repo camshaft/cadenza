@@ -331,22 +331,9 @@
               (def (x) 5))
             ((. m x) unit)))
   (error  CDZ0303))
-
-(case "an unrecognized pragma key is rejected, not ignored"
-  (doc    "`(pragma frobnicate 3)` names a key the pinned registry (options/module-pragmas/) does not
-           define, so the module is REJECTED (CDZ0601, modules-and-namespaces.md #An Unrecognized Module
-           Directive Is Rejected) rather than silently ignored. THE load-bearing rule of the pragma
-           channel — unlike C's #pragma, an unknown directive is never dropped, because a dropped
-           meaning-changing directive would let one source compile to two meanings. This is core to the
-           module surface, but tagged (needs numeric-model) only because it rides the pragma machinery
-           the same generation realizes.")
-  (needs numeric-model)
-  (input  (do
-            (module m
-              (pragma frobnicate 3)
-              (def (x) 5))
-            ((. m x) unit)))
-  (error  CDZ0601))
+; (The general pragma mechanism — an unrecognized key rejected CDZ0601, malformed args CDZ0602 — is
+;  witnessed in 11-modules.sexp under `needs module-pragmas`; here we pin only the numeric-domain
+;  behavior of the `default-integer` key.)
 
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode
