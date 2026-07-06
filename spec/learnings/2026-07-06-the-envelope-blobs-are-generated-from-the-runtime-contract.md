@@ -91,10 +91,27 @@ then derives the compiler's view of the runtime's contract from the runtime's ow
 compiler — one command, one source of truth, self-validating. Recorded so the next runtime-interface
 change is understood as an edit to the WIT + a one-line allow-list entry + `build`, never a hand-paste;
 and so the two prior envelope re-derivation learnings are read as the *problem* this retires, not a
-recipe to repeat. The reference-with-display envelope (`RUNNABLE_ENVELOPE_TAIL`, the all-constant
-resource-ABI path) is not yet generated this way — it does not depend on the runtime interface, so it
-stayed a baked constant; folding it into the same wasm-encoder generator is a clean follow-up.
-Composes with
+recipe to repeat.
+
+The same generator was then turned on the other hand-pasted magic-value tables, which sharpened the
+principle in two ways. **The opcode table** (`codegen.rs`'s `mod op`) was generated the same way, but
+its source of truth is not a contract we own — it is the WebAssembly spec's opcode numbers, and the
+authoritative encoder of those is `wasm-encoder` itself. So each opcode byte is derived by *encoding a
+`wasm_encoder::Instruction` and taking its leading byte*: we curate only *which* ops the compiler uses
+and *what we name them*, never the numbers. And because two compiler implementations both hand-encode
+wasm — the Rust seed and the Cadenza-authored compiler — the opcode table is emitted into BOTH (`op.rs`
+and `op.cdz`), so a code generator that emits multiple languages lets one source of truth feed every
+implementation. That is the general shape the effort reaches for: a magic-value table pulled into every
+implementation from one derivation. (Reaching the opcodes from the spec's own instruction-index
+appendix, by fetch or vendored snapshot, is a possible later refinement; `wasm-encoder` is the offline,
+already-pinned, spec-tracking source in the meantime.) **The reference-with-display envelope**
+(`RUNNABLE_ENVELOPE_TAIL`, the all-constant resource-ABI path — a `value` resource owning
+`display()->string`, with a nested inner component) was also folded in, even though it is not
+interface-driven and never changes: the point is not that it churns but that its derivation should be a
+checked-in program, not an opaque array. Building it surfaced one real invariant — the reference's
+embedded core module must be the FIRST section after the component preamble, because the compiler
+splices its own core module there and appends the tail, so anything the generator emits before the
+module lands in the wrong half of the split. Composes with
 [wiring the persistent vector re-derived the frozen envelope](./2026-07-05-wiring-the-persistent-vector-re-derived-the-frozen-envelope.md)
 and
 [wiring the Bytes rope exercised the recipe a second time](./2026-07-06-wiring-the-rope-exercised-the-envelope-recipe-a-second-time-and-caught-a-no-op-compact.md).
