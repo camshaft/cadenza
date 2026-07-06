@@ -471,6 +471,28 @@
             (def (main) (f 5))))
   (output (: (IntList.Cons (tuple 5 (IntList.Nil unit))) IntList)))
 
+(case "a recursively-built linked list renders its full runtime spine"
+  (doc    "The RENDER counterpart of the runtime-fold cases: a list whose spine is built by a
+           self-recursive function (so its length is decided at run time) is returned as the program's
+           RESULT and must render its complete structure — `count 3` yields
+           `(IntList.Cons (tuple 3 (IntList.Cons (tuple 2 (IntList.Cons (tuple 1 (IntList.Nil unit)))))))`.
+           A generation that cannot yet infer the static shape of a value of a RECURSIVE sum type (whose
+           shape is unbounded — the tree-shaped renderer would need to walk to a runtime-determined
+           depth) MUST decline rather than render a truncated or wrong structure. This is the render dual
+           of §\"a recursive function folds a linked list of runtime-determined length\": consuming such a
+           list to a scalar works, but rendering it as the boundary result is harder (an infinite static
+           shape) and is not on the self-hosting critical path (a compiler returns bytes, not a rendered
+           list). Pins decline-don't-miscompile: the wrong answer `(IntList.Cons 0)` — reading the Cons
+           payload's tuple handle as a boxed integer — is a FAIL, never an accepted output.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (def (count n) (if (< n 1)
+                               (IntList.Nil ())
+                               (IntList.Cons (tuple n (count (- n 1))))))
+            (def (main) (count 3))))
+  (output (: (IntList.Cons (tuple 3 (IntList.Cons (tuple 2 (IntList.Cons (tuple 1 (IntList.Nil unit))))))) IntList)))
+
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
 ; whose payload is an Ok, binding the innermost payload directly (02-binding "nested patterns
