@@ -21,6 +21,18 @@
 ; `(Int N)` is the integer constructor applied to a compile-time width — a quantity type is the same
 ; shape indexed by a compile-time UNIT instead of a compile-time natural.
 ;
+; FAMILIES OF MEASURE — a DIMENSION groups a FAMILY of interconvertible units. `metre`, `millimetre`,
+; and `inch` are three units of the one dimension `length`; each carries an EXACT `Rational` scale to
+; the dimension's REFERENCE unit (metre = 1, mm = 1/1000, inch = 127/5000). `(Unit.of #"inch")` names
+; such a family unit; the reference is the scale-1 unit. Combining two quantities whose units SHARE a
+; dimension is well-formed even when the units DIFFER — each converts to the reference by its exact
+; scale and combines there (automatic exact conversion, a principled exception to no-silent-promotion:
+; the conversion is exact and canonical, and a mix of DIMENSIONS is still CDZ0501). A PREFIX applies an
+; exact scale: SI decimal (kilo 10³, milli 10⁻³ = 1/1000) and IEC binary (kibi 2¹⁰, mebi 2²⁰). Exact
+; mixing NEEDS exact magnitudes — `1 inch + 1 mm` is exact only over `Rational` — the deep tie to the
+; numeric model. The `(Unit.base …)` cases above are the degenerate one-unit-per-dimension case; the
+; `(Unit.of …)`/`(Unit.prefix …)` cases below add the family/scale/prefix layer over it.
+;
 ; THE LOAD-BEARING CONSTRAINT — units are CHECKED THEN ERASED. Adding a unit to a numeric value MUST
 ; NOT change the value's numeric byte form or its runtime behavior (units-of-measure.md #Dimensional
 ; Analysis Does Not Alter The Numeric Core): `(Qty.of 5.0 metre)` and the bare `5.0` are BYTE-IDENTICAL
@@ -292,3 +304,103 @@
   (needs  units-of-measure)
   (input  (Qty.value (Qty.of (Rational.of 1 3) (Unit.base #"feet"))))
   (output (: 1/3 Rational)))
+
+; ============================================================================================
+; Families of measure — many interconvertible units per dimension; mixing converts exactly
+; ============================================================================================
+; A DIMENSION (the group element, e.g. `length`) groups a FAMILY of units — metre, millimetre, inch —
+; each carrying an EXACT `Rational` scale to the dimension's REFERENCE unit (metre = 1, mm = 1/1000,
+; inch = 127/5000). `(Unit.of #"inch")` names such a family unit (declared in the prelude under its
+; dimension with its scale); the reference unit is the scale-1 unit, so `(Unit.base #"metre")` above is
+; the length reference. Combining two quantities whose units SHARE A DIMENSION is well-formed even when
+; the units DIFFER: each operand converts to the reference unit by its exact scale and combines there
+; (units-of-measure.md #Combining Units Of One Dimension Is Well-Formed). This is automatic exact
+; conversion — a principled exception to no-silent-promotion, defensible because the conversion is EXACT
+; and CANONICAL (one right answer, the value at the reference unit) unlike a lossy Int/Float promotion,
+; and because a mix of DIMENSIONS is still CDZ0501. Exact mixing needs exact magnitudes: `1 inch + 1 mm`
+; is exact only over `Rational` (options/numeric-model/), the deep tie between the two layers.
+
+(case "converting a unit to another unit of the same dimension is an exact rational scale"
+  (doc    "`(Unit.in (Unit.of #\"metre\") (Qty.of (Rational.of 1 1) (Unit.of #\"inch\")))` converts 1 inch
+           to metres by its exact scale 127/5000 — an exact `Rational` conversion, not an approximation
+           (units-of-measure.md #A Unit Carries An Exact Scale To Its Dimension's Reference). The result
+           is `(Qty Rational metre)` = 127/5000 m. Pins that a within-dimension conversion is the exact
+           scale the family declares.")
+  (needs  units-of-measure)
+  (input  (Unit.in (Unit.of #"metre") (Qty.of (Rational.of 1 1) (Unit.of #"inch"))))
+  (output (: (Qty.of (Rational.of 127 5000) (Unit.of #"metre")) (Qty Rational (Unit.of #"metre")))))
+
+(case "adding two units of one dimension converts to the reference unit exactly"
+  (doc    "THE mixing case: `(+ (Qty 1 inch) (Qty 1 mm))` over exact rational magnitudes — both are
+           dimension `length`, so each converts to the reference `metre` by its exact scale (1 inch =
+           127/5000 m, 1 mm = 1/1000 m) and they add there: 127/5000 + 1/1000 = 127/5000 + 5/5000 =
+           132/5000 = 33/1250 m. The result is `(Qty Rational metre)` — the common reference unit, a
+           deterministic function of the operand units (units-of-measure.md #Combining Units Of One
+           Dimension Is Well-Formed). Exact because the magnitudes are `Rational`.")
+  (needs  units-of-measure)
+  (input  (+ (Qty.of (Rational.of 1 1) (Unit.of #"inch")) (Qty.of (Rational.of 1 1) (Unit.of #"millimetre"))))
+  (output (: (Qty.of (Rational.of 33 1250) (Unit.of #"metre")) (Qty Rational (Unit.of #"metre")))))
+
+(case "mixing units of DIFFERENT dimensions is still a compile-time error"
+  (doc    "`(+ (Qty 1 inch) (Qty 1 second))` mixes `length` and `time` — DIFFERENT dimensions — so it is
+           CDZ0501, unchanged. Automatic conversion applies WITHIN a dimension (inch↔mm), never ACROSS
+           one (inch↔second): there is no scale relating a length to a time. Pins that the mixing
+           relaxation does not weaken the dimensional safety the layer exists for.")
+  (needs  units-of-measure)
+  (input  (+ (Qty.of (Rational.of 1 1) (Unit.of #"inch")) (Qty.of (Rational.of 1 1) (Unit.of #"second"))))
+  (error  CDZ0501))
+
+(case "comparing two units of one dimension converts before comparing"
+  (doc    "`(< (Qty 25 mm) (Qty 1 inch))` compares a length in mm to a length in inches — same dimension,
+           different units — so each converts to the reference and compares there: 25 mm = 25/1000 =
+           1/40 m, 1 inch = 127/5000 m; 1/40 = 125/5000 < 127/5000, so it is true. Pins that comparison,
+           like `+`/`-`, converts differing units of one dimension rather than rejecting them.")
+  (needs  units-of-measure)
+  (input  (< (Qty.of (Rational.of 25 1) (Unit.of #"millimetre")) (Qty.of (Rational.of 1 1) (Unit.of #"inch"))))
+  (output (: true Bool)))
+
+; ============================================================================================
+; Prefixes — SI decimal (powers of ten) and IEC binary (powers of two) as exact scales
+; ============================================================================================
+; A PREFIX applies an exact scale to a unit, producing another unit of the SAME dimension
+; (units-of-measure.md #A Scaled Unit Is A Unit Scaled By An Exact Factor). SI decimal prefixes are
+; powers of ten (kilo 10³, milli 10⁻³ = 1/1000 — an exact Rational); IEC binary prefixes are powers of
+; two (kibi 2¹⁰ = 1024, mebi 2²⁰). `kilobyte` (1000 byte) and `kibibyte` (1024 byte) are DISTINCT units
+; of one dimension with distinct exact scales — never silently equated.
+
+(case "an SI decimal prefix scales a unit by a power of ten"
+  (doc    "`(Unit.in (Unit.of #\"metre\") (Qty.of (Rational.of 3 1) (Unit.prefix kilo (Unit.of #\"metre\"))))`
+           converts 3 km to metres: `(Unit.prefix kilo metre)` has scale 1000·1 = 1000, so 3 km = 3000 m.
+           Pins that a prefixed unit is a unit of the same dimension differing by the exact prefix
+           factor.")
+  (needs  units-of-measure)
+  (input  (Unit.in (Unit.of #"metre") (Qty.of (Rational.of 3 1) (Unit.prefix kilo (Unit.of #"metre")))))
+  (output (: (Qty.of (Rational.of 3000 1) (Unit.of #"metre")) (Qty Rational (Unit.of #"metre")))))
+
+(case "a negative-power SI prefix is an exact rational scale"
+  (doc    "`(Unit.in (Unit.of #\"second\") (Qty.of (Rational.of 5 1) (Unit.prefix milli (Unit.of #\"second\"))))`
+           converts 5 ms to seconds: `milli` = 10⁻³ = 1/1000, so 5 ms = 5/1000 = 1/200 s. Pins that
+           negative-power prefixes are exact `Rational` scales — the second reason exact rationals are
+           load-bearing for units (a milli/micro/nano factor has no exact float or integer form).")
+  (needs  units-of-measure)
+  (input  (Unit.in (Unit.of #"second") (Qty.of (Rational.of 5 1) (Unit.prefix milli (Unit.of #"second")))))
+  (output (: (Qty.of (Rational.of 1 200) (Unit.of #"second")) (Qty Rational (Unit.of #"second")))))
+
+(case "an IEC binary prefix scales a unit by a power of two"
+  (doc    "`(Unit.in (Unit.of #\"byte\") (Qty.of (Rational.of 1 1) (Unit.prefix mebi (Unit.of #\"byte\"))))`
+           converts 1 MiB to bytes: `mebi` = 2²⁰ = 1048576, so 1 MiB = 1048576 byte. Pins the binary
+           prefix family (kibi/mebi/gibi) alongside the decimal one — distinct scales for `information`.")
+  (needs  units-of-measure)
+  (input  (Unit.in (Unit.of #"byte") (Qty.of (Rational.of 1 1) (Unit.prefix mebi (Unit.of #"byte")))))
+  (output (: (Qty.of (Rational.of 1048576 1) (Unit.of #"byte")) (Qty Rational (Unit.of #"byte")))))
+
+(case "a decimal kilobyte and a binary kibibyte are distinct units of one dimension"
+  (doc    "`(+ (Qty 1 KiB) (Qty 1 kB))` over the `information` dimension: kibibyte = 1024 byte and
+           kilobyte = 1000 byte are DISTINCT units with distinct exact scales, so mixing them converts to
+           the reference `byte` and sums to 1024 + 1000 = 2024 byte — NOT 2000, never silently equated.
+           Pins that the two prefix systems are genuinely different scales the arithmetic keeps distinct
+           (the classic KiB-vs-kB conflation is caught, not hidden).")
+  (needs  units-of-measure)
+  (input  (+ (Qty.of (Rational.of 1 1) (Unit.prefix kibi (Unit.of #"byte")))
+             (Qty.of (Rational.of 1 1) (Unit.prefix kilo (Unit.of #"byte")))))
+  (output (: (Qty.of (Rational.of 2024 1) (Unit.of #"byte")) (Qty Rational (Unit.of #"byte")))))

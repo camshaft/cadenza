@@ -33,13 +33,47 @@ A combination of quantities of incompatible dimension MUST be rejected at compil
 
 An operation that derives a dimension MUST produce the dimension the operation's rule defines rather than discard dimensional information.
 
+## Units Within A Dimension
+
+### A Dimension Groups Interconvertible Units
+
+A dimension MUST admit more than one named unit, so that several units — such as a metre, a millimetre, and an inch — name measures of one dimension rather than each being a distinct dimension.
+
+Two units of the same dimension MUST be interconvertible, and two units of different dimension MUST NOT be.
+
+### A Unit Carries An Exact Scale To Its Dimension's Reference
+
+Each unit of a dimension MUST carry an exact scale relating it to that dimension's reference unit, so that a conversion between two units of one dimension is an exact ratio rather than an approximation.
+
+A conversion between two units of the same dimension MUST preserve the exact value when the underlying numeric type is exact, losing precision only where the underlying numeric type is itself inexact.
+
+### Combining Units Of One Dimension Is Well-Formed
+
+Combining two quantities whose units share a dimension MUST be well-formed even when the units differ, the combination being taken at a common unit of that dimension reached by each operand's exact scale.
+
+The result unit of a combination of same-dimension quantities MUST be a deterministic function of the operands' units, so that the result is reproducible rather than dependent on evaluation order.
+
+### A Scaled Unit Is A Unit Scaled By An Exact Factor
+
+A unit prefixed or otherwise scaled by an exact factor — a decimal multiple such as kilo or milli, or a binary multiple such as kibi or mebi — MUST itself be a unit of the same dimension as the unit it scales, differing only by that exact factor.
+
+A scale factor MUST be an exact value, so that a prefixed unit converts to its base without approximation.
+
 ## Layered, Not Core
 
 ### Dimensional Analysis Does Not Alter The Numeric Core
 
-Adding a unit to a numeric value MUST NOT change the value's numeric byte form.
+Attaching a unit to a numeric value MUST NOT change the value's numeric byte form.
 
-Adding a unit to a numeric value MUST NOT change the value's runtime behavior.
+Attaching a unit to a numeric value, or combining values that already share a unit, MUST NOT change the value's runtime behavior.
+
+### A Unit Conversion Is The Arithmetic The Source Denotes
+
+A conversion between two units of one dimension MUST be the scale arithmetic the source denotes by naming those units, not additional arithmetic the dimensional layer introduces, so that the emitted arithmetic is what the program means rather than an overhead the check imposes.
+
+A unit conversion whose operands are compile-time constants MUST be computed at compile time, so that a conversion between constant quantities contributes no runtime arithmetic.
+
+The dimension a quantity carries MUST be erased whether or not a scale conversion is emitted, so that the type-level dimensional information never survives into the component even when the scale arithmetic does.
 
 ## Optionality
 

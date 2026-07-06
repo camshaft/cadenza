@@ -64,10 +64,14 @@ Diagnostic Has A Stable Code").
 | **`CDZ03xx` — numeric model** | | |
 | `CDZ0301` | an operation on two different numeric types without an explicit conversion | `spec/capabilities/numeric-model.md#numeric-types-do-not-silently-promote` |
 | `CDZ0302` | an integer type indexed by a width outside the admitted range — e.g. `(UInt 0)`, `(UInt 65)`, a negative width, or a non-natural width — a specialization of the compile-time-constraint rejection (type-system.md §"A Generic Constraint Is A Compile-Time Predicate Over Type-Values") for the integer width constructor | `spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width` |
+| `CDZ0303` | a `(pragma default-integer <T>)` module directive whose `<T>` is not an integer type the numeric model admits — e.g. a float, a rational, or a non-numeric type (the numeric-domain check on a well-formed directive, distinct from the structural `CDZ0602`) | `spec/capabilities/numeric-model.md#a-module-may-declare-its-default-integer-literal-type` |
 | **`CDZ04xx` — capabilities and effects** | | |
 | `CDZ0401` | a program that reaches a host operation its manifest does not enumerate | `spec/capabilities/capabilities-and-effects.md#undeclared-capability-is-a-compile-time-error` |
 | **`CDZ05xx` — verification layers (dimensional analysis, refinements, contracts, proofs)** | | |
 | `CDZ0501` | a combination of quantities whose dimensions are incompatible — adding, subtracting, or comparing quantities of unlike dimension, or annotating a quantity at a dimension the operation does not derive | `spec/capabilities/units-of-measure.md#dimensional-mismatch-is-an-error` |
+| **`CDZ06xx` — module directives (pragmas)** | | |
+| `CDZ0601` | a module directive whose pragma key is not one the pinned registry defines — an unrecognized directive, which is rejected rather than ignored so it can neither silently change nor silently fail to change a program's meaning | `spec/capabilities/modules-and-namespaces.md#an-unrecognized-module-directive-is-rejected` |
+| `CDZ0602` | a module directive whose pragma key is recognized but whose arguments do not match the shape that key defines — e.g. a wrong number of arguments or an argument of the wrong kind (distinct from a well-formed directive whose argument violates a domain rule, which carries that domain's code) | `spec/capabilities/modules-and-namespaces.md#a-module-directive-is-drawn-from-a-fixed-set` |
 
 Traps are a distinct, **runtime** category: a trap is not a diagnostic code but a defined-kind halt
 carrying a reason string (core-semantics.md §"A Trap Halts Execution At A Defined Point"), witnessed in

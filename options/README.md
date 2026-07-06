@@ -65,6 +65,8 @@ any future generation.
 | [`ad-hoc-polymorphism`](./ad-hoc-polymorphism/) | explicit-dictionaries | type-system.md |
 | [`symbol-interning`](./symbol-interning/) | interned-string-symbol | collections-and-text.md; type-system.md; memory-and-resource-model.md |
 | [`verification-strategy`](./verification-strategy/) | liquid-refinements-extrinsic-proofs | verification-layers.md; property-based-testing.md |
+| [`units-of-measure`](./units-of-measure/) | erased-compile-time-quantity | units-of-measure.md; numeric-model.md; verification-layers.md |
+| [`module-pragmas`](./module-pragmas/) | keyed-registry-strict | modules-and-namespaces.md; numeric-model.md |
 
 ## Change discipline
 

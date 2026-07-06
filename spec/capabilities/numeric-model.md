@@ -47,6 +47,38 @@ An integer operation that overflows its type MUST have a defined, deterministic 
 
 The compiler MUST NOT emit an integer operation whose overflow behavior is undefined.
 
+## Arbitrary Precision
+
+### An Arbitrary-Precision Integer Has Unbounded Range
+
+An arbitrary-precision integer type MUST represent every integer with no maximum or minimum bound, so that an arithmetic operation on it never overflows.
+
+An arithmetic operation on arbitrary-precision integers MUST NOT trap for the magnitude of its result, growing its representation as the result requires rather than wrapping or trapping.
+
+### An Arbitrary-Precision Integer Is A Distinct Type Opted Into Explicitly
+
+An arbitrary-precision integer MUST be a distinct numeric type, so that it does not silently convert to or from a fixed-width integer without an explicit conversion.
+
+## Default Literal Type
+
+### A Module May Declare Its Default Integer Literal Type
+
+A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), the integer type that an integer literal with no other constraint takes within that module.
+
+When a module declares no default integer literal type, an integer literal with no other constraint MUST take the numeric model's default integer type.
+
+The type named by a default-integer-literal directive MUST be an integer type the numeric model admits, and a directive naming a non-integer type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
+
+### A Declared Default Applies At The Definition Site
+
+The default integer literal type in force for a literal MUST be the one declared by the module in which the literal is written, not one declared by any module that imports it, so that importing a module never changes the type its literals take.
+
+### A Declared Default Fixes A Type, Not A Conversion
+
+Declaring a default integer literal type MUST only determine the type an otherwise-unconstrained integer literal takes, and MUST NOT introduce any implicit conversion between numeric types, so that every no-silent-promotion rule applies unchanged to a literal whatever its declared default type.
+
+An explicit type annotation or other constraint on an integer literal MUST take precedence over the module's declared default integer literal type.
+
 ## Exactness
 
 ### Exact Arithmetic Is Exact

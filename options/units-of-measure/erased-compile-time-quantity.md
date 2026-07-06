@@ -44,10 +44,91 @@ over base units) expressed in Cadenza's own compile-time-value machinery rather 
 compiler syntax.
 
 Base dimensions are named by `Symbol`s (`options/symbol-interning/`), so a program (or a prelude
-module) declares its own base dimensions — `metre`, `kilogram`, `second`, `ampere`, … — and builds
-derived units from them. The layer fixes the *algebra*, not a privileged SI vocabulary; a build's
-prelude MAY supply the SI base dimensions and common derived units (`newton` = `kg·m·s⁻²`) as ordinary
-definitions, exactly as `Int8` is an ordinary alias for `(Int 8)`.
+module) declares its own base dimensions — `length`, `mass`, `time`, `current`, `information`, … — and
+builds derived units from them. The layer fixes the *algebra*, not a privileged SI vocabulary; a
+build's prelude MAY supply the SI base dimensions and common derived units (`newton` = `kg·m·s⁻²`) as
+ordinary definitions, exactly as `Int8` is an ordinary alias for `(Int 8)`.
+
+## Dimension vs. unit — a family of interconvertible units per dimension
+
+The group element above is the **dimension** — `length`, `time`, `information` — and it is what the
+type tracks and what gates compatibility. A **unit** is a *named measure of a dimension*: `metre`,
+`millimetre`, and `inch` are three units of the one dimension `length`, and `byte`, `kibibyte`, and
+`kilobyte` are three units of `information`. This split — dimension for compatibility, unit for the
+concrete scale — is what lets a program **mix units of one dimension** (add inches to millimetres)
+while still rejecting a mix of *dimensions* (add a length to a time). The committed base-unit model is
+the degenerate case of one unit per dimension; this generalizes it additively — a base unit is simply
+the scale-1 reference unit of its dimension, so every earlier case stays valid.
+
+A **family of measure** is a dimension together with its units, each carrying an **exact scale** to the
+dimension's designated **reference unit** (the unit of scale 1). The scale is an exact `Rational`
+(`options/numeric-model/`), which is what makes conversion *exact*:
+
+| Family (dimension) | Reference | Units and their exact scales to the reference |
+|---|---|---|
+| `length` | `metre` | `metre` 1, `millimetre` 1/1000, `centimetre` 1/100, `kilometre` 1000, `inch` 127/5000, `foot` 381/1250, `mile` 201168/125 |
+| `time` | `second` | `second` 1, `millisecond` 1/1000, `minute` 60, `hour` 3600 |
+| `information` | `byte` | `byte` 1, `kilobyte` 1000, `megabyte` 10⁶, `kibibyte` 1024, `mebibyte` 2²⁰, `gibibyte` 2³⁰ |
+
+A unit is written `(Unit.of #"metre")` — a unit within the dimension the prelude declares it under —
+and a program's prelude defines its families as ordinary data (a dimension `Symbol` plus a map of
+unit-name ↦ exact-scale `Rational`), so the layer fixes the *mechanism* (a family is a dimension +
+scaled units), not a privileged vocabulary. A build's prelude MAY supply the SI families and the common
+imperial and information units; a program MAY declare its own.
+
+### Prefixes are structured exact scales — SI decimal and IEC binary
+
+A **prefix** applies an exact scale factor to a unit, producing another unit of the **same dimension**:
+`(Unit.prefix kilo metre)` is the kilometre (scale 1000·1 = 1000), `(Unit.prefix milli second)` the
+millisecond (1/1000), `(Unit.prefix mebi byte)` the mebibyte (2²⁰). Two prefix systems are first-class,
+because both matter and they are genuinely different scales:
+
+- **SI decimal prefixes** — powers of ten: `kilo` 10³, `mega` 10⁶, `giga` 10⁹, `tera` 10¹²; `milli`
+  10⁻³, `micro` 10⁻⁶, `nano` 10⁻⁹, `pico` 10⁻¹². A negative-power prefix is an exact `Rational` scale
+  (`milli` = 1/1000), which is the second reason exact rationals are load-bearing here.
+- **IEC binary prefixes** — powers of two: `kibi` 2¹⁰, `mebi` 2²⁰, `gibi` 2³⁰, `tebi` 2⁴⁰, used for
+  `information`. `kibibyte` = 1024 byte and `kilobyte` = 1000 byte are **distinct units of one
+  dimension** with distinct exact scales, so a program that conflates them is caught by the arithmetic
+  (1 KiB + 1 kB = 2024 byte, not 2000), never silently equated.
+
+A prefix is itself an exact scale value, so `(Unit.prefix p u)` is the unit whose scale is
+`p · scale(u)`; prefixing composes with the group operations exactly (a `(Unit.prefix kilo metre)`
+squared is `km²`, scale 10⁶ m²).
+
+## Mixing units of one dimension — automatic exact conversion at a common unit
+
+Combining two quantities whose units **share a dimension** is well-formed even when the units differ:
+the compiler converts each operand to a **common unit** of that dimension by its exact scale and
+combines there. The common unit is the operands' dimension's **reference unit**, chosen so the result
+is a deterministic function of the operand units (not of evaluation order):
+
+```
+(+ (Qty.of 1 (Unit.of #"inch")) (Qty.of 1 (Unit.of #"millimetre")))
+  ; both are dimension `length`
+  ; convert each to the reference `metre` by its exact scale:
+  ;   1 inch = 127/5000 m,  1 mm = 1/1000 m
+  ; -> (Qty Rational metre) = 127/5000 + 1/1000 = 129/5000 m   (exact)
+```
+
+The conversion is **automatic when the dimensions match**, and this is a deliberate, principled
+exception to the numeric core's no-silent-promotion stance — defensible precisely because it is *not*
+like `Int64`→`Float64` promotion:
+
+- **The conversion is exact and canonical.** There is exactly one right answer — the value at the
+  dimension's reference unit, reached by exact `Rational` scales. Integer→float promotion is
+  ambiguous (widen or truncate?) and lossy; a unit conversion within a dimension is neither. So the
+  reproducibility and no-surprise arguments that motivate no-promotion do not bite here.
+- **It requires exact magnitudes to stay exact.** `1 inch + 1 mm` is exact only over `Rational`
+  magnitudes; over `Float64` the scales round. This is the deep tie to `options/numeric-model/`:
+  **exact mixing requires exact magnitudes**, so a program that wants exact unit conversion carries its
+  magnitudes as `Rational` (see §"Relationship to the numeric model" below).
+- **Dimension mismatch is still a hard error.** `(+ (Qty 1 inch) (Qty 1 second))` remains `CDZ0501` —
+  auto-conversion applies *within* a dimension, never *across* one. The safety the layer exists for is
+  untouched; only the within-dimension unit change becomes automatic.
+
+A program that prefers every conversion visible in the source MAY still write it explicitly with
+`(Unit.in u q)` — convert `q` to unit `u` — which is also how a program pins the result unit when it
+does not want the reference (`(Unit.in (Unit.of #"inch") (+ a b))`).
 
 ## Constructing and observing a quantity
 
@@ -71,18 +152,25 @@ rather than discard dimensional information"):
 
 | Operation on `(Qty T a)` and `(Qty T b)` | Dimensional rule | Result |
 |---|---|---|
-| `(+ p q)`, `(- p q)` | dimensions MUST be equal (`a` = `b`) | `(Qty T a)` |
-| `(< p q)`, `(> p q)`, `(<= …)`, `(>= …)`, `(= …)` | dimensions MUST be equal | `Bool` |
+| `(+ p q)`, `(- p q)` | dimensions MUST be equal; if the *units* differ, each operand converts to the dimension's reference unit by its exact scale | `(Qty T r)`, `r` the common (reference) unit |
+| `(< p q)`, `(> p q)`, `(<= …)`, `(>= …)`, `(= …)` | dimensions MUST be equal; differing units convert to the reference before comparing | `Bool` |
 | `(* p q)` | dimensions multiply | `(Qty T (Unit.* a b))` |
 | `(/ p q)` | dimensions divide | `(Qty T (Unit./ a b))` |
 | `(Qty.pow p n)` (`n` a compile-time integer) | dimension raised to `n` | `(Qty T (Unit.^ a n))` |
 
-The **underlying numeric type `T` obeys the numeric core unchanged**: `(+ p q)` requires `p` and `q`
-to have the *same* `T` just as bare numeric addition does (no silent promotion between `Int64` and
-`Float64`, numeric-model.md), and the numeric operation that actually runs is the plain `T` operation
-on the erased values. The unit layer adds one obligation on top — that the *dimensions* also agree for
-`+`/`-`/comparison, and compose by the group operation for `*`/`/`/`pow` — and contributes **nothing**
-to the emitted arithmetic.
+When both operands are already in the **same unit** (`a` = `b`, the committed case), no conversion
+happens and the result carries that unit: `(+ (Qty 2 metre) (Qty 3 metre))` = `(Qty 5 metre)`, and the
+unit layer contributes **nothing** to the emitted arithmetic. When the units *differ but share a
+dimension*, each operand is scaled to the reference unit — that scale multiply is real arithmetic (see
+§"Erasure" below), the exact `Rational` conversion the source denotes by naming two different units.
+
+The **underlying numeric type `T` obeys the numeric core unchanged**: `(+ p q)` requires `p` and `q` to
+have the *same* `T` just as bare numeric addition does (no silent promotion between `Int64` and
+`Float64`, numeric-model.md), and the numeric operation that runs is the plain `T` operation. The unit
+layer adds two things on top — the *dimensions* must agree for `+`/`-`/comparison (composing by the
+group operation for `*`/`/`/`pow`), and same-dimension operands in *differing units* are converted to a
+common unit by their exact scales — and it introduces no arithmetic beyond that conversion the source
+already means.
 
 Multiplying by a bare (dimensionless) numeric scalar is the ordinary product with `Unit.one`, so
 scaling a quantity by a constant keeps its dimension: `(* (Qty.of 2.0 metre) (Qty.of 3.0 Unit.one))`
@@ -125,6 +213,32 @@ Erased; the refinement-erases-to-its-base-type discipline, verification-layers.m
   **included** is byte-identical to one derived with it **excluded** — dimensional discharge does not
   change emitted bytes (verification-layers.md #Discharge Does Not Change Emitted Bytes). The capability
   can only *reject more programs*, never change the meaning of one it accepts.
+
+### A scale conversion is the arithmetic the source denotes, not overhead the check adds
+
+The one subtlety mixing introduces: when two operands share a dimension but use **different units**, the
+compiler emits the **exact-scale conversion** to the common unit — a `Rational` multiply. This is
+honest to state precisely rather than paper over (units-of-measure.md #A Unit Conversion Is The
+Arithmetic The Source Denotes):
+
+- The *dimension* erases completely, always — no dimension symbol or exponent map ever survives, whether
+  or not a scale conversion is emitted. What may survive is the **scale multiply itself**, and only when
+  the source actually mixed units. `1 inch + 1 mm` denotes "convert both to a common length and add";
+  the conversion is the meaning of naming two different length units, not an overhead the checker adds
+  on top. Erasing units does not erase arithmetic the program asked for by writing it.
+- When the operands are **compile-time constants**, the conversion is **const-folded** — `1 inch + 1 mm`
+  becomes the literal `129/5000 metre` at compile time, contributing no runtime arithmetic. The scale
+  multiply reaches the emitted component only when a magnitude is a *runtime* value (a value from a
+  parameter, a call, an `if`), exactly like any other arithmetic on runtime operands.
+- **Same-unit combination stays free.** `(+ (Qty 2 metre) (Qty 3 metre))` needs no conversion, so it
+  emits the plain `T` addition and nothing else — the committed "zero runtime cost" story holds
+  unchanged for the common case where a program stays in one unit. The cost appears exactly and only
+  where a program mixes units, and it is the cost of the conversion the program requested.
+
+So the precise invariant is: the **dimensional discharge** sits off the byte path (a program with all
+units erased *to the same unit* is byte-identical with or without the capability), and a **unit
+conversion** is ordinary arithmetic the source denotes — const-folded when constant, emitted when
+runtime — never additional arithmetic the dimensional layer introduces of its own.
 
 ## Why these choices, against the north star
 

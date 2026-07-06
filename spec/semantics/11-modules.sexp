@@ -98,6 +98,47 @@
             (. m log)))
   (trap   "no such field"))
 
+; ============================================================================================
+; Module pragmas — the compiler-directive channel; unknown key REJECTED, not ignored
+; ============================================================================================
+; A module MAY carry directives written `(pragma <key> <arg>…)` that instruct the compiler how to
+; compile it (modules-and-namespaces.md §Module Directives; options/module-pragmas/). The load-bearing
+; rule — unlike C's advisory #pragma — is that an UNRECOGNIZED key is REJECTED at compile time (CDZ0601),
+; never ignored: a meaning-changing directive that some toolchain silently dropped would let one source
+; compile to two meanings, the drift the one-executable-semantics / canonical-form principles forbid
+; (constitution §IX, §X). A recognized key with the wrong argument shape is CDZ0602. The pinned registry
+; today defines one key, `default-integer` (its behavior witnessed in 06-numeric-model.sexp under
+; `needs numeric-model`); these cases pin the general mechanism. `(needs module-pragmas)`: the pragma
+; channel is realized by a later generation, so the seed's gate skips these — they pin the contract.
+
+(case "an unrecognized pragma key is rejected rather than ignored"
+  (doc    "`(pragma frobnicate 3)` names a key the pinned registry does not define, so the module is
+           REJECTED (CDZ0601, modules-and-namespaces.md #An Unrecognized Module Directive Is Rejected),
+           not silently ignored. THE reason the channel is strict: a dropped meaning-changing directive
+           would make one source mean two things on two toolchains. The general-mechanism companion of
+           the numeric `default-integer` cases.")
+  (needs  module-pragmas)
+  (input  (do
+            (module m
+              (pragma frobnicate 3)
+              (def (answer) 42))
+            ((. m answer) unit)))
+  (error  CDZ0601))
+
+(case "a recognized pragma with a malformed argument list is rejected"
+  (doc    "`(pragma default-integer)` names a registered key but omits its one required argument, so it
+           is rejected against the shape the key defines (CDZ0602, modules-and-namespaces.md #A Module
+           Directive Is Drawn From A Fixed Set, 2nd sentence). Distinct from CDZ0601 (unknown key) and
+           from CDZ0303 (a well-formed directive whose type argument fails the integer-domain predicate):
+           here the directive is structurally malformed.")
+  (needs  module-pragmas)
+  (input  (do
+            (module m
+              (pragma default-integer)
+              (def (answer) 42))
+            ((. m answer) unit)))
+  (error  CDZ0602))
+
 (case "an export and a like-named metadata key do not collide"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata (2nd
            sentence): metadata is reached by a key distinct from every export name, so metadata access

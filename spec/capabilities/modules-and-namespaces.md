@@ -47,6 +47,26 @@ The compiler MUST reject a module whose body reaches an effect its declared role
 
 The compiler MUST emit a machine-readable certificate that a module satisfies its declared role's effect profile, so that an activation review can trust the module's compliance — a fold role's purity, for instance — without re-deriving it from the module's body.
 
+## Module Directives
+
+### A Module Directive Is Drawn From A Fixed Set
+
+A module MAY carry directives that instruct the compiler how to compile it, and every such directive's key MUST be drawn from a set fixed by this specification rather than invented per program, so that a directive has one fixed meaning across generations.
+
+A module directive's arguments MUST match the shape the directive's key defines, and a directive whose arguments do not MUST be rejected with a machine-readable diagnostic.
+
+### An Unrecognized Module Directive Is Rejected
+
+A module directive whose key is not one the fixed set defines MUST be rejected at compile time with a machine-readable diagnostic, rather than ignored, so that a directive can neither silently change a program's meaning on a toolchain that understands it while being dropped by one that does not, nor silently fail to take effect.
+
+### A Meaning-Changing Directive Is Part Of The Canonical Form
+
+A module directive that changes the meaning of the module's definitions MUST be carried in the module's canonical form, so that the module's meaning is determined by its canonical form alone and does not depend on a compilation option outside it.
+
+### A Module Directive Is Compile-Time Only
+
+A module directive MUST be resolved at compile time and MUST NOT introduce any runtime representation of its own into the emitted component, so that a directive affects how the module is compiled without adding runtime cost or crossing the boundary.
+
 ## Dependency Resolution
 
 ### Dependencies Resolve By Content Address

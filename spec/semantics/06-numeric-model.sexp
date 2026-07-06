@@ -194,6 +194,160 @@
   (input  (+ (Rational.of 1 2) 1))
   (error  CDZ0301))
 
+; --- Arbitrary-precision integers: BigInt, unbounded range, opted into explicitly ---------
+; `BigInt` (options/numeric-model/) represents every integer with NO bound — the signed, unbounded
+; companion of the fixed-width family. Its arithmetic NEVER traps for magnitude and never wraps: the
+; representation grows as the result requires (numeric-model.md #An Arbitrary-Precision Integer Has
+; Unbounded Range). This is the type a domain that must not think about overflow reaches for — a
+; factorial, a cryptographic modulus, an exact accumulator. `(BigInt.of x)` converts a fixed-width
+; integer up; `Int64.of`/`(UInt N).of` convert back CHECKED (trap out of range). It is a DISTINCT type
+; opted into explicitly: no operation silently produces or consumes one (a BigInt/Int64 mix is CDZ0301).
+; `(needs numeric-model)`: the seed realizes only the checked Int64 core.
+
+(case "an arbitrary-precision integer multiplication does not overflow"
+  (doc    "`(* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807))` multiplies two values
+           each equal to Int64.max — a product far beyond 64 bits — and yields the exact BigInt
+           85070591730234615847396907784232501249, NOT a trap and NOT a wrap (numeric-model.md #An
+           Arbitrary-Precision Integer Has Unbounded Range). The same product over Int64 traps
+           (`integer overflow`); BigInt's representation grows instead. THE reason the type exists.")
+  (needs numeric-model)
+  (input  (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
+  (output (: 85070591730234615847396907784232501249 BigInt)))
+
+(case "an arbitrary-precision literal beyond 64 bits is an exact BigInt"
+  (doc    "`(: 100000000000000000000 BigInt)` annotates a literal larger than Int64.max as a BigInt — an
+           exact value with no width worry. Pins that BigInt carries a magnitude the fixed-width family
+           cannot (this literal would not fit any `(Int N)`/`(UInt N)` with N ≤ 64) and that its
+           canonical written form is the ordinary decimal.")
+  (needs numeric-model)
+  (input  (: 100000000000000000000 BigInt))
+  (output (: 100000000000000000000 BigInt)))
+
+(case "converting a fixed-width integer to BigInt is explicit"
+  (doc    "`(BigInt.of 42)` converts the Int64 42 up to the BigInt 42 — the explicit widening into the
+           unbounded type. A BigInt and the Int64 42 are DISTINCT types with distinct canonical forms;
+           the conversion is always written, never implicit.")
+  (needs numeric-model)
+  (input  (BigInt.of 42))
+  (output (: 42 BigInt)))
+
+(case "converting a BigInt back to a fixed width is checked and traps when out of range"
+  (doc    "`((UInt 8).of (BigInt.of 300))` converts a BigInt down to `(UInt 8)`, whose range is 0..=255,
+           so 300 does not fit and it TRAPS (numeric-model.md #A Conversion Between Integer Types Is
+           Explicit — the checked form), exactly as `((UInt 8).of 300)` on an Int64 does. Pins that
+           narrowing OUT of BigInt is checked, not a silent truncation.")
+  (needs numeric-model)
+  (input  ((UInt 8).of (BigInt.of 300)))
+  (trap   "integer overflow"))
+
+(case "a BigInt operation does not silently promote a fixed-width operand"
+  (doc    "`(+ (BigInt.of 1) 1)` mixes a BigInt and an Int64 — two distinct numeric types — rejected
+           (CDZ0301) rather than absorbing the Int64 1 into BigInt (numeric-model.md #Numeric Types Do
+           Not Silently Promote). The unbounded type does not swallow a fixed-width operand; to add, a
+           program writes `(+ (BigInt.of 1) (BigInt.of 1))`.")
+  (needs numeric-model)
+  (input  (+ (BigInt.of 1) 1))
+  (error  CDZ0301))
+
+; --- Module pragma `default-integer`: fixes a literal's TYPE, never a conversion ----------
+; A module MAY declare `(pragma default-integer <T>)` so a bare integer literal with no other constraint
+; takes `<T>` instead of Int64 within that module (numeric-model.md #A Module May Declare Its Default
+; Integer Literal Type). `pragma` is the module's compiler-directive channel (options/module-pragmas/):
+; its key comes from a PINNED registry, and an UNRECOGNIZED key is REJECTED, not ignored (CDZ0601) — a
+; directive that changes meaning must never be silently dropped (modules-and-namespaces.md #An
+; Unrecognized Module Directive Is Rejected). THE LOAD-BEARING PROPERTY of `default-integer`: it fixes
+; what type a literal STARTS as, and NOTHING else — every no-silent-promotion rule applies unchanged (#A
+; Declared Default Fixes A Type, Not A Conversion). DEFINITION-SITE scoped (the module the literal is
+; WRITTEN in, never a module that imports it — #A Declared Default Applies At The Definition Site), so
+; importing a module never changes the type of its literals. An explicit annotation wins over the
+; default. Resolved at compile time, then types erase — zero ABI impact. `(needs numeric-model)`.
+
+(case "a default-integer pragma makes a bare literal take the declared integer type"
+  (doc    "The `crypto` module declares `(pragma default-integer BigInt)`, so the bare literal 2 in
+           `double`'s body is a BigInt, x is a BigInt, and `(double (BigInt.of 21))` = 42 : BigInt — the
+           ergonomic escape hatch: a bignum-heavy module writes bare literals without `(BigInt.of …)`
+           around each. Pins that the declared default is the type an unconstrained literal takes.")
+  (needs numeric-model)
+  (input  (do
+            (module crypto
+              (pragma default-integer BigInt)
+              (def (double x) (* x 2)))
+            ((. crypto double) (BigInt.of 21))))
+  (output (: 42 BigInt)))
+
+(case "a default-integer pragma fixes a type but adds no conversion — no-promotion still holds"
+  (doc    "In a `(pragma default-integer BigInt)` module, `(mix)` writes `(+ 2 (Int64.of 1))`: the bare 2
+           is a BigInt (the module default), `(Int64.of 1)` is an Int64, so the mix is rejected (CDZ0301)
+           exactly as any BigInt/Int64 mix is (numeric-model.md #A Declared Default Fixes A Type, Not A
+           Conversion). THE load-bearing case: the default changed what type the literal STARTS as, it
+           did NOT introduce a coercion — the feature buys ergonomics without weakening no-promotion.")
+  (needs numeric-model)
+  (input  (do
+            (module m
+              (pragma default-integer BigInt)
+              (def (mix) (+ 2 (Int64.of 1))))
+            ((. m mix) unit)))
+  (error  CDZ0301))
+
+(case "an explicit annotation overrides the default-integer pragma"
+  (doc    "In a `(pragma default-integer BigInt)` module, `(: 5 Int64)` is still Int64 — an explicit
+           annotation takes precedence over the module default (numeric-model.md #A Declared Default
+           Fixes A Type…, last sentence). Pins that the default only decides the OTHERWISE-UNCONSTRAINED
+           case; a constrained literal keeps its constrained type.")
+  (needs numeric-model)
+  (input  (do
+            (module m
+              (pragma default-integer BigInt)
+              (def (pinned) (: 5 Int64)))
+            ((. m pinned) unit)))
+  (output (: 5 Int64)))
+
+(case "the default-integer pragma is definition-site scoped, not use-site"
+  (doc    "`lib` declares no pragma (its literals are Int64); `app` declares `(pragma default-integer
+           BigInt)`. `app` calls `(. lib answer)`, whose body's literal 42 was WRITTEN in `lib` — so it
+           stays Int64 regardless of `app`'s default (numeric-model.md #A Declared Default Applies At The
+           Definition Site). Importing a module never changes the type of code inside it; the result is
+           Int64, not BigInt. THE case that keeps the feature compatible with separate compilation.")
+  (needs numeric-model)
+  (input  (do
+            (module lib
+              (def (answer) 42))
+            (module app
+              (pragma default-integer BigInt)
+              (def (go) ((. lib answer) unit)))
+            ((. app go) unit)))
+  (output (: 42 Int64)))
+
+(case "a default-integer pragma naming a non-integer type is rejected"
+  (doc    "`(pragma default-integer Float64)` names a type that is not an integer the numeric model
+           admits, so the module is rejected (CDZ0303, numeric-model.md #A Module May Declare Its Default
+           Integer Literal Type). The pragma KEY is recognized and its argument is a valid type — it just
+           fails the integer-domain predicate — so this is the numeric CDZ0303, distinct from the
+           structural CDZ0602 (malformed args) and CDZ0601 (unknown key).")
+  (needs numeric-model)
+  (input  (do
+            (module m
+              (pragma default-integer Float64)
+              (def (x) 5))
+            ((. m x) unit)))
+  (error  CDZ0303))
+
+(case "an unrecognized pragma key is rejected, not ignored"
+  (doc    "`(pragma frobnicate 3)` names a key the pinned registry (options/module-pragmas/) does not
+           define, so the module is REJECTED (CDZ0601, modules-and-namespaces.md #An Unrecognized Module
+           Directive Is Rejected) rather than silently ignored. THE load-bearing rule of the pragma
+           channel — unlike C's #pragma, an unknown directive is never dropped, because a dropped
+           meaning-changing directive would let one source compile to two meanings. This is core to the
+           module surface, but tagged (needs numeric-model) only because it rides the pragma machinery
+           the same generation realizes.")
+  (needs numeric-model)
+  (input  (do
+            (module m
+              (pragma frobnicate 3)
+              (def (x) 5))
+            ((. m x) unit)))
+  (error  CDZ0601))
+
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode
            (contracts/determinism-and-fuel.md); byte-identical on every conforming runtime. The seed

@@ -62,9 +62,13 @@ and the seed's behavior gate skips them.
 
 - [`erased-compile-time-quantity`](./erased-compile-time-quantity.md) — a quantity is a value of the
   type constructor `(Qty T u)` pairing an underlying numeric type `T` with a compile-time unit `u`
-  drawn from a free abelian group over named base units (`Unit.one`, `Unit.*`, `Unit./`, `Unit.^`);
-  arithmetic composes dimensions by the group operation, addition/subtraction/comparison require equal
-  dimension (mismatch is `CDZ0501`), and `(Qty T u)` erases to `T` before emission so the numeric byte
-  form and runtime behavior are unchanged. **The default.**
+  drawn from a free abelian group over named base dimensions (`Unit.one`, `Unit.*`, `Unit./`, `Unit.^`);
+  each dimension is a **family of interconvertible units**, every unit carrying an **exact `Rational`
+  scale** to the dimension's reference unit, so units of one dimension mix (`1 inch + 1 mm`) by
+  automatic exact conversion while a mix of *dimensions* stays `CDZ0501`; **SI decimal** and **IEC
+  binary** prefixes are structured exact scales (`kilo` 10³, `mebi` 2²⁰); arithmetic composes dimensions
+  by the group operation; and `(Qty T u)` erases its *dimension* to `T` before emission (a scale
+  conversion is the exact-`Rational` arithmetic the source denotes, const-folded when constant). **The
+  default.**
 
 DEFAULT: erased-compile-time-quantity

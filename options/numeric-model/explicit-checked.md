@@ -14,7 +14,9 @@
 | Concern | Default |
 |---|---|
 | Integer types | the two **width-indexed type constructors** `Int` and `UInt`, applied to a compile-time width `N` in `1..=64`: `(Int N)` is a checked two's-complement signed integer over `−2ⁿ⁻¹..=2ⁿ⁻¹−1`, `(UInt N)` a checked unsigned integer over `0..=2ⁿ−1`. Every application is a distinct, checked type; each traps on overflow of its own range, none silently converts to another width or signedness. |
-| Default integer | **checked signed 64-bit** — `Int64`, the alias for `(Int 64)`; overflow **traps** deterministically rather than wrapping. It is the type a bare integer literal takes when nothing constrains it otherwise. |
+| Default integer | **checked signed 64-bit** — `Int64`, the alias for `(Int 64)`; overflow **traps** deterministically rather than wrapping. It is the type a bare integer literal takes when nothing constrains it otherwise and the module declares no other default (see §"Default integer literal type"). |
+| Arbitrary-precision integer | a distinct **`BigInt`** type of unbounded range, opted into explicitly — never overflows or wraps (see §"Arbitrary-precision integer"). |
+| Module default literal type | a module MAY declare `(pragma default-integer <T>)` (a module directive, `options/module-pragmas/`) so a bare literal in it takes `<T>` instead of `Int64`; fixes a type, never a conversion; definition-site scoped (see §"Default integer literal type"). |
 | Named width aliases | `Int8/16/32/64` and `UInt8/16/32/64` are ordinary aliases for `(Int 8)`…`(UInt 64)` — the common widths that also have a boundary representation; they are not separate primitives. Any other in-range width — `(UInt 48)`, `(UInt 62)`, `(Int 7)` — is an equally first-class type with no alias. |
 | Integer conversions | **explicit** only: `T.of x` is a **checked** conversion (traps when `x` is outside `T`'s range), `T.wrap x` is a **truncating/wrapping** conversion (keeps the low `N` bits under `T`'s two's-complement representation). Neither is ever performed implicitly. |
 | Wrapping integers | available as a **distinct type**, not a mode on the default integer, so wrap is never silent |
@@ -110,6 +112,85 @@ later optional increment MAY lift the ceiling and realize wide fixed-size intege
 representation, at which point `(UInt 128)` becomes a valid type with no change to the surface syntax —
 only the constraint's upper bound and the representation move. Until then, a program needing more than 64
 bits uses the opt-in arbitrary-precision big-integer type.
+
+## Arbitrary-precision integer — `BigInt`, opted into explicitly
+
+The arbitrary-precision integer type `BigInt` represents **every integer with no bound** — it is the
+signed, unbounded companion of the fixed-width family, opted into explicitly like the wrapping and
+rational types (numeric-model.md §"An Arbitrary-Precision Integer Has Unbounded Range", §"An
+Arbitrary-Precision Integer Is A Distinct Type Opted Into Explicitly").
+
+- **No overflow, ever.** A `BigInt` arithmetic operation **never traps for magnitude** and never
+  wraps: its representation grows as the result requires, so `(* huge huge)` is just a larger `BigInt`.
+  This is the whole point of the type — a domain that must not think about precision or overflow (a
+  factorial, a cryptographic modulus, an exact accumulator) uses `BigInt` and the overflow question
+  disappears. (Division by zero still traps: an unbounded range does not give `n/0` a value.)
+- **Construction.** `(BigInt.of x)` is the explicit conversion from a fixed-width integer, and
+  `Int64.of` / `(UInt N).of` convert *back*, **checked** — trapping when the `BigInt` is outside the
+  target's range (`(UInt 8).of (BigInt.of 300)` traps, exactly as `(UInt 8).of 300` does). The
+  canonical written value form is the ordinary decimal (`(: 42 BigInt)`); a `BigInt` and the `Int64`
+  `42` are **distinct types** with distinct canonical forms, crossed only by an explicit conversion.
+- **Distinct, no promotion.** No operation silently produces or consumes a `BigInt`: `(+ (BigInt.of 1)
+  1)` mixes `BigInt` and `Int64` and is rejected (`CDZ0301`) exactly as an `Int64`/`Float64` mix is.
+  The unbounded type does not "absorb" a fixed-width operand; the conversion is always written.
+- **Representation and boundary.** A `BigInt` is a multi-word (multi-limb) signed magnitude. It has a
+  boundary representation — a `list<u8>` in the fixed canonical two's-complement encoding pinned in
+  `options/type-mapping/` — so unlike a non-aliased fixed width, a `BigInt` **may cross an exported
+  signature**. That encoding fixes bytes that enter the canonical value form, so it is governed like
+  every other boundary type.
+- **Relationship to the reserved wide widths.** A width `N > 64` stays reserved (`CDZ0302`, §"Widths
+  above 64 are reserved"); `BigInt` is the *unbounded* type, not a fixed 128- or 256-bit one. The two
+  are different needs — `BigInt` grows without limit; a future `(UInt 128)` would be a fixed wide
+  register type — and `BigInt` is the answer today for "more than 64 bits."
+
+## Default integer literal type — a module may declare which integer a bare literal takes
+
+By default a bare integer literal is `Int64` (the table above). A **module may declare a different
+default** with the `default-integer` module directive (`options/module-pragmas/`), so that within that
+module an integer literal with no other constraint takes `<T>` instead of `Int64`:
+
+```
+(module crypto
+  (pragma default-integer BigInt)   ; bare literals in this module are BigInt
+  (def (double x) (* x 2))          ; x : BigInt, 2 : BigInt, result BigInt — no overflow to think about
+  (def (start) 1000000000000000000000))   ; the literal is a BigInt, no width worry
+```
+
+`pragma` is the module's compiler-directive channel (`options/module-pragmas/`): its key is drawn from
+a pinned registry, and an unrecognized key is **rejected, not ignored** (`CDZ0601`) — a directive that
+changes a program's meaning must never be silently dropped. `default-integer` is the registry's first
+key. This is the ergonomic escape hatch your domains want: a module doing arbitrary-precision or
+wrapping arithmetic throughout declares its default once, and every literal in it is born the right
+type — no `(BigInt.of …)` around every constant. The design is deliberately narrow, so it buys
+ergonomics **without** weakening any guarantee:
+
+- **It fixes a type, not a conversion.** The declaration only changes what type an
+  *otherwise-unconstrained* literal *starts as*. Once a literal has its type, **every no-silent-promotion
+  rule applies unchanged** (numeric-model.md §"A Declared Default Fixes A Type, Not A Conversion"). In
+  the `crypto` module above, `(+ (double x) someInt64)` is still `CDZ0301` — the default made the
+  literals `BigInt`, it did **not** add any coercion between `BigInt` and `Int64`. This is why the
+  feature is safe: it never introduces the silent promotion the model exists to forbid.
+- **It applies at the definition site (lexical), never the use site.** The default in force for a
+  literal is the one declared by the module the literal is *written in*, not by any module that imports
+  it (numeric-model.md §"A Declared Default Applies At The Definition Site"). A function defined in an
+  `Int64`-default module keeps its `Int64` literals when called from a `BigInt`-default module —
+  **importing a module never changes the type of code inside it**, which is what keeps the feature
+  compatible with separate compilation and deterministic meaning. The default is a property of the
+  source region, resolved entirely before types leave the compiler.
+- **An explicit constraint always wins.** An annotation or other constraint on a literal takes
+  precedence over the module default (numeric-model.md §"A Declared Default Fixes A Type…", 2nd
+  sentence): in a `BigInt`-default module, `(: 5 Int64)` is still `Int64`, and a literal in an
+  argument position of a known `Int64` parameter is `Int64`. The default only decides the
+  *otherwise-unconstrained* case.
+- **Compile-time only, zero ABI impact.** The default is resolved during type-checking and then types
+  erase (Principle VII); it changes which type a literal *has*, never a byte form or the boundary — a
+  `BigInt` literal serializes as a `BigInt` and an `Int64` literal as an `Int64`, exactly as if each had
+  been written explicitly. So the declaration is not an ABI concern; it is source-level ergonomics.
+- **Any integer type is declarable**, not only `BigInt`: `(pragma default-integer Wrapping64)` for a
+  module full of wrap-around hashing, `(pragma default-integer (UInt 32))` for a module of 32-bit index
+  math. The directive names an integer type the numeric model admits; a non-integer type is rejected
+  (`CDZ0303`, the numeric-domain check), distinct from an unrecognized pragma key (`CDZ0601`) or
+  malformed pragma arguments (`CDZ0602`).
 
 ## Exact rational — a normalized pair of big-integers, opted into explicitly
 
