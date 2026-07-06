@@ -56,13 +56,16 @@ ignition bar:
   **rejects an ill-typed program at compile time** with the type rule's diagnostic code (constitution
   §VII), realized incrementally over the rules it covers (reject-don't-miscompile).
 - **`collections` (primitive slice):** the built-in `list` and `map` aggregates as value forms —
-  construction, structural equality, and total-or-trap indexing — which a compiler needs to build and
-  walk an AST. Corpus cases needing them carry `(needs collections)`. This is the primitive slice only;
+  construction and structural equality — which a compiler needs to build and
+  walk an AST. Corpus cases needing them carry `(needs collections)`. Fallible indexing and lookup
+  (Option-returning `at`/`get`; collections-and-text.md §"Indexing And Lookup Are Fallible, Not
+  Trapping") are a distinct capability, `fallible-access`, the seed does not yet realize. This is the
+  primitive slice only;
   the richer **`collections-and-text`** capability (string scalar semantics, string lexicographic
   ordering, map iteration-order determinism) is deferred (below).
 - **`Bytes` (a byte-sequence value form):** an immutable sequence of 8-bit bytes — construction from a
-  list of `Int64` in `0..=255` (values outside the range trap), concatenation, length, total-or-trap
-  indexing, and structural equality — realized by the seed **because the Cadenza-authored compiler
+  list of `Int64` in `0..=255` (values outside the range trap), concatenation, length,
+  and structural equality — realized by the seed **because the Cadenza-authored compiler
   emits a component's wasm bytes as an ordinary `Bytes` value** (bootstrap.md §"The Compiler Is
   Authored In Cadenza, Not In The Seed"; self-hosting-and-bootstrap.md §"Each Generation Is Derived By
   The Previous"). This is the seam decision: the seed contributes evaluation and a `Bytes` value the
@@ -105,11 +108,20 @@ realizes them and adds their witnessing cases:
   and length, string lexicographic ordering, string NFC equality, and map iteration-order determinism.
   The seed realizes the primitive `list`/`map` slice (above) for building an AST; the full capability's
   text and ordering semantics are realized later.
+- **fallible-access** — Option-returning element indexing and key lookup: `List.at` / `String.at` /
+  `Bytes.at` yield `(Option T)` (`Some` in bounds, `None` out of bounds), sub-sequence `slice` yields
+  `(Option Seq)`, and map `get` yields `(Option V)` — with `expect` (core-semantics.md §"Requiring The
+  Value Of An Optional Traps On Absence") the explicit combinator that turns a `None` into a trap
+  carrying its message (collections-and-text.md §"Indexing And Lookup Are Fallible, Not Trapping"). The
+  seed today traps directly on an out-of-bounds access rather than returning an Option, so it does not
+  realize this capability; its corpus witnesses carry `(needs fallible-access)` and are skipped by the
+  seed until a later generation returns the Option. This is a behavior change from the earlier
+  total-or-trap indexing, not merely an addition.
 - **binary-matching** — the `(bin …)` binary construction-and-matching form (options/binary-syntax/):
   fixed-width integer segments with explicit endianness and signedness, sub-byte bit-fields, and
   dependent-size `bytes` segments, in both expression (construct) and pattern (destructure) position.
-  The seed realizes the primitive `Bytes` slice (construction, equality, length, concatenation,
-  total-or-trap indexing) it needs to build a component's wasm bytes; the richer `bin` grammar that
+  The seed realizes the primitive `Bytes` slice (construction, equality, length, concatenation)
+  it needs to build a component's wasm bytes; the richer `bin` grammar that
   subsumes it lands in a later increment. Corpus cases carry `(needs binary-matching)`.
 - **symbols** — the `Symbol` interned-name value form (options/symbol-interning/): `Symbol.of` interns
   a `String` to a `Symbol`, `Symbol.to-string` recovers it, and `=` compares two Symbols by content in

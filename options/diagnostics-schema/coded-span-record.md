@@ -53,6 +53,8 @@ Diagnostic Has A Stable Code").
 
 | Code | Meaning (the rejection it names) | Rule it enforces (`<spec-file>#<section-slug>`) |
 |---|---|---|
+| **`CDZ00xx` — reader (lexical / literal syntax)** | | |
+| `CDZ0001` | a string literal containing an unrecognized escape sequence — a backslash before a character that begins none of the recognized escapes (`\n`, `\t`, `\r`, `\\`, `\"`) | `spec/capabilities/collections-and-text.md#a-string-literals-escapes-are-a-closed-set` |
 | **`CDZ01xx` — binding, scope, and name resolution** | | |
 | `CDZ0101` | reference to a name with no enclosing binding | `spec/capabilities/core-semantics.md#binding-is-lexical` |
 | `CDZ0102` | a pattern that binds the same name more than once | `spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch` |

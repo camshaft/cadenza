@@ -4,7 +4,7 @@
 program builds a `Bytes` value from typed segments and how it destructures one by pattern — over the
 `Bytes` value form the language already realizes. The constitution and the collections spec fix that
 `Bytes` is an immutable byte-sequence value with construction, equality, length, concatenation, and
-total-or-trap indexing (spec/semantics/10-bytes.sexp; collections-and-text.md); they do not fix a
+fallible (Option-returning) indexing (spec/semantics/10-bytes.sexp; collections-and-text.md); they do not fix a
 syntax for reading and writing structured binary layouts, because that surface is the choice this
 decision pins.
 

@@ -23,7 +23,7 @@ generation already realizes. That keeps the added surface tiny.
 | **Records** | construct a record and read a field | `Behavior`, `Event`, and environment frames are records |
 | **Mutual recursion** | top-level functions that call each other, bounded by the resource measure | `eval` ↔ `eval-args` ↔ `eval-match` recur mutually |
 | **Structural equality** | `=` over values | evaluating the language's own `=`, and the reader/printer round-trip oracle |
-| **Lists** | construct, head, tail, length, index (total-or-trap) | argument lists, environments as assoc-lists, event sequences |
+| **Lists** | construct, head, tail, length, index (fallible, Option-returning) | argument lists, environments as assoc-lists, event sequences |
 | **Strings** | equality and concatenation | dispatch on a node's head-symbol name; build diagnostic and qualified-name text |
 | **Integers/bools** | the arithmetic and comparison the seed already realizes | delegated to when interpreting `+`, `<`, `if` |
 | **First-class functions/closures** | `fn` values that capture their scope, applied by `(f arg…)` | authoring a **compiler** in Cadenza needs first-class functions — passing, returning, and storing them (core-semantics.md §Functions); the seed realizes them |

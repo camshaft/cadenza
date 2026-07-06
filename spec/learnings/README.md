@@ -291,29 +291,49 @@ generations of Cadenza taught these lessons the expensive way; the specification
   operator M0–M9 ladder and names its single gate: **M3 (static types + rows) is where generics + HM inference lands,
   and nothing polymorphic — containers, width-indexed ints, the port itself — moves until it does.**
 
-## Open spec gaps (found by adversarial-corpus probing; awaiting a clarity pass)
+## Spec gaps (found by adversarial-corpus probing) — all four RESOLVED 2026-07-05 in a clarity pass
 
-These entries record behavior the specification has **not yet fixed** — an adversarial corpus run reached
+These entries record behavior the specification had **not fixed** — an adversarial corpus run reached
 a construct with two or more defensible, observably-distinct outcomes and no requirement selecting between
-them, so the corpus records no oracle for it. Unlike the resolved learnings above, each of these defers its
-requirement edit to a follow-up clarity agent: the entry names the gap, the candidate readings, and the
-recommended resolution, but does not itself change a requirement. Resolving one means adding the RFC-2119
-sentence the entry describes and the witnessing corpus case, then moving it into the resolved list above.
+them, so the corpus recorded no oracle for it. Each named the gap, the candidate readings, and a recommended
+resolution, deferring the requirement edit to a follow-up clarity pass. **That clarity pass ran on 2026-07-05
+and resolved all four** (each bullet below carries its RESOLVED note: the RFC-2119 sentence added, the witnessing
+corpus case, and — where the seed does not yet enforce the new rule — the `(needs …)` capability tag that skips
+the witness rather than FAILing the gate). The string/bytes indexing gap was resolved by an operator direction
+that went *beyond* the recommended fix — making indexing fallible (Option-returning) with an `expect` combinator,
+superseding total-or-trap entirely — a behavior change the seed realizes in a later generation.
 
 - [Spec gap: `let` binding sequencing is unspecified](./2026-07-05-spec-gap-let-binding-sequencing.md)
   — whether multiple bindings in one `let` are sequential (`let*`, each initializer sees the earlier names) or
   parallel (each evaluated in the enclosing scope) is undetermined; `(let ((x 1) (y (+ x 1))) y)` is 2 under one
-  reading and an unbound-name rejection under the other. Recommended: sequential (matches the seed and the
-  functional-language default).
+  reading and an unbound-name rejection under the other.
+  **RESOLVED 2026-07-05 (sequential):** core-semantics.md §"The Bindings Of One `let` Take Effect In Order" fixes
+  each initializer to observe the bindings written before it (a repeat shadows), matching the seed and the
+  `do`-sequencing rule the spec already commits to. Witnessed by two core cases in 02-binding-and-control.sexp
+  (`(let ((x 1) (y (+ x 1))) y)` → 2; `(let ((x 1) (x (+ x 10))) x)` → 11), both of which the seed passes.
 - [Spec gap: duplicate pattern binder](./2026-07-05-spec-gap-duplicate-pattern-binder.md)
   — whether a pattern may bind the same name twice (`(tuple x x)`), and if so whether it shadows, errors, or
-  imposes an equality constraint, is unspecified. Recommended: a repeated binder is a compile-time error
-  (linear patterns).
+  imposes an equality constraint, is unspecified.
+  **RESOLVED 2026-07-05 (linear, compile-time error):** core-semantics.md §"Bindings Introduced By A Pattern Are
+  Scoped To Its Branch" now requires each name be bound at most once, rejected as new code `CDZ0102`. Witnessed by
+  a 05-compound-types.sexp case `(match (tuple 1 2) ((tuple x x) x) (_ 0))` → `(error CDZ0102)`, gated
+  `(needs linear-patterns)` because the seed today mis-accepts the pattern (it lets the second binder shadow and
+  returns 2), so the case skips until a generation enforces linearity rather than FAILing the gate.
 - [Spec gap: String/Bytes indexing lacks a total-or-trap requirement](./2026-07-05-spec-gap-string-bytes-total-or-trap.md)
   — only *list* indexing has a dedicated total-or-trap MUST; String and Bytes out-of-bounds reads rely on the
   weaker general partial-operations clause, which permits a trap *or* a defined value, so the corpus's recorded
-  traps are one permitted choice rather than required behavior. Recommended: add a total-or-trap requirement
-  covering String and Bytes indexing (or generalize the list one).
+  traps are one permitted choice rather than required behavior.
+  **RESOLVED 2026-07-05 (made FALLIBLE, superseding total-or-trap — operator direction):** the operator chose that
+  indexing/lookup should be *fallible*, not trapping. collections-and-text.md §"List Operations Are Total Or Trap"
+  became §"Indexing And Lookup Are Fallible, Not Trapping": `List.at`/`String.at`/`Bytes.at`, sub-sequence `slice`,
+  and map `get` all return an `Option` (`Some` in bounds, `None` out of bounds / slice-out-of-range / missing key),
+  and core-semantics.md §"Requiring The Value Of An Optional Traps On Absence" adds `expect` — an Option-specific
+  combinator taking a *mandatory message* that becomes the trap reason (chosen over a generic `unwrap` across
+  Option+Result, and over the `unwrap` name, so intent is stated at the call site). This retires the three specific
+  OOB trap reasons (`list`/`bytes index`, `bytes slice out of bounds`). All ~27 indexing corpus cases across
+  05/10/13 (and one match-over-slice in 02) were flipped to Option outputs and gated `(needs fallible-access)` — a
+  capability the seed does not yet realize (it still traps directly) — so they skip until a `/build` returns the
+  Option, keeping the gate green. This is a *behavior change*, larger than the original gap, not merely a MUST added.
 - [The behavior gate is not byte-exact for floats](./2026-07-05-behavior-gate-not-byte-exact-for-floats.md)
   — the whole-float renderer used `f as i64`, which *saturates*, so distinct floats ≥ 2^63 (1e19, 1e20, 1e100)
   collapsed to one canonical form — violating deterministic-value-form injectivity — and the gate couldn't catch

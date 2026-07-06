@@ -215,3 +215,31 @@
            so two literals differing only in normalization are one value.")
   (input  "café")
   (output (: "café" String)))
+
+; --- A string literal's escape sequences are a closed set -----------------------------------
+; collections-and-text.md #A String Literal's Escapes Are A Closed Set: within a string literal a
+; backslash introduces an escape sequence, and a conforming reader recognizes exactly `\n` (U+000A),
+; `\t` (U+0009), `\r` (U+000D), `\\` (U+005C), and `\"` (U+0022). A backslash before any other
+; character is a compile-time error, so an unrecognized escape is a rejected program rather than a
+; silently-dropped backslash or an implementation-defined character. These pin the recognized set (the
+; escape denotes the one scalar value it names, so `(= "\t" <a literal tab>)` is true) and the
+; rejection of an unrecognized escape.
+
+(case "a recognized string escape denotes its one scalar value"
+  (doc    "`\"\\t\"` is the one-scalar string containing a tab (U+0009): the reader expands the escape,
+           so it equals a literal that contains an actual tab character (collections-and-text.md #A
+           String Literal's Escapes Are A Closed Set). Witnesses that `\\t` is recognized and denotes
+           exactly U+0009, not the two characters backslash-t.")
+  (input  (= "\t" "	"))
+  (output (: true Bool)))
+
+(case "an unrecognized string escape is rejected"
+  (doc    "`\"\\q\"` uses a backslash before `q`, which begins none of the recognized escape sequences,
+           so the reader MUST reject it at compile time (collections-and-text.md #A String Literal's
+           Escapes Are A Closed Set) rather than drop the backslash and read `q` (length 1) or emit an
+           implementation-defined character. Carries `(needs strict-escapes)`: the seed's reader today
+           accepts an unknown escape as the bare character, so it SKIPS this case until a generation
+           enforces the closed set; a later generation rejects the program.")
+  (needs  strict-escapes)
+  (input  "\q")
+  (error  CDZ0001))

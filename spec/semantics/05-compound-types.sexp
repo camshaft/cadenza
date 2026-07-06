@@ -411,6 +411,25 @@
             (def (main) (f 7))))
   (output (: (Some (tuple 7 1)) (Option (Tuple Int64 Int64)))))
 
+(case "a recursive function folds a runtime linked list to a scalar"
+  (doc    "The consumption half of the recursive-sum idiom, and the core shape a self-hosted compiler is
+           written in: a recursive function CONSUMES a runtime linked list (a user recursive sum) by
+           matching its variants and returns a SCALAR. `sm` sums the elements: `sm(Cons(5, Cons(8,
+           Cons(2, Nil))))` = 15. The list is built from a runtime value (so it lives on the value heap,
+           not folded), and `sm` recurses through `IntList.Cons`/`IntList.Nil` at run time, binding the
+           head and tail from each Cons node's payload tuple. Pins that a program whose RESULT is a
+           scalar it folded out of a runtime heap value compiles and runs — the `map`/`fold`-over-nodes
+           idiom the compiler leans on, distinct from a program whose result IS the heap value.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (def (sm xs) (match xs
+                           ((IntList.Cons (tuple h t)) (+ h (sm t)))
+                           ((IntList.Nil _)            0)))
+            (def (build n) (IntList.Cons (tuple n (IntList.Cons (tuple 8 (IntList.Cons (tuple 2 (IntList.Nil ()))))))))
+            (def (main) (sm (build 5)))))
+  (output (: 15 Int64)))
+
 (case "a recursive user sum type is built at run time and renders with qualified variant names"
   (doc    "A QUALIFIED-constructor recursive sum type — the linked-list / AST shape a self-hosted
            compiler manipulates — constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))`
@@ -1106,6 +1125,26 @@
             (match pair
               ((tuple a b) (+ a b)))))
   (output (: 10 Int64)))
+
+; --- A pattern is LINEAR: it binds each name at most once ------------------------------------
+; core-semantics.md #Bindings Introduced By A Pattern Are Scoped To Its Branch: "A pattern MUST bind
+; each name at most once; a pattern that binds the same name more than once MUST be a compile-time
+; error (CDZ0102)." So `(tuple x x)` — binding `x` twice — is rejected, rather than silently letting
+; the second binder shadow the first (which would make `(tuple x x)` bind `x` to the second element)
+; or imposing a hidden equality constraint (matching only a tuple whose two elements are equal). The
+; case carries `(needs linear-patterns)`: the seed does not yet enforce pattern linearity — it accepts
+; the pattern and lets the second binder shadow — so it SKIPS this case until a generation realizes the
+; check; a later generation runs it and produces the CDZ0102 rejection.
+
+(case "a pattern that binds the same name twice is rejected"
+  (doc    "`(match (tuple 1 2) ((tuple x x) x) (_ 0))` binds `x` twice in one pattern — not a linear
+           pattern — so the compiler rejects it (CDZ0102, core-semantics.md #Bindings Introduced By A
+           Pattern Are Scoped To Its Branch), rather than shadowing (which would yield 2) or imposing an
+           equality constraint (which would fall through to 0). Pins linearity: a repeated binder is an
+           error, not a silent shadow or a hidden equality test.")
+  (needs  linear-patterns)
+  (input  (match (tuple 1 2) ((tuple x x) x) (_ 0)))
+  (error  CDZ0102))
 
 (case "a recursive sum type works with pattern matching"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable: sum types can be recursive — a variant

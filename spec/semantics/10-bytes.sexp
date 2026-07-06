@@ -4,9 +4,12 @@
 ; self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous";
 ; options/realized-capability-set/seed-ignition-set.md). Tagged (needs bytes): the
 ; seed realizes this capability, so it runs these cases; a generation that does not
-; realize Bytes skips them. Results are (: <value> <Type>); an out-of-range byte or
-; an out-of-bounds index is a runtime trap (total-or-trap) that survives type-checking,
-; not a static rejection — the compiler emits a component that traps at that point.
+; realize Bytes skips them. Results are (: <value> <Type>); an out-of-range byte is a
+; runtime trap that survives type-checking, not a static rejection. An out-of-bounds
+; index or slice is instead FALLIBLE — it yields None, not a trap (collections-and-text.md
+; #Indexing And Lookup Are Fallible, Not Trapping) — so those cases are tagged
+; (needs fallible-access), a capability the seed does not yet realize (they skip until a
+; generation returns an Option from Bytes.at / Bytes.slice).
 
 (case "a byte sequence is constructed from a list of integers in range"
   (doc    "Witnesses that the seed realizes a Bytes value form: Bytes.of maps a list of
@@ -39,12 +42,12 @@
              (Bytes.of (list 1 2 3 4))))
   (output (: true Bool)))
 
-(case "indexing a byte sequence returns the byte at that position"
-  (doc    "Witnesses total-or-trap Bytes indexing: an in-bounds index yields the byte
-           as an Int64 in 0..=255.")
-  (needs  bytes)
+(case "indexing a byte sequence returns Some of the byte at that position"
+  (doc    "Witnesses fallible Bytes indexing (collections-and-text.md #Indexing And Lookup Are Fallible,
+           Not Trapping): an in-bounds index yields the byte as an Int64 in 0..=255 wrapped in Some.")
+  (needs  fallible-access)
   (input  (Bytes.at (Bytes.of (list 7 8 9)) 1))
-  (output (: 8 Int64)))
+  (output (: (Some 8) (Option Int64))))
 
 (case "constructing a byte sequence with a value out of range traps"
   (doc    "Witnesses that a byte outside 0..=255 has no defined result, so the program
@@ -70,21 +73,22 @@
   (input  (Bytes.of (list -1)))
   (trap   "byte value out of range"))
 
-(case "indexing a byte sequence out of bounds traps"
-  (doc    "Witnesses total-or-trap Bytes indexing on the failing side, mirroring
-           List.at (collections-and-text.md #List Operations Are Total Or Trap).")
-  (needs  bytes)
+(case "indexing a byte sequence out of bounds yields None"
+  (doc    "Witnesses fallible Bytes indexing on the absent side, mirroring List.at
+           (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping): an out-of-bounds
+           index yields None rather than trapping.")
+  (needs  fallible-access)
   (input  (Bytes.at (Bytes.of (list 7 8 9)) 5))
-  (trap   "bytes index out of bounds"))
+  (output (: (None unit) (Option Int64))))
 
-(case "indexing a byte sequence with a negative index traps"
+(case "indexing a byte sequence with a negative index yields None"
   (doc    "`(Bytes.at (Bytes.of (list 7 8 9)) -1)` uses a negative index — no byte at position -1 — so
-           it MUST trap (total-or-trap Bytes indexing), NOT cast the negative index to a large unsigned
+           it MUST yield None (fallible Bytes indexing), NOT cast the negative index to a large unsigned
            offset and read an unspecified byte. The negative-index companion of the out-of-bounds `5`
            case above, mirroring the List.at negative-index case (05-compound-types).")
-  (needs  bytes)
+  (needs  fallible-access)
   (input  (Bytes.at (Bytes.of (list 7 8 9)) -1))
-  (trap   "bytes index out of bounds"))
+  (output (: (None unit) (Option Int64))))
 
 ; --- The empty byte sequence is an ordinary Bytes value ----------------------------------
 ; `(Bytes.of (list))` builds the zero-length byte sequence — a first-class Bytes value the compiler
@@ -150,68 +154,76 @@
 ; than by copying those bytes — but memory-and-resource-model.md #Sharing Is Not Observable requires the
 ; shared-storage slice and a freshly-constructed copy of the same bytes to be indistinguishable by EVERY
 ; operation: equality, length, and indexing. These cases pin that contract under copy semantics, so a
-; later view representation lands as a pure optimization that MUST keep them green. Slicing is
-; total-or-trap on the same footing as `Bytes.at`: a start or length that runs past the end has no
-; defined result and traps rather than reading beyond the sequence.
+; later view representation lands as a pure optimization that MUST keep them green. Slicing is fallible
+; on the same footing as `Bytes.at` (collections-and-text.md #Indexing And Lookup Are Fallible, Not
+; Trapping): an in-bounds range yields Some of the sub-sequence, and a start or length that runs past
+; the end yields None rather than reading beyond the sequence. A case that operates on the sliced bytes
+; unwraps the Option with `expect` (core-semantics.md #Requiring The Value Of An Optional Traps On
+; Absence), so it names the in-bounds expectation at the point it requires the sub-sequence.
 
-(case "slicing yields the bytes at that range"
-  (doc    "`(Bytes.slice b 1 2)` is the 2-byte sequence starting at index 1 — equal by its bytes in order
-           to the freshly-constructed `(Bytes.of (list 20 30))`. A slice is an ordinary Bytes value; a
-           representation that shares the parent's storage to realize it MUST be indistinguishable from
-           this copy (memory-and-resource-model.md #Sharing Is Not Observable).")
-  (needs  bytes)
-  (input  (= (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) (Bytes.of (list 20 30))))
+(case "an in-bounds slice yields Some of the bytes at that range"
+  (doc    "`(Bytes.slice b 1 2)` yields Some of the 2-byte sequence starting at index 1; the unwrapped
+           sub-sequence is equal by its bytes in order to the freshly-constructed `(Bytes.of (list 20
+           30))`. A slice is an ordinary Bytes value; a representation that shares the parent's storage
+           to realize it MUST be indistinguishable from this copy (memory-and-resource-model.md #Sharing
+           Is Not Observable). `expect` unwraps the in-bounds slice.")
+  (needs  fallible-access)
+  (input  (= (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")
+             (Bytes.of (list 20 30))))
   (output (: true Bool)))
 
 (case "the length of a slice is the slice's byte count"
-  (doc    "`(Bytes.len (Bytes.slice b 1 2))` = 2: length reads the slice's OWN byte count, not the
-           parent's. A view representation that stored a length must report the slice's length, never the
-           backing sequence's — the sharing is not observable through length.")
-  (needs  bytes)
-  (input  (Bytes.len (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2)))
+  (doc    "`(Bytes.len (expect (Bytes.slice b 1 2) …))` = 2: length reads the slice's OWN byte count, not
+           the parent's. A view representation that stored a length must report the slice's length, never
+           the backing sequence's — the sharing is not observable through length.")
+  (needs  fallible-access)
+  (input  (Bytes.len (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
   (output (: 2 Int64)))
 
 (case "indexing a slice is relative to the slice's start"
-  (doc    "`(Bytes.at (Bytes.slice b 1 2) 0)` = 20: index 0 of the slice is the byte at the slice's start,
-           not the parent's start. Pins that a view representation adds its offset — indexing is relative
-           to the slice, so sharing the parent's storage is not observable through indexing.")
-  (needs  bytes)
-  (input  (Bytes.at (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) 0))
-  (output (: 20 Int64)))
+  (doc    "`(Bytes.at (expect (Bytes.slice b 1 2) …) 0)` = Some 20: index 0 of the slice is the byte at
+           the slice's start, not the parent's start. Pins that a view representation adds its offset —
+           indexing is relative to the slice, so sharing the parent's storage is not observable through
+           indexing.")
+  (needs  fallible-access)
+  (input  (Bytes.at (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds") 0))
+  (output (: (Some 20) (Option Int64))))
 
 (case "a slice spanning a concatenation sees the logical bytes"
   (doc    "Slicing across the seam of `(concat a b)` — `(Bytes.slice (concat (list 1 2) (list 3 4)) 1 2)`
-           = `(Bytes.of (list 2 3))` — reads the LOGICAL bytes in order, independent of how the sequence
-           was assembled. Pins that a slice over a deferred-concatenation representation crosses leaf
-           boundaries correctly, seeing bytes not physical layout (#Sharing Is Not Observable).")
-  (needs  bytes)
-  (input  (= (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2)
+           = Some `(Bytes.of (list 2 3))` — reads the LOGICAL bytes in order, independent of how the
+           sequence was assembled. Pins that a slice over a deferred-concatenation representation crosses
+           leaf boundaries correctly, seeing bytes not physical layout (#Sharing Is Not Observable).")
+  (needs  fallible-access)
+  (input  (= (expect (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2)
+                     "slice is in bounds")
              (Bytes.of (list 2 3))))
   (output (: true Bool)))
 
 (case "a zero-length slice is the empty byte sequence"
-  (doc    "`(Bytes.slice b 2 0)` is the empty byte sequence — equal to `(Bytes.of (list))`. Pins the
-           degenerate slice: taking zero bytes at an in-bounds start yields the identity of
-           concatenation, not a trap.")
-  (needs  bytes)
-  (input  (= (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) (Bytes.of (list))))
+  (doc    "`(Bytes.slice b 2 0)` yields Some of the empty byte sequence — equal to `(Bytes.of (list))`.
+           Pins the degenerate slice: taking zero bytes at an in-bounds start yields the identity of
+           concatenation, present as Some, not None.")
+  (needs  fallible-access)
+  (input  (= (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) "slice is in bounds")
+             (Bytes.of (list))))
   (output (: true Bool)))
 
-(case "slicing past the end of a byte sequence traps"
+(case "slicing past the end of a byte sequence yields None"
   (doc    "`(Bytes.slice b 2 3)` on a 4-byte sequence asks for 3 bytes starting at index 2 — running one
-           byte past the end — so it MUST trap rather than read beyond the sequence or return a short
-           result (total-or-trap, on the same footing as Bytes.at out-of-bounds).")
-  (needs  bytes)
+           byte past the end — so it MUST yield None rather than read beyond the sequence or return a
+           short result (fallible, on the same footing as Bytes.at out-of-bounds).")
+  (needs  fallible-access)
   (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 3))
-  (trap   "bytes slice out of bounds"))
+  (output (: (None unit) (Option Bytes))))
 
-(case "slicing with a negative start traps"
-  (doc    "`(Bytes.slice b -1 2)` uses a start below 0 — no byte at position -1 — so it MUST trap, NOT
-           cast the negative start to a large unsigned offset. The negative-index companion of the
-           past-the-end case, mirroring the Bytes.at negative-index trap.")
-  (needs  bytes)
+(case "slicing with a negative start yields None"
+  (doc    "`(Bytes.slice b -1 2)` uses a start below 0 — no byte at position -1 — so it MUST yield None,
+           NOT cast the negative start to a large unsigned offset. The negative-index companion of the
+           past-the-end case, mirroring the Bytes.at negative-index None.")
+  (needs  fallible-access)
   (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) -1 2))
-  (trap   "bytes slice out of bounds"))
+  (output (: (None unit) (Option Bytes))))
 
 ; --- Compacting a slice preserves its value while releasing shared storage ---------------
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
@@ -223,13 +235,13 @@
 ; the resource measure, not through any value operation.
 
 (case "compacting a slice preserves its bytes"
-  (doc    "`(Bytes.compact (Bytes.slice b 1 2))` = `(Bytes.slice b 1 2)`: compacting materializes the
-           slice into independent storage, changing resource use but not the value. Pins that compact is
-           value-preserving — equal by bytes in order to the un-compacted slice (memory-and-resource
-           -model.md #Retained Storage Is Accounted For What It Holds Live).")
-  (needs  bytes)
-  (input  (= (Bytes.compact (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2))
-             (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2)))
+  (doc    "`(Bytes.compact (expect (Bytes.slice b 1 2) …))` = the same in-bounds slice: compacting
+           materializes the slice into independent storage, changing resource use but not the value.
+           Pins that compact is value-preserving — equal by bytes in order to the un-compacted slice
+           (memory-and-resource-model.md #Retained Storage Is Accounted For What It Holds Live).")
+  (needs  fallible-access)
+  (input  (= (Bytes.compact (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds"))
+             (expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
   (output (: true Bool)))
 
 (case "compacting is the identity on value for a whole byte sequence"

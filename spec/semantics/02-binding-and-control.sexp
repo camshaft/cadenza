@@ -19,6 +19,29 @@
   (input  (+ (let ((x 2)) x) (let ((x 1)) x)))
   (output (: 3 Int64)))
 
+; --- The bindings of one `let` take effect in order (let*, not parallel) --------------------
+; core-semantics.md #The Bindings Of One `let` Take Effect In Order: each binding's initializer sees
+; the bindings written before it in the SAME let, so `(let ((x 1) (y (+ x 1))) y)` is 2 — `y`'s
+; initializer observes `x`. Under a PARALLEL reading `y`'s initializer would evaluate in the enclosing
+; scope where `x` is unbound (a CDZ0101 rejection); the sequential reading, which the seed realizes,
+; is the recorded oracle.
+
+(case "a later let binding sees an earlier one in the same let"
+  (doc    "`(let ((x 1) (y (+ x 1))) y)` = 2: the second binding's initializer `(+ x 1)` observes the
+           first binding `x`, so the bindings of one `let` take effect in order (core-semantics.md
+           #The Bindings Of One `let` Take Effect In Order), not in parallel where `x` would be unbound
+           in `y`'s initializer.")
+  (input  (let ((x 1) (y (+ x 1))) y))
+  (output (: 2 Int64)))
+
+(case "a repeated let binding shadows the earlier one for what follows"
+  (doc    "`(let ((x 1) (x (+ x 10))) x)` = 11: the second binding of `x` shadows the first for the
+           initializers and body that follow, and its initializer `(+ x 10)` sees the first `x` = 1
+           (core-semantics.md #The Bindings Of One `let` Take Effect In Order + #Shadowing Is
+           Well-Defined). The sequential companion of the case above at a repeated name.")
+  (input  (let ((x 1) (x (+ x 10))) x))
+  (output (: 11 Int64)))
+
 (case "a reference to an unbound name is rejected before running"
   (doc    "Witnesses core-semantics.md #Binding Is Lexical: a reference to a name with no enclosing
            binding is refused. This is a front-end rejection every generation makes — scope resolution
@@ -309,10 +332,12 @@
   (output (: 100 Int64)))
 
 (case "matching on a sliced string selects the literal arm"
-  (doc    "Companion using another string-producing operation: `(String.slice \"hello\" 0 2)` is \"he\",
-           which the \"he\" arm matches, yielding 100. A slice result is a scrutinee value like any
-           other string.")
-  (input  (match (String.slice "hello" 0 2)
+  (doc    "Companion using another string-producing operation: `(String.slice \"hello\" 0 2)` yields Some
+           \"he\"; `expect` unwraps the in-bounds slice to \"he\", which the \"he\" arm matches, yielding
+           100. A slice result is fallible (collections-and-text.md #Indexing And Lookup Are Fallible,
+           Not Trapping), so the program names the in-bounds expectation before matching the substring.")
+  (needs  fallible-access)
+  (input  (match (expect (String.slice "hello" 0 2) "slice is in bounds")
             ("he"  100)
             (else  200)))
   (output (: 100 Int64)))
