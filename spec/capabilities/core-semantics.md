@@ -223,11 +223,13 @@ An operation that has no result for some inputs MUST, on those inputs, either ev
 
 An operation that has no result for some inputs MUST NOT produce an unspecified value.
 
-### Requiring An Absent Fallible Value Traps
+### Requiring The Value Of An Optional Traps On Absence
 
-A single fallible-value combinator MUST apply uniformly to any value that models presence-or-absence — an optional's present and absent cases, and a result's success and failure cases — returning the contained value when one is present and raising a trap of a defined kind when it is absent, so that turning absence into a halt is one explicit operation rather than a behavior wired into each fallible-producing operation.
+An optional MUST offer an operation that returns its contained value when one is present and raises a trap when it is absent, so that turning absence into a halt is one explicit operation rather than a behavior wired into each operation that produces an optional.
 
-The trap this combinator raises when it is applied to an absent value MUST carry one defined kind regardless of which fallible-producing operation yielded the absence, so that the combinator — not the upstream operation — is the single named point at which a program chooses to halt on absence.
+This operation MUST require a message argument, so that requiring a present value states, at the point it does so, why the value is expected to be present.
+
+The trap this operation raises on an absent optional MUST carry that message as its reason, so that the halt names the expectation the program stated rather than the upstream operation that produced the absence.
 
 ## Equality And Ordering
 

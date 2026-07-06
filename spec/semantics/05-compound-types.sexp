@@ -411,6 +411,24 @@
             (def (main) (f 7))))
   (output (: (Some (tuple 7 1)) (Option (Tuple Int64 Int64)))))
 
+(case "a recursive user sum type is built at run time and renders with qualified variant names"
+  (doc    "A QUALIFIED-constructor recursive sum type — the linked-list / AST shape a self-hosted
+           compiler manipulates — constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))`
+           with n=5 a runtime value produces `(IntList.Cons (tuple 5 (IntList.Nil unit)))`: a heap sum
+           whose payload is a heap tuple whose second element is a nested heap sum. Pins that a
+           QUALIFIED variant (`IntList.Cons`, not a bare `Some`) constructs at run time and the
+           type-directed renderer reconstructs its qualified `Type.Variant` name from the sum type's
+           declaration (the tag-free runtime holds only the discriminant), recursing through the
+           tuple and the nested sum. This is the runtime construction half of the recursive-sum idiom
+           the const case §\"a recursive sum type works with pattern matching\" folds; here the payload
+           is a genuine runtime value so it lives on the value heap.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (def (f n) (IntList.Cons (tuple n (IntList.Nil ()))))
+            (def (main) (f 5))))
+  (output (: (IntList.Cons (tuple 5 (IntList.Nil unit))) IntList)))
+
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
 ; whose payload is an Ok, binding the innermost payload directly (02-binding "nested patterns
@@ -536,36 +554,46 @@
   (input     (= (list (map (a 1)) (map (b 2))) (list (map (a 1)) (map (b 2)))))
   (output    (: true Bool)))
 
-(case "indexing a list out of bounds traps"
-  (doc    "Witnesses collections-and-text.md #List Operations Are Total Or Trap: a well-typed list
-           access whose index is out of range halts at run time with a trap — a total-or-trap
-           operation, not a static rejection.")
-  (needs collections)
+(case "indexing a list in bounds yields Some of the element"
+  (doc    "Witnesses collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping: a
+           well-typed list access whose index is in range yields the element wrapped in Some — an
+           Option, not a bare value — so absence and presence share one total return type.")
+  (needs fallible-access)
+  (input  (List.at (list 1 2 3) 1))
+  (output (: (Some 2) (Option Int64))))
+
+(case "indexing a list out of bounds yields None"
+  (doc    "Witnesses collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping: a
+           well-typed list access whose index is out of range yields None rather than trapping or
+           reading an unspecified value. A program that requires the element unwraps this Option with
+           `expect` (core-semantics.md #Requiring The Value Of An Optional Traps On Absence).")
+  (needs fallible-access)
   (input  (List.at (list 1 2 3) 5))
-  (trap   "list index out of bounds"))
+  (output (: (None unit) (Option Int64))))
 
 ; A NEGATIVE index is out of bounds exactly as an over-large one is — no element sits at position -1.
-; It is the classic total-or-trap miscompile: a lowering that casts the signed index to an unsigned
+; It is the classic fallible-access miscompile: a lowering that casts the signed index to an unsigned
 ; width (wasm addresses memory with u32/u64 offsets) turns -1 into a huge in-range-looking offset,
-; reading an unspecified value instead of trapping. #List Operations Are Total Or Trap requires the
-; trap; this pins the negative side of the bounds check the `5` case only exercises on the high side.
+; reading an unspecified value instead of yielding None. #Indexing And Lookup Are Fallible, Not
+; Trapping requires None; this pins the negative side of the bounds check the `5` case only exercises
+; on the high side.
 
-(case "indexing a list with a negative index traps"
+(case "indexing a list with a negative index yields None"
   (doc    "`(List.at (list 1 2 3) -1)` uses a negative index — no element at position -1 — so it MUST
-           trap (collections-and-text.md #List Operations Are Total Or Trap), NOT wrap the negative
-           index to a large unsigned offset and read an unspecified element. The negative-index
-           companion of the out-of-bounds `5` case above; both must trap.")
-  (needs collections)
+           yield None (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping), NOT
+           wrap the negative index to a large unsigned offset and read an unspecified element. The
+           negative-index companion of the out-of-bounds `5` case above; both yield None.")
+  (needs fallible-access)
   (input  (List.at (list 1 2 3) -1))
-  (trap   "list index out of bounds"))
+  (output (: (None unit) (Option Int64))))
 
-(case "indexing an empty list traps"
+(case "indexing an empty list yields None"
   (doc    "`(List.at (list) 0)` indexes position 0 of a list with no elements — out of bounds, since
-           an empty list has no element at any index — so it MUST trap. Pins the degenerate boundary:
-           index 0 is valid only when the list is non-empty.")
-  (needs collections)
+           an empty list has no element at any index — so it MUST yield None. Pins the degenerate
+           boundary: index 0 is present only when the list is non-empty.")
+  (needs fallible-access)
   (input  (List.at (list) 0))
-  (trap   "list index out of bounds"))
+  (output (: (None unit) (Option Int64))))
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")

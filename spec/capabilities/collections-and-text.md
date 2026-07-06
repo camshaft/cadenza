@@ -84,7 +84,7 @@ An operation that reads an element of a sequence by position — indexing a list
 
 Looking a key up in a map MUST likewise be total, yielding an optional value that is present when the map contains the key and absent when it does not.
 
-A program that requires the present value of such a result MUST obtain it through the fallible-value combinator (core-semantics.md §"Requiring An Absent Fallible Value Traps"), so that the boundary between handling absence as data and halting on absence is explicit at the point the program crosses it, not hidden inside the access operation.
+A program that requires the present value of such an optional MUST obtain it through the optional's value-requiring operation carrying a mandatory message (core-semantics.md §"Requiring The Value Of An Optional Traps On Absence"), so that the boundary between handling absence as data and halting on absence is explicit at the point the program crosses it, not hidden inside the access operation.
 
 ## Maps
 

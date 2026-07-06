@@ -55,6 +55,7 @@ Diagnostic Has A Stable Code").
 |---|---|---|
 | **`CDZ01xx` — binding, scope, and name resolution** | | |
 | `CDZ0101` | reference to a name with no enclosing binding | `spec/capabilities/core-semantics.md#binding-is-lexical` |
+| `CDZ0102` | a pattern that binds the same name more than once | `spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch` |
 | **`CDZ02xx` — types and pattern matching** | | |
 | `CDZ0201` | a program that is not well-typed (general type error) | `spec/capabilities/type-system.md#a-well-typed-program-does-not-go-wrong` |
 | `CDZ0202` | a value used at a nominal type that is only structurally identical to its declared type | `spec/capabilities/type-system.md#user-types-are-declarable-as-nominal-or-structural` |
@@ -82,10 +83,8 @@ the corpus by `(trap "<reason>")`. The reason strings the ignition corpus pins:
 | `"integer overflow"` | a checked integer operation overflows its type | numeric-model.md §"Overflow Is Defined" |
 | `"division by zero"` | an integer division or modulo has a zero divisor, which has no quotient or remainder | core-semantics.md §"Partial Operations Have A Defined Outcome" |
 | `"rational with zero denominator"` | an exact rational is constructed with a zero denominator, which denotes no number | numeric-model.md §"A Rational With A Zero Denominator Is Not A Value" |
-| `"list index out of bounds"` | a list is indexed outside its bounds | collections-and-text.md §"List Operations Are Total Or Trap" |
+| *the message the `expect` supplied* | `expect` is applied to an absent optional; the trap reason is verbatim the mandatory message the `expect` call carries, so the halt names the requirement the program stated rather than the upstream access | core-semantics.md §"Requiring The Value Of An Optional Traps On Absence" |
 | `"byte value out of range"` | a `Bytes` value is constructed from an integer outside `0..=255` | self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous" (the seed-realized `Bytes` form; `options/realized-capability-set/`) |
-| `"bytes index out of bounds"` | a `Bytes` value is indexed outside its bounds | self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous" (total-or-trap `Bytes` indexing) |
-| `"bytes slice out of bounds"` | a `Bytes` slice's start or length runs outside the sequence's bounds, or its start is negative | `spec/capabilities/memory-and-resource-model.md#sharing-is-not-observable` (total-or-trap `Bytes` slicing) |
 | `"binary value does not fit segment"` | a `(bin …)` construction is given a value with no encoding in its segment — a value above an unsigned segment's range, a negative value in an unsigned segment, or a value wider than a bit-field's width | `options/binary-syntax/README.md` (total-or-trap `bin` construction) |
 | `"member access on a non-record"` | member access `(. v k)` is applied to a value `v` that is not a record | core-semantics.md §"Member Access Projects A Record Field" |
 | `"no such field"` | member access `(. r k)` names a field `k` the record `r` does not contain | core-semantics.md §"Member Access Projects A Record Field" |
