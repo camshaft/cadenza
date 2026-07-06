@@ -251,3 +251,74 @@
   (needs  bytes)
   (input  (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))))
   (output (: true Bool)))
+
+; --- Bytes as a RUNTIME value: construct, measure, and concatenate at run time ------------
+; Every case above builds Bytes from literal integers, so the whole value is compile-time-known and
+; folds to one baked constant. But the compiler's OWN interface is `compile: list<u8> -> result<list<u8>>`
+; — it READS input bytes and BUILDS output bytes whose contents depend on runtime data. These cases pin
+; that a byte sequence carrying a genuine runtime byte, or built by a runtime-recursive computation, is
+; a first-class value: it lives on the value heap (packed, via the runtime's bytes-alloc/set/get/len),
+; renders `(Bytes.of (list …))` identically to the const form, and supports len/concat at run time. This
+; is the byte-level substrate a self-hosted compiler assembles a component's wasm bytes with.
+
+(case "a byte sequence carrying a runtime byte value is a first-class value"
+  (doc    "`(Bytes.of (list n 66 67))` with `n` a runtime parameter cannot fold to a constant — the
+           first byte is decided at run time. The seed builds it on the value heap (bytes-alloc then
+           bytes-set per byte, range-checking each to 0..=255) and the type-directed renderer walks it
+           back to `(Bytes.of (list 65 66 67))`, byte-identical to a const byte sequence. Pins that Bytes
+           is a runtime value, not only a compile-time literal — the compiler's output type flowing at
+           run time.")
+  (needs  bytes)
+  (input  (module m
+            (def (mk n) (Bytes.of (list n 66 67)))
+            (def (main)  (mk 65))))
+  (output (: (Bytes.of (list 65 66 67)) Bytes)))
+
+(case "constructing a byte sequence with a runtime value out of range traps"
+  (doc    "The runtime companion of the const `256`/`-1` out-of-range cases: when the byte value is a
+           runtime parameter, the range check `0..=255` must still fire at run time — a byte outside the
+           range has no defined result, so the program traps (core-semantics.md #Partial Operations Have
+           A Defined Outcome) rather than truncating `256` to `0` via a wrapping `as u8`. Pins that the
+           bound is enforced on the value, not only on a compile-time literal.")
+  (needs  bytes)
+  (input  (module m
+            (def (mk n) (Bytes.of (list n)))
+            (def (main)  (mk 256))))
+  (trap   "byte value out of range"))
+
+(case "the length of a runtime byte sequence is its byte count"
+  (doc    "`Bytes.len` of a byte sequence carrying a runtime byte: the seed folds a runtime Bytes value
+           to a SCALAR count via the runtime's bytes-len, the fold-to-scalar half of the idiom (like a
+           recursive list sum). `(Bytes.len (Bytes.of (list n 2 3)))` = 3 for any `n`.")
+  (needs  bytes)
+  (input  (module m
+            (def (sz n) (Bytes.len (Bytes.of (list n 2 3))))
+            (def (main)  (sz 9))))
+  (output (: 3 Int64)))
+
+(case "concatenating byte sequences built at run time appends their bytes in order"
+  (doc    "`Bytes.concat` of two runtime byte sequences copies each source byte into a fresh buffer via
+           the runtime's bytes-get/bytes-set, so the result is a genuine runtime value with the appended
+           bytes. `(Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9)))` = `(Bytes.of (list 7 8 9))`
+           for `a=7 b=8`. Pins runtime concatenation — how a compiler joins the byte fragments of its
+           output.")
+  (needs  bytes)
+  (input  (module m
+            (def (join a b) (Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9))))
+            (def (main)      (join 7 8))))
+  (output (: (Bytes.of (list 7 8 9)) Bytes)))
+
+(case "a recursively-built byte sequence assembles its bytes at run time"
+  (doc    "The genuine self-hosting idiom for output: a byte sequence whose LENGTH is decided at run
+           time, built by recursion + concatenation, not a fixed literal spine. `rep` prepends the byte
+           88 `n` times onto the empty sequence, so how many bytes exist is known only at run time.
+           `(rep 4)` = `(Bytes.of (list 88 88 88 88))`. This is exactly the shape a self-hosted compiler
+           uses to emit a component's wasm bytes — concatenating byte fragments in a recursion whose
+           depth is driven by the program being compiled.")
+  (needs  bytes)
+  (input  (module m
+            (def (rep n) (if (< n 1)
+                            (Bytes.of (list))
+                            (Bytes.concat (Bytes.of (list 88)) (rep (- n 1)))))
+            (def (main)  (rep 4))))
+  (output (: (Bytes.of (list 88 88 88 88)) Bytes)))
