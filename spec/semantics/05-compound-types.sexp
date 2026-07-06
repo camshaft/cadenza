@@ -453,6 +453,30 @@
             (def (main) (sm (count 5)))))
   (output (: 15 Int64)))
 
+(case "an expression tree built at run time is evaluated by matching its node variants"
+  (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
+           canonical little AST — is built at run time by `build` (its structure decided by a runtime
+           argument), then `ev` evaluates it by dispatching on each node's runtime variant. `Expr.Lit`
+           carries an Int64 leaf; `Expr.Add`/`Expr.Mul` each carry a `(Tuple Expr Expr)` of two
+           sub-expressions bound from the node's payload and evaluated recursively. `build 4` produces
+           `Add(Lit 4, Add(Lit 3, Add(Lit 2, Add(Lit 1, Lit 2))))`, so `ev` yields 4+3+2+1+2 = 12. Pins
+           that a THREE-variant recursive sum (not just a two-variant list) built at run time is
+           consumed by runtime discriminant dispatch, binding a nested tuple payload of two heap
+           sub-nodes and recursing into each — the exact `(match node ((Expr.Add …) …) …)` idiom a
+           self-hosted evaluator/compiler is written in.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Expr (Lit Int64 | Add (Tuple Expr Expr) | Mul (Tuple Expr Expr)))
+            (def (ev e) (match e
+                          ((Expr.Lit n)           n)
+                          ((Expr.Add (tuple a b)) (+ (ev a) (ev b)))
+                          ((Expr.Mul (tuple a b)) (* (ev a) (ev b)))))
+            (def (build k) (if (< k 1)
+                               (Expr.Lit 2)
+                               (Expr.Add (tuple (Expr.Lit k) (build (- k 1))))))
+            (def (main) (ev (build 4)))))
+  (output (: 12 Int64)))
+
 (case "a recursive user sum type is built at run time and renders with qualified variant names"
   (doc    "A QUALIFIED-constructor recursive sum type — the linked-list / AST shape a self-hosted
            compiler manipulates — constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))`
