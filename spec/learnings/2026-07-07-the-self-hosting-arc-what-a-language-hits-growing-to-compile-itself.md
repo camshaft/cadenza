@@ -36,11 +36,25 @@ The arc, in rough order (each links its learning):
   ([[2026-07-07-the-reader-is-wired-bytes-to-component-end-to-end]] →
   [[2026-07-07-the-whole-module-reader-is-wired-module-bytes-to-component]]).
 - **Runtime-value plumbing** — the built-in Option across a boundary
-  ([[2026-07-07-the-reader-gate-is-being-closed-accessor-by-accessor]]), runtime `tuple.N`
+  ([[2026-07-07-the-reader-gate-is-being-closed-accessor-by-accessor]] →
+  [[2026-07-07-the-reader-gate-closed-and-list-at-on-a-payload-list-is-the-next]]), runtime `tuple.N`
   ([[2026-07-07-runtime-tuple-projection-needs-a-let-and-the-direct-path-miscompiles]]), payload-bound
   `List.at` ([[2026-07-07-payload-bound-list-at-fixed-multi-arg-calls-are-representable]]), the
   `Never`-on-heap invariant ([[2026-07-07-the-invalid-component-violation-fixed-and-the-handoff-lags-the-seed]]),
-  recursive-shape inference ([[2026-07-07-a-recursive-bytes-fold-infers-its-shape-as-the-direct-result]]).
+  recursive-shape inference ([[2026-07-07-a-recursive-bytes-fold-infers-its-shape-as-the-direct-result]]),
+  call-vs-operator by environment membership
+  ([[2026-07-07-the-reader-tells-a-call-from-an-operator-by-function-environment-membership]]).
+- **Multi-argument calls (a capability decomposed)** — build the arg list (recursive push-accumulator,
+  [[2026-07-07-a-recursive-push-accumulator-loses-its-list-return-kind]]) + read it back (payload-bound
+  `List.at`), pinned as a round-trip ([[2026-07-07-the-arg-list-round-trip-works-build-by-push-read-by-index]]),
+  then the feature was pure wiring ([[2026-07-07-n-ary-calls-wired-end-to-end-the-round-trip-becomes-the-feature]]).
+- **The endgame — subset growth, not a blocker** — the gate shifted from seed capability to the compiler's
+  accepted subset reaching self-inclusion
+  ([[2026-07-07-self-hosting-gate-shifts-from-seed-capability-to-bootstrapping-subset]]); operator coverage
+  fills in (runtime bitwise for LEB128,
+  [[2026-07-07-runtime-bitwise-ops-emitted-the-leb128-encoder-runs-on-runtime-values]]); the last major
+  emit item is `match` on user sums ([[2026-07-07-match-on-user-sums-is-the-last-major-emit-frontier]]),
+  plus scale (TCO, [[deep-recursion-traps-at-host-stack-limit]]).
 
 **Why — the four patterns that recurred.** Beneath the specific gaps, four shapes repeated, and naming
 them is the durable payoff:
@@ -83,3 +97,20 @@ tree-walks, [[deep-recursion-traps-at-host-stack-limit]]) before *compiler-compi
 The gate for self-hosting is no longer a seed capability but the compiler's accepted subset reaching
 self-inclusion ([[2026-07-07-self-hosting-gate-shifts-from-seed-capability-to-bootstrapping-subset]]) —
 and the four patterns above are what the remaining subset-growth work will keep encountering.
+
+**Refresh note (2026-07-07, later).** The arc extended past the first draft with three more stages —
+runtime-value plumbing completing, multi-argument calls (a capability decomposed into build + read
+sides that failed independently, then composed as pure wiring), and the endgame reframed as an
+emit-coverage checklist — all now linked above. Two patterns from the list keep proving out and are
+worth flagging as the most load-bearing: **pattern 1** (order/position-independent recursive-result
+inference) recurred a *fifth* time on a `list` return (the push-accumulator), and **pattern 2**
+(const-folding hides a missing runtime emitter) recurred a *fourth* time on runtime bitwise `&`/`|` for
+LEB128 — so "a const/literal/entrypoint case passing is not evidence the runtime path works; probe the
+runtime-through-a-parameter case" is the single most repeated diagnostic of the whole arc. Two further
+methodological rules crystallized after the draft: a *capability* decomposes into independently-failing
+directions, so **pin the round-trip** (build then read in one program) to certify it is reachable; and a
+*feature* is composition of independently-fixed capabilities, so once they hold the feature is **pure
+wiring**, not invention. Finally, the loop's artifact rule sharpened: a **seed defect** earns a corpus
+case (it flips green when fixed), an **emit-coverage item** earns a backlog scope entry (its guard is
+the compiler's own source compiling once it lands), and a **reader-internal completeness step realizing
+already-witnessed behavior** earns a learning, not a duplicate case.
