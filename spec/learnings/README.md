@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The arithmetic-overflow arc closed — checked emit with scratch locals landed, and the wrong-value frontier is now empty](./2026-07-07-the-arithmetic-overflow-arc-closed-checked-emit-with-scratch-locals-landed-correctly.md)
+  — the runtime `+ - *` overflow miscompile (ask-37) is fixed. The arc: miscompile (bare opcode wraps) → crash
+  (checked emit with unreserved scratch locals → stack overflow) → reverted-miscompile → FIXED (checked emit with
+  `sb` reserved past params+lets, `locals-decl` +3 i64). Verified: overflow TRAPS, in-range computes, and NESTED
+  checked ops share scratch correctly (`(* (+ a b) c)` → 30). Byte-gate declines 369 → 335; corrected full-oracle
+  dangerous sweep reports **WRONG = 0** — the arithmetic class is gone, the wrong-value frontier is empty. Lessons:
+  the reject-don't-miscompile ORDERING (wrong-value < crash < decline < correct) held across the arc — every step
+  UP was progress even when still broken, the one step DOWN (crash → reverted-miscompile) was the regression; and
+  this is the first faithfully-emitted GUARDED op, so the "local-allocating lower pass" shifts+checked-arith both
+  needed is now real. The nested-ops check is load-bearing (proves scratch slots are shared, not just allocated).
+  No new corpus (cases already pinned; the byte gate measured it, WRONG=0).
 - [The decode direction became a general value-interchange capability — and it picked Option, resolving the signature](./2026-07-07-the-decode-direction-became-a-general-value-interchange-capability-that-picks-option.md)
   — last cycle's operator correction (`Ast.decode` must be total, not trap; signature left open) resolved this
   cycle: a sibling landed `spec/capabilities/value-interchange.md`, a GENERAL capability for serializing/decoding
