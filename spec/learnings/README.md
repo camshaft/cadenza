@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [N-ary calls wired end-to-end — the arg-list round-trip became the feature, as pure wiring](./2026-07-07-n-ary-calls-wired-end-to-end-the-round-trip-becomes-the-feature.md)
+  — with both arg-list halves fixed (read #17, build #18), the spike wired N-ARY user-function calls through the
+  whole pipeline — the "pure wiring" the prior cycle predicted. `NCall` → `(Tuple Int64 (list Node))`; `read-call`
+  reads any arity via a push-loop (`read-call-args`); `resolve` maps over the list; `lower` pushes args L-to-R
+  before `call`. Verified `(add2 20 22)` → 42, `(add3 10 20 12)` → 42. Closes the multi-arg-call arc. Payoff of
+  decomposing a capability into independently-failing directions: "handle multi-arg calls" was never one fix — it
+  was read-the-list + build-the-list, two instances of the runtime-value-kind family cycles apart; once both held,
+  the feature was composition not invention (composition thesis at FEATURE granularity). Corollary: the round-trip
+  case certifies the feature is REACHABLE, the feature case certifies it was REACHED. Pinned `09-functions.sexp`
+  "a named multi-argument function applies to all its arguments at once" (`(add2 20 22)` → 42, direct vs curried).
 - [The argument-list round-trip works — build by push-recursion, read by indexed iteration](./2026-07-07-the-arg-list-round-trip-works-build-by-push-read-by-index.md)
   — seed fixed Tier 3i / #18: a recursive push-accumulator now infers a list return (my todo case flipped PASS).
   With it, both halves of a multi-arg call's argument handling work together: BUILD (push-loop accumulates

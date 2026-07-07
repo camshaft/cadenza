@@ -197,6 +197,40 @@
             (def (main) (sum-to 3))))
   (output (: 6 Int64)))
 
+; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
+; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
+; self-call sits in one branch of an inner `if` and a Bool literal in the other: `(if guard (recurse …)
+; false)` (all-so-far, else fail) or its mirror `(if guard false (recurse …))`. Both denote a Bool and
+; must type as a Bool CONDITION regardless of which branch holds the self-call — the recursive
+; function's return kind is inferred from its body, and a still-unsolved self-call must NOT let branch
+; ORDER decide the kind (a Bool-literal branch pins the result to Bool). This is the return-kind
+; companion of the recursion cases above, and the exact shape of a reader's byte-by-byte name matcher.
+
+(case "a recursive predicate with the self-call in the then branch is a Bool condition"
+  (doc    "`all-lt` tests that every element from i is < the bound: `(if (< i n) (if (< i bound)
+           (all-lt (+ i 1) n bound) false) true)` — the recursive self-call is the THEN branch, the
+           `false` is the ELSE. Used as an `if` condition, `all-lt` MUST type as Bool; with n=3 and a
+           bound of 5 over indices 0,1,2 (all < 5) it is true, so the outer `if` yields 1. Pins that a
+           recursive Bool function whose self-call is the then-branch infers a Bool return regardless of
+           branch order — the shape a reader's name matcher takes ('all bytes equal so far, else fail').")
+  (input  (module m
+            (def (all-lt i n bound)
+              (if (< i n) (if (< i bound) (all-lt (+ i 1) n bound) false) true))
+            (def (main) (if (all-lt 0 3 5) 1 0))))
+  (output (: 1 Int64)))
+
+(case "a recursive predicate with the self-call in the else branch is a Bool condition"
+  (doc    "The mirror of the case above: the self-call is the ELSE branch and `false` the THEN —
+           `(if (< i n) (if (< i bound) false (all-ge (+ i 1) n bound)) true)`, testing every element
+           from i is NOT < the bound. With n=3, bound=0 over indices 0,1,2 (none < 0) it is true → 1.
+           Pins that BOTH branch orders of a recursive Bool predicate type identically as a Bool
+           condition (the return-kind inference is order-independent).")
+  (input  (module m
+            (def (all-ge i n bound)
+              (if (< i n) (if (< i bound) false (all-ge (+ i 1) n bound)) true))
+            (def (main) (if (all-ge 0 3 0) 1 0))))
+  (output (: 1 Int64)))
+
 (case "a recursive def with a match base case computes over its argument"
   (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments,
            with the base case expressed
@@ -356,6 +390,21 @@
             (def (add x y) (+ x y))
             (def (main) ((add 3) 4))))
   (output (: 7 Int64)))
+
+(case "a named multi-argument function applies to all its arguments at once"
+  (doc    "The DIRECT multi-argument application `(add a b)` — not the explicit curried `((add a) b)` of
+           the case above — of a named two-parameter def, at a module entrypoint. `(add2 20 22)` = 42.
+           By §Functions Are Single-Arity these are the same program (`(f a b)` desugars to `((f a) b)`),
+           but the direct form is the surface shape a program (and a self-hosted compiler reading a call
+           node with an argument list) actually writes, and it exercises the N-ary-call lowering — the
+           arguments read into an argument list, then pushed left-to-right before the `call` (wasm's
+           calling convention) — rather than the nested single-application form. The three-argument
+           companion `(add3 10 20 12) = 42` pins that an arbitrary arity, not just two, applies at once.")
+  (input  (module m
+            (def (add2 a b)   (+ a b))
+            (def (add3 a b c) (+ a (+ b c)))
+            (def (main)       (+ (add2 20 22) (- (add3 10 20 12) 42)))))
+  (output (: 42 Int64)))
 
 (case "a named function is partially applied, bound, and used"
   (doc    "core-semantics.md §Functions Are Single-Arity: partial application is natural for a named
