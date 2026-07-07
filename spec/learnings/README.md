@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader tells a call from an operator by function-environment membership — two namespaces, one lookup](./2026-07-07-the-reader-tells-a-call-from-an-operator-by-function-environment-membership.md)
+  — `read-app` grew to distinguish a user-function CALL from a primitive OPERATOR: it carries a function
+  environment (`fenv` = the module's `def` names' prelude indices), looks the head index up in it — present → a
+  call to that function slot (`read-call`), absent → a binary operator (`read-op-name`, now the full surface
+  `+ - * / % < > = <= >= != and or not`). Key design fact: a canonical AST head is untyped as to what it names,
+  and scope resolution and call-vs-operator resolution are the SAME operation — ordered-index-environment
+  membership (`ienv-pos`) — applied to different environments (param env vs function env). Clean because the
+  namespaces don't overlap (operators never appear in `fenv`, so lookup-fails-means-operator is total, not a
+  heuristic). Lets a multi-def module's functions call each other. NO new corpus case (reader-internal step over
+  pre-parsed bytes; mechanism already pinned by the shadowing case, behaviors already covered) — a
+  reader-internal completeness step realizing already-witnessed behaviors earns a learning, not a duplicate case.
 - [The self-hosting arc — what a language hits growing to compile its own compiler, and the four patterns that recurred](./2026-07-07-the-self-hosting-arc-what-a-language-hits-growing-to-compile-itself.md)
   — SYNTHESIS of the ~25 dated-07-07 spike learnings: the one place to start understanding the whole self-hosting
   push (backend exists → language holes → front rung → reader → runtime-value plumbing), with every stage linked.
