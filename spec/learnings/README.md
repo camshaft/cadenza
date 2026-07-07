@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A decode over external bytes must be total (a Result), not trap — "refuse" is the error case, not a failure](./2026-07-07-a-new-decode-contract-landed-the-refuse-invalid-half-holds-the-no-trailing-bytes-half-does-not.md)
+  — a new `deterministic-value-form.md` decode contract (inverting decode; refuse invalid; trailing bytes are an
+  error). Probing the seed's `Ast.decode`: it TRAPS on invalid bytes and SILENTLY IGNORES trailing bytes. I first
+  recorded the trap-on-garbage as correct ("refuse = trap") — the operator corrected it: `Ast.decode` consumes
+  bytes that can come from an EXTERNAL source, so it must be TOTAL (return a Result/Option), never trap. That
+  re-frames BOTH clauses as unmet: invalid bytes must return the error case (not trap), trailing bytes must be
+  detected (not dropped). Lesson: the TRUST BOUNDARY decides trap-vs-Result — a partial op on a program's own
+  values may trap (defined outcome), but a decode of possibly-external bytes must be total; "refuse" at that
+  boundary means return the error case. I wrongly imported the compiler's honest-trap reflex onto a data decoder —
+  reject-don't-miscompile (trap on an uncompilable construct) and total-decode (error value on unparseable data)
+  are different disciplines for different layers. Filed ask-38 (make `Ast.decode` total; signature Option vs
+  Result is an operator call — ripples to 9 round-trip cases). No corpus this cycle (the trap-asserting case I
+  briefly added was reverted; error-case cases withheld until the signature is decided).
 - [The checked-arithmetic fix regressed the emit path — and it's a crash, not a miscompile, which is the right kind of regression to have](./2026-07-07-the-checked-arithmetic-fix-regressed-the-emit-path-a-decline-would-have-been-safer-first.md)
   — ask-37's fix landed (+6.5 KB: `KAdd/KSub/KMul` → `checked-binop` inline overflow guards over 3 scratch
   locals; the emit sequence is correct). But re-probing showed it REGRESSED: runtime `+`/`-`/`*` now make the
