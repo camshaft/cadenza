@@ -10,6 +10,20 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The diagnostics pivot from Result-return to effects hit a parallel compile-entry lowering gap](./2026-07-07-the-diagnostics-pivot-from-result-to-effects-hit-a-parallel-compile-entry-lowering-gap.md)
+  — the diagnostics channel has two shapes and the compiler tried both, hitting a compile-entry lowering gap on
+  each: Result-return declines on a deep `Core` sum-match under Result-shaping (ask-42), and the effects route
+  (operator's "diagnostics via effects": `Diag.emit` collected by a handler — collection works, ask-45) declines
+  when the `handle` is installed at the `compile` entry (NEW ask-46). Verified ask-46 with its discriminator:
+  same recursive-effectful `handle` compiles under `main`/`run` but declines under `compile`, and it's
+  presence-triggered (a handle anywhere in a compile-entry module, even unreachable). Careful non-overclaim: I
+  probed for a single unifying root and didn't cleanly find one — ask-46 is entry-kind-gated, ask-42 is a
+  scrutinee-kind divergence; distinct mechanisms, shared shape. Shared shape = **the `compile` entry is a
+  less-complete lowering path than `run`** (it's the newer ABI), and the features that lag are exactly the ones
+  the compiler needs to run AS that entry (a diagnostics handler, an internal-state effect). Lesson: a new entry
+  ABI forks a self-hosting compiler's lowering coverage — probe the run-vs-compile-entry discriminator to tell
+  "unimplemented" from "unimplemented AT THIS ENTRY" (the latter a smaller, ABI-path-local fix). No corpus
+  (compile-entry ABI gap; effect value-behavior pinned separately under the run entry).
 - [A pinned toolchain snapshot gives the loop a reproducible probe target — and settles the churn readings](./2026-07-07-a-pinned-toolchain-snapshot-gives-the-loop-a-reproducible-probe-target.md)
   — an `implementation/stable/` snapshot appeared: a frozen all-gates-green `cadenza-seed` + runtime +
   cdz-rustc reference + `SHA256SUMS`, so self-hosting work runs against a FIXED seed, not the mid-cycle-rebuilding
