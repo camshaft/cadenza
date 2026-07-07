@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The byte gate absorbed the loop's hand-run WRONG-sweep as native classification — and a slower gate that runs the artifact is the honest one](./2026-07-07-the-byte-gate-absorbed-the-loops-hand-run-wrong-sweep-as-native-classification.md)
+  — `component-check` landed a classifier (ask-33) that judges a disagreement by RUNNING both compiled programs,
+  not by the entry function's syntax: component traps where native yields ⇒ decline; equal values ⇒ soft
+  (byte-differ, same behavior); differing values or a value where native traps ⇒ disagree. compiler.cdz went from
+  65/124/386 (old bare-`unreachable` proxy) to 97 agree / 260 disagree / 25 soft / 195 decline with **0 ran-to-
+  wrong-value** — the 260 decompose into 190 `component=diagnostics` (ask-53) + 70 `native=rejected` (ask-30),
+  both compiler-side, no seed miscompile. This makes the loop's hand-maintained WRONG=0 sweep the gate's native
+  output — the third layer this session where a distinction re-derived from indirect evidence became a first-class
+  output of the producer (ask-48 external diagnostics, ask-53 internal check, ask-33 the gate itself). Load-bearing
+  detail: the honest classifier is SLOWER because it RUNS the artifact rather than inspecting its shape (it timed
+  out where the syntactic proxy finished in ~1s) — an instant gate is a proxy, and proxies leak (the predecessor
+  missed 77 runtime-trapping declines). No corpus (the gate's classifier is measurement apparatus, not a language
+  value).
 - [A decline that leaks into a VALID-but-trapping component is the most dangerous shape a decline can take — and the guard is a run-entry corpus case, not a discriminator](./2026-07-07-a-decline-that-leaks-into-a-valid-but-trapping-component-is-the-most-dangerous-shape.md)
   — isolating the `Option.expect` field-projection fix (ask-52) surfaced a sharper sibling defect: the same
   projection with a CALL-produced optional scrutinee didn't honestly decline on the pre-fix seed — it emitted a
