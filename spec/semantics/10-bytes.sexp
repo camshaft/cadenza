@@ -580,6 +580,31 @@
                            (dec (Bytes.of (list 0x0A)) 0))))))
   (output (: 1 Int64)))
 
+(case "a CBOR simple value that is not a known boolean is classified as not-a-boolean"
+  (doc    "CBOR major type 7 (simple/float) holds MORE than the two booleans: `0xF4`=false (arg 20),
+           `0xF5`=true (arg 21), `0xF6`=null (arg 22), and the float heads (`0xF9`/`0xFA`/`0xFB`, arg
+           25/26/27). A reader that decodes a major-7 head by checking ONLY `arg == 21` (true) and
+           defaulting everything else to false MISCLASSIFIES every other simple value — a float head
+           (arg 27) reads as `false`, a silent miscompile. A correct classifier is three-way: arg 20 →
+           false, arg 21 → true, anything else → NOT a boolean (to be declined or handled as its real
+           kind). `classify` returns 1/0 for the two booleans and -1 for a non-boolean simple value; over
+           arg 20 (false→0), 21 (true→1·10), and 27 (a float head→ -1·100) it sums to 0 + 10 + (-100) =
+           -90. Pins that the boolean discriminator must check the value IS `0xF4`/`0xF5`, not merely
+           `≠ 0xF5`, so a float or null head is not silently read as false — the exact miscompile a
+           self-hosted reader's major-7 branch makes when it assumes bool (a CBOR float `3.14` decoding
+           to `false`). The reader's fix is to route a non-boolean major-7 value to a decline (KError),
+           not default it; this case pins the discrimination the decline depends on.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (classify-simple arg)
+              (if (= arg 21) 1
+              (if (= arg 20) 0
+                             (- 0 1))))
+            (def (main) (+ (classify-simple 20)
+                        (+ (* 10 (classify-simple 21))
+                           (* 100 (classify-simple 27)))))))
+  (output (: -90 Int64)))
+
 (case "resolving a head against a prelude symbol rejects a length-mismatched prefix"
   (doc    "The reader's NAME-resolution step (ast-encoding.md: a node names its kind by a prelude INDEX;
            the reader byte-compares the indexed prelude symbol against a known operator name — no runtime

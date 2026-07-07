@@ -508,6 +508,18 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The self-hosted reader miscompiles unsupported constructs instead of declining — and correcting my own wrong call](./2026-07-07-the-self-hosted-reader-miscompiles-unsupported-constructs-instead-of-declining.md)
+  — the harness's `0 mine-declines` is the ALARMING signal, not noise: `compiler.cdz` NEVER declines an
+  unsupported construct — it emits a valid-but-WRONG component. Verified: a CBOR float `0xfb` (major 7, info 27)
+  hits `read-node`'s major-7 branch which assumes bool (`arg==21`?), so `arg 27 ≠ 21` → `NBool 0` → the program
+  returns `false`; strings/records fall through to `NInt`/`"?"` stubs. A reject-don't-miscompile violation INSIDE
+  the Cadenza-authored compiler's reader. CORRECTS my prior-cycle call (I said the disagrees were a byte-patching
+  artifact — WRONG; the bytes reach the decode path and are miscompiled). I made the very error the spike keeps
+  teaching against — reasoned from a proxy (size clustering) instead of probing the actual behavior; a suspicious
+  aggregate (0 declines) deserves a direct probe before an explanation. Fix (SPEC-BACKLOG #23): route the reader's
+  unrecognized atom kinds to KError→unreachable, mirroring the PUnknown head path; `mine-declines` rising from 0
+  is the acceptance signal. Pinned `10-bytes.sexp` "a CBOR simple value that is not a known boolean is classified
+  as not-a-boolean" (three-way classify: arg 20→false, 21→true, else→not-a-bool; → -90).
 - [Verifying the self-hosted compiler needs a `compile`-exporting component — the interim byte-patching harness mis-measures](./2026-07-07-verifying-the-self-hosted-compiler-needs-a-compile-exporting-component.md)
   — the spike wants to run compiler.cdz over the WHOLE corpus (feed each case's AST bytes, diff its output vs
   native cdz-rustc). The host has this (`component-check` + the `compiler.wit` `compile: list<u8> →

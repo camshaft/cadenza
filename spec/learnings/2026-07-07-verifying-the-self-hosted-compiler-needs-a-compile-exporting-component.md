@@ -19,16 +19,21 @@ them into `compiler.cdz`'s `main`* (via its `compile-bytes` reader), `emit` → 
 directly → NATIVE, and classify AGREE / MINE-DECLINES / NATIVE-DECLINES / DISAGREE. Its docstring names
 the intent correctly: **DISAGREE is the real-bug signal; MINE-DECLINES is the coverage frontier.**
 
-But the harness **mis-measures**, and recognizing that is the durable point. It reported ~147 DISAGREE
-and **0 MINE-DECLINES** — and the counts *drifted between runs* (147 then 149; 27 then 25 AGREE). Two
-tells expose the artifact: (1) the "mine" component sizes cluster tightly at **88–102 bytes** while
-native ranges 89–3332 — i.e. `compiler.cdz` is emitting a near-constant stub for almost every case, so
-the byte-patching mostly is not reaching its decode path; and (2) **0 MINE-DECLINES** directly
-contradicts the docstring's own expectation that declines are "the expected state for most cases" (the
-compiler genuinely can't yet emit `match`/records/maps/effects — those *should* be declines, not
-disagrees). So the "147 disagree" is not 147 compiler bugs; it is the harness classifying a degenerate
-stub as a disagreement. The reliable signal it *does* give is the small AGREE set (byte-identical cases
-on the arithmetic/scalar subset the compiler truly emits).
+The harness reported ~147 DISAGREE and **0 MINE-DECLINES**, with counts drifting between runs (147 then
+149; 27 then 25 AGREE). My first reading of this was **wrong and is corrected here** (the honest trail,
+not smoothed over): I inferred the "mine" sizes clustering at 88–102 B meant the byte-patching *wasn't
+reaching the decode path* — a harness artifact. A next-cycle probe showed the opposite: the bytes DO
+reach the reader, which **miscompiles** them. A CBOR float `0xfb` (major 7, info 27) hits `read-node`'s
+major-7 branch, which assumes a boolean (`0xF5`/`0xF4` = arg 21/20), so `arg 27 ≠ 21` decodes to
+`NBool 0` → the program's `run()` returns **`false`** (verified). Strings/records/tuples have no reader
+node, so they fall through to `NInt`/`NPrim`-of-`"?"` and emit an i64 stub. So the ~88 B "stub" is not
+a *degenerate non-decode* — it is a *wrong decode*: a valid component computing the wrong thing. **The
+147 DISAGREE are (mostly) real miscompiles, and `0 MINE-DECLINES` is the true, alarming signal** — the
+compiler *never declines* an unsupported construct; it always emits something. (This corrects the claim
+above; see [[2026-07-07-the-self-hosted-reader-miscompiles-unsupported-constructs-instead-of-declining]]
+for the reject-don't-miscompile violation and its fix.) The harness's *count instability* and the need
+for a clean `compile` component (below) still stand; what changed is that its DISAGREE axis is
+signal, not noise.
 
 **Why.** The lesson is a specific instance of the modeled-subsystem trap
 ([[2026-07-02-a-modeled-subsystem-passes-a-shape-check]]): **a verification harness is only as
