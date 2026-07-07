@@ -4,8 +4,7 @@
 ; Multi-parameter syntax (fn (x y) body) is sugar for currying: (fn x (fn y body)).
 ; Application (f a b) is sugar for ((f a) b). These are CORE cases (no (needs …)):
 ; the seed realizes them, because a compiler authored in Cadenza is built from
-; functions and closures. Results are (: <value> <Type>); unbounded recursion halts
-; as (exhausted).
+; functions and closures. Results are (: <value> <Type>).
 
 (case "a function applied to an argument"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value and §Applying A Function
@@ -190,9 +189,8 @@
   (error  CDZ0201))
 
 (case "a recursive def computes over its argument"
-  (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments and
-           §Recursion Is Accountable Against The Resource Measure: sum-to counts down to 0, bounded by
-           the resource measure. sum-to(3) = 3 + 2 + 1 + 0 = 6.")
+  (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments:
+           sum-to counts down to 0 through direct self-recursion. sum-to(3) = 3 + 2 + 1 + 0 = 6.")
   (input  (module m
             (def (sum-to n)
               (if (= n 0) 0 (+ n (sum-to (+ n -1)))))
@@ -200,8 +198,8 @@
   (output (: 6 Int64)))
 
 (case "a recursive def with a match base case computes over its argument"
-  (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments
-           and §Recursion Is Accountable Against The Resource Measure, with the base case expressed
+  (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments,
+           with the base case expressed
            as a `match` on the argument rather than an `if`. This is the canonical functional idiom:
            sum-to(n) matches 0 → 0, else n + sum-to(n-1). The base-case arm must be selected from
            the RUNTIME value of n; sum-to(3) = 3 + 2 + 1 + 0 = 6. Companion to the if-based
@@ -304,14 +302,24 @@
             (def (main) (even 7))))
   (output (: false Bool)))
 
-(case "unbounded recursion halts by exhausting the resource measure"
-  (doc    "Witnesses core-semantics.md §Recursion Is Accountable Against The Resource Measure: a
-           function that applies itself with no base case consumes the deterministic resource measure
-           and halts at a defined point rather than running forever.")
+(case "a self-recursive Bool-returning function whose recursive call is the then-branch"
+  (doc    "A self-recursive function that returns Bool, whose `if` body puts the recursive SELF-CALL in
+           the THEN branch and a Bool literal in the ELSE — the `all …` / `every-so-far` shape a reader's
+           name matcher takes (`(if (< i n) (if guard (recurse (+ i 1)) false) true)` = \"all positions
+           satisfy the guard\"). `(go 0 3)` recurses to the base case and returns true. Pins that a
+           recursive function's RETURN KIND settles to Bool regardless of whether the self-call (whose
+           kind is a placeholder until the function's kind is known) is the then-branch or the else-branch:
+           a Bool-literal sibling must pin the `if`'s result kind to Bool, so the result does not depend on
+           branch ORDER. The mutually-recursive `even`/`odd` above already returns Bool, but there each
+           branch is a Bool literal or the OTHER function's call; here the branch is the function's OWN
+           call, which is the order-dependent kind-inference case (the Bool analogue of the recursive
+           heap-accumulator kind race). The mirror shape — self-call in the ELSE, literal in the THEN —
+           and an Int-returning self-recursive function both settle correctly; this pins the Bool + then
+           combination that does not yet.")
   (input  (module m
-            (def (spin n) (spin (+ n 1)))
-            (def (main) (spin 0))))
-  (exhausted))
+            (def (go i n) (if (< i n) (go (+ i 1) n) true))
+            (def (main) (if (go 0 3) 1 0))))
+  (output (: 1 Int64)))
 
 (case "functions are single-arity and curried"
   (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one

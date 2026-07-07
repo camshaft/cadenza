@@ -508,6 +508,15 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [A recursive Bool function's return kind is inferred branch-order-dependently — the same kind race as Tier 00, now on Bool](./2026-07-07-recursive-bool-return-kind-inference-is-branch-order-dependent.md)
+  — probing the reader's name matcher found: a self-recursive Bool-returning fn DECLINES ("if condition is not
+  Bool" / "branches differ in kind") when the self-call is the THEN branch and a Bool literal the ELSE; the mirror
+  (self-call in ELSE) compiles, and an Int-returning version compiles. So it's Bool-specific + branch-order-specific
+  — the SAME order-dependent kind race as Tier 00, now on Bool instead of Heap. Fix = the proven one: a concrete
+  branch pins the if/match result kind regardless of order (self-call placeholder yields to a concrete sibling).
+  Lesson: kind-inference order-independence is a property EVERY kind needs, not a Heap-specific patch. The reader's
+  head resolver IS a recursive Bool name-eq in exactly this shape → blocks self-hosting. Pinned `09-functions.sexp`
+  "a self-recursive Bool-returning function whose recursive call is the then-branch" (→ 1, todo). SPEC-BACKLOG #14.
 - [The built-in list cannot be pattern-matched — the biggest ergonomic gap for authoring the compiler](./2026-07-07-the-built-in-list-cannot-be-pattern-matched.md)
   — as the reader grew (walking CBOR arrays of children), the spike hit a spec+seed gap: the built-in `list`
   cannot be pattern-matched AT ALL (`(cons h t)`, `(list a b)`, `(list)` all decline "unsupported list pattern";
