@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A fixpoint loop's compile blowup is the fresh-re-seed-plus-list-result conjunction — not the loop, and not either half alone](./2026-07-07-a-fixpoint-loops-blowup-is-fresh-re-seed-plus-list-result-not-the-loop.md)
+  — the self-hosting return-kind machinery's next step is a monotone fixpoint, and two reproducers still OOM the
+  seed. The handoff doc blamed "a `list` parameter re-seeded with a fresh `(list)` each round"; four direct
+  `emit` probes narrowed it to a CONJUNCTION — fresh re-seed AND the result consumed as a list. Threading the
+  incoming list (even growing it by `List.push` each round) compiles; re-seeding fresh while consuming the result
+  as an Int64 compiles. Only both together diverge. Same class as [[eval-const-let-memoization-blowup]] /
+  [[threaded-compound-accumulator-inference-blowup]] — an inference fixpoint that fails to reach a fixed KIND.
+  The OOMing program can't be a corpus case (it hangs the gate), so the pin is the passing side of the boundary:
+  05-compound-types *"a fixpoint loop that threads a growing list accumulator returns that list"* (→5, AGREE).
+  Backlog carries the corrected trigger + the four controls. Lesson: a handoff doc's one-line trigger is an
+  aggregate to probe, not trust — the probe turned a one-variable claim into a two-variable conjunction, the
+  difference between a fix that works and one aimed at a shape that was never broken.
 - [The compiler core was restarted four times](./2026-07-02-compiler-core-restarted-four-times.md) —
   why the specification, not the compiler, is the durable artifact.
 - [Component output never materialized](./2026-07-02-component-output-never-materialized.md) — why the

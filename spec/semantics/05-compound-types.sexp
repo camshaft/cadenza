@@ -583,6 +583,48 @@
             (def (main) (sm (count 5)))))
   (output (: 15 Int64)))
 
+(case "a sum-match recursion that accumulates a built-in list returns a list"
+  (doc    "The ACCUMULATOR companion of the fold above, and the shape a compiler's per-function
+           return-kind table takes: `recompute` recurses by `match`-destructuring a user-sum parameter
+           (`FL`) and push-accumulates a BUILT-IN `list` in its other parameter `out`, returning `out`
+           in the base arm. `(List.len (recompute <2-node FL> (list)))` = 2 — two `List.push`es. Pins
+           that the accumulator parameter AND the function's return both converge to the list (heap)
+           kind even though the base arm `((FL.FNil _) out)` returns the accumulator bare and the
+           recursive arm is a bare self-call — neither match arm independently reports the heap kind on
+           the first inference pass. Without unifying the arms to the heap kind, the return locks to
+           Int64 while `out` becomes heap, and `List.len` on the result declines 'of a non-list value'
+           (the match-form twin of the if-form accumulator case in 13-strings; a compiler that walks a
+           function list building a return-kind table is exactly this shape).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type FL (FNil | FCons (Tuple Int64 FL)))
+            (def (recompute funcs out)
+              (match funcs
+                ((FL.FNil _)            out)
+                ((FL.FCons (tuple h t)) (recompute t (List.push out h)))))
+            (def (main) (List.len (recompute (FL.FCons (tuple 5 (FL.FCons (tuple 6 (FL.FNil ()))))) (list))))))
+  (output (: 2 Int64)))
+
+(case "a fixpoint loop that threads a growing list accumulator returns that list"
+  (doc    "The self-hosting return-kind machinery next needs a monotone FIXPOINT loop — `iterate` a
+           table until it stops changing — and the boundary of what compiles is narrow. `loop`
+           recurses on a counter and THREADS its list parameter `xs`, growing it by `List.push` each
+           round, then the result is consumed as a list: `(List.len (loop (list 1 2 3) 2))` = 5 (three
+           seed elements plus two pushes). This pins that a list-typed parameter carried THROUGH a
+           recursive fixpoint — derived from the incoming value, even when mutated by `List.push` — and
+           returned as a list, converges to the heap kind and compiles. The trigger for the still-open
+           blowup (SPEC-BACKLOG) is strictly narrower than a fixpoint loop per se: it needs the list
+           parameter to be RE-SEEDED with a fresh `(list …)` each round (NOT derived from the incoming
+           value) AND the result consumed as a list; threading the incoming list — this case — is the
+           passing side of that boundary, and re-seeding while consuming the result as an Int64 also
+           compiles. So the finding here is a positive frontier marker: threaded list accumulators in a
+           fixpoint are representable today; only the fresh-re-seed-plus-list-result conjunction is not.")
+  (input  (module m
+            (def (loop xs passes)
+              (if (< passes 1) xs (loop (List.push xs 9) (- passes 1))))
+            (def (main) (List.len (loop (list 1 2 3) 2)))))
+  (output (: 5 Int64)))
+
 (case "the built-in list is folded by an element-with-rest pattern"
   (doc    "The natural fold over the BUILT-IN `list`, without hand-rolling a custom cons-sum. A list is
            deconstructed by ELEMENT patterns with an optional rest binder — `(list)` matches exactly the
@@ -791,6 +833,67 @@
             ((Sign.Zero _) 0)
             ((Sign.Pos _)  1)))
   (output (: 0 Int64)))
+
+; The nested-pattern cases above use CONSTANT scrutinees that fold at compile time. These pin the same
+; nested constructor-payload pattern on a RUNTIME sum value (built at run time so it lives on the value
+; heap), the shape a compiler hits matching an `Option`/`Result` that carries a user AST node, or a
+; wrapper sum whose payload is itself a variant. The runtime matcher must dispatch on the OUTER
+; discriminant, then — for a nested constructor payload binder — on the INNER discriminant, falling
+; through to the outer arm's siblings when the inner variant does not match (exactly as a hand-written
+; inner `match` on the bound payload would).
+
+(case "a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern"
+  (doc    "`(W.Wrap (N.P 5))` is built at run time (through the `f` boundary, so it is a heap value, not
+           a folded constant) and matched by nested constructor patterns: `(W.Wrap (N.L v))` and
+           `(W.Wrap (N.P v))` share the outer `Wrap` discriminant and dispatch on the INNER `N.L`/`N.P`
+           tag, while `(W.Empty _)` is the outer sibling. `(f (W.Wrap (N.P 5)))` selects the `N.P` arm
+           (5 + 100 = 105). Pins the runtime nested constructor-payload binder — a payload that is itself
+           a sum, deconstructed in one arm — with multiple same-outer arms falling through correctly on
+           the inner discriminant. Without it the runtime matcher declined `unsupported payload binder`
+           (it bound a `(tuple …)` or a bare name, not a nested constructor).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type N (L Int64 | P Int64))
+            (type W (Wrap N | Empty))
+            (def (f w) (match w
+                         ((W.Wrap (N.L v)) v)
+                         ((W.Wrap (N.P v)) (+ v 100))
+                         ((W.Empty _)      -1)))
+            (def (main) (f (W.Wrap (N.P 5))))))
+  (output (: 105 Int64)))
+
+(case "a nested constructor payload that misses the inner variant falls through to the outer sibling"
+  (doc    "The fall-through companion of the case above: `(f (W.Empty))` matches no `W.Wrap` arm, so it
+           reaches the `(W.Empty _)` sibling (-1). And with `(W.Wrap (N.L 5))` the FIRST arm `(W.Wrap
+           (N.L v))` matches (5), not the `N.P` arm — the inner discriminant discriminates. Together
+           with the case above these pin all three arms of a nested runtime dispatch reachable: inner
+           `N.L`, inner `N.P`, and the outer `Empty` fall-through.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type N (L Int64 | P Int64))
+            (type W (Wrap N | Empty))
+            (def (f w) (match w
+                         ((W.Wrap (N.L v)) v)
+                         ((W.Wrap (N.P v)) (+ v 100))
+                         ((W.Empty _)      -1)))
+            (def (main) (+ (f (W.Wrap (N.L 5))) (f (W.Empty))))))
+  (output (: 4 Int64)))
+
+(case "a runtime Option carrying a user sum is matched by a nested constructor pattern"
+  (doc    "The reader/self-host idiom: a fallible access yields an `Option` whose `Some` payload is a
+           user AST node. `(List.at (List.push (list) (N.L 7)) 0)` is a runtime `(Some (N.L 7))`; the
+           nested pattern `(Some (N.L v))` deconstructs the built-in Option AND the user variant in one
+           arm, binding v=7, while `(None _)` is the empty-access arm. Pins the built-in polymorphic
+           `Option` carrying a user sum through the runtime nested matcher — the `List.at`/`Bytes.at`
+           result a compiler threads when it decodes a node list.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type N (L Int64 | P Int64))
+            (def (main) (match (List.at (List.push (list) (N.L 7)) 0)
+                          ((Some (N.L v)) v)
+                          ((Some (N.P v)) (+ v 100))
+                          ((None _)       -1)))))
+  (output (: 7 Int64)))
 
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
