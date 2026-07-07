@@ -49,3 +49,22 @@ with the isolation (checked-ops-only) and the root-cause hypothesis (scratch-loc
 **when landing a faithful fix that needs new machinery, land the decline first and the emit second — a
 half-built emit that crashes is tolerable only because the decline underneath would have caught it; without that
 net, the half-built emit is a regression with nothing below it.**
+
+---
+
+**Follow-up (2026-07-07, next cycle) — the crash was fixed by REVERTING to the bare opcode, which is a step
+BACKWARD on reject-don't-miscompile.** The stack-overflow regression was resolved not by fixing the scratch-local
+reservation but by reverting `lower`'s `KAdd/KSub/KMul` arms to the bare `binop … (IAdd/ISub/IMul)` — verified:
+the emitted `(+ a b)` is `local.get 0; local.get 1; i64.add`, no guard; byte gate back to 140 disagree; in-range
+arithmetic works again. But this restored the ORIGINAL ask-37 miscompile: `(+ MAX 1)` → MIN, `(* MAX 2)` → -2
+(wrap, not trap). So the revert traded a **safe crash (a trap)** back for an **unsafe silent wrong value** — the
+crash was the *better* state under reject-don't-miscompile, and reverting past it went the wrong way. (Also left
+stale artifacts: the `lower` doc comment still claims "OVERFLOW-TRAP via inline checked guards," and
+`checked-binop`/`checked-add/sub/mul` are now dead defs — the emit sequence is correct and present, just
+unwired.) The lesson this sharpens: **when a fix breaks, revert toward the SAFER failure, not the original.**
+The ordering of outcomes is wrong-value (worst) < crash < decline < correct. The buggy checked-emit was a crash;
+the pre-fix state was a wrong value. Reverting a crash back to a wrong value moves *down* that ordering to unblock
+the build — the right move is to revert (or gate) to a DECLINE instead (ask-37 option 2: `KError` on runtime
+`+ - *`), which is strictly safer than both the crash and the wrong value, and keeps the build green. A revert is
+not automatically safe just because it restores a known-"working" state; if that state was a miscompile, the
+revert reintroduces the miscompile. Direction matters: unblock toward decline, never back toward wrong value.

@@ -22,6 +22,11 @@ generations of Cadenza taught these lessons the expensive way; the specification
   miscompile held through the mistake. Sequencing lesson: when the faithful fix needs new machinery (scratch
   locals the fold-only Lir never had), land the DECLINE first and the emit behind it — a half-built emit that
   crashes is tolerable only because the decline underneath would catch it. No new corpus (cases already pinned).
+  **Follow-up next cycle:** the crash was fixed by REVERTING to the bare opcode — which restored the original
+  wrong-value miscompile (`* MAX 2` → -2), a step BACKWARD (traded a safe crash for an unsafe wrong value). Lesson
+  sharpened: when a fix breaks, revert toward the SAFER failure, not the original — outcome ordering is
+  wrong-value < crash < decline < correct; unblock toward DECLINE, never back toward wrong value. A revert isn't
+  safe just because it restores a known-"working" state; if that state was a miscompile, the revert reintroduces it.
 - [The compiler emits bare arithmetic that wraps instead of trapping — and a scalar-only scan hid the overflow miscompiles](./2026-07-07-the-compiler-emits-bare-arithmetic-and-a-scalar-only-scan-hid-the-overflow-miscompiles.md)
   — a quiet-cycle completeness sweep for wrong-value miscompiles came back "0 WRONG" (108 native=ok disagreements
   = 28 soft + 77 hidden declines + 3 other) — but the 3 "other" I nearly dismissed as "no scalar oracle" were
