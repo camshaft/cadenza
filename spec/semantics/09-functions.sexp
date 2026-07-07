@@ -406,6 +406,22 @@
             (def (main)       (+ (add2 20 22) (- (add3 10 20 12) 42)))))
   (output (: 42 Int64)))
 
+(case "the module entrypoint is the def named main regardless of its position"
+  (doc    "The module entrypoint is the def NAMED `main` — its position among the defs does not matter.
+           Here `main` is the FIRST def and calls a helper `f` DEFINED AFTER it: `(def (main) (f 41))`
+           then `(def (f x) (+ x 1))`, so f(41) = 42. This pins two things at once: a forward reference
+           (a call to a def that appears later in source order resolves) and, more pointedly, that entry
+           selection is by NAME, not by position — the companion cases in this file all place `main`
+           last, so nothing else pins that a main-first module has the same entry. A compiler that
+           instead took the FIRST def as the nullary entry would lift the parameter-taking `f` as the
+           entry and miscompile (or must decline); selecting `main` by name reorders it to the entry
+           slot no matter where it sits. The call itself is the ordinary N-ary call lowering — the
+           argument `41` pushed before the `call` — exercised across the forward edge.")
+  (input  (module m
+            (def (main) (f 41))
+            (def (f x)  (+ x 1))))
+  (output (: 42 Int64)))
+
 (case "a named function is partially applied, bound, and used"
   (doc    "core-semantics.md §Functions Are Single-Arity: partial application is natural for a named
            def too — `(add 3)` returns a closure awaiting the second argument, bound to `inc` and then

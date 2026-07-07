@@ -10,6 +10,21 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The self-hosted reader compiles a multi-def call — but picks the entry by position, and the name-based reorder is blocked on a seed blowup](./2026-07-07-the-self-hosted-reader-compiles-a-multi-def-call-but-picks-the-entry-by-position.md)
+  — the harness's new `error` bucket (invalid emission, distinct from a clean decline) flagged a two-def module
+  whose entry calls a user function. Direct probing reduced it: the underscore in the "underscore parameter"
+  case is a red herring (the plain-name twin fails identically), and disassembling the invalid bytes showed the
+  real cause — the reader takes the FIRST def as the nullary `run` entry positionally, while native selects the
+  def NAMED `main`. So a helper-first module lifts a param'd `f` as the nullary entry and strands its argument
+  (`values remaining on stack`). The multi-def user-function CALL works end-to-end whenever the entry is first
+  (`(def (main) (f 41)) (def (f x) (+ x 1))` → 42, valid); only entry SELECTION is the gap. The name-based
+  reorder is written but reverted — it tips the seed's compile-time evaluator into an exponential blowup
+  ([[compiler-exponential-in-nesting-depth]], SEED-GAPS 3m) — so `entry-guard` makes the mismatch a clean
+  decline, never invalid bytes. Caught the fix land MID-PROBE (invalid → clean decline as the spike edited
+  compiler.cdz live). Pinned `09-functions` *"the module entrypoint is the def named main regardless of its
+  position"* (→42, AGREE). Lesson: a harness bucket is an aggregate to probe, not a diagnosis — "invalid on a
+  param name" was really "positional-vs-named entry"; and probe the artifact as it is NOW, the spike may fix it
+  under you.
 - [A fixpoint loop's compile blowup is the fresh-re-seed-plus-list-result conjunction — not the loop, and not either half alone](./2026-07-07-a-fixpoint-loops-blowup-is-fresh-re-seed-plus-list-result-not-the-loop.md)
   — the self-hosting return-kind machinery's next step is a monotone fixpoint, and two reproducers still OOM the
   seed. The handoff doc blamed "a `list` parameter re-seeded with a fresh `(list)` each round"; four direct
