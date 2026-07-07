@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The checked-arithmetic fix regressed the emit path — and it's a crash, not a miscompile, which is the right kind of regression to have](./2026-07-07-the-checked-arithmetic-fix-regressed-the-emit-path-a-decline-would-have-been-safer-first.md)
+  — ask-37's fix landed (+6.5 KB: `KAdd/KSub/KMul` → `checked-binop` inline overflow guards over 3 scratch
+  locals; the emit sequence is correct). But re-probing showed it REGRESSED: runtime `+`/`-`/`*` now make the
+  compiler.cdz component TRAP (infinite recursion, wasm fn 64 → stack overflow) instead of emitting — isolated to
+  the 3 checked ops (`id`/`<`/`&` still compile). Root cause: scratch-local base `sb` not reserved past
+  params+lets (`locals-decl` must declare 3 more i64 slots). Byte gate regressed 140 → 172 disagree. Two lessons:
+  (1) only the self-hosting re-probe catches it — the behavior gate stayed green (runs native, unaffected); a
+  self-hosted regression is invisible to every non-self-hosting gate. (2) **A crash-regression is the RIGHT kind
+  to have** — it moved runtime overflow from a silent WRONG VALUE (`* MAX 2` → -2) to a TRAP; reject-don't-
+  miscompile held through the mistake. Sequencing lesson: when the faithful fix needs new machinery (scratch
+  locals the fold-only Lir never had), land the DECLINE first and the emit behind it — a half-built emit that
+  crashes is tolerable only because the decline underneath would catch it. No new corpus (cases already pinned).
 - [The compiler emits bare arithmetic that wraps instead of trapping — and a scalar-only scan hid the overflow miscompiles](./2026-07-07-the-compiler-emits-bare-arithmetic-and-a-scalar-only-scan-hid-the-overflow-miscompiles.md)
   — a quiet-cycle completeness sweep for wrong-value miscompiles came back "0 WRONG" (108 native=ok disagreements
   = 28 soft + 77 hidden declines + 3 other) — but the 3 "other" I nearly dismissed as "no scalar oracle" were
