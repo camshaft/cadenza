@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The self-hosting arc — what a language hits growing to compile its own compiler, and the four patterns that recurred](./2026-07-07-the-self-hosting-arc-what-a-language-hits-growing-to-compile-itself.md)
+  — SYNTHESIS of the ~25 dated-07-07 spike learnings: the one place to start understanding the whole self-hosting
+  push (backend exists → language holes → front rung → reader → runtime-value plumbing), with every stage linked.
+  Drives no requirement; it's the map. The FOUR recurring patterns (reusable diagnostics for the work ahead): (1)
+  order/position-independent inference — a self-call placeholder pinned by a concrete sibling, same race on Heap /
+  Bool / compound-shape; (2) payload-bound = runtime, and const-folding hides the runtime gap — reduce the FAILING
+  program, a clean analogue that folds isn't evidence; (3) input/output are duals over one small byte vocabulary —
+  no separate reader runtime; (4) write it honestly — the contortion (Bytes-hack trap, concat-anchor) is often the
+  bug, and handoff docs lag the seed so probe the rebuilt binary. Self-host architecture complete + gate-witnessed
+  (module bytes → component); remaining = subset growth (emit `match` on user sums) + scale (TCO).
 - [A recursive cons-list→Bytes fold now infers its shape as the direct result — the serialize spine, no concat anchor needed](./2026-07-07-a-recursive-bytes-fold-infers-its-shape-as-the-direct-result.md)
   — seed fixed Tier 3d: a recursive fold of a cons-list of byte fragments to Bytes (`(match xs ((Nil) empty)
   ((Cons (tuple h t)) (Bytes.concat h (rec t))))`) now compiles as `main`'s DIRECT result (verified `cat-all
