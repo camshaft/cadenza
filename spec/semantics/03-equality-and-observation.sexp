@@ -1,7 +1,7 @@
 ; Equality, ordering, and the observable-behavior projection — witnesses core-semantics.md
 ; #Equality And Ordering, #Floating-Point Equality Follows The Canonical Byte Form, #Observable
-; Behavior, and #A Program Terminates In Exactly One Terminal Condition. Results are (: <value> <Type>);
-; observation of ordered host calls uses (host-calls ...); resource-measure exhaustion uses (exhausted).
+; Behavior, and #A Program That Terminates Ends In One Of Two Terminal Conditions. Results are
+; (: <value> <Type>); observation of ordered host calls uses (host-calls ...).
 
 (case "structural equality holds component-wise"
   (doc    "Witnesses core-semantics.md #Equality Is Structural.")
@@ -116,6 +116,33 @@
   (input  (< 2 3))
   (output (: true Bool)))
 
+(case "an entrypoint returning a comparison presents a Bool result at the boundary"
+  (doc    "Type-directed emission at the component boundary: a nullary `main` whose body is an Int64
+           comparison has result type Bool, so the `run` export is framed at the Bool boundary valtype,
+           not the s64 an arithmetic result would use. `(lt 20 22)` is true. The companion below returns
+           the arithmetic i64 (42) through the SAME entrypoint shape, so the pair pins that the boundary
+           result type tracks the program's RESULT TYPE — a comparison crosses as Bool, an arithmetic
+           expression as Int64 — rather than a fixed valtype. This is the observable of a compiler that
+           reads a program's result kind and frames `run` accordingly; the result kind is one of a fixed
+           set (Int64 / Bool), selected by the operator that produces the result (a comparison yields
+           Bool, `+`/`-`/`*`/`/`/`%` yield Int64).")
+  (input  (module m
+            (def (lt a b) (< a b))
+            (def (main)   (lt 20 22))))
+  (output (: true Bool)))
+
+(case "an entrypoint returning arithmetic presents an Int64 result at the boundary"
+  (doc    "The Int64 companion to the Bool-boundary case above: the same nullary-`main`-calls-a-helper
+           shape, but the body is an arithmetic expression whose result type is Int64, so `run` is framed
+           at the Int64 boundary valtype and `(add 20 22)` crosses as 42. Together the two cases pin that
+           the entrypoint's boundary result type is type-directed — Bool for a comparison, Int64 for
+           arithmetic — the same program shape emitting a different boundary type from its result type
+           alone.")
+  (input  (module m
+            (def (add a b) (+ a b))
+            (def (main)    (add 20 22))))
+  (output (: 42 Int64)))
+
 ; --- Bool offers a total order in which false is less than true --------------------------
 ; core-semantics.md #Ordering Where Offered Is Total, 3rd sentence: "The Bool type MUST offer a
 ; total order in which false is less than true." Bool is not only an equality type — it carries a
@@ -159,21 +186,92 @@
   (input  (>= true true))
   (output (: true Bool)))
 
+; --- A total order is observed through a three-way `compare` yielding Ordering ------------------
+; core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison: a type that offers a
+; total order offers a `compare` yielding an `Ordering` value with exactly three variants — `Less`,
+; `Equal`, `Greater` — so a single comparison reports the full relation, not one boolean bit of it.
+; `Ordering` is an ORDINARY closed prelude sum (like Option, Result, Sign), so its value form is
+; `(Ordering.Less unit)` etc. — a nullary variant applied to unit, the same `(Variant unit)` form
+; every nullary variant takes — and a consumer deconstructs it with an exhaustive three-arm match.
+; `compare` is the PRIMITIVE from which `<` `>` `<=` `>=` `=` are each definable (the operators MUST
+; AGREE with it), so a type has one order surfaced two ways that cannot disagree. It also names the
+; canonical element order Set/Map serialize in. Tagged `(needs ordering)` — a FRESH capability the
+; seed does not realize (NOT `collections`; the seed would otherwise RUN these and reject the unbound
+; `Ordering`/`compare` names with a coded diagnostic — a gate FAIL — rather than skip). A later
+; generation realizes `compare`; until then the seed's behavior gate SKIPS these.
+
+(case "comparing a lesser value to a greater yields Less"
+  (doc    "`(compare 1 2)` is `(Ordering.Less unit)` — the three-way comparison reports that 1 is less
+           than 2 as the `Less` variant of the Ordering sum, not a boolean (core-semantics.md #A Total
+           Order Is Observed Through A Three-Way Comparison). Pins the Less arm of the three-way result.")
+  (needs  ordering)
+  (input  (compare 1 2))
+  (output (: (Ordering.Less unit) Ordering)))
+
+(case "comparing equal values yields Equal"
+  (doc    "`(compare 2 2)` is `(Ordering.Equal unit)` — the middle variant, distinct from both Less and
+           Greater. Pins that the three-way comparison reports equality as its own variant rather than
+           collapsing it into one of the strict relations.")
+  (needs  ordering)
+  (input  (compare 2 2))
+  (output (: (Ordering.Equal unit) Ordering)))
+
+(case "comparing a greater value to a lesser yields Greater"
+  (doc    "`(compare 3 2)` is `(Ordering.Greater unit)` — the Greater variant. Together with the Less and
+           Equal cases this pins all three variants of the Ordering result are reachable and correctly
+           discriminated by the value relation.")
+  (needs  ordering)
+  (input  (compare 3 2))
+  (output (: (Ordering.Greater unit) Ordering)))
+
+(case "the three-way comparison is deconstructed by an exhaustive match"
+  (doc    "An Ordering value is an ordinary closed sum, so it is matched with the uniform `(Ctor _)`
+           patterns over its three variants (core-semantics.md #A Total Order Is Observed Through A
+           Three-Way Comparison, 2nd sentence): matching `(compare 1 2)` selects the `Less` arm, yielding
+           -1. Pins that a comparison result dispatches through the same exhaustive match as any other
+           sum, so every consumer handles all three cases.")
+  (needs  ordering)
+  (input  (match (compare 1 2)
+            ((Ordering.Less _)    -1)
+            ((Ordering.Equal _)   0)
+            ((Ordering.Greater _) 1)))
+  (output (: -1 Int64)))
+
+(case "the boolean less-than operator agrees with the three-way comparison"
+  (doc    "core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison (3rd sentence: the
+           boolean ordering operators MUST agree with the three-way comparison): `(< 1 2)` is true
+           exactly when `(compare 1 2)` is `(Ordering.Less unit)`. This case pins that agreement — `(< 1
+           2)` is true and the compare above is Less, so a type's one order is surfaced two ways that
+           cannot diverge.")
+  (needs  ordering)
+  (input  (< 1 2))
+  (output (: true Bool)))
+
+(case "the three-way comparison orders strings lexicographically"
+  (doc    "`(compare \"a\" \"b\")` is `(Ordering.Less unit)` — String offers a total order (the
+           lexicographic order of its Unicode scalar values, collections-and-text.md #String Comparison
+           Is Defined On Scalar Values), so compare works over it exactly as over Int64. Pins that the
+           three-way comparison is offered by every type with a total order, not only the numeric types.")
+  (needs  ordering)
+  (input  (compare "a" "b"))
+  (output (: (Ordering.Less unit) Ordering)))
+
 (case "a program that makes a host call has that call in its observable behavior"
   (doc    "Witnesses core-semantics.md #Host Calls Are Ordered And Part Of Observable Behavior.
-           The module imports and declares a unit-returning host function `log`, so it is bound
-           (host-interface-binding.md #A Host Import Is A WIT-Typed Function The Manifest Enumerates);
-           the run makes one host call and returns the unit value — the normal-termination value of a
-           program evaluated only for its effect (core-semantics.md #An Expression Evaluated Only For
-           Its Effect Yields The Unit Value). The (output …) primary clause pins the terminal
-           condition; the (host-calls …) observation pins the call sequence.")
+           The module declares a unit-returning effect `log` and the entrypoint delegates it to the host,
+           so its operation `log.emit` is bound (host-interface-binding.md #A Host Import Is A WIT-Typed
+           Function The Manifest Enumerates); the run makes one host call and returns the unit value — the
+           normal-termination value of a program evaluated only for its effect (core-semantics.md #An
+           Expression Evaluated Only For Its Effect Yields The Unit Value). The (output …) primary clause
+           pins the terminal condition; the (host-calls …) observation pins the call sequence.")
+  (needs  effects)
   (input  (module m
-            (import (host log (func (String) unit)))
-            (use (capability log))
+            (effect log (op emit (-> String Unit)))
             (def (main)
-              (log "hello"))))
+              (host (log)
+                (log.emit "hello")))))
   (output (: unit Unit))
-  (host-calls (call log (: "hello" String))))
+  (host-calls (call log.emit (: "hello" String))))
 
 (case "host calls are observed in the order they were made"
   (doc    "Witnesses core-semantics.md #Host Calls Are Ordered And Part Of Observable Behavior and
@@ -182,23 +280,14 @@
            \"first\" is observed before \"second\". The run terminates normally with the unit value
            (core-semantics.md #An Expression Evaluated Only For Its Effect Yields The Unit Value); the
            (output …) clause pins that terminal condition and the (host-calls …) observation pins the order.")
+  (needs  effects)
   (input  (module m
-            (import (host log (func (String) unit)))
-            (use (capability log))
+            (effect log (op emit (-> String Unit)))
             (def (main)
-              (do
-                (log "first")
-                (log "second")))))
+              (host (log)
+                (do
+                  (log.emit "first")
+                  (log.emit "second"))))))
   (output (: unit Unit))
-  (host-calls (call log (: "first" String))
-              (call log (: "second" String))))
-
-(case "a program halts by exhausting the deterministic resource measure"
-  (doc    "Witnesses core-semantics.md #Evaluation Is Bounded and #A Program Terminates In Exactly One
-           Terminal Condition (the third terminal condition). Unbounded self-recursion consumes the
-           resource measure (determinism-and-fuel.md §Resource Accounting) and halts at a defined
-           point rather than running forever.")
-  (input  (module m
-            (def (loop n) (loop n))
-            (def (main) (loop 0))))
-  (exhausted))
+  (host-calls (call log.emit (: "first" String))
+              (call log.emit (: "second" String))))

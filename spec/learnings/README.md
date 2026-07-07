@@ -508,6 +508,15 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The component's result valtype is type-directed — through an exhaustively-matched Kind sum, the same discipline as the instruction sum](./2026-07-06-result-valtype-is-type-directed-through-an-exhaustive-kind-sum.md)
+  — the spike grew comparisons (`<`, `=`) whose result type is Bool, not Int64, forcing the framing to present
+  `run` at the right boundary valtype (Int64 → s64, Bool → bool). Solved with a type-directed `kind-of : Core →
+  Kind` pass where `Kind` is a SUM (`Ki64 | KBool`) matched EXHAUSTIVELY by the pass and both valtype maps — so
+  adding a kind (a float result) is a compile error until every consumer handles it, the same reject-don't-
+  miscompile discipline the `Instr` sum gives the backend. Also completed "no integer/string tag dispatch" at the
+  SURFACE: the head moved from integer opcode to a `Prim` sum variant. This is the seam where full type inference
+  will live (operand kinds are fixed today, so `kind-of` is a direct read, no unification yet). Pinned two
+  `03-equality-and-observation.sexp` cases (same `main` shape, Bool boundary vs Int64 boundary, both PASS).
 - [The compiler's byte-emitting spine needs a known-answer corpus case, not just verified primitives](./2026-07-06-the-compilers-byte-emitting-spine-needs-a-known-answer-corpus-case.md)
   — the spike reported its LEB128 encoders "verified byte-correct" (`uleb 624485 → E5 8E 26`), but that check
   lived only in an ephemeral `emit` probe in the gitignored spike; the corpus pinned every INGREDIENT (`<`, `&`,
