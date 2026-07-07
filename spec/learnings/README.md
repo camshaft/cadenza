@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The argument-list round-trip works — build by push-recursion, read by indexed iteration](./2026-07-07-the-arg-list-round-trip-works-build-by-push-read-by-index.md)
+  — seed fixed Tier 3i / #18: a recursive push-accumulator now infers a list return (my todo case flipped PASS).
+  With it, both halves of a multi-arg call's argument handling work together: BUILD (push-loop accumulates
+  operands, item 18) + READ (index the built list, item 17). Verified end-to-end: build [0 1 2] by push-recursion,
+  sum by List.at iteration → 3. Names a matched pair: an arg list is a list a compiler both builds and reads, and
+  each direction was blocked by a different instance of the same "value must carry its list kind" family — now
+  both fixed, round-trip closes. Lesson: a singular-looking capability ("multi-arg calls") decomposes into build
+  + read sides that fail independently; pin the ROUND-TRIP (build then read in one program) to check they compose.
+  Pinned `05-compound-types.sexp` "a list built by a recursive push-loop is then iterated by index" (→3). #18
+  RESOLVED. ⚠compiler.cdz `read-call` still only handles UNARY calls with a now-STALE "blocked" comment — multi-arg
+  is pure wiring now, not a blocker.
 - [A recursive push-accumulator loses its list return kind — the Tier-00 race again, now blocking the arg-list reader](./2026-07-07-a-recursive-push-accumulator-loses-its-list-return-kind.md)
   — with payload-bound List.at fixed (arg list READABLE), the gap moved to BUILDING it: a recursive fn threading
   a `list` accumulator grown by `List.push` has its return kind collapse to non-list (`List.len` → "of a non-list

@@ -1677,6 +1677,27 @@
             (def (main)        (List.len (build 3 (list))))))
   (output (: 3 Int64)))
 
+(case "a list built by a recursive push-loop is then iterated by index"
+  (doc    "The full arg-list round-trip a self-hosted reader performs, composing the push-BUILD and the
+           index-READ: `build` accumulates `[0 1 2]` into a list by a recursive push-loop (the reader's
+           `read-args` shape — grow the accumulator per operand), then `sum-at` iterates the built list
+           by index (`List.at` + `List.len`, the lowering's arg-walk shape) and sums the elements. The
+           `let`-bound built list is both measurable and indexable, and its elements are consumed. `build
+           0 3 (list)` = `[0 1 2]`; summed = 0+1+2 = 3. Pins that a list is BUILT by push-recursion AND
+           READ by indexed iteration in one program — the two halves of a multi-argument call's argument
+           handling (construct the `(list Node)` of operands, then walk it to lower each) working
+           together, over a `let`-bound runtime list. Distinct from the build-only case above (which only
+           measures the built list's length) and the read-only payload-`List.at` cases (which index a
+           pre-built list): this composes build and read, the complete arg-list idiom.")
+  (needs  list-growth)
+  (input  (module m
+            (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (sum-at xs i n) (if (< i n)
+                                     (+ (match (List.at xs i) ((Some x) x) ((None _) 0)) (sum-at xs (+ i 1) n))
+                                     0))
+            (def (main) (let ((xs (build 0 3 (list)))) (sum-at xs 0 (List.len xs))))))
+  (output (: 3 Int64)))
+
 (case "a recursive sum consumer whose arguments are recursive sum producers compiles"
   (doc    "The self-hosting compiler's spine: a recursive tree-walk (`lower`) whose arms combine the
            results of TWO recursive self-calls through a second recursive consumer (`code-cat`) that
