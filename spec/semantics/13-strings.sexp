@@ -462,6 +462,24 @@
             ((None _) false)))
   (output (: true Bool)))
 
+(case "a helper decodes bytes to a string and consumes the fallible result"
+  (doc    "The reader's symbol-table idiom: a helper takes raw `Bytes` (a slice of the input), decodes
+           them with `String.from-bytes`, and `match`es the fallible result — binding the string in the
+           `Some` arm to measure/intern it, and handling malformed bytes in the `None` arm. `(dec (Bytes.of
+           (list 104 105)))` decodes \"hi\" and returns its byte length 2. Pins `String.from-bytes`
+           consumed THROUGH A FUNCTION BOUNDARY (the shape a self-hosted reader materializes its symbol
+           table with), not only at the entrypoint: decoding at `main` directly and matching there works,
+           but the same decode-and-match inside a called helper does not yet — the fallible decode's result
+           must survive the boundary the way `Bytes.at`/`List.at` results now do. Companion of the
+           round-trip case above, which matches `from-bytes` at `main`; this one crosses a call.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (dec b) (match (String.from-bytes b)
+                           ((Some s) (String.byte-len s))
+                           ((None _) -1)))
+            (def (main) (dec (Bytes.of (list 104 105))))))
+  (output (: 2 Int64)))
+
 (case "a utf8 bin segment binds a decoded string when the bytes are well-formed"
   (doc    "The `bin` pattern `(bin (u8 n) (utf8 name n))` reads a length byte n, then decodes exactly the
            next n bytes as UTF-8 into `name : String`. Against `(list 3 102 111 111)` — n=3, then the

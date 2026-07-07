@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader gate is being closed accessor-by-accessor — `Bytes.at` crosses a boundary now, `String.from-bytes` is next](./2026-07-07-the-reader-gate-is-being-closed-accessor-by-accessor.md)
+  — the built-in-fallible-result-across-a-boundary gate (item 12) is being closed one accessor at a time, as that
+  learning warned. This cycle `Bytes.at` through a helper was fixed (the reader's per-byte idiom → works); but the
+  fix is accessor-specific: `String.from-bytes` through a helper still declines ("unsupported dotted-application" —
+  a DIFFERENT message, so it needs its own runtime lowering, not just payload-kind work), and a literal `(Some 42)`
+  through a helper still declines "arms differ in kind". `List.at`/`Bytes.at` green, `String.from-bytes`/bare-`Some`
+  todo. Vindicates item 12: per-accessor patching closes the symptom, not the class — the general fix is to give
+  built-in `Option`/`Result` the payload-type registration a user sum gets. A reader uses ALL these at once, so it
+  compiles only when the last accessor lands. Pinned `13-strings.sexp` "a helper decodes bytes to a string and
+  consumes the fallible result" (→ 2, todo).
 - [Shape inference through `match` unblocks the type-driven emit spine — and prelude variant names must not shadow a program's](./2026-07-07-shape-inference-through-match-unblocks-the-type-driven-emit-spine.md)
   — two seed fixes jointly unblock the compiler's emit spine (the recursive `lower`/`emit` walk turning an AST
   node into instruction bytes). (1) `shape_of` now handles `match`: a `match`'s shape is the UNIFIED shape of its
