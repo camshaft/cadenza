@@ -10,6 +10,20 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A decline that lands on a trap-expecting oracle is coincidental agreement, not a semantic trap — the trap-oracle dual of reject-don't-miscompile](./2026-07-07-a-decline-that-lands-on-a-trap-oracle-is-coincidental-agreement-not-a-semantic-trap.md)
+  — a quiet-cycle completeness sweep of the interim harness's new `trap-ok` bucket (oracle expects a trap, mine
+  also traps). The board looked clean — 22 agree / 6 soft / 4 trap-ok / 0 hard — but probing the four realized
+  `trap-ok` cases showed every one is a bare `unreachable` DECLINE: `compiler.cdz` doesn't support `record` /
+  `Bytes.of` yet, so it traps by declining, NOT by the byte-range or missing-field check the case pins (a valid
+  in-range `(Bytes.of (list 65 66))`, which must NOT trap, also traps). Coincidental agreement: right observable
+  (a trap), wrong reason (unsupported). This is the dual of reject-don't-miscompile — on a value oracle a decline
+  is visibly distinct, but on a TRAP oracle a decline and a semantic trap produce the identical `unreachable`, so
+  a value-only harness can't separate them, and a wrong range check added later would still score `trap-ok`
+  (silent regression). No corpus change (the cases are correct); the gap is in the measurement. Fix: read
+  `trap-ok` as "traps, reason unverified"; pair each out-of-range case with an in-range companion that must NOT
+  trap (the discriminator a value-only trap oracle lacks) — recorded for the real `component-check` gate too.
+  Lesson: a bucket that agrees on an observable a decline can counterfeit is the WEAKEST evidence on the board,
+  not the strongest.
 - [A `bytes → bytes` compile entry unblocks the real differential harness — the seam is landed, the compiler just hasn't moved onto it](./2026-07-07-a-bytes-to-bytes-compile-entry-unblocks-the-real-differential-harness.md)
   — SEED-GAPS gap 3l (the seed could only lift a nullary `run`, not a `compile : list<u8> → list<u8>` component)
   is RESOLVED on the seed side. Probing the rebuilt seed confirmed it: a new `compile-run` subcommand builds a
