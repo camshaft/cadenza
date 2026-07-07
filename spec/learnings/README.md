@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The final self-host blocker is a scale limit, not a shape gap — and a scale limit resists a minimal corpus case](./2026-07-07-the-final-self-host-blocker-is-a-scale-limit-not-a-shape-gap.md)
+  — the reader can now be JOINED to the pipeline, and the join is the last blocker. `read-node : Bytes → Node` is
+  verified (`read (quote (+ 1 2))` builds the right Node), but feeding it to the real `resolve : Node → Core`
+  declines "runtime compound element of a kind the runtime cannot box yet". Decisive: it does NOT reduce — a
+  3-variant resolver runs, a 6-variant heterogeneous one runs (→4, verified), only the full 18-variant `Core`
+  fails; and even `resolve` on a runtime `(NInt 42)` declines, so it's a full-FUNCTION scale/union property, not
+  an input shape. Different KIND of blocker from every prior reader gap (all were shape gaps, minimally pinnable):
+  a scale limit has NO minimal witness. So NO corpus case (a giant resolver is brittle; a tractable one guards
+  nothing) — the honest artifact is a bisected backlog entry (#16) + the regression guard being the whole
+  `compiler.cdz` resolve compiling once fixed. RULE: shape gap → minimal case; scale limit → bisection + backlog,
+  real artifact as the guard. Tier 2f is the single remaining hard gate on bytes → bytes self-hosting.
 - [The invalid-component violation is fixed — completing the withheld-case cycle — and the handoff doc lags the seed](./2026-07-07-the-invalid-component-violation-fixed-and-the-handoff-lags-the-seed.md)
   — the `let`-free `tuple.N`-on-a-named-def violation (item 15, emitted an INVALID component) is FIXED, thoroughly
   (whole-program result 40, tuple.1 → 5, consumed → 140, compound element matched → 7). Completes a clean cycle:
