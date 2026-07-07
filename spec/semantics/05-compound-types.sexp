@@ -1655,6 +1655,28 @@
             (def (main)         (List.len (build (list) 0 5)))))
   (output (: 5 Int64)))
 
+(case "a recursive list accumulator grown by push and returned in the base arm stays a list"
+  (doc    "The variant of the recursive-builder above that a compiler's arg-list reader takes, and that
+           tests the accumulator's return-kind inference specifically. Here the `list` accumulator `acc`
+           is RETURNED UNCHANGED in the base arm (`(if (< n 1) acc …)`) and grown by `List.push` in the
+           NON-first argument position of the recursive call (`(build (- n 1) (List.push acc n))`). The
+           accumulator's kind must converge to `list`/heap — the base arm returns it, and `List.push`
+           yields a list, so the return kind is a list — and `List.len` on the result must read the
+           built list's length. `build 3 (list)` pushes 3, 2, 1, so the length is 3. Distinct from the
+           case above, where the pushed list is the recursive call's FIRST argument (its kind forced
+           positionally); here `acc` is returned bare in the base arm, so a naive inference seeds it
+           scalar and `List.push acc n` must UPGRADE that seed to a list rather than the bare return
+           collapsing it — the same threaded-accumulator convergence the recursive-sum-consumer case
+           below pins for a heap sum, here for a `list` return. This is exactly the reader's
+           argument-accumulation loop: `(read-args … i out) = (read-args … (+ i 1) (List.push out
+           (read-node …)))`, which builds the `(list Node)` of a call's operands — so a self-hosted
+           compiler cannot construct a multi-argument call's arg list until this infers a list return.")
+  (needs  list-growth)
+  (input  (module m
+            (def (build n acc) (if (< n 1) acc (build (- n 1) (List.push acc n))))
+            (def (main)        (List.len (build 3 (list))))))
+  (output (: 3 Int64)))
+
 (case "a recursive sum consumer whose arguments are recursive sum producers compiles"
   (doc    "The self-hosting compiler's spine: a recursive tree-walk (`lower`) whose arms combine the
            results of TWO recursive self-calls through a second recursive consumer (`code-cat`) that

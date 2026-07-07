@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [A recursive push-accumulator loses its list return kind — the Tier-00 race again, now blocking the arg-list reader](./2026-07-07-a-recursive-push-accumulator-loses-its-list-return-kind.md)
+  — with payload-bound List.at fixed (arg list READABLE), the gap moved to BUILDING it: a recursive fn threading
+  a `list` accumulator grown by `List.push` has its return kind collapse to non-list (`List.len` → "of a non-list
+  value"). Boundary = exactly {recursive ∧ list-accumulator ∧ push}; drop any one and it works. THE blocker for
+  multi-arg calls (the reader's `(read-args … (List.push out (read-node …)))` loop). FIFTH instance of arc-pattern
+  #1 (order/position-independent recursive-result inference): `acc` returned in the base arm seeds scalar,
+  `List.push acc n`'s list result must UPGRADE it not be collapsed — same cause + fix as the Tier-00
+  threaded-accumulator race, now on a `list` return. Distinct from the passing recursive-builder (push as FIRST
+  arg, forced positionally). Pinned `05-compound-types.sexp` "a recursive list accumulator grown by push and
+  returned in the base arm stays a list" (→3, todo). SPEC-BACKLOG #18 (+ #19 = the secondary 3j nested-ctor-under-
+  Some-on-a-param-list gap, has a two-step workaround).
 - [The reader tells a call from an operator by function-environment membership — two namespaces, one lookup](./2026-07-07-the-reader-tells-a-call-from-an-operator-by-function-environment-membership.md)
   — `read-app` grew to distinguish a user-function CALL from a primitive OPERATOR: it carries a function
   environment (`fenv` = the module's `def` names' prelude indices), looks the head index up in it — present → a
