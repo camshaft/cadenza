@@ -10,6 +10,28 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A pinned toolchain snapshot gives the loop a reproducible probe target — and settles the churn readings](./2026-07-07-a-pinned-toolchain-snapshot-gives-the-loop-a-reproducible-probe-target.md)
+  — an `implementation/stable/` snapshot appeared: a frozen all-gates-green `cadenza-seed` + runtime +
+  cdz-rustc reference + `SHA256SUMS`, so self-hosting work runs against a FIXED seed, not the mid-cycle-rebuilding
+  `implementation/seed/`. Verified: hashes OK, gate green (569), byte gate 65/124/385, WRONG=0 — and those match
+  the last several cycles, confirming the earlier fluctuation (183→137→124 disagree) was transient churn, not
+  movement. Adopting it: several recent cycles were muddied by the seed rebuilding WHILE I probed (a false
+  gate-timeout regression, a byte-count swing from a half-migrated ABI, mtimes moving twice per cycle) — a probe
+  is only as trustworthy as the target's stability, and measuring a moving target reads something that no longer
+  exists. Standing-procedure update: probe against `stable/` (CADENZA_RUNTIME by ABSOLUTE path — relative fails
+  the write silently) for reproducible readings; watch `implementation/seed/` mtimes as the ACTIVITY signal, not
+  the measurement target; cross-check live-vs-stable only when the divergence is the question (e.g. "did the
+  latest rebuild fix ask-42?"). No corpus/ask — a loop-procedure improvement.
+- [A result-typed entry can mis-shape a deep sum-match in its call graph](./2026-07-07-a-result-typed-entry-can-mis-shape-a-deep-sum-match-in-its-call-graph.md)
+  — wiring the self-hosted compiler's rejection path to `compile: … → result<list<u8>, list<diagnostic>>`
+  made it decline itself ("runtime match with a non-literal pattern") on its deep `Core` sum-matchers, though
+  they compile fine when `compile` returns bare `Bytes`. Root cause: a match arm's payload-slot binder
+  (`func-body`'s `Core`-typed `body`) mis-infers as `Int64` because inference doesn't seed arm binders with
+  their declared slot kinds; that wrong return kind mismatches a callee param, forces an inline, and the
+  inlined body's constructor-`match` drops to the scalar path and declines. Amplified by inline-on-mismatch;
+  surfaces only at self-host scale. The seeding fix re-walks the inference fixpoint → compile-cost blowup, so
+  the durable response is the kinded-artifact interface (Amendment 0.8.0): one `{artifacts, diagnostics}`
+  record on both success and rejection has same-shaped branches, so the choosing sum-match lowers cleanly.
 - [A gate timeout is not a regression until you rule out contention — isolate before escalating](./2026-07-07-a-gate-timeout-is-not-a-regression-until-you-rule-out-contention.md)
   — after a seed rebuild the gate (normally ~2 s) timed out at 2 min, twice — looked like a hang/blowup
   regression. Isolating: `10-bytes.sexp` showed a per-file timeout, but every bisected half/quarter passed in
