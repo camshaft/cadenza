@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The built-in list cannot be pattern-matched — the biggest ergonomic gap for authoring the compiler](./2026-07-07-the-built-in-list-cannot-be-pattern-matched.md)
+  — as the reader grew (walking CBOR arrays of children), the spike hit a spec+seed gap: the built-in `list`
+  cannot be pattern-matched AT ALL (`(cons h t)`, `(list a b)`, `(list)` all decline "unsupported list pattern";
+  `core-semantics.md` §Pattern Matching says NOTHING about lists). So every list-consuming pass — module def list,
+  code stream, CBOR children — is hand-rolled as a custom cons-sum (`FList`/`Code`/`DList`) duplicating the
+  sequence type. Right design keeps representation OPAQUE (a `list` is a persistent tree, not cons cells):
+  ML/Rust-style element patterns with a rest binder — `(list)` empty, `(list x .. rest)` first+tail — matcher asks
+  len/first/rest. A spec decision (pattern matching is core-semantics), not just seed work. Pinned
+  `05-compound-types.sexp` "the built-in list is folded by an element-with-rest pattern" (→ 60, `(needs
+  list-patterns)`, skips). SPEC-BACKLOG #13. Also: `String.from-bytes`-thru-boundary reclassified NOT blocking the
+  reader (raw-byte decode doesn't need it; only the symbol table does).
 - [The reader decodes CBOR as the input dual of the output spine — built on the byte primitives that already work](./2026-07-07-the-reader-decodes-cbor-as-the-input-dual-of-the-output-spine.md)
   — the spike started its READER (last major piece before self-hosting), and it fell out as the input dual of the
   LEB128 output spine: `cbor-major` (`>> byte 5`), `cbor-info` (`& byte 31`), `cbor-arg` (1/2/4/8-byte big-endian

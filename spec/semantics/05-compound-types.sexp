@@ -472,6 +472,28 @@
             (def (main) (sm (count 5)))))
   (output (: 15 Int64)))
 
+(case "the built-in list is folded by an element-with-rest pattern"
+  (doc    "The natural fold over the BUILT-IN `list`, without hand-rolling a custom cons-sum. A list is
+           deconstructed by ELEMENT patterns with an optional rest binder — `(list)` matches exactly the
+           empty list, `(list x .. rest)` binds the first element `x` and the remaining elements as a
+           list `rest` — so a total fold needs just those two arms (fixed-arity `(list x y)` are sugar
+           for length checks). `sum (list 10 20 30)` = 10 + (20 + (30 + 0)) = 60. This keeps the list's
+           representation OPAQUE (the matcher asks length/first/rest, not `Cons`/`Nil` cells — a `list` is
+           a persistent tree, not a cons list), matching by elements the way ML/Rust do, not by exposing
+           an internal cell structure. Every list-consuming pass a compiler writes — a module's def list,
+           a call's argument list, a block's statements — is this fold; without it each must hand-roll a
+           `(type FList (FNil | FCons …))` cons-sum that duplicates the sequence type the language already
+           has (see the `IntList` fold above, which stands in precisely because the built-in `list` cannot
+           yet be matched). This is a spec addition — `core-semantics.md` §Pattern Matching gains list
+           deconstruction — plus seed lowering; until then it declines \"unsupported list pattern\".")
+  (needs  list-patterns)
+  (input  (module m
+            (def (sum xs) (match xs
+                            ((list)           0)
+                            ((list x .. rest) (+ x (sum rest)))))
+            (def (main) (sum (list 10 20 30)))))
+  (output (: 60 Int64)))
+
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
            canonical little AST — is built at run time by `build` (its structure decided by a runtime
@@ -1026,6 +1048,22 @@
             (def (depth e) (match e ((Expr.Lit n) 0) ((Expr.Neg x) (+ 1 (depth x)))))
             (def (main)    (depth (Expr.Neg (Expr.Lit 5))))))
   (output (: 1 Int64)))
+
+(case "a bare nullary constructor is the nullary sum value"
+  (doc    "A nullary variant used as a VALUE may be written BARE — `NNil`, not `(Node.NNil unit)`. A
+           bare nullary constructor IS the nullary sum value (core-semantics.md #A Sum Type Constructor
+           Is A Single-Arity Function: its argument type is Unit), equivalent to `(Ctor unit)`. Matched,
+           built at run time, and returned, the bare and applied forms denote one value. `(classify 0)`
+           builds `NNil` (bare) and matches its `((Node.NNil _) …)` arm → 1; `(classify 7)` builds
+           `(Node.NLit 7)` → 7. Pins that the bare nullary form both constructs and matches — the shape
+           a reader takes writing `NNil` for an empty node rather than the verbose `(Node.NNil unit)`.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Node (NLit Int64 | NNil))
+            (def (classify n) (if (= n 0) NNil (Node.NLit n)))
+            (def (val x) (match x ((Node.NLit v) v) ((Node.NNil _) 1)))
+            (def (main) (+ (val (classify 0)) (val (classify 7))))))
+  (output (: 8 Int64)))
 
 (case "a match arm building a fresh runtime compound infers its shape"
   (doc    "A non-recursive `emit` dispatches on a sum variant and each arm BUILDS a fresh runtime
