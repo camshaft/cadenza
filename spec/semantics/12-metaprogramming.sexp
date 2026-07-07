@@ -157,8 +157,8 @@
            (value-interchange.md — decode of possibly-external bytes yields the error case, never traps),
            so the round-trip matches the `Ok` arm and equates its payload.")
   (input  (match (Ast.decode (Ast.encode (Ast.Int 7)))
-            ((Ok a) (= a (Ast.Int 7)))
-            (else   false)))
+            ((Ok a)  (= a (Ast.Int 7)))
+            ((Err _) false)))
   (output (: true Bool)))
 
 (case "encoding and decoding a constructor-built compound AST round-trips"
@@ -167,8 +167,8 @@
            bijection round-trip reaches a constructor-built compound AST, not only a leaf node. `Ast.decode`
            is total (`Bytes → Result<Ast, _>`), so the round-trip matches the `Ok` arm.")
   (input  (match (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
-            ((Ok a) (= a (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
-            (else   false)))
+            ((Ok a)  (= a (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
+            ((Err _) false)))
   (output (: true Bool)))
 
 (case "a quote-built and constructor-built AST of the same tree encode to identical bytes"
@@ -280,8 +280,8 @@
            on AST values, and the encoding is faithful. `Ast.decode` is total (`Bytes → Result<Ast, _>`),
            so the round-trip matches the `Ok` arm and equates its payload to the original.")
   (input  (match (Ast.decode (Ast.encode (quote (+ 1 2))))
-            ((Ok a) (= a (quote (+ 1 2))))
-            (else   false)))
+            ((Ok a)  (= a (quote (+ 1 2))))
+            ((Err _) false)))
   (output (: true Bool)))
 
 (case "decoding bytes that are not a canonical AST yields the error case, not a trap"
@@ -293,8 +293,8 @@
            discipline (like `String.from-bytes`), not reject-don't-miscompile: malformed EXTERNAL input is a
            handleable condition, not a program bug that traps.")
   (input  (match (Ast.decode (Bytes.of (list 255 255 255)))
-            ((Ok _) 1)
-            (else   0)))
+            ((Ok _)  1)
+            ((Err _) 0)))
   (output (: 0 Int64)))
 
 (case "decoding canonical bytes followed by a trailing byte yields the error case"
@@ -305,8 +305,8 @@
            companion of the round-trip cases: decode consumes the WHOLE input or reports an error, so a
            truncated or concatenated external input is caught rather than half-read.")
   (input  (match (Ast.decode (Bytes.concat (Ast.encode (Ast.Int 7)) (Bytes.of (list 99))))
-            ((Ok _) 1)
-            (else   0)))
+            ((Ok _)  1)
+            ((Err _) 0)))
   (output (: 0 Int64)))
 
 ; ============================================================================================

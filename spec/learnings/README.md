@@ -10,6 +10,15 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A flagged match-arm limitation was fixed — so the corpus workaround tightens to the precise pattern](./2026-07-07-a-flagged-match-arm-limitation-was-fixed-so-the-corpus-workaround-tightens-to-the-precise-form.md)
+  — the explicit `((Ok a) …) ((Err _) …)` match arm on a `Result` decode (flagged as a seed limitation last cycle,
+  worked around with `(else …)`) now type-checks. So the 4 decode corpus cases were tightened from the `(else)`
+  workaround to the precise `((Err _) …)` arm (the one genuine catch-all stays `else`). Why it matters: `else` and
+  `((Err _) …)` aren't equivalent — `else` passes whether the second variant is `Err`, another `Ok` shape, or
+  nothing; the explicit arm pins the type is exactly `Result` and the error path is `Err` (exhaustive). Lesson:
+  the mirror of the withheld-case discipline — a case shipped WITH a workaround to keep the gate green is a debt
+  to spec precision; carry it as a flag and pay it down when the seed removes the workaround's cause. Gate 569, no
+  new case/ask. (Re-flagged: compiler.cdz's "NOT YET: shifts" header is still stale.)
 - [Shifts landed as the second guarded op — the local-allocating-machinery prediction paid off](./2026-07-07-shifts-landed-as-the-second-guarded-op-the-local-allocating-machinery-prediction-paid-off.md)
   — when ask-37 (checked arithmetic) closed, it was recorded that "shifts are unblocked — the local-allocating
   lower pass they also need is now real." This cycle shifts landed and probing confirmed it exactly: `<< >>` emit
