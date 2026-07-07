@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The byte-level gate's decline discriminator exposed the real self-hosting frontier: the compiler has no type-checker](./2026-07-07-the-byte-level-gate-decline-discriminator-exposes-the-missing-type-checker.md)
+  — the decline discriminator (ask-29) landed: `component-check` went 58 agree / 496 disagree → 58 agree / 152
+  disagree / **344 decline** / 204 skip. Splitting declines off made the 152 legible: 117 are the fold-vs-helper
+  `soft` set (fine), but **33 are `native=rejected / component=ok`** — `compiler.cdz` COMPILES ill-typed programs
+  native REJECTS (`(if true 1 false)`, `(+ 1 true)` → `Ok`, native declines). It has NO type-checker: reads →
+  resolves → folds → lowers → emits, no type-rejection pass. 33 span CDZ0201 (19, cond branch/condition), CDZ0301
+  (11, no-promotion operands), CDZ0210 (3, non-exhaustive match). A whole-program reject-don't-miscompile
+  violation, invisible until the discriminator split off the decline noise. Filed ask-30 (type-checker + the
+  diagnostics ABI it needs). No new corpus (the 33 are already rejection cases native realizes). Lesson: the
+  strictest gate you can afford is worth its discriminator — byte-identity against a reference that REJECTS
+  ill-typed programs is the only differential that catches a missing type-checker; every weaker gate accepts the
+  same programs the buggy compiler does. And a discriminator doesn't just make the count honest — it makes the
+  residue legible (the 33 named themselves once decline noise was subtracted).
 - [The byte-level self-hosting gate runs — and its "disagree" count conflates honest declines with real miscompiles](./2026-07-07-the-byte-level-self-hosting-gate-runs-and-its-disagree-count-conflates-declines-with-miscompiles.md)
   — the last wiring step landed (`compile-run --emit-component`, SPEC-BACKLOG #28), so the real byte gate runs:
   persist compiler.cdz → 27 KB component, `component-check <it> spec/semantics` → **58 agree, 496 disagree, 204
