@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [`match` on user sums is the last major emit frontier — self-hosting is now an emit-coverage checklist, not a blocker](./2026-07-07-match-on-user-sums-is-the-last-major-emit-frontier.md)
+  — a bookkeeping cycle (spike only updated docs) prompted taking stock: the compiler's OWN source uses ~41
+  `match` over 11 user sum types, ~19 String ops, pervasive recursion — but its emit-side `Core` has NO `KMatch`,
+  no user-sum declaration/construction. Each is a SUBSET-FRONTIER item, not a seed gap (the seed compiles user-sum
+  `match` fine → 31; it's the Cadenza compiler's EMIT path that must grow). Self-hosting is now a countable
+  emit-coverage CHECKLIST, not an open blocker: emit `match` on user sums + construction (THE big one — every pass
+  is a match over a user sum, so it's not one feature but THE feature the compiler is written in) → string/bytes
+  comparison on the emit path → TCO for deep recursion. No unknown blocker left, only known coverage to fill. It's
+  the emit-side dual of the reader's node-dispatch (decode a tagged node ↔ produce code for one). No new corpus
+  case (behavior already pinned as a SEED capability; compiler-emit not yet a shape to pin). SPEC-BACKLOG #20 (the
+  self-inclusion inventory, priority-ordered).
 - [N-ary calls wired end-to-end — the arg-list round-trip became the feature, as pure wiring](./2026-07-07-n-ary-calls-wired-end-to-end-the-round-trip-becomes-the-feature.md)
   — with both arg-list halves fixed (read #17, build #18), the spike wired N-ARY user-function calls through the
   whole pipeline — the "pure wiring" the prior cycle predicted. `NCall` → `(Tuple Int64 (list Node))`; `read-call`
