@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The byte-level self-hosting gate runs — and its "disagree" count conflates honest declines with real miscompiles](./2026-07-07-the-byte-level-self-hosting-gate-runs-and-its-disagree-count-conflates-declines-with-miscompiles.md)
+  — the last wiring step landed (`compile-run --emit-component`, SPEC-BACKLOG #28), so the real byte gate runs:
+  persist compiler.cdz → 27 KB component, `component-check <it> spec/semantics` → **58 agree, 496 disagree, 204
+  skip**. But 496 is misleading: 158 disagreements emit the byte-IDENTICAL 88-byte component = `func 0 →
+  unreachable`, an honest `KError` decline (two different unhandled programs → same 88 bytes, traps when run).
+  `component-check` byte-compares a decline stub against native's real output and calls it `disagree` — the same
+  decline-vs-result blind spot as the trap oracle (#26), now at the byte level. True frontier once declines are
+  excluded: ~58 agree + soft set, rest = reader doesn't decode records/strings/floats/effects yet (expected). Fix
+  handed to agent: `component-check` must classify a bare-`unreachable` entry as `decline`, not `disagree`. No
+  corpus case (gate classification, not spec). Lesson, now proven across THREE gates (value/trap/byte): every new
+  differential inherits the decline-vs-result blind spot and needs the discriminator explicitly — a headline
+  count is trustworthy only where the shared observable can't be counterfeited (agree/byte-identical UP, never
+  disagree DOWN).
 - [Gap 3n is fixed — the self-hosting loop is operational for arbitrary programs, and the byte-level gate is one step away](./2026-07-07-gap-3n-fixed-the-self-hosting-loop-is-operational-and-the-byte-gate-is-one-step-away.md)
   — the `compile`-return mod-4 alignment bug (narrowed over the prior cycles, fix `(p+3)&!3` converged with the
   compiler agent) landed in the seed. The loop re-probed every input that failed last cycle (`0`/`1`/`true`/`256`/
