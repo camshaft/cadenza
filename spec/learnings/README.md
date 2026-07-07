@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The workaround was the bug — correcting the "scale limit" diagnosis of the final self-host blocker](./2026-07-07-the-workaround-was-the-bug-correcting-the-scale-limit-diagnosis.md)
+  — CORRECTION: two cycles ago I diagnosed Tier 2f ("resolve on a runtime Node can't box") as a seed SCALE limit
+  (every tractable resolver passed, only the full 18-variant failed → "no minimal witness"). WRONG. The real
+  cause was self-inflicted: `resolve`'s PUnknown arm used `(Bytes.len (Bytes.of (list 256)))` — an out-of-range
+  Bytes hack as a placeholder trap (backlog #11's stub) — a Never value that poisoned the WHOLE runtime `resolve`.
+  Replacing it with an honest `KError → unreachable` fixed it. THE WORKAROUND WAS THE BUG. Underneath was a real
+  (differently-shaped) seed invariant: a Never value on the runtime-heap path emitted invalid code, now hardened
+  ([[never-typed-value-on-the-runtime-heap-path]]). Meta-lesson correcting the scale-limit rule: my bisection
+  rebuilt a clean ANALOGUE (structure) and dropped the culprit (the Bytes content), so it confirmed a false
+  hypothesis — REDUCE THE FAILING PROGRAM BY DELETING ITS ARMS, not by rebuilding a clean one. And "write it
+  honestly" isn't just style — the contortion can be the defect. Withdraws backlog #16 (mis-framed); resolves #11.
 - [The reader is wired — the compiler now reads a program's canonical AST bytes and compiles it, end to end](./2026-07-07-the-reader-is-wired-bytes-to-component-end-to-end.md)
   — MILESTONE: with every self-host seed blocker cleared, the reader is WIRED into the pipeline. `compiler.cdz`'s
   `main` now compiles a program READ FROM ITS OWN CANONICAL AST BYTES: `read-node : Bytes → Node` decodes the CBOR
