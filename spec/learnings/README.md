@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The decode direction became a general value-interchange capability — and it picked Option, resolving the signature](./2026-07-07-the-decode-direction-became-a-general-value-interchange-capability-that-picks-option.md)
+  — last cycle's operator correction (`Ast.decode` must be total, not trap; signature left open) resolved this
+  cycle: a sibling landed `spec/capabilities/value-interchange.md`, a GENERAL capability for serializing/decoding
+  any value, whose §"Decode Inverts Serialize And Refuses Otherwise" mandates decode "MUST yield the ABSENCE OF A
+  VALUE rather than a value… an optional result rather than trapping." So the signature is **Option** (`Bytes →
+  Option<Ast>`, matching `String.from-bytes`), and the principle generalized from AST to all values. Re-probe: the
+  seed's `Ast.decode` still returns bare `Ast` and traps — unmet. Two lessons: (1) an operator correction naming
+  a boundary condition ("decode of external bytes must not fail hard") is best promoted to a GENERAL capability at
+  that boundary, not a patch to the one operation — every serializable type then inherits total-decode. (2) A new
+  fallible op should wear the language's existing fallible surface (Option) rather than a bespoke error channel
+  unless it needs the detail. ask-38 updated with the resolved signature; error-case corpus withheld until the
+  seed makes decode Option-returning.
 - [A decode over external bytes must be total (a Result), not trap — "refuse" is the error case, not a failure](./2026-07-07-a-new-decode-contract-landed-the-refuse-invalid-half-holds-the-no-trailing-bytes-half-does-not.md)
   — a new `deterministic-value-form.md` decode contract (inverting decode; refuse invalid; trailing bytes are an
   error). Probing the seed's `Ast.decode`: it TRAPS on invalid bytes and SILENTLY IGNORES trailing bytes. I first
