@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader resolves names to local slots — lexical shadowing is deepest-position-wins in an index environment](./2026-07-07-the-reader-resolves-names-to-local-slots-with-lexical-shadowing.md)
+  — the reader grew SCOPE resolution: a bare name (CBOR tag 39 `d8 27 <idx>` wrapping a prelude index) resolves to
+  a local SLOT via a parameter environment (in-scope names' prelude indices, in order); `let` extends the env
+  (append-at-end → next slot). The "resolve names to bindings" step (companion to "resolve names to codes"), on
+  runtime bytes. Load-bearing: shadowing = DEEPEST-position-wins — `ienv-pos` searches deepest-first, so env
+  `[5,7,5]` looking up 5 → slot 2 (innermost), not 0. A FIRST-match search silently resolves a shadowing `let` to
+  the shadowed outer slot — a valid-component-wrong-value scope bug. Append-at-end + search-deepest-first gives
+  lexical scope with shadowing over a flat slot array, no nesting structure needed. Pinned `02-binding-and-control.sexp`
+  "resolving a name in a shadowing environment returns the innermost binding's slot" (→2). Reader now decodes
+  functions with params + `let`, not just closed constant bodies.
 - [Payload-bound `List.at` fixed — multi-argument calls are now representable (and const-folding masked the real gap)](./2026-07-07-payload-bound-list-at-fixed-multi-arg-calls-are-representable.md)
   — the seed fixed Tier 3h / #17: `List.at` on a payload-bound list now reads its element (→10, my todo case
   flipped to PASS). Unblocks the natural N-ary call rep `KCall (Tuple Int64 (List Core))` — iterate the payload

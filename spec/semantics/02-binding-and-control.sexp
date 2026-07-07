@@ -42,6 +42,32 @@
   (input  (let ((x 1) (x (+ x 10))) x))
   (output (: 11 Int64)))
 
+(case "resolving a name in a shadowing environment returns the innermost binding's slot"
+  (doc    "The compiler-internal SCOPE-RESOLUTION idiom behind lexical shadowing (the value-level cases
+           above pin the observable; this pins how a name resolver realizes it). A name environment is a
+           list of bound names in scope order (a self-hosted compiler holds parameters and `let`
+           bindings this way, resolving a name reference to a local slot). When a name is bound twice —
+           an inner `let` shadowing an outer binding of the same name — resolution must return the
+           INNERMOST (latest, highest-slot) binding, not the first. `pos` searches the environment
+           deepest-first and returns the last matching position: for env `[5, 7, 5]` (name 5 bound at
+           slot 0, shadowed at slot 2), looking up 5 yields 2 — the shadowing binding — not 0. Pins that
+           a recursive deepest-first environment search realizes lexical shadowing correctly (a
+           first-match search would wrongly return the shadowed outer slot 0). An absent name yields -1.
+           This is the `bytes → local-slot` name resolution a reader performs, the runtime dual of the
+           `let`-shadowing value semantics above.")
+  (input  (module m
+            (type Env (ENil | ECons (Tuple Int64 Env)))
+            (def (pos xs target k)
+              (match xs
+                ((Env.ENil _) (- 0 1))
+                ((Env.ECons (tuple h t))
+                  (let ((deeper (pos t target (+ k 1))))
+                    (if (= deeper (- 0 1))
+                        (if (= h target) k (- 0 1))
+                        deeper)))))
+            (def (main) (pos (Env.ECons (tuple 5 (Env.ECons (tuple 7 (Env.ECons (tuple 5 (Env.ENil ()))))))) 5 0))))
+  (output (: 2 Int64)))
+
 (case "a reference to an unbound name is rejected before running"
   (doc    "Witnesses core-semantics.md #Binding Is Lexical: a reference to a name with no enclosing
            binding is refused. This is a front-end rejection every generation makes — scope resolution
