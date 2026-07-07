@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader's whole foundation is built and verified — gated on a single inference bug, as dead code](./2026-07-07-the-reader-foundation-is-built-and-gated-on-one-inference-bug.md)
+  — the reader's three sub-capabilities are all written + verified on real `(quote 42)` bytes: head decode
+  (`cbor-major`/`arg`/…), structural navigation (`cbor-skip`/`skip-elems`, walks past a nested item), and name
+  resolution (`prelude-entry`/`name-eq`, byte-compares a prelude symbol to `b"+"` — no runtime String). But
+  `name-eq` is the recursive-Bool shape that declines (item 14), so the spike parked it as DEAD CODE: the compiler
+  still builds (nothing calls it yet), and it comes alive when item 14 is fixed + the top-level `read` walk is
+  wired. So the reader is fully scaffolded, blocked on ONE seed inference bug. A method: build+verify everything
+  else, park the blocked fn as dead code (sibling of "route around the blocker"). Honest caveat: foundation built
+  ≠ reader works (name-eq inert → no end-to-end `bytes → AST` yet). Pinned `10-bytes.sexp` "a CBOR skip walks past
+  a whole nested item" (`82 82 01 02 03` → 5, PASS). Self-host gate = #12 + #13 + #14.
 - [A recursive Bool function's return kind is inferred branch-order-dependently — the same kind race as Tier 00, now on Bool](./2026-07-07-recursive-bool-return-kind-inference-is-branch-order-dependent.md)
   — probing the reader's name matcher found: a self-recursive Bool-returning fn DECLINES ("if condition is not
   Bool" / "branches differ in kind") when the self-call is the THEN branch and a Bool literal the ELSE; the mirror

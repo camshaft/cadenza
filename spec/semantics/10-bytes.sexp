@@ -526,6 +526,37 @@
                                        (arg   (Bytes.of (list 0x19 0x01 0x2C)) 0)))))
   (output (: (tuple 0 300) (Tuple Int64 Int64))))
 
+(case "a CBOR skip walks past a whole nested item to the next offset"
+  (doc    "The reader's structural NAVIGATION primitive, the companion of the head-decode above: given
+           the offset of a CBOR item, `cbor-skip` returns the offset just past that entire item —
+           recursively, so a nested array is walked element by element. It dispatches on the major type:
+           an array (major 4) skips its head then each of its `arg` elements in turn (the mutually
+           recursive `skip-elems`); a byte/text string (major 2/3) skips its head then `arg` payload
+           bytes; a scalar (major 0/1/7) is just its head. Against the bytes `82 82 01 02 03` — an array
+           of two items whose first is itself the array `[1 2]` (`82 01 02`) and whose second is the
+           scalar `3` (`03`) — `cbor-skip` from offset 0 walks the outer array: into the inner two-element
+           array, past both scalars, then past the trailing `3`, landing at offset 5 (past all five
+           bytes). Pins the recursive item-walk a reader uses to reach the root past `[version, prelude,
+           root]` and to advance across an application's argument forms — mutual recursion (`cbor-skip` ↔
+           `skip-elems`) over runtime input bytes, the navigation half of `bytes → AST` that the
+           head-decode's value-extraction half complements.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (cbor-major b i)    (>> (byte-at b i) 5))
+            (def (cbor-info b i)     (& (byte-at b i) 31))
+            (def (cbor-arg b i)      (if (< (cbor-info b i) 24) (cbor-info b i) (byte-at b (+ i 1))))
+            (def (cbor-head-len b i) (if (< (cbor-info b i) 24) 1 2))
+            (def (skip-elems b i k)  (if (< k 1) i (skip-elems b (cbor-skip b i) (- k 1))))
+            (def (cbor-skip b i)
+              (if (= (cbor-major b i) 4)
+                  (skip-elems b (+ i (cbor-head-len b i)) (cbor-arg b i))
+              (if (or (= (cbor-major b i) 3) (= (cbor-major b i) 2))
+                  (+ (+ i (cbor-head-len b i)) (cbor-arg b i))
+                  (+ i (cbor-head-len b i)))))
+            (def (main) (cbor-skip (Bytes.of (list 0x82 0x82 0x01 0x02 0x03)) 0))))
+  (output (: 5 Int64)))
+
 ; --- The `b"…"` literal reads to a byte sequence, and rendering round-trips -----------------------
 ; `b"…"` is reader sugar for `(Bytes.of (list …))`, so a byte-string literal and the explicit form
 ; denote ONE value: they are equal. These cases pin the reader equivalence in both directions
