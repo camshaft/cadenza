@@ -10,6 +10,20 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A diagnostics capability spec raised the bar to error recovery and a machine-branchable kind — and it names the distinction the loop has been improvising](./2026-07-07-a-diagnostics-capability-spec-raised-the-bar-to-error-recovery-and-a-branchable-kind.md)
+  — a new tracked `spec/capabilities/diagnostics.md` formalized the compiler's diagnostics contract. Probing each
+  requirement against the stable seed split them: MET (stable codes — pinned by the corpus's `rejected CDZ####`
+  cases; severity; machine-readable) vs SPEC-AHEAD — maximal-independent-set-in-one-pass (seed reports only the
+  FIRST error; `(do (+ 1 true) (< 2 false))` → one diagnostic, no error recovery), primary/derived, a
+  machine-branchable rejection/decline/trap KIND, and structural fixes. The striking one: the machine-branchable
+  KIND is exactly the distinction this loop has spent a dozen cycles reconstructing from emitted bytes (the byte
+  gate's decline/trap discriminators, ask-26/29/33) — the spec now makes the compiler exposing it a requirement,
+  which would retire the loop's discriminator apparatus. Lesson: at a capability-spec landing, probe the seed
+  against each new requirement and record the spec-ahead gaps; and when the spec formalizes a distinction the loop
+  has been improvising from indirect evidence, that improvisation was a workaround for a missing first-class
+  output — the fix is the artifact exposing it, after which the loop reads instead of reconstructs. No corpus
+  (diagnostics-shape/behavior, not `(output …)` values; the single-rejection code the corpus pins is met). Filed
+  as ask-48.
 - [The diagnostics pivot from Result-return to effects hit a parallel compile-entry lowering gap](./2026-07-07-the-diagnostics-pivot-from-result-to-effects-hit-a-parallel-compile-entry-lowering-gap.md)
   — the diagnostics channel has two shapes and the compiler tried both, hitting a compile-entry lowering gap on
   each: Result-return declines on a deep `Core` sum-match under Result-shaping (ask-42), and the effects route
