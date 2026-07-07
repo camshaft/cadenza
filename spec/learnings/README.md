@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Fixing an over-rejection revealed the decline it was masking — a wrong classification can sit on top of a truer, less-flattering one](./2026-07-07-fixing-an-over-rejection-revealed-the-decline-it-was-masking.md)
+  — the `KUnknown` half of ask-53 landed: `check-node` stopped false-rejecting unprovable-kind Bool operands, and
+  the byte gate moved (disagree 102→94, the 9 Bool over-rejects→0, WRONG=0 held). But reading the four-bucket
+  deltas precisely — agree 96→95, soft 25→25, decline 354→**364** — showed the 9 cases went to DECLINE, not agree:
+  the false `CDZ0201` had been sitting ON TOP OF an underlying decline (the compiler doesn't yet compile
+  Bool-parameter branching), and removing the false-reject uncovered the honest decline that was always the true
+  state. Real progress on reject-don't-miscompile (decline > false-reject) but NOT the payoff the disagree drop
+  superficially suggests — the case only lands at `agree` when the compiler gains the positive capability
+  (propagate the parameter's declared Bool kind). Measurement lesson: the disagree count is a lossy summary; read
+  the four-bucket FLOW (where cases WENT), because "left disagree" ≠ "reached agree" and a loop reading only the
+  headline would record a payoff that didn't happen. No corpus (the 9 cases already pin it; they move decline→agree
+  when parameter-kind propagation lands).
 - [A type-check has two opposite failure modes, and over-rejecting valid code is the worse one — an unprovable kind must default to silence](./2026-07-07-a-type-check-has-two-opposite-failure-modes-and-over-rejecting-valid-code-is-the-worse-one.md)
   — activating the diagnostics handler exercised `check-node` end-to-end, and the byte gate's 102 disagrees split
   two ways: 88 `native=rejected` comp=ok (ask-30 UNDER-reject, accepts bad programs) but 9 `native=ok`
