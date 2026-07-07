@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The arity subset of the type-checker landed first, exactly as scoped — with a let-form tail the fixed-arity check didn't reach](./2026-07-07-the-arity-subset-of-the-type-checker-landed-first-exactly-as-scoped-with-a-let-form-tail.md)
+  — ask-30's cheap arity/well-formedness half landed (one `read-app` fixed-arity guard, as scoped): `(+ 1)`,
+  `(+ 1 2 3)`, `(if true 1)`, `(< 5)`, `(not 1 2)` moved mis-accept → decline (trap), well-formed unregressed.
+  Byte gate 59→61 agree, 148→136 disagree; WRONG sweep 0. Of the 33 native-rejected mis-accepts, ~12 moved; 21
+  remain: ~19 TYPE-INFERENCE (int-vs-float no-promotion across all operators, mismatched-type, match
+  exhaustiveness — the bigger half, needs the reject-on-kind-mismatch pass) + a **2-case LET-FORM tail** the
+  fixed-arity check didn't reach (`let` is variable-arity; needs a small `read-let` check). Lesson: the
+  enumerate-then-root-cause analysis held ("~10 arity errors = one guard, not ten"), but re-enumerating the
+  RESIDUE after the landing caught what the category rounded off — "arity subset" was really "fixed-arity subset";
+  a fix closes exactly the shape it matches, and the residue names both the next subset AND the fix's boundary.
+  No new corpus (cases already pinned; gate measured the mis-accept→decline flip).
 - [A flagged match-arm limitation was fixed — so the corpus workaround tightens to the precise pattern](./2026-07-07-a-flagged-match-arm-limitation-was-fixed-so-the-corpus-workaround-tightens-to-the-precise-form.md)
   — the explicit `((Ok a) …) ((Err _) …)` match arm on a `Result` decode (flagged as a seed limitation last cycle,
   worked around with `(else …)`) now type-checks. So the 4 decode corpus cases were tightened from the `(else)`
