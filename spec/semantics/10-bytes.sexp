@@ -557,6 +557,45 @@
             (def (main) (cbor-skip (Bytes.of (list 0x82 0x82 0x01 0x02 0x03)) 0))))
   (output (: 5 Int64)))
 
+(case "a recursive reader decodes a CBOR application tree and evaluates it by head index"
+  (doc    "The reader's spine assembled end-to-end: `ev` recursively decodes a canonical-AST application
+           — a CBOR array `[head-index, operand, operand]` — and dispatches on the decoded head index to
+           the operation, recursing into each operand offset located by `child-off` (= `skip-elems` from
+           the first element). This composes every input-side primitive the earlier cases pin in
+           isolation — head decode (`cbor-major`/`cbor-arg`), navigation (`cbor-skip`/`skip-elems`), and
+           child-offset location — into the actual `bytes → value` walk a self-hosted reader performs.
+           Against `83 00 01 83 01 02 0B` — the CBOR of the application `[+ 1 [* 2 11]]` (outer array of
+           3: head-index 0 = `+`, operand `1`, and a nested array-of-3 head-index 1 = `*` with operands
+           `2` and `11`=0x0B) — `ev` reads head 0, recurses into operand 1 (the scalar `1`) and operand 2
+           (the nested `[* 2 11]`, which reads head 1 and multiplies 2·11), yielding 1 + (2·11) = 23.
+           Pins that the primitives COMPOSE into a recursive tree decode over runtime input bytes — the
+           `bytes → AST` reader that, joined to `resolve`, is the front end of a self-hosted compiler.
+           A single-primitive slip (wrong child offset, wrong head extraction, a navigation miscount)
+           reads the wrong operand and changes the result, so this is a tighter check on the reader than
+           any primitive alone — the input dual of the LEB128 known-answer emit case.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (cbor-major b i)    (>> (byte-at b i) 5))
+            (def (cbor-info b i)     (& (byte-at b i) 31))
+            (def (cbor-arg b i)      (if (< (cbor-info b i) 24) (cbor-info b i) (byte-at b (+ i 1))))
+            (def (cbor-head-len b i) (if (< (cbor-info b i) 24) 1 2))
+            (def (skip-elems b i k)  (if (< k 1) i (skip-elems b (cbor-skip b i) (- k 1))))
+            (def (cbor-skip b i)
+              (if (= (cbor-major b i) 4)
+                  (skip-elems b (+ i (cbor-head-len b i)) (cbor-arg b i))
+                  (+ i (cbor-head-len b i))))
+            (def (elem0 b i)      (+ i (cbor-head-len b i)))
+            (def (child-off b i k) (skip-elems b (elem0 b i) k))
+            (def (ev b i)
+              (if (= (cbor-major b i) 4)
+                  (if (= (cbor-arg b (elem0 b i)) 0)
+                      (+ (ev b (child-off b i 1)) (ev b (child-off b i 2)))
+                      (* (ev b (child-off b i 1)) (ev b (child-off b i 2))))
+                  (cbor-arg b i)))
+            (def (main) (ev (Bytes.of (list 0x83 0x00 0x01 0x83 0x01 0x02 0x0B)) 0))))
+  (output (: 23 Int64)))
+
 ; --- The `b"…"` literal reads to a byte sequence, and rendering round-trips -----------------------
 ; `b"…"` is reader sugar for `(Bytes.of (list …))`, so a byte-string literal and the explicit form
 ; denote ONE value: they are equal. These cases pin the reader equivalence in both directions

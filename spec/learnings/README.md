@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader is wired — the compiler now reads a program's canonical AST bytes and compiles it, end to end](./2026-07-07-the-reader-is-wired-bytes-to-component-end-to-end.md)
+  — MILESTONE: with every self-host seed blocker cleared, the reader is WIRED into the pipeline. `compiler.cdz`'s
+  `main` now compiles a program READ FROM ITS OWN CANONICAL AST BYTES: `read-node : Bytes → Node` decodes the CBOR
+  `83 01 81 61 2B 83 00 01 02` (= `(+ 1 2)`) → resolve → fold → lower → serialize → frame → a VALID component
+  whose code is `i64.const 1; i64.const 2; i64.add`. `bytes → component`, verified. The reader needed no big new
+  mechanism — it COMPOSES primitives each landed as a verified, corpus-pinned step (head decode, navigation, name
+  matcher, resolver join). Lesson: a self-hosted front end is a composition of small individually-verifiable byte
+  ops, symmetric to the output side. Caveat: this is the SINGLE-EXPRESSION read path; multi-def module read +
+  scale (TCO for deep sources) remain, so it's `bytes → component` for an expression, not yet compiler-compiles-
+  compiler. Pinned `10-bytes.sexp` "a recursive reader decodes a CBOR application tree and evaluates it by head
+  index" (`[+ 1 [* 2 11]]` → 23, PASS).
 - [The final self-host blocker is fixed — the reader can now join the pipeline, and the scale-limit case became pinnable](./2026-07-07-the-final-self-host-blocker-is-fixed-the-reader-can-join-the-pipeline.md)
   — Tier 2f (the "cannot box" decline feeding a runtime `Node` to the real `resolve`) is FIXED: the full
   18-variant resolve on a runtime-built Node, scalar-consumed, now runs (verified → 1). This was THE last hard
