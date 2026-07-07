@@ -451,6 +451,34 @@
   (input  (= (String.from-bytes (Bytes.of (list 255))) None))
   (output (: true Bool)))
 
+(case "decoding an overlong UTF-8 encoding yields none"
+  (doc    "`(Bytes.of (list 192 128))` is `C0 80` — the OVERLONG two-byte encoding of U+0000, which
+           well-formed UTF-8 forbids (a code point must use its shortest encoding; NUL is the one-byte
+           `00`). A decoder that only checked the leading/continuation byte STRUCTURE (a lead byte
+           `110xxxxx` then a `10xxxxxx` continuation) would wrongly accept `C0 80`; strict UTF-8 (the
+           Unicode definition, matching `str::from_utf8`) rejects it, so `String.from-bytes` yields
+           `None`. Pins that the decode enforces shortest-form, not just byte shape — a security-relevant
+           distinction (overlong encodings have been used to smuggle forbidden bytes past naive
+           validators). This is a requirement on the runtime's UTF-8 validator the reader relies on:
+           the byte sequence, not the code point, must be canonical.")
+  (needs  binary-matching)
+  (input  (= (String.from-bytes (Bytes.of (list 192 128))) None))
+  (output (: true Bool)))
+
+(case "decoding a surrogate code point encoded as UTF-8 yields none"
+  (doc    "`(Bytes.of (list 237 160 128))` is `ED A0 80` — the UTF-8-shaped encoding of U+D800, a HIGH
+           SURROGATE. Surrogates are not Unicode scalar values (they exist only for UTF-16 pairing), so
+           well-formed UTF-8 excludes them even though the three-byte structure `1110xxxx 10xxxxxx
+           10xxxxxx` is superficially valid. Strict UTF-8 rejects the surrogate range U+D800..=U+DFFF, so
+           `String.from-bytes` yields `None`. The decode companion of the `Char.from-int` surrogate case
+           (which rejects U+D800 as data): a String is a sequence of scalar values, so a byte sequence
+           encoding a surrogate is not a well-formed String. Pins that the runtime validator rejects
+           surrogate encodings, not only structurally-broken bytes — the same Unicode-scalar boundary
+           the char surface enforces, now on the byte-decode path the reader uses.")
+  (needs  binary-matching)
+  (input  (= (String.from-bytes (Bytes.of (list 237 160 128))) None))
+  (output (: true Bool)))
+
 (case "encoding a decoded string round-trips to the same bytes"
   (doc    "For well-formed bytes `b`, decoding then re-encoding yields `b`: matching the `(Some s)` arm of
            `(String.from-bytes b)` and taking `(String.to-bytes s)` gives back the original UTF-8 bytes.

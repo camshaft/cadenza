@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [`String.from-bytes` validates in the runtime — a String is a UTF-8 Bytes leaf, so decode is a check, not a copy](./2026-07-07-string-from-bytes-validates-in-the-runtime-a-string-is-a-utf8-bytes-leaf.md)
+  — the reader's symbol-table decode needs runtime `String.from-bytes` (backlog #12). In-flight fix (WIT append +
+  codegen, mid-landing — binary NOT yet rebuilt): a runtime String IS the same Bytes-backed UTF-8 leaf, so
+  `from-bytes` needs no decode/copy — only a validity CHECK, via a new runtime primitive `bytes-is-utf8` (WIT idx
+  54), not a compiler-emitted state machine. Two design points: (1) String-as-Bytes-leaf collapses a decode to a
+  predicate + zero-cost retag (same shape as tag-free heap / rope slice — an op that looks like copy is a check
+  over shared bytes); (2) validation belongs in the runtime — a hand-emitted validator checking only byte SHAPE
+  accepts overlong (`C0 80`) + surrogate (`ED A0 80`) encodings, both security-relevant, both forbidden by strict
+  UTF-8. Pinned two `13-strings.sexp` cases (overlong + surrogate → None) recording the strict-UTF-8 requirement
+  (skip on `needs binary-matching`). NOT claimed landed — design + requirement captured, probe when built.
 - [The reader's decode surface is complete — dispatch, iterate, and atom-decode are the three legs of a canonical-AST reader](./2026-07-07-the-reader-decode-surface-is-complete-dispatch-iterate-atom.md)
   — the spike rounded out the reader's ATOM decode + variable-arity applications: `read-node` now decodes every
   CBOR scalar major (0 uint → NInt, 1 negint → `NInt (-1 - arg)`, 7 simple → NBool `0xF5`/`0xF4`), and `read-app`
