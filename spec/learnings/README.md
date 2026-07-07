@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The nested-payload-binder fix closes the front end — a multi-def surface module now compiles end-to-end](./2026-07-07-the-nested-payload-binder-fix-closes-the-front-end.md)
+  — the Tier-2b blocker (a `match` arm binding a nested tuple in a sum payload, `(Ctor (tuple op (tuple a b)))`)
+  is FIXED in the seed: `bind_sum_payload` now recurses into a nested `(tuple …)` slot, exactly as predicted. The
+  corpus case that pinned it flipped todo→PASS with NO edit to the oracle — reject-don't-miscompile working as
+  designed. With it fixed, the spike CLOSED its front end end-to-end: a `Def`/`DList` multi-definition surface +
+  `resolve-module` (DList→FList, name→code) means a whole textual module now flows read → resolve → fold → lower →
+  serialize → frame → bytes. Verified `(module m (def (main) (+ 20 22)) (def (dbl x) (* x 2)))` → valid 2-function
+  component. Only the READER (bytes → DList, CBOR decode) remains before self-hosting. Two notes: flat surface
+  nodes are now a CHOICE not a workaround (nesting no longer declines — prune the stale comments); and the
+  unknown-head path is still a placeholder TRAP, not a real diagnostic (new backlog item).
 - [Runtime strings landed — the keystone unblocked, and the front rung now resolves a name to a code](./2026-07-07-runtime-strings-unblock-the-name-based-front-rung.md)
   — runtime `String`, the Tier-0 keystone blocker of a self-hosting front end, landed in the seed: string fn
   parameters, runtime string `=` dispatch, string return across a call, and string sum-payloads all compile now
