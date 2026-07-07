@@ -10,6 +10,20 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Reading a field off a runtime record completes "read your own input" — the record twin of runtime tuple projection, and the shape must be threaded per binding form](./2026-07-07-reading-a-field-off-a-runtime-record-completes-read-your-own-input.md)
+  — with the diagnostics pipeline landed, the next self-hosting hop is reading the AST out of `compile`'s
+  `list<artifact>` input; `(. artifact bytes)` declined `runtime compound element of a kind the runtime cannot
+  box yet`. Fixed in three parts, each an instance of a known pattern: a runtime `(. r f)` emits `arr-get` at the
+  field's sorted-key slot (the twin of the runtime `tuple.N` fix); a `match` binding a Heap payload to a bare
+  name now carries the payload's Shape (the shape-through-match mechanism); and `compile`'s `inputs` param gets
+  the fixed `list<artifact>` shape. Verified via the match idiom on the refreshed stable seed. The sharp lesson is
+  the follow-on that did NOT get fixed: the SAME projection through `Option.expect` instead of a match arm still
+  declines — so shape-carrying is PER-BINDING-FORM. A runtime-compound-access capability is scoped to the binding
+  construct the value arrives through (match arm / let / expect unwrap / parameter / destructure), and each must
+  separately learn to thread the static Shape; when a fix lands via one binder, probe the others — the ones that
+  still decline are the fix's own map of its follow-ons. Corpus: added "a field is projected off a record bound
+  through a match arm" (gate 570→571) — the new part-2 mechanism as a run-entry value; the `Option.expect`
+  follow-on is a narrow ask for the compiler agent.
 - [A fix verified on one entry doesn't move a gate driven through another — the compile/run ABI fork has two hops, not one](./2026-07-07-a-fix-verified-on-one-entry-does-not-move-a-gate-driven-through-another.md)
   — ask-46 landed (recursive-effectful `handle` lowers under the `compile` entry) and I verified it green via
   `compile-run` with the diagnostics target shape (`compile → Diagnostics: [(CDZ0201,bad),(CDZ0201,bad)]`). But

@@ -285,6 +285,24 @@
   (input  (. (. (record (outer (record (inner 7)))) outer) inner))
   (output (: 7 Int64)))
 
+(case "a field is projected off a record bound through a match arm"
+  (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field where the record reaches
+           the `.` projection by being BOUND in a match arm — the payload of a `Some`. `mk` returns
+           `(Some (record (a n) (b (+ n 1))))`, a genuine runtime record inside an Option; the match
+           binds that record to `r` in the `Some` arm and `(. r b)` projects field `b`. With n=41 the
+           record is `(record (a 41) (b 42))`, so `b` is 42. The record is not a compile-time literal
+           and does not arrive through a `let` or a conditional — it arrives as a matched constructor
+           payload, and the projection must still resolve the field, which requires the match binder to
+           carry the payload's record shape to `r`. A binder that dropped the shape would leave `r`
+           shapeless and the projection would have no slot to index.")
+  (input  (module m
+            (def (mk n) (Some (record (a n) (b (+ n 1)))))
+            (def (main)
+              (match (mk 41)
+                ((Some r) (. r b))
+                ((None u) 0)))))
+  (output (: 42 Int64)))
+
 (case "a sum-type value is constructed through a variant"
   (doc    "Sign is declared where used as (Neg | Zero | Pos) (options/code-shape/); a value is one
            variant. Construction is via application: Sign.Pos is a Constructor (function), and
