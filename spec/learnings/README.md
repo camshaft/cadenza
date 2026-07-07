@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Over-applying a user function declines as "partial application needs closures" — not the arity error the corpus says it mirrors](./2026-07-07-over-applying-a-user-function-declines-as-closures-not-as-an-arity-error.md)
+  — surfaced by a mid-refactor compiler.cdz (a `kind-of` call/def arity mismatch): `(f 5 9)` on a unary `f`
+  declines "partial application needs closures", but the corpus records the PARALLEL constructor case `(Some 1 2)`
+  as `(error CDZ0201)` (apply-a-non-function) and its prose says user-fn over-application is "arity-checked the
+  same way" — yet only the constructor case is pinned, and the seed treats the user-fn case differently (a
+  closure-feature gap, not a type error). Should be CDZ0201 (same `((f a) b)` desugaring). NO corpus case: pinning
+  `(f 5 9) → CDZ0201` FAILed the gate via a CROSS-CASE interaction — it flipped an unrelated passing case
+  (`(let ((ctor None)) (ctor unit))`) to a wrong "CDZ0401 undeclared capability: ctor", exposing that
+  head-position name classification (value / constructor / capability / over-applied-fn) is fragile and
+  order-sensitive. SPEC-BACKLOG #21 (fix = emit CDZ0201 AND make head-position classification total). The spike's
+  trigger was transient WIP, not a compiler regression.
 - [Runtime bitwise `&`/`|` are emitted — the compiler's own LEB128 encoder now runs on runtime values](./2026-07-07-runtime-bitwise-ops-emitted-the-leb128-encoder-runs-on-runtime-values.md)
   — subset-growth (#20 operator coverage): emit-side Core gained `KBitAnd`/`KBitOr`, so runtime `&`/`|` (value
   through a parameter, not a constant) now emit. Verified `(& n 127)` on 200 → 72, and the composed LEB128 byte
