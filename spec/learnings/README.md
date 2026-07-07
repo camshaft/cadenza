@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader gate (built-in Option across a boundary) closed fully — and `List.at` on a payload-bound list is the next accessor](./2026-07-07-the-reader-gate-closed-and-list-at-on-a-payload-list-is-the-next.md)
+  — the seed rebuilt and closed backlog #12 (built-in Option/Result losing its payload kind across a boundary)
+  across ALL facets at once: `String.from-bytes` through a helper works (→2, ill-formed → None arm; real
+  `gen_runtime_string_from_bytes`, validates with the existing runtime — `bytes-is-utf8` not needed on this path),
+  AND the bare `(Some 42)` through a helper (the general kind-recovery facet, deepest, untouched by prior
+  per-accessor fixes) → 42. Both corpus cases withheld/todo in earlier cycles flipped todo→PASS. Vindicates the
+  accessor-by-accessor learning: per-accessor patching closes symptoms, the general fix closes the class. New gap
+  surfaced — Tier 3h: `List.at` on a list BOUND FROM A SUM PAYLOAD declines (List.len on it works; List.at on a
+  top-level list works) — same "payload binder yields a shape the accessor doesn't recognize" pattern one level
+  out; blocks the natural multi-arg-call rep `KCall (Tuple Int64 (list Core))`. Pinned `05-compound-types.sexp`
+  "indexing a list bound from a sum payload yields the element" (→10, todo). #12 RESOLVED; new #17.
 - [The reader realizes the prelude-index name-resolution contract — head names resolve by byte-comparing prelude symbols, no runtime String](./2026-07-07-the-reader-realizes-the-prelude-index-name-resolution-contract.md)
   — the reader's name-resolution seam directly realizes `ast-encoding.md` (a node names its kind by a prelude
   INDEX, not inline; the prelude lists the distinct symbols). `prelude-entry k` locates the Nth symbol,

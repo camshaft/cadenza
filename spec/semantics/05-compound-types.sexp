@@ -205,6 +205,35 @@
             (def (main) (tuple.0 (dec 4)))))
   (output (: 40 Int64)))
 
+(case "a recursive resolver whose trapping arm builds a compound compiles"
+  (doc    "A recursive `Node → Core` resolver — the self-hosting compiler's front rung — applied to a
+           runtime-built `Node` and consumed as a scalar. One arm (`unknown-head`) builds a Core whose
+           payload is a DEFINITE TRAP: `(Core.KConst (bad))` where `(bad)` = `(Bytes.len (Bytes.of (list
+           256)))` (256 is out of byte range, so the payload const-folds to a trap → `Kind::Never`).
+           `resolve` of `(NPrim '+' …)` takes the `KAdd` arm (not the trapping one), so `kind-of` of the
+           result is 1. Pins that a divergent (Never) compound element does NOT poison the whole
+           function: earlier the trapping arm made `resolve`'s entire body emit an INVALID component on
+           the runtime-heap path (a Never element boxed as a half-built `sum-new`; a Never-returning
+           helper's i64 leaking to a Heap caller), which declined 'cannot box' / failed validation — the
+           final blocker on connecting the reader to the pipeline. A Never element now short-circuits to
+           `unreachable`, a Never-bodied function stubs to `unreachable` keeping its inferred signature,
+           and a Never argument makes its call diverge — so a resolver with a trapping arm compiles, and
+           an actually-unknown head traps at run time (the front-end rejection point).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Node (NInt Int64 | NPrim (Tuple String Node Node)))
+            (type Core (KConst Int64 | KAdd (Tuple Core Core)))
+            (def (bad) (Bytes.len (Bytes.of (list 256))))
+            (def (resolve node)
+              (match node
+                ((Node.NInt n) (Core.KConst n))
+                ((Node.NPrim (tuple h a b))
+                  (if (= h "+") (Core.KAdd (tuple (resolve a) (resolve b)))
+                                (Core.KConst (bad))))))
+            (def (kind-of c) (match c ((Core.KConst n) 0) (_ 1)))
+            (def (main) (kind-of (resolve (Node.NPrim (tuple "+" (Node.NInt 20) (Node.NInt 22))))))))
+  (output (: 1 Int64)))
+
 (case "two structural values of the same shape are equal"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
            sentence) at the value level: two structural records of the same shape and contents are
@@ -494,6 +523,23 @@
             (def (unwrap o d) (match o ((Some x) x) ((None _) d)))
             (def (main) (unwrap (Some 42) 99))))
   (output (: 42 Int64)))
+
+(case "a generic unwrap helper consumes a fallible Bytes.at result"
+  (doc    "The reader idiom in full: a GENERIC `unwrap` helper (taking an `Option Int64` PARAMETER)
+           consumes the fallible `(Bytes.at b i)` result — the shape a byte-walking reader is written
+           in, where the producer of the Option and the consumer are different functions. `at` passes
+           `(Bytes.at b 1)` (= `(Some 20)`) into `unwrap` with default -1; the payload kind (Int64)
+           must be recovered after the Option crossed BOTH the `Bytes.at` producer boundary AND the
+           `unwrap` parameter boundary. Pins that a fallible runtime result flows into a generic
+           consumer helper — earlier this declined 'arms differ in kind' because the `Some` binder
+           bound as an opaque handle across the parameter boundary; now the arm-unification recovers
+           it. `(at (Bytes.of (list 10 20 30)) 1)` = 20.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (unwrap o d) (match o ((Some x) x) ((None _) d)))
+            (def (at b i)     (unwrap (Bytes.at b i) -1))
+            (def (main)       (at (Bytes.of (list 10 20 30)) 1))))
+  (output (: 20 Int64)))
 
 (case "a recursive function folds a runtime linked list to a scalar"
   (doc    "The consumption half of the recursive-sum idiom, and the core shape a self-hosted compiler is
@@ -865,6 +911,24 @@
   (needs fallible-access)
   (input  (List.at (list) 0))
   (output (: (None unit) (Option Int64))))
+
+(case "indexing a list bound from a sum payload yields the element"
+  (doc    "`List.at` on a list that was BOUND OUT OF A SUM PAYLOAD by a `match` arm must read its element
+           exactly as `List.at` on a top-level list does — a payload-bound list is the same runtime array
+           handle, just reached through a constructor. `f` matches `K.KK`, binding the payload's `(list 10
+           20 30)` as `xs`, and reads element 0 → 10. Pins that element access on a payload-bound list is
+           wired: `List.len` on such a list already works (a compiler reading `List.len` of a bound arg
+           list), so `List.at` on it must too, or a compiler cannot iterate a list stored in a node — the
+           natural representation of a multi-argument call `(K fn-index (list args…))` whose lowering reads
+           `List.at args i` for each argument. Distinct from the top-level `List.at` cases above (the list
+           is a direct parameter there); here the list arrives through a sum payload, the shape a
+           self-hosted compiler's IR nodes carry.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type K (KK (Tuple Int64 (List Int64))))
+            (def (f c) (match c ((K.KK (tuple fi xs)) (match (List.at xs 0) ((Some x) x) ((None _) -1)))))
+            (def (main) (f (K.KK (tuple 7 (list 10 20 30)))))))
+  (output (: 10 Int64)))
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
