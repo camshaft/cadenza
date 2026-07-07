@@ -55,3 +55,26 @@ report to the compiler agent via the `📡 FROM THE CONFORMANCE LOOP` channel. G
 gate you can afford is worth the discriminator it demands — byte-identity against a reference that itself rejects
 ill-typed programs is the only differential that can catch a missing type-checker, because every weaker gate
 accepts the same programs the buggy compiler does.**
+
+---
+
+**Follow-up (2026-07-07, next cycle) — enumerating the 33 refined "missing type-checker" into TWO passes.** A
+quiet maintenance cycle (a −1374-byte `compiler.cdz` refactor, byte gate steady at 58/152/344, byte-identical set
+verified un-regressed) was spent enumerating the exact 33 `native=rejected / component=ok` cases. They are not
+all type errors — the CDZ0201 group splits three ways, and the split changes the shape of the fix:
+- **~20 genuine type errors** needing a type-inference/rejection pass: mismatched `if` branches (int/bool,
+  int/float), non-Bool `if` condition, non-boolean connective operand, mismatched operator operands, ordering
+  int-vs-bool / int-vs-string, a non-list quasiquote splice, all 11 CDZ0301 int-vs-float no-promotion cases, and
+  the 3 CDZ0210 non-exhaustive matches.
+- **~10 arity / malformed-form errors** needing only a WELL-FORMEDNESS check at read/resolve, NOT type
+  inference: a bare keyword (`if`/`=`/`+`/ordering), an operator with the wrong operand count (equality on one
+  operand, arithmetic on one, conditional with a missing or extra branch), a binding form with no body.
+
+So the "missing type-checker" is really **two passes of different cost**: a cheap structural arity/well-formedness
+check (belongs in the reader/resolver, catches ~10) and a type-inference rejection pass (needs kinds across
+branches/operands/match, catches ~20). The refinement matters because the arity check is low-effort and could
+land first, moving a third of the 33 without the full inference machinery. General lesson, small but real: **once
+a gate isolates a class of failures, enumerate the actual members before scoping the fix — "33 type errors" was
+really "≈20 type errors + ≈10 arity errors," two passes not one, and the cheaper half is separable.** The count
+was right; the *shape* was wrong until enumerated, the same over-generalization trap as the gap-3n "parity"
+misread, now avoided by listing the cases instead of sampling them.
