@@ -10,6 +10,15 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A stray debug print on stderr is invisible to every gate — the self-hosting probe caught it by reading the whole output](./2026-07-07-a-stray-debug-print-on-stderr-is-invisible-to-the-gate-but-caught-by-reading-the-self-host-output.md)
+  — probing `compile-run` surfaced `DBG ctor-arm match, scrut_kind=Int64, scrutinee=Name("node")` — a leftover
+  `eprintln!` in the seed's ctor-arm-match codegen, firing once as the seed compiles compiler.cdz itself. No gate
+  caught it: it's on stderr, so emitted bytes / gate stdout / WRONG sweep are all blind to it (gate green 569,
+  0 DBG on the corpus). Only a full-output read on the self-hosting path saw it. Two lessons: a gate measures the
+  channel it's built to measure — noise (or a should-be-error warning, a perf cliff) on any other channel is
+  invisible; read the WHOLE artifact output, not just the verdict. And a debug tripwire maps where the
+  implementer is actively uncertain — the guard (ctor-pattern arm + non-Heap scrutinee) is the live inference
+  edge. Filed ask-44 (LOW: remove/gate the eprintln). No corpus (stderr print, not a value-behavior).
 - [The build-tool interface is a kinded-artifact list, not a two-arm result](./2026-07-07-the-build-tool-interface-is-a-kinded-artifact-list-not-a-two-arm-result.md)
   — the frozen build-tool-interface's derivation entry was `result<component-bytes, diagnostics>`, mutually
   exclusive: no warnings alongside a module, one byte output only, one input only. Generalized (Amendment
