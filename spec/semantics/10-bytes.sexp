@@ -526,6 +526,35 @@
                                        (arg   (Bytes.of (list 0x19 0x01 0x2C)) 0)))))
   (output (: (tuple 0 300) (Tuple Int64 Int64))))
 
+(case "a CBOR atom decodes each scalar major type to its value"
+  (doc    "The reader's LEAF-atom decode, the third leg beside head-index dispatch and length-driven
+           iteration: interpreting a CBOR scalar by its major type into the value it denotes. A reader
+           decoding a canonical AST's atoms must handle each scalar major: 0 (unsigned int) is its
+           argument directly; 1 (negative int) is `-1 - arg` (CBOR's negint convention, so arg 9 encodes
+           -10); 7 (simple) carries the booleans (`0xF5` = arg 21 = true, `0xF4` = arg 20 = false). `dec`
+           dispatches on major and returns the decoded Int64 (booleans as 1/0). Summing the decodes of
+           `29` (negint → -10), `F5` (true → 1), and `0A` (uint 10 → 10) gives -10 + 1 + 10 = 1. Pins
+           that a reader interprets each scalar atom form correctly — a negint read as a plain uint (9
+           instead of -10), or a boolean's arg mistaken for a small int, would corrupt every literal a
+           self-hosted front end reads. Completes the reader's decode surface: head dispatch (which
+           operation), length iteration (how many children), and atom decode (each leaf's value).")
+  (needs  fallible-access)
+  (input  (module m
+            (def (byte-at b i)    (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (cbor-major b i) (>> (byte-at b i) 5))
+            (def (cbor-info b i)  (& (byte-at b i) 31))
+            (def (cbor-arg b i)   (if (< (cbor-info b i) 24) (cbor-info b i) (byte-at b (+ i 1))))
+            (def (dec b i)
+              (if (= (cbor-major b i) 1)
+                  (- (- 0 1) (cbor-arg b i))
+              (if (= (cbor-major b i) 7)
+                  (if (= (cbor-arg b i) 21) 1 0)
+                  (cbor-arg b i))))
+            (def (main) (+ (dec (Bytes.of (list 0x29)) 0)
+                        (+ (dec (Bytes.of (list 0xF5)) 0)
+                           (dec (Bytes.of (list 0x0A)) 0))))))
+  (output (: 1 Int64)))
+
 (case "a CBOR skip walks past a whole nested item to the next offset"
   (doc    "The reader's structural NAVIGATION primitive, the companion of the head-decode above: given
            the offset of a CBOR item, `cbor-skip` returns the offset just past that entire item —

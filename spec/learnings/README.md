@@ -508,6 +508,15 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader's decode surface is complete — dispatch, iterate, and atom-decode are the three legs of a canonical-AST reader](./2026-07-07-the-reader-decode-surface-is-complete-dispatch-iterate-atom.md)
+  — the spike rounded out the reader's ATOM decode + variable-arity applications: `read-node` now decodes every
+  CBOR scalar major (0 uint → NInt, 1 negint → `NInt (-1 - arg)`, 7 simple → NBool `0xF5`/`0xF4`), and `read-app`
+  dispatches by head AND arity (`if`→3, `not`→1, else binary). A canonical-AST reader is exactly THREE legs, all
+  now built + gate-witnessed: DISPATCH (scalar head → operation), ITERATE (array length → loop), ATOM-DECODE (leaf
+  scalar → value by major type). Exhaustive over what a reader does. Reached by accretion of small verified arms,
+  not a "reader algorithm" — the composition thesis again. Negint note: CBOR encodes -n as `-1-n`, so reading it
+  as a plain uint silently corrupts a literal (9 for -10) → earns a known-answer case. Pinned `10-bytes.sexp` "a
+  CBOR atom decodes each scalar major type to its value" (negint -10 + bool 1 + uint 10 = 1, PASS).
 - [The self-hosting gate shifted from "seed capability" to "the compiler's source is within its own accepted subset"](./2026-07-07-self-hosting-gate-shifts-from-seed-capability-to-bootstrapping-subset.md)
   — a CATEGORY SHIFT in the blocker. For ~20 cycles the gate was a seed capability (a shape the seed couldn't
   compile); all fixed. Now the gate is "does the compiler accept the language its OWN source is written in?" — a
