@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Shifts landed as the second guarded op — the local-allocating-machinery prediction paid off](./2026-07-07-shifts-landed-as-the-second-guarded-op-the-local-allocating-machinery-prediction-paid-off.md)
+  — when ask-37 (checked arithmetic) closed, it was recorded that "shifts are unblocked — the local-allocating
+  lower pass they also need is now real." This cycle shifts landed and probing confirmed it exactly: `<< >>` emit
+  through the same scratch-local machinery with both guards, byte-faithful to native (in-range `256>>4=16`;
+  count ≥ 64 TRAPS — no silent mask-mod-64; `1<<63` overflow TRAPS). Byte gate 58 → 59 agree; standing WRONG
+  sweep stayed 0. No new corpus (shift behavior — const/runtime, in-range/guarded-trap — is ALREADY fully pinned;
+  the byte gate measured compiler.cdz against it). Lesson: when the first instance of an architectural capability
+  lands, the ops that were declined WAITING on it become cheap wiring, not fresh work — naming the acceptance
+  list at decline time (the shifts-decline learning listed shifts + checked-arith as the local-allocating pass's
+  acceptance list) makes the second op a verification, not a rediscovery. The two guarded ops (checked `+ - *`,
+  shifts) share one mechanism. Stale-comment flag to the agent: the header still says "NOT YET: shifts."
 - [A mid-flight signature change turns the gate red — the corpus must follow the seed, and the spec wording must be reconciled](./2026-07-07-a-mid-flight-signature-change-turns-the-gate-red-and-the-corpus-must-follow-the-seed.md)
   — ask-38 landed: `Ast.decode` became total, `Bytes → Result<Ast, e>` (Ok/Err, rejects invalid AND trailing
   bytes, never traps). The standing gate check caught it RED — 4 round-trip corpus cases still asserted the bare
