@@ -771,6 +771,21 @@
   (input  (& (>> 300 7) 127))
   (output (: 2 Int64)))
 
+(case "the LEB128 byte composition runs on a runtime operand"
+  (doc    "The composition above on a RUNTIME operand, not a constant: `(leb-byte n)` = `(Int.to-byte (|
+           (& n 127) 128))` with `n` a function parameter, so the mask, continuation-bit OR, and to-byte
+           are EMITTED (not const-folded). `(leb-byte 300)` = 172, the same non-final byte the constant
+           case produces — but reached through the runtime `i64.and`/`i64.or` the encoder actually
+           executes when it encodes a value computed at run time (a section length, an operand). Pins
+           that runtime bitwise `&`/`|` (and their composition) are emitted and agree with the const
+           fold — a self-hosted LEB128 encoder works on the runtime values it is fed, not only on
+           literals. The const cases above fold and so cannot witness the emitted bitwise path; this
+           one, taking `n` through a parameter, does.")
+  (input  (module m
+            (def (leb-byte n) (Int.to-byte (| (& n 127) 128)))
+            (def (main)       (leb-byte 300))))
+  (output (: 172 Int64)))
+
 (case "extracting a high byte composes shift and mask"
   (doc    "`(& (>> 65535 8) 255)` shifts 0xFFFF right by 8 (yielding 0xFF = 255) then masks the low 8
            bits (255) — the byte-extraction the compiler uses to lay out a multi-byte little-endian

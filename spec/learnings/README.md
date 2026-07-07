@@ -508,6 +508,15 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Runtime bitwise `&`/`|` are emitted — the compiler's own LEB128 encoder now runs on runtime values](./2026-07-07-runtime-bitwise-ops-emitted-the-leb128-encoder-runs-on-runtime-values.md)
+  — subset-growth (#20 operator coverage): emit-side Core gained `KBitAnd`/`KBitOr`, so runtime `&`/`|` (value
+  through a parameter, not a constant) now emit. Verified `(& n 127)` on 200 → 72, and the composed LEB128 byte
+  `(Int.to-byte (| (& n 127) 128))` on runtime 300 → 172. Matters because the compiler's OWN LEB128 encoder runs
+  these ops on runtime values (every section length/operand), so self-emission needs them emitted not just folded.
+  Recurring const-masks-the-runtime-gap trap AGAIN: the corpus had `&`/`|` only on CONSTANT operands (fold, never
+  exercise the emitted i64.and/or). Rule holds: a const case for an operator isn't evidence it emits — the
+  runtime-through-a-parameter case is; the LEB128 encoder is the sharpest witness. Pinned `06-numeric-model.sexp`
+  "the LEB128 byte composition runs on a runtime operand" (→172). Frontier still `match` on user sums + TCO.
 - [`match` on user sums is the last major emit frontier — self-hosting is now an emit-coverage checklist, not a blocker](./2026-07-07-match-on-user-sums-is-the-last-major-emit-frontier.md)
   — a bookkeeping cycle (spike only updated docs) prompted taking stock: the compiler's OWN source uses ~41
   `match` over 11 user sum types, ~19 String ops, pervasive recursion — but its emit-side `Core` has NO `KMatch`,
