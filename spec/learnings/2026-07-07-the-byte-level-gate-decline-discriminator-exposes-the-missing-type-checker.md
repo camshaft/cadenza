@@ -78,3 +78,26 @@ a gate isolates a class of failures, enumerate the actual members before scoping
 really "≈20 type errors + ≈10 arity errors," two passes not one, and the cheaper half is separable.** The count
 was right; the *shape* was wrong until enumerated, the same over-generalization trap as the gap-3n "parity"
 misread, now avoided by listing the cases instead of sampling them.
+
+---
+
+**Follow-up (2026-07-07, next cycle) — the arity subset has ONE root cause: `read-app` reads fixed arity without
+checking the application has it.** A quiet seed cycle (a `codegen.rs` edit that left both gates unchanged;
+compiler.cdz steady) was spent isolating the mechanism behind the ~10 arity mis-acceptances. Disassembling what
+`compiler.cdz` emits for the malformed forms:
+- `(+ 1)` (arity-1) → `i64.const 1` — reads the one present operand, **silently drops the `+`**.
+- `(if true 1)` (missing else) → `i64.const 1` — reads the then-branch, drops the missing else.
+- `(+ 1 2)` (well-formed control) → `i64.const 3`.
+
+So `read-app` dispatches an operator by head name and reads its *expected* operand count positionally from the
+CBOR array; when the array is shorter than expected it reads whatever is there and builds a truncated node
+instead of checking `actual-operand-count == expected-arity` and declining. **The whole arity subset is one
+fix:** `read-app` compares the application's actual operand count to the head form's arity and routes a mismatch
+to `KError`. It is a reader-side structural check (no type inference), lands independently of and before the
+type-inference pass, and converts the ~10 arity cases mis-accept → decline. General lesson, compounding the
+enumerate-before-scoping one: **after enumerating a class, find its shared root cause before treating each member
+as its own fix — the ~10 "arity errors" are not ten checks but one missing guard in one function (`read-app`),
+which is the difference between a ten-case slog and a one-line change.** The mis-accept mechanism is itself a
+small reject-don't-miscompile lesson: a reader that reads a *fixed* shape from a *variable*-length encoding must
+verify the length, or it silently compiles a truncation of a malformed program — the positional-decode twin of
+the atom-decode leak (float→false) from the reader-miscompile learning.
