@@ -477,6 +477,49 @@
             (def (main) (ev (build 4)))))
   (output (: 12 Int64)))
 
+(case "a function returns a heap sub-node selected by a match arm"
+  (doc    "A helper whose `match` arm yields a heap value bound by the pattern (a payload binder) — the
+           tree-walker's hot path: a function that returns a SUB-NODE selected by matching its argument.
+           `left` returns the whole `n`-leaf for a `Leaf`, and the first component `a` of the pair for a
+           `Pair`; the result (a heap sub-node crossing the function-return boundary) is then matched
+           again to fold to a scalar. Pins that constructing a runtime sum, and matching one, are both
+           value-heap operations that engage the runtime path — a helper returning a bound sub-node must
+           compile to a real function reading the heap, never emit heap-accessor calls into a scalar
+           module with no such imports (which produced an invalid component). `left` of `Pair(Leaf 7,
+           Leaf 9)` is `Leaf 7`, whose leaf value is 7.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type T (Leaf Int64 | Pair (Tuple T T)))
+            (def (left x) (match x ((T.Leaf n) (T.Leaf n)) ((T.Pair (tuple a b)) a)))
+            (def (main) (match (left (T.Pair (tuple (T.Leaf 7) (T.Leaf 9))))
+                          ((T.Leaf n) n)
+                          ((T.Pair p) 0)))))
+  (output (: 7 Int64)))
+
+(case "a match arm binds a nested tuple inside a sum payload"
+  (doc    "A `match` arm destructures a sum payload whose shape is a tuple nested inside a tuple —
+           `(Bin (tuple op (tuple a b)))` — binding `op`, `a`, and `b` in one arm. This is the exact
+           node a self-hosted compiler's `resolve`/`lower` passes take: a tagged node pairing a head
+           opcode with a tuple of its two sub-operands, matched `((Expr.Bin (tuple op (tuple a b))) …)`
+           and folded recursively. Pins that the payload binder recurses into a compound slot — a binder
+           that is itself a `(tuple …)` reads that slot's heap handle and destructures it by the same
+           slot logic — not only a flat payload tuple. The control cases already cover the flat binder
+           (`(tuple a b)` in §\"a function returns a heap sub-node\") and a wide flat binder; only the
+           NESTING is exercised here. `ev (Bin 0 (Lit 20) (Bin 1 (Lit 22) (Lit 8)))` computes
+           `20 + (22 - 8) = 34`.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Expr (Lit Int64 | Bin (Tuple Int64 (Tuple Expr Expr))))
+            (def (ev e) (match e
+                          ((Expr.Lit n)                    n)
+                          ((Expr.Bin (tuple op (tuple a b)))
+                             (if (= op 0) (+ (ev a) (ev b)) (- (ev a) (ev b))))))
+            (def (main) (ev (Expr.Bin (tuple 0
+                                        (tuple (Expr.Lit 20)
+                                               (Expr.Bin (tuple 1
+                                                 (tuple (Expr.Lit 22) (Expr.Lit 8)))))))))))
+  (output (: 34 Int64)))
+
 (case "a recursive user sum type is built at run time and renders with qualified variant names"
   (doc    "A QUALIFIED-constructor recursive sum type — the linked-list / AST shape a self-hosted
            compiler manipulates — constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))`
@@ -1260,63 +1303,91 @@
   (input    (= (record (x 0) (y 0)) (Point (x 0) (y 0))))
   (error    CDZ0202))
 
-; --- The persistent vector: a growable, structurally-shared runtime sequence --------------
-; A `Vec` is a persistent (immutable, structurally-shared) growable sequence — a 32-way radix trie in
-; the value-heap runtime — DISTINCT from a `list` (a flat fixed array backing small homogeneous
-; sequences). It is the representation a self-hosting compiler accumulates output in: `Vec.push` and
-; `Vec.update` are functional constructors that produce a NEW version while leaving the old one
-; untouched (persistence), with O(log₃₂ N) push/get/update and path-copying sharing. `Vec.len` reads
-; the element count; `Vec.get` reads an element by index. These cases pin the vector as a first-class
-; runtime value the seed realizes (the runtime exposes vec-empty/len/get/push/update; the compiler
-; imports them at the frozen envelope's indices 24–28). Tagged (needs persistent-vector).
+; --- A list grows by functional construction (collections-and-text.md #A List Is Grown By Functional
+;     Construction) --------------------------------------------------------------------------------
+; A list is grown with `List.push` (append an element) and `List.update` (replace the element at an
+; index), each producing a NEW list value that leaves its operand unchanged — a list is immutable under
+; growth exactly as it is under reading. This is the accumulator a self-hosting compiler builds its
+; output in. Crucially, growth does NOT introduce a second sequence type: collections-and-text.md #A
+; List's Representation Is Unspecified And Unobservable lets the runtime back a list with any structure
+; (a contiguous array for a small or literal one, a structurally-shared persistent tree for a grown one)
+; and keep the choice invisible, so a `(list …)` literal and a pushed-onto list are the SAME type and
+; render `(list …)` alike. The elements are runtime values (a parameter, a computed value), so the list
+; lives on the value heap, not folded. Tagged (needs list-growth).
 
-(case "an empty vector renders as an empty sequence"
-  (doc    "`(Vec.empty)` is the empty persistent vector — a genuine value, rendered `(vec)`. The base
-           case every incremental build starts from.")
-  (needs  persistent-vector)
-  (input  (Vec.empty))
-  (output (: (vec) Vec)))
-
-(case "pushing an element onto a vector appends it"
-  (doc    "`Vec.push` is a functional constructor: it produces a NEW vector with the element appended.
-           Pushing a runtime value `n` onto the empty vector, then two more elements, yields
-           `(vec 7 8 9)` for `n=7`. The elements are runtime values (the first is a parameter), so the
-           vector lives on the value heap, not folded.")
-  (needs  persistent-vector)
+(case "pushing an element onto a list appends it"
+  (doc    "`List.push` is a functional constructor: it produces a NEW list with the element appended.
+           Pushing a runtime value `n` onto the empty list `(list)`, then two more elements, yields
+           `(list 7 8 9)` for `n=7`. The elements are runtime values (the first is a parameter), so the
+           list lives on the value heap, and the whole grown value renders `(list …)` — the same form a
+           list literal renders, because growth changes only the representation, not the type.")
+  (needs  list-growth)
   (input  (module m
-            (def (mk n) (Vec.push (Vec.push (Vec.push (Vec.empty) n) 8) 9))
+            (def (mk n) (List.push (List.push (List.push (list) n) 8) 9))
             (def (main)  (mk 7))))
-  (output (: (vec 7 8 9) Vec)))
+  (output (: (list 7 8 9) (List Int64))))
 
-(case "the length of a vector is its element count"
-  (doc    "`Vec.len` reads the element count as a scalar — the fold-to-scalar half of the idiom, like
-           `Bytes.len`/`List.len`. `(Vec.len (push (push empty n) 8))` = 2 for any `n`.")
-  (needs  persistent-vector)
+(case "the length of a grown list is its element count"
+  (doc    "`List.len` reads the element count as a scalar — the fold-to-scalar half of the idiom, like
+           `Bytes.len`. `(List.len (List.push (List.push (list) n) 8))` = 2 for any `n`. Pins that the
+           length operation reads a list however it was built (grown here, not a literal).")
+  (needs  list-growth)
   (input  (module m
-            (def (sz n) (Vec.len (Vec.push (Vec.push (Vec.empty) n) 8)))
+            (def (sz n) (List.len (List.push (List.push (list) n) 8)))
             (def (main)  (sz 7))))
   (output (: 2 Int64)))
 
-(case "updating a vector index replaces that element, leaving others"
-  (doc    "`Vec.update` is a functional constructor producing a NEW vector with one index replaced —
-           the persistent update that path-copies the changed spine and shares the rest. Updating
-           index 0 of `(vec 1 2)` to a runtime `n` yields `(vec 99 2)` for `n=99`.")
-  (needs  persistent-vector)
+(case "updating a list index replaces that element, leaving others"
+  (doc    "`List.update` is a functional constructor producing a NEW list with one index replaced,
+           leaving the operand list unchanged. Updating index 0 of a two-element list to a runtime `n`
+           yields `(list 99 2)` for `n=99`. The replace-at-index is defined for the in-bounds index 0.")
+  (needs  list-growth)
   (input  (module m
-            (def (put n) (Vec.update (Vec.push (Vec.push (Vec.empty) 1) 2) 0 n))
+            (def (put n) (List.update (List.push (List.push (list) 1) 2) 0 n))
             (def (main)  (put 99))))
-  (output (: (vec 99 2) Vec)))
+  (output (: (list 99 2) (List Int64))))
 
-(case "a vector built by a runtime-length loop has that many elements"
-  (doc    "The genuine self-hosting idiom: a vector whose LENGTH is decided at run time, built by a
+(case "a list built by a runtime-length loop has that many elements"
+  (doc    "The genuine self-hosting idiom: a list whose LENGTH is decided at run time, built by a
            recursion that pushes an element per step, then measured. `build` pushes `0,1,…,n-1` onto
-           the empty vector — how many pushes happen is known only at run time — and `Vec.len` folds
-           the result to a scalar. `(Vec.len (build (Vec.empty) 0 5))` = 5. This is exactly how a
+           the empty list — how many pushes happen is known only at run time — and `List.len` folds
+           the result to a scalar. `(List.len (build (list) 0 5))` = 5. This is exactly how a
            self-hosted compiler accumulates and then measures an output buffer: a runtime-length
-           functional sequence consumed to a scalar. Pins that a recursive builder's vector return
-           value flows through the recursion (its kind converges to a heap value) and is consumable.")
-  (needs  persistent-vector)
+           functional sequence consumed to a scalar. Pins that a recursive builder's list return
+           value flows through the recursion (its kind converges to a heap value) and is consumable —
+           the representation carrying it (a persistent tree) is an unobservable implementation detail.")
+  (needs  list-growth)
   (input  (module m
-            (def (build v i n) (if (< i n) (build (Vec.push v i) (+ i 1) n) v))
-            (def (main)         (Vec.len (build (Vec.empty) 0 5)))))
+            (def (build v i n) (if (< i n) (build (List.push v i) (+ i 1) n) v))
+            (def (main)         (List.len (build (list) 0 5)))))
   (output (: 5 Int64)))
+
+(case "a recursive sum consumer whose arguments are recursive sum producers compiles"
+  (doc    "The self-hosting compiler's spine: a recursive tree-walk (`lower`) whose arms combine the
+           results of TWO recursive self-calls through a second recursive consumer (`code-cat`) that
+           threads an accumulator. `code-cat`'s second parameter is a compound value returned unchanged
+           in its base arm and passed along in its recursive arm — so it MUST be typed as a heap value,
+           the same as its first parameter, or the heap argument at the call site forces the compiler
+           to inline an unbounded recursion (a compile-time blowup, not a runtime one). Pins that a
+           threaded compound accumulator's kind converges to a heap value regardless of the order its
+           constraints are discovered, so every recursive call lowers to a real function call. Folds
+           the result to a scalar so the case is representation-independent: `lower` of the tree for
+           `(20 + 22)` yields three instructions, whose count is 3.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Instr (IConst Int64 | IAdd))
+            (type Code  (CNil | CCons (Tuple Instr Code)))
+            (type Core  (KConst Int64 | KAdd (Tuple Core Core)))
+            (def (one i)        (Code.CCons (tuple i (Code.CNil ()))))
+            (def (code-cat xs ys)
+              (match xs
+                ((Code.CNil _)              ys)
+                ((Code.CCons (tuple h t))   (Code.CCons (tuple h (code-cat t ys))))))
+            (def (len c)
+              (match c ((Code.CNil _) 0) ((Code.CCons (tuple h t)) (+ 1 (len t)))))
+            (def (lower node)
+              (match node
+                ((Core.KConst n)         (one (Instr.IConst n)))
+                ((Core.KAdd (tuple a b)) (code-cat (lower a) (code-cat (lower b) (one (Instr.IAdd ())))))))
+            (def (main) (len (lower (Core.KAdd (tuple (Core.KConst 20) (Core.KConst 22))))))))
+  (output (: 3 Int64)))

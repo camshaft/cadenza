@@ -278,7 +278,79 @@ generations of Cadenza taught these lessons the expensive way; the specification
   shared `mod tag`; the compiler-emitted renderer became per-program (one fn per distinct shape) rather than a fixed body.
   Pushes the name-free learning one level deeper (no type identity either). Gate 326→369, IGNITION byte-identical,
   COMPONENT-CHECK 412 agree.
-- [Self-hosting is gated on generics; the rest is libraries and scale](./2026-07-05-self-hosting-is-gated-on-generics-the-rest-is-libraries-and-scale.md)
+- [A persistent collection fits the tagless heap with no new machinery](./2026-07-05-persistent-collections-fit-the-tagless-heap-with-no-new-machinery.md)
+  — the first persistent collection (a persistent vector as a 32-way radix trie) was added to the value-heap runtime with
+  **no new `Node` field, no new discriminant, and no new reference-counting code**: its interior/leaf nodes carry children
+  in the existing tagless node's `handles`, so structural sharing is just a refcount above one, the existing iterative free
+  cascade reclaims a whole trie, and it renders exactly like a list. Confirms the tag-free learning's explicit prediction
+  that "CHAMP/RRB collections" would land with zero emitted-byte impact, and realizes (rather than adds) the memory model's
+  #Sharing Is Not Observable and #Retained Storage requirements. The seam grows only by appending operations that name
+  *what* a collection does, never *how* it is stored — so a later CHAMP map or RRB tree is the same cheap move.
+- [A Bytes rope defers materialization behind the same observable bytes](./2026-07-05-a-bytes-rope-defers-materialization-behind-the-same-observable-bytes.md)
+  — a Bytes value became a rope of shared concat/slice nodes over byte leaves, so concat/slice are O(1) and copy no bytes,
+  killing the O(n²) copy cascade the self-hosting compiler hits concatenating module sections. Same tagless trick as the
+  persistent vector (no new `Node` field; leaf/slice/concat by child count), but its new mechanism — flatten a rope node to
+  a leaf in place on first full read, so the emit loop stays O(n) not O(n²) — is licensed by the memory model's #Sharing Is
+  Not Observable **deferred-materialization** clause: the flattened bytes are identical, so it changes representation, not
+  value. The finding: **structural sharing and deferred materialization are one mechanism**, both authorized by the same
+  "not observable" test, both consequences of immutability making representation invisible to meaning. A slice pins its
+  whole parent (#Retained Storage); the compaction op is the release valve.
+- [Wiring the Bytes rope exercised the frozen-envelope recipe a second time — and caught a compact that did nothing](./2026-07-06-wiring-the-rope-exercised-the-envelope-recipe-a-second-time-and-caught-a-no-op-compact.md)
+  — exposing the rope to the language appended three runtime imports (envelope 29→32, the second re-derivation), and the
+  recipe ran mechanically start-to-finish: split-and-compare reproduced the existing constants, the new envelope emitted a
+  valid component *before* any logic change. Two compiler-side findings the append surfaced: (a) runtime `Bytes.compact` was
+  a **no-op identity** — value-preserving but keeping the parent pinned, defeating its whole purpose; the const-fold path
+  hid it because a value-equality oracle *cannot see* a resource-only operation. Route reset/reuse/compaction ops to a
+  runtime that actually reclaims, or their correctness is untested. (b) A fallible runtime `Bytes.slice`/`Bytes.at` needed
+  its result **shape** (Option-with-payload, for the type-directed renderer), not just its **kind** — a renderable value
+  declined at the boundary until `shape_of` mapped it to the Option shape with the right payload. Native concat is now the
+  O(n²)→O(n) unlock; +4 runtime corpus cases.
+- [The compiler's envelope byte-blobs are generated from the runtime contract, not pasted from ephemeral scripts](./2026-07-06-the-envelope-blobs-are-generated-from-the-runtime-contract.md)
+  — the fixed component-model envelope (HEAD/TAIL, import section, indices, core signatures, count) had been hand-derived by
+  a throwaway `/tmp` WAT+`wasm-tools` script and pasted as opaque arrays, and the interface it encodes was duplicated across
+  SEVEN copies (the runtime WIT + six in the compiler/host) that had to agree by hand. Now the runtime **WIT is the single
+  source of truth**: a Rust generator in `xtask` parses it (`wit-parser`), builds each reference component (`wasm-encoder`),
+  self-validates (`wasmparser`), splits at the core-module boundary, and emits the compiler's + host's Rust source — folded
+  into the one `build` command, write-if-changed to preserve the incremental cache. Generic over the contract; the compiler
+  supplies only an ordered allow-list of the ops it lowers. The principle: **a derived artifact whose derivation is an
+  ephemeral script is a latent defect even when its bytes are correct** — correctness you cannot re-derive is unmaintainable,
+  so make the derivation a checked-in, re-runnable, self-validating program with one source of truth. Retires the manual
+  recipe of the two prior envelope re-derivation learnings; also baked the runtime-hash pin into the generated source
+  (killing a dead env var). `wasm-encoder` stays out-of-band (never a shipped-compiler dep).
+- [The leaf fast path derefs twice — the rope taxes the program that never ropes](./2026-07-06-the-leaf-fast-path-derefs-twice-so-the-rope-taxes-the-program-that-never-ropes.md)
+  — a cost review asked what a pure-leaf program (build a flat buffer, read it back, never concat/slice) pays for the rope
+  existing. Answer: almost nothing, except `bytes-get`'s leaf path now dereferences the node **twice** — once to classify
+  leaf-vs-rope (dropping the borrow so the rope case can take a mutable borrow to flatten), then again to read the byte —
+  where pre-rope code derefed once. That ~2× per-byte constant lands on the compiler's hottest loop (`for i in 0..len`
+  reading an assembled module out), still O(n) but needlessly. The mechanism for the deferred case (flatten needs to release
+  the shared borrow) seeped into the common case; fold classify+read into one borrow so the leaf path is one deref again. No
+  ABI/spec impact. The general trap: an **implicit** representation optimization tends to tax the value that never uses it
+  unless the common-case accessor is deliberately carved back out — and a value oracle is blind to the cost, like the no-op
+  `compact` beside it.
+- [A keyed collection needs no serialization seam — tag-free structural hashing and comparison suffice](./2026-07-06-a-keyed-collection-needs-no-serialization-seam-structural-comparison-is-tag-free.md)
+  — designing the persistent map (a CHAMP) and set raised the first hard tag-free question: a hash trie must **hash**
+  and **compare** keys, but the runtime holds no type identity. The resolution rejects both a per-operation
+  canonical-bytes serialization seam (allocates on every insert/lookup) and an equality-function upcall (reentrancy
+  across the boundary) in favor of the runtime **hashing and comparing keys by a direct structural walk of the node
+  graph** — keys cross as plain handles, nothing is serialized, no upcall. Correct because (1) keys within a map are
+  homogeneous (cross-type is a compile-time rejection), so the node-level ambiguity a tag would resolve is harmless —
+  both operands share whatever type the bytes are; and (2) every value form is canonical **except the Bytes rope**
+  (compacted before use as a key). The finding: **structural equality and hashing need no run-time type system,
+  because a canonical representation already encodes the identity a tag would carry** — the same
+  immutability-makes-representation-invisible argument as the rope. Names the tripwire: a future non-canonical RRB
+  vector used as a key would break structural compare unless normalized on use.
+- [An iterator over an immutable heap is a stateless cursor — in-place when unique, forkable when shared](./2026-07-06-an-iterator-over-an-immutable-heap-is-a-stateless-cursor-that-is-in-place-when-unique.md)
+  — the map's iteration surface replaced a materialized entries array (an O(n) allocation per traversal that defeats
+  fusion) with a **cursor**: a bounded descent-stack read through head/tail projections (`iter-key`/`iter-val` +
+  `iter-next`), the ML lazy-cons-stream (OCaml `Seq`) / stream-fusion source shape fitted to single-handle ops. The
+  cursor is **stateless** (`iter-next` returns a new cursor) yet costs nothing, because at reference-count one the
+  reuse-when-unique discipline makes advance an in-place refit — physically a mutation, semantically a new value — so
+  the loop is as cheap as a mutable pointer; and when shared (the caller `dup`'d it), advance path-copies, giving
+  forkable iterators (peekable/tee/backtracking) **for free by the identical `count==1 ? reuse : copy` rule** every
+  persistent structure turns on. The reconciliation of stateful iteration with an immutable heap: **a cursor is not a
+  value** — linear, ephemeral, borrowing — so in-place-when-unique is the frame-limited-reuse identity, not a mutation.
+  Dispatch is static (`impl Iterator`, not `dyn`); the uniform non-allocating pull protocol is where stream fusion
+  becomes possible in the language.
   — a three-front gap analysis (seed-compiler-as-a-program inventory, spec survey, realized-capability audit) for
   authoring the Cadenza compiler in Cadenza. The self-host target is the pure `bytes → bytes` core
   (`codegen.rs`+`ast.rs`+`diagnostics.rs`, ~7,300 lines), not the workspace; the seam is a pure function, so
@@ -290,6 +362,180 @@ generations of Cadenza taught these lessons the expensive way; the specification
   (multi-module, traits, symbol interning, macros, `bin`, units, verification, width-indexed ints). Confirms the
   operator M0–M9 ladder and names its single gate: **M3 (static types + rows) is where generics + HM inference lands,
   and nothing polymorphic — containers, width-indexed ints, the port itself — moves until it does.**
+- [A recursive consumer of a runtime heap value must be typed Heap, or the compiler diverges](./2026-07-05-a-recursive-consumer-of-a-runtime-value-must-be-typed-heap.md)
+  — the seed chooses inline-vs-`call` for a callee by the argument's inferred kind; a recursive function consuming a
+  runtime heap value whose parameter is *under-constrained* defaults to a scalar kind, which selects the inline path,
+  so the expansion never bottoms out and **the compiler itself diverges** (stack overflow / hang). Hit twice on one
+  cause (runtime sum-match `sm`; runtime bytes `sumb`); the fix is identical and lives in inference — a heap-value
+  CONSUMER (constructor-pattern match arm; `Bytes.len`/`at`/`slice`) must constrain its operand to the heap kind so a
+  recursive caller emits a runtime `call`, not an inline. Sharpens decline-don't-miscompile: **a non-terminating
+  compilation is a miscompile, not a decline.**
+- [The compiler's own I/O type must be a first-class runtime value, and the frozen import set decides which](./2026-07-05-the-compilers-io-type-must-be-a-first-class-runtime-value.md)
+  — the compile seam is `list<u8> → result<list<u8>>`, yet `Bytes` existed only as a compile-time constant; the
+  compiler's own input/output type was unavailable as a runtime value. Runtime Bytes (construct/len/concat/recursive-
+  builder) landed on the value-heap runtime. Two invariants: **(1)** among a compiler's needed runtime values, realize
+  first the one the FROZEN emission envelope already imports (Bytes' ops were reserved in it → no re-derivation; String's
+  were not → deferred) — the import set, not feature difficulty, sets the order; **(2)** when a runtime primitive
+  truncates a value the language bounds more tightly (`bytes-set` does `value as u8`), the compiler emits the range check
+  on the language value BEFORE the primitive, so a partial operation's trap isn't silently swallowed. Input consumption
+  (index a runtime buffer + match its `Option`) remains blocked on runtime polymorphic-payload sum-match.
+- [Wiring the persistent vector re-derived the frozen envelope for the first time — and forced a fixpoint fix](./2026-07-05-wiring-the-persistent-vector-re-derived-the-frozen-envelope.md)
+  — exposing the runtime's persistent vector (`Vec.empty`/`push`/`update`/`len`/`get`) to the language was the FIRST
+  actual extension of the frozen component-emission envelope: five new lowered imports meant re-deriving HEAD (1200→1440),
+  TAIL (344→400, run/realloc core-func aliases shifting 24/25→29/30), and the import section (24→29). Done the prescribed
+  dev-desk way (author extended WAT → `wasm-tools` validate → split at the core-module boundary → re-bake constants), with
+  a split-and-compare check that reproduced the EXISTING constants before trusting the new ones. Confirms the fixed-envelope
+  learning's "append-only, one-time re-derivation" claim (IGNITION byte-identity + COMPONENT-CHECK survived the bump). ALSO
+  fixed a fixpoint hole a recursive vector BUILDER exposed: `if` inference now prefers `Kind::Heap` when its branches
+  disagree, so a recursive compound builder's return kind converges to a heap value instead of locking to the Int64 default
+  — the builder-side dual of the recursive-consumer-must-be-Heap rule (an under-determined kind at a heap boundary resolves
+  toward the heap).
+- [Authoring the compiler in Cadenza surfaces the language's real gaps](./2026-07-05-authoring-the-compiler-in-cadenza-surfaces-the-language-gaps.md)
+  — why the compiler's vertical slice was authored in aspirational Cadenza (as if every capability were
+  realized, with inline `DECLINE` markers): the marker frequency is a prioritization signal (effects ≫
+  numeric-model > sum-types), and where the language fights the author is a design signal. Drove three
+  sibling learnings and a family of compiler-idiom corpus cases; the spike lives in the disposable
+  `implementation/` tree, so its durable output is the learnings and cases, not the source.
+- [Effects are declared with one surface; a host-bound declaration is the grant](./2026-07-05-effects-are-declared-with-one-surface-the-declaration-is-the-grant.md)
+  — why an effect is declared `(effect Name (op … (-> T… R))…)` (a record of operations reached as
+  `Name.op`), a host import is the same form with a `(host)` marker, and that host-bound declaration IS
+  the manifest grant — removing both `(import (host …))` and `(use (capability …))` so there is one way to
+  declare, not several. Adds `CDZ0402` (undischarged effect) and `CDZ0403` (handler arm names an
+  undeclared op). Drives capabilities-and-effects.md + options/effects-model + code-shape + corpus.
+- [Dynamic-extent context is an effect; lexical-extent data is a parameter](./2026-07-05-dynamic-extent-is-an-effect-lexical-extent-is-a-parameter.md)
+  — why "effects for everything" is right for diagnostics / fresh-supply / the unification store (dynamic
+  extent — alive until a handler returns) but wrong for the lexical environment (lexical extent — a
+  threaded immutable map, since argument-passing IS lexical scoping); a handler forced to snapshot/restore
+  to fake nesting is the tell the effect is the wrong tool. Refines the mutation-as-State resolution.
+- [The compiler's internal IR is a typed sum; the public AST stays homoiconic](./2026-07-05-the-internal-ir-is-a-typed-sum-the-public-ast-stays-homoiconic.md)
+  — why the instruction backend uses a typed `Instr` sum (exhaustive serializer ⇒ a new opcode is a
+  compile error, extending decline-don't-miscompile to codegen and enabling structural const-fold/peephole)
+  while the frontend stays homoiconic `Ast` + quasiquote where values truly are syntax; and why `Symbol`
+  interning lives in the internal term (at the `Ast → term` boundary), not the quotable `Ast`.
+  Ratified 2026-07-05 into compiler-pipeline.md §Representation (typed instruction sum + exhaustive
+  serializer; quasiquote re-scoped to the frontend/macro layer).
+- [Lower through a resolved IR so emission is a serializer, not a construction site](./2026-07-06-lower-through-a-resolved-ir-so-emission-is-a-serializer.md)
+  — why the *middle* rung (a resolved, analyzed representation) must exist, not just the backend
+  instruction sum: a single AST→bytes pass that also type-checks, folds, inlines, and resolves effect
+  handlers as it emits has no seam to add a feature or an optimization at, makes the compiler exponential
+  in nesting (resolution + env redone per branch), and hides a miscompile where the discharging handler
+  is decided by state the emitter accumulates (the effects under-frame). Drives compiler-pipeline.md
+  §Representation §"The Compiler Resolves Names Before It Selects Instructions" and §"Emission Serializes
+  A Lowered Representation" — name resolution / type-checking / folding / effect lowering are
+  transformations of the IR, and byte emission resolves nothing. Requirements state the obligations, not
+  the pass ladder.
+- [Optimizing-compiler techniques for a functional/immutable IR — a grounded catalog](./2026-07-06-optimizing-compiler-techniques-for-a-functional-immutable-ir.md)
+  — forward-looking design input (drives NO requirement) for the deferred IR-layer question: a
+  fact-checked catalog of prior art grounded in Cadenza's constraints. Converges on direct-style
+  ANF + explicit join points (not CPS; recovers CPS's power without its fixed evaluation order),
+  nanopass single-task passes over checkable per-rung grammars, and MLIR-style progressive lowering
+  (don't lower too far too early). Confirms Cadenza's two headline optimizations are Core→Core passes:
+  Perceus RC/reuse/FBIP (acyclicity is the precision precondition; needs ownership/borrow annotations)
+  and evidence-passing + tail-resumptive effect lowering to stock wasm (Tier-3 reified continuations are
+  the one thing needing a lower/CFG-shaped rung). Honest gaps: pass-correctness apparatus and several
+  classic functional opts (fusion, worker/wrapper, let-floating, CHAMP/RRB × reuse) unassessed. Six
+  primary sources (CwC PLDI'17, nanopass ICFP'13, MLIR, Perceus PLDI'21, Immutable Beans, Generalized
+  Evidence Passing ICFP'21).
+- [Record and tuple reshaping is explicit row operations](./2026-07-05-record-and-tuple-reshaping-is-explicit-row-operations.md)
+  — why the requested "pop a field / add a field / merge / split" operations are the explicit
+  `project`/narrowing the rows learning promised but never pinned: three record primitives
+  (`Record.project`/`without`/`merge`) plus derived `extend`/`with`/`pop`, and positional tuple
+  analogues (`Tuple.cat`/`split-at`/`pop`). Each yields a NEW closed value (no mutation), is shaped
+  statically, and stays a special form (field names/positions are static, not runtime values). `merge`
+  is strict-unbiased (shared field → `CDZ0211`, no silent clobber); `extend` (absent) and `with`
+  (present, may retype) are deliberately distinct; `pop` is row-typed not `Option` (field presence is
+  static). Drives type-system.md §The Declarable Type Universe (7 subsections), `CDZ0211`/`CDZ0212`,
+  and `options/record-tuple-operations/`.
+- [Fuel is host-owned runtime policy, not a compiler-emitted measure](./2026-07-06-fuel-is-host-owned-runtime-policy-not-a-compiler-emitted-measure.md)
+  — why resource exhaustion is delegated entirely to the execution environment (wasmtime `consume_fuel`
+  instruments emitted wasm at JIT time; async-fiber yield refuels/yields/aborts on the same stack with no
+  recompute) rather than modeled as a compiler-emitted measure or a boundary effect: fuel can run out at
+  any loop back-edge, so an effect framing makes the whole program a fine-grained state machine, and a
+  program that could read its remaining fuel would make the host's grant schedule observable. The program
+  is fuel-blind by mandate; a completing run is byte-identical regardless of budget, and abort is a
+  resource terminal like OOM, outside observable behavior. The compiler emits nothing; Core Principle V's
+  obligation relocates from the compiler to "the execution environment MUST be interruptible at a bounded
+  point." Drives constitution V, determinism-and-fuel.md §Resource Accounting, core-semantics.md, glossary.
+- [Compiling effect handlers: classify first, and the tail-resumptive common case is plain code](./2026-07-06-compiling-effect-handlers-classify-first-tail-resumptive-is-plain-code.md)
+  — why intra-program `handle`/perform/`resume` lowers to wasm by a classification-first strategy: a
+  compile-time pass sorts each handler arm into tail-resumptive / abortive / general-one-shot and lowers each
+  to a minimal stock-wasm shape. Cadenza's lexical+static resolution over a monomorphized closed row collapses
+  Koka's runtime evidence vector to a direct arm reference, and because EVERY corpus arm and the compiler's own
+  `Fresh`/`Diag`/`Unify` are tail-resumptive, the whole shipping surface needs ZERO continuation machinery
+  (perform = direct call, tail `resume e` = `e`). The general-one-shot fallback is a defunctionalized frame on
+  the FROZEN value-heap prefix (envelope-neutral, no new WIT op). Rejects native stack-switching (not in any
+  Wasmtime tier, >4× slower than Asyncify, opaque native stack can't cross the boundary as data). A reified
+  intra-program continuation must not span a host suspension point (the invariant reconciling durable-data vs
+  non-durable-handle). Ten SOTA lanes adversarially fact-checked; caught fuel-retired (Amendment 0.7.0) as a
+  stale premise. Drives options/effects-model/lowering-to-wasm.md; Stage 1 clears the #1 self-host blocker.
+- [Implementing effects in the seed: inlining resolves cross-function effects — until recursion](./2026-07-06-implementing-effects-in-the-seed-inlining-resolves-cross-function-until-recursion.md)
+  — executing the classify-first design in the seed (Stages 0–2 landed, gate 466 pass/0 fail). Three findings:
+  (1) cross-function effect resolution reduces to INLINING an effectful callee into the handled region (the
+  existing lambda-arg alias path), turning all six cross-function corpus cases green with no new mechanism — but
+  a RECURSIVE effectful function inlines its own body without bound, so it DECLINES cleanly (an `inlining`-stack
+  guard), the precise Stage-3/monomorphization boundary; the non-recursive cases pass without the guard, so the
+  wall is invisible until you write the recursive-effect test (two new corpus cases pin it). (2) A delegated
+  operation `log.emit` cannot be a top-level component IMPORT NAME (the model requires kebab-case externs), which
+  forced the design's effect=WIT-interface / op=function-in-it encoding — the dot lives only in the recorded
+  call name. (3) A new tail value-form must be taught to `emit`, `infer_list` (so the return kind flows and
+  `call_base` is right), AND `shape_of_list` (so a compound result drives the runtime-compound renderer) — miss
+  one and the paths disagree into an invalid component, not a decline. State threading is a mutable wasm local
+  whose handed-back value reads the OLD state; unit-state is the zero-cost degenerate case.
+- [Authoring the compiler in Cadenza surfaces gaps a corpus grown from a floor misses](./2026-07-06-authoring-the-compiler-surfaces-gaps-a-corpus-grown-from-a-floor-misses.md)
+  — (re-)authoring the compiler in Cadenza — a resolved `Core` → `Lir` typed-instruction-sum → bytes ladder
+  whose emission is a pure serializer — reached a working vertical slice (it compiled `(+ 20 22)` to a valid
+  component that runs to 42, via `i64.const 20 · i64.const 22 · i64.add`). Getting there surfaced four
+  seed/spec gaps that isolated conformance cases never had: (1) compile-time inlining was EXPONENTIAL — a
+  recursive value function threading a compound accumulator had that parameter's kind inferred as a scalar, so
+  a heap argument met a scalar parameter and the recursive call inlined without bound (>30 GB, OS-killed);
+  fixed in kind inference (back-propagate a `match`'s result kind to arms returning a parameter; let the
+  more-defined heap kind win an order-dependent constraint race) and pinned by a new corpus case. (2) NO boolean
+  connectives (own learning). (3) runtime `String` is unrealized (walls off name dispatch + the reader's symbol
+  table — the keystone remaining self-host blocker). (4) a `match` arm returning a heap value bound by its
+  pattern through a helper could emit an invalid component (fixed to compile). The methodological lesson: a
+  corpus grown outward from a mandatory floor is structurally blind to the STAPLES and INTERACTIONS a real
+  program composes; authoring the second compiler is the most demanding conformance test the language has, and
+  it earns its keep as a gap-finder long before it is self-hosting.
+- [The front rung of a resolved-IR compiler needs nested payload binders — and folding early leaves cdz-rustc's dead code behind](./2026-07-06-the-front-rung-of-a-resolved-ir-compiler-needs-nested-payload-binders.md)
+  — the sequel to the gap-finder above: with the exponential-inlining and heap-sub-node fixes landed, the whole
+  pipeline is now authored (`resolve → fold → lower → serialize → frame`) and every rung compiles when fed
+  `Core` directly, but the FRONT rung `resolve` declines on ONE gap — a nested tuple binder inside a sum payload
+  (`((Node.NPrim (tuple op (tuple a b))) …)`, the exact node a resolved-IR front rung takes). Flat and flat-3
+  payload binders work; only the recursion into a compound slot is missing (`bind_sum_payload` must recurse), and
+  there is no in-language workaround (a bare runtime-tuple match arm also declines). Pinned by a new
+  `05-compound-types.sexp` case (→ 34, scores todo). Second finding, a point FOR the resolved-IR architecture:
+  the Cadenza compiler folds `(+ 20 22)` to `KConst 42` at the Core layer BEFORE emission, so its 89-byte
+  component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
+  overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
+  cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [A language with conditionals still needs boolean connectives — the spec had none](./2026-07-06-a-language-with-conditionals-still-needs-boolean-connectives.md)
+  — a routine compiler predicate (the signed-LEB128 terminator, an `and`/`or` of bit tests) could not be
+  written: `(and a b)`/`(or a b)`/`(not a)` were absent from the seed, EVERY conformance case, and the spec —
+  a language with a proven-short-circuit `if`, comparison operators, and a totally-ordered `Bool`, but no way to
+  COMBINE two booleans without nesting a conditional per condition. The gap survived because the corpus grew case
+  by case and none happened to need a connective, and because connectives are so basic their absence reads as
+  impossible rather than as an omission to check. Drove a *Boolean Connectives Short-Circuit* requirement in
+  `core-semantics.md` (adjacent to *Conditionals Evaluate One Branch*): the language MUST offer conjunction,
+  disjunction, negation; conjunction evaluates its right operand only when the left is true (disjunction only
+  when false), SHORT-CIRCUITING so a connective shields a trapping/effectful right operand exactly as an
+  unselected conditional branch does; each operand is type-checked as a boolean whether or not evaluated. The
+  short-circuit choice is load-bearing — it fixes behavior on a right operand that traps or performs an effect.
+- [A list and a persistent vector are one type — representation is the runtime's choice, not the author's](./2026-07-06-a-list-and-a-persistent-vector-are-one-type-representation-is-the-runtimes-choice.md)
+  — the language had grown TWO surfaces for the same idea (an ordered, homogeneous, immutable, indexed
+  sequence): the specified `list` (flat array, `(list …)`) and an unspecified `Vec` (a 32-way radix trie,
+  `(vec …)`, `Vec.push`/`update`) that arrived as a self-hosting output accumulator and quietly acquired a
+  surface type, render form, and API namespace. Only `list` was ever in `collections-and-text.md`; a flat
+  array IS the trie's ≤32-element base case (a single leaf), so they are one data structure split at an
+  arbitrary size threshold, not two representations across a type boundary; and their observable contracts
+  are identical but for the performance curve. Two surface types makes representation OBSERVABLE at the
+  surface — contradicting the tag-free runtime, #Sharing Is Not Observable, and the persistent-collections
+  learning's explicit "representation can change freely with zero emitted-byte impact." Merge to ONE sequence
+  type (keep `list`'s name/literal/render, absorb `push`/`update` + the trie as its representation, delete
+  `Vec` + `(vec …)`). Author-controlled representation (Clojure/Rust) is a coherent but OPPOSITE philosophy
+  Cadenza never chose — it drifted in through an accumulator. The sharpened thesis: **a new representation is
+  a new way to store an existing type, not a new type.** Drives collections-and-text.md §"A List Is An Ordered
+  Homogeneous Sequence" (functional growth + representation-unspecified); shrinks deterministic-value-form by
+  one value form; corpus `(needs persistent-vector)` cases fold into `list` ops; no envelope re-derivation.
 
 ## Spec gaps (found by adversarial-corpus probing) — all four RESOLVED 2026-07-05 in a clarity pass
 
