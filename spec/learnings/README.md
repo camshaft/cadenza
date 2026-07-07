@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader decodes CBOR as the input dual of the output spine — built on the byte primitives that already work](./2026-07-07-the-reader-decodes-cbor-as-the-input-dual-of-the-output-spine.md)
+  — the spike started its READER (last major piece before self-hosting), and it fell out as the input dual of the
+  LEB128 output spine: `cbor-major` (`>> byte 5`), `cbor-info` (`& byte 31`), `cbor-arg` (1/2/4/8-byte big-endian
+  argument), all built on `byte-at` = `(match (Bytes.at b i) ((Some x) x) (None 0))` + bit ops — the SAME small
+  vocabulary the encoder composes upward, so there's no separate reader runtime and it could start the moment
+  Bytes.at-across-a-boundary landed. Verified: major of 0x83 → 4, arg of `18 2A` → 42, be-assembly of `01 2C` →
+  300. It's authored AROUND the open #12 facets — decodes raw bytes with Bytes.at, not String.from-bytes (the
+  symbol table is where from-bytes becomes unavoidable, the reader's next dependency). Like the output side, the
+  decode is a COMPOSITION needing a known-answer case, not just verified primitives. Pinned `10-bytes.sexp`
+  "a CBOR head decodes its major type and big-endian argument" (`19 01 2C` → `(tuple 0 300)`, PASS).
 - [The reader gate is being closed accessor-by-accessor — `Bytes.at` crosses a boundary now, `String.from-bytes` is next](./2026-07-07-the-reader-gate-is-being-closed-accessor-by-accessor.md)
   — the built-in-fallible-result-across-a-boundary gate (item 12) is being closed one accessor at a time, as that
   learning warned. This cycle `Bytes.at` through a helper was fixed (the reader's per-byte idiom → works); but the

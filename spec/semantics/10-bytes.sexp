@@ -455,6 +455,77 @@
             (def (main) (mk 1))))
   (output (: b"\x01\x02\x03" Bytes)))
 
+; --- A runtime `Bytes.at` Option is MATCHED — the reader's core idiom -------------------------------
+; The reader walks the input bytes with `(match (Bytes.at input i) ((Some b) …) (None …))` on every
+; byte, so this must compile: matching a runtime `Bytes.at` result (an `Option<Int64>` — the byte
+; boxed) and returning a scalar from each arm. The `Some` binder is the Int64 BYTE (not an opaque
+; handle), so it unifies with a scalar `None` arm. These pin that consuming a runtime `Bytes.at`
+; Option by `match` works exactly as consuming any other `Option<Int64>` — the last gate before a
+; byte-walking reader (hence true `bytes → bytes` self-hosting).
+
+(case "matching a runtime Bytes.at Option binds the byte in the Some arm"
+  (doc    "`(match (Bytes.at b i) ((Some x) x) (None -1))` on a runtime byte sequence `b` at an
+           in-bounds index returns the byte: `(at (Bytes.of (list 10 20 30)) 1)` is 20. The `Some`
+           binder `x` is the Int64 byte (Bytes.at boxes a byte, and the match unboxes it to the scalar),
+           so it unifies with the scalar `None` arm — the reader's per-byte dispatch. Pins that a runtime
+           `Bytes.at` Option matches like any `Option<Int64>`.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (at b i) (match (Bytes.at b i) ((Some x) x) (None -1)))
+            (def (main)   (at (Bytes.of (list 10 20 30)) 1))))
+  (output (: 20 Int64)))
+
+(case "matching a runtime Bytes.at Option takes the None arm past the end"
+  (doc    "The out-of-bounds companion: `(at (Bytes.of (list 10 20 30)) 9)` reads past the end, so the
+           match takes the `None` arm and returns -1. Pins that both arms of a runtime `Bytes.at` match
+           are reachable and unify — the terminating branch of the byte-walk.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (at b i) (match (Bytes.at b i) ((Some x) x) (None -1)))
+            (def (main)   (at (Bytes.of (list 10 20 30)) 9))))
+  (output (: -1 Int64)))
+
+(case "a recursive byte walk sums a runtime sequence via Bytes.at and match"
+  (doc    "The reader's shape: walk a runtime byte sequence from index 0, matching `(Bytes.at b i)` on
+           each step — `Some` binds the byte and recurses with `i+1`, `None` (past the end) terminates
+           with the accumulator. `(go (Bytes.of (list 10 20 30)) 0 0)` sums to 60. Pins that a recursive
+           function driving over the input bytes by matching `Bytes.at` compiles and runs — the core
+           `bytes → AST` loop a self-hosted front end is built on.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (go b i acc)
+              (match (Bytes.at b i)
+                ((Some x) (go b (+ i 1) (+ acc x)))
+                (None acc)))
+            (def (main) (go (Bytes.of (list 10 20 30)) 0 0))))
+  (output (: 60 Int64)))
+
+(case "a CBOR head decodes its major type and big-endian argument from the input bytes"
+  (doc    "The compiler's INPUT-side decode spine — the dual of the LEB128 output encoder: reading a
+           canonical-binary-AST head from the input bytes. The head's initial byte splits into a major
+           type (top 3 bits, `(>> byte 5)`) and additional-info (low 5 bits, `(& byte 31)`); an info of
+           24/25/26/27 means a 1/2/4/8-byte BIG-ENDIAN argument follows, assembled most-significant-byte
+           first. Against the real bytes of `(quote 300)` encoded as a CBOR uint — `19 01 2C` (info 25 = a
+           2-byte argument, then 0x01 0x2C) — `major` is 0 (unsigned int) and `arg` is 0x012C = 300. The
+           result `(tuple 0 300)` pins BOTH halves of the head decode at once: the major-type shift and
+           the big-endian multi-byte argument assembly (`byte[i]*256 + byte[i+1]`). This composes the byte
+           primitives (`Bytes.at`+match, `>>`, `&`, `*`, `+`) into the reader's head-decode step, exactly
+           as the LEB128 case composes them into the writer's — a single-primitive slip (wrong shift,
+           wrong mask, wrong place value) changes the decoded number, so this is a tighter check on the
+           input path than any primitive alone.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (byte-at b i)  (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (major b i)    (>> (byte-at b i) 5))
+            (def (info b i)     (& (byte-at b i) 31))
+            (def (be b i n)     (if (< n 1) 0
+                                 (+ (* (byte-at b i) (place (- n 1))) (be b (+ i 1) (- n 1)))))
+            (def (place k)      (if (< k 1) 1 (* 256 (place (- k 1)))))
+            (def (arg b i)      (if (< (info b i) 24) (info b i) (be b (+ i 1) 2)))
+            (def (main)         (tuple (major (Bytes.of (list 0x19 0x01 0x2C)) 0)
+                                       (arg   (Bytes.of (list 0x19 0x01 0x2C)) 0)))))
+  (output (: (tuple 0 300) (Tuple Int64 Int64))))
+
 ; --- The `b"…"` literal reads to a byte sequence, and rendering round-trips -----------------------
 ; `b"…"` is reader sugar for `(Bytes.of (list …))`, so a byte-string literal and the explicit form
 ; denote ONE value: they are equal. These cases pin the reader equivalence in both directions
