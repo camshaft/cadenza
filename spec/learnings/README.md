@@ -10,6 +10,16 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A gate timeout is not a regression until you rule out contention — isolate before escalating](./2026-07-07-a-gate-timeout-is-not-a-regression-until-you-rule-out-contention.md)
+  — after a seed rebuild the gate (normally ~2 s) timed out at 2 min, twice — looked like a hang/blowup
+  regression. Isolating: `10-bytes.sexp` showed a per-file timeout, but every bisected half/quarter passed in
+  ~1 s, the file alone ran 1 s / 51 PASS, and the full gate re-run when the box was quiet ran 2 s / 569 green. No
+  hang — transient CONTENTION (a concurrent sibling seed rebuild competing for CPU/IO). Lesson: a timeout is a
+  wall-clock signal that conflates "work got slower" (regression) with "box got busier" (contention); before
+  escalating, re-run the suspect ALONE and compare to baseline — a real slowdown reproduces in isolation,
+  contention doesn't. Don't cry regression on a timeout; don't dismiss a real blowup either — isolate and time.
+  No seed defect (the finding was about the loop's own reaction). Also this cycle: ask-44 (the stray DBG
+  eprintln) removed by the rebuild → done. Gate green 2 s, WRONG=0.
 - [A stray debug print on stderr is invisible to every gate — the self-hosting probe caught it by reading the whole output](./2026-07-07-a-stray-debug-print-on-stderr-is-invisible-to-the-gate-but-caught-by-reading-the-self-host-output.md)
   — probing `compile-run` surfaced `DBG ctor-arm match, scrut_kind=Int64, scrutinee=Name("node")` — a leftover
   `eprintln!` in the seed's ctor-arm-match codegen, firing once as the seed compiles compiler.cdz itself. No gate
