@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The compiler emits bare arithmetic that wraps instead of trapping — and a scalar-only scan hid the overflow miscompiles](./2026-07-07-the-compiler-emits-bare-arithmetic-and-a-scalar-only-scan-hid-the-overflow-miscompiles.md)
+  — a quiet-cycle completeness sweep for wrong-value miscompiles came back "0 WRONG" (108 native=ok disagreements
+  = 28 soft + 77 hidden declines + 3 other) — but the 3 "other" I nearly dismissed as "no scalar oracle" were
+  TRAP-oracle cases the scan filtered out, and `compiler.cdz` runs them to a value: it emits bare
+  `i64.add/sub/mul` that WRAP on overflow (`Int64.max+1`→MIN, `*2`→-2) where the default `+ - *` MUST trap. A
+  wrong-value miscompile class, same severity as `(id true)` (ask-34), the arithmetic core — filed high-priority
+  ask-37 (emit a checked lowering as `/ %` already do, or decline). Two lessons: it's a real miscompile; AND my
+  own scan had the exact proxy-leak this loop keeps documenting — "0 WRONG" meant "0 wrong among scalar-oracle
+  cases," and filtering out trap oracles dropped precisely the cases where a wrap-instead-of-trap lives. A scan is
+  only as complete as the oracle it consults; "no scalar oracle → skip" is how a trap-required miscompile hides
+  in the `other` pile. No new corpus (overflow-traps cases already pinned; behavior gate green because native
+  traps).
 - [The ask lifecycle closed its first validation round-trip — and a miscompile fixed by declining is a valid resolution](./2026-07-07-the-ask-lifecycle-closed-its-first-validation-round-trip-and-a-miscompile-fixed-by-declining.md)
   — the compiler agent adopted the ask-lifecycle and moved four asks into `pending-validation/`; the loop
   re-probed all four against the live artifact and confirmed → `done`: ask-19 (nested ctor under `Some` on a
