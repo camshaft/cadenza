@@ -322,6 +322,20 @@
             (def (main) (. (Option.expect (mk 41) "x") b))))
   (output (: 42 Int64)))
 
+(case "a field is projected off a record unwrapped from a result with expect"
+  (doc    "The Result twin of the Option.expect case above: the record reaches the `.` projection by
+           being UNWRAPPED from a `Result` with `expect`, the Result produced by a FUNCTION CALL. `mk`
+           returns `(Ok (record (a n) (b (+ n 1))))`; `(Result.expect (mk 41) \"x\")` unwraps the Ok to
+           the record and `(. … b)` projects field `b` = 42 (the Err case would trap — expect is
+           unwrap-or-trap). Same demand as the Option companion: the unwrap must carry the payload's
+           record shape to the projected value through the call-produced scrutinee, or the projection
+           has no slot to index. Pins that Result.expect — not only Option.expect — threads a compound
+           payload's shape to a downstream field access, across the two-variant Result sum.")
+  (input  (module m
+            (def (mk n) (Ok (record (a n) (b (+ n 1)))))
+            (def (main) (. (Result.expect (mk 41) "x") b))))
+  (output (: 42 Int64)))
+
 (case "a sum-type value is constructed through a variant"
   (doc    "Sign is declared where used as (Neg | Zero | Pos) (options/code-shape/); a value is one
            variant. Construction is via application: Sign.Pos is a Constructor (function), and
