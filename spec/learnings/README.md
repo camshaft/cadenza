@@ -10,6 +10,21 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The self-hosting loop runs end-to-end — and the compile-return alignment bug has a sharp value threshold the handoff doc missed](./2026-07-07-the-self-hosting-loop-runs-end-to-end-but-the-compile-return-trips-on-a-value-threshold.md)
+  — `compiler.cdz`'s entry was rewired to `(def (compile b) (compile-bytes b))` — the real self-hosting seam
+  (pending step 1 from the bytes→bytes learning, now landed). `compile-run` compiles `(module m (def (main) 42))`
+  → the correct 89-byte component through the full pipeline: the compiler is a genuine byte-transform now. But
+  the seed's `compile`-RETURN wrapper trips "return pointer not aligned" (gap 3n). Probing the CURRENT seed
+  corrected the handoff doc twice: (1) its fixed-output repro `(Bytes.of (list 0 0 0 0))` now PASSES — a partial
+  fix landed, the doc is stale; (2) the real failure is a SHARP DETERMINISTIC VALUE THRESHOLD, not
+  "allocation-dependent" — `(main) N` fails for N ≤ 23, succeeds for N ≥ 24 (bisected), identical 89-byte output
+  both sides, single operand-byte difference. So `0`/`1`/`true`/`256` fail but `42`/chains succeed — the simplest
+  inputs are the minimal reproducer, opposite the doc's implication. The bug is the seed's computed-`list<u8>`
+  return marshalling (rope-flatten-to-retarea offset), not the compiler (all these `emit` byte-identically to
+  native). No corpus case (seed component-ABI defect). Lesson: a handoff doc's open-bug characterization is an
+  aggregate to re-probe — "fails at every size" became "fixed-output works; real compiler fails for N ≤ 23," a
+  different and actionable shape. The self-hosting loop is functionally CLOSED; the last blocker to a byte-level
+  gate is this one alignment bug, not any compiler capability.
 - [The return-kind table is a monotone fixpoint, and it propagates a Bool result to any call depth — the capability gap 3k unblocked](./2026-07-07-the-return-kind-table-is-a-monotone-fixpoint-and-it-propagates-bool-to-any-depth.md)
   — the compiler needs each function's result kind (i32/Bool vs i64/Int) to frame its wasm signatures and calls.
   A single-pass table handles a directly-Bool-bodied helper, but a TRANSITIVE chain (`a` returns `b`'s result,
