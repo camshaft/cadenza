@@ -217,6 +217,32 @@
   (input  (module m (def (main) (if (< 1 2) 7 (% 5 0)))))
   (output (: 7 Int64)))
 
+(case "a conditional selects a branch by a runtime value that is not known at compile time"
+  (doc    "`(def (f x) (if (< x 10) x (* x 2)))`: the condition `(< x 10)` depends on the runtime
+           parameter `x`, so it CANNOT fold — the conditional must emit a real runtime branch that
+           selects `x` (then) or `(* x 2)` (else) by the value computed at run time. `f(21)`: 21 is not
+           < 10, so the else-branch yields 42. Pins the runtime conditional — a condition that is a
+           genuine runtime value, not a literal or a fold — which a compiler lowers to a structured
+           branch (push the condition, then a then/else region each leaving one value of the branches'
+           shared type on the stack). Distinct from every conditional case above, whose condition is
+           known at compile time (a literal, a nested `if`, or a foldable comparison): here the selection
+           happens at run time. The companion `f(3)` (3 < 10) takes the then-branch and yields 3.")
+  (input  (module m
+            (def (f x) (if (< x 10) x (* x 2)))
+            (def (main) (f 21))))
+  (output (: 42 Int64)))
+
+(case "a runtime conditional selects its then-branch when the runtime condition holds"
+  (doc    "The then-branch companion to the runtime-conditional case above: with `x` = 3, `(< x 10)` is
+           true at run time, so `(if (< x 10) x (* x 2))` selects `x` and yields 3. Together the pair
+           pins that a runtime conditional selects EITHER branch by the run-time condition value (42 when
+           false, 3 when true), so the structured branch is a genuine two-way selection, not a folded
+           constant.")
+  (input  (module m
+            (def (f x) (if (< x 10) x (* x 2)))
+            (def (main) (f 3))))
+  (output (: 3 Int64)))
+
 ; --- A conditional's branches must have the same type ------------------------------------
 ; core-semantics.md #Conditionals Evaluate One Branch, 2nd sentence: "Every branch of a
 ; conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated

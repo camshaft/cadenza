@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The compiler emits a multi-function module with a real call — and routes around the front-rung blocker to prove the backend](./2026-07-06-the-compiler-emits-a-multi-function-module-with-a-real-call.md)
+  — milestone: `compiler.cdz` now compiles to a valid component that is MORE THAN ONE FUNCTION and threads a real
+  `call` with a parameter (`main = dbl(21)`, `dbl x = x+x` → 42 via `call 1`, not a fold). New: a multi-function
+  assembler (`compile-program` over an `FList` of `Func`, N-entry sections), `Core` constructors `KLocal`
+  (→ `local.get`) and `KCall` (→ `arg ++ call fi`), and `KIf` → structured `if/else/end` for a RUNTIME condition.
+  The headline is METHOD: the agent ROUTED AROUND the front-rung blocker (Tier 2b nested binder still declines) by
+  hand-building the folded `Core`/`Func` list `main` feeds the assembler — so the backend is proven FROM THE
+  RESOLVED IR INWARD while `resolve` stays stubbed. The resolved-IR seam is the right TESTING seam too (Core is a
+  user sum, so it can be built by hand). Honest status: backend proven, front rung still blocked on backlog #1.
+  Pinned two `02-binding-and-control.sexp` runtime-conditional cases (both PASS).
 - [Folding a constant-condition conditional must preserve short-circuit shielding — the third face of trap-preserving rewrites](./2026-07-06-folding-a-constant-condition-preserves-short-circuit-shielding.md)
   — the fold pass grew to conditionals: `fold-if` reduces `(if c t f)` when `c` folds to a constant by BECOMING
   the taken branch and DROPPING the other, so a trap/effect in the untaken branch never occurs — correct because a
