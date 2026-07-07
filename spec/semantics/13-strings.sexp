@@ -303,6 +303,122 @@
              (def (main) (f true))))
   (output  (: 5 Int64)))
 
+; --- A string flows as a genuine RUNTIME value: a fn parameter, a return, a sum payload -----------
+; The cases above CONSUME a string in an operation whose result is a scalar (a length), so the string
+; itself never crosses a function boundary as a value. These pin the string flowing as a first-class
+; runtime value — passed to a function, returned from one, carried in a sum variant, compared for
+; equality, concatenated — the operations a program that dispatches on names and threads a symbol
+; table requires (collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values; the string
+; analogue of the "Bytes as a RUNTIME value" cases in 10-bytes.sexp). A string literal reaching one of
+; these positions is a runtime value (a UTF-8 leaf), not only a compile-time constant; the compiler
+; materializes it on the value heap. `main` here yields a scalar so the observable stays a plain value.
+
+(case "a string passed to a function as a runtime argument is measured by its byte length"
+  (doc    "`(len2 \"hello\")` passes the string literal as a genuine runtime argument to `len2`, whose
+           body takes its byte length. `String.byte-len` of a runtime string parameter is 5 — the UTF-8
+           byte count. Pins that a string flows across a function boundary as a first-class value, not
+           only as a folded constant (the front end passes a form's head string to a classifier this way).")
+  (input   (module m
+             (def (len2 s) (String.byte-len s))
+             (def (main)   (len2 "hello"))))
+  (output  (: 5 Int64)))
+
+(case "a runtime string equality selects a branch by comparing a parameter to a literal"
+  (doc    "`(if (= s \"def\") 1 0)` compares a runtime string parameter `s` against a literal — the
+           name-dispatch primitive a compiler uses to recognize a form's head. Equality is structural
+           over the UTF-8 bytes: `(pick \"def\")` is 1 (bytes match), `(pick \"x\")` is 0 (length
+           differs). Their sum is 1. Pins runtime string `=` as a byte comparison, not a handle identity.")
+  (input   (module m
+             (def (pick s) (if (= s "def") 1 0))
+             (def (main)   (+ (pick "def") (pick "x")))))
+  (output  (: 1 Int64)))
+
+(case "a multi-way string-head dispatch resolves an operator name to its operation"
+  (doc    "The compiler's front-rung idiom end-to-end: a form's head is a STRING, and the resolver maps
+           it to an operation by a chain of runtime string comparisons — `(= h \"+\")`, `(= h \"-\")`,
+           `(= h \"*\")` — selecting the arithmetic to perform on the operands. This is the concrete
+           `head-prim`/`resolve` shape a name-based front end takes: the reader hands the compiler a head
+           NAME, and resolution turns that name into a code (here, directly into the operation) before
+           anything downstream runs — the 'resolve names to codes before selecting instructions' step
+           (compiler-pipeline.md §Representation) made concrete over runtime strings. `(eval-head \"+\"
+           20 22)` resolves `\"+\"` and computes 42. Unlike the single-comparison case above, this pins a
+           MULTI-way dispatch — several head names, each selecting a distinct operation — which is what a
+           real head resolver is; the falls-through default (an unrecognized head) yields 0 here, the
+           value-level stand-in for the front end's decline on an unknown head.")
+  (input   (module m
+             (def (eval-head h a b)
+               (if (= h "+") (+ a b)
+               (if (= h "-") (- a b)
+               (if (= h "*") (* a b) 0))))
+             (def (main) (eval-head "+" 20 22))))
+  (output  (: 42 Int64)))
+
+(case "a string carried as a sum-variant payload is bound and measured at run time"
+  (doc    "A `Node` variant carries a String payload built at run time; a `match` binds it and takes its
+           byte length. `(weigh (Node.NSym \"hello\"))` is 5 (the bound string's byte length) and
+           `(weigh (Node.NInt 3))` is 3, summing to 8. Pins a string as a runtime sum payload — the
+           shape of a symbol-carrying AST node the compiler walks — bound by a match arm and consumed.")
+  (input   (module m
+             (type Node (NInt Int64 | NSym String))
+             (def (weigh n) (match n ((Node.NInt i) i) ((Node.NSym s) (String.byte-len s))))
+             (def (main)    (+ (weigh (Node.NSym "hello")) (weigh (Node.NInt 3))))))
+  (output  (: 8 Int64)))
+
+(case "concatenating two runtime strings and measuring the result"
+  (doc    "`(String.concat a b)` of two runtime string parameters yields a runtime string whose byte
+           length is the sum of the operands' — `(join \"foo\" \"bar\")` is \"foobar\", byte length 6.
+           Pins runtime string concatenation (how a compiler assembles a name or a diagnostic from
+           fragments), agreeing with `(+ (byte-len a) (byte-len b))` when neither operand is empty.")
+  (input   (module m
+             (def (join a b) (String.byte-len (String.concat a b)))
+             (def (main)     (join "foo" "bar"))))
+  (output  (: 6 Int64)))
+
+(case "the byte length of a runtime string equals the length of its encoded bytes"
+  (doc    "The runtime companion of the const `byte-len`/`to-bytes` agreement: for a runtime string `s`,
+           `(String.byte-len s)` MUST equal `(Bytes.len (String.to-bytes s))` — the direct byte count and
+           the encode-then-measure path are one number. `\"café\"` has byte length 5 (é is two bytes), so
+           this is true. Pins that a runtime String IS its UTF-8 bytes (String.to-bytes is the identity on
+           the underlying representation), the invariant the Bytes-backed String realization rests on.")
+  (input   (module m
+             (def (agree s) (= (String.byte-len s) (Bytes.len (String.to-bytes s))))
+             (def (main)    (agree "café"))))
+  (output  (: true Bool)))
+
+(case "the scalar length of a runtime multi-byte string counts scalars, not bytes"
+  (doc    "`String.scalar-len` of a runtime string counts Unicode scalar values, not UTF-8 bytes:
+           `(slen \"café\")` is 4 (c, a, f, é) even though the byte length is 5. Pins that scalar length
+           on a runtime value agrees with the const `chars().count()` — the runtime counts the UTF-8
+           leading bytes (those not of the form 10xxxxxx), which for well-formed UTF-8 is the scalar
+           count (collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length).")
+  (input   (module m
+             (def (slen s) (String.scalar-len s))
+             (def (main)   (slen "café"))))
+  (output  (: 4 Int64)))
+
+(case "a runtime string returned across the run boundary renders as its quoted text"
+  (doc    "A string BUILT at run time and returned as `main`'s value crosses the boundary as its proper
+           String type and renders as the quoted canonical text — `(join \"hel\" \"lo\")` is
+           \"hello\". This exercises the compiler-emitted, type-directed string renderer (the analogue
+           of the `b\"…\"` Bytes renderer): a runtime String is walked byte-by-byte and quoted/escaped,
+           byte-identical to the const `\"…\"` form. Pins RETURNING a runtime string (distinct from the
+           cases above, which consume one to a scalar) — the compound-value output ABI for strings.")
+  (input   (module m
+             (def (join a b) (String.concat a b))
+             (def (main)     (join "hel" "lo"))))
+  (output  (: "hello" String)))
+
+(case "a returned runtime string with a multi-byte scalar renders the scalar verbatim"
+  (doc    "The rendered form of a runtime string passes a printable Unicode scalar through verbatim, not
+           as an escape — `(id \"café\")` renders \"café\" (the é is its raw two-byte UTF-8, matching the
+           const path's `{:?}`, which prints printable Unicode literally). Pins that the emitted string
+           renderer's escaping agrees with the const renderer on multi-byte scalars, so a rendered string
+           reads back to the same value.")
+  (input   (module m
+             (def (id s) (if true s s))
+             (def (main) (id "café"))))
+  (output  (: "café" String)))
+
 ; --- Decoding bytes to a string is TOTAL, never trapping ---------------------------------------
 ; collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping. Cadenza's String is
 ; guaranteed-well-formed (a sequence of Unicode scalar values, never invalid UTF-8), so turning a Bytes
@@ -381,3 +497,122 @@
   (input  (match (Bytes.of (list 3 102 111 111))
             ((bin (u8 n) (utf8 name n)) name)))
   (error  CDZ0210))
+
+; --- Char — a single validated Unicode scalar, the element type of a string's scalar sequence ----
+; collections-and-text.md #A Char Is A Single Unicode Scalar Value: a `Char` is one Unicode scalar
+; (a code point in U+0000..=U+10FFFF EXCLUDING the surrogate range U+D800..=U+DFFF), the element type
+; of the sequence a String already is (#A String Is A Sequence Of Unicode Scalar Values). The
+; type-mapping table already carried a `char` boundary row with no surface producer; `Char` is that
+; producer (spec/learnings/2026-07-05-char-is-a-validated-unicode-scalar-the-boundary-already-
+; promises.md). A char literal is written `#\<scalar>` (options/char-literal-syntax/hash-scalar-
+; literal.md); `Char` is a prelude record, so `Char.to-int` is `(. Char to-int)` and `Char.from-int`
+; is `(. Char from-int)`, and `String.scalar-at` reads one scalar of a string.
+;
+; Tagged `(needs chars)` — a FRESH capability the seed does not realize (NOT the realized
+; `collections`, which would make the seed RUN these and reject the unbound `Char`/`String.scalar-at`
+; names with a coded diagnostic — a gate FAIL — rather than skip; the same reason `symbols` uses its
+; own tag). A later generation realizes scalar access and the `Char` value form; until then the seed's
+; behavior gate SKIPS these — they pin the contract the realization must meet, not seed declines.
+
+(case "reading a string's scalar in bounds yields Some of the char"
+  (doc    "Witnesses collections-and-text.md #A String's Scalars Are Addressable: `(String.scalar-at
+           \"hello\" 1)` reads the scalar at scalar-position 1 — the char `#\\e` — wrapped in Some (an
+           Option<Char>, the fallible read analogous to List.at and String.at). This is the operation
+           that was missing: String.scalar-len counted scalars but nothing returned one.")
+  (needs  chars)
+  (input  (String.scalar-at "hello" 1))
+  (output (: (Some #\e) (Option Char))))
+
+(case "reading a string's scalar out of bounds yields None"
+  (doc    "The out-of-bounds companion: `(String.scalar-at \"hi\" 5)` reads past the end of a two-scalar
+           string, so it yields None rather than trapping (collections-and-text.md #A String's Scalars
+           Are Addressable — reading is total, and #Indexing And Lookup Are Fallible, Not Trapping). The
+           Char analogue of the out-of-range String.at / List.at Nones.")
+  (needs  chars)
+  (input  (String.scalar-at "hi" 5))
+  (output (: (None unit) (Option Char))))
+
+(case "reading a string's scalar addresses scalar values, not bytes"
+  (doc    "`(String.scalar-at \"café\" 3)` is `(Some #\\é)`: the string is four scalar values (c, a, f,
+           é) and scalar-position 3 is é — even though é occupies bytes 3–4 of the five-byte UTF-8
+           encoding, so a byte offset would land mid-scalar. Pins that scalar access addresses by scalar
+           value (collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), returning a
+           Char — the Char companion of the scalar-indexed String.at case above.")
+  (needs  chars)
+  (input  (String.scalar-at "café" 3))
+  (output (: (Some #\é) (Option Char))))
+
+(case "converting a char to its integer scalar value is total"
+  (doc    "Witnesses collections-and-text.md #A Char Converts To And From An Integer Totally:
+           `(Char.to-int #\\a)` is 97 — the Unicode scalar value (code point) of the char `a`. Total:
+           every char is a scalar value that has an integer code point, so to-int never fails.")
+  (needs  chars)
+  (input  (Char.to-int #\a))
+  (output (: 97 Int64)))
+
+(case "converting a scalar-valued integer to a char yields Some"
+  (doc    "`(Char.from-int 97)` is `(Some #\\a)` — 97 is the scalar value of `a`, a valid Unicode scalar,
+           so the conversion succeeds (collections-and-text.md #A Char Converts To And From An Integer
+           Totally). from-int is FALLIBLE (returns an Option) because not every integer is a scalar; this
+           is the success arm.")
+  (needs  chars)
+  (input  (Char.from-int 97))
+  (output (: (Some #\a) (Option Char))))
+
+(case "converting a surrogate code point to a char yields None"
+  (doc    "`(Char.from-int 55296)` — 55296 is U+D800, a HIGH SURROGATE, which is NOT a Unicode scalar
+           value — so from-int yields None rather than producing an invalid char (collections-and-text.md
+           #A Char Converts To And From An Integer Totally, and #A Char Is A Single Unicode Scalar Value:
+           surrogates are excluded). Pins that the surrogate range is rejected as data (None), never a
+           trap and never an ill-formed Char. This is why from-int must be fallible.")
+  (needs  chars)
+  (input  (Char.from-int 55296))
+  (output (: (None unit) (Option Char))))
+
+(case "converting an out-of-range integer to a char yields None"
+  (doc    "`(Char.from-int 1114112)` — 1114112 is U+110000, one past the maximum scalar U+10FFFF — so it
+           is not a scalar value and from-int yields None (collections-and-text.md #A Char Converts To
+           And From An Integer Totally). The high-end companion of the surrogate case; both are handled
+           as data, not traps.")
+  (needs  chars)
+  (input  (Char.from-int 1114112))
+  (output (: (None unit) (Option Char))))
+
+(case "char to-int and from-int round-trip through the scalar value"
+  (doc    "For a scalar value v, `(Char.from-int v)` is `(Some c)` and `(Char.to-int c)` is v again:
+           `(Char.to-int #\\a)` = 97 and `(Char.from-int 97)` = `(Some #\\a)`, so matching the Some arm
+           and taking to-int returns 97. Pins from-int as the inverse of to-int on a valid scalar
+           (collections-and-text.md #A Char Converts To And From An Integer Totally). MUST be true.")
+  (needs  chars)
+  (input  (match (Char.from-int 97)
+            ((Some c) (= (Char.to-int c) 97))
+            ((None _) false)))
+  (output (: true Bool)))
+
+(case "a char literal naming a surrogate is a reader error"
+  (doc    "`#\\u+D800` names U+D800, a high surrogate — NOT a Unicode scalar value — so the char literal
+           denotes no valid scalar and the reader rejects it (CDZ0002, collections-and-text.md #A Char Is
+           A Single Unicode Scalar Value; options/char-literal-syntax/). The static companion of the
+           dynamic `(Char.from-int 55296)` → None: a literal cannot spell a non-scalar, so the surrogate
+           case is caught at read time rather than producing an invalid Char.")
+  (needs  chars)
+  (input  #\u+D800)
+  (error  CDZ0002))
+
+(case "a char order agrees with its scalar value"
+  (doc    "Witnesses collections-and-text.md #A Char Is A Single Unicode Scalar Value (2nd sentence: a
+           char's ordering is the numeric order of its scalar value): `(< #\\a #\\b)` is true because
+           the scalar value of `a` (97) is less than that of `b` (98). Pins that a Char order and the
+           string order defined on scalar values agree by construction — a Char is comparable and its
+           order is its scalar order.")
+  (needs  chars)
+  (input  (< #\a #\b))
+  (output (: true Bool)))
+
+(case "two equal chars compare equal"
+  (doc    "`(= #\\a #\\a)` is true — a char's value is its scalar, and two chars are equal exactly when
+           their scalar values are equal. Pins Char equality as scalar equality, the equality companion
+           of the Char order case.")
+  (needs  chars)
+  (input  (= #\a #\a))
+  (output (: true Bool)))

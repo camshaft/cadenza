@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Runtime strings landed — the keystone unblocked, and the front rung now resolves a name to a code](./2026-07-07-runtime-strings-unblock-the-name-based-front-rung.md)
+  — runtime `String`, the Tier-0 keystone blocker of a self-hosting front end, landed in the seed: string fn
+  parameters, runtime string `=` dispatch, string return across a call, and string sum-payloads all compile now
+  (the SEED-GAPS Tier-0 probes that all declined). The spike rewrote its front rung to resolve a form's head by
+  NAME — `main` compiles `(+ 20 22)` from a STRING-headed node `(NPrim (tuple "+" …))`, `resolve` maps `"+"` to a
+  typed `Prim` via `head-prim`, no string survives into Core (looked up once at the resolve seam), and an unknown
+  head → `PUnknown` → DECLINE (reject-don't-miscompile at the surface). "Resolve names to codes" is now the REAL
+  front rung, not an integer-opcode stand-in. Sidesteps the still-open nested-binder blocker (backlog #1) via a
+  FLAT node payload. Pinned a `13-strings.sexp` multi-way head-dispatch case (PASS); the Tier-0 probe cases a
+  sibling pinned are all green. Front end's critical path now: nested-payload decode (#1) + the CBOR reader.
 - [The compiler emits a multi-function module with a real call — and routes around the front-rung blocker to prove the backend](./2026-07-06-the-compiler-emits-a-multi-function-module-with-a-real-call.md)
   — milestone: `compiler.cdz` now compiles to a valid component that is MORE THAN ONE FUNCTION and threads a real
   `call` with a parameter (`main = dbl(21)`, `dbl x = x+x` → 42 via `call 1`, not a fold). New: a multi-function
