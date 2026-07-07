@@ -24,7 +24,11 @@ generations of Cadenza taught these lessons the expensive way; the specification
   native). No corpus case (seed component-ABI defect). Lesson: a handoff doc's open-bug characterization is an
   aggregate to re-probe — "fails at every size" became "fixed-output works; real compiler fails for N ≤ 23," a
   different and actionable shape. The self-hosting loop is functionally CLOSED; the last blocker to a byte-level
-  gate is this one alignment bug, not any compiler capability.
+  gate is this one alignment bug, not any compiler capability. **Follow-up next cycle:** the "value threshold at
+  24" is itself a proxy — the real trigger is INPUT-LENGTH PARITY (odd input AST byte-length → misaligned
+  retarea; 24 is the CBOR 1→2-byte int boundary that flips input length odd→even). Fix = round the retarea up to
+  4/8 alignment independent of input length. Each re-probe moved the root cause one step closer: wrapper → value
+  → CBOR-size boundary → input-length parity → retarea alignment round-up.
 - [The return-kind table is a monotone fixpoint, and it propagates a Bool result to any call depth — the capability gap 3k unblocked](./2026-07-07-the-return-kind-table-is-a-monotone-fixpoint-and-it-propagates-bool-to-any-depth.md)
   — the compiler needs each function's result kind (i32/Bool vs i64/Int) to frame its wasm signatures and calls.
   A single-pass table handles a directly-Bool-bodied helper, but a TRANSITIVE chain (`a` returns `b`'s result,

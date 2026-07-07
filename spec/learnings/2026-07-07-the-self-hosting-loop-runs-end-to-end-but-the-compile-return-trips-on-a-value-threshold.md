@@ -60,3 +60,41 @@ compile-return path entirely). The strategic status is worth stating plainly: **
 functionally closed — a Cadenza-authored compiler compiles a program to a correct component through the real
 seam — and the last thing between here and a byte-level self-hosting gate is one seed-side alignment bug in the
 return marshalling, not any missing compiler capability.**
+
+---
+
+**Follow-up (2026-07-07, next cycle) — the "value threshold at 24" is a PROXY; the real trigger is INPUT-LENGTH
+PARITY.** Continuing to bisect gap 3n (the seed rebuilt again but did not touch it — the N ≤ 23 fails / N ≥ 24
+succeeds threshold reproduced exactly), the value threshold turned out to be a red herring hiding a much sharper
+root cause. Measuring the **input** program's canonical AST byte length (via `Ast.encode`) and correlating with
+pass/fail across varied programs gave a *perfect* correlation with **parity of the input byte-list length**:
+
+| input | input-AST bytes | parity | compile-run |
+|---|---|---|---|
+| `(main) 5` | 31 | odd | FAIL |
+| `(main) 23` | 31 | odd | FAIL |
+| `(main) 24` | 32 | even | OK |
+| `(main) 100` | 32 | even | OK |
+| `(main) 1000` | 33 | odd | FAIL |
+| `(main) (+ 20 2)` | 36 | even | OK |
+| `(main) (+ 200 2)` | 37 | odd | FAIL |
+| `(main) true` | 31 | odd | FAIL |
+| `(main) (< 3 5)` | 36 | even | OK |
+| `(id 5)(id x)=x` | 48 | even | OK |
+
+Every odd input length → *"not aligned"*; every even length → OK, with no exception across bare ints, compound
+expressions, Bools, and multi-def modules. The "value 24" boundary was a proxy because **24 is the CBOR
+integer boundary** where a bare int's minor encoding grows from one byte (`0x00`–`0x17` for 0–23) to two
+(`0x18 <byte>` for 24), which flips the input AST length from 31 (odd) to 32 (even). So the bug is: the seed's
+`compile` wrapper writes the input `list<u8>` into linear memory, and when the **input length is odd**, the
+byte-buffer's end offset leaves the subsequently-placed return pointer (retarea) 2-byte-but-not-4/8-aligned. The
+fix is to **round the input-buffer's end (or the retarea's start) up to a 4/8 boundary before placing the
+return area**, independent of input length — a one-line alignment padding in the marshalling wrapper. This is
+dramatically more actionable than "value-dependent" or even "input-length-dependent": it is specifically
+input-length *parity*, pointing at a missing alignment round-up between the input buffer and the retarea. The
+minimal reproducer is now any odd-length input, cleanest as `(module m (def (main) 5))` (31 bytes) fails vs
+`(module m (def (main) 24))` (32 bytes) succeeds. **Lesson compounded:** last cycle corrected the doc's "fails
+at every size" to "value threshold at 24"; this cycle corrected *my own* "value threshold" to "input-length
+parity" — the same discipline (re-probe the characterization, don't inherit it) applied to my own prior
+finding, and each re-probe moved the root cause one concrete step closer to the actual defect (wrapper → value
+→ CBOR-size boundary → input-length parity → retarea alignment round-up).
