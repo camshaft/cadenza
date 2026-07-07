@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The invalid-component violation is fixed — completing the withheld-case cycle — and the handoff doc lags the seed](./2026-07-07-the-invalid-component-violation-fixed-and-the-handoff-lags-the-seed.md)
+  — the `let`-free `tuple.N`-on-a-named-def violation (item 15, emitted an INVALID component) is FIXED, thoroughly
+  (whole-program result 40, tuple.1 → 5, consumed → 140, compound element matched → 7). Completes a clean cycle:
+  invalid → WITHHELD (couldn't pin as corpus without FAILing the gate) → fixed → pinned GREEN. That's the right
+  lifecycle for a decline-don't-miscompile violation — never sits as a FAIL, never lost (backlog carries it until
+  the fix). Second-order lesson: the spike's handoff docs LAG the seed — SEED-GAPS still says this case "still
+  produces a VALID component that TRAPS" (wrong twice: it runs now, and it was INVALID not valid-but-traps), the
+  2nd stale claim in 2 cycles (the 1st: `compiler.cdz` calling live `name-eq` dead code). So the loop PROBES the
+  running seed, never trusts a fast-moving handoff's status — a doc is a lead, the corpus (which executes) is the
+  oracle. Pinned `05-compound-types.sexp` "a scalar element is projected directly from a function's runtime tuple
+  result" (→ 40, PASS); closes #15.
 - [The recursive-Bool fix unblocked the reader's name matcher — and the full surface language composes in one program](./2026-07-07-the-name-matcher-unblocks-and-the-surface-language-composes.md)
   — the recursive-Bool return-kind race (item 14) is FIXED: its corpus case flipped todo→PASS with no oracle
   change, and the reader's `name-eq` (byte-by-byte prelude-symbol comparator, the `(if (= a b) (recurse) false)`

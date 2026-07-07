@@ -140,6 +140,71 @@
             (def (main) (f 0))))
   (output (: 1 Int64)))
 
+; --- Positional access on a RUNTIME tuple bound by `let` -------------------------------------------
+; A tuple returned from a function and BOUND BY `let` is a genuine runtime value (a value-heap
+; positional array), not a compile-time structure. `tuple.N` on such a bound name reads element N from
+; the heap array (`arr-get`), unboxing a scalar element to its kind and keeping a compound element as a
+; handle. This is the shape a recursive-descent decoder takes — threading a `(node, next-index)` pair
+; through `let` — so it must both project a scalar element and yield a compound element a `match`
+; consumes. (Without the runtime path a `tuple.N` on a let-bound runtime tuple emitted an unreachable
+; that trapped; these pin the arr-get lowering.)
+
+(case "a scalar element is projected from a let-bound runtime tuple"
+  (doc    "`mk` returns a runtime tuple `(tuple (NLit 5) 9)` — a genuine value-heap value because its
+           first element is a runtime sum. Bound by `let`, `tuple.1` reads its second element, the Int64
+           `9`. Pins that positional access on a materialized runtime tuple reads and unboxes a scalar
+           element (`arr-get` + `get-int`), the index half of a decoder threading `(node, index)`.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Node (NLit Int64 | NAdd (Tuple Node Node)))
+            (def (mk) (tuple (NLit 5) 9))
+            (def (main) (let ((l (mk))) (tuple.1 l)))))
+  (output (: 9 Int64)))
+
+(case "a compound element projected from a let-bound runtime tuple is matched"
+  (doc    "The companion where the projected element is itself a runtime compound: `tuple.0` of the
+           let-bound tuple is the `Node` sum `(NLit 5)`, which a `match` then consumes to its scalar
+           payload 5. Pins that a runtime `tuple.N` yields a heap element a `match` can dispatch on —
+           the node half of a decoder's `(node, index)` pair (the exact shape a `bytes → AST` reader
+           threads through `let`).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Node (NLit Int64 | NAdd (Tuple Node Node)))
+            (def (mk) (tuple (NLit 5) 9))
+            (def (ev e) (match e ((Node.NLit v) v) ((Node.NAdd (tuple a b)) (+ (ev a) (ev b)))))
+            (def (main) (let ((l (mk))) (ev (tuple.0 l))))))
+  (output (: 5 Int64)))
+
+(case "a scalar element is projected directly from a function's runtime tuple result"
+  (doc    "The `let`-free companion of the projected-element cases above: `tuple.N` applied DIRECTLY to a
+           NAMED-def call that returns a runtime tuple, with no intervening `let`. `(dec 4)` returns
+           `(tuple 40 5)`; `(tuple.0 (dec 4))` projects 40. Pins that positional access on a runtime
+           tuple does not depend on the tuple first being `let`-bound — the `let`-bound cases above
+           compile, and so must the direct projection (the shape a reader takes to read just one half of
+           a returned pair). Distinct from the inline-tuple case `(tuple.1 (tuple n (+ n 1)))` (a tuple
+           built right at the projection) and the lambda case `(tuple.0 ((fn …) …))` (compile-time
+           reduced): here the tuple comes from a NAMED def, which the compiler does not reduce, so the
+           projection must recover the operand's shape at the projection site — earlier this emitted an
+           invalid component (a decline-don't-miscompile violation), now fixed.")
+  (input  (module m
+            (def (dec i) (tuple (* i 10) (+ i 1)))
+            (def (main) (tuple.0 (dec 4)))))
+  (output (: 40 Int64)))
+
+(case "a scalar element is projected DIRECTLY from a named function's runtime tuple result"
+  (doc    "The `let`-free companion: `tuple.0` applied DIRECTLY to a named-def function's runtime-tuple
+           result — `(tuple.0 (dec 4))` with no intervening `let` — projects the scalar element. `dec`
+           builds a runtime tuple `(tuple (* n 10) 9)`; element 0 is `(* 4 10)` = 40. Pins that the
+           projection recovers the operand's shape at the PROJECTION site, not only at a `let`-binding
+           site, so a named-def result is projectable like a `let`-bound one. (This directly built a
+           runtime tuple constructor into an import-free scalar module — an INVALID component — before
+           the runtime constructor learned to decline on the scalar path and defer to the runtime pass:
+           decline-don't-miscompile, then compile.)")
+  (input  (module m
+            (def (dec n) (tuple (* n 10) 9))
+            (def (main) (tuple.0 (dec 4)))))
+  (output (: 40 Int64)))
+
 (case "two structural values of the same shape are equal"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
            sentence) at the value level: two structural records of the same shape and contents are
