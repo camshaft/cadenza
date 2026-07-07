@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The whole-module reader is wired — the compiler reads a multi-def module's canonical AST and compiles it](./2026-07-07-the-whole-module-reader-is-wired-module-bytes-to-component.md)
+  — the reader went from a single expression to a WHOLE MODULE: `compiler.cdz`'s `main` now compiles `module
+  bytes → component`. The CBOR of `(module m (def (main) 42))` → read-module → resolve-module → fold → lower →
+  serialize → frame → valid 89-byte component. New machinery (`read-module`/`read-defs`) reads CBOR array LENGTHS
+  as structural counts — def-count = root array length − 2, param-count = signature length − 1 — the count half of
+  `bytes → AST` (vs the head-index-dispatch scalar half). Added no new primitive: it's `cbor-arg` + `skip-elems` +
+  `read-node`, proven pieces assembled at one more level. A canonical-AST reader is fundamentally two things:
+  dispatch on a decoded scalar, and iterate by a decoded count — both now built + gate-witnessed. Caveat: still
+  architecture at small scale (compiler-compiles-compiler needs TCO for deep sources). Pinned `10-bytes.sexp` "a
+  CBOR reader walks a variable-length array using its decoded length as the element count" (`[10 20 30 40]` → 100).
 - [The workaround was the bug — correcting the "scale limit" diagnosis of the final self-host blocker](./2026-07-07-the-workaround-was-the-bug-correcting-the-scale-limit-diagnosis.md)
   — CORRECTION: two cycles ago I diagnosed Tier 2f ("resolve on a runtime Node can't box") as a seed SCALE limit
   (every tractable resolver passed, only the full 18-variant failed → "no minimal witness"). WRONG. The real

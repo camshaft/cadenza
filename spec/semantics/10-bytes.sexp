@@ -596,6 +596,38 @@
             (def (main) (ev (Bytes.of (list 0x83 0x00 0x01 0x83 0x01 0x02 0x0B)) 0))))
   (output (: 23 Int64)))
 
+(case "a CBOR reader walks a variable-length array using its decoded length as the element count"
+  (doc    "The reader's structural-COUNT primitive, distinct from head-index dispatch: a CBOR array's
+           additional-info IS its element count, so `cbor-arg` on the array head yields the length, and
+           that length drives a walk over the array's elements (`elem k` = `skip-elems` from the first
+           element). This is how the whole-module reader finds how many `def`s a module has (the root
+           array's length minus the head and name) and how many parameters each `def` takes (its
+           signature array's length minus one) — the array length read AS DATA, not a fixed arity.
+           Against `84 0A 14 18 1E 18 28` — a CBOR array of 4 whose elements are 10, 20, 30, 40 (the last
+           two one-byte-argument encoded, `18 1E` and `18 28`) — `sum-array` reads the length 4 from the
+           head, then sums the 4 elements located by `elem`, yielding 10+20+30+40 = 100. Pins that a
+           reader drives a loop by an array length decoded from the input (the shape of reading a
+           module's def list or a call's argument list), the count half of `bytes → AST` that the
+           head-index-dispatch case complements.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (cbor-major b i)    (>> (byte-at b i) 5))
+            (def (cbor-info b i)     (& (byte-at b i) 31))
+            (def (cbor-arg b i)      (if (< (cbor-info b i) 24) (cbor-info b i) (byte-at b (+ i 1))))
+            (def (cbor-head-len b i) (if (< (cbor-info b i) 24) 1 2))
+            (def (skip-elems b i k)  (if (< k 1) i (skip-elems b (cbor-skip b i) (- k 1))))
+            (def (cbor-skip b i)
+              (if (= (cbor-major b i) 4)
+                  (skip-elems b (+ i (cbor-head-len b i)) (cbor-arg b i))
+                  (+ i (cbor-head-len b i))))
+            (def (elem0 b i)     (+ i (cbor-head-len b i)))
+            (def (elem b i k)    (skip-elems b (elem0 b i) k))
+            (def (sum-elems b i k n) (if (< k n) (+ (cbor-arg b (elem b i k)) (sum-elems b i (+ k 1) n)) 0))
+            (def (sum-array b i) (sum-elems b i 0 (cbor-arg b i)))
+            (def (main) (sum-array (Bytes.of (list 0x84 0x0A 0x14 0x18 0x1E 0x18 0x28)) 0))))
+  (output (: 100 Int64)))
+
 ; --- The `b"…"` literal reads to a byte sequence, and rendering round-trips -----------------------
 ; `b"…"` is reader sugar for `(Bytes.of (list …))`, so a byte-string literal and the explicit form
 ; denote ONE value: they are equal. These cases pin the reader equivalence in both directions
