@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The reader realizes the prelude-index name-resolution contract — head names resolve by byte-comparing prelude symbols, no runtime String](./2026-07-07-the-reader-realizes-the-prelude-index-name-resolution-contract.md)
+  — the reader's name-resolution seam directly realizes `ast-encoding.md` (a node names its kind by a prelude
+  INDEX, not inline; the prelude lists the distinct symbols). `prelude-entry k` locates the Nth symbol,
+  `name-eq` byte-compares its payload against an operator name (`b"+"`) — LENGTH first, then bytes, no runtime
+  String. So "resolve names to codes" is a property of the FORMAT (the code is already the index), not a pass the
+  reader implements — "the input format is an ally," fully realized on runtime bytes. Load-bearing detail:
+  length-BEFORE-bytes, because operator names aren't prefix-free (`+`/`++`, `<`/`<=`); a byte loop stopping at the
+  shorter length mis-resolves `"++"` as `+`. Pinned `10-bytes.sexp` "resolving a head against a prelude symbol
+  rejects a length-mismatched prefix" (`"++"` vs `b"+"` → 0, PASS). (The symbol-table→String materialization is
+  the separate in-flight from-bytes work; head resolution doesn't need it.)
 - [`String.from-bytes` validates in the runtime — a String is a UTF-8 Bytes leaf, so decode is a check, not a copy](./2026-07-07-string-from-bytes-validates-in-the-runtime-a-string-is-a-utf8-bytes-leaf.md)
   — the reader's symbol-table decode needs runtime `String.from-bytes` (backlog #12). In-flight fix (WIT append +
   codegen, mid-landing — binary NOT yet rebuilt): a runtime String IS the same Bytes-backed UTF-8 leaf, so

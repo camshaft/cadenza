@@ -555,6 +555,36 @@
                            (dec (Bytes.of (list 0x0A)) 0))))))
   (output (: 1 Int64)))
 
+(case "resolving a head against a prelude symbol rejects a length-mismatched prefix"
+  (doc    "The reader's NAME-resolution step (ast-encoding.md: a node names its kind by a prelude INDEX;
+           the reader byte-compares the indexed prelude symbol against a known operator name — no runtime
+           String needed, just Bytes). The comparison must check LENGTH first, then bytes: comparing the
+           prelude text symbol `\"++\"` (CBOR text-of-2, `62 2B 2B`) against the operator name `b\"+\"`
+           (length 1) must be FALSE — a byte-loop without the length guard would see the first byte match
+           (`+` = `+`) and wrongly resolve `\"++\"` to `+`. `name-eq` returns 1 only on an exact
+           length-and-bytes match; here the lengths differ (2 vs 1) so it is 0. Pins the length-prefixed
+           symbol compare a self-hosted reader uses to turn a head index into an operator identity — a
+           prefix must not be mistaken for the whole name, or the reader would mis-resolve every operator
+           whose name is a prefix of another. The positive companion (exact match → 1) is the head
+           resolution the whole-module compile path already exercises end-to-end.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (cbor-info b i)     (& (byte-at b i) 31))
+            (def (cbor-arg b i)      (if (< (cbor-info b i) 24) (cbor-info b i) (byte-at b (+ i 1))))
+            (def (cbor-head-len b i) (if (< (cbor-info b i) 24) 1 2))
+            (def (payload-off b i)   (+ i (cbor-head-len b i)))
+            (def (entry-len b e)     (cbor-arg b e))
+            (def (entry-byte b e j)  (byte-at b (+ (payload-off b e) j)))
+            (def (lit-byte lit j)    (match (Bytes.at lit j) ((Some x) x) ((None _) 0)))
+            (def (neq-go b e lit j n)
+              (if (< j n)
+                  (if (= (entry-byte b e j) (lit-byte lit j)) (neq-go b e lit (+ j 1) n) false)
+                  true))
+            (def (name-eq b e lit n) (if (= (entry-len b e) n) (neq-go b e lit 0 n) false))
+            (def (main) (if (name-eq (Bytes.of (list 0x62 0x2B 0x2B)) 0 b"+" 1) 1 0))))
+  (output (: 0 Int64)))
+
 (case "a CBOR skip walks past a whole nested item to the next offset"
   (doc    "The reader's structural NAVIGATION primitive, the companion of the head-decode above: given
            the offset of a CBOR item, `cbor-skip` returns the offset just past that entire item —
