@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The final self-host blocker is fixed — the reader can now join the pipeline, and the scale-limit case became pinnable](./2026-07-07-the-final-self-host-blocker-is-fixed-the-reader-can-join-the-pipeline.md)
+  — Tier 2f (the "cannot box" decline feeding a runtime `Node` to the real `resolve`) is FIXED: the full
+  18-variant resolve on a runtime-built Node, scalar-consumed, now runs (verified → 1). This was THE last hard
+  blocker on `bytes → bytes` self-hosting — the reader (`read-node`, already built) can now join
+  `read → resolve → fold → lower → serialize → frame`. EVERY self-host seed blocker (Tier 00/0/2b/2c/2d/2e/3a/2f)
+  is now cleared. Flip side of last cycle's rule: a scale limit resists a minimal case WHILE broken (every
+  reduction passes), but once FIXED a representative case at natural size is a fine guard. Lifecycle: broken →
+  bisect+backlog; fixed → pin a representative case. Pinned `05-compound-types.sexp` "a recursive resolver
+  transforms one runtime sum tree into another, then consumes it" (Node→Core→scalar, cross-sum-type, → 42, PASS);
+  closes #16. Remaining: WIRING the join in compiler.cdz + non-blocking #12/#13. (Handoff docs still lag — 3rd/4th
+  stale claims this session; the probe confirmed the fix, not the doc.)
 - [The final self-host blocker is a scale limit, not a shape gap — and a scale limit resists a minimal corpus case](./2026-07-07-the-final-self-host-blocker-is-a-scale-limit-not-a-shape-gap.md)
   — the reader can now be JOINED to the pipeline, and the join is the last blocker. `read-node : Bytes → Node` is
   verified (`read (quote (+ 1 2))` builds the right Node), but feeding it to the real `resolve : Node → Core`

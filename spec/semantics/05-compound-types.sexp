@@ -626,6 +626,40 @@
                                                  (tuple (Expr.Lit 22) (Expr.Lit 8)))))))))))
   (output (: 34 Int64)))
 
+(case "a recursive resolver transforms one runtime sum tree into another, then consumes it"
+  (doc    "The compiler's reader→pipeline JOIN shape: a recursive function that transforms a runtime-built
+           value of ONE sum type into a value of a DIFFERENT sum type, whose result is then consumed. A
+           `Node` surface tree (head a String, resolved by name) is resolved to a typed `Core` tree —
+           `resolve : Node → Core` maps `NInt→KConst` and dispatches an `NPrim`'s String head to the Core
+           primitive constructor — and `eval : Core → Int64` folds the Core. Both are recursive walks over
+           runtime heap values (the `Node` is built at run time, so `resolve`'s `Core` output is
+           materialized at run time, not folded). `resolve (NPrim \"+\" (NInt 20) (NPrim \"*\" (NInt 2)
+           (NInt 11)))` builds `KAdd(KConst 20, KMul(KConst 2, KConst 11))`; `eval` yields 20 + (2*11) =
+           42. Pins that a Node→Core→scalar transform composes — a runtime sum consumed to build a
+           DIFFERENT runtime sum, which is in turn consumed — the exact shape that joins a self-hosted
+           reader to its resolved-IR pipeline (distinct from the `Expr` self-evaluator above, which stays
+           within one type; here the transform crosses sum types, and the intermediate `Core` is a genuine
+           runtime value the producer materializes and the consumer walks).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Node (NInt Int64 | NPrim (Tuple String Node Node)))
+            (type Core (KConst Int64 | KAdd (Tuple Core Core) | KSub (Tuple Core Core) | KMul (Tuple Core Core)))
+            (def (resolve n) (match n
+                               ((Node.NInt v) (Core.KConst v))
+                               ((Node.NPrim (tuple h a b))
+                                  (if (= h "+") (Core.KAdd (tuple (resolve a) (resolve b)))
+                                  (if (= h "-") (Core.KSub (tuple (resolve a) (resolve b)))
+                                                (Core.KMul (tuple (resolve a) (resolve b))))))))
+            (def (eval c) (match c
+                            ((Core.KConst v) v)
+                            ((Core.KAdd (tuple a b)) (+ (eval a) (eval b)))
+                            ((Core.KSub (tuple a b)) (- (eval a) (eval b)))
+                            ((Core.KMul (tuple a b)) (* (eval a) (eval b)))))
+            (def (main) (eval (resolve (Node.NPrim (tuple "+"
+                                          (Node.NInt 20)
+                                          (Node.NPrim (tuple "*" (Node.NInt 2) (Node.NInt 11))))))))))
+  (output (: 42 Int64)))
+
 (case "a recursive user sum type is built at run time and renders with qualified variant names"
   (doc    "A QUALIFIED-constructor recursive sum type — the linked-list / AST shape a self-hosted
            compiler manipulates — constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))`
