@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Shape inference through `match` unblocks the type-driven emit spine — and prelude variant names must not shadow a program's](./2026-07-07-shape-inference-through-match-unblocks-the-type-driven-emit-spine.md)
+  — two seed fixes jointly unblock the compiler's emit spine (the recursive `lower`/`emit` walk turning an AST
+  node into instruction bytes). (1) `shape_of` now handles `match`: a `match`'s shape is the UNIFIED shape of its
+  arm bodies (as `if` unifies branches), so a `match`-arm-returns-fresh-compound infers directly — the
+  `if`-on-discriminant workaround is retired. (2) a prelude variant name (nullary `Sign.Neg`) no longer shadows a
+  program's same-named UNARY variant (`Expr.Neg Expr`) — nullary detection is now last-writer-wins (arity is the
+  property the check needs; per-type namespacing deferred). Both are the same lesson as type-directed valtype: a
+  tree-walking compiler needs shape/kind/arity to come from the value's TYPE, recovered uniformly. Pinned a
+  `10-bytes.sexp` emit-spine case (3-variant `Expr → Bytes`, opcode per variant, `emit (Add (Lit 1) (Neg (Lit 2)))
+  → b"BB|j"`, PASS); closes SEED-GAPS Tier 3a.
 - [The built-in Option loses its payload kind across a function boundary — the last blocker before the reader](./2026-07-07-the-built-in-option-loses-its-payload-kind-across-a-boundary.md)
   — the reader walks input with `(match (Bytes.at input i) ((Some b) …) (None …))`, and that idiom declines
   "runtime sum match arms differ in kind" once the built-in `Option` crosses a function boundary. Boundary is

@@ -377,6 +377,30 @@
             (def (main) (uleb 100))))
   (output (: b"d" Bytes)))
 
+(case "a recursive emitter dispatches on a sum's variants to build bytes per node"
+  (doc    "The compiler's emit spine as a type-driven tree walk: a recursive `emit : Expr → Bytes`
+           `match`es a three-variant AST and returns a DIFFERENT freshly-built byte fragment per variant,
+           composing its sub-emissions with `Bytes.concat`. `Expr.Lit` emits one opcode byte (0x42, the
+           `i64.const` opcode), `Expr.Neg` emits its operand's bytes then a negate opcode (0x7C), and
+           `Expr.Add` emits both operands then an add opcode (0x6A) — post-order, exactly the wasm stack
+           discipline a real backend follows. `emit (Add (Lit 1) (Neg (Lit 2)))` yields
+           `[42] ++ ([42] ++ [7C]) ++ [6A]` = `b\"BB|j\"`. Distinct from the LEB128 encoder cases above,
+           which recurse on an INTEGER's bits: this recurses on a SUM's structure, and each arm builds a
+           fresh compound whose shape the compiler must infer directly from the arm bodies (their unified
+           `Bytes` shape), not via an `if`-on-discriminant detour. This is the `lower`/`serialize` shape a
+           self-hosted compiler is written in — the exhaustive per-variant byte map that turns a typed IR
+           node into its instruction bytes.")
+  (needs  bytes)
+  (input  (module m
+            (type Expr (Lit Int64 | Neg Expr | Add (Tuple Expr Expr)))
+            (def (emit e)
+              (match e
+                ((Expr.Lit n)           (Bytes.of (list 0x42)))
+                ((Expr.Neg x)           (Bytes.concat (emit x) (Bytes.of (list 0x7C))))
+                ((Expr.Add (tuple a b)) (Bytes.concat (emit a) (Bytes.concat (emit b) (Bytes.of (list 0x6A)))))))
+            (def (main) (emit (Expr.Add (tuple (Expr.Lit 1) (Expr.Neg (Expr.Lit 2))))))))
+  (output (: b"BB|j" Bytes)))
+
 ; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
 ; Slicing and compacting a byte sequence carrying a runtime value are the input-side companions of the
 ; concat cases above: a compiler reading its input bytes takes sub-ranges (`Bytes.slice`) and, having
