@@ -508,6 +508,18 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Verifying the self-hosted compiler needs a `compile`-exporting component — the interim byte-patching harness mis-measures](./2026-07-07-verifying-the-self-hosted-compiler-needs-a-compile-exporting-component.md)
+  — the spike wants to run compiler.cdz over the WHOLE corpus (feed each case's AST bytes, diff its output vs
+  native cdz-rustc). The host has this (`component-check` + the `compiler.wit` `compile: list<u8> →
+  result<list<u8>,…>` world), but it's BLOCKED by seed gap 3l: the seed emits only nullary `run : () → output`,
+  so a `main` that IS `compile : Bytes → Bytes` declines "must take no parameters". Workaround: an interim
+  harness (`run_corpus.py`) that byte-PATCHES each case into compiler.cdz's main. But it MIS-MEASURES: ~147
+  "disagree", 0 "mine-declines" (contradicting its own docstring that declines are expected), counts DRIFT
+  between runs, and "mine" sizes cluster at 88–102B while native ranges 89–3332B → the patched bytes mostly
+  don't reach the decode path; it's classifying a degenerate stub as disagreement. Modeled-subsystem trap: a
+  workaround routing around the real ABI reports numbers that measure the workaround. Trust only its AGREE set;
+  DON'T chase the 147. Fix = SPEC-BACKLOG #22 (gap 3l: emit a `compile`-exporting entry). No corpus case
+  (infra, and a mismeasured table isn't an oracle).
 - [Over-applying a user function declines as "partial application needs closures" — not the arity error the corpus says it mirrors](./2026-07-07-over-applying-a-user-function-declines-as-closures-not-as-an-arity-error.md)
   — surfaced by a mid-refactor compiler.cdz (a `kind-of` call/def arity mismatch): `(f 5 9)` on a unary `f`
   declines "partial application needs closures", but the corpus records the PARALLEL constructor case `(Some 1 2)`
