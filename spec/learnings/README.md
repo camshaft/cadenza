@@ -10,6 +10,16 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- ["Disagree" rising can be progress — cases moving off the decline floor into the soft/heap middle ground](./2026-07-07-disagree-rising-is-progress-when-cases-move-off-the-decline-floor.md)
+  — the byte gate moved declines 377→330, disagrees 137→183 — reads like a regression, but the standing WRONG
+  sweep stayed 0. Probing the ~46 that moved: the +3.3 KB compiler.cdz change EXPANDED coverage — many `let`/
+  `match`/pattern constructs that previously declined (bare-`unreachable` stub) now COMPILE, to value-correct or
+  heap results, leaving the decline floor for the soft/heap middle ground (which the 3-bucket gate scores
+  `disagree`). Of 151 native=ok disagreements: 29 soft, 37 still decline-stub, 85 heap/other (WRONG=0 → none a
+  miscompile). Lesson: a gate with fewer buckets than the phenomenon has states can't express direction — a
+  rising `disagree` with WRONG=0 is coverage moving off the decline floor (good), not a regression; only `agree`
+  (up=good) and the loop's `WRONG` (up=bad) move unambiguously. Read `component-check` deltas THROUGH the WRONG
+  sweep. (ask-40 diagnostics still not landed — type-rejections still bare-decline, not coded Diagnostics.)
 - [The type-rejection pass landed as a decline — and the diagnostics channel is the last gap from decline to agree](./2026-07-07-the-type-rejection-pass-landed-as-a-decline-and-the-diagnostics-channel-is-the-last-gap-to-agree.md)
   — ask-30's harder half landed: a `well-typed?` type-rejection pass run PRE-FOLD. Verified by discriminating
   disassembly — `(if true 1 false)` DECLINES (both branches supported types, so only the branch MISMATCH can be
