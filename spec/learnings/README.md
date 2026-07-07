@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The type-rejection pass landed as a decline — and the diagnostics channel is the last gap from decline to agree](./2026-07-07-the-type-rejection-pass-landed-as-a-decline-and-the-diagnostics-channel-is-the-last-gap-to-agree.md)
+  — ask-30's harder half landed: a `well-typed?` type-rejection pass run PRE-FOLD. Verified by discriminating
+  disassembly — `(if true 1 false)` DECLINES (both branches supported types, so only the branch MISMATCH can be
+  the cause → it's a real type-check, not an unsupported-operand decline), `(if true 1 2)` compiles, `(if true
+  (+ 1 1) false)` declines (mismatch survives the fold → proves pre-fold placement). So genuine type mismatches
+  now decline instead of mis-compiling. Byte gate stayed flat (61 agree) because the ~21 cases moved mis-accept →
+  **decline**, but `component-check` scores them `disagree` still: native gives a CODED rejection, compiler.cdz a
+  trap — decline ≠ coded-rejection. The sole gap to `agree` is the DIAGNOSTICS CHANNEL (ask-40: `compile` returns
+  `result<_, list<diagnostic>>`). Self-caught misread: I first read the traps as unsupported-operand declines;
+  the both-operands-supported discriminator settled it. Lessons: a type-rejection pass belongs pre-fold (test it
+  with a mismatch whose branch would fold to a value); to tell a type-check from an unsupported-operand decline,
+  probe where every operand is supported and only the mismatch is wrong; mis-accept → decline → agree is the
+  reject-don't-miscompile ladder — decline is the milestone that removes the miscompile, agree needs diagnostics.
 - [The arity subset of the type-checker landed first, exactly as scoped — with a let-form tail the fixed-arity check didn't reach](./2026-07-07-the-arity-subset-of-the-type-checker-landed-first-exactly-as-scoped-with-a-let-form-tail.md)
   — ask-30's cheap arity/well-formedness half landed (one `read-app` fixed-arity guard, as scoped): `(+ 1)`,
   `(+ 1 2 3)`, `(if true 1)`, `(< 5)`, `(not 1 2)` moved mis-accept → decline (trap), well-formed unregressed.
