@@ -10,6 +10,20 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A `bytes → bytes` compile entry unblocks the real differential harness — the seam is landed, the compiler just hasn't moved onto it](./2026-07-07-a-bytes-to-bytes-compile-entry-unblocks-the-real-differential-harness.md)
+  — SEED-GAPS gap 3l (the seed could only lift a nullary `run`, not a `compile : list<u8> → list<u8>` component)
+  is RESOLVED on the seed side. Probing the rebuilt seed confirmed it: a new `compile-run` subcommand builds a
+  compiler as a compile component and drives it over an input's AST bytes; an identity `(def (compile b) b)`
+  builds a valid 3,059-byte component and round-trips the input's 32 canonical AST bytes through the list ABI.
+  BUT a second probe caught the un-crossed seam: `compile-run` on the actual `compiler.cdz` fails "expected 0
+  argument(s), got 1" — the committed compiler still exports a nullary `(def (main) …)` with the target bytes
+  HARDCODED, so it's lifted as `run`, not `compile`. The rewire (`main` → `(def (compile b) (compile-bytes b))`)
+  is one line and `compile-bytes` already exists; the full `component-check` corpus diff additionally waits on
+  the value-heap runtime component building again (CHAMP mid-implementation). Neither is a language/correctness
+  gap. No corpus case (a bytes→bytes entry is an ABI contract, not a scalar oracle). Lesson: a resolved gap is a
+  CAPABILITY, not a CONNECTION — "is 3l fixed?" is yes for the seed, no for the end-to-end loop; only running the
+  actual artifact (not the handoff banner's "VERIFIED end-to-end", which described a since-reverted rewire)
+  distinguishes them.
 - [The self-hosted reader compiles a multi-def call — but picks the entry by position, and the name-based reorder is blocked on a seed blowup](./2026-07-07-the-self-hosted-reader-compiles-a-multi-def-call-but-picks-the-entry-by-position.md)
   — the harness's new `error` bucket (invalid emission, distinct from a clean decline) flagged a two-def module
   whose entry calls a user function. Direct probing reduced it: the underscore in the "underscore parameter"
