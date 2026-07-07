@@ -141,27 +141,34 @@
 ; produces (the cases above), `Ast.encode` and `Ast.decode` must consume it exactly as they consume a
 ; quote-built AST — the round-trip is over AST VALUES, not over one privileged construction path. These
 ; are the encode/decode companions of the equality cases above: the same representation must reach the
-; encoder however the AST was built. The seed encodes/decodes a quote-built AST (the round-trip cases
-; earlier in this file) but declines a constructor-built one ("unsupported dotted-application") — the
-; encoder resolves a quote value but not an applied Ast.* constructor, the same construct/consume split
-; the equality cases expose, here on the encode path. A generation that does not yet bridge the two
-; declines rather than miscompiling (reject-don't-miscompile); the gate scores it todo.
+; encoder however the AST was built. A quote-built AST (`(quote 7)`) and a constructor-built one
+; (`(Ast.Int 7)`) are the ONE AST value form (the equality cases above), so `Ast.encode`/`Ast.decode`
+; consume both identically — the round-trip is over AST VALUES, not one privileged construction path.
+; A generation that has not yet bridged the two would decline the constructor-built operand rather than
+; miscompiling (reject-don't-miscompile); the seed now bridges an applied `Ast.*` constructor to the AST
+; value it denotes (via the constructor→node bridge), so these round-trip like the quote-built cases.
 
 (case "encoding and decoding a constructor-built AST round-trips to an equal value"
   (doc    "`(Ast.Int 7)` is an AST value (the same form `(quote 7)` produces); encoding then decoding it
            MUST yield an equal AST (ast-encoding.md #The Encoding Is A Bijection — decode(encode t) is t).
            The quote-built round-trip is witnessed earlier in this file; a constructor-built AST is the
-           same value form, so it MUST round-trip identically. The seed declines (\"unsupported
-           dotted-application\") — Ast.encode consumes a quote value but not an applied Ast.* constructor.")
-  (input  (= (Ast.decode (Ast.encode (Ast.Int 7))) (Ast.Int 7)))
+           same value form, so it round-trips identically — the encoder bridges an applied `Ast.*`
+           constructor to the AST value it denotes. `Ast.decode : Bytes → Result<Ast, _>` is total
+           (value-interchange.md — decode of possibly-external bytes yields the error case, never traps),
+           so the round-trip matches the `Ok` arm and equates its payload.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Int 7)))
+            ((Ok a) (= a (Ast.Int 7)))
+            (else   false)))
   (output (: true Bool)))
 
 (case "encoding and decoding a constructor-built compound AST round-trips"
   (doc    "The compound companion: a hand-built `(Ast.List (list (Ast.Name \"g\") (Ast.Int 5)))` MUST
            encode and decode back to an equal AST, exactly as a quote-built list does. Pins that the
-           bijection round-trip reaches a constructor-built compound AST, not only a leaf node.")
-  (input  (= (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
-             (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
+           bijection round-trip reaches a constructor-built compound AST, not only a leaf node. `Ast.decode`
+           is total (`Bytes → Result<Ast, _>`), so the round-trip matches the `Ok` arm.")
+  (input  (match (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
+            ((Ok a) (= a (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
+            (else   false)))
   (output (: true Bool)))
 
 (case "a quote-built and constructor-built AST of the same tree encode to identical bytes"
@@ -246,29 +253,200 @@
   (input  (quasiquote (unquote 1 2)))
   (error  CDZ0201))
 
-(case "quasiquote makes instruction construction readable"
-  (doc    "Witnesses compiler-pipeline.md #The Compiler Constructs Instructions Via Quasiquote:
-           building instructions via quasiquote is readable. Compare `(op-const ,n) vs
-           (Ast.List (list (Ast.Name \"op-const\") n)) — quasiquote reads like the instruction.
-           Note: dotted names like i64.const expand to member access; instruction tags use
-           hyphenated names to avoid this.")
+(case "quasiquote makes AST construction readable"
+  (doc    "Witnesses compiler-pipeline.md #The Compiler Constructs AST Values Via Quasiquote:
+           building an AST value via quasiquote is readable. Compare `(op-const ,n) vs
+           (Ast.List (list (Ast.Name \"op-const\") n)) — quasiquote reads like the form it builds.
+           This is the frontend/macro role quasiquote serves; the compiler's instruction backend
+           instead uses a dedicated typed instruction sum built by ordinary constructors and matched
+           to bytes (compiler-pipeline.md #The Compiler Operates On AST Values). Note: dotted names
+           like i64.const expand to member access; hyphenated names avoid this.")
   (input  (let ((n 42)) `(op-const ,n)))
   (output (: (Ast.List (list (Ast.Name "op-const") (Ast.Int 42))) Ast)))
 
 (case "Ast.decode converts bytes to an AST sum type value"
   (doc    "Witnesses compiler-pipeline.md #The Compiler Operates On AST Values: the compiler receives
-           a program as binary bytes and decodes it to an AST sum type value. Ast.decode takes Bytes
-           and returns an Ast value (the same sum type quote produces). The compiler then pattern-matches
-           over the decoded AST.")
+           a program as binary bytes and decodes it to an AST sum type value. `Ast.decode : Bytes →
+           Result<Ast, _>` is total over possibly-external bytes (value-interchange.md — it never traps),
+           so the compiler matches the `Ok` arm and then pattern-matches the AST within it.")
   (input  (match (Ast.decode (Ast.encode (quote 42)))
-            ((Ast.Int n) n)
-            (else        0)))
+            ((Ok (Ast.Int n)) n)
+            (else             0)))
   (output (: 42 Int64)))
 
 (case "Ast.encode and Ast.decode round-trip"
   (doc    "Witnesses contracts/ast-encoding.md: encoding an AST to binary and decoding it back
            produces the same AST value. The compiler relies on this: it decodes the input, operates
-           on AST values, and the encoding is faithful.")
-  (input  (= (Ast.decode (Ast.encode (quote (+ 1 2))))
-             (quote (+ 1 2))))
+           on AST values, and the encoding is faithful. `Ast.decode` is total (`Bytes → Result<Ast, _>`),
+           so the round-trip matches the `Ok` arm and equates its payload to the original.")
+  (input  (match (Ast.decode (Ast.encode (quote (+ 1 2))))
+            ((Ok a) (= a (quote (+ 1 2))))
+            (else   false)))
   (output (: true Bool)))
+
+(case "decoding bytes that are not a canonical AST yields the error case, not a trap"
+  (doc    "contracts/value-interchange.md #Decode Inverts Serialize And Refuses Otherwise + #A Decode Over
+           External Bytes Is Total: `Ast.decode` consumes bytes that may come from an EXTERNAL source, so it
+           MUST be total — a byte sequence that is not the canonical encoding of any AST yields the error
+           case (`Err`), NOT a trap. `(Bytes.of (list 255 255 255))` is not a valid AST encoding, so the
+           decode returns `Err` and the program handles it as an ordinary value. This is the fallible-reader
+           discipline (like `String.from-bytes`), not reject-don't-miscompile: malformed EXTERNAL input is a
+           handleable condition, not a program bug that traps.")
+  (input  (match (Ast.decode (Bytes.of (list 255 255 255)))
+            ((Ok _) 1)
+            (else   0)))
+  (output (: 0 Int64)))
+
+(case "decoding canonical bytes followed by a trailing byte yields the error case"
+  (doc    "contracts/deterministic-value-form.md #Decoding Is The Inverse Of The Canonical Byte Form: a byte
+           sequence that is valid canonical bytes FOLLOWED BY additional bytes MUST NOT decode as the value
+           the valid prefix encodes — the trailing byte is a detected error, not silently ignored. So
+           `Ast.decode` of `(encode (Ast.Int 7)) ++ [99]` yields `Err`, not `Ok (Ast.Int 7)`. The total-decode
+           companion of the round-trip cases: decode consumes the WHOLE input or reports an error, so a
+           truncated or concatenated external input is caught rather than half-read.")
+  (input  (match (Ast.decode (Bytes.concat (Ast.encode (Ast.Int 7)) (Bytes.of (list 99))))
+            ((Ok _) 1)
+            (else   0)))
+  (output (: 0 Int64)))
+
+; ============================================================================================
+; Quote patterns — the quasiquote surface in PATTERN position (options/quote-patterns/)
+; ============================================================================================
+; The same `` ` ``/`,`/`,@` surface that CONSTRUCTS an AST value (above) serves the DUAL direction in
+; pattern position: `` `<template> `` inside a `match` DESTRUCTURES an Ast scrutinee, reusing the
+; constructor/pattern duality the language already has (a variant `(Some 5)` builds and `(Some n)`
+; destructures). A quote pattern is EXACTLY EQUIVALENT to the pattern built from the `Ast.*` sum
+; constructors — `` `(+ ,a ,b) `` IS `(Ast.List (list (Ast.Name "+") a b))` as a pattern — so it adds a
+; surface, not a new value or a second matching mechanism. In the template: a literal subterm matches by
+; equality (an integer as `(Ast.Int n)`, a bare name as `(Ast.Name "…")`), a compound `(h a b)` matches
+; an `Ast.List` of EXACTLY that arity element-by-element, `,<pattern>` binds/further-matches the sub-AST
+; at its position, and a FINAL `,@<name>` binds the remaining list elements. Exhaustiveness is the
+; existing rule (a quote pattern never covers every AST — different head, different arity, a leaf where a
+; list is expected all fail — so an Ast match needs a catch-all bare-name/`_` arm or it is CDZ0210), and
+; equality/encoding are the constructor form's (a value matched through a quote pattern is matched through
+; the very sum patterns the un-tagged cases above already run). NOTE the `,`/`,@` marks are meaningful
+; only INSIDE a `` ` `` template — a top-level catch-all arm is an ordinary bare-name or `_` pattern, as
+; a bare `,other` outside a quasiquote is the existing syntax error (the "unquote outside quasiquote"
+; case above, CDZ0401), not a pattern.
+;
+; The seed ALREADY destructures AST sums by the `Ast.*` constructors — the un-tagged
+; `(match (quote (+ 1 2)) ((Ast.List elems) …))` cases above run on it. The one NEW piece is the
+; reader/lowering that recognizes a backtick in PATTERN position and desugars it to those constructor
+; patterns. Tagged `(needs quote-patterns)`: a later generation realizes that lowering
+; (options/realized-capability-set/); the seed skips these — they pin the contract the realization must
+; meet, they are not seed declines.
+
+(case "a quote pattern binds an unquoted operand of a compound form"
+  (doc    "`` `(+ ,a ,b) `` in pattern position IS `(Ast.List (list (Ast.Name \"+\") a b))` as a pattern
+           (options/quote-patterns/quasiquote-pattern.md): the literal head `+` matches `(Ast.Name \"+\")`
+           by equality, and `,a`/`,b` bind the two operand sub-ASTs. Matching `(quote (+ 3 5))` binds
+           a=`(Ast.Int 3)` and b=`(Ast.Int 5)`; the arm returns b, so the AST for 5. Pins the core
+           destructuring: unquote is the binder, a literal subterm matches by equality. The catch-all
+           `other` is an ordinary bare-name pattern — `,` is meaningful only inside a `` ` `` template.")
+  (needs  quote-patterns)
+  (input  (match (quote (+ 3 5))
+            (`(+ ,a ,b) b)
+            (other      other)))
+  (output (: (Ast.Int 5) Ast)))
+
+(case "a quote pattern is equivalent to the Ast.* constructor pattern"
+  (doc    "A quote pattern lowers to the `Ast.*` constructor pattern, so the two spellings bind
+           identically. `` `(+ ,a ,b) `` and `(Ast.List (list (Ast.Name \"+\") a b))` matched against the
+           same `(quote (+ 1 2))` both bind a=`(Ast.Int 1)`; comparing the two bound values is true. Pins
+           the equivalence the form rests on — the pattern adds a surface, not a second mechanism.")
+  (needs  quote-patterns)
+  (input  (= (match (quote (+ 1 2)) (`(+ ,a ,b) a) (_ (Ast.Int 0)))
+             (match (quote (+ 1 2)) ((Ast.List (list (Ast.Name "+") a b)) a) (_ (Ast.Int 0)))))
+  (output (: true Bool)))
+
+(case "a literal subterm in a quote pattern matches by equality"
+  (doc    "A literal head/subterm matches by equality — the direct analogue of a literal value pattern
+           `(match 2 (2 \"two\") …)`. `` `(+ ,a ,b) `` matches only a form headed by `+`; against
+           `(quote (- 3 5))`, whose head is `-`, it does NOT match, so control falls to the `other`
+           catch-all. Pins that the literal name in the template constrains the head, not merely the
+           arity.")
+  (needs  quote-patterns)
+  (input  (match (quote (- 3 5))
+            (`(+ ,a ,b) 1)
+            (other      0)))
+  (output (: 0 Int64)))
+
+(case "a quote pattern matches a fixed arity"
+  (doc    "A compound template `` `(f ,a ,b) `` matches an `Ast.List` of EXACTLY three elements — the
+           reading of `(Ast.List (list (Ast.Name \"f\") a b))`, whose `(list …)` sub-pattern fixes
+           length. `(quote (f 1 2 3))` has four elements, so it does NOT match the two-operand pattern and
+           falls to the catch-all. Pins fixed arity: variable length is expressed only through `,@`.")
+  (needs  quote-patterns)
+  (input  (match (quote (f 1 2 3))
+            (`(f ,a ,b) 2)
+            (other      9)))
+  (output (: 9 Int64)))
+
+(case "a nested unquote pattern matches a sub-AST by shape"
+  (doc    "`,<pattern>` nests an ordinary pattern at the sub-AST's position, so `` `(+ ,(Ast.Int n) ,b) ``
+           matches only an addition whose first operand is an INTEGER LITERAL and binds its value to n.
+           Against `(quote (+ 7 x))`, the first operand `(Ast.Int 7)` matches `(Ast.Int n)` binding n=7;
+           the arm returns n. Pins that unquote takes a full pattern, not only a bare name.")
+  (needs  quote-patterns)
+  (input  (match (quote (+ 7 x))
+            (`(+ ,(Ast.Int n) ,b) n)
+            (other                0)))
+  (output (: 7 Int64)))
+
+(case "a final unquote-splice binds the remaining elements as a list"
+  (doc    "A final `,@<name>` binds the remaining list elements as a LIST (never a single element), the
+           pattern-position dual of splicing construction. `` `(f ,@args) `` against `(quote (f 1 2 3))`
+           binds args to the list `(Ast.Int 1) (Ast.Int 2) (Ast.Int 3)`; `List.len` of it is 3. Pins the
+           tail splice binds the rest and that the elements are a list.")
+  (needs  quote-patterns)
+  (input  (match (quote (f 1 2 3))
+            (`(f ,@args) (List.len args))
+            (other       0)))
+  (output (: 3 Int64)))
+
+(case "a quote pattern used to recognize a compiler form reads as that form"
+  (doc    "The self-hosting payoff (options/quote-patterns/quasiquote-pattern.md #Why This Matters For
+           Self-Hosting): the compiler's core is a `match` over the decoded AST, and a quote-pattern arm
+           reads as the surface it lowers. Here a tiny `lower` distinguishes `(+ …)` from everything else
+           by quote pattern; against `(quote (+ 4 6))` it selects the add arm and returns the first
+           operand's node. Mirrors the construction idiom `` `(op-const ,n) `` on the pattern side.")
+  (needs  quote-patterns)
+  (input  (match (quote (+ 4 6))
+            (`(+ ,a ,b) a)
+            (`(- ,a ,b) b)
+            (other      other)))
+  (output (: (Ast.Int 4) Ast)))
+
+; An Ast match whose arms are only quote patterns does not cover the AST sum — a different head, a
+; different arity, or a leaf scrutinee all fail to match — so it is non-exhaustive and rejected CDZ0210,
+; exactly as a sum match missing a variant (core-semantics.md #Matching Is Exhaustive Or Rejected). A
+; bare-name pattern (equivalently `_`) matches any AST and is the catch-all, so its ABSENCE is what makes
+; the match non-exhaustive. Quote matching reuses exhaustiveness rather than adding a rule.
+
+(case "a quote-pattern match with no catch-all is non-exhaustive"
+  (doc    "`` `(+ ,a ,b) `` covers only additions; an Ast scrutinee can be a name, an integer, or a
+           differently-headed list, none of which it matches. With no bare-name/`_` catch-all arm the
+           match does not cover the AST sum and is rejected CDZ0210 — the same rejection a sum match
+           missing a variant gets. Pins that quote matching reuses the existing exhaustiveness rule.")
+  (needs  quote-patterns)
+  (input  (match (quote (+ 1 2))
+            (`(+ ,a ,b) a)))
+  (error  CDZ0210))
+
+; `,@` binds the REST and so is only meaningful as the final element of its template: a `,@` before other
+; elements would match a variable-length gap in the middle of a fixed sequence, turning a single
+; positional scan into a search. That is an ill-formed quote pattern, rejected CDZ0221 (the CDZ02xx
+; types-and-patterns band, the quote-pattern companion of the binary-form CDZ0220). Mirrors `bin`, where
+; an unsized `(bytes rest)` is legal only as the final segment.
+
+(case "a non-final unquote-splice in a quote pattern is ill-formed"
+  (doc    "`,@<name>` binds the remaining elements, so it is meaningful only as the FINAL element of a
+           template. `` `(f ,@init ,last) `` puts `,@init` before `,last`, requiring a variable-length gap
+           flanked by a fixed tail — an ill-formed quote pattern, rejected CDZ0221
+           (options/quote-patterns/quasiquote-pattern.md #Tail Splice Is Final-Position Only). Mirrors the
+           binary-form rule that an unsized `bytes` segment is legal only last.")
+  (needs  quote-patterns)
+  (input  (match (quote (f 1 2 3))
+            (`(f ,@init ,last) last)
+            (other             other)))
+  (error  CDZ0221))

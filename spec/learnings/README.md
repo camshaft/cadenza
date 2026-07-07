@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A mid-flight signature change turns the gate red — the corpus must follow the seed, and the spec wording must be reconciled](./2026-07-07-a-mid-flight-signature-change-turns-the-gate-red-and-the-corpus-must-follow-the-seed.md)
+  — ask-38 landed: `Ast.decode` became total, `Bytes → Result<Ast, e>` (Ok/Err, rejects invalid AND trailing
+  bytes, never traps). The standing gate check caught it RED — 4 round-trip corpus cases still asserted the bare
+  `Ast` form (now `(= (Ok ast) x)` → false). The loop migrated them to `(match … ((Ok a) (= a x)) (else false))`
+  (the explicit `((Err _) …)` arm tripped a seed limitation — `(else)` works), added 2 error-case cases (garbage →
+  Err, trailing → Err), restored green (569). Three lessons: (1) a signature change is a gate event — when the
+  seed moves to the correct type, the corpus is downstream and migrates in the same cycle. (2) Migrate to the
+  shape the seed ACCEPTS (probe first), don't iterate hand-written forms on a red gate. (3) The seed chose Result
+  where value-interchange.md says "absence of a value" (Option-shaped) — a green gate means the corpus matches the
+  SEED, not that the seed matches the SPEC; the Option-vs-Result divergence is flagged for the operator, not
+  papered over.
 - [The arithmetic-overflow arc closed — checked emit with scratch locals landed, and the wrong-value frontier is now empty](./2026-07-07-the-arithmetic-overflow-arc-closed-checked-emit-with-scratch-locals-landed-correctly.md)
   — the runtime `+ - *` overflow miscompile (ask-37) is fixed. The arc: miscompile (bare opcode wraps) → crash
   (checked emit with unreserved scratch locals → stack overflow) → reverted-miscompile → FIXED (checked emit with
