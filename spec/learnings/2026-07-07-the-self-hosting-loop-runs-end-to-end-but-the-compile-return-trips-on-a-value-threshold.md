@@ -85,16 +85,27 @@ pass/fail across varied programs gave a *perfect* correlation with **parity of t
 Every odd input length → *"not aligned"*; every even length → OK, with no exception across bare ints, compound
 expressions, Bools, and multi-def modules. The "value 24" boundary was a proxy because **24 is the CBOR
 integer boundary** where a bare int's minor encoding grows from one byte (`0x00`–`0x17` for 0–23) to two
-(`0x18 <byte>` for 24), which flips the input AST length from 31 (odd) to 32 (even). So the bug is: the seed's
-`compile` wrapper writes the input `list<u8>` into linear memory, and when the **input length is odd**, the
-byte-buffer's end offset leaves the subsequently-placed return pointer (retarea) 2-byte-but-not-4/8-aligned. The
-fix is to **round the input-buffer's end (or the retarea's start) up to a 4/8 boundary before placing the
-return area**, independent of input length — a one-line alignment padding in the marshalling wrapper. This is
-dramatically more actionable than "value-dependent" or even "input-length-dependent": it is specifically
-input-length *parity*, pointing at a missing alignment round-up between the input buffer and the retarea. The
-minimal reproducer is now any odd-length input, cleanest as `(module m (def (main) 5))` (31 bytes) fails vs
-`(module m (def (main) 24))` (32 bytes) succeeds. **Lesson compounded:** last cycle corrected the doc's "fails
-at every size" to "value threshold at 24"; this cycle corrected *my own* "value threshold" to "input-length
-parity" — the same discipline (re-probe the characterization, don't inherit it) applied to my own prior
-finding, and each re-probe moved the root cause one concrete step closer to the actual defect (wrapper → value
-→ CBOR-size boundary → input-length parity → retarea alignment round-up).
+(`0x18 <byte>` for 24), which flips the input AST length from 31 to 32. So the bug is: the seed's `compile`
+wrapper writes the input `list<u8>` into linear memory, and the return pointer (retarea) is placed at
+`base + input_len` without re-aligning, so it is 4-aligned only when the input length is a multiple of 4. The
+fix is to **round the bump pointer up to a 4/8 boundary before placing the return area** (`(p + 3) & !3`),
+independent of input length — a one-line alignment padding in the marshalling wrapper. The minimal reproducer is
+any input whose AST length is not a multiple of 4, cleanest as `(module m (def (main) 5))` (31 bytes) fails vs
+`(module m (def (main) 24))` (32 bytes) succeeds.
+
+**CORRECTION (same cycle, after cross-checking the compiler agent's `SEED-GAPS` note): it is INPUT-LENGTH
+mod 4, NOT parity.** My table above only sampled even lengths that were also ≡ 0 (mod 4) — a lucky under-sample.
+A direct len ≡ 2 (mod 4) probe settles it: `(module mmm (def (main) 42))` has AST length **34** (even) and
+**FAILS**, while length 32 and 36 (both ≡ 0) pass. So an even-but-not-4-multiple length still trips the bug —
+it is `input_len % 4 == 0` that aligns, exactly matching the compiler agent's independently-reached diagnosis
+(`retptr = base + input_len`, 4-aligned only when `input_len % 4 == 0`). Parity was the coarser, wrong read; the
+agent and this loop converged on the same finer root cause and fix.
+
+**Lesson compounded (and a caution against my own re-probe):** last cycle corrected the doc's "fails at every
+size" to "value threshold at 24"; this cycle corrected *my own* "value threshold" to "input-length parity" — and
+then a cross-check against the agent's note corrected *that* to "input-length mod 4." The re-probe discipline
+applies to my own findings, but the *third* correction is the sharp reminder: **the first re-probe result is
+still a hypothesis to over-sample before publishing** — I generalized "31 fails, 32 works" to parity from cases
+that were all ≡ 0 (mod 4), and one len-34 probe would have caught it before I wrote "parity." Each step still
+moved the root cause closer to the defect (wrapper → value → CBOR-boundary → parity → **mod 4** → bump-pointer
+align-up), but the parity step was an avoidable over-generalization from an under-sampled table.
