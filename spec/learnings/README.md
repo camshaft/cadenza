@@ -10,6 +10,26 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The build-tool interface is a kinded-artifact list, not a two-arm result](./2026-07-07-the-build-tool-interface-is-a-kinded-artifact-list-not-a-two-arm-result.md)
+  — the frozen build-tool-interface's derivation entry was `result<component-bytes, diagnostics>`, mutually
+  exclusive: no warnings alongside a module, one byte output only, one input only. Generalized (Amendment
+  0.8.0) to artifacts-in / {artifacts, diagnostics}-out — the component is one kinded artifact among DWARF /
+  source map / manifest, the input list admits source units + a cache + dependencies, and per-diagnostic
+  severity lets a warning ride alongside a produced component. Compilation is artifacts-in, artifacts-out
+  with an always-live diagnostics channel; the component is not a privileged return value. Realized interface
+  stays `result<list<u8>, list<diagnostic>>` (the degenerate case) until the artifact-list ABI is built out.
+- [A frozen interface contract supersedes the in-flight asks that assumed its old shape — and freezes a seed-migration gap open](./2026-07-07-a-frozen-interface-contract-supersedes-in-flight-asks-and-opens-a-seed-migration-gap.md)
+  — the new frozen `build-tool-interface.md` (Amendment 0.8.0) reshaped the diagnostics/output surface from a
+  two-arm `result<list<u8>, list<diagnostic>>` to a KINDED-ARTIFACT interface (`compile-output = { artifacts,
+  diagnostics }`; distinct channels, not arms). This supersedes the loop's open asks that assumed the old shape:
+  ask-40's "return a Result" is now the wrong target, ask-38's Option-vs-Result flag is moot. Probe: the seed's
+  DRIVER ABI hasn't migrated — `compile-run`/`component-check` still return a single `list<u8>`, type-rejections
+  still bare-decline; the ~30 type-rejections stay `decline`-blocked on the seed+checker migration. Byte gate
+  unchanged (65 agree, WRONG=0) because it measures the OLD ABI — the contract change is invisible to it. Lesson:
+  a frozen contract is a SPEC event, not an implementation event; at a freeze the loop re-probes the seed against
+  the new shape, re-targets the asks that assumed the old one, and records the migration gap — so a green gate
+  (measuring the old ABI) isn't mistaken for conformance to the new contract. (The sibling's learning above covers
+  WHY the shape changed; this is the loop's reconciliation + the seed-migration gap.)
 - [Sharing the scratch-local mechanism cost right-shift its byte-identity — reuse has a fidelity price](./2026-07-07-sharing-the-scratch-local-mechanism-cost-right-shift-its-byte-identity.md)
   — a regression spot-check on the `agree` anchors caught `(>> 256 4)`, byte-identical in Run 73, now `soft`
   (value-correct → 16, byte-different; WRONG=0 — not a correctness regression). Cause: shift emit reuses the
