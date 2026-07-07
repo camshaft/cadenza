@@ -243,6 +243,34 @@
             (def (main) (f 3))))
   (output (: 3 Int64)))
 
+(case "a conjunction guards a let over a runtime value inside a conditional"
+  (doc    "An INTEGRATION case: several control constructs composed in one function over a runtime
+           parameter, the way a real program (not an isolated feature test) uses the language.
+           `classify x = (if (and (> x 0) (< x 10)) (let ((y (* x x))) (- y 1)) 0)` composes: a
+           short-circuit `and` of two comparisons as the condition (each operand a runtime `>`/`<`), a
+           `let` binding a RUNTIME value `(* x x)` in the then-branch (so it must emit a real local, not
+           a compile-time alias), the outer conditional selecting Int64 branches, and the arithmetic —
+           all driven by the runtime argument. `classify 4`: `0 < 4` and `4 < 10` both hold, so
+           `(let ((y (* 4 4))) (- y 1))` = 16 - 1 = 15. Pins that these constructs COMPOSE in one
+           function — the short-circuit `and` (which desugars to a nested conditional), a runtime `let`,
+           and the enclosing `if` nest correctly and thread their values — not merely that each works in
+           isolation. The out-of-range companion below takes the else-branch.")
+  (input  (module m
+            (def (classify x) (if (and (> x 0) (< x 10)) (let ((y (* x x))) (- y 1)) 0))
+            (def (main) (classify 4))))
+  (output (: 15 Int64)))
+
+(case "the guarded-let conditional takes its else-branch when the conjunction is false"
+  (doc    "The else companion of the integration case above: `classify 20` — `20 < 10` is false, so the
+           short-circuit `and` is false and the outer conditional selects its else-branch 0, never
+           evaluating the `let`. Together the pair pins that the composed `and`/`let`/`if` selects by the
+           runtime value in both directions (15 in range, 0 out of range), and that the short-circuit
+           `and` shields the `let`-bearing then-branch when the guard fails.")
+  (input  (module m
+            (def (classify x) (if (and (> x 0) (< x 10)) (let ((y (* x x))) (- y 1)) 0))
+            (def (main) (classify 20))))
+  (output (: 0 Int64)))
+
 ; --- A conditional's branches must have the same type ------------------------------------
 ; core-semantics.md #Conditionals Evaluate One Branch, 2nd sentence: "Every branch of a
 ; conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated

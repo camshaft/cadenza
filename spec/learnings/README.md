@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The recursive-Bool fix unblocked the reader's name matcher — and the full surface language composes in one program](./2026-07-07-the-name-matcher-unblocks-and-the-surface-language-composes.md)
+  — the recursive-Bool return-kind race (item 14) is FIXED: its corpus case flipped todo→PASS with no oracle
+  change, and the reader's `name-eq` (byte-by-byte prelude-symbol comparator, the `(if (= a b) (recurse) false)`
+  shape) came alive (`b"++"` vs `b"++"` → 1) — the dead-code bet paid off. Third confirmation that kind-inference
+  order-independence is ONE property (Heap=Tier00, Bool=item14, same fix). MILESTONE: the full surface language
+  composes in ONE realistic program — `classify x = (if (and (> x 0) (< x 10)) (let ((y (* x x))) (- y 1)) 0)`
+  compiles end-to-end (`4 → 15`, `20 → 0`): short-circuit `and`, runtime `let` (real local, not alias), nested
+  `if`, arithmetic — all from surface names, all threading correctly. The CONVERSE of the gap-finder lesson: when
+  features finally compose, that composition is a conformance obligation the floor-outward corpus lacks. Pinned 2
+  `02-binding-and-control.sexp` integration cases (both PASS).
 - [Runtime tuple projection works through a `let` — and the direct path is a decline-don't-miscompile violation, not a clean trap](./2026-07-07-runtime-tuple-projection-needs-a-let-and-the-direct-path-miscompiles.md)
   — the spike fixed `tuple.N` on a runtime (`let`-bound) tuple (the decoder's `(node, index)` pair): `arr-get` +
   unbox from the `Local`'s carried `Shape`. Verified `(let ((r (dec 4))) (+ (tuple.0 r) (tuple.1 r))) → 45`. But
