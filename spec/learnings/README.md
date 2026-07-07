@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Folding a constant-condition conditional must preserve short-circuit shielding — the third face of trap-preserving rewrites](./2026-07-06-folding-a-constant-condition-preserves-short-circuit-shielding.md)
+  — the fold pass grew to conditionals: `fold-if` reduces `(if c t f)` when `c` folds to a constant by BECOMING
+  the taken branch and DROPPING the other, so a trap/effect in the untaken branch never occurs — correct because a
+  run-time conditional already shields its unselected branch. Verified `(if (< 1 2) 7 (% 5 0)) → 7` (condition
+  folds to true, `(% 5 0)` dropped). This is the third face of the trap-preservation principle
+  ([[2026-07-06-constant-folding-must-preserve-runtime-traps]]): don't ERASE a trap (`/ 10 (- 3 3)` still traps),
+  don't MANUFACTURE one in arithmetic (`% Int64.min -1` must yield 0), don't manufacture one in CONTROL (drop the
+  untaken trapping branch). The control face is easiest to get wrong because folding an `if` reads as an
+  optimization, not a shielding obligation. Pinned in `02-binding-and-control.sexp` (PASS); same reasoning governs
+  `and`/`or` short-circuit.
 - [The component's result valtype is type-directed — through an exhaustively-matched Kind sum, the same discipline as the instruction sum](./2026-07-06-result-valtype-is-type-directed-through-an-exhaustive-kind-sum.md)
   — the spike grew comparisons (`<`, `=`) whose result type is Bool, not Int64, forcing the framing to present
   `run` at the right boundary valtype (Int64 → s64, Bool → bool). Solved with a type-directed `kind-of : Core →

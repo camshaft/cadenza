@@ -1,7 +1,7 @@
 ; Binding, scope, and control flow — witnesses core-semantics.md. Cases are s-expressions
 ; in the canonical homoiconic representation (options/code-shape/); a result is (: <value> <Type>),
 ; a rejected program records its diagnostic code (options/diagnostics-schema/), a runtime halt
-; records a trap or (exhausted). See README.md for the case vocabulary.
+; records a trap. See README.md for the case vocabulary.
 
 (case "a let binding is in scope in its body"
   (doc    "Witnesses core-semantics.md #Binding Is Lexical — a name resolves to its enclosing binding.")
@@ -201,6 +201,21 @@
            by its condition, whatever Bool expression computes it).")
   (input  (if (if true false true) 1 2))
   (output (: 2 Int64)))
+
+(case "a conditional whose condition folds to a constant still drops the untaken trapping branch"
+  (doc    "`(if (< 1 2) 7 (% 5 0))`: the condition is a COMPARISON that a constant-folding compiler
+           reduces to true at compile time, after which the conditional selects its then-branch (7) and
+           the untaken else-branch `(% 5 0)` — a modulo-by-zero that would trap — is never evaluated,
+           so the result is 7. Pins that folding a conditional whose CONDITION became a constant is
+           short-circuit-preserving: it becomes the taken branch and DROPS the other, exactly as a
+           run-time conditional shields an unselected branch (core-semantics.md #Conditionals Evaluate
+           One Branch). This is the dual of the divisor-folds-to-zero case (06-numeric-model.sexp): there
+           a fold must not ERASE a trap the source denotes; here a fold must not MANUFACTURE a trap the
+           source shields. Distinct from the literal-`true` shielding case above in that the shielding
+           holds only AFTER the condition itself folds — a fold that evaluated both branches, or kept
+           the trapping one, would wrongly trap.")
+  (input  (module m (def (main) (if (< 1 2) 7 (% 5 0)))))
+  (output (: 7 Int64)))
 
 ; --- A conditional's branches must have the same type ------------------------------------
 ; core-semantics.md #Conditionals Evaluate One Branch, 2nd sentence: "Every branch of a
@@ -683,3 +698,65 @@
             (def (is-zero n) (match n (0 true) (_ false)))
             (def (main) (is-zero 0))))
   (output (: true Bool)))
+
+; --- Boolean connectives (short-circuit) -------------------------------------------------
+; core-semantics.md #Boolean Connectives Short-Circuit: the language offers conjunction, disjunction,
+; and negation over Bool. Conjunction evaluates its right operand ONLY when the left is true;
+; disjunction ONLY when the left is false — so a connective shields a trapping or effectful right
+; operand exactly as an unselected conditional branch does (#Conditionals Evaluate One Branch). Each
+; operand is type-checked as a Bool whether or not it is evaluated. Tagged (needs boolean-connectives):
+; the seed does not yet realize `and`/`or`/`not`, so it SKIPS these until a generation adds them; they
+; desugar to short-circuit conditionals (`(and a b)` = `(if a b false)`, `(or a b)` = `(if a true b)`,
+; `(not a)` = `(if a false true)`), which the seed already lowers.
+
+(case "conjunction is true exactly when both operands are true"
+  (doc    "The `and` value table over the four Bool pairs, folded to one witness: only true∧true is
+           true (core-semantics.md #Boolean Connectives Short-Circuit).")
+  (needs  boolean-connectives)
+  (input  (module m
+            (def (row a b) (if (and a b) 1 0))
+            (def (main) (+ (+ (row true true) (row true false)) (+ (row false true) (row false false))))))
+  (output (: 1 Int64)))
+
+(case "disjunction is false exactly when both operands are false"
+  (doc    "The `or` value table: only false∨false is false, so three of the four pairs are true
+           (core-semantics.md #Boolean Connectives Short-Circuit).")
+  (needs  boolean-connectives)
+  (input  (module m
+            (def (row a b) (if (or a b) 1 0))
+            (def (main) (+ (+ (row true true) (row true false)) (+ (row false true) (row false false))))))
+  (output (: 3 Int64)))
+
+(case "negation inverts a boolean"
+  (doc    "`(not true)` is false and `(not false)` is true (core-semantics.md #Boolean Connectives
+           Short-Circuit).")
+  (needs  boolean-connectives)
+  (input  (module m (def (main) (if (not false) (not true) true))))
+  (output (: false Bool)))
+
+(case "conjunction shields a trapping right operand when the left is false"
+  (doc    "`(and false (< (/ 1 0) 2))`: `and` evaluates its right operand ONLY when the left is true,
+           so with the left false the division-by-zero trap in the right operand is NOT evaluated and
+           the result is false — the connective shields the trap exactly as an unselected conditional
+           branch does (core-semantics.md #Boolean Connectives Short-Circuit). Without short-circuit
+           this would trap.")
+  (needs  boolean-connectives)
+  (input  (and false (< (/ 1 0) 2)))
+  (output (: false Bool)))
+
+(case "disjunction shields a trapping right operand when the left is true"
+  (doc    "`(or true (< (/ 1 0) 2))`: `or` evaluates its right operand ONLY when the left is false, so
+           with the left true the trap in the right operand is NOT evaluated and the result is true.
+           The dual of the `and` shielding case (core-semantics.md #Boolean Connectives Short-Circuit).")
+  (needs  boolean-connectives)
+  (input  (or true (< (/ 1 0) 2)))
+  (output (: true Bool)))
+
+(case "a boolean connective with a non-boolean operand is a type error"
+  (doc    "`(and true 1)` gives an Int64 where a Bool operand is required. core-semantics.md #Boolean
+           Connectives Short-Circuit: each operand is type-checked as a Bool whether or not it is
+           evaluated, so the compiler MUST reject the non-Bool operand (CDZ0201) rather than run — the
+           same discipline as a conditional's branch type-check, applied to a connective's operand.")
+  (needs  boolean-connectives)
+  (input  (and true 1))
+  (error  CDZ0201))
