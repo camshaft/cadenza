@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The ask lifecycle closed its first validation round-trip — and a miscompile fixed by declining is a valid resolution](./2026-07-07-the-ask-lifecycle-closed-its-first-validation-round-trip-and-a-miscompile-fixed-by-declining.md)
+  — the compiler agent adopted the ask-lifecycle and moved four asks into `pending-validation/`; the loop
+  re-probed all four against the live artifact and confirmed → `done`: ask-19 (nested ctor under `Some` on a
+  param list — now compiles, pinned as a gate case → 5), ask-25 (the `main`-named entry reorder, unblocked by
+  gap-3m — a helper-first module now runs to 42; byte gate 153 → 141 disagree), ask-31 (checked arithmetic), and
+  ask-34 (the first miscompile — `(id true)` → `1` now TRAPS). Two lessons: (1) the lifecycle is a two-party
+  protocol where `done` = the loop re-probed the live binary, never the implementer's claim — which mattered
+  because compiler.cdz moved twice mid-cycle and only re-running gave honest numbers. (2) **A miscompile fixed by
+  DECLINING is the right first fix, not a half-fix** — ask-34 was resolved via decline (trap, don't mis-widen a
+  Bool to i64), moving it `disagree → decline` (out of the real-miscompile column); byte-identity is a separate
+  low-priority follow-on (ask-35). Principle: when a miscompile can't yet be compiled correctly, make it decline
+  — restore reject-don't-miscompile now, chase byte-identity later; the wrong value in between is the dangerous
+  state and should exist briefly. One new corpus case (ask-19's shape → 5, gate 562).
 - [The byte gate found its first real miscompile — a polymorphic identity loses its Bool return — and the decline discriminator is too narrow to see it](./2026-07-07-the-byte-gate-found-its-first-real-miscompile-a-polymorphic-identity-loses-its-bool-return.md)
   — running every one of the 153 byte-gate disagreements (not trusting the aggregate) split them: 28 soft, **77
   hidden declines** (trap at runtime but NOT a bare-`unreachable` entry, so ask-29's discriminator misses them),

@@ -616,14 +616,42 @@
            blowup (SPEC-BACKLOG) is strictly narrower than a fixpoint loop per se: it needs the list
            parameter to be RE-SEEDED with a fresh `(list …)` each round (NOT derived from the incoming
            value) AND the result consumed as a list; threading the incoming list — this case — is the
-           passing side of that boundary, and re-seeding while consuming the result as an Int64 also
-           compiles. So the finding here is a positive frontier marker: threaded list accumulators in a
-           fixpoint are representable today; only the fresh-re-seed-plus-list-result conjunction is not.")
+           passing side of that boundary. (The fresh-re-seed-plus-list-result conjunction, once the
+           open blowup, now also compiles — see the case below.)")
   (input  (module m
             (def (loop xs passes)
               (if (< passes 1) xs (loop (List.push xs 9) (- passes 1))))
             (def (main) (List.len (loop (list 1 2 3) 2)))))
   (output (: 5 Int64)))
+
+(case "a fixpoint that re-seeds a fresh list each round via a helper returns a list"
+  (doc    "The full monotone-fixpoint shape a self-hosted compiler's return-kind table takes, and the
+           narrow conjunction that used to blow the compiler up (OOM): `iterate` recurses on a counter
+           but RE-SEEDS its `ktab` parameter with a FRESHLY-BUILT list each round — `(recompute funcs
+           (list))`, NOT derived from the incoming `ktab` — and the result is consumed as a list. Here
+           `recompute` rebuilds a one-element list from a one-node `FL` each pass, so `(List.len (iterate
+           <1-node FL> (list) 2))` = 1. Pins that a fixpoint whose list accumulator is re-seeded by a
+           HELPER CALL (not threaded, not a direct `List.push` of the incoming value) still converges
+           BOTH the callee's re-seeded parameter AND the function's return to the heap kind. The trap it
+           closes: the argument `(recompute funcs (list))` is heap, but `iterate`'s `ktab` parameter —
+           only returned in the base branch and re-passed in the recursive branch, never used in a
+           kind-forcing op — defaulted to Int64, so the heap argument mismatched the Int64 parameter and
+           the recursive `iterate` INLINED at compile time, re-expanding without bound (the compile-cost
+           blowup). Propagating the argument's heap kind ONTO the callee's parameter (the arg → callee-
+           param direction of unification) converges `ktab` to heap, so the call emits a real `call`, not
+           an inline. This is the fresh-re-seed-plus-list-result form the case above noted as the open
+           frontier — now representable.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type FL (FNil | FCons (Tuple Int64 FL)))
+            (def (recompute funcs out)
+              (match funcs
+                ((FL.FNil _)            out)
+                ((FL.FCons (tuple h t)) (recompute t (List.push out 7)))))
+            (def (iterate funcs ktab passes)
+              (if (< passes 1) ktab (iterate funcs (recompute funcs (list)) (- passes 1))))
+            (def (main) (List.len (iterate (FL.FCons (tuple 1 (FL.FNil ()))) (list) 2)))))
+  (output (: 1 Int64)))
 
 (case "the built-in list is folded by an element-with-rest pattern"
   (doc    "The natural fold over the BUILT-IN `list`, without hand-rolling a custom cons-sum. A list is
@@ -713,6 +741,25 @@
                                                (Expr.Bin (tuple 1
                                                  (tuple (Expr.Lit 22) (Expr.Lit 8)))))))))))
   (output (: 34 Int64)))
+
+(case "a constructor pattern nested under Some matches a runtime list element"
+  (doc    "A `match` arm whose binder is ITSELF a constructor pattern nested under `Some` —
+           `((Some (E.Lit n)) n)` — where the scrutinee is a fallible lookup `(List.at xs 0)` on a
+           parameter list (a runtime value, not a compile-time constant). The reader's element walk
+           takes exactly this shape: index a runtime sequence, and destructure the `Option`'s payload —
+           itself a user-sum constructor — in one arm. Pins that a payload binder that is a CONSTRUCTOR
+           pattern (not a bare name, not a tuple) recurses correctly: the `Some` payload's heap handle is
+           materialized and matched against the inner `(E.Lit n)`, binding `n`. `(first-lit (list (E.Lit
+           5)))` = 5. This is the ctor-under-Option companion of the nested-tuple-in-payload case above,
+           and the shape a self-hosted compiler uses to read one element of a node list.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type E (Lit Int64 | Neg Int64))
+            (def (first-lit xs) (match (List.at xs 0)
+                                  ((Some (E.Lit n)) n)
+                                  ((None _)         0)))
+            (def (main) (first-lit (list (E.Lit 5))))))
+  (output (: 5 Int64)))
 
 (case "a recursive resolver transforms one runtime sum tree into another, then consumes it"
   (doc    "The compiler's reader→pipeline JOIN shape: a recursive function that transforms a runtime-built
@@ -894,6 +941,27 @@
                           ((Some (N.P v)) (+ v 100))
                           ((None _)       -1)))))
   (output (: 7 Int64)))
+
+(case "an association list is searched by key with a tuple-carrying Option match"
+  (doc    "The compiler's symbol-table / environment idiom: a list of `(key value)` tuples searched by
+           key. `lookup` recurses by index, and each `(List.at xs i)` yields an `Option` whose `Some`
+           payload is a TUPLE, deconstructed in one arm `((Some (tuple key val)) …)`; it compares the
+           bound `key` to the target `k` and returns `val` on a hit, else recurses. `(lookup (list
+           (tuple 1 100) (tuple 2 200)) 0 2)` = 200. Pins that the tuple payload's slot binders (`key`,
+           `val`) recover their concrete scalar kinds even though the list is a PARAMETER (opaque
+           `Heap`, so the element shape — hence the tuple's slot types — is unknown): `key` infers
+           Int64 from `(= key k)` by arm-unification, so it unboxes and the `=`/return kinds agree.
+           Without that per-slot recovery the binders stay opaque `Heap` and the match declines
+           'equality of differing kinds' / 'arms differ in kind'. This is the assoc-list an environment
+           or a string→index symbol table is built on.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (def (lookup xs i k)
+              (match (List.at xs i)
+                ((Some (tuple key val)) (if (= key k) val (lookup xs (+ i 1) k)))
+                ((None _)               -1)))
+            (def (main) (lookup (list (tuple 1 100) (tuple 2 200)) 0 2))))
+  (output (: 200 Int64)))
 
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
