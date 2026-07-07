@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The built-in Option loses its payload kind across a function boundary — the last blocker before the reader](./2026-07-07-the-built-in-option-loses-its-payload-kind-across-a-boundary.md)
+  — the reader walks input with `(match (Bytes.at input i) ((Some b) …) (None …))`, and that idiom declines
+  "runtime sum match arms differ in kind" once the built-in `Option` crosses a function boundary. Boundary is
+  sharp AND wider than the spike's Tier-2c framing: `(match (Some 42) …)` at the entrypoint works, but the SAME
+  match in a helper declines — even a plain literal `(Some 42)`, not just `Bytes.at`. `List.at`'s Option and
+  every USER sum bind payloads across boundaries fine (Tier-2b fix), so the gap is the BUILT-IN Option/Result
+  constructor carrying no per-slot payload type (`sum_payload_types`) — its payload kind is recoverable only
+  where local type context supplies it. Fix = register the built-in sums' payload types like a user sum's, NOT
+  patch `Bytes.at`. A value's kind must come from its TYPE, not the expression that produced it (cf. type-directed
+  valtype). Pinned `05-compound-types.sexp` "a built-in Option is unwrapped by a helper that binds its payload"
+  (→ 42, scores todo). The current gate on the reader → self-hosting.
 - [The nested-payload-binder fix closes the front end — a multi-def surface module now compiles end-to-end](./2026-07-07-the-nested-payload-binder-fix-closes-the-front-end.md)
   — the Tier-2b blocker (a `match` arm binding a nested tuple in a sum payload, `(Ctor (tuple op (tuple a b)))`)
   is FIXED in the seed: `bind_sum_payload` now recurses into a nested `(tuple …)` slot, exactly as predicted. The

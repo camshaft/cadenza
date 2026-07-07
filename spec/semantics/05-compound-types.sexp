@@ -411,6 +411,25 @@
             (def (main) (f 7))))
   (output (: (Some (tuple 7 1)) (Option (Tuple Int64 Int64)))))
 
+(case "a built-in Option is unwrapped by a helper that binds its payload"
+  (doc    "A helper takes an `Option Int64` as a PARAMETER and matches it, binding and returning the
+           payload in the `Some` arm and a default in the `None` arm — the idiom for consuming a
+           fallible result (`Bytes.at`, `String.from-bytes`, map `get`) that a self-hosted reader is
+           written in. `(unwrap (Some 42) 99)` binds x=42 and returns 42. Pins that the BUILT-IN
+           polymorphic `Option` supports a payload-binding match across a function boundary, the same
+           way a user-declared sum does (see §\"a match arm binds a nested tuple inside a sum payload\"
+           and the `Box (Full Int64 | Empty)` shape, which compiles). Distinct from the runtime-Option
+           cases above, which only CONSTRUCT and return an Option; this one CONSUMES one whose payload
+           kind must be recovered after it crossed a parameter boundary. Matching the same Option at the
+           entrypoint directly compiles; only passing it into a helper and binding the payload does not
+           yet, so this case guards that the built-in Option's payload kind survives the boundary as a
+           user sum's does.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (unwrap o d) (match o ((Some x) x) ((None _) d)))
+            (def (main) (unwrap (Some 42) 99))))
+  (output (: 42 Int64)))
+
 (case "a recursive function folds a runtime linked list to a scalar"
   (doc    "The consumption half of the recursive-sum idiom, and the core shape a self-hosted compiler is
            written in: a recursive function CONSUMES a runtime linked list (a user recursive sum) by
@@ -990,6 +1009,54 @@
            the Unit argument-type rule for nullary variants holds for every sum, not only Option.")
   (input     (Sign.Pos 5))
   (error     CDZ0201))
+
+(case "a program's unary variant reusing a prelude nullary variant name is unary"
+  (doc    "A program declares `(type Expr (Lit Int64 | Neg Expr))` whose `Neg` variant carries a
+           payload — reusing the NAME of the prelude `(type Sign (Neg | Zero | Pos))`'s NULLARY `Neg`.
+           The program's declaration governs its own `Expr.Neg`: it is UNARY, so `(Expr.Neg (Expr.Lit
+           5))` is well-typed (not a nullary-variant-carries-a-payload error), and a recursive fold over
+           it computes — `depth` of a singly-negated literal is 1. Pins that a program `(type …)`
+           overrides a prelude variant's ARITY by name, so a self-hosted compiler declaring an AST whose
+           variant names (`Neg`, `Lit`, `App`, …) happen to collide with prelude ones is not misjudged
+           by the collided prelude arity. Without the override the prelude's nullary `Neg` misfires
+           CDZ0201 on the program's `(Expr.Neg …)`.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Expr (Lit Int64 | Neg Expr))
+            (def (depth e) (match e ((Expr.Lit n) 0) ((Expr.Neg x) (+ 1 (depth x)))))
+            (def (main)    (depth (Expr.Neg (Expr.Lit 5))))))
+  (output (: 1 Int64)))
+
+(case "a match arm building a fresh runtime compound infers its shape"
+  (doc    "A non-recursive `emit` dispatches on a sum variant and each arm BUILDS a fresh runtime
+           compound (a Bytes value) — `((Expr.Lit n) (Bytes.of (list 66))) / ((Expr.Neg n) (Bytes.of
+           (list 124)))`. The match's result shape is the unified shape of its arm bodies (both Bytes),
+           inferred exactly as an `if`'s two branches are — so returning it across the run boundary
+           renders `b\"B\"`. Pins that a match-arm-returns-fresh-compound needs no `if`-on-discriminant
+           workaround: this is the compiler's own emit/lower DISPATCH shape (dispatch on a node's variant,
+           build its output bytes).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Expr (Lit Int64 | Neg Int64))
+            (def (emit e) (match e ((Expr.Lit n) (Bytes.of (list 66))) ((Expr.Neg n) (Bytes.of (list 124)))))
+            (def (main)   (emit (Expr.Lit 5)))))
+  (output (: b"B" Bytes)))
+
+(case "a recursive lower from a sum to Bytes assembles its output in match arms"
+  (doc    "The compiler's emit spine: a recursive `lower : Expr → Bytes` dispatches on each node's
+           variant and BUILDS the output bytes in the arm — a `Lit` emits its opcode byte, a `Neg`
+           concatenates the lowered child with a suffix byte. `(lower (Neg (Lit 5)))` = `b\"B|\"` (0x42
+           'B' for the Lit, 0x7C '|' appended for the Neg). Pins that a match arm may both build a fresh
+           compound AND recurse — the shape is inferred and the runtime Bytes assemble correctly, the
+           exact shape a self-hosted backend's `lower`/`serialize` takes.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Expr (Lit Int64 | Neg Expr))
+            (def (lower e) (match e
+                             ((Expr.Lit n) (Bytes.of (list 66)))
+                             ((Expr.Neg x) (Bytes.concat (lower x) (Bytes.of (list 124))))))
+            (def (main)    (lower (Expr.Neg (Expr.Lit 5))))))
+  (output (: b"B|" Bytes)))
 
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
