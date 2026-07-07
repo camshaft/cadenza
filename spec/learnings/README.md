@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A pinned snapshot can capture a partial landing when related fixes land minutes apart — the frozen reference has a seam, not just an age](./2026-07-07-a-snapshot-can-capture-a-partial-landing-when-fixes-land-minutes-apart.md)
+  — the refreshed 16:38 stable snapshot held effect-based diagnostics HALF-landed: ask-49 (a compound-returning
+  effectful handle lowers) present, but its sibling ask-51 (the `compile-output` ABI detection recurses through a
+  `handle`) absent — the freshly-built 16:40 seed has both. Probing stable alone painted a self-contradictory
+  picture ("the handler lowers a compound record, but the ABI can't see that record inside the handle"); cross-
+  probing stable-vs-live resolved it as a refresh-timing seam — the refresh instant fell in the ~2-minute gap
+  between the two commits. Sharpens the earlier pinned-snapshot learning: the snapshot's risk isn't only staleness
+  (older than live) but a FROZEN MID-FEATURE seam (one half of a multi-commit feature present, the other absent).
+  Discipline: when one half of a known multi-part landing works on a snapshot and another half doesn't, suspect a
+  refresh seam before a compiler contradiction — check the fixes' commit times against the snapshot mtime and
+  cross-probe live. No corpus (a property of the measurement apparatus, not a language value).
 - [Reading a field off a runtime record completes "read your own input" — the record twin of runtime tuple projection, and the shape must be threaded per binding form](./2026-07-07-reading-a-field-off-a-runtime-record-completes-read-your-own-input.md)
   — with the diagnostics pipeline landed, the next self-hosting hop is reading the AST out of `compile`'s
   `list<artifact>` input; `(. artifact bytes)` declined `runtime compound element of a kind the runtime cannot
