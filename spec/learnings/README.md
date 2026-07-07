@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [A recursive cons-list→Bytes fold now infers its shape as the direct result — the serialize spine, no concat anchor needed](./2026-07-07-a-recursive-bytes-fold-infers-its-shape-as-the-direct-result.md)
+  — seed fixed Tier 3d: a recursive fold of a cons-list of byte fragments to Bytes (`(match xs ((Nil) empty)
+  ((Cons (tuple h t)) (Bytes.concat h (rec t))))`) now compiles as `main`'s DIRECT result (verified `cat-all
+  (build 3)` → `b"CBA"`), where it previously declined "cannot infer runtime compound result shape" unless
+  anchored by a literal concat operand. The compiler's SERIALIZE spine (fold a code stream into the output byte
+  vector). Same family as the recursive-Bool and Tier-00 Heap races: a self-call's shape is a placeholder during
+  the function's own inference; the fix lets a concrete sibling (the `Bytes.of (list)` base arm) pin the result
+  regardless of position — now extended to the compound-SHAPE axis (was kind). The concat-anchor workaround was
+  the same contortion as the Bytes-hack; removing the need is the honest fix. Pinned `10-bytes.sexp` "a recursive
+  fold of a cons-list to bytes is the whole program result" (→ b"CBA"). NOTE: distinct from the still-declining
+  recursive-sum-VALUE render (unbounded shape); a Bytes fold has a determinate result.
 - [The reader resolves names to local slots — lexical shadowing is deepest-position-wins in an index environment](./2026-07-07-the-reader-resolves-names-to-local-slots-with-lexical-shadowing.md)
   — the reader grew SCOPE resolution: a bare name (CBOR tag 39 `d8 27 <idx>` wrapping a prelude index) resolves to
   a local SLOT via a parameter environment (in-scope names' prelude indices, in order); `let` extends the env

@@ -401,6 +401,31 @@
             (def (main) (emit (Expr.Add (tuple (Expr.Lit 1) (Expr.Neg (Expr.Lit 2))))))))
   (output (: b"BB|j" Bytes)))
 
+(case "a recursive fold of a cons-list to bytes is the whole program result"
+  (doc    "The compiler's SERIALIZE spine: fold a linked list of byte fragments into one byte vector by
+           recursive `Bytes.concat`, as the program's DIRECT result. `cat-all` walks a `BL` cons-list
+           whose elements are `Bytes`, concatenating each head onto the fold of the tail; `build n`
+           constructs the list at run time (so its length — hence the fold depth — is a runtime value),
+           making fragment `64+k` for k = n..1. `cat-all (build 3)` folds `[b\"C\" b\"B\" b\"A\"]`
+           (bytes 67, 66, 65) to `b\"CBA\"`. Pins that a recursive cons-list→Bytes fold infers its Bytes
+           result shape even when the recursive call is the fold's whole value (`(Bytes.concat h (cat-all
+           t))` with `cat-all t` as an operand) AND the fold is `main`'s direct result — earlier this
+           declined \"cannot infer runtime compound result shape\" unless anchored by a literal concat
+           operand. This is how a self-hosted compiler assembles its output: `serialize` folds a code
+           stream (a list of encoded instruction/section fragments) into the component's byte vector,
+           the list-fold companion of the per-node tree-walk emitter above.")
+  (needs  bytes)
+  (input  (module m
+            (type BL (BNil | BCons (Tuple Bytes BL)))
+            (def (build n) (if (< n 1)
+                               (BL.BNil ())
+                               (BL.BCons (tuple (Bytes.of (list (Int.to-byte (+ 64 n)))) (build (- n 1))))))
+            (def (cat-all xs) (match xs
+                                ((BL.BNil _)            (Bytes.of (list)))
+                                ((BL.BCons (tuple h t)) (Bytes.concat h (cat-all t)))))
+            (def (main) (cat-all (build 3)))))
+  (output (: b"CBA" Bytes)))
+
 ; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
 ; Slicing and compacting a byte sequence carrying a runtime value are the input-side companions of the
 ; concat cases above: a compiler reading its input bytes takes sub-ranges (`Bytes.slice`) and, having
