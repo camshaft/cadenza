@@ -486,6 +486,19 @@
             (def (main) (div 5 0))))
   (trap   "division by zero"))
 
+(case "a division whose divisor folds to zero still traps"
+  (doc    "`(/ 10 (- 3 3))`: the divisor is not the literal 0 but a constant expression that reduces to
+           0. Constant folding a compiler applies bottom-up will reduce `(- 3 3)` to 0 before it reaches
+           the division — but folding the division ITSELF to a value would ERASE a trap the source
+           specifies, changing the program's meaning. So the fold must be meaning-preserving: it may
+           reduce the divisor, yet the divide-by-zero MUST still trap at run time (it is emitted as a
+           real i64.div_s over a now-constant 0), exactly as `(/ 10 0)` does. Pins that a Core→Core
+           rewrite (folding) preserves a runtime trap — it may not manufacture a value where the source
+           denotes a trap. The dual of the guarded-fold direction: `(/ (+ 10 10) (+ 2 2))` DOES fold to
+           5 because it cannot trap; a divisor of 0 may not be folded away.")
+  (input  (/ 10 (- 3 3)))
+  (trap   "division by zero"))
+
 (case "modulo gives the remainder"
   (doc    "The compiler needs modulo for LEB128 encoding: extract 7-bit groups from an integer.")
   (input  (% 130 128))

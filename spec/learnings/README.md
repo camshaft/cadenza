@@ -508,6 +508,18 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Constant folding must preserve runtime traps — and whether a certain trap should be a compile error is a separate decision](./2026-07-06-constant-folding-must-preserve-runtime-traps.md)
+  — the compiler's first Core→Core rewrite (constant folding) must be MEANING-PRESERVING: `(/ 5 0)`'s recorded
+  meaning is a trap, so folding it to a value would erase the trap (a miscompile) and folding it to a rejection
+  also changes the meaning. The fold is guarded (`foldable-divisor`) — fold a division/modulo ONLY when the
+  divisor is a non-zero, non-overflowing constant; otherwise keep the primitive so the trap fires at run time.
+  Verified: `(/ 10 (- 3 3))` folds the divisor to 0 but still TRAPS (preserved, not erased); the mirror bug is the
+  seed's over-eager const-fold TRAPPING `(% Int64.min -1)` which must yield 0 (manufacturing a trap). SEPARATE
+  open question the operator flagged: should a provable-certain trap be a COMPILE-TIME rejection? Kept out of the
+  fold — reachability (`(if false (/ 5 0) 42)` → 42, verified) and the ragged boundary (`(/ 5 0)` rejected but
+  `(/ 5 (id 0))` not) push it to a later reachability pass, tied to compile-time-mandatory-eval contexts à la
+  Rust/Zig. Recorded as SPEC-BACKLOG item 9; corpus case "a division whose divisor folds to zero still traps"
+  pins the erase-direction floor.
 - [A language with conditionals still needs boolean connectives — the spec had none](./2026-07-06-a-language-with-conditionals-still-needs-boolean-connectives.md)
   — a routine compiler predicate (the signed-LEB128 terminator, an `and`/`or` of bit tests) could not be
   written: `(and a b)`/`(or a b)`/`(not a)` were absent from the seed, EVERY conformance case, and the spec —
