@@ -303,6 +303,25 @@
                 ((None u) 0)))))
   (output (: 42 Int64)))
 
+(case "a field is projected off a record unwrapped from an optional with expect"
+  (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field and #Requiring The Value
+           Of An Optional Traps On Absence composed: the record reaches the `.` projection by being
+           UNWRAPPED from an `Option` with `expect`, where the optional is produced by a FUNCTION CALL
+           (not an inline literal). `mk` returns `(Some (record (a n) (b (+ n 1))))`; `(Option.expect
+           (mk 41) \"x\")` unwraps the present optional to the record, and `(. … b)` projects field `b`
+           = 42. This is the `expect`-unwrap companion of the match-arm binder case above: the value
+           arrives through a DIFFERENT binding construct, and the projection must still resolve the
+           field — the unwrap must carry the payload's record shape to the projected value. The
+           call-produced scrutinee is the demanding form: an inline `(Some (record …))` literal or a
+           `let`-bound optional carry the shape structurally, but a call return is a genuine runtime
+           value whose shape must be threaded through the `expect` unwrap. A shape-dropping unwrap would
+           leave the value slotless — historically this compiled to a VALID component that TRAPPED at
+           run (a decline leaked past the emit retry into a runtime trap), which this case pins against.")
+  (input  (module m
+            (def (mk n) (Some (record (a n) (b (+ n 1)))))
+            (def (main) (. (Option.expect (mk 41) "x") b))))
+  (output (: 42 Int64)))
+
 (case "a sum-type value is constructed through a variant"
   (doc    "Sign is declared where used as (Neg | Zero | Pos) (options/code-shape/); a value is one
            variant. Construction is via application: Sign.Pos is a Constructor (function), and

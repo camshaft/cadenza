@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A decline that leaks into a VALID-but-trapping component is the most dangerous shape a decline can take — and the guard is a run-entry corpus case, not a discriminator](./2026-07-07-a-decline-that-leaks-into-a-valid-but-trapping-component-is-the-most-dangerous-shape.md)
+  — isolating the `Option.expect` field-projection fix (ask-52) surfaced a sharper sibling defect: the same
+  projection with a CALL-produced optional scrutinee didn't honestly decline on the pre-fix seed — it emitted a
+  VALID component that TRAPPED at run (a bare `unreachable` stub the entry called). Seven probes localized it to
+  `gen_runtime_member` re-deriving the operand's Shape via `shape_of` through a call, which the `expect`-case
+  couldn't recover. This is the reject-don't-miscompile ordering caught in its most insidious middle: a decline
+  that leaked PAST the emit-retry into a run-time trap is strictly worse than an honest entry-stub decline, and it
+  re-creates the decline-vs-semantic-trap value ambiguity (ask-26/33) — an entry-shape proxy can't see it, only
+  running the artifact can. The fix for a leaked-decline-trap isn't a better discriminator (that only keeps the
+  count honest) but a CORPUS CASE with a concrete value, which converts "currently fixed" into "cannot regress
+  silently." Added "a field is projected off a record unwrapped from an optional with expect" (call-scrutinee
+  form, gate 571→572). General lesson: the behaviors most worth a regression guard are the ones whose failure mode
+  is a silently valid wrong artifact.
 - [The decline-vs-reject distinction reappears inside the compiler's own diagnostics pass — and a working mechanism can still be unshippable](./2026-07-07-the-decline-vs-reject-distinction-reappears-inside-the-compilers-own-diagnostics-pass.md)
   — the whole seed-side effect-diagnostics pipeline landed and the MECHANISM works end-to-end (well-typed → Ok
   component, ill-typed → `Diagnostics[CDZ0201]`), but the byte gate didn't move: activating the handler drove
