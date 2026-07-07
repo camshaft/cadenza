@@ -508,6 +508,18 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Payload-bound `List.at` fixed — multi-argument calls are now representable (and const-folding masked the real gap)](./2026-07-07-payload-bound-list-at-fixed-multi-arg-calls-are-representable.md)
+  — the seed fixed Tier 3h / #17: `List.at` on a payload-bound list now reads its element (→10, my todo case
+  flipped to PASS). Unblocks the natural N-ary call rep `KCall (Tuple Int64 (List Core))` — iterate the payload
+  arg list via `List.len` + `List.at`, each arg a recursive sum consumed (verified `KCall(9,[10 20 12])` → 42).
+  ⚠ I MIS-FRAMED the cause as "payload-shape mismatch"; the seed fix shows there was simply NO runtime `List.at`
+  emitter — `List.at (list …) i` only ever "worked" by const-FOLDING the literal list; a payload-bound Heap
+  handle can't fold, so that's where the mask came off. SAME trap as the scale-limit misdiagnosis: reasoning from
+  a const-folding clean analogue hides a missing runtime path. RULE (proven twice): when a construct works on a
+  literal/at the entrypoint but fails on a runtime value / through a boundary, check whether the runtime emitter
+  EXISTS before theorizing about shapes — a const-foldable positive control is not evidence the runtime path
+  works. Pinned `05-compound-types.sexp` "a multi-argument call node is evaluated by iterating its payload arg
+  list" (→42). #17 RESOLVED; #13 (list patterns) now purely ergonomic.
 - [The reader gate (built-in Option across a boundary) closed fully — and `List.at` on a payload-bound list is the next accessor](./2026-07-07-the-reader-gate-closed-and-list-at-on-a-payload-list-is-the-next.md)
   — the seed rebuilt and closed backlog #12 (built-in Option/Result losing its payload kind across a boundary)
   across ALL facets at once: `String.from-bytes` through a helper works (→2, ill-formed → None arm; real

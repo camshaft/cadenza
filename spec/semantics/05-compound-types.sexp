@@ -930,6 +930,31 @@
             (def (main) (f (K.KK (tuple 7 (list 10 20 30)))))))
   (output (: 10 Int64)))
 
+(case "a multi-argument call node is evaluated by iterating its payload arg list"
+  (doc    "The multi-argument-call idiom the payload-bound `List.at` unblocks — a self-hosted compiler's
+           natural N-ary call representation. A `KCall` node carries `(Tuple Int64 (List Core))`: a
+           function index plus an argument LIST of sub-nodes. `ev` matches `KCall`, binds the arg list
+           `xs` from the payload, and iterates it — `List.len xs` gives the count, `List.at xs i` reads
+           each argument node, and each is evaluated recursively and summed. `KCall` with three
+           `KConst` args [10 20 12] evaluates to 10+20+12 = 42. Pins that a list of HEAP sub-nodes stored
+           in a sum payload is both measurable (`List.len`) and indexable (`List.at`) and its elements are
+           themselves consumable (matched/recursed), so a compiler can lower an N-ary node by iterating
+           its payload arg list — distinct from the single-element case above (here the payload list holds
+           recursive sum values and is walked in full, the exact shape a `lower`/`ev` pass over a call
+           node with a variable argument count takes).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Core (KConst Int64 | KCall (Tuple Int64 (List Core))))
+            (def (sum-args xs i n) (if (< i n)
+                                       (+ (ev (match (List.at xs i) ((Some c) c) ((None _) (Core.KConst 0))))
+                                          (sum-args xs (+ i 1) n))
+                                       0))
+            (def (ev c) (match c
+                          ((Core.KConst v) v)
+                          ((Core.KCall (tuple fi xs)) (sum-args xs 0 (List.len xs)))))
+            (def (main) (ev (Core.KCall (tuple 9 (list (Core.KConst 10) (Core.KConst 20) (Core.KConst 12))))))))
+  (output (: 42 Int64)))
+
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
   (needs collections)
