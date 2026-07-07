@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The byte gate found its first real miscompile — a polymorphic identity loses its Bool return — and the decline discriminator is too narrow to see it](./2026-07-07-the-byte-gate-found-its-first-real-miscompile-a-polymorphic-identity-loses-its-bool-return.md)
+  — running every one of the 153 byte-gate disagreements (not trusting the aggregate) split them: 28 soft, **77
+  hidden declines** (trap at runtime but NOT a bare-`unreachable` entry, so ask-29's discriminator misses them),
+  33 native-rejected (ask-30), and **1 REAL MISCOMPILE**: `(def (id x) x) (def (main) (id true))` returns `1`,
+  not `true` — compiler.cdz frames the polymorphic `id` as i64, widens the Bool `1` to i64, and lifts `(result
+  s64)` where native lifts `bool`. Root cause: the return-kind fixpoint propagates a BODY-shaped Bool return but
+  not an ARGUMENT-shaped one (a function whose return kind is its argument's). Two findings → ask-34 (the
+  miscompile: specialize the pass-through return to the applied argument's kind, or decline — never mis-widen)
+  and ask-33 (widen the discriminator to a runtime-trap check so `disagree` means running-wrong-value, ~1, not
+  153). No new corpus (`(id true)` already pinned; behavior gate green because native handles it). Lesson: a
+  gate's discriminator is only as good as the failure shape it models — "decline = bare unreachable" hid 77
+  declines; a decline is "traps at runtime." Run the artifact; the entry-func shape is a proxy, and proxies leak.
 - [The byte-level gate's decline discriminator exposed the real self-hosting frontier: the compiler has no type-checker](./2026-07-07-the-byte-level-gate-decline-discriminator-exposes-the-missing-type-checker.md)
   — the decline discriminator (ask-29) landed: `component-check` went 58 agree / 496 disagree → 58 agree / 152
   disagree / **344 decline** / 204 skip. Splitting declines off made the 152 legible: 117 are the fold-vs-helper
