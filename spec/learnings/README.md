@@ -10,6 +10,20 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The decline-vs-reject distinction reappears inside the compiler's own diagnostics pass — and a working mechanism can still be unshippable](./2026-07-07-the-decline-vs-reject-distinction-reappears-inside-the-compilers-own-diagnostics-pass.md)
+  — the whole seed-side effect-diagnostics pipeline landed and the MECHANISM works end-to-end (well-typed → Ok
+  component, ill-typed → `Diagnostics[CDZ0201]`), but the byte gate didn't move: activating the handler drove
+  `component-check` 152→441 disagree because the coarse `check-node` pass FALSE-REJECTS constructs native compiles.
+  Root (ask-53): `KError` has two sources that resolve identically — a genuine rejection (`(+ 1)`, native rejects
+  CDZ0201 ✓) and an honest decline (a float `4.5`, native runs it → must NOT be a diagnostic) — and the pass emits
+  a diagnostic for both. Verified the two sources have opposite native outcomes. This is the decline-vs-reject
+  distinction the loop fought across three measurement gates (ask-26/29/33) and made a spec requirement (ask-48's
+  machine-branchable kind), now recurring a fourth time INSIDE the self-hosted compiler's own diagnostics pass —
+  it's intrinsic to a compilation relation, reappearing at every layer that classifies a "no". Durable fix: carry
+  the kind as a distinct value where the "no" is produced (`KReject` vs `KDecline`), don't re-derive downstream.
+  Second lesson: a mechanism proven end-to-end can still be unshippable — run the FULL gate before reporting a
+  payoff; a capability demo on one input says nothing about corpus-wide correctness. `compile` correctly held at
+  bare-Bytes (gate 571/0, WRONG=0). No corpus (existing cases pin both sides; ask-53 is a check-pass scoping bug).
 - [A pinned snapshot can capture a partial landing when related fixes land minutes apart — the frozen reference has a seam, not just an age](./2026-07-07-a-snapshot-can-capture-a-partial-landing-when-fixes-land-minutes-apart.md)
   — the refreshed 16:38 stable snapshot held effect-based diagnostics HALF-landed: ask-49 (a compound-returning
   effectful handle lowers) present, but its sibling ask-51 (the `compile-output` ABI detection recurses through a
