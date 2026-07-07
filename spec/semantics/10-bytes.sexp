@@ -628,6 +628,36 @@
             (def (main) (sum-array (Bytes.of (list 0x84 0x0A 0x14 0x18 0x1E 0x18 0x28)) 0))))
   (output (: 100 Int64)))
 
+(case "a CBOR skip steps over a tagged item to the value it wraps"
+  (doc    "The reader's navigation over a CBOR TAG (major 6): a tag is its head followed by exactly one
+           tagged data item, so skipping a tag skips its head then recursively skips the one item it
+           wraps. This is the `39` bare-name marker a canonical-AST module uses to distinguish a symbol
+           reference from a plain integer — encoded `d8 27 <idx>` (tag number 39 = `0x27`, given as a
+           one-byte argument after the `0xd8` tag head). Against `d8 27 01` — tag 39 (a two-byte head)
+           wrapping the uint `1` (one byte) — `cbor-skip` from offset 0 steps past the tag head and the
+           wrapped uint, landing at offset 3. Pins the tag branch of the navigation primitive: without
+           it a reader walking a module's def list would miscount offsets the moment it met a tagged
+           name, reading the wrong element. Completes the item-kind coverage of `cbor-skip` (array /
+           string / tag / scalar) the reader needs to traverse the whole canonical AST.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (cbor-major b i)    (>> (byte-at b i) 5))
+            (def (cbor-info b i)     (& (byte-at b i) 31))
+            (def (cbor-arg b i)      (if (< (cbor-info b i) 24) (cbor-info b i) (byte-at b (+ i 1))))
+            (def (cbor-head-len b i) (if (< (cbor-info b i) 24) 1 2))
+            (def (skip-elems b i k)  (if (< k 1) i (skip-elems b (cbor-skip b i) (- k 1))))
+            (def (cbor-skip b i)
+              (if (= (cbor-major b i) 4)
+                  (skip-elems b (+ i (cbor-head-len b i)) (cbor-arg b i))
+              (if (or (= (cbor-major b i) 3) (= (cbor-major b i) 2))
+                  (+ (+ i (cbor-head-len b i)) (cbor-arg b i))
+              (if (= (cbor-major b i) 6)
+                  (cbor-skip b (+ i (cbor-head-len b i)))
+                  (+ i (cbor-head-len b i))))))
+            (def (main) (cbor-skip (Bytes.of (list 0xD8 0x27 0x01)) 0))))
+  (output (: 3 Int64)))
+
 ; --- The `b"…"` literal reads to a byte sequence, and rendering round-trips -----------------------
 ; `b"…"` is reader sugar for `(Bytes.of (list …))`, so a byte-string literal and the explicit form
 ; denote ONE value: they are equal. These cases pin the reader equivalence in both directions

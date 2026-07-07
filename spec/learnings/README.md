@@ -508,6 +508,17 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The self-hosting gate shifted from "seed capability" to "the compiler's source is within its own accepted subset"](./2026-07-07-self-hosting-gate-shifts-from-seed-capability-to-bootstrapping-subset.md)
+  — a CATEGORY SHIFT in the blocker. For ~20 cycles the gate was a seed capability (a shape the seed couldn't
+  compile); all fixed. Now the gate is "does the compiler accept the language its OWN source is written in?" — a
+  bootstrapping-completeness question. `compile-bytes` reads+compiles the subset {arith, comparison, bool, if,
+  let, call, multi-def, Int64/Bool}; the compiler's own source uses more (sum types, match, String, heap
+  recursion), so `compiler compiles compiler` is gated on the Cadenza compiler's front end/backend GROWING to
+  accept those (which the seed already compiles — the compiler just doesn't yet EMIT for them). Changes the loop's
+  job: from defect-finding (probe seed → pin corpus case) to coverage-measuring (a subset frontier / capability
+  inventory — a roadmap artifact, not a per-shape case). #12/#13 recategorized "reader gate" → "subset growth".
+  Pinned `10-bytes.sexp` "a CBOR skip steps over a tagged item" (tag 39 `d8 27 01` → 3), completing cbor-skip's
+  item-kind coverage (array/string/tag/scalar).
 - [The whole-module reader is wired — the compiler reads a multi-def module's canonical AST and compiles it](./2026-07-07-the-whole-module-reader-is-wired-module-bytes-to-component.md)
   — the reader went from a single expression to a WHOLE MODULE: `compiler.cdz`'s `main` now compiles `module
   bytes → component`. The CBOR of `(module m (def (main) 42))` → read-module → resolve-module → fold → lower →
