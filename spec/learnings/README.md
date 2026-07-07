@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Gap 3n is fixed — the self-hosting loop is operational for arbitrary programs, and the byte-level gate is one step away](./2026-07-07-gap-3n-fixed-the-self-hosting-loop-is-operational-and-the-byte-gate-is-one-step-away.md)
+  — the `compile`-return mod-4 alignment bug (narrowed over the prior cycles, fix `(p+3)&!3` converged with the
+  compiler agent) landed in the seed. The loop re-probed every input that failed last cycle (`0`/`1`/`true`/`256`/
+  len-31/33/34) — ALL now `Ok`, across all mod-4 residues. So `compile-run` works for arbitrary programs, and a
+  byte-level differential runs: `compiler.cdz` is byte-IDENTICAL to native on `(main) 42`/`(< 3 5)`/depth-2 chain,
+  `soft` on `(+ 20 22)`/`(dbl 21)` (native overflow helpers vs mine folding) — the real self-hosting agreement
+  through the ABI it ships. Full report→fix→confirm round trip through the loop→agent channel. No corpus case
+  (seed ABI defect; the values are already pinned). Next: `component-check` is the byte gate but reads a compiler
+  component from a fixed path and can't be pointed at a compiler.cdz-built one — one seed step (persist the
+  compile-component) unblocks the whole-corpus byte gate. Lesson: a loop that hands the agent a root cause AND
+  verifies the fix closes the feedback edge — confirming gaps stay closed is as much the job as finding them.
 - [The self-hosting loop runs end-to-end — and the compile-return alignment bug has a sharp value threshold the handoff doc missed](./2026-07-07-the-self-hosting-loop-runs-end-to-end-but-the-compile-return-trips-on-a-value-threshold.md)
   — `compiler.cdz`'s entry was rewired to `(def (compile b) (compile-bytes b))` — the real self-hosting seam
   (pending step 1 from the bytes→bytes learning, now landed). `compile-run` compiles `(module m (def (main) 42))`
