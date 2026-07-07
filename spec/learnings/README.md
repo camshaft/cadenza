@@ -508,6 +508,16 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [Runtime tuple projection works through a `let` — and the direct path is a decline-don't-miscompile violation, not a clean trap](./2026-07-07-runtime-tuple-projection-needs-a-let-and-the-direct-path-miscompiles.md)
+  — the spike fixed `tuple.N` on a runtime (`let`-bound) tuple (the decoder's `(node, index)` pair): `arr-get` +
+  unbox from the `Local`'s carried `Shape`. Verified `(let ((r (dec 4))) (+ (tuple.0 r) (tuple.1 r))) → 45`. But
+  probing the `let`-FREE path found it WORSE than the handoff recorded: SEED-GAPS says "valid component that
+  traps"; measurement shows `(tuple.0 (dec 4))` emits an INVALID component (fails wasm validation) — a
+  decline-don't-miscompile violation, strictly worse than a clean decline or defined trap. The `let` is
+  load-bearing (shape recovery is wired to the binding site, not the projection operator). Durable point:
+  "valid-but-traps" ≠ "invalid component" — different severities; a handoff recording the milder one HIDES a
+  miscompile, and the gate scores invalid as FAIL not todo (so it can't be pinned green until the seed compiles or
+  declines it). No corpus case landed (would FAIL the gate); SPEC-BACKLOG #15.
 - [The reader's whole foundation is built and verified — gated on a single inference bug, as dead code](./2026-07-07-the-reader-foundation-is-built-and-gated-on-one-inference-bug.md)
   — the reader's three sub-capabilities are all written + verified on real `(quote 42)` bytes: head decode
   (`cbor-major`/`arg`/…), structural navigation (`cbor-skip`/`skip-elems`, walks past a nested item), and name
