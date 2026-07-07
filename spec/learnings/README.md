@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A fix verified on one entry doesn't move a gate driven through another — the compile/run ABI fork has two hops, not one](./2026-07-07-a-fix-verified-on-one-entry-does-not-move-a-gate-driven-through-another.md)
+  — ask-46 landed (recursive-effectful `handle` lowers under the `compile` entry) and I verified it green via
+  `compile-run` with the diagnostics target shape (`compile → Diagnostics: [(CDZ0201,bad),(CDZ0201,bad)]`). But
+  the byte gate didn't move (65/124/386 unchanged, compiler.cdz still the same 42151 bytes) because the gate
+  drives the compiler through `emit`→`run()`, and on THAT entry a recursive-effectful `handle` whose RESULT is a
+  compound still declines (ask-49, independently reproduced — the run-entry twin of ask-46; scalar result works
+  by ask-45, compound works on the compile entry by ask-46). So a real, correctly-verified fix moved no gate
+  number, because I verified it on the entry the fix is about (`compile`) not the entry the gate uses (`run`).
+  Sharpens the ask-46 thesis (a new entry ABI forks lowering coverage) into a verification rule: when coverage
+  forks by entry, verify a fix on the entry your GATE drives — a green on the wrong entry is a true result about
+  the wrong question, and mistaking it for progress hides the real remaining hop. No corpus (entry-ABI lowering
+  gap). ask-46 → done (loop-verified), ask-49 the open last-hop.
 - [A diagnostics capability spec raised the bar to error recovery and a machine-branchable kind — and it names the distinction the loop has been improvising](./2026-07-07-a-diagnostics-capability-spec-raised-the-bar-to-error-recovery-and-a-branchable-kind.md)
   — a new tracked `spec/capabilities/diagnostics.md` formalized the compiler's diagnostics contract. Probing each
   requirement against the stable seed split them: MET (stable codes — pinned by the corpus's `rejected CDZ####`
