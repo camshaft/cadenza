@@ -10,6 +10,16 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Sharing the scratch-local mechanism cost right-shift its byte-identity — reuse has a fidelity price](./2026-07-07-sharing-the-scratch-local-mechanism-cost-right-shift-its-byte-identity.md)
+  — a regression spot-check on the `agree` anchors caught `(>> 256 4)`, byte-identical in Run 73, now `soft`
+  (value-correct → 16, byte-different; WRONG=0 — not a correctness regression). Cause: shift emit reuses the
+  checked-arithmetic 3-slot scratch reservation, but `>>` needs only 2 (no overflow guard; native declares 2),
+  so `>>` over-declares one local and drops out of byte-identity (`<<` needs 3 and stays agree). Lesson: a
+  shared mechanism emits the UNION of its clients' needs — reuse (which made shifts cheap wiring) costs
+  byte-fidelity on the client that needs less, and `agree` (byte-identical) is the only bucket that shows it;
+  the last mile to agree on a reused mechanism is per-client tailoring. Process note: a rising `agree` count is
+  not a superset — "61→65" doesn't prove the 61 stayed; spot-check the anchors. Filed ask-41 (LOW: direction-
+  specific shift scratch-local count). No corpus (shift value/trap already pinned; this is byte-fidelity).
 - ["Disagree" rising can be progress — cases moving off the decline floor into the soft/heap middle ground](./2026-07-07-disagree-rising-is-progress-when-cases-move-off-the-decline-floor.md)
   — the byte gate moved declines 377→330, disagrees 137→183 — reads like a regression, but the standing WRONG
   sweep stayed 0. Probing the ~46 that moved: the +3.3 KB compiler.cdz change EXPANDED coverage — many `let`/
