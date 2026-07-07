@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The return-kind table is a monotone fixpoint, and it propagates a Bool result to any call depth — the capability gap 3k unblocked](./2026-07-07-the-return-kind-table-is-a-monotone-fixpoint-and-it-propagates-bool-to-any-depth.md)
+  — the compiler needs each function's result kind (i32/Bool vs i64/Int) to frame its wasm signatures and calls.
+  A single-pass table handles a directly-Bool-bodied helper, but a TRANSITIVE chain (`a` returns `b`'s result,
+  `b` returns `c`'s, only `c` has a Bool body) is a FIXPOINT over the call graph. The spike landed
+  `build-ktab`/`ktab-iterate` (a monotone fixpoint), and probing compiler.cdz confirmed it byte-identical to the
+  seed at depth 1/2/3 (108/124/140 B, every func framed `result i32`). This is the capability gap 3k /
+  [[a-fixpoint-loops-blowup-is-fresh-re-seed-plus-list-result-not-the-loop]] was blocking — the compiler shipped
+  a single-pass STOPGAP because the seed OOM'd on the fixpoint shape; 3k fixed → the true fixpoint became
+  expressible and replaced the stopgap. Pinned `09-functions` *"a boolean result propagates through a three-deep
+  chain of forwarding functions"* (→ true, byte-identical 131 B) — depth-3 is what distinguishes a fixpoint from
+  a single pass (the two-deep case one propagation step also passes). Lesson: the compiler's "single-pass / NOT
+  YET / reverted" comments are a live map of the seed's frontier — a stopgap approximation (this) and a stopgap
+  decline (shifts) both resolve by the seed growing, not the compiler working around.
 - [A decline that lands on a trap-expecting oracle is coincidental agreement, not a semantic trap — the trap-oracle dual of reject-don't-miscompile](./2026-07-07-a-decline-that-lands-on-a-trap-oracle-is-coincidental-agreement-not-a-semantic-trap.md)
   — a quiet-cycle completeness sweep of the interim harness's new `trap-ok` bucket (oracle expects a trap, mine
   also traps). The board looked clean — 22 agree / 6 soft / 4 trap-ok / 0 hard — but probing the four realized

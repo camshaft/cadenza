@@ -475,6 +475,26 @@
             (def (main) (b 1))))
   (output (: false Bool)))
 
+(case "a boolean result propagates through a three-deep chain of forwarding functions"
+  (doc    "core-semantics.md §A Function Is A First-Class Value, one level deeper than the two-function
+           case above: `a` forwards `b`'s result, `b` forwards `c`'s, and `c` is the only function with
+           a directly Bool body (`(= n 0)`). So a's and b's return types are Bool only TRANSITIVELY —
+           neither has a Bool-shaped body; each just returns a call whose callee's return type must
+           already be known. Determining every function's result type is therefore a FIXPOINT over the
+           call graph, not a single pass: the first pass learns `c` returns Bool, the second propagates
+           that to `b`, the third to `a` and `main`. A single-pass return-type computation (enough for
+           the two-function case, where one propagation step suffices) leaves `a`/`b` unresolved — and a
+           compiler that defaults an unresolved function result to the integer type would give `a` and
+           `b` mismatched result kinds versus the `i32`/Bool value they actually forward. a(0) = true.
+           This pins that result-type resolution iterates to convergence across an arbitrary-depth chain,
+           the companion of the two-deep case and of the recursive Bool cases earlier in this file.")
+  (input  (module m
+            (def (main) (a 0))
+            (def (a n)  (b n))
+            (def (b n)  (c n))
+            (def (c n)  (= n 0))))
+  (output (: true Bool)))
+
 (case "a boolean function result bound by let is still a boolean"
   (doc    "core-semantics.md §Binding Is Lexical: binding a predicate's result to a name and
            returning that name does not change its type. The program's result is the Bool true.")
