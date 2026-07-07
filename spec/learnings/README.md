@@ -508,6 +508,18 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [A no-scratch-local Lir must decline the ops that need guard locals — shifts are the honest decline, not a miscompile](./2026-07-07-a-no-scratch-local-lir-must-decline-ops-that-need-guard-locals.md)
+  — the compiler reached `<< >>` and deliberately DECLINES them (KError→unreachable). Reason: wasm's shl/shr mask
+  the count mod 64 and never trap, so an unguarded emit MISCOMPILES (shift-by-64 → silently shift-by-0); faithful
+  lowering needs a count-range trap guard + overflow guard, both needing SCRATCH LOCALS — but compiler.cdz's Lir
+  is a pure Core→Code fold with NO local allocation. So faithful shifts are an ARCHITECTURAL step (a
+  local-allocating lower pass), not a one-line binop; declining is the only honest option a fold-only backend has
+  (bare emit = miscompile). The CORRECT face of reject-don't-miscompile (vs the reader's atom-decode leak, #23):
+  the backend recognizes it can't faithfully emit and declines. General: a backend IR's shape (fold-only vs
+  local-allocating) BOUNDS which operators it can faithfully emit; guarded ops (shifts, checked-arith-with-a-held-
+  operand, bin-fit-checks) are declined until the IR grows locals, and that's coverage-gap-in-the-pass, not
+  in the operators. No corpus case (seed's shift-trap already pinned; this is a compiler.cdz emit-path choice).
+  Notes SPEC-BACKLOG #20: faithful guarded-op emit is gated on a local-allocating lower pass.
 - [The self-hosted reader miscompiles unsupported constructs instead of declining — and correcting my own wrong call](./2026-07-07-the-self-hosted-reader-miscompiles-unsupported-constructs-instead-of-declining.md)
   — the harness's `0 mine-declines` is the ALARMING signal, not noise: `compiler.cdz` NEVER declines an
   unsupported construct — it emits a valid-but-WRONG component. Verified: a CBOR float `0xfb` (major 7, info 27)
