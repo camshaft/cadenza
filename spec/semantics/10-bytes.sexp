@@ -10,14 +10,30 @@
 ; #Indexing And Lookup Are Fallible, Not Trapping) — so those cases are tagged
 ; (needs fallible-access), a capability the seed does not yet realize (they skip until a
 ; generation returns an Option from Bytes.at / Bytes.slice).
+;
+; THE OBSERVABLE FORM — `b"…"`. A byte sequence's canonical display is the byte-string literal
+; `b"…"` (options/binary-syntax), the SAME shape the `bytes` crate's `Debug` prints and this
+; specification's model of a legible byte dump: a printable ASCII byte (0x20..=0x7e) stands for
+; itself, and any other byte is an escape — `\n \r \t \\ \" \0` for the named ones, `\xNN` (two
+; lowercase hex digits) for the rest. `b"…"` is ALSO reader sugar: it reads to `(Bytes.of (list …))`,
+; the way `a.b` reads to `(. a b)`, so the two spellings are one program and the canonical tree
+; carries only `Bytes.of` — there is no new node kind. This is why the input `(Bytes.of (list …))`
+; and the output `b"…"` name the same value: rendering a byte sequence and reading it back
+; round-trips (the cases at the end of this file pin the equivalence). It composes with the `(bin …)`
+; binary form (16-binary-matching.sexp): `b"…"` is a whole-value literal (matches by equality, splices
+; into `(bytes …)`), where `(bin …)` is a structured segment application — orthogonal surfaces that
+; both denote an ordinary Bytes value.
 
 (case "a byte sequence is constructed from a list of integers in range"
   (doc    "Witnesses that the seed realizes a Bytes value form: Bytes.of maps a list of
            Int64 in 0..=255 to an immutable byte sequence. This is the value the
-           Cadenza-authored compiler builds a component's wasm bytes up as.")
+           Cadenza-authored compiler builds a component's wasm bytes up as. Its canonical
+           OBSERVABLE form is the byte-string display `b\"…\"` (options/binary-syntax): a printable
+           ASCII byte stands for itself and any other byte is a `\\xNN` escape, so bytes 1, 2, 3 —
+           all non-printable — render `b\"\\x01\\x02\\x03\"`.")
   (needs  bytes)
   (input  (Bytes.of (list 1 2 3)))
-  (output (: (Bytes.of (list 1 2 3)) Bytes)))
+  (output (: b"\x01\x02\x03" Bytes)))
 
 (case "byte sequences are equal by their bytes in order"
   (doc    "Witnesses Bytes structural equality: two byte sequences are equal exactly
@@ -229,16 +245,16 @@
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
 ; parent alive). `(Bytes.compact b)` derives a value equal to `b` whose storage is independent of what
 ; `b` was derived from — the value-preserving materialization memory-and-resource-model.md #Retained
-; Storage Is Accounted For What It Holds Live requires, letting a program drop a large parent while
-; keeping a small slice. Compacting changes RESOURCE USE, never the VALUE: the compacted slice is equal
-; to the slice by its bytes in order (#Equality Is Structural), so `compact` is observable only through
-; the resource measure, not through any value operation.
+; Storage Is What A Value's Representation Holds Live requires, letting a program drop a large parent
+; while keeping a small slice. Compacting changes STORAGE USE, never the VALUE: the compacted slice is
+; equal to the slice by its bytes in order (#Equality Is Structural), so `compact` is not observable
+; through any value operation.
 
 (case "compacting a slice preserves its bytes"
   (doc    "`(Bytes.compact (Option.expect (Bytes.slice b 1 2) …))` = the same in-bounds slice: compacting
            materializes the slice into independent storage, changing resource use but not the value.
            Pins that compact is value-preserving — equal by bytes in order to the un-compacted slice
-           (memory-and-resource-model.md #Retained Storage Is Accounted For What It Holds Live).")
+           (memory-and-resource-model.md #Retained Storage Is What A Value's Representation Holds Live).")
   (needs  fallible-access)
   (input  (= (Bytes.compact (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds"))
              (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
@@ -265,14 +281,14 @@
   (doc    "`(Bytes.of (list n 66 67))` with `n` a runtime parameter cannot fold to a constant — the
            first byte is decided at run time. The seed builds it on the value heap (bytes-alloc then
            bytes-set per byte, range-checking each to 0..=255) and the type-directed renderer walks it
-           back to `(Bytes.of (list 65 66 67))`, byte-identical to a const byte sequence. Pins that Bytes
-           is a runtime value, not only a compile-time literal — the compiler's output type flowing at
-           run time.")
+           back to `b\"ABC\"`, byte-identical to a const byte sequence. Bytes 65 66 67 are the printable
+           ASCII `A B C`, so the byte-string display shows them literally. Pins that Bytes is a runtime
+           value, not only a compile-time literal — the compiler's output type flowing at run time.")
   (needs  bytes)
   (input  (module m
             (def (mk n) (Bytes.of (list n 66 67)))
             (def (main)  (mk 65))))
-  (output (: (Bytes.of (list 65 66 67)) Bytes)))
+  (output (: b"ABC" Bytes)))
 
 (case "constructing a byte sequence with a runtime value out of range traps"
   (doc    "The runtime companion of the const `256`/`-1` out-of-range cases: when the byte value is a
@@ -301,29 +317,65 @@
            bytes. The representation MAY defer the concatenation — sharing the operands' storage under a
            concatenation node rather than copying their bytes into a fresh buffer — as an unobservable
            optimization (memory-and-resource-model.md #Sharing Is Not Observable), which keeps this case
-           green either way. `(Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9)))` = `(Bytes.of (list
-           7 8 9))` for `a=7 b=8`. Pins runtime concatenation — how a compiler joins the byte fragments of
-           its output.")
+           green either way. `(Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9)))` = `b\"\\x07\\x08\\t\"`
+           for `a=7 b=8` — bytes 7 (BEL), 8 (backspace), 9 (tab) render as escapes (9 is the `\\t` special
+           escape). Pins runtime concatenation — how a compiler joins the byte fragments of its output.")
   (needs  bytes)
   (input  (module m
             (def (join a b) (Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9))))
             (def (main)      (join 7 8))))
-  (output (: (Bytes.of (list 7 8 9)) Bytes)))
+  (output (: b"\x07\x08\t" Bytes)))
 
 (case "a recursively-built byte sequence assembles its bytes at run time"
   (doc    "The genuine self-hosting idiom for output: a byte sequence whose LENGTH is decided at run
            time, built by recursion + concatenation, not a fixed literal spine. `rep` prepends the byte
            88 `n` times onto the empty sequence, so how many bytes exist is known only at run time.
-           `(rep 4)` = `(Bytes.of (list 88 88 88 88))`. This is exactly the shape a self-hosted compiler
-           uses to emit a component's wasm bytes — concatenating byte fragments in a recursion whose
-           depth is driven by the program being compiled.")
+           `(rep 4)` = `b\"XXXX\"` (byte 88 is the printable ASCII `X`). This is exactly the shape a
+           self-hosted compiler uses to emit a component's wasm bytes — concatenating byte fragments in
+           a recursion whose depth is driven by the program being compiled.")
   (needs  bytes)
   (input  (module m
             (def (rep n) (if (< n 1)
                             (Bytes.of (list))
                             (Bytes.concat (Bytes.of (list 88)) (rep (- n 1)))))
             (def (main)  (rep 4))))
-  (output (: (Bytes.of (list 88 88 88 88)) Bytes)))
+  (output (: b"XXXX" Bytes)))
+
+(case "an unsigned LEB128 encoder emits the known-answer multibyte encoding"
+  (doc    "The compiler's byte-emitting SPINE as one known-answer case: the recursive unsigned-LEB128
+           encoder that produces every section length, vector count, and u32 operand in a wasm module.
+           It composes the primitives the numeric cases pin individually — `(< n 128)` (terminator
+           test), `(& n 127)` (low 7 bits), `(| … 128)` (continuation bit), `(>> n 7)` (next group),
+           `Int.to-byte`, and `Bytes.concat` — into a recursion whose depth is the number of output
+           bytes. `(uleb 624485)` is the canonical multibyte value from the LEB128 spec: 624485 =
+           0b10011_0001110_1100101, so the little-endian 7-bit groups are 0x65, 0x0E, 0x26, and with
+           the continuation bit set on all but the last the bytes are `E5 8E 26` = `b\"\\xe5\\x8e&\"`
+           (byte 0x26 is `&`). Pins that the whole encoder composes to the exact bytes wasm requires —
+           a single-primitive slip (wrong mask, wrong shift, dropped continuation bit) changes the
+           output, so this is a tighter check on the emit path than any primitive alone. The companion
+           `(uleb 100)` (100 < 128) exits in one byte to `b\"d\"`, exercising the base case.")
+  (needs  bytes)
+  (input  (module m
+            (def (uleb n)
+              (if (< n 128)
+                  (Bytes.of (list (Int.to-byte n)))
+                  (Bytes.concat (Bytes.of (list (Int.to-byte (| (& n 127) 128)))) (uleb (>> n 7)))))
+            (def (main) (uleb 624485))))
+  (output (: b"\xe5\x8e&" Bytes)))
+
+(case "an unsigned LEB128 encoder emits a single byte below the continuation threshold"
+  (doc    "The base case of the LEB128 encoder above: a value under 128 needs no continuation byte, so
+           the encoder's `(< n 128)` arm emits exactly one byte and does not recurse. `(uleb 100)` =
+           `b\"d\"` (byte 100 is ASCII `d`). Pins the terminator arm in isolation from the recursive
+           multibyte path, so a regression in either arm is localized.")
+  (needs  bytes)
+  (input  (module m
+            (def (uleb n)
+              (if (< n 128)
+                  (Bytes.of (list (Int.to-byte n)))
+                  (Bytes.concat (Bytes.of (list (Int.to-byte (| (& n 127) 128)))) (uleb (>> n 7)))))
+            (def (main) (uleb 100))))
+  (output (: b"d" Bytes)))
 
 ; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
 ; Slicing and compacting a byte sequence carrying a runtime value are the input-side companions of the
@@ -334,16 +386,16 @@
 ; compile time (Some in bounds, None past the end or below zero), and compact is the identity on value.
 
 (case "slicing a byte sequence built at run time yields Some of the sub-range"
-  (doc    "`(Bytes.slice b 1 2)` on a runtime-built `b` yields `(Some (Bytes.of (list 20 30)))`: the
-           runtime realizes the slice by sharing `b`'s storage (a view node over the parent leaf), which
-           is indistinguishable from a fresh copy (memory-and-resource-model.md #Sharing Is Not
-           Observable). Pins the fallible slice on a runtime value — how a compiler reads a sub-range of
-           its input bytes without copying.")
+  (doc    "`(Bytes.slice b 1 2)` on a runtime-built `b` yields `(Some b\"\\x14\\x1e\")`: the runtime
+           realizes the slice by sharing `b`'s storage (a view node over the parent leaf), which is
+           indistinguishable from a fresh copy (memory-and-resource-model.md #Sharing Is Not Observable).
+           Bytes 20, 30 are non-printable, so the byte-string display escapes them. Pins the fallible
+           slice on a runtime value — how a compiler reads a sub-range of its input bytes without copying.")
   (needs  fallible-access)
   (input  (module m
             (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
             (def (main)     (sl 10 1 2))))
-  (output (: (Some (Bytes.of (list 20 30))) (Option Bytes))))
+  (output (: (Some b"\x14\x1e") (Option Bytes))))
 
 (case "slicing a runtime byte sequence past the end yields None"
   (doc    "`(Bytes.slice b 2 3)` on a runtime-built 4-byte sequence asks for 3 bytes from index 2 —
@@ -370,11 +422,55 @@
 (case "compacting a byte sequence built at run time preserves its bytes"
   (doc    "`(Bytes.compact b)` on a runtime-built `b` = `b`: compact re-bases the value into storage
            independent of any larger buffer it was sliced from (memory-and-resource-model.md #Retained
-           Storage Is Accounted For What It Holds Live), changing resource use but never the value. Pins
+           Storage Is What A Value's Representation Holds Live), changing storage use but never the value. Pins
            that compact is value-preserving on a runtime value — how a compiler keeps a small slice of a
-           large input while letting the input be reclaimed. `(mk 1)` = `(Bytes.of (list 1 2 3))`.")
+           large input while letting the input be reclaimed. `(mk 1)` = `b\"\\x01\\x02\\x03\"`.")
   (needs  bytes)
   (input  (module m
             (def (mk n) (Bytes.compact (Bytes.of (list n 2 3))))
             (def (main) (mk 1))))
-  (output (: (Bytes.of (list 1 2 3)) Bytes)))
+  (output (: b"\x01\x02\x03" Bytes)))
+
+; --- The `b"…"` literal reads to a byte sequence, and rendering round-trips -----------------------
+; `b"…"` is reader sugar for `(Bytes.of (list …))`, so a byte-string literal and the explicit form
+; denote ONE value: they are equal. These cases pin the reader equivalence in both directions
+; (printable and escaped bytes) and the full round-trip — a byte sequence WRITTEN as `b"…"`,
+; constructed, and rendered back yields the same `b"…"` text — so the display form and the input form
+; are inverses. A generation that does not yet realize the `b"…"` reader sugar declines (todo), it
+; does not miscompile.
+
+(case "a byte-string literal equals the explicit byte sequence it desugars to"
+  (doc    "`(= b\"ABC\" (Bytes.of (list 65 66 67)))` is true: `b\"ABC\"` reads to `(Bytes.of (list 65 66
+           67))` (bytes 65 66 67 = ASCII `A B C`), so the literal and the explicit form are the same
+           value (options/binary-syntax; the `#\"…\"`/`a.b` sugar pattern). Pins that the byte-string
+           literal is reader sugar, not a distinct value form.")
+  (needs  bytes)
+  (input  (= b"ABC" (Bytes.of (list 65 66 67))))
+  (output (: true Bool)))
+
+(case "a byte-string literal with escapes equals its explicit byte sequence"
+  (doc    "`(= b\"\\x89PNG\" (Bytes.of (list 137 80 78 71)))` is true: the `\\x89` hex escape is byte
+           137 and `PNG` are the printable bytes 80 78 71, so the literal reads to the PNG magic
+           prefix. Pins that `\\xNN` and printable-ASCII bytes read to the same values the explicit
+           list names — the reader escape set is the inverse of the display escape set.")
+  (needs  bytes)
+  (input  (= b"\x89PNG" (Bytes.of (list 137 80 78 71))))
+  (output (: true Bool)))
+
+(case "an empty byte-string literal is the empty byte sequence"
+  (doc    "`(= b\"\" (Bytes.of (list)))` is true: `b\"\"` reads to the zero-length byte sequence. Pins
+           the degenerate literal, the byte-string spelling of `(Bytes.of (list))`.")
+  (needs  bytes)
+  (input  (= b"" (Bytes.of (list))))
+  (output (: true Bool)))
+
+(case "a byte sequence written as a literal renders back to the same literal"
+  (doc    "The full round-trip: a byte sequence built at run time from a `b\"…\"` literal renders back
+           to that same `b\"…\"` text. `b\"A\\nB\"` carries the printable `A`, a newline (the `\\n`
+           special escape), and `B`; passing it through a runtime function and rendering the result
+           yields `b\"A\\nB\"` — reading and displaying a byte sequence are inverses.")
+  (needs  bytes)
+  (input  (module m
+            (def (id b) b)
+            (def (main) (id b"A\nB"))))
+  (output (: b"A\nB" Bytes)))

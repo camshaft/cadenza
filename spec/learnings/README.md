@@ -508,6 +508,15 @@ generations of Cadenza taught these lessons the expensive way; the specification
   component has no dead code — while cdz-rustc emits 128 bytes because it folds shallowly and leaves a dead
   overflow-check helper. The two agree on result + `run`'s body but not bytes; byte-identity awaits DCE in
   cdz-rustc (a separable Core→Core concern), which reframes the byte-identity target as a named milestone.
+- [The compiler's byte-emitting spine needs a known-answer corpus case, not just verified primitives](./2026-07-06-the-compilers-byte-emitting-spine-needs-a-known-answer-corpus-case.md)
+  — the spike reported its LEB128 encoders "verified byte-correct" (`uleb 624485 → E5 8E 26`), but that check
+  lived only in an ephemeral `emit` probe in the gitignored spike; the corpus pinned every INGREDIENT (`<`, `&`,
+  `|`, `>>`, `Int.to-byte`, `Bytes.concat`, recursive-by-count Bytes) in isolation but never the COMPOSITION —
+  the actual recursive encoder run to a known-answer multibyte output. Verifying primitives separately does not
+  verify they compose to the right bytes; a single slip (wrong mask/shift, dropped continuation bit) is invisible
+  per-primitive yet miscompiles the component. Pinned two `10-bytes.sexp` cases (multibyte `624485 → b"\xe5\x8e&"`
+  + base-case `100 → b"d"`, both PASS). Rule: when a spike says "verified byte-correct" via a probe, it is NOT
+  durable until it is a corpus case — the gate only protects what the corpus pins.
 - [Constant folding must preserve runtime traps — and whether a certain trap should be a compile error is a separate decision](./2026-07-06-constant-folding-must-preserve-runtime-traps.md)
   — the compiler's first Core→Core rewrite (constant folding) must be MEANING-PRESERVING: `(/ 5 0)`'s recorded
   meaning is a trap, so folding it to a value would erase the trap (a miscompile) and folding it to a rejection
