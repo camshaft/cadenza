@@ -12,6 +12,10 @@ component computing the wrong value). The root causes, verified:
   component that yields `false`.
 - **strings / records / tuples / bytes-ops / host calls**: the reader has no node shape for them, so
   they fall through to `NInt` / an `NPrim`-of-`"?"` and emit an i64 stub or a spurious value.
+- **unbound name-reference** (a later facet): `read-node`'s tag branch decodes a name to `(NLocal
+  (ienv-pos env idx 0))`, and `ienv-pos` returns **-1** for a name not in the environment — used
+  directly as a local slot with no bounds check, so an unbound name decodes to `NLocal -1` → `KLocal
+  -1` → an invalid `local.get` (uleb of -1 is a huge index), a miscompile rather than a decline.
 
 This is a **reject-don't-miscompile violation inside the Cadenza-authored compiler itself**: the very
 discipline the spec mandates for a generation ("a construct it does not yet cover MUST decline, not run
