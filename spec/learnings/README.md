@@ -10,6 +10,19 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A type-check has two opposite failure modes, and over-rejecting valid code is the worse one — an unprovable kind must default to silence](./2026-07-07-a-type-check-has-two-opposite-failure-modes-and-over-rejecting-valid-code-is-the-worse-one.md)
+  — activating the diagnostics handler exercised `check-node` end-to-end, and the byte gate's 102 disagrees split
+  two ways: 88 `native=rejected` comp=ok (ask-30 UNDER-reject, accepts bad programs) but 9 `native=ok`
+  comp=`diagnostics` — well-typed programs the check FALSE-REJECTS. All 9 were a Bool whose kind isn't statically
+  provable at the check point (a function PARAMETER / call result / match scrutinee as an `if`/`and`/`or`
+  condition). The prior compound-focused analysis had concluded "Bool is fine" from LITERAL-Bool controls; a
+  parameter's kind reaches the check by a different path, and re-probing flipped it. Two lessons: (1) a type-check
+  fails in two opposite directions and they're asymmetric — over-rejecting valid code is worse than under-rejecting
+  invalid code (it denies a correct program its meaning), so an operand whose kind can't be POSITIVELY proven must
+  default to SILENCE not rejection (the fix needs both `KCompound` = emit-more and `KUnknown` = never-emit); (2) an
+  aggregate "this class is fine" is only as good as the flavor of input sampled — re-probe a negative claim with a
+  differently-shaped input before trusting it. No corpus (the 9 well-typed cases are already in the corpus, scoring
+  disagree — they're the regression guard; `compile` correctly stays bare-Bytes until both halves land).
 - [The byte gate absorbed the loop's hand-run WRONG-sweep as native classification — and a slower gate that runs the artifact is the honest one](./2026-07-07-the-byte-gate-absorbed-the-loops-hand-run-wrong-sweep-as-native-classification.md)
   — `component-check` landed a classifier (ask-33) that judges a disagreement by RUNNING both compiled programs,
   not by the entry function's syntax: component traps where native yields ⇒ decline; equal values ⇒ soft
