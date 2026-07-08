@@ -10,6 +10,16 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The differential gate stays sound under the REFERENCE moving, not just the compiler — a co-evolving pair only ever grows the decline pile, never a false disagree](./2026-07-07-the-differential-gate-stays-sound-under-the-reference-moving-not-just-the-compiler.md)
+  — native advanced (behavior gate 574→577, 3 previously-todo cases now compile natively) while the self-hosted
+  byte gate stayed 0 disagree; the 3 new-native cases became byte-gate DECLINES, not disagrees. Prior zero-disagree
+  learnings framed self-maintenance from the COMPILER side (a new emit path matches or disagrees); this is the
+  REFERENCE side — when native gains a feature the compiler lacks, the compiler declines (stub) rather than
+  guessing, so a moving reference only GROWS the decline pile, never manufactures a false disagree. The decline
+  bucket is the shock absorber for capability mismatch in EITHER direction, which is what makes 0-disagree
+  trustworthy while both sides rebuild every cycle. Caveat: this certifies agreement-WITH-the-reference, so a
+  separate oracle on the reference (the corpus `(output …)` behavior gate, 577/0) is still required — the two
+  gates pin correctness from two sides. No corpus (observation about gate behavior as the reference moves).
 - [A const-fold placeholder must be unobservable — decline every use that would read it, so a dead slot can never leak as a wrong value](./2026-07-07-a-const-fold-placeholder-must-be-unobservable-decline-every-use-that-would-read-it.md)
   — let-bound compound projections now const-fold (agree 126→129) via a literal-compound env `lce`; `read-let`
   binds the name's runtime slot to a PLACEHOLDER `(NInt 0)` (slot numbering must stay consistent) and records the
