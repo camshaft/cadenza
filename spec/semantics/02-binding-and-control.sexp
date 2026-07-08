@@ -371,6 +371,19 @@
   (input  (if false 1 false))
   (error  CDZ0201))
 
+(case "a conditional with a compound branch and a scalar branch is a type error even when the compound branch is dead"
+  (doc    "`(if false (record (a 1)) 7)` — the then-branch is a compound (a record), the else-branch is a
+           scalar (Int64); they have different types, so the conditional is ill-typed and the compiler MUST
+           reject it (CDZ0201). The constant condition `false` selects the SCALAR branch, so a compiler that
+           const-folds the conditional to its taken branch would discard the compound then-branch WITHOUT
+           type-checking it and silently accept an ill-typed program — a miscompile. The type-check is on the
+           PAIR of branches, so it must happen BEFORE (or independently of) any fold that eliminates a branch:
+           an unevaluated branch cannot carry a deferred type error. This pins the compound-vs-scalar instance
+           of the dead-branch check, which the scalar-vs-scalar cases above do not exercise (folding a compound
+           branch away is where the check is easiest to skip).")
+  (input  (if false (record (a 1)) 7))
+  (error  CDZ0201))
+
 (case "a conditional with integer and floating-point branches is a type error"
   (doc    "Int64 and Float64 are distinct numeric types that do not silently unify (numeric-model.md
            #Numeric Types Do Not Silently Promote). A conditional with an Int64 branch and a Float64

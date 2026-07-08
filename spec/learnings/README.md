@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A fold that eliminates a branch must not eliminate that branch's type-check — const-folding is value-preserving but not rejection-preserving](./2026-07-07-a-fold-that-eliminates-a-branch-must-not-eliminate-its-type-check.md)
+  — a latent miscompile: `(if false (record (a 1)) 7)` folded `false`→7, discarding the dead compound then-branch
+  WITHOUT type-checking it; native rejects (branches differ, CDZ0201) but the folding compiler accepted+emitted 7
+  — a wrong-ACCEPTANCE (mirror of wrong-value). Const-folding a conditional preserves the VALUE but not the
+  REJECTION: a conditional's well-formedness needs BOTH branches to type-check whether or not evaluated, so the
+  fold drops the dead branch's check obligation. General trap: any transform that eliminates a subterm also
+  eliminates the CHECKS it would trigger; if those are load-bearing for well-formedness, the transform is unsound
+  though value-preserving — check the whole form before/independently of folding. The scalar dead-branch cases
+  were already pinned+working; the compound branch slipped through because folding a compound branch away is where
+  the check is easiest to skip (the fold never forms its kind). Added the compound-vs-scalar-dead-branch corpus
+  case (gate +1). Fixed via KCompound (compound-vs-scalar = provable mismatch → CDZ0201).
 - [Settledness is the artifact ceasing to change, not the metric trending toward good — a converging count on a live file is still noise](./2026-07-07-settledness-is-the-artifact-not-changing-not-the-metric-trending-good.md)
   — caught compiler.cdz mid-M2-work: byte gate 70 disagree (all traps, compound-heavy) then 33 a minute later —
   a FALLING count that reads like a regression being fixed in real time. It wasn't: the file was being actively
