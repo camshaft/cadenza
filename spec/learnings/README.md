@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Coverage advances through two doors — decline→agree (byte-identical) and decline→soft (value-correct, byte-differ) — and the soft door opening is its own milestone](./2026-07-07-coverage-advances-through-two-doors-decline-to-agree-and-decline-to-soft.md)
+  — after cycles of const-fold agree gains, this cycle agree held (134) but SOFT jumped 26→37 (decline 421→410) —
+  real compiler.cdz progress (emitted component differs, corpus stable): ~11 runtime-SCALAR function/binding cases
+  (multi-arg fns, let-in-function) moved decline→soft, i.e. now EMIT runnable value-correct code that byte-differs
+  from native. Coverage has two destinations out of decline: →agree (byte-identical, easy for const-fold) and
+  →soft (value-correct, byte-differ — a real emit path came online). The soft door is the harder/more-important
+  threshold ("can I emit this correctly at all?"); byte-fidelity (soft→agree) is a follow-on. So track `agree +
+  soft` as coverage (agree = the byte-fidelity subset), watch a CLASS moving decline→soft as the signal an emit
+  path came online — a flat agree with rising soft is advancing, not stalling. Here it's the runtime-scalar emit
+  path maturing (M2 runtime-compound + HOF still decline). No corpus (the ~11 pinned; convert soft→agree on
+  byte-fidelity tuning).
 - [The differential gate stays sound under the REFERENCE moving, not just the compiler — a co-evolving pair only ever grows the decline pile, never a false disagree](./2026-07-07-the-differential-gate-stays-sound-under-the-reference-moving-not-just-the-compiler.md)
   — native advanced (behavior gate 574→577, 3 previously-todo cases now compile natively) while the self-hosted
   byte gate stayed 0 disagree; the 3 new-native cases became byte-gate DECLINES, not disagrees. Prior zero-disagree
