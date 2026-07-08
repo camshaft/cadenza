@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [When your own change moves the denominator, count-deltas lie — isolate the single unit for ground truth](./2026-07-07-when-your-own-change-moves-the-denominator-isolate-the-unit-for-ground-truth.md)
+  — the compiler agent's channel reported ask-53 "RESOLVED, agree 79→95, the 9 Bool cases fixed" (implying agree);
+  my Run-106 count-flow said they went to decline. Re-deriving hit a confound: I'd ADDED a corpus case (Result.expect,
+  Run 105) between measurements, so the total moved 577→578 and my constant-total flow arithmetic was unsound. So I
+  stopped arguing from counts and isolated the unit — a one-case corpus with just the boolean-parameter program →
+  `0 agree, 1 DECLINE` (conjunction too; a scalar-add control → soft, confirming the harness reports non-decline).
+  Ground truth: the 9 Bool cases DECLINE — the `KUnknown` fix eliminated the false CDZ0201 (verdict is decline, not
+  disagree-with-diagnostics), but compiler.cdz's EMIT path doesn't yet compile Bool-parameter branching, which the
+  false-reject was masking. The channel's "reached agree" was an over-claim. Lessons: a count-delta is trustworthy
+  only if the denominator held still — and you move it yourself when you add corpus cases, so to answer "did THESE
+  cases reach agree?" isolate them into a one-case corpus; and this is the re-probe rule applied to your OWN prior
+  conclusion (right for a confounded reason still needs re-grounding). No corpus (9 cases already pin it).
 - [Fixing an over-rejection revealed the decline it was masking — a wrong classification can sit on top of a truer, less-flattering one](./2026-07-07-fixing-an-over-rejection-revealed-the-decline-it-was-masking.md)
   — the `KUnknown` half of ask-53 landed: `check-node` stopped false-rejecting unprovable-kind Bool operands, and
   the byte gate moved (disagree 102→94, the 9 Bool over-rejects→0, WRONG=0 held). But reading the four-bucket
