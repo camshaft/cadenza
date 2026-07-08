@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Past zero disagree, the loop maps the decline pile, not the disagree frontier — soundness is a certified negative, coverage is the positive frontier](./2026-07-07-past-zero-disagree-the-loop-maps-the-decline-pile-not-the-disagree-frontier.md)
+  — with the gate at 0 disagree, soundness is a certified, self-maintaining negative (any new emit path either
+  matches native or the gate catches a fresh disagree), so the loop's measurement pivots to the POSITIVE frontier:
+  coverage. Mapped the 434 declines per-file — 05-compound-types 139 (runtime records/tuples/lists/maps as results
+  = the M2 gap, ~1/3 of all), 02-binding 56, 10-bytes 49, 13-strings 45, 09-functions 34 (closures), 12-metaprog
+  26, 14-effects 22, tail. Leverage principle (from Run 111): cluster by shared missing CAPABILITY not file —
+  runtime-compound emission underlies 05 AND pieces of string/bytes/list/equality files, so landing that one
+  capability cascades across domains; a file count understates the leverage. Honesty note: a PASSING gate with 434
+  declines is SOUND not COMPLETE — report disagree and decline as separate numbers so a green gate isn't misread
+  as a finished compiler. Filed the map as ask-57. No corpus (map over existing corpus; declines→agree as
+  capabilities land, gate guarantees soundness through the change).
 - [The self-hosting differential gate reached zero disagree — the residual is honest declines and soft byte-differences, not miscompiles](./2026-07-07-the-self-hosting-differential-gate-reached-zero-disagree.md)
   — the self-hosted compiler component reached **120 agree / 0 disagree / 25 soft / 434 decline**
   (`COMPONENT-CHECK: PASS`); the last cluster (ask-56, int/float→CDZ0301 via a float/numeric kind) fell, discriminator
