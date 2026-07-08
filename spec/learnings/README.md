@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A const-fold placeholder must be unobservable — decline every use that would read it, so a dead slot can never leak as a wrong value](./2026-07-07-a-const-fold-placeholder-must-be-unobservable-decline-every-use-that-would-read-it.md)
+  — let-bound compound projections now const-fold (agree 126→129) via a literal-compound env `lce`; `read-let`
+  binds the name's runtime slot to a PLACEHOLDER `(NInt 0)` (slot numbering must stay consistent) and records the
+  real compound in `lce`. The hazard: if any path reads that dead slot as a VALUE (bare use `(let ((t (tuple 5 9)))
+  t)`, equality), it emits 0 where native yields the tuple — a silent wrong-value miscompile. The design declines
+  every unhandled use (read-node's local path checks `lce` and declines a compound slot); only projection (which
+  reads through `lce`, never the placeholder) agrees. Verified: bare use → decline, projection → agree, full sweep
+  0 disagree — the placeholder is structurally unobservable. Lesson: an optimization that leaves a stand-in must
+  make it unobservable by DECLINING every use it doesn't fully handle (never best-effort-emit — there's no correct
+  value for an un-materialized thing; a leaked stand-in is worse than not optimizing); and the verification that
+  earns confidence is the adversarial NEGATIVE one (confirm unhandled uses decline), not the positive (handled
+  uses agree). No corpus (bare-use-declines + projections-agree already pinned).
 - [Compound coverage lands const-first because folding needs no runtime heap — the agree count on compound cases can rise while the hard part hasn't started](./2026-07-07-compound-coverage-lands-const-first-because-folding-needs-no-runtime-heap.md)
   — the compound frontier advanced 3→6→9 agree, but probing which cases land shows a sharp gradient:
   `(tuple.0 (tuple 7 9))` (a LITERAL compound projected to a scalar) now agrees, while `(tuple.0 (mk 5))` (project
