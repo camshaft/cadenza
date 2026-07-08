@@ -19,6 +19,35 @@
   (input  (+ (let ((x 2)) x) (let ((x 1)) x)))
   (output (: 3 Int64)))
 
+; A `let` may shadow a FUNCTION PARAMETER with a value of a DIFFERENT TYPE, and the inner binding's type
+; governs its references (core-semantics.md #Shadowing Is Well-Defined: a shadowing binding takes effect
+; for references in its scope). `(def (f x) (let ((x true)) x))` binds parameter `x` (used at type Int64
+; by the call `(f 99)`) and then shadows it with `x = true` (Bool); the body returns the inner `x`, so
+; `f` returns the Bool `true` regardless of its argument. The shadow is well-defined and the program is
+; well-typed — the different-name analogue `(def (f x) (let ((y true)) y))` returns `true`, and a
+; non-parameter nested shadow `(let ((x 99)) (let ((x true)) x))` returns `true`. A compiler that reuses
+; the parameter's local SLOT (typed for the parameter, e.g. i64 for an Int64 argument) for the shadowing
+; binding's differently-typed value emits a component that fails wasm validation — an invalid component,
+; the worst outcome (self-hosting-and-bootstrap.md #An Unsupported Construct Is Declined, Not Miscompiled:
+; a not-yet-handled construct MUST decline, never emit an invalid or divergent component). A generation
+; that cannot yet allocate a fresh slot for a differently-typed shadow of a parameter declines rather than
+; emitting an invalid component.
+
+(case "a let shadowing a parameter with a differently-typed value is not an invalid component"
+  (doc    "`(def (f x) (let ((x true)) x))` shadows the Int64 parameter `x` with the Bool `x = true`; the
+           body returns the inner `x`, so `(f 99)` = `true`. The shadow is well-defined (core-semantics.md
+           #Shadowing Is Well-Defined) and the program is well-typed — the different-name form `(let ((y
+           true)) y)` and the non-parameter nested shadow both return `true`. The compiler MUST compute
+           `true` or DECLINE, never emit a component that fails wasm validation by reusing the parameter's
+           local slot for the differently-typed shadow. Pins that a differently-typed shadow of a parameter
+           gets its own slot rather than colliding with the parameter's, so the result is a valid component
+           (the inline and different-name shadows already work; this is the same-name parameter-shadow
+           case). A generation that cannot yet do so declines rather than emitting an invalid component.")
+  (input  (module m
+            (def (f x) (let ((x true)) x))
+            (def (main) (f 99))))
+  (output (: true Bool)))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`
@@ -148,6 +177,102 @@
            needs no static typing — so (error CDZ0101) is the recorded outcome.")
   (input  y)
   (error  CDZ0101))
+
+; The unbound-name check (and well-formedness generally) applies to EVERY definition in a module, not
+; only the ones reachable from `main`. core-semantics.md #Binding Is Lexical: "A reference to a name with
+; no enclosing binding MUST be a compile-time error" — unconditionally, with no reachability qualifier.
+; And a module's definitions are its EXPORTS, each reachable by member access (#A Module Evaluates To A
+; Record Of Its Exports; #A Module's Exported Definition Is Reachable By Member Access), so a `(def (bad)
+; nonexistent)` is not dead code — it is an export `(. m bad)` whose body must resolve. A compiler that
+; type-checks and scope-checks only the functions transitively CALLED by `main` lets an ill-formed unused
+; definition through: `(module m (def (bad) nonexistent) (def (main) 42))` compiles and runs to 42, its
+; `bad` body's unbound `nonexistent` never checked. That contradicts the unconditional binding rule (and
+; #A Program That Is Not Well-Typed Is Rejected — "every expression has a statically determined type",
+; which includes every definition's body). An inner-module sibling in the same shape IS checked today
+; (its unused ill-typed export is rejected), so this is specifically the TOP-LEVEL module's uncalled defs.
+
+(case "an unbound name in an uncalled sibling definition is still rejected"
+  (doc    "`(def (bad) nonexistent)` references the unbound name `nonexistent`; even though `main` never
+           calls `bad`, the program MUST be rejected (CDZ0101, core-semantics.md #Binding Is Lexical — the
+           unbound-name rule is unconditional, not gated on reachability from `main`). A module's
+           definitions are its exports, each reachable by member access, so `bad`'s body is not dead code
+           and must resolve. A compiler that scope-checks only the functions `main` transitively calls lets
+           an ill-formed uncalled definition through, running to 42 instead of rejecting. Pins that every
+           top-level definition's body is checked, exactly as an inner-module sibling's already is.")
+  (input  (module m
+            (def (bad)  nonexistent)
+            (def (main) 42)))
+  (error  CDZ0101))
+
+; The unbound-name check also reaches into an UNSELECTED conditional branch, not only uncalled top-level
+; definitions. core-semantics.md #Binding Is Lexical: "A reference to a name with no enclosing binding
+; MUST be a compile-time error" (unconditional); #Conditionals Evaluate One Branch: "Every branch … MUST
+; be type-checked whether or not it is evaluated." So `(if true 1 undefined-name)` MUST be rejected
+; (CDZ0101) even though the constant condition selects the `1` branch and the `undefined-name` branch is
+; never evaluated — an unevaluated branch cannot carry a deferred scope error any more than a deferred
+; type error. A compiler that const-folds the conditional to its taken branch and scope-checks only that
+; branch lets the unbound reference in the dropped branch slip through, running to 1. (The `if` form
+; already catches a TYPE error in an unselected branch — `(if true 1 (+ 1 true))` is rejected — so the
+; scope check must reach the same unselected branch the type check already does.)
+
+(case "an unbound name in an unselected conditional branch is still rejected"
+  (doc    "`(if true 1 undefined-name)` references the unbound name `undefined-name` in the else-branch;
+           even though the constant condition `true` selects the `1` branch, the program MUST be rejected
+           (CDZ0101, core-semantics.md #Binding Is Lexical — unconditional — with #Conditionals Evaluate
+           One Branch: every branch type-checked whether or not evaluated). An unevaluated branch cannot
+           carry a deferred scope error. A compiler that const-folds the conditional to its taken branch and
+           scope-checks only that branch runs to 1 instead of rejecting. Pins that scope resolution reaches
+           an unselected branch, exactly as the type check already does (`(if true 1 (+ 1 true))` is
+           rejected). A generation that does not yet scope-check the dropped branch declines.")
+  (input  (if true 1 undefined-name))
+  (error  CDZ0101))
+
+; The same unbound-name check reaches a boolean connective's SHORT-CIRCUITED operand, exactly as it
+; reaches an unselected conditional branch — the spec makes the two identical. core-semantics.md #Boolean
+; Connectives Short-Circuit: "a connective shields a trapping or effectful right operand exactly as the
+; unselected branch of a conditional does", and "Each operand of a boolean connective MUST be type-checked
+; as a boolean whether or not it is evaluated, so that an unevaluated operand cannot carry a deferred
+; error, exactly as every branch of a conditional is type-checked." So `(and false undefined-name)` MUST
+; be rejected (CDZ0101): `false` short-circuits the conjunction so the right operand is not evaluated, but
+; an unevaluated operand cannot carry a deferred SCOPE error any more than a deferred type error. The seed
+; already type-checks the dead operand — `(and false (+ 1 1))` is rejected "operand is not a Bool" and
+; `(and false (+ 1 true))` "operation on mismatched types" — so, exactly as for the `if` case above
+; (`(if true 1 (+ 1 true))` type-checks the dropped branch, and `(if true 1 undefined-name)` now
+; scope-checks it too), the scope check MUST reach the same short-circuited operand the type check already
+; does. A compiler that emits only the taken side of the short-circuit and scope-checks only that operand
+; lets the unbound reference in the dead operand slip through, running `(and false undefined-name)` to
+; `false`. A generation that does not yet scope-check the dead operand declines.
+
+(case "an unbound name in a short-circuited boolean operand is still rejected"
+  (doc    "`(and false undefined-name)` references the unbound name `undefined-name` in the conjunction's
+           right operand; even though the constant left operand `false` short-circuits the `and` so the
+           right is never evaluated, the program MUST be rejected (CDZ0101, core-semantics.md #Binding Is
+           Lexical — unconditional — with #Boolean Connectives Short-Circuit: each operand is type-checked
+           whether or not it is evaluated, EXACTLY AS every branch of a conditional is). An unevaluated
+           operand cannot carry a deferred scope error, the connective companion of the unselected-branch
+           case above (`(if true 1 undefined-name)`). The seed already type-checks the dead operand
+           (`(and false (+ 1 1))` rejects \"operand is not a Bool\"), so the scope check must reach the
+           same operand the type check does. A compiler that scope-checks only the evaluated side runs to
+           `false` instead of rejecting. A generation that does not yet scope-check the short-circuited
+           operand declines rather than answering `false`.")
+  (input  (and false undefined-name))
+  (error  CDZ0101))
+
+(case "a let-bound variable is in scope inside a boolean connective operand"
+  (doc    "The complement of the short-circuited-unbound case above, and the boundary its scope check
+           must not over-reach into: a `let`-bound (or parameter) name used in an `and`/`or` operand is
+           IN SCOPE and resolves normally (core-semantics.md #Binding Is Lexical: a name resolves to its
+           nearest enclosing binding). `(let ((x 3)) (and (> x 0) (< x 9)))` binds `x` and uses it in
+           BOTH conjuncts, yielding true. A compiler that scope-checks a connective operand against a
+           scope MISSING the enclosing `let`/parameter binders (e.g. a whole-tree type-check pass that
+           does not thread block-local bindings) wrongly rejects `x` as unbound — the pair to the
+           unbound case: an unbound name is rejected, a bound one is NOT. This idiom (`(let (…) (and
+           (>= i 0) …))`) is pervasive in a self-hosting compiler's bounds/range guards, so the scope
+           check must run where the operand's lexical environment is complete.")
+  (input  (module m
+            (def (f k) (let ((x k)) (and (> x 0) (< x 9))))
+            (def (main) (if (f 3) 1 0))))
+  (output (: 1 Int64)))
 
 (case "a sequencing block yields the value of its last form"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (2nd sentence:
@@ -408,6 +533,42 @@
   (input  (if false (record (a 1)) 7))
   (error  CDZ0201))
 
+; The branch-type-agreement check must fire when the conditional is INSIDE A FUNCTION BODY with a
+; constant condition, not only at the top-level entry expression. The cases above pair mismatched
+; branches in `main`'s own body and are correctly rejected; but the same mismatch inside a `def`ed
+; function with a compile-time-constant condition SLIPS — the const-condition fold in a function body
+; discards the untaken branch WITHOUT the pair-of-branches type-check that #Conditionals Evaluate One
+; Branch requires ("every branch … type-checked whether or not it is evaluated"). `(def (f) (if true 1
+; false))` pairs an Int64 then-branch with a Bool else-branch — ill-typed exactly as the top-level `(if
+; true 1 false)` is (CDZ0201) — yet the seed accepts it and `f` returns 1, an ill-typed program run
+; (and it composes: `(+ (f) 0)` = 1). Worse, when the surviving (taken) branch is a COMPUTED expression
+; rather than a constant — `(def (f n) (if true (+ n 1) false))`, whose `(+ n 1)` cannot fold to a
+; literal — the unchecked Int/Bool branch-representation mismatch makes the compiler emit an INVALID
+; wasm component (it fails validation), not merely a wrong value: a fold that drops a branch dropped its
+; type-check, and the two branches' incompatible representations reach code generation. The internal
+; checks of the dropped branch DO survive the fold (an else `(+ 1 true)` is still rejected "operation on
+; mismatched types", an unbound else name is still CDZ0101) — only the branch-type-AGREEMENT check is
+; lost, which is the one these cases pin. This is the in-function companion of the top-level dead-branch
+; cases: the fold that eliminates a branch must not eliminate the agreement check, wherever the `if` sits.
+(case "a conditional inside a function with a constant condition and mismatched branches is a type error"
+  (doc    "`(def (f) (if true 1 false))` pairs an Int64 then-branch with a Bool else-branch — different
+           types, ill-typed exactly as the top-level `(if true 1 false)` above (CDZ0201). But the `if` is
+           inside a function body with a constant condition, and the seed's const-condition fold in a
+           function body discards the untaken `false` branch WITHOUT the pair-of-branches type-check
+           (core-semantics.md #Conditionals Evaluate One Branch: every branch type-checked whether or not
+           evaluated). The seed accepts it and `f` returns 1 — an ill-typed program run — where the
+           identical `if` at the top-level entry expression is correctly rejected. (When the surviving
+           branch is a COMPUTED expression, `(def (f n) (if true (+ n 1) false))`, the unchecked Int/Bool
+           branch-representation mismatch makes the compiler emit an INVALID component rather than a wrong
+           value.) Pins that the dead-branch agreement check fires inside a function body too, not only at
+           the top-level entry — the internal checks of the dropped branch already survive the fold; only
+           the branch-type-agreement check is lost. A generation that type-checks the pair of branches
+           before folding declines rather than running the ill-typed program or emitting invalid code.")
+  (input  (module m
+            (def (f) (if true 1 false))
+            (def (main) (f))))
+  (error  CDZ0201))
+
 (case "a conditional with integer and floating-point branches is a type error"
   (doc    "Int64 and Float64 are distinct numeric types that do not silently unify (numeric-model.md
            #Numeric Types Do Not Silently Promote). A conditional with an Int64 branch and a Float64
@@ -443,6 +604,30 @@
            depth the list-element homogeneity check already applies.")
   (input  (if true (tuple 1 2) (tuple 1 true)))
   (error  CDZ0201))
+
+; The structural branch-type check must NOT treat a list's LENGTH as part of its type — unlike a tuple's
+; arity. A list is a variable-length sequence typed by its element type (collections-and-text.md #A List
+; Is An Ordered Homogeneous Sequence, #A List Is Grown By Functional Construction), so two list branches
+; of the SAME element type but DIFFERENT LENGTH are the SAME type `(List Int64)`, and the conditional is
+; well-typed — its value is whichever list the condition selects. `(if true (list 1 2) (list 3 4 5))`
+; yields `(list 1 2)`. A compiler that reuses the tuple-arity branch-shape check on lists wrongly rejects
+; this well-typed conditional as "branches have different shapes" — length is a tuple's type distinction,
+; not a list's. (The genuinely ill-typed list-branch case is two lists of different ELEMENT type, e.g.
+; `(if … (list 1 2) (list true false))` — those are different types and rejected, exactly as any type
+; mismatch is; only the different-LENGTH same-element-type case must be accepted.)
+
+(case "a conditional with two list branches of different length is well-typed"
+  (doc    "`(if true (list 1 2) (list 3 4 5))` pairs a two-element list with a three-element list — the
+           SAME type `(List Int64)`, since a list's length is not part of its type (a list is
+           variable-length; collections-and-text.md #A List Is An Ordered Homogeneous Sequence). The
+           conditional is well-typed and yields the selected branch `(list 1 2)`. This is the list
+           counterpoint to the tuple-arity branch case above: a tuple's arity IS part of its type (so
+           different-arity tuple branches are rejected), but a list's length is NOT, so different-length
+           list branches MUST be accepted. Pins that the branch-shape check does not treat list length as
+           a shape mismatch — a compiler reusing the tuple-arity check on lists wrongly rejects this.")
+  (needs  collections)
+  (input  (if true (list 1 2) (list 3 4 5)))
+  (output (: (list 1 2) (List Int64))))
 
 ; --- A conditional's condition must be a Bool --------------------------------------------
 ; core-semantics.md #Conditionals Evaluate One Branch: a conditional selects a branch by its
@@ -685,6 +870,70 @@
            one the constant scrutinee names — a three-variant sum with a single arm is rejected just
            as a two-variant one is.")
   (input  (match (Sign.Pos unit) ((Sign.Pos _) 1)))
+  (error  CDZ0210))
+
+; An Int64's value set is all 2^64 of its values, so no finite set of literal arms covers it — a match
+; on an Int64 with only literal arms and no wildcard is non-exhaustive exactly as a Bool match missing an
+; arm or a sum match missing a variant is. The rule is the same one the bool and sum cases above pin
+; (core-semantics.md #Matching Is Exhaustive Or Rejected: "cover every value of the scrutinee's type"),
+; applied to the third scrutinee kind: exhaustiveness is a property of the ARM SET against the TYPE, not
+; of the scrutinee's value. In particular a COMPILE-TIME CONSTANT Int64 scrutinee that hits a present arm
+; does NOT excuse the missing coverage: `(match 5 (5 1))` folds the scrutinee to `5` and the sole arm
+; names `5`, but the arm set still leaves every other Int64 uncovered and there is no wildcard, so the
+; match is non-exhaustive and MUST be rejected (CDZ0210). This is the Int64 companion of the
+; constant-scrutinee, present-arm bool case (§"a bool match on a constant scrutinee is non-exhaustive
+; even when the constant hits the sole arm") and sum case above: a static-scrutinee compile path that
+; returns the arm the constant matches must NOT skip the arm-set-vs-type exhaustiveness check just
+; because the constant hit a present arm. The DYNAMIC-scrutinee form — `(match x (5 1))` for a parameter
+; `x` — is already rejected; the constant-scrutinee form is the one a value-driven shortcut mis-accepts.
+
+(case "an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm"
+  (doc    "`(match 5 (5 1))` — the scrutinee is the COMPILE-TIME CONSTANT `5`, and the sole arm `5` is
+           exactly the value it holds. Exhaustiveness is still checked against the TYPE's value set (all
+           2^64 Int64 values), not against which value the constant scrutinee happens to be: a finite set
+           of literal arms cannot cover Int64, and there is no wildcard, so the match is non-exhaustive
+           and the compiler MUST reject it (CDZ0210). This is the Int64 companion of the constant-scrutinee
+           present-arm bool case and sum case above (core-semantics.md #Matching Is Exhaustive Or
+           Rejected). A static-scrutinee compile path that returns the arm the constant matches must NOT
+           skip the arm-set-vs-type exhaustiveness check just because the constant hit a present arm — the
+           same value-driven shortcut the bool path had before it was fixed. The dynamic-scrutinee form
+           `(match x (5 1))` for a parameter `x` is already rejected; the constant-scrutinee present-arm
+           form is the one this pins. A generation that does not yet check int-literal exhaustiveness on a
+           constant scrutinee declines rather than emitting a component (reject-don't-miscompile).")
+  (input  (match 5 (5 1)))
+  (error  CDZ0210))
+
+; Exhaustiveness composes into NESTED patterns, not only the top-level variant set. core-semantics.md
+; #Patterns Compose (a constructor pattern's binder MAY itself be a constructor pattern, matched
+; recursively) with #Matching Is Exhaustive Or Rejected ("cover every value of the scrutinee's type"):
+; a value of type `Option (Option Int64)` ranges over `(Some (Some _))`, `(Some (None _))`, and `(None
+; _)`, so a match arming `(Some (Some x))` and `(None _)` — but NOT `(Some (None _))` — leaves a value of
+; the type uncovered and is non-exhaustive (CDZ0210), exactly as a flat match missing a top-level variant
+; is. The check must descend into the nested constructor position: the OUTER `Some` is covered, but its
+; payload's own variant set (`Some | None`) is not, so the composed arm set does not cover the type. A
+; compiler that checks exhaustiveness only at the top level (outer `Some`/`None` both named) accepts the
+; ill-typed program; worse, one that checks against the CONSTANT scrutinee's nested shape rather than the
+; TYPE accepts `(match (Some (Some 5)) …)` because the constant hits `(Some (Some x))` — the same
+; value-driven shortcut the constant-scrutinee cases above pin, here at the nested level. (The dynamic
+; form and the constant-is-the-uncovered-case form are already rejected — `(match (Some (None unit))
+; ((Some (Some x)) x) ((None _) -1))` declines; the constant-hits-a-covered-arm form is the one this pins.)
+; A generation that does not yet check nested exhaustiveness declines rather than emitting a component.
+
+(case "a nested sum match missing an inner variant is non-exhaustive"
+  (doc    "`(match (Some (Some 5)) ((Some (Some x)) x) ((None _) -1))` arms the outer `Some` (with an inner
+           `Some`) and the outer `None`, but leaves `(Some (None _))` uncovered — a value of the scrutinee
+           type `Option (Option Int64)` that no arm matches and no wildcard catches, so the match is
+           non-exhaustive and MUST be rejected (CDZ0210, core-semantics.md #Matching Is Exhaustive Or
+           Rejected with #Patterns Compose: exhaustiveness composes into the nested constructor position).
+           Pins that the exhaustiveness check descends into a nested pattern — the outer `Some` is covered,
+           but its payload's variant set `Some | None` is not, so the composed arm set does not cover the
+           type. This is the nested companion of the flat sum-missing-a-variant case above; a compiler that
+           checks only the top-level variant set, or checks against the constant scrutinee's nested shape
+           (`(Some (Some 5))` hits `(Some (Some x))`) rather than the type, accepts the ill-typed program.
+           A generation that does not yet check nested exhaustiveness declines rather than emitting.")
+  (input  (match (Some (Some 5))
+            ((Some (Some x)) x)
+            ((None _)        -1)))
   (error  CDZ0210))
 
 (case "nested patterns deconstruct recursively"
@@ -1028,6 +1277,125 @@
             (def (main) (is-zero 0))))
   (output (: true Bool)))
 
+; A match is an expression of ONE type — all its arm bodies must agree, exactly as a conditional's two
+; branches must (core-semantics.md #Matching Is Exhaustive Or Rejected makes a match an expression whose
+; type is what its arms yield; #Conditionals Evaluate One Branch requires "every branch … type-checked
+; whether or not it is evaluated"). So arm bodies of DIFFERENT type — a `1` (Int64) arm and a `true`
+; (Bool) arm — make the match ill-typed (CDZ0201), whether or not the constant scrutinee selects one of
+; them. A compiler that CONST-FOLDS a match on a literal scrutinee to its matching arm and emits only that
+; arm — without type-checking the OTHER arms — silently accepts `(match 5 (5 1) (_ true))` and runs it to
+; 1, an unevaluated arm carrying a deferred type error. This is the match analogue of the conditional
+; branch-agreement check (which rejects `(if (= 5 5) 1 true)` even though the constant condition selects
+; the Int64 branch): the arm-type check is on the SET of arm bodies, independent of which the scrutinee
+; hits. A RUNTIME-scrutinee match already checks this ("runtime match arms differ in kind"); the gap is the
+; const-folded path. A generation that does not yet check the unselected arms' types declines rather than
+; emitting the arm it folded to.
+
+(case "a match whose arm bodies have different types is a type error even when a constant scrutinee selects one"
+  (doc    "`(match 5 (5 1) (_ true))` has an Int64 arm body `1` and a Bool arm body `true` — a match is an
+           expression of one type, so disagreeing arm bodies are ill-typed (CDZ0201), the match analogue of
+           the conditional branch-agreement cases (`(if … 1 true)` is rejected). The constant scrutinee `5`
+           selects the Int64 arm, so a compiler that const-folds the match to its matching arm and emits
+           only that arm — without type-checking the other arms — silently accepts this and runs it to 1,
+           an unevaluated arm carrying a deferred type error (core-semantics.md #Conditionals Evaluate One
+           Branch: every branch is type-checked whether or not evaluated; the same for a match's arms). A
+           runtime-scrutinee match already rejects arms that differ in kind; this pins the const-folded
+           path. A generation that does not yet check the unselected arms declines rather than emitting the
+           folded arm.")
+  (input  (match 5 (5 1) (_ true)))
+  (error  CDZ0201))
+
+; The unselected-arm check must type-check each arm's BODY for internal errors, not only compare the arms'
+; RESULT types. The case above pins arm-type-AGREEMENT (an Int64 arm vs a Bool arm); this pins that an
+; unselected arm whose body is INTERNALLY ill-typed — `(+ 1 true)`, an Int64/Bool arithmetic mismatch —
+; is rejected too, even though the constant scrutinee selects the other arm. core-semantics.md
+; #Conditionals Evaluate One Branch: "Every branch … MUST be type-checked whether or not it is evaluated,
+; so that an unevaluated branch cannot carry a deferred error" — the same for a match's arms. The `if`
+; form already catches this in its unselected branch (`(if true 1 (+ 1 true))` is rejected "operation on
+; mismatched types"); the const-folded match does not — it takes the unselected arm's result type
+; superficially (here Int64, which agrees with the selected arm) WITHOUT checking the body, so the internal
+; `(+ 1 true)` deferred type error slips through and the program runs to 1. A generation that does not yet
+; type-check an unselected arm body declines rather than emitting the folded arm.
+
+(case "an internally ill-typed unselected match arm body is a type error"
+  (doc    "`(match 5 (5 1) (_ (+ 1 true)))` — the unselected `_` arm body `(+ 1 true)` mixes Int64 and Bool,
+           an internal type error the compiler MUST reject (CDZ0201), even though the constant scrutinee `5`
+           selects the `1` arm. Distinct from the arm-type-AGREEMENT case above: there the two arms' result
+           types disagree; here an arm's BODY is internally ill-typed while its result type (Int64) agrees
+           with the selected arm. core-semantics.md #Conditionals Evaluate One Branch requires every branch
+           type-checked whether or not evaluated, and the same holds for a match's arms — the `if` form
+           already rejects `(if true 1 (+ 1 true))`. Pins that the const-folded match type-checks each arm's
+           BODY, not only compares arm result types. A generation that does not yet check the unselected
+           arm's body declines rather than emitting the folded arm.")
+  (input  (match 5 (5 1) (_ (+ 1 true))))
+  (error  CDZ0201))
+
+; The unselected-arm check must reach a SCOPE error, not only a type error. The two cases above pin that
+; a const-folded match type-checks its unselected arms (agreement + internal type); this pins that it
+; also SCOPE-checks them — an unbound name in an unselected arm is rejected (CDZ0101), exactly as the
+; `if` form already rejects an unbound name in its unselected branch (`(if true 1 undefined-name)` above).
+; core-semantics.md #Binding Is Lexical: "A reference to a name with no enclosing binding MUST be a
+; compile-time error" (unconditional); #Conditionals Evaluate One Branch: every branch type-checked
+; whether or not evaluated — the same for a match's arms, and scope resolution reaches an unselected arm
+; as the type check does. `(match 2 (1 undefined-z) (_ 99))` selects the `_` arm (scrutinee 2 ≠ 1), but
+; the `1` arm references the unbound `undefined-z`; the program MUST be rejected CDZ0101, not run to 99.
+; The seed const-folds the match to its selected arm and scope-checks ONLY that arm, so the unbound
+; reference in the dropped arm slips and it runs to 99 — the scope-check analogue of the type-check the
+; case above pins, and the match companion of the `if` unselected-branch scope case. This is the more
+; fundamental gap: it swallows CDZ0101, the front-end check every generation makes ("scope resolution
+; needs no static typing"), on the const-folded match path. (The `if` form scope-checks its dropped
+; branch correctly; only the const-folded match drops the unselected arm's scope check.) A generation
+; that scope-checks every arm before folding declines rather than emitting the folded arm.
+(case "an unbound name in an unselected match arm is still rejected"
+  (doc    "`(match 2 (1 undefined-z) (_ 99))` references the unbound name `undefined-z` in the `1` arm;
+           the scrutinee 2 selects the `_` arm, but the program MUST be rejected (CDZ0101,
+           core-semantics.md #Binding Is Lexical — unconditional — with #Conditionals Evaluate One Branch:
+           every arm checked whether or not evaluated). An unevaluated arm cannot carry a deferred scope
+           error, exactly as an unevaluated `if` branch cannot (`(if true 1 undefined-name)` is rejected
+           above). The seed const-folds the match to its selected arm and scope-checks only that arm, so
+           the unbound reference in the dropped `1` arm slips and it runs to 99 — swallowing CDZ0101, the
+           front-end check every generation makes. This is the match companion of the `if`
+           unselected-branch scope case, and the scope-check analogue of the unselected-arm TYPE cases
+           above (which the seed already enforces). A generation that scope-checks every arm before
+           folding declines rather than emitting the folded arm.")
+  (input  (match 2 (1 undefined-z) (_ 99)))
+  (error  CDZ0101))
+
+; The arm-type-agreement check must fire when a RUNTIME scrutinee's first arm body is a bare PAYLOAD
+; BINDER — the const-folded cases above assume "a runtime-scrutinee match already rejects arms that
+; differ in kind," but that check SLIPS when the first arm's body is just the payload variable it binds,
+; and the match then MISCOMPILES rather than merely running. `(match o ((Some x) x) ((None _) true))`
+; over a runtime `o : Option Int64` has a `Some` arm body `x` (Int64, the payload) and a `None` arm body
+; `true` (Bool) — disagreeing arm types, so the match is ill-typed (CDZ0201) exactly as `(match 5 (5 1)
+; (_ true))` is, and as the conditional `(if … 1 true)` is. But the seed accepts it and, worse, the
+; Int64 payload is REINTERPRETED as a Bool across the run boundary: `(f (Some 5))` yields `true`,
+; `(f (Some 42))` yields `false` — the payload's bits read as a boolean, neither the true Int value nor a
+; rejection. The tell that isolates the gap: make the first arm body ANYTHING but a bare binder and the
+; check fires — a literal `((Some x) 99)` rejects "match arm bodies have different types", an arithmetic
+; `((Some x) (+ x 0))` rejects "runtime sum match arms differ in kind" — only the bare-binder first arm
+; `((Some x) x)` slips. And an inline constant scrutinee (`(match (Some 5) ((Some x) x) ((None _) true))`)
+; const-folds to the correct Int 5, so the defect is specific to the RUNTIME-scrutinee + bare-binder-first-
+; arm path — the exact path the "runtime match already checks this" assumption relies on. It is a wrong
+; VALUE, not only a missed rejection: an Int64 payload emerges as a Bool. A generation that checks the arm
+; result types on this path declines the ill-typed program rather than reinterpreting the payload's bits.
+(case "a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error"
+  (doc    "`(match o ((Some x) x) ((None _) true))` over a runtime `o : Option Int64` has a `Some` arm
+           body `x` of type Int64 (the payload) and a `None` arm body `true` of type Bool — disagreeing
+           arm types, so the match is ill-typed (CDZ0201), the same arm-agreement rule as `(match 5 (5 1)
+           (_ true))` and the conditional `(if … 1 true)`. The seed accepts it and REINTERPRETS the Int64
+           payload as a Bool: `(f (Some 5))` yields `true`, `(f (Some 42))` yields `false` — a wrong value
+           (the payload's bits read as a boolean), not merely a missed rejection. The check fires when the
+           first arm body is a literal (`((Some x) 99)` → \"match arm bodies have different types\") or an
+           expression (`((Some x) (+ x 0))` → \"runtime sum match arms differ in kind\"); ONLY a bare
+           payload-binder first arm slips, and only on a runtime scrutinee (an inline constant scrutinee
+           const-folds to the correct Int). Falsifies the assumption that a runtime-scrutinee match already
+           checks arm-type agreement. A generation that checks the arm result types declines rather than
+           reinterpreting the payload.")
+  (input  (module m
+            (def (f o) (match o ((Some x) x) ((None _) true)))
+            (def (main) (f (Some 5)))))
+  (error  CDZ0201))
+
 ; --- Boolean connectives (short-circuit) -------------------------------------------------
 ; core-semantics.md #Boolean Connectives Short-Circuit: the language offers conjunction, disjunction,
 ; and negation over Bool. Conjunction evaluates its right operand ONLY when the left is true;
@@ -1089,3 +1457,66 @@
   (needs  boolean-connectives)
   (input  (and true 1))
   (error  CDZ0201))
+
+(case "a recursive function that threads a tuple accumulator returns it"
+  (doc    "A recursive function whose result is a TUPLE in every branch — a `(value, cursor)` accumulator
+           threaded through the recursion — MUST compile and return that tuple. `go` returns `(tuple acc 0)`
+           at the base and, in the recursive branch, matches a helper's tuple `(pair n)` and recurses with an
+           updated accumulator; the result kind is a tuple on both branches, so the function is tuple-valued
+           throughout. `(go 3 0)` sums 3+2+1 into `acc`, yielding `(tuple 6 0)`, and `a` = 6. A generation
+           whose return-kind inference does not recognize the recursive branch as tuple-valued declines
+           (\"runtime sum match without a constructor arm\" — the tuple match is misread as a sum match when
+           the tuple comes from a call and the arm recurses); but a tuple-threading recursion is an ordinary
+           function, load-bearing for any recursive-descent walk that threads a (node, position) cursor.")
+  (input  (module m
+            (def (go n acc)
+              (if (= n 0)
+                  (tuple acc 0)
+                  (match (pair n) ((tuple v k) (go (- n 1) (+ acc v))))))
+            (def (pair n) (tuple n n))
+            (def (main) (match (go 3 0) ((tuple a b) a)))))
+  (output (: 6 Int64)))
+
+(case "a tail-recursive function returning a tuple is tuple-valued"
+  (doc    "The MINIMAL isolation of the case above — no accumulator, no helper, no heap: a tail-recursive
+           function whose branches are both a TUPLE MUST be tuple-valued, so a match on its result
+           destructures the tuple. `(go 3)` recurses to the base `(tuple 0 0)`; `(+ a b)` = 0. A generation
+           whose return-kind inference does not carry the base branch's tuple kind back through the
+           tail-recursive call declines (\"runtime sum match without a constructor arm\" — the recursive call
+           site is 'unknown tuple shape', so the result's tuple match is misread as a sum match). The trigger
+           is precisely TAIL-RECURSION + a TUPLE return: a non-recursive tuple return compiles, and a
+           NON-tail recursive function that WRAPS its recursive result in a new tuple compiles; only the
+           tail-recursive tuple return does not. This is the return-kind companion of the tail-recursive
+           SCALAR accumulator inference (realized) — a tuple result must infer the same way a scalar does.")
+  (input  (module m
+            (def (go n) (if (< n 1) (tuple 0 0) (go (- n 1))))
+            (def (main) (match (go 3) ((tuple a b) (+ a b))))))
+  (output (: 0 Int64)))
+
+(case "a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched"
+  (doc    "The MUTUAL-RECURSION sibling of the tail-recursive tuple return above. `dn` (decode-node) and
+           `dac` (decode-children) are mutually recursive: `dn` returns `(tuple <Ast> <cursor>)` — a HEAP
+           sum value paired with an Int cursor — and `dac` matches `dn`'s tuple `((tuple child nx) …)` and
+           recurses. `top` destructures `dn`'s result to the HEAP slot `ast`, and `main` dispatches on it
+           with CONSTRUCTOR patterns. The return-kind inference must carry the tuple's per-slot kinds — a
+           heap slot (the `Ast`) stays Heap, a scalar slot (the cursor) is Int — back through the MUTUAL
+           recursion, so `top`'s result is a runtime sum (Heap) and the caller's `((AInt n) …)` takes the
+           runtime-sum-match path. A generation that infers the heap slot as a scalar declines 'runtime
+           match with a non-literal pattern' (the constructor pattern is read against a scalar) or 'cannot
+           infer runtime compound result shape' — ask-77, the mutual-recursion face of the tail-recursive
+           tuple return. `(dn (list 42 7) 0)` at i=0 yields `(tuple (AInt 42) 1)`; `top` returns `(AInt 42)`;
+           `main` reads 42. `List.at`+`Option.expect` keeps the element a genuine runtime value (unfolded).")
+  (needs   sum-type-declaration)
+  (input  (module m
+            (type Ast (AInt Int64 | ALeaf | AList (List Ast)))
+            (def (dn b i)
+              (if (= i 0)
+                  (tuple (AInt (Option.expect (List.at b 0) "in range")) (+ i 1))
+                  (tuple (AList (dac b i (- i 1) (list))) (+ i 1))))
+            (def (dac b i n acc)
+              (if (< n 1)
+                  acc
+                  (match (dn b i) ((tuple child nx) (dac b nx (- n 1) (List.push acc child))))))
+            (def (top b) (match (dn b 0) ((tuple ast pos) ast)))
+            (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1)))))
+  (output (: 42 Int64)))

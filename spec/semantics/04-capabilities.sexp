@@ -31,6 +31,48 @@
   (output (: unit Unit))
   (host-calls (call log.emit (: "ready" String))))
 
+; An entrypoint's delegation reaches an effect performed anywhere in the operations REACHABLE from its
+; body — including inside a RECURSIVE function it calls. capabilities-and-effects.md #An Entrypoint
+; Delegates The Capabilities It Grants To The Host: "The compiler MUST determine a program's required
+; capabilities from the operations its entrypoints actually REACH and delegate", and #The Authority An
+; Entrypoint Reaches: "determined by the operations reachable from its own body under its own delegations"
+; — reachability follows the CALL GRAPH. So `main`, delegating `log` with `(host (log) …)` and calling a
+; recursive `go` that performs `log.emit`, reaches `log.emit` under its delegation: the program is granted
+; and MUST run, emitting one host call per performance. The non-recursive case already works — `(host
+; (log) (go))` for a non-recursive `go` performing `log.emit` runs, as does a two-level non-recursive
+; chain — and the intra-program-handler analog works through recursion too (a recursive `go` performing an
+; effect discharged by an enclosing `handle` runs). A compiler whose host-delegation REACHABILITY analysis
+; does not traverse into a recursive function wrongly concludes the effect is ungranted and rejects the
+; program (CDZ0401) — a FALSE rejection of a valid, granted program, and the recursion-of-the-performing-
+; function is the sole trigger (the same effect performed in a non-recursive callee, or discharged by an
+; intra-program handler through the same recursion, is accepted). A generation that does not yet follow a
+; recursive call in delegation reachability must not reject a program the delegation grants.
+
+(case "an entrypoint delegation reaches an effect performed in a recursive callee"
+  (doc    "`main` delegates `log` with `(host (log) …)` and calls a recursive `go` that performs
+           `log.emit` on each step — so `log.emit` is reachable from `main`'s body under its delegation
+           and IS granted (capabilities-and-effects.md #An Entrypoint Delegates The Capabilities It Grants
+           To The Host: capabilities are the operations the entrypoint actually REACHES, reachability
+           following the call graph). The program MUST run, terminating in `unit` and making one
+           `log.emit` host call per performance (here one, `go 1`). Pins that delegation reachability
+           traverses into a recursive function: the non-recursive callee case already runs (the case
+           above, and a two-level chain), and the intra-program-handler analog runs through recursion, so
+           a compiler that rejects this as ungranted (CDZ0401) falsely rejects a valid program because the
+           performing function is recursive. A generation that does not yet follow a recursive call in
+           delegation reachability must not reject a program the delegation grants.")
+  (needs  effects)
+  (input  (module m
+            (effect log (op emit (-> String Unit)))
+            (def (go n)
+              (if (= n 0)
+                  unit
+                  (do (log.emit "x") (go (- n 1)))))
+            (def (main)
+              (host (log)
+                (go 1)))))
+  (output (: unit Unit))
+  (host-calls (call log.emit (: "x" String))))
+
 (case "reaching an effect neither handled nor delegated is rejected at compile time"
   (doc    "Witnesses capabilities-and-effects.md #An Ungranted Effect Is A Compile-Time Error: main
            performs `log.emit` for an effect no enclosing handler discharges and the entrypoint does not

@@ -111,6 +111,129 @@
             (def (main) (f 2.5))))
   (output (: false Bool)))
 
+; --- Equality of two RUNTIME strings, neither a compile-time literal --------------------------
+; core-semantics.md #Equality Is Structural + #String Equality Follows Normalized Contents: `=` on
+; two String operands compares their normalized contents. The top-of-file string-equality cases
+; (13-strings.sexp) compare two LITERAL strings, folded at compile time; a comparison in which AT
+; LEAST ONE operand is a literal also folds (the compiler holds one side statically). The demanding
+; shape is two operands that are BOTH runtime values — two function parameters, two payload-bound
+; names — with no literal to fold against: a String is a Bytes-backed heap value, so comparing two of
+; them is a runtime heap walk. The seed folds the literal cases but declines the two-runtime case
+; ("runtime compound equality (heap walk) not yet emitted") — a not-yet-emitted runtime path within a
+; realized capability, the String companion of the runtime-float-equality cases above. A program that
+; compares names it read from data (a symbol table, an AST node's head, a proof term's variable name)
+; hits exactly this; the recorded true/false is the oracle a generation that emits the heap-walk
+; comparison reproduces.
+
+(case "two runtime strings compare equal by their contents"
+  (doc    "`eq2` compares its two String PARAMETERS — both runtime values, neither a literal the
+           compiler can fold against. `(eq2 \"foo\" \"foo\")` is true. String equality is realized
+           (collections-and-text.md #String Equality Follows Normalized Contents), so it must hold when
+           BOTH operands are runtime, not only when one side is a literal (which folds). The seed
+           declines (\"runtime compound equality (heap walk) not yet emitted\"): it folds a literal-side
+           comparison but has not emitted the two-runtime heap walk. A program comparing two names read
+           from data takes this shape.")
+  (input  (module m
+            (def (eq2 a b) (= a b))
+            (def (main) (eq2 "foo" "foo"))))
+  (output (: true Bool)))
+
+(case "two unequal runtime strings compare false by their contents"
+  (doc    "The companion with unequal runtime operands: `(eq2 \"foo\" \"bar\")` is false. Confirms the
+           two-runtime string comparison is a genuine content test, not a constant fold (true for equal
+           contents, false for different). The seed declines the same way as the equal case.")
+  (input  (module m
+            (def (eq2 a b) (= a b))
+            (def (main) (eq2 "foo" "bar"))))
+  (output (: false Bool)))
+
+(case "a runtime string compared against a literal folds against the literal side"
+  (doc    "The control the two cases above must be distinguished from: when ONE operand is a literal,
+           the comparison folds against that side and the seed compiles it. `f` compares its String
+           parameter to the literal \"x\"; `(f \"x\")` is true. Pins that the runtime-string equality
+           gap is specifically the BOTH-runtime case — a literal on either side is already emitted.")
+  (input  (module m
+            (def (f s) (= s "x"))
+            (def (main) (f "x"))))
+  (output (: true Bool)))
+
+(case "a runtime string bound from a sum payload compares equal to a string parameter"
+  (doc    "The two-runtime-string case above compares two direct PARAMETERS; this compares a String bound
+           from a SUM-VARIANT PAYLOAD (`s` from `(Wrap.Wrap s)`) against a String parameter (`name`) —
+           still two runtime operands with no literal to fold, but one is now a heap value extracted from a
+           constructor payload rather than a bare parameter. `(payload-is (Wrap.Wrap \"foo\") \"foo\")` is
+           true by String equality (collections-and-text.md #String Equality Follows Normalized Contents).
+           A generation that emits the two-runtime heap walk for bare parameters but not for a
+           payload-extracted operand declines here (\"runtime compound equality (heap walk) not yet
+           emitted\") — the payload/aliased-operand companion of the two-parameter case; a program that
+           compares a name it destructured from a data node against an expected name takes exactly this
+           shape.")
+  (input  (module case
+            (type Wrap (Wrap String))
+            (def (payload-is w name) (match w ((Wrap.Wrap s) (= s name))))
+            (def (main) (payload-is (Wrap.Wrap "foo") "foo"))))
+  (output (: true Bool)))
+
+; --- Equality of two RUNTIME compound values (a heap walk over the value heap) -----------------
+; core-semantics.md #Equality Is Structural: two values are equal when they have the same type and
+; their contents are equal component-wise; #Values Are Equal … agrees with the canonical byte form. The
+; component-wise cases above compare compound values built from LITERALS (folded at compile time). The
+; demanding shape is two compound values BUILT AT RUN TIME — a sum/record/tuple whose contents come
+; from a parameter or a call — so the comparison is a walk over two heap values, not a constant fold.
+; The seed declines this ("runtime compound equality (heap walk) not yet emitted") — the same
+; not-yet-emitted runtime path the two-runtime-string case above hits (a String is itself a
+; Bytes-backed heap value, so the two declines share one root). A program that compares two runtime AST
+; nodes / proof terms / records for structural equality hits this; the recorded oracle is what a
+; generation emitting the heap-walk comparison reproduces. Until then a program routes around it with a
+; hand-written recursive comparator (scalar `=` on the leaves, which IS emitted).
+
+(case "two runtime sum values compare equal by a heap walk"
+  (doc    "`mk` builds a runtime sum `(N.I n)` from its parameter, so both operands of `(= (mk 1) (mk
+           1))` are heap values, not folded constants. Structural equality (core-semantics.md #Equality
+           Is Structural) makes them equal, so the program is true. The seed declines (\"runtime
+           compound equality (heap walk) not yet emitted\"): it folds equality of compile-time-known
+           compounds but has not emitted the runtime heap walk. The runtime-compound companion of the
+           runtime-float and two-runtime-string equality cases above — all three are the same
+           not-yet-emitted runtime comparison. A generation emitting the heap walk reproduces true.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type N (I Int64 | J Int64))
+            (def (mk n) (N.I n))
+            (def (main) (if (= (mk 1) (mk 1)) 1 0))))
+  (output (: 1 Int64)))
+
+(case "two differing runtime sum values compare unequal by a heap walk"
+  (doc    "The companion with unequal runtime compounds: `(mk 1)` is `(N.I 1)` and `(mk2 2)` is `(N.I
+           2)`, so the heap walk finds their payloads differ and the comparison is false → 0. Confirms
+           the runtime compound comparison is a genuine structural test, not a constant fold. The seed
+           declines the same way as the equal case.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type N (I Int64 | J Int64))
+            (def (mk n) (N.I n))
+            (def (main) (if (= (mk 1) (mk 2)) 1 0))))
+  (output (: 0 Int64)))
+
+(case "a runtime compound structural equality is expressible as a hand-written recursive comparator"
+  (doc    "The route around the not-yet-emitted heap walk, and the shape a program needing runtime
+           compound equality writes today: an explicit recursive comparator that dispatches on each
+           value's variant and compares the leaves with scalar `=` (which IS emitted for runtime
+           scalars). `same` compares two `N` values by matching both and comparing the bound Int64
+           payloads; `(same (mk 1) (mk 1))` is true → 1. Pins that structural equality of runtime
+           compounds is ALREADY achievable by hand — the missing built-in `=` heap walk is a
+           convenience over this, not a new expressive power — so a program (a proof kernel comparing
+           terms, a compiler comparing AST nodes) is not blocked, only more verbose.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type N (I Int64 | J Int64))
+            (def (mk n) (N.I n))
+            (def (same a b)
+              (match a
+                ((N.I x) (match b ((N.I y) (= x y)) ((N.J _) false)))
+                ((N.J x) (match b ((N.J y) (= x y)) ((N.I _) false)))))
+            (def (main) (if (same (mk 1) (mk 1)) 1 0))))
+  (output (: 1 Int64)))
+
 (case "an offered ordering is total and deterministic"
   (doc    "Witnesses core-semantics.md #Ordering Where Offered Is Total: Int64 offers a total order.")
   (input  (< 2 3))

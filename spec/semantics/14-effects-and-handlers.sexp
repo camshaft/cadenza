@@ -256,6 +256,41 @@
   (output (: 5 Int64))
   (host-calls))
 
+; The dual of the collision-free cross-effect case: WITHIN one effect, an operation name declared TWICE
+; is ill-formed. capabilities-and-effects.md #An Effect Declaration Names The Effect And Types Its
+; Operations: an effect declaration "binds each of its operations to an operation type, so that the set of
+; operations an effect offers is a CLOSED, statically-known SET rather than an open collection of ad-hoc
+; names." Two `(op f …)` in one effect bind the name `f` twice — the set is then not well-defined (which
+; operation type governs a performance of `E.f`?), the same ill-formedness a record with a duplicate field
+; (`(record (a 1) (a 2))`) and a module with a duplicate definition (`(module … (def (f) 1) (def (f) 2))`)
+; are rejected for (CDZ0201): a fixed/closed set cannot name the same member twice. The effect MUST be
+; rejected, not resolved by keeping one `f` and silently discarding the other. A compiler that registers
+; each operation into the effect's table without checking for a name already bound silently keeps one and
+; accepts the declaration — the effect-declaration sibling of the record-field and module-definition
+; duplicate gaps. (Distinct from the cross-effect case above, where `Unify.resolve` and `Scope.resolve` are
+; two operations of two effects, disambiguated by their effect — collision-free per the spec's 2nd
+; sentence. Here it is one effect naming one operation twice.) A generation that does not yet check for a
+; duplicate operation name declines rather than silently choosing one.
+
+(case "an effect that declares an operation name twice is rejected"
+  (doc    "`(effect E (op f (-> Int64 Int64)) (op f (-> Int64 Int64)))` declares the operation `f` twice —
+           but an effect's operations are a CLOSED, statically-known SET, each name bound to one operation
+           type (capabilities-and-effects.md #An Effect Declaration Names The Effect And Types Its
+           Operations). Binding `f` twice makes the set ill-defined, the same ill-formedness a record with a
+           duplicate field name or a module with a duplicate definition is rejected for (CDZ0201) — a fixed
+           set cannot name the same member twice. The effect MUST be rejected, not resolved by keeping one
+           `f` and discarding the other. Pins that the duplicate-member check reaches an effect's operation
+           set, the effect-declaration sibling of the record-field (`(record (a 1) (a 2))`) and module-
+           definition (`(module … (def (f) 1) (def (f) 2))`) duplicate cases; distinct from the collision-
+           free cross-effect case above (`Unify.resolve` / `Scope.resolve`), which is two effects' distinct
+           operations. A generation that does not yet detect a duplicate operation name declines rather
+           than silently choosing one.")
+  (needs  effects)
+  (input  (module m
+            (effect E (op f (-> Int64 Int64)) (op f (-> Int64 Int64)))
+            (def (main) 1)))
+  (error  CDZ0201))
+
 ; --- Handler resolution is dynamic in extent, across function boundaries ------------------------
 ; capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically Determined. The cases
 ; above perform and handle inside one `main`, where dynamic and lexical resolution coincide. These cases
@@ -508,6 +543,187 @@
 ; These are the compile-time checks that keep "no ambient authority" a property of the source
 ; (capabilities-and-effects.md #An Ungranted Effect Is A Compile-Time Error, #A Handler Arm Names An
 ; Operation Its Effect Declares).
+
+; Performing an operation is TYPED exactly as an ordinary function application: its arguments are checked
+; against the operation's declared parameter types (capabilities-and-effects.md #Performing An Operation Is
+; Typed And Contributes To The Row: "Performing an operation MUST check its arguments against the operation's
+; declared parameter types … so that an effect operation is typed exactly as an ordinary function
+; application is"). So performing `E.op` — declared `(-> Int64 Int64)` — on a Bool argument is a type
+; mismatch, rejected (CDZ0201) exactly as an ordinary `(f true)` on an Int64-parameter `f` is. A compiler
+; that lowers the perform without checking the argument against the declared parameter type MISCOMPILES: it
+; feeds the Bool (or worse, a String) through the op's Int64 slot and produces a garbage value rather than
+; rejecting — `(E.op "str")` returns a nonsense integer. A generation that does not yet type-check a perform's
+; arguments declines rather than emitting the mistyped operation.
+
+(case "performing an operation with an argument of the wrong type is a type error"
+  (doc    "`E.op` is declared `(-> Int64 Int64)`, so performing `(E.op true)` supplies a Bool where the
+           operation's parameter type is Int64 — a type mismatch the compiler MUST reject (CDZ0201,
+           capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row: a
+           perform's arguments are checked against the declared parameter types, exactly as an ordinary
+           function application's are — `(f true)` on an Int64-parameter `f` is rejected the same way).
+           Pins that an effect operation's arguments are type-checked: a compiler that lowers the perform
+           without checking feeds the Bool through the op's Int64 slot and produces a wrong value (and a
+           String argument yields a garbage integer). A generation that does not yet check a perform's
+           arguments declines rather than emitting the mistyped operation.")
+  (needs  effects)
+  (input  (module m
+            (effect E (op op (-> Int64 Int64)))
+            (def (main)
+              (handle unit ((E.op (n) s (resume n s)))
+                (E.op true)))))
+  (error  CDZ0201))
+
+; The perform-argument check must fire for EVERY declared parameter type, not only Int64. An operation
+; declared `(-> String Unit)` performed on an Int64 argument — `(E.emit 42)` — is the same type mismatch
+; as the Int64-parameter case above and MUST be rejected (CDZ0201). This is the STRING-parameter sibling:
+; a compiler whose perform lowering dispatches on the DECLARED parameter type (routing a String-parameter
+; op to a string-argument path) before checking the ARGUMENT's actual type skips the check when the
+; declared parameter is String, and feeds the Int through the op's String slot — the handler arm binds `s`
+; to `42` typed as a String, so `(E.emit 42)` runs to `unit` (and a downstream `(String.byte-len s)` in
+; the arm reads a non-String value). The Int64-parameter op catches its bad argument (`(E.op true)` above);
+; the String-parameter op must catch its bad argument identically, or the argument check is not "exactly as
+; an ordinary function application" for every parameter type. A generation that does not yet check a
+; String-parameter op's argument declines rather than binding the mistyped value into the handler arm.
+
+(case "performing a string-parameter operation with a non-string argument is a type error"
+  (doc    "`E.emit` is declared `(-> String Unit)`, so performing `(E.emit 42)` supplies an Int64 where the
+           operation's parameter type is String — a type mismatch the compiler MUST reject (CDZ0201,
+           capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row),
+           exactly as the Int64-parameter case `(E.op true)` above is. Pins that the perform-argument check
+           fires for a STRING-declared parameter too, not only Int64: a compiler that dispatches a perform
+           on the declared parameter type — routing a String-parameter op to a string-argument path —
+           before checking the argument's actual type skips the check for a String parameter and binds the
+           Int `42` into the handler arm as a String, so `(E.emit 42)` runs to `unit` instead of being
+           rejected. The argument check must be uniform across parameter types. A generation that does not
+           yet check a String-parameter op's argument declines rather than binding the mistyped value.")
+  (needs  effects)
+  (input  (module m
+            (effect E (op emit (-> String Unit)))
+            (def (main)
+              (handle unit ((E.emit (s) st (resume unit st)))
+                (E.emit 42)))))
+  (error  CDZ0201))
+
+; The perform-argument check must also fire for a COMPOUND declared parameter type, not only the scalar
+; types Int64 (above) and String (above). An operation declared `(-> (List Int64) Unit)` performed on an
+; Int64 argument — `(E.put 42)` — is the same type mismatch and MUST be rejected (CDZ0201). This is the
+; COMPOUND-parameter sibling of the two scalar-parameter cases: a compiler whose perform check compares the
+; argument only against a scalar Kind skips the check when the declared parameter is a compound, binds the
+; Int `42` into the handler arm typed as a `List Int64`, and `(E.put 42)` runs to `unit` (a downstream
+; `(List.len xs)` in the arm then reads a non-list value). A tuple argument where a list is declared, or a
+; wrong element type, slips through the same way. The argument check must be uniform across ALL parameter
+; type shapes — scalar and compound alike. A generation that does not yet check a compound-parameter op's
+; argument declines rather than binding the mistyped value into the handler arm.
+
+(case "performing an operation with a wrong-type argument for a compound parameter is a type error"
+  (doc    "`E.put` is declared `(-> (List Int64) Unit)`, so performing `(E.put 42)` supplies an Int64 where
+           the operation's parameter type is the compound `List Int64` — a type mismatch the compiler MUST
+           reject (CDZ0201, capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To
+           The Row), exactly as the Int64-parameter (`(E.op true)`) and String-parameter (`(E.emit 42)`)
+           cases above are. Pins that the perform-argument check fires for a COMPOUND declared parameter
+           too, not only scalars: a compiler that compares the argument only against a scalar Kind skips the
+           check for a compound parameter and binds the Int `42` into the handler arm typed as a `List
+           Int64`, so `(E.put 42)` runs to `unit` (a downstream `(List.len xs)` reads a non-list value). The
+           argument check must be uniform across all parameter type shapes. A generation that does not yet
+           check a compound-parameter op's argument declines rather than binding the mistyped value.")
+  (needs  effects)
+  (input  (module m
+            (effect E (op put (-> (List Int64) Unit)))
+            (def (main)
+              (handle unit ((E.put (xs) s (resume unit s)))
+                (E.put 42)))))
+  (error  CDZ0201))
+
+; The SAME spec sentence has a second half: performing an operation must "YIELD the operation's declared
+; RESULT type" (capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row).
+; A handler arm resumes the continuation with the value the operation yields — `(resume <value> <state>)`
+; "returns <value> to the point that performed the operation" (this file's header) — so the resume VALUE
+; is what the operation yields, and it MUST have the operation's declared result type. For `E.op` declared
+; `(-> Int64 Int64)`, `(resume true s)` resumes with a Bool where the declared result is Int64 — a type
+; mismatch the compiler MUST reject (CDZ0201), exactly as feeding a Bool argument to the perform is (the
+; case above) and exactly as an ordinary function whose body returns the wrong type is. A compiler that
+; checks a perform's ARGUMENTS but not the resume value against the result type feeds the Bool back through
+; the op's Int64-typed result slot and yields the wrong value — `(E.op 1)` returns `true` (and `(resume 99
+; s)` for a Bool-result op returns the integer `99`) rather than rejecting. This is the result-type half of
+; the perform-argument case above: the two halves of one spec sentence must both hold. A generation that
+; does not yet check the resume value against the declared result type declines rather than yielding it.
+
+(case "resuming with a value of the wrong type for the operation's result is a type error"
+  (doc    "`E.op` is declared `(-> Int64 Int64)`, so its result type is Int64 and the value a handler
+           resumes with — `(resume <value> <state>)`, the value returned to the perform site — MUST be an
+           Int64. `(resume true s)` resumes with a Bool, a mismatch against the declared result type the
+           compiler MUST reject (CDZ0201, capabilities-and-effects.md #Performing An Operation Is Typed And
+           Contributes To The Row: a perform must 'yield the operation's declared result type', so an
+           effect operation is typed exactly as an ordinary function application — whose body returning the
+           wrong type is rejected the same way). This is the result-type companion of the argument-type
+           case above (`(E.op true)`): the same spec sentence checks arguments against parameter types AND
+           yields the declared result type. A compiler that checks the arguments but not the resume value
+           feeds the Bool through the op's Int64 result slot and yields `true` from `(E.op 1)` rather than
+           rejecting. A generation that does not yet check the resume value against the result type
+           declines rather than yielding it.")
+  (needs  effects)
+  (input  (module m
+            (effect E (op op (-> Int64 Int64)))
+            (def (main)
+              (handle unit ((E.op (n) s (resume true s)))
+                (E.op 1)))))
+  (error  CDZ0201))
+
+; The resume-value result-type check must hold when the declared result type is a COMPOUND, not only a
+; scalar. `E.get` declared `(-> (List Int64))` has result type `List Int64`, so a handler resuming with an
+; Int64 — `(resume 42 s)` — or a Bool, or a tuple, is the same result-type mismatch the scalar case above
+; is, and MUST be rejected (CDZ0201). A compiler that checks the resume value against a SCALAR result type
+; but not a compound one yields the mistyped value: `(E.get)` returns `42` for `(resume 42 s)`, and — worse
+; — `(resume (tuple 7 8) s)` yields `(list)`, a TUPLE reinterpreted through the op's List result slot and
+; rendered as an (empty) list, a type-confusion wrong value. This is the compound-result sibling of the
+; scalar-result case above: the "yield the declared result type" check must be uniform across result types,
+; not gated by whether the declared result is scalar. A generation that does not yet check a compound
+; result type declines rather than yielding the mistyped value.
+
+(case "resuming with a wrong-type value for a compound result type is a type error"
+  (doc    "`E.get` is declared `(-> (List Int64))`, so its result type is the compound `List Int64` and the
+           value a handler resumes with MUST be a `List Int64`. `(resume 42 s)` resumes with an Int64 — a
+           mismatch against the declared compound result type the compiler MUST reject (CDZ0201,
+           capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row: a
+           perform must 'yield the operation's declared result type'). This is the compound-result-type
+           companion of the scalar-result case above (`(resume true s)` for an Int64 result): the check
+           must be uniform across result types. A compiler that checks a scalar result type but not a
+           compound one yields the mistyped value — `(E.get)` returns `42`, and resuming with a tuple where
+           a list is declared renders `(list)`, a type-confusion wrong value. A generation that does not yet
+           check a compound result type declines rather than yielding the mistyped value.")
+  (needs  effects)
+  (input  (module m
+            (effect E (op get (-> (List Int64))))
+            (def (main)
+              (handle unit ((E.get () s (resume 42 s)))
+                (E.get)))))
+  (error  CDZ0201))
+
+; A resume carries two values — `(resume <value> <state>)` — and BOTH are ordinary expressions subject to
+; #Binding Is Lexical (core-semantics.md, unconditional): a reference to an unbound name in either is a
+; compile-time error (CDZ0101). The resume VALUE position already rejects an unbound name (`(resume
+; undefined-xyz s)` is caught), but the STATE position does not: `(resume unit undefined-xyz)` runs to the
+; handler's result instead of rejecting the unbound `undefined-xyz`. A compiler that scope-checks only the
+; resume value and not the resume state lets an unbound reference in the state slip through — the same
+; unbound-name gap the unselected-conditional-branch and short-circuited-connective-operand cases closed,
+; here in a resume's second argument. A generation that does not yet scope-check the resume state declines.
+
+(case "an unbound name in a resume's state position is rejected"
+  (doc    "`(resume unit undefined-xyz)` references the unbound name `undefined-xyz` in the resume's STATE
+           position (its second argument); a resume's state is an ordinary expression, so an unbound name
+           in it is a compile-time error (CDZ0101, core-semantics.md #Binding Is Lexical — unconditional),
+           exactly as an unbound name in the resume VALUE position (`(resume undefined-xyz s)`) already is.
+           Pins that scope resolution reaches the resume STATE, not only the resume value. A compiler that
+           scope-checks the value but not the state runs to the handler's result instead of rejecting. A
+           generation that does not yet scope-check the resume state declines rather than emitting a
+           component.")
+  (needs  effects)
+  (input  (module m
+            (effect E (op put (-> Int64 Unit)))
+            (def (main)
+              (handle unit ((E.put (p) s (resume unit undefined-xyz)))
+                (E.put 1)))))
+  (error  CDZ0101))
 
 (case "a handler arm for an operation the effect does not declare is rejected"
   (doc    "`Choose` declares only `pick`; a handler arm naming `Choose.guess` names an operation the

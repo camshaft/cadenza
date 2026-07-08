@@ -7,9 +7,6 @@
 # as a local, generated target.
 # =============================================================================
 
-# The generated compiler / any synthesized implementation.
-/implementation/
-
 # Editor / OS / agent-local
 .vscode/
 .idea/
@@ -21,4 +18,5 @@ result
 .claude/
 
 # stray editor/rust-analyzer flycheck output at repo root
-/target/
+target/
+

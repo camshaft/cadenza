@@ -36,6 +36,38 @@
   (input      (record (a 1) (b 2) (a 3)))
   (error      CDZ0201))
 
+; A SUM's variant names are a set too, exactly as a record's field names are — type-system.md #The
+; Structural Types makes a sum "of named variants" whose shape is "its variant names with their payload
+; types", and #Structural Values Are Comparable Only When Their Shapes Match speaks of a sum's "variant
+; SET"; #A Match Is Exhaustive Against The Sum Type's Variant Set checks exhaustiveness against that set.
+; For the variant set to be well-defined, the variant names must be distinct, so a sum declaring the same
+; variant name twice — `(type T (A Int64 | A Bool))` — is ill-formed and MUST be rejected (CDZ0201), the
+; same duplicate-member ill-formedness a record with a duplicate field (`(record (a 1) (a 2))` above), a
+; module with a duplicate definition (11-modules.sexp), and an effect declaring an operation twice
+; (14-effects-and-handlers.sexp) are rejected for. A compiler that registers each variant without checking
+; for a name already declared binds `A` twice with two payload types — `(T.A 5)` and `(T.A true)` both
+; construct, an ambiguous variant the closed variant set forbids. This is the fourth closed name-set (after
+; record fields, module definitions, and effect operations) whose duplicate-member check the family
+; requires. A generation that does not yet detect a duplicate variant name declines rather than binding one.
+
+(case "a sum declaring a variant name twice is a type error"
+  (doc    "`(type T (A Int64 | A Bool))` declares the variant `A` twice — but a sum's variant names are a
+           SET (type-system.md #The Structural Types Are Record, Tuple, And Sum: a sum's shape is its
+           variant names with their payload types; #A Match Is Exhaustive Against The Sum Type's Variant
+           Set), so declaring `A` twice makes the variant set ill-defined and MUST be rejected (CDZ0201),
+           the same duplicate-member ill-formedness a record with a duplicate field (`(record (a 1) (a
+           2))`), a module with a duplicate definition, and an effect declaring an operation twice are
+           rejected for. Pins that the duplicate-member check reaches a sum's variant set — the fourth
+           closed name-set beside record fields, module definitions, and effect operations. A compiler that
+           registers each variant without the check binds `A` twice with two payload types (`(T.A 5)` and
+           `(T.A true)` both construct), an ambiguous variant the closed set forbids. A generation that does
+           not yet detect a duplicate variant name declines rather than binding one.")
+  (needs      sum-type-declaration)
+  (input      (module m
+                (type T (A Int64 | A Bool))
+                (def (main) 1)))
+  (error      CDZ0201))
+
 (case "member access is written explicitly as the dot form in the canonical tree"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field: the canonical
            form is (. <record> <key>); `p.y` is its display sugar. This case writes the
@@ -79,6 +111,46 @@
            the compiler rejects (CDZ0201).")
   (input     (. "hi" x))
   (error     CDZ0201))
+
+; --- Accessing a field the record does not have is a static type error, not a runtime trap --------
+; The cases above reject member access on a NON-record (an Int, Bool, Tuple, String) at compile time —
+; the projection has no defined result, so the compiler rejects rather than emitting a component that
+; traps. The SIBLING situation is member access on a record that DOES NOT HAVE the named field: a
+; record's TYPE is its field names with their types (type-system.md #The Structural Types Are Record,
+; Tuple, And Sum: "a record's field names with their types"), and member access projects "the field
+; named by its key FROM the record" (core-semantics.md #Member Access Projects A Record Field) — a
+; field the record's type does not carry cannot be projected, so projecting it has no defined result,
+; exactly as projecting a field of a non-record does. The row operations already fix this outcome
+; UNCONDITIONALLY: projecting-to (type-system.md #A Record Is Restricted To A Named Set Of Its Fields)
+; and dropping (§#A Record Is Reduced By Dropping…) "a field the operand record does not contain MUST
+; be rejected at compile time with the machine-readable code for a required field that is absent." Bare
+; member access is the same projection and MUST reject the same way — NOT emit a component that traps
+; at run time. The seed instead lowers `p.z` (z absent) to trapping code: a runtime trap where the spec
+; mandates a compile-time rejection, the record-operand companion of the non-record member-access cases.
+(case "member access of a field the record does not have is a type error"
+  (doc    "`(record (x 1))` has the single field `x`; its type carries no field `z` (type-system.md
+           #The Structural Types Are Record… — a record's field names with their types). Projecting the
+           absent `z` has no defined result, so it is a compile-time type error (CDZ0201), the
+           record-operand companion of `(. 5 x)` (member access on a non-record, rejected above) and the
+           bare-access analogue of the row-projection rule that rejects naming a field the operand does
+           not contain (type-system.md #A Record Is Restricted To A Named Set Of Its Fields;
+           core-semantics.md #Member Access Projects A Record Field). Rejected before lowering, not
+           deferred to a runtime trap. A valid field (`(. (record (x 1)) x)` = 1) is unaffected.")
+  (input     (. (record (x 1)) z))
+  (error     CDZ0201))
+
+(case "member access of an absent field on a function-returned record is a type error"
+  (doc    "The field-presence check reaches a record RETURNED by a function, not only a literal: `(mk)`
+           returns `(record (x 1))`, whose type carries only `x`, so `(. (mk) z)` names an absent field —
+           a compile-time type error (CDZ0201). `resolve` beta-reduces the call to its `(record …)` body,
+           so the field set is known at the access site exactly as for a literal (the record-field twin of
+           the tuple-arity check reaching a function-returned tuple). A record PARAMETER, whose field set
+           is not known in the callee, resolves to no `(record …)` and imposes nothing — it is not
+           false-rejected (declining or taking the runtime path instead).")
+  (input  (module m
+            (def (mk) (record (x 1)))
+            (def (main) (. (mk) z))))
+  (error  CDZ0201))
 
 ; The positional tuple accessor `tuple.N` requires a TUPLE operand, exactly as member access `.`
 ; requires a record operand (above). Applying `tuple.N` to a non-tuple — a scalar, a record, a sum —
@@ -127,12 +199,78 @@
   (input     (tuple.3 (tuple 10 20 30)))
   (error     CDZ0201))
 
-(case "member access of a missing field traps"
+; The static-arity range check must reach a tuple whose arity is known through a FUNCTION RETURN, not only
+; a directly-written tuple literal. `mk` returns `(tuple 1 2)`, so `(mk)`'s result is a two-element tuple —
+; its arity (2, valid positions 0..1) is statically known at the projection site (the same shape recovery
+; that lets `(tuple.1 (mk))` project element 1). So `(tuple.2 (mk))` names position 2, outside the arity,
+; a compile-time-knowable ill-typing the compiler MUST reject (CDZ0201) — exactly as the literal
+; `(tuple.3 (tuple 10 20 30))` above and the let-bound `(let ((p (tuple 1 2))) (tuple.2 p))` are. A compiler
+; that range-checks the index for a literal and a let-bound tuple but NOT for a fn-return tuple emits a
+; component that TRAPS at run time on `(tuple.2 (mk))` — deferring a compile-time-knowable ill-typing to a
+; runtime trap, the very thing the case above forbids. (Distinct from a tuple reached through a PARAMETER,
+; whose arity is genuinely unknown in the callee's body and which correctly declines "unknown tuple shape";
+; here the arity IS known from the callee's return.) A generation that does not yet range-check the index on
+; a fn-return tuple declines rather than emitting the trapping access.
+
+(case "a tuple access out of arity on a function-returned tuple is a type error, not a trap"
+  (doc    "`mk` returns `(tuple 1 2)`, so `(mk)` is a two-element tuple whose arity is statically known at
+           the projection site (as the valid `(tuple.1 (mk))` shows). `(tuple.2 (mk))` names position 2,
+           outside the arity 0..1 — a compile-time-knowable ill-typing the compiler MUST reject (CDZ0201,
+           type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix: a positional access
+           out of the static arity is rejected), exactly as the literal `(tuple.3 (tuple 10 20 30))` and the
+           let-bound `(let ((p (tuple 1 2))) (tuple.2 p))` are. Pins that the arity range check reaches a
+           tuple whose arity is known through a function return, not only a literal or let-bound tuple. A
+           compiler that checks the literal/let cases but emits a runtime trap for the fn-return case defers
+           a compile-time-knowable ill-typing to a trap — the very thing the literal case forbids. (A tuple
+           reached through a PARAMETER has genuinely unknown arity and correctly declines instead; here the
+           arity is known from the callee's return.) A generation that does not yet range-check a fn-return
+           tuple's access declines rather than emitting the trapping access.")
+  (needs     sum-type-declaration)
+  (input     (module m
+               (def (mk) (tuple 1 2))
+               (def (main) (tuple.2 (mk)))))
+  (error     CDZ0201))
+
+; Projecting a tuple that arrives as a FUNCTION PARAMETER (a runtime tuple whose shape is not the
+; inline literal at the projection site) must either compute the projection or DECLINE — never emit an
+; invalid component. `(def (fst t) (tuple.0 t))` applied to `(tuple 7 8)` is well-typed and its value is
+; 7 (the inline `(let ((t (tuple 7 8))) (tuple.0 t))` and the beta-reducing `((fn (t) (tuple.0 t)) (tuple
+; 7 8))` both yield 7). self-hosting-and-bootstrap.md #An Unsupported Construct Is Declined, Not
+; Miscompiled: "A generation whose compiler does not yet compile a construct a program uses MUST decline
+; to derive a component … rather than emit a component whose observable behavior diverges" — and emitting
+; a component that FAILS wasm validation is neither a decline nor a valid component, the worst outcome.
+; The record accessor already takes the correct path on the analogous named-parameter case (`(def (geta
+; r) (. r a))` DECLINES "runtime member access on a value of unknown record shape"); `tuple.N` on a
+; parameter must at least do the same rather than emit invalid bytes. The recorded oracle is the value 7;
+; a generation that cannot yet thread the parameter tuple's shape declines (scored todo), and a generation
+; that emits an invalid component FAILs this case.
+
+(case "projecting a tuple passed as a function parameter yields the element, never an invalid component"
+  (doc    "`(def (fst t) (tuple.0 t))` applied to `(tuple 7 8)` projects element 0 of a tuple that
+           arrives as a parameter — a well-typed program whose value is 7 (the inline and lambda forms
+           both compute 7). The compiler MUST either compute the projection or DECLINE
+           (self-hosting-and-bootstrap.md #An Unsupported Construct Is Declined, Not Miscompiled), never
+           emit a component that fails wasm validation — the worst outcome, neither a decline nor a valid
+           component. The record accessor already declines the analogous named-parameter case (`(. r a)`
+           on a record parameter → 'unknown record shape'); `tuple.N` on a parameter must not emit invalid
+           bytes where the record accessor cleanly declines. A generation that cannot yet thread the
+           parameter tuple's shape declines rather than emitting an invalid component.")
+  (needs     collections)
+  (input     (module m
+               (def (fst t) (tuple.0 t))
+               (def (main)  (fst (tuple 7 8)))))
+  (output    (: 7 Int64)))
+
+(case "member access of a missing field is a type error"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field (3rd sentence):
-           projecting a field the record does not contain traps rather than producing an
-           unspecified value.")
+           projecting a field the record does not contain has no defined result. A record's field
+           names are part of its type, so `p`'s type carries only `x`; naming the absent `z` is a
+           COMPILE-TIME type error (CDZ0201), the bare-access companion of the row-projection rule
+           (type-system.md #A Record Is Restricted To A Named Set Of Its Fields) — rejected before
+           lowering, not deferred to a runtime trap. The `let`-bound record `p` resolves to a
+           compile-time `(record (x 1))`, so the field set is statically known at the access site.")
   (input  (let ((p (record (x 1)))) (. p z)))
-  (trap   "no such field"))
+  (error  CDZ0201))
 
 (case "member access on a record chosen by a conditional projects the field"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field with a record value that
@@ -491,6 +629,67 @@
             (def (main) (f 1))))
   (output (: (list 1 2 3) (List Int64))))
 
+(case "two lists are concatenated into one flat list"
+  (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first
+           list in order followed by those of the second (collections-and-text.md §A List Is Grown By
+           Functional Construction, the concatenation clause). Pins that a concatenated list is the
+           SAME `List` type as a literal — its representation (an RRB persistent tree join) is
+           unobservable (#A List's Representation Is Unspecified And Unobservable), so it renders as one
+           flat `(list …)`. The self-hosting compiler assembles output in linear time with this op.")
+  (needs      collections)
+  (input  (module m (def (main) (List.concat (list 1 2) (list 3 4)))))
+  (output (: (list 1 2 3 4) (List Int64))))
+
+(case "the length of a concatenation is the sum of the two lengths"
+  (doc    "`(List.len (List.concat (list 1 2 3) (list 4 5)))` = 5 — concatenation appends every element
+           of the second list to the first, so the result length is the sum. Reads through the joined
+           trie via `vec-len` exactly as a push-built list (collections-and-text.md §A List's
+           Representation Is Unspecified And Unobservable).")
+  (needs      collections)
+  (input  (module m (def (main) (List.len (List.concat (list 1 2 3) (list 4 5))))))
+  (output (: 5 Int64)))
+
+(case "an element read across a concatenation boundary is the right value"
+  (doc    "`(Option.expect (List.at (List.concat (list 10 20 30) (list 40 50)) 3) …)` = 40 — index 3 of
+           the concatenation is the FIRST element of the second operand, so the join places the second
+           list's elements immediately after the first's. Pins that `List.at` reads a concatenated list
+           by the same total ordering as a literal.")
+  (needs      fallible-access)
+  (input  (module m
+            (def (main)
+              (Option.expect (List.at (List.concat (list 10 20 30) (list 40 50)) 3) "in bounds"))))
+  (output (: 40 Int64)))
+
+(case "concatenating with the empty list on the right is identity"
+  (doc    "`(List.len (List.concat (list 7 8 9) (list)))` = 3 — concatenating with the empty list yields
+           a list equal to the other operand (collections-and-text.md §A List Is Grown By Functional
+           Construction: the empty-operand identity). The empty right operand contributes no elements.")
+  (needs      collections)
+  (input  (module m (def (main) (List.len (List.concat (list 7 8 9) (list))))))
+  (output (: 3 Int64)))
+
+(case "a list-concatenating helper threads lists through a call"
+  (doc    "`(def (cat a b) (List.concat a b))` applied to two literals — concatenation works on list
+           PARAMETERS, not only inline literals, so both operands are inferred `Heap` and the helper
+           emits a runtime `vec-concat`. This is the `code-cat`/emit-assembly idiom a self-hosted
+           compiler is written in: joining encoded fragments in linear time rather than pushing one
+           element at a time (O(n²)).")
+  (needs      collections)
+  (input  (module m
+            (def (cat a b) (List.concat a b))
+            (def (main) (List.len (cat (list 1 2 3) (list 4 5 6 7))))))
+  (output (: 7 Int64)))
+
+(case "concatenating lists of different element types is a type error"
+  (doc    "`(List.concat (list 1 2) (list true))` joins an `Int64` list with a `Bool` list — but a list
+           has ONE element type (collections-and-text.md §A List Is An Ordered Homogeneous Sequence),
+           so a concatenation of two differently-typed lists has no well-typed result and is rejected
+           (CDZ0201). A generation that skipped this would render the result at one operand's element
+           type, mistyping the other's elements — a wrong value, not merely a missing rejection.")
+  (needs      collections)
+  (input  (module m (def (main) (List.len (List.concat (list 1 2) (list true))))))
+  (error CDZ0201))
+
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
            record field that is itself a runtime compound. Pins that the type-directed renderer
@@ -617,6 +816,70 @@
             (def (at b i)     (unwrap (Bytes.at b i) -1))
             (def (main)       (at (Bytes.of (list 10 20 30)) 1))))
   (output (: 20 Int64)))
+
+; The payload type of a fallible `List.at` result must flow through `Option.expect` into ARITHMETIC, just
+; as it does for `Bytes.at` and just as the match-unwrap form does for `List.at`. `(List.at xs i)` on a
+; `List Int64` is `Option Int64`, so `(Option.expect (List.at xs i) msg)` is an Int64 and adding to it is
+; well-typed. The seed declines "non-integer operand to arithmetic" for a RUNTIME list (a parameter, or a
+; literal with a computed element) — it does not resolve `Option.expect (List.at <runtime-list> i)` to
+; Int64 for the arithmetic-operand check — yet the SAME idiom works for `Bytes.at` (`(+ (Option.expect
+; (Bytes.at b 1) msg) 10)` = 30), the match-unwrap form works for `List.at` (`(+ (match (List.at xs 1)
+; ((Some x) x) ((None _) 0)) 10)` = 30), and `Option.expect (List.at …)` used NON-arithmetically (returned,
+; or matched) works (→20). Only `Option.expect` on a `List.at` result, used as an arithmetic operand on a
+; runtime list, loses the Int64 element type. It is decline-don't-miscompile-safe (an honest decline, no
+; wrong value), so a generation that does not yet propagate a runtime list's element type through
+; `Option.expect` into arithmetic declines rather than miscompiling. It is the list-indexing reader idiom a
+; self-hosted compiler is written in.
+
+(case "an expect of a list index result is an integer usable in arithmetic"
+  (doc    "`(List.at xs i)` on a `List Int64` is `Option Int64`, so `(Option.expect (List.at xs 1) msg)` is
+           an Int64 and `(+ … 10)` is well-typed; for `xs` = `(list 10 20 30)`, element 1 is 20, so the sum
+           is 30. Pins that a runtime list's element type flows through `Option.expect` into arithmetic —
+           the list-indexing reader idiom. The seed declines 'non-integer operand to arithmetic' for a
+           runtime list (here a parameter), not resolving the expect result to Int64 for the `+` operand,
+           though the same idiom works for `Bytes.at` (§'a generic unwrap helper consumes a fallible
+           Bytes.at result' above), the match-unwrap form works for `List.at`, and the expect result works
+           when returned or matched (not added). A generation that does not yet propagate a runtime list's
+           element type through `Option.expect` into arithmetic declines rather than miscompiling.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (f xs) (+ (Option.expect (List.at xs 1) "in bounds") 10))
+            (def (main) (f (list 10 20 30)))))
+  (output (: 30 Int64)))
+
+; The arm-unification that recovers a payload kind across branches must reach a NESTED-Option arm against
+; a None arm, not only a single-level Some against a None. A function whose branches return `(None unit)`
+; and `(Some (Some n))` produces an `Option (Option Int64)` — a valid type — but the two arms differ in
+; payload KIND (the `None` arm carries Unit; the `Some` arm carries a nested `Option Int64`), and the
+; compound-result-shape inference does not unify them: returning that value as the program result declines
+; "cannot infer runtime compound result shape". The single-level analogue works — a function returning
+; `(None unit)` vs `(Some n)` yields `(Some 5)` (its arms' kinds DO unify at the result boundary) — and a
+; nested producer whose BOTH arms are `(Some (Some …))` works (`(Some (Some 5))`, consistent kind). Only a
+; None arm paired with a NESTED-Some arm is not yet unified. The value is unambiguous — consuming the same
+; producer with a nested match `((Some (Some x)) …)` reconstructs `(Some (Some 5))` — so the program is
+; valid; the compound-result-shape inference just does not yet recover the nested-vs-nullary arm kind. This
+; is the nested-payload sibling of the fallible-result arm-unification cases above (which recover a
+; single-level Some payload across a boundary). A generation that does not yet unify a None arm with a
+; nested-Some arm at the result boundary declines rather than miscompiling.
+
+(case "a function returning None or a nested Some infers its compound result shape"
+  (doc    "`cl` returns `(None unit)` for a negative input and `(Some (Some n))` otherwise — an `Option
+           (Option Int64)`, whose value for `(cl 5)` is `(Some (Some 5))`. Returning it as the program
+           result requires unifying the `None` arm's payload kind (Unit) with the `Some` arm's nested
+           payload kind (`Option Int64`) at the compound-result boundary. The single-level analogue (`None`
+           vs `(Some n)`) infers fine and yields `(Some 5)`, and a producer whose both arms are `(Some
+           (Some …))` infers fine and yields `(Some (Some 5))` — only a None arm paired with a NESTED-Some
+           arm is not yet unified, declining \"cannot infer runtime compound result shape\". The value is
+           unambiguous (consuming `cl` with a nested `(Some (Some x))` match reconstructs `(Some (Some
+           5))`), so the program is valid; this pins that the arm-kind unification recovering a payload
+           kind across branches reaches a nested-Option arm against a None arm, the nested-payload sibling
+           of the single-level fallible-result unification above. A generation that does not yet unify a
+           None arm with a nested-Some arm at the result boundary declines rather than miscompiling.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (cl n)   (if (< n 0) (None unit) (Some (Some n))))
+            (def (main)   (cl 5))))
+  (output (: (Some (Some 5)) (Option (Option Int64)))))
 
 (case "a recursive function folds a runtime linked list to a scalar"
   (doc    "The consumption half of the recursive-sum idiom, and the core shape a self-hosted compiler is
@@ -1061,6 +1324,183 @@
                           ((None _)       -1)))))
   (output (: 7 Int64)))
 
+; --- A constructor pattern NESTED INSIDE A TUPLE ELEMENT of a payload --------------------------
+; The nested-payload cases above bind a constructor DIRECTLY under a constructor (`(W.Wrap (N.L v))`).
+; A distinct shape a compiler / proof kernel hits is a constructor pattern nested inside a TUPLE
+; ELEMENT of the payload — `(Outer.Wrap (tuple (Inner.A v) k))`, where the payload is a tuple and one
+; of its elements is itself a variant to destructure in the SAME arm. This composes two binder kinds
+; the corpus covers separately (a tuple-payload binder, §"a match arm binds a nested tuple inside a sum
+; payload"; and a nested constructor binder, §"a runtime wrapper sum whose payload is a variant"), but
+; the COMBINATION — a ctor pattern occupying a tuple SLOT — is not yet lowered: the seed declines
+; ("runtime sum match: unsupported nested payload binder"). This is exactly the shape of a HOL-style
+; `dest_eq`/`TRANS` arm — `(= l r)` destructured as `(Comb (tuple (Comb (tuple _eq l)) r))` where a
+; `Comb` binder sits in a tuple slot. A generation that does not yet lower a ctor-in-tuple-slot binder
+; declines rather than miscompiling; the recorded oracle is what the composed lowering produces.
+
+(case "a constructor pattern in a tuple payload slot is matched in one arm"
+  (doc    "`Outer.Wrap` carries `(Tuple Inner Int64)`; the arm `(Outer.Wrap (tuple (Inner.A v) k))`
+           destructures the payload tuple AND the `Inner` variant in its first slot in ONE arm, binding
+           `v` and `k`. `(f (Outer.Wrap (tuple (Inner.A 20) 22)))` selects the `Inner.A` arm → 20 + 22 =
+           42. Pins a constructor pattern occupying a TUPLE SLOT of a payload — the composition of a
+           tuple-payload binder and a nested-constructor binder, the shape a kernel's equation-arm
+           `(Comb (tuple (Comb …) r))` takes. The seed declines (\"unsupported nested payload binder\"):
+           it lowers a ctor-directly-under-ctor and a flat tuple binder, but not a ctor inside a tuple
+           slot. A generation composing the two reproduces 42.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Inner (A Int64 | B Int64))
+            (type Outer (Wrap (Tuple Inner Int64)))
+            (def (f o)
+              (match o
+                ((Outer.Wrap (tuple (Inner.A v) k)) (+ v k))
+                ((Outer.Wrap (tuple (Inner.B v) k)) (- v k))))
+            (def (main) (f (Outer.Wrap (tuple (Inner.A 20) 22))))))
+  (output (: 42 Int64)))
+
+(case "a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching"
+  (doc    "The route around the not-yet-lowered ctor-in-tuple-slot binder: bind the tuple element to a
+           NAME in the outer arm, then re-match it in a nested `match`. `(Outer.Wrap (tuple i k))` binds
+           the whole first slot as `i`, and the inner `(match i ((Inner.A v) …) …)` destructures it —
+           the two binder kinds SEPARATED across two matches rather than composed in one pattern. Same
+           input, same result (42). Pins that the composed pattern is a surface convenience over
+           bind-then-re-match, which IS lowered — a kernel is not blocked, only more verbose (this is
+           the one-level-at-a-time peel a HOL `dest_eq` uses to route around the gap above).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Inner (A Int64 | B Int64))
+            (type Outer (Wrap (Tuple Inner Int64)))
+            (def (f o)
+              (match o
+                ((Outer.Wrap (tuple i k))
+                   (match i ((Inner.A v) (+ v k)) ((Inner.B v) (- v k))))))
+            (def (main) (f (Outer.Wrap (tuple (Inner.A 20) 22))))))
+  (output (: 42 Int64)))
+
+; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
+; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
+; above project fields, index lists, and re-match variants inside the arm). But when the payload
+; compound is RETURNED FROM A HELPER — `(def (unbox b) (match b ((Box.B t) t)))` — and the caller then
+; applies a positional accessor `tuple.N` to the returned value, the shape is not recovered at the
+; projection site. WORSE THAN A DECLINE: the seed does not refuse to derive a component (which the gate
+; would score `todo`); it REJECTS the program with a type-error code (CDZ0201 "tuple access on a
+; non-tuple"), asserting a VALID program is ill-typed — a decline-don't-miscompile violation
+; (spec/learnings/2026-07-03-decline-do-not-miscompile.md; the projection companion of §"a scalar
+; element is projected DIRECTLY from a named function's runtime tuple result", which built an invalid
+; component before it learned to decline). Projecting INLINE in the arm, or binding the tuple's slots
+; by a tuple-pattern in the arm, recovers the shape and compiles (the control below). This is precisely
+; why a HOL-style `concl : Thm -> Term` that returns the payload term for a CALLER to match fails,
+; while extracting the conclusion inline in the `Thm` arm compiles — the payload's shape must be
+; consumed where it is bound, not threaded through a bare return. The recorded oracle is the projected
+; element; a seed that rejects it here FAILS this case, because the program is well-typed — the correct
+; not-yet-covered behavior is to DECLINE (todo), never to reject a valid program as a type error.
+
+(case "a tuple payload extracted through a helper return must not be rejected as a type error"
+  (doc    "`unbox` returns the `Box.B` payload tuple to its caller, which then applies `tuple.1`.
+           `(unbox (Box.B (tuple (list) (Term.Var 7))))` is a `(List Int64, Term)` pair, so `(tuple.1
+           …)` projects the `Term` and `is-var` of it is 1 — a WELL-TYPED program. The seed does not
+           recover the tuple shape at the projection site and REJECTS with CDZ0201 (\"tuple access on a
+           non-tuple\"), asserting a valid program is ill-typed — a decline-don't-miscompile violation:
+           for a shape it cannot yet thread through a function return it MUST decline (scored todo), not
+           reject a valid program (this case FAILs a generation that rejects). This is the shape a HOL
+           `concl`/`dest_thm` takes when it returns a payload term for the CALLER to consume — the
+           reason such an accessor fails while inline extraction compiles. A generation threading the
+           payload's shape through the return reproduces the projected element 1.")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Term (Var Int64 | Neg Int64))
+            (type Box (B (Tuple (List Int64) Term)))
+            (def (is-var tm) (match tm ((Term.Var _) 1) ((Term.Neg _) 0)))
+            (def (unbox bx) (match bx ((Box.B t) t)))
+            (def (main)
+              (let ((p (unbox (Box.B (tuple (list) (Term.Var 7))))))
+                (is-var (tuple.1 p))))))
+  (output (: 1 Int64)))
+
+(case "a tuple payload consumed INLINE in the sum arm projects and re-matches"
+  (doc    "The control the case above must be distinguished from, and the route a program takes today:
+           consume the payload tuple's slots INLINE in the `Box.B` arm — bind them by a tuple-pattern —
+           rather than returning the tuple for a caller to project. `((Box.B (tuple _ c)) (is-var c))`
+           binds the second slot `c` (a `Term`) in the arm and re-matches it, yielding 1. Pins that a
+           payload compound's shape IS available where it is bound — the gap is specifically threading
+           it through a bare function RETURN. A HOL kernel routes around `concl`-then-match by
+           destructuring the `Thm` inline in the arm that needs the conclusion (the pattern the working
+           spike used to verify a minted theorem).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Term (Var Int64 | Neg Int64))
+            (type Box (B (Tuple (List Int64) Term)))
+            (def (is-var tm) (match tm ((Term.Var _) 1) ((Term.Neg _) 0)))
+            (def (main)
+              (match (Box.B (tuple (list) (Term.Var 7)))
+                ((Box.B (tuple _ c)) (is-var c))))))
+  (output (: 1 Int64)))
+
+; The same payload-through-a-return gap on the BUILT-IN `Option` takes a WORSE form than on a declared
+; sum: where `(unbox …)` on a declared `Box` REJECTS the projection (CDZ0201, above — bad, but a refusal),
+; a helper that returns a built-in `Some`'s tuple payload emits a VALID component that TRAPS at run time.
+; `get` binds `(Some p)`'s payload `p` and returns it; the caller applies `tuple.0`. The program is
+; well-typed — `(Some (tuple 7 8))`'s payload is a two-tuple, and both inline routes below yield 7 — so
+; the recorded outcome is 7. But the seed does not thread the payload's tuple shape through `get`'s return,
+; and instead of DECLINING (scored todo) it emits a component whose `tuple.0` traps: a decline-don't-
+; miscompile violation of the emit-a-broken-component kind (worse than the declared-sum rejection, which
+; at least refuses). The correct not-yet-covered behavior is to decline; running to a trap where the
+; program has a value is the failure this case pins.
+
+(case "a tuple payload returned through a helper from a built-in Option must not trap"
+  (doc    "`get` binds the payload `p` of `(Some p)` and returns it; `(tuple.0 (get (Some (tuple 7 8))))`
+           projects element 0 of that two-tuple payload — a well-typed program whose value is 7 (both
+           inline routes below confirm it). The seed does not recover the payload's tuple shape through
+           `get`'s bare return and emits a VALID component that TRAPS at `tuple.0`, rather than declining
+           — a decline-don't-miscompile violation of the emit-a-broken-component kind. This is the
+           built-in-`Option` companion of the declared-sum `Box` case above, and WORSE: the declared sum
+           rejects the projection (CDZ0201) while the built-in one runs to a trap. A generation that
+           cannot yet thread a built-in sum payload's shape through a function return MUST decline (scored
+           todo), never emit a component that traps on a valued program.")
+  (input  (module m
+            (def (get o) (match o ((Some p) p) (None (tuple 0 0))))
+            (def (main) (tuple.0 (get (Some (tuple 7 8)))))))
+  (output (: 7 Int64)))
+
+(case "a built-in Option tuple payload consumed INLINE in the Some arm projects"
+  (doc    "The control the trap case above must be distinguished from: consume the `Some` payload's tuple
+           INLINE in the arm — project `(tuple.0 p)` where `p` is bound in the `Some` arm — rather than
+           returning it for a caller. `(match (Some (tuple 7 8)) ((Some p) (tuple.0 p)) (None 0))` yields
+           7. Pins that the payload's shape IS available where it is bound; the gap is threading it through
+           a bare function RETURN, exactly as for the declared-sum `Box` pair above.")
+  (input  (module m
+            (def (main) (match (Some (tuple 7 8)) ((Some p) (tuple.0 p)) (None 0)))))
+  (output (: 7 Int64)))
+
+; Projecting the RESULT of a call to a function that TAKES and RETURNS a tuple parameter must compute or
+; decline, never trap. `(def (go t) t)` is the identity on a tuple; `(tuple.0 (go (tuple 5 0)))` is a
+; well-typed projection of a two-tuple, value 5. When `go`'s body PROJECTS its tuple parameter (`(tuple.0
+; t)`) — which `tuple.N`-on-a-parameter declines as "unknown tuple shape" — that decline shape appears to
+; poison `go`'s return type, so the CALLER'S `(tuple.0 (go …))` emits a VALID component that TRAPS instead
+; of computing 5. The trap is not depth-dependent: it happens even at recursion depth 0 (the base arm
+; returns the tuple immediately). Contrast: a function returning a FRESH tuple (`(def (mk n) (tuple n (+ n
+; 1)))`) has its result projected fine (`(tuple.0 (mk 5))` = 5), and a SCALAR accumulator threaded through
+; the same recursion computes correctly — so the program is well-typed and the value is representable; only
+; a tuple-typed parameter threaded and returned, then projected at the call site, traps. self-hosting-and-
+; bootstrap.md #An Unsupported Construct Is Declined, Not Miscompiled: a shape the compiler cannot thread
+; through the call MUST decline, never emit a component that traps on a valued program.
+
+(case "projecting the result of a function that threads a tuple parameter must not trap"
+  (doc    "`(def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (tuple.0 t) n) (tuple.1 t)))))` threads a
+           tuple accumulator `t`, projecting `(tuple.0 t)`/`(tuple.1 t)` in its body and returning a tuple;
+           `(tuple.0 (go 3 (tuple 0 0)))` is well-typed with value 6 (the scalar-accumulator analogue
+           computes, and a fresh-tuple-returning helper's result projects fine). The seed emits a VALID
+           component that TRAPS at the caller's `tuple.0` — the tuple parameter's shape, which `tuple.N` on
+           a parameter declines as unknown, is not threaded through `go`'s return, so the call-result
+           projection traps rather than computing or declining (a decline-don't-miscompile violation; the
+           trap happens even at recursion depth 0). Companion of the built-in-Option payload-return case
+           above — here the tuple flows through an ordinary tuple-typed parameter rather than a sum payload.
+           A generation that cannot yet thread a tuple parameter's shape through the return declines rather
+           than emitting a component that traps.")
+  (input  (module m
+            (def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (tuple.0 t) n) (tuple.1 t)))))
+            (def (main) (tuple.0 (go 3 (tuple 0 0))))))
+  (output (: 6 Int64)))
+
 (case "an association list is searched by key with a tuple-carrying Option match"
   (doc    "The compiler's symbol-table / environment idiom: a list of `(key value)` tuples searched by
            key. `lookup` recurses by index, and each `(List.at xs i)` yields an `Option` whose `Some`
@@ -1089,6 +1529,30 @@
   (input  (= (list 1 2 3) (list 1 2 3)))
   (output (: true Bool)))
 
+; Two lists of the SAME element type but DIFFERENT LENGTH are the SAME TYPE — a list's length is NOT
+; part of its type (a list is a variable-length sequence, grown by `List.push`; collections-and-text.md
+; #A List Is An Ordered Homogeneous Sequence types a list by its ELEMENT type, and #A List Is Grown By
+; Functional Construction makes length runtime-varying). So comparing `(list 1 2)` with `(list 1 2 3)`
+; is a comparison of two `(List Int64)` values, which MUST be TOTAL (core-semantics.md #Equality Is
+; Structural — comparable when their types match) and yield `false` (different elements), NOT a type
+; error. This is UNLIKE a tuple, whose arity IS part of its type (two tuples of different arity are
+; different types and comparing them is rejected). A compiler that treats list length like tuple arity —
+; reusing the tuple-shape-incompatibility check on lists — wrongly rejects `(= (list 1 2) (list 1 2 3))`
+; as "comparison between values of different shapes", a false rejection of a well-typed total comparison.
+
+(case "two lists of different length are unequal, not a type error"
+  (doc    "`(= (list 1 2) (list 1 2 3))` compares two `(List Int64)` values of different length — a list's
+           length is not part of its type (a list is variable-length; collections-and-text.md #A List Is
+           An Ordered Homogeneous Sequence types it by element type, #A List Is Grown By Functional
+           Construction), so both are the same type and the comparison is TOTAL, yielding `false` (they
+           differ in their elements), NOT a type error. This is unlike a tuple, whose arity IS part of its
+           type (different-arity tuples are rejected as different shapes). Pins that list equality does not
+           treat length as a shape mismatch — a compiler reusing the tuple-arity incompatibility check on
+           lists wrongly rejects this well-typed total comparison as 'different shapes'.")
+  (needs  collections)
+  (input  (= (list 1 2) (list 1 2 3)))
+  (output (: false Bool)))
+
 ; --- A list is homogeneous: its elements share one type ----------------------------------
 ; collections-and-text.md #A List Is An Ordered Homogeneous Sequence: "A list MUST be an ordered
 ; sequence whose elements share one type." A list literal whose elements do NOT share one type is
@@ -1112,6 +1576,55 @@
            like Int64 and Bool.")
   (needs     collections)
   (input     (list 1 2.5))
+  (error     CDZ0201))
+
+; Homogeneity is a property of the LIST VALUE, so it must hold under `List.push` too, not only for a
+; list LITERAL. collections-and-text.md #A List Is Grown By Functional Construction: `List.push`
+; "MUST produce a NEW LIST VALUE" — and a list value's elements share one type (#A List Is An Ordered
+; Homogeneous Sequence). So `(List.push (list 1 2) true)` appends a Bool to an Int64 list, making the
+; result non-homogeneous — the same violation as the `(list 1 true)` literal above, which MUST be
+; rejected (CDZ0201). A `List.push` that skips the element-type check the literal enforces does not just
+; build a heterogeneous list: it renders the RESULT using the pushed element's type, so the original
+; Int64 elements `1 2` come back as `true true` — `(List.push (list 10 20) false)` yields
+; `(list true true false)`, projecting the stored integers 10 and 20 at the Bool type. That is a
+; wrong-value miscompile (the "projecting a mixed element back out at a different type" hazard the
+; homogeneity rule exists to prevent), strictly worse than a missing rejection. A generation that does
+; not yet check the pushed element's type declines rather than building the corrupted list.
+
+(case "pushing an element of a different type onto a list is a type error"
+  (doc    "`(List.push (list 1 2) true)` appends a Bool to an Int64 list — the result is not homogeneous
+           (collections-and-text.md #A List Is An Ordered Homogeneous Sequence), so it is a type error
+           (CDZ0201), exactly as the `(list 1 true)` literal above is. `List.push` produces a new LIST
+           value (#A List Is Grown By Functional Construction), which must satisfy the same
+           element-share-one-type rule the literal does. A `List.push` that skips the element-type check
+           miscompiles: it renders the result at the pushed element's type, so the stored integers come
+           back as booleans (`(List.push (list 10 20) false)` → `(list true true false)`) — a wrong value,
+           not merely a missing rejection. A generation that does not yet check the pushed element's type
+           declines rather than building the mistyped list.")
+  (needs     collections)
+  (input     (List.push (list 1 2) true))
+  (error     CDZ0201))
+
+; `List.update` is the other functional-construction operator (#A List Is Grown By Functional
+; Construction pairs "append an element" with "replace the element at an index"), and it has the same
+; obligation: replacing a slot with an element of a different type breaks homogeneity. `(List.update
+; (list 1 2 3) 1 true)` puts a Bool where an Int64 was — a non-homogeneous result, CDZ0201, exactly as
+; the `List.push` and literal cases. And it exhibits the identical render corruption: the whole result
+; is walked at the replacement element's type, so `(List.update (list 10 20 30) 0 false)` yields
+; `(list false true true)` — the untouched integers 20 and 30 project as `true`. Pins that the
+; element-type check covers BOTH functional-construction operators, not only `push`.
+
+(case "updating a list slot with an element of a different type is a type error"
+  (doc    "`(List.update (list 1 2 3) 1 true)` replaces an Int64 slot with a Bool — the result is not
+           homogeneous (collections-and-text.md #A List Is An Ordered Homogeneous Sequence), a type error
+           (CDZ0201), the `List.update` companion of the `List.push` case above. Like push, an unchecked
+           update miscompiles by rendering the result at the replacement element's type: `(List.update
+           (list 10 20 30) 0 false)` → `(list false true true)`, projecting the untouched integers 20 and
+           30 as booleans — a wrong value. Pins that both functional-construction operators enforce the
+           element-type rule the literal does. A generation that does not yet check the replacement
+           element's type declines rather than building the mistyped list.")
+  (needs     collections)
+  (input     (List.update (list 1 2 3) 1 true))
   (error     CDZ0201))
 
 ; Homogeneity is by element TYPE, and two compound values of the same KIND but different SHAPE are
@@ -1251,6 +1764,128 @@
   (input  (= (map (a 1) (b 2)) (map (b 2) (a 1))))
   (output (: true Bool)))
 
+; Map equality is STRUCTURAL and must not depend on whether a map's key was a compile-time constant or
+; computed at run time (core-semantics.md #Equality Is Structural — two values equal exactly when their
+; canonical forms coincide). `(let ((k 5)) (map (k 1)))` and `(let ((j (+ 2 3))) (map (j 1)))` are the
+; SAME map `{5:1}` — both render `(map (5 1))`, both `Map.lookup 5` → `(Some 1)`, both size 1 — so they
+; MUST compare equal. The seed instead returns FALSE when one side's key was computed at run time (a
+; runtime-constructed map) and the other's was a constant (a const-folded map): it compares the two maps'
+; DIFFERENT internal representations (const-folded value vs runtime heap handle) rather than their values.
+; This is a wrong VALUE, not a decline — worse than the list/tuple case, where a runtime-compound equality
+; honestly DECLINES "runtime compound equality (heap walk) not yet emitted"; the map path emits an equality
+; that silently answers false. A generation whose map equality cannot yet compare a runtime-constructed
+; map against a const one MUST decline (as list/tuple equality does) rather than answering false.
+
+(case "a map with a computed key equals the same map with a constant key"
+  (doc    "`(let ((j (+ 2 3))) (map (j 1)))` and `(let ((k 5)) (map (k 1)))` are the SAME map `{5:1}` —
+           `(+ 2 3)` is 5, both render `(map (5 1))`, both look up key 5 to `(Some 1)`, both have size 1 —
+           so they compare equal under structural equality (core-semantics.md #Equality Is Structural),
+           independent of whether the key was a compile-time constant or computed at run time. The seed
+           returns false: it compares a runtime-constructed map's heap representation against a const map's
+           folded representation rather than their values — a wrong value (a structural-equality miscompile
+           for maps). Worse than the list/tuple runtime-compound-equality case, which honestly declines
+           rather than answering; the map path emits an equality that answers false. MUST be true. A
+           generation whose map equality cannot yet compare a runtime map against a const one declines
+           rather than answering false.")
+  (needs   collections)
+  (input   (let ((j (+ 2 3))) (let ((k 5)) (= (map (j 1)) (map (k 1))))))
+  (output  (: true Bool)))
+
+; The positive half of the map-key-is-a-value rule: a name bound in scope, used in a key position, keys
+; the map by the name's VALUE — not by the literal name. `(let ((a 5)) (map (a 1)))` is the map with the
+; INTEGER key 5, so it equals `(Map.insert Map.empty 5 1)` and is NOT equal to the String-keyed `(Map.insert
+; Map.empty "a" 1)`. Decisively, two DISTINCT names bound to the SAME value key the same entry: `(let ((a
+; 5)) (let ((b 5)) (map (a 1) (b 2))))` has ONE entry (size 1, the later `b 2` overwriting `a 1` at key 5),
+; because keys are compared by value (collections-and-text.md #Keys Are Compared By Value) — impossible if
+; the key were the literal name (`a` and `b` differ as strings). This is the companion of the unbound-key
+; case below: a bound key resolves to its value; an unbound key is a scope error (never a coerced string).
+
+(case "a bound name in a map key is used by its value, not the literal name"
+  (doc    "`a` is bound to 5, so `(map (a 1))` keys the map by the VALUE 5 — it equals `(Map.insert
+           Map.empty 5 1)` (an integer key), the value the name holds, NOT the String `\"a\"` of the
+           literal name (collections-and-text.md #A Map's Canonical Form: a map's keys are values, resolved
+           in scope, not compile-time labels). A reader that treated the key as the literal name would key
+           by `\"a\"` and this equality would be false. Pins the positive half of the map-key-is-a-value
+           rule (the unbound-key scope-error case below is the negative half). MUST be true.")
+  (needs      collections)
+  (input      (let ((a 5)) (= (map (a 1)) (Map.insert Map.empty 5 1))))
+  (output     (: true Bool)))
+
+(case "two distinct names bound to the same value key the same map entry"
+  (doc    "The decisive witness that a map key is the name's VALUE, not the name: `a` and `b` are distinct
+           names both bound to 5, so `(map (a 1) (b 2))` has ONE entry at key 5 (the later `(b 2)`
+           overwrites `(a 1)`), size 1 — keys are compared by value (collections-and-text.md #Keys Are
+           Compared By Value), and 5 = 5. If the key were the literal name, `a` and `b` would be distinct
+           string keys and the map would have size 2. MUST be 1.")
+  (needs      collections)
+  (input      (let ((a 5)) (let ((b 5)) (Map.size (map (a 1) (b 2))))))
+  (output     (: 1 Int64)))
+
+; The value-not-literal rule holds when the bound value is itself a STRING, ruling out a type-driven
+; coercion (a reader that stringified an ident only when the key type were String would pass the integer
+; cases above yet still be wrong here). `a` bound to the String `"x"` keys the map by the VALUE `"x"`, so
+; `(map (a 1))` equals `(Map.insert Map.empty "x" 1)` — NOT the map keyed by the literal name `"a"`. And
+; two distinct names bound to the SAME string collide to one entry (value equality), while two bound to
+; DIFFERENT strings give two — the same value-semantics witness as the integer case, at String key type.
+; Together with the integer cases, these show the key is resolved to its VALUE regardless of the value's
+; type; the only wrong case is an UNBOUND name (the scope-error case below), which is a resolution failure,
+; not a type-driven choice.
+
+(case "a name bound to a string keys a map by its value, not the literal name"
+  (doc    "`a` is bound to the String `\"x\"`, so `(map (a 1))` keys the map by the VALUE `\"x\"` — it
+           equals `(Map.insert Map.empty \"x\" 1)`, NOT the map keyed by the literal name `\"a\"`. Pins
+           that the value-not-literal rule holds at String key type too, ruling out a type-driven ident
+           coercion (a reader that stringified an ident only for a String key type would still be wrong
+           here — the key is the bound value `\"x\"`, not the name). MUST be true.")
+  (needs      collections)
+  (input      (let ((a "x")) (= (map (a 1)) (Map.insert Map.empty "x" 1))))
+  (output     (: true Bool)))
+
+(case "distinct names bound to the same string key the same map entry"
+  (doc    "The String-key companion of the same-value-collision witness: `a` and `b` are distinct names
+           both bound to `\"k\"`, so `(map (a 1) (b 2))` has ONE entry at key `\"k\"` (size 1) — keys
+           compared by value, and `\"k\"` = `\"k\"`. If the key were the literal name, they would be
+           distinct string keys `\"a\"`/`\"b\"` and size would be 2. MUST be 1.")
+  (needs      collections)
+  (input      (let ((a "k")) (let ((b "k")) (Map.size (map (a 1) (b 2))))))
+  (output     (: 1 Int64)))
+
+; A map's KEY is a VALUE, not a compile-time label: collections-and-text.md #A Map's Canonical Form —
+; "a map's keys are values of one key type; a record's field names are fixed compile-time labels." So in
+; a `(map (k v) …)` literal the key position `k` is an ORDINARY EXPRESSION evaluated and resolved in
+; scope (that is how a map has a dynamic key at all) — a bound name resolves to its VALUE (`(let ((k 42))
+; (map (k 1)))` is the map `(map (42 1))`, equal to `(Map.insert Map.empty 42 1)`), exactly as the value
+; position does. It follows that an UNBOUND name in a key position is the ordinary unbound-name error
+; (core-semantics.md #Binding Is Lexical — "a reference to a name with no enclosing binding MUST be a
+; compile-time error", unconditional), CDZ0101, exactly as an unbound name in the value position or in any
+; ordinary expression is. The seed instead SILENTLY COERCES an unbound key name to a String literal of its
+; spelling — `(map (undefined-key 1))` yields `(map ("undefined-key" 1))` — a wrong value that swallows
+; the scope error and fabricates a String key the program never wrote. This is the map-key instance of the
+; unquote fallback family (an operation that must EVALUATE its operand falling back to quoting/stringifying
+; it when evaluation fails, picking the wrong branch for a broken name): a key that fails to resolve is the
+; name's scope error, not a cue to reinterpret the name as a String. (There is also no readable literal for
+; a String or integer key — `(map ("a" 1))` and `(map (1 10))` both decline "a map entry is not a (key
+; value) pair" — so the coercion is the only way the current reader expresses a String key, which is why
+; the corpus's `(map (a 1))` cases lean on it; both the coercion and the missing literal-key syntax are the
+; same defect: the key position is not read as an ordinary value expression.) A generation that does not
+; yet evaluate a map key as a scoped value declines rather than coercing an unbound name to a String.
+
+(case "an unbound name in a map key is a scope error, not a coerced string"
+  (doc    "A map's key is a VALUE resolved in scope (collections-and-text.md #A Map's Canonical Form: a
+           map's keys are values, not compile-time labels), so a bound name in a key position resolves to
+           its value — `(let ((k 42)) (map (k 1)))` is `(map (42 1))` = `(Map.insert Map.empty 42 1)`. An
+           UNBOUND name in a key position is therefore the ordinary unbound-name error (CDZ0101,
+           core-semantics.md #Binding Is Lexical), exactly as an unbound name in the value position is. The
+           seed instead silently coerces the unbound key name to a String of its spelling — `(map
+           (undefined-key 1))` → `(map (\"undefined-key\" 1))` — a wrong value that swallows the scope error
+           and fabricates a String key the program never wrote (the map-key instance of the unquote-fallback
+           family: a position that must EVALUATE its operand must not reinterpret an unresolvable name as a
+           String). A generation that does not yet evaluate a map key as a scoped value declines rather than
+           coercing.")
+  (needs      collections)
+  (input      (map (undefined-key 1)))
+  (error      CDZ0101))
+
 ; --- A map's values share one type (and its keys share one type) -------------------------
 ; collections-and-text.md #A Map Associates Keys With Values: "A map MUST associate keys of one type
 ; with values of one type." So a map whose VALUES do not share one type (an Int64 value and a Bool
@@ -1273,6 +1908,36 @@
            numeric types too, mirroring the list case.")
   (needs      collections)
   (input      (= (map (a 1) (b 2.5)) (map (a 1) (b 2.5))))
+  (error      CDZ0201))
+
+; The KEY-homogeneity half of the same rule, on the `(map …)` LITERAL path. collections-and-text.md #A Map
+; Associates Keys With Values: "A map MUST associate keys of one type with values of one type." The seed
+; enforces the VALUES half on the literal (the cases above) and enforces the KEYS half on the `Map.insert`
+; path (§"inserting a key of a different type into a map is a type error"), but does NOT enforce key
+; homogeneity on the `(map …)` literal: a literal with two keys of DIFFERENT types builds a heterogeneous-
+; key map rather than being rejected. `(let ((j 5)) (let ((k true)) (map (j 1) (k 2))))` — the keys are the
+; VALUES 5 (Int64) and true (Bool), two types — produces `(map (5 1) (true 2))`, an ill-typed map with two
+; key types, instead of CDZ0201. (The keys are bound names so this is independent of the unbound-key→string
+; coercion bug; the same holds for Int+String keys, `(map (j 1) (k 2))` with `j`=5, `k`="s".) The
+; value-homogeneity check and the `Map.insert` key-homogeneity check both exist; the literal's key-
+; homogeneity check is the missing sibling. A generation that does not yet check a map literal's key
+; homogeneity declines rather than building a heterogeneous-key map.
+
+(case "a map literal with keys of two different types is a type error"
+  (doc    "`(let ((j 5)) (let ((k true)) (map (j 1) (k 2))))` has keys that are the VALUES 5 (Int64) and
+           true (Bool) — two types — so the map associates keys of MORE than one type, ill-typed and
+           rejected (CDZ0201, collections-and-text.md #A Map Associates Keys With Values — keys of ONE
+           type). The key-homogeneity check must fire on the map's CONSTRUCTION — when the heterogeneous
+           map is built and RETURNED as the result — exactly as the VALUE-homogeneity check does (a bare
+           `(map (a 1) (b true))` returned as the result is rejected 'map values do not share one type').
+           The keys are BOUND names, so this is independent of the unbound-name→string coercion. A seed
+           that checks key homogeneity only when the map flows into an OPERATION (`Map.size`, `=`) but not
+           when it is merely constructed/returned still builds a heterogeneous-key map `(map (5 1) (true
+           2))` here — the construction-path half the value check already covers. A generation that does
+           not yet check a map literal's key homogeneity on construction declines rather than building a
+           heterogeneous-key map.")
+  (needs      collections)
+  (input      (let ((j 5)) (let ((k true)) (map (j 1) (k 2)))))
   (error      CDZ0201))
 
 ; As with a list (the compound-shape homogeneity cases above), map value-homogeneity is by value TYPE:
@@ -1508,6 +2173,68 @@
            Pos), so its argument type is Unit and `(Sign.Pos 5)` is a type error (CDZ0201). Pins that
            the Unit argument-type rule for nullary variants holds for every sum, not only Option.")
   (input     (Sign.Pos 5))
+  (error     CDZ0201))
+
+; The dual of the nullary-variant rule: a UNARY variant with a DECLARED payload type checks its argument
+; against that type, exactly as the nullary variant checks its argument is Unit. core-semantics.md #A Sum
+; Type Constructor Is A Single-Arity Function makes a constructor "a single-arity function that, when
+; applied to exactly one argument, produces a Sum value" — and a function application type-checks its
+; argument (#Applying A Function Binds Its Parameter To Its Argument), so `T.Mk` declared `(Mk Int64)` has
+; argument type Int64 and `(T.Mk "x")` applies it to a String — a type mismatch the compiler MUST reject
+; (CDZ0201). type-system.md #The Structural Types makes a sum's shape "its variant names with their payload
+; types", so a payload of the wrong type is ill-typed. A compiler that constructs the variant without
+; checking the payload against the declared type produces an observably ill-typed value — `(T.Mk "x")`
+; renders as `(T.Mk "x")`, and matching it binds the String where an Int64 is declared (a downstream
+; `(String.byte-len n)` reads it as a String and succeeds, running the ill-typed program). This is the
+; typed-payload companion of the nullary-variant cases above (which check the argument is Unit); the
+; argument-type check must hold for a declared non-Unit payload too. A generation that does not yet check
+; a unary variant's payload type declines rather than constructing the mistyped value.
+
+(case "a unary variant applied to a wrong-type payload is a type error"
+  (doc    "`(type T (Mk Int64))` declares `T.Mk` with payload type Int64, so `(T.Mk \"x\")` applies it to a
+           String — a type mismatch the compiler MUST reject (CDZ0201, core-semantics.md #A Sum Type
+           Constructor Is A Single-Arity Function with #Applying A Function Binds Its Parameter To Its
+           Argument: a constructor is a single-arity function whose argument is type-checked, exactly as
+           `(f \"x\")` on an Int64-parameter `f` is). This is the typed-payload companion of the
+           nullary-variant cases above (`(None 5)`, `(Sign.Pos 5)`, which check the argument is Unit): a
+           unary variant's DECLARED payload type is checked just as the nullary variant's Unit type is. A
+           compiler that constructs the variant without checking the payload produces an observably
+           ill-typed value `(T.Mk \"x\")`, and matching it binds the String where an Int64 is declared. A
+           generation that does not yet check a unary variant's payload type declines rather than
+           constructing the mistyped value.")
+  (needs     sum-type-declaration)
+  (input     (module m
+               (type T (Mk Int64))
+               (def (main) (T.Mk "x"))))
+  (error     CDZ0201))
+
+; The unary-variant payload-type check must cover a COMPOUND payload type too — including a TUPLE. A
+; variant declared `(Pair (Tuple Int64 Int64))` has payload type `(Tuple Int64 Int64)`, so `(T.Pair (tuple
+; 1 2 3))` applies it to a THREE-element tuple where a two-element one is declared — a type mismatch
+; (CDZ0201), since a tuple's length is part of its type (type-system.md #A Tuple Is Reshaped Positionally,
+; whose length is part of its type). A compiler that checks a scalar/String/List/Record payload (those
+; landed) but not a Tuple payload constructs `(T.Pair (tuple 1 2 3))` and lets a downstream `(tuple.2 p)`
+; project position 2 — a position the DECLARED two-element payload type does not have — yielding 3, a
+; wrong value the declared arity forbids. `(T.Pair 5)` (a scalar where the tuple payload is declared) slips
+; through the same way. This is the Tuple-payload sibling of the scalar unary-variant case above: the
+; payload-type check must cover every payload type shape, tuple included. A generation that does not yet
+; check a tuple-typed payload declines rather than constructing the mistyped value.
+
+(case "a unary variant applied to a wrong-arity tuple payload is a type error"
+  (doc    "`(type T (Pair (Tuple Int64 Int64)))` declares `T.Pair` with payload type `(Tuple Int64 Int64)`,
+           so `(T.Pair (tuple 1 2 3))` applies it to a three-element tuple where a two-element one is
+           declared — a type mismatch the compiler MUST reject (CDZ0201): a tuple's length is part of its
+           type (type-system.md #A Tuple Is Reshaped Positionally, #The Structural Types Are Record, Tuple,
+           And Sum), so the arities do not unify, exactly as the scalar unary-variant case (`(T.Mk \"x\")`)
+           above. Pins that the unary-variant payload-type check covers a COMPOUND (tuple) payload, not
+           only scalars/String/List/Record: a compiler that skips the tuple payload constructs `(T.Pair
+           (tuple 1 2 3))` and lets a downstream `(tuple.2 p)` project a position the declared two-element
+           payload lacks, yielding 3 — a wrong value the declared arity forbids. A generation that does not
+           yet check a tuple-typed payload declines rather than constructing the mistyped value.")
+  (needs     sum-type-declaration)
+  (input     (module m
+               (type T (Pair (Tuple Int64 Int64)))
+               (def (main) (T.Pair (tuple 1 2 3)))))
   (error     CDZ0201))
 
 (case "a program's unary variant reusing a prelude nullary variant name is unary"
@@ -1841,6 +2568,29 @@
   (input  (match (tuple 1 2) ((tuple x x) x) (_ 0)))
   (error  CDZ0102))
 
+; Linearity holds ACROSS sub-patterns, not only within one flat pattern. core-semantics.md #Patterns
+; Compose: "A composed pattern MUST bind the union of its sub-patterns' bindings … and MUST remain linear
+; across the whole pattern, so that a name appearing in more than one sub-pattern is the same CDZ0102
+; error as one appearing twice in a flat pattern." So `(tuple x (tuple x y))` — `x` bound once at the
+; outer position and again inside the nested tuple pattern — is a repeated binder across the composition,
+; CDZ0102, exactly as the flat `(tuple x x)` is. This is the nested companion of the flat case above; it
+; carries the same `(needs linear-patterns)` gate (the seed does not yet enforce linearity, so it SKIPS —
+; and without an explicit nested case a linearity check written only for a flat pattern's immediate binders
+; would still accept the cross-sub-pattern repeat, silently shadowing the outer `x`).
+
+(case "a pattern that binds the same name across nested sub-patterns is rejected"
+  (doc    "`(match (tuple 1 (tuple 2 3)) ((tuple x (tuple x y)) x) (_ 0))` binds `x` at the outer tuple's
+           first position AND inside the nested tuple pattern — a repeated binder across the composition,
+           which MUST be rejected (CDZ0102, core-semantics.md #Patterns Compose: linearity holds across the
+           whole pattern, a name in more than one sub-pattern is the same error as one twice in a flat
+           pattern). Pins that the linearity check descends into sub-patterns, not only the immediate
+           binders of one pattern node — a check that scans only a flat pattern's binders would accept this
+           and silently shadow the outer `x` (yielding 2). Same `(needs linear-patterns)` gate as the flat
+           case; a generation realizing linearity must catch the nested repeat too.")
+  (needs  linear-patterns)
+  (input  (match (tuple 1 (tuple 2 3)) ((tuple x (tuple x y)) x) (_ 0)))
+  (error  CDZ0102))
+
 (case "a recursive sum type works with pattern matching"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable: sum types can be recursive — a variant
            can carry the type itself. (type IntList (Cons (Tuple Int64 IntList) | Nil)) is a linked list.
@@ -1884,6 +2634,41 @@
            violation regardless of which operand carries the tag — CDZ0202. Pins that the nominal tag
            is checked on either side of the comparison, not only the left.")
   (input    (= (record (x 0) (y 0)) (Point (x 0) (y 0))))
+  (error    CDZ0202))
+
+; --- The nominal boundary holds for user-declared SUM types too, not only nominal records -----------
+; type-system.md #Nominal Is An Orthogonal Modifier Over Any Structural Type declares nominal available
+; over "record, tuple, or SUM"; #Nominal Types Are Not Comparable Across Their Boundary then makes a
+; comparison of two DIFFERENT nominal types a type error (CDZ0202), and #Nominal Is An Orthogonal Modifier
+; Over Any Structural Type makes two nominal types "distinct whenever their fully-qualified names differ,
+; EVEN WHEN their underlying structures and their declared local names are identical". A user `(type …)` sum is
+; nominal (its value renders with its type tag, `(A.Mk 1)`), so two distinct sum types `A` and `B` that
+; happen to share a variant name `Mk` are still distinct nominal types — comparing `(A.Mk 1)` with
+; `(B.Mk 1)` is the same nominal-boundary violation the Point/Vector record case above pins, and MUST be
+; rejected (CDZ0202). A compiler that compares two same-shape sums STRUCTURALLY — matching only on the
+; shared variant set `{Mk}` and the payload — silently answers the comparison `false` (the untagged
+; structural comparison the nominal boundary forbids), the sum sibling of the nominal-record gap. It is a
+; wrong VALUE, not merely a missing rejection: the spec says the comparison must be caught, and `false`
+; answers it. A generation that does not yet track nominal tags on a sum in comparison DECLINES rather
+; than answering (reject-don't-miscompile) — answering `false` is the failure.
+
+(case "comparing two same-shape nominal sum types is a type error, not false"
+  (doc    "`A` and `B` are distinct user-declared sum types that share the variant name `Mk` and the
+           payload type `Int64` — but a nominal type's identity is its fully-qualified name, so they are
+           distinct nominal types even with identical structure and local variant name (type-system.md
+           #Nominal Is An Orthogonal Modifier Over Any Structural Type). Comparing `(A.Mk 1)` with `(B.Mk 1)`
+           is therefore a comparison across the nominal boundary — a type error (CDZ0202), exactly as the
+           Point/Vector nominal-record case above. This is the SUM sibling of that record case: the
+           nominal boundary is checked for a user sum type, not only for a nominal record. A compiler that
+           compares the two sums structurally (matching only the shared variant set and payload) answers
+           `false` — the untagged structural comparison the nominal boundary forbids, a wrong value the
+           spec says must be caught rather than answered. A generation that does not yet track nominal
+           tags on a sum declines rather than answering false (reject-don't-miscompile).")
+  (needs    sum-type-declaration)
+  (input    (do
+              (type A (Mk Int64))
+              (type B (Mk Int64))
+              (= (A.Mk 1) (B.Mk 1))))
   (error    CDZ0202))
 
 ; --- A list grows by functional construction (collections-and-text.md #A List Is Grown By Functional
@@ -2060,6 +2845,41 @@
   (input  (module m (def (main) (Map.lookup (Map.insert Map.empty 1 10) 2))))
   (output (: (None unit) (Option Int64))))
 
+; A `Map.lookup` result MUST match its true variant regardless of how the map was constructed. A map built
+; by a `(map …)` LITERAL with a RUN-TIME-computed key is mis-represented: `Map.lookup` on it renders the
+; correct `(Some v)` when returned directly, but MATCHING that result dispatches to the `None` arm — a
+; wrong-arm miscompile. `(let ((j (+ 2 3))) (match (Map.lookup (map (j 1)) 5) ((Some v) v) ((None _) -1)))`
+; yields -1 though key 5 (= `(+ 2 3)`) is present with value 1, so the `(Some v)` arm binds v=1 and the
+; result MUST be 1. The same map built with a CONST key (`(let ((j 5)) (map (j 1)))`) matches correctly
+; (→1), and a `Map.insert`-built map (even with a computed key) matches correctly (→1) — only the
+; computed-key `(map …)` LITERAL produces a map whose lookup Option mis-dispatches. This is the same
+; under-realized computed-key-map-literal defect as the const/runtime map-equality miscompile (§"a map with
+; a computed key equals the same map with a constant key"): the literal path with a runtime key builds a
+; map that does not behave as a proper runtime map (its lookup result carries a variant tag the match
+; misreads). A generation whose computed-key map literal is not yet a proper runtime map declines rather
+; than mis-dispatching its lookup result.
+
+(case "matching a lookup from a computed-key map literal selects the present-value arm"
+  (doc    "A map built by a `(map …)` literal with a run-time-computed key `(+ 2 3)` (= 5) holds key 5 ↦ 1;
+           `(Map.lookup … 5)` is `(Some 1)`, so matching it MUST bind the `(Some v)` arm's v=1 and yield 1
+           (core-semantics.md #Matching Is Exhaustive Or Rejected — the first matching arm; the scrutinee
+           is a Some). The seed yields -1: the computed-key map LITERAL is mis-represented, so the lookup's
+           Option mis-dispatches to the `None` arm even though the value is present (the lookup renders
+           `(Some 1)` when returned directly, so the value is right — only the match reads the wrong
+           variant). The same map with a CONST key matches correctly (→1), and a `Map.insert`-built map
+           matches correctly (→1) — only the computed-key `(map …)` literal is broken, the same under-
+           realized computed-key-literal defect behind the const/runtime map-equality miscompile. A
+           generation whose computed-key map literal is not yet a proper runtime map declines rather than
+           mis-dispatching.")
+  (needs  maps)
+  (input  (module m
+            (def (main)
+              (let ((j (+ 2 3)))
+                (match (Map.lookup (map (j 1)) 5)
+                  ((Some v) v)
+                  ((None _) -1))))))
+  (output (: 1 Int64)))
+
 (case "inserting a key already present replaces its value, not the size"
   (doc    "Adding a key that is already present REPLACES its value rather than adding a second entry
            (collections-and-text.md §A Map Is Built By Functional Construction, preserving each key at
@@ -2106,6 +2926,37 @@
             (def (main) (tuple.0 (Map.take (Map.insert Map.empty 1 10) 1)))))
   (output (: (Some 10) (Option Int64))))
 
+; A map operation applies to a map that arrives through a FUNCTION PARAMETER, not only a map constructed
+; inline in the same expression. Every OTHER heap collection already supports this — `(def (f xs) (List.len
+; xs))`, `(def (f b) (Bytes.len b))`, and `(def (f s) (String.byte-len s))` all compile and run when the
+; collection is a parameter — so a map, an ordinary heap value (collections-and-text.md #A Map Is Built By
+; Functional Construction; memory-and-resource-model.md — a map is a heap value like a list), must too:
+; `(def (f mp) (Map.size mp))` applied to a map is a well-typed program. The seed lowers `Map.*` for a map
+; built inline (`(Map.size (Map.insert Map.empty 1 10))` works) but declines a `Map.*` operation whose map
+; operand is a parameter ("unsupported dotted-application") — the map is the ONLY heap collection whose
+; operations do not yet accept a parameter operand, blocking the ordinary idiom of threading a map (an
+; environment, a symbol table) through a function or a recursive accumulator, which a self-hosted compiler
+; is written in (its `List` accumulator equivalent already works). It is decline-don't-miscompile-safe (an
+; honest decline, no wrong value), so a generation that does not yet lower a `Map.*` operation on a
+; parameter operand declines rather than miscompiling.
+
+(case "a map operation applies to a map passed as a function parameter"
+  (doc    "`(def (count mp) (Map.size mp))` takes a map as a PARAMETER and reads its size; applied to a
+           two-entry map it yields 2. Pins that a `Map.*` operation accepts a map operand that arrives
+           through a function boundary, not only one constructed inline — every other heap collection
+           already does (`List.len`/`Bytes.len`/`String.byte-len` on a parameter all compile), and a map is
+           an ordinary heap value, so threading a map through a function (an environment or symbol table, a
+           self-hosted compiler's core idiom — its List-accumulator equivalent works) must compile. The
+           seed lowers `Map.*` on an inline-built map but declines it on a parameter map ('unsupported
+           dotted-application') — the map is the only heap collection whose operations do not yet take a
+           parameter operand. A generation that does not yet lower a `Map.*` on a parameter operand declines
+           rather than miscompiling.")
+  (needs  maps)
+  (input  (module m
+            (def (count mp) (Map.size mp))
+            (def (main) (count (Map.insert (Map.insert Map.empty 1 10) 2 20)))))
+  (output (: 2 Int64)))
+
 (case "a built map renders its entries in canonical key order"
   (doc    "A map returned as the program RESULT renders its entries as key-value pairs in the
            deterministic canonical key order (collections-and-text.md §A Map Renders As Its Entries In
@@ -2114,6 +2965,40 @@
   (needs  maps)
   (input  (module m (def (main) (Map.insert (Map.insert Map.empty 2 20) 1 10))))
   (output (: (map (1 10) (2 20)) (Map Int64 Int64))))
+
+; Map homogeneity (collections-and-text.md #A Map Associates Keys With Values: "A map MUST associate keys
+; of one type with values of one type") holds under `Map.insert` too, not only for a map literal. The
+; literal already rejects a map whose values disagree in type (§"a map with values of two different types
+; is a type error", above); `Map.insert` produces a NEW MAP VALUE (#A Map Is Built By Functional
+; Construction), which must satisfy the same rule. So inserting an association whose value type differs
+; from the map's value type — `(Map.insert (Map.insert Map.empty 1 10) 2 true)` puts a Bool value into an
+; Int64-valued map — is a type error (CDZ0201), the map analogue of the `List.push` homogeneity case. An
+; insert that skips the check builds a map with values of two types, the value-side of the association the
+; homogeneity rule forbids. A generation that does not yet check the inserted value's type declines rather
+; than building the mixed-value map.
+
+(case "inserting a value of a different type into a map is a type error"
+  (doc    "`(Map.insert (Map.insert Map.empty 1 10) 2 true)` inserts a Bool value into a map whose values
+           are Int64 — the result associates values of two types, which a map may not (collections-and-text.md
+           #A Map Associates Keys With Values), a type error (CDZ0201), exactly as the `(map (a 1) (b true))`
+           literal is rejected (§\"a map with values of two different types is a type error\"). `Map.insert`
+           produces a new map value and must satisfy the same one-value-type rule the literal does — the
+           functional-construction companion, mirroring the `List.push`/`List.update` homogeneity cases. A
+           generation that does not yet check the inserted value's type declines rather than building it.")
+  (needs  maps)
+  (input  (module m (def (main) (Map.insert (Map.insert Map.empty 1 10) 2 true))))
+  (error  CDZ0201))
+
+(case "inserting a key of a different type into a map is a type error"
+  (doc    "The key-side companion: `(Map.insert (Map.insert Map.empty 1 10) true 20)` inserts a Bool KEY
+           into a map whose keys are Int64 — a map associates keys of ONE type (collections-and-text.md #A
+           Map Associates Keys With Values), so mixing an Int64 key with a Bool key is a type error
+           (CDZ0201). `Map.insert` must enforce the key's type against the map's key type as the value case
+           does. A generation that does not yet check the inserted key's type declines rather than building
+           the mixed-key map.")
+  (needs  maps)
+  (input  (module m (def (main) (Map.insert (Map.insert Map.empty 1 10) true 20))))
+  (error  CDZ0201))
 
 ; --- Map PATTERN matching (ask-61) — a SEPARATE phase, gated `(needs map-patterns)`. A map's key set is
 ; a RUNTIME collection, not a static shape, so a map pattern is a KEY-DIRECTED LOOKUP: `(map (k p) .. rest)`

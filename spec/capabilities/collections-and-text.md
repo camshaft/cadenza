@@ -100,6 +100,8 @@ A list MUST offer an operation that appends an element and an operation that rep
 
 The replace-at-index operation MUST be defined only for an index that is in bounds, consistent with the fallible reading rule below, so that growth never observes an element at a position the list does not have.
 
+A list MUST also offer an operation that concatenates two lists, producing a new list whose elements are those of the first list in order followed by those of the second, and leaving both operand lists unchanged. Concatenation MUST be defined only when both operands share one element type — the result is a list of that type — consistent with *A List Is An Ordered Homogeneous Sequence*; concatenating with the empty list on either side MUST yield a list equal to the other operand.
+
 ### A List's Representation Is Unspecified And Unobservable
 
 A conforming implementation MAY back a list with any internal representation — a contiguous array, a persistent tree, or a structure it selects and changes by size or usage — and MUST NOT let that choice be observable, so that two lists with equal elements in the same order are indistinguishable by every operation, including equality, length, indexing, and the list's canonical byte form, regardless of how each is stored. This realizes memory-and-resource-model.md §"Sharing Is Not Observable" for the list type; it introduces no way for a program to name, select, or branch on a list's representation.

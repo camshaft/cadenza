@@ -11,6 +11,33 @@
   (input  (quote (+ 1 2)))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))) Ast)))
 
+; --- A plain quote does not evaluate a nested unquote --------------------------------------------
+; metaprogramming.md #Quote Produces An AST Value: `(quote <expr>)` produces the AST of <expr>
+; "WITHOUT evaluating <expr> itself" — UNCONDITIONALLY, whatever <expr> contains. A quasiquote
+; nested inside a plain quote is INERT: `(quote `(+ ,x))` is the AST of the template `(+ ,x)`, in
+; which the `,x` (unquote) is ordinary structure — the plain quote does not put it in a
+; quasiquote-active context (that context is established by an EVALUATED quasiquote, and this
+; quasiquote is quoted, not evaluated). So the `,x` MUST NOT be evaluated: the quoted structure
+; mentions the NAME `x`, not x's value. This is the EVALUATION-side dual of "an unquote nested
+; inside a plain quote is a syntax error, not an active unquote" (a bare `(quote (g ,x))` rejects
+; CDZ0401): here the unquote is one level deeper — under a quasiquote under the quote — so it is
+; inert data rather than a stray unquote, but the same principle holds: a plain quote evaluates
+; NOTHING in its body. Discriminator that does not depend on the inert node's exact spelling: bind
+; two DISTINCT names to the SAME value and quote each — the quoted templates mention different
+; names (`x` vs `y`), so they are NOT structurally equal. A compiler that evaluates the nested
+; unquote collapses both to the AST of `(+ 1)` and wrongly answers `true`.
+(case "a plain quote does not evaluate a quasiquote's unquote nested inside it"
+  (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (\"without evaluating <expr>\").
+           `(quote `(+ ,x))` and `(quote `(+ ,y))` with x and y both bound to 1 quote two templates
+           that mention DIFFERENT names (`x` vs `y`); a plain quote does not evaluate the nested
+           `,x`/`,y`, so the two quoted structures differ and `=` is FALSE. A compiler that evaluates
+           the nested unquote (embedding x's value 1 and y's value 1) collapses both to the AST of
+           `(+ 1)` and wrongly answers true — it treated the quoted quasiquote as an active one,
+           evaluating inside a plain quote. Companion (rejection side) below: a bare stray unquote
+           under a plain quote is CDZ0401.")
+  (input  (let ((x 1)) (let ((y 1)) (= (quote `(+ ,x)) (quote `(+ ,y))))))
+  (output (: false Bool)))
+
 (case "eval is optional for macros and interactive use"
   (doc    "Witnesses metaprogramming.md #Eval Is Optional For Macros And Interactive Use: (eval <ast>)
            executes AST as code, optional for macros/REPL. Seed provides it; static generations need
@@ -22,19 +49,25 @@
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds
-           the integer payload, demonstrating AST variants are proper sum types.")
+           the integer payload, demonstrating AST variants are proper sum types. Because the AST is
+           an ORDINARY sum (type-system.md #The Abstract Syntax Tree Type Is An Ordinary Sum Type),
+           its match is subject to the same exhaustiveness rule any sum match is (#A Match Is
+           Exhaustive Against The Sum Type's Variant Set), so a match that inspects one form carries a
+           catch-all `_` arm for the others.")
   (input  (match (quote 42)
             ((Ast.Int n) n)
-            ((Ast.Name _) 0)))
+            (_ 0)))
   (output (: 42 Int64)))
 
 (case "pattern matching over AST distinguishes forms"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value: the compiler pattern-matches
            over AST sums to distinguish syntactic forms. Matching (quote (+ 1 2)) as an Ast.List
-           allows inspecting its structure recursively.")
+           allows inspecting its structure recursively. The AST is an ordinary sum, so the match
+           covers the remaining variants with a catch-all `_` arm (#A Match Is Exhaustive Against The
+           Sum Type's Variant Set).")
   (input  (match (quote (+ 1 2))
             ((Ast.List elems) (List.len elems))
-            ((Ast.Int _)      0)))
+            (_                0)))
   (output (: 3 Int64)))
 
 (case "eval on malformed AST traps"
@@ -58,6 +91,29 @@
            `(+ ,(+ 1 1) 10) evaluates (+ 1 1) to 2, constructs AST with that value.")
   (input  `(+ ,(+ 1 1) 10))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
+
+; An unquote MUST EVALUATE its expression (metaprogramming.md #Quasiquote Constructs AST With Selective
+; Evaluation: ",<expr> … MUST evaluate <expr> normally and insert its result"). If that expression cannot
+; be evaluated because it references an UNBOUND name, that is the ordinary unbound-name error
+; (core-semantics.md #Binding Is Lexical: "A reference to a name with no enclosing binding MUST be a
+; compile-time error", unconditional) — NOT an occasion to fall back to quoting the expression as inert
+; AST. `` `(a ,(+ b 1)) `` with `b` unbound must be rejected CDZ0101, exactly as the bare `(+ b 1)` is,
+; because the unquote evaluates `(+ b 1)` and `b` has no binding. A compiler that, when an unquote's
+; expression fails to const-evaluate, silently QUOTES it (yielding `(Ast.List (Ast.Name "+") (Ast.Name
+; "b") (Ast.Int 1))`) turns a scope error into a valid AST value — the unquote stopped evaluating and
+; became a second quote, contradicting the selective-EVALUATION rule.
+
+(case "an unquote of an expression with an unbound name is rejected, not quoted"
+  (doc    "`` `(a ,(+ b 1)) `` unquotes `(+ b 1)`, which references the unbound name `b` — the unquote
+           MUST evaluate its expression (metaprogramming.md #Quasiquote Constructs AST With Selective
+           Evaluation), so this is the ordinary unbound-name error (CDZ0101, core-semantics.md #Binding
+           Is Lexical — unconditional), exactly as the bare `(+ b 1)` is. Pins that an unquote whose
+           expression cannot be evaluated is rejected, NOT silently quoted as inert AST: a compiler that
+           falls back to quoting the un-evaluable expression (yielding an `(Ast.List …)` for `(+ b 1)`)
+           turns the selective-evaluation unquote into a second quote and swallows the scope error. With
+           `b` bound (`(let ((b 5)) `(a ,(+ b 1)))`) the unquote evaluates to 6; unbound, it is CDZ0101.")
+  (input  `(a ,(+ b 1)))
+  (error  CDZ0101))
 
 ; An AST built by quasiquote-with-unquote is an ordinary AST VALUE: it must be structurally EQUAL to
 ; the same AST built any other way, and encode to the same bytes (core-semantics.md #Equality Is
@@ -125,6 +181,38 @@
   (input  (= (quote (+ 1 2)) (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))))
   (output (: true Bool)))
 
+; The built-in `Ast` is an ordinary sum type — "a variant per syntactic form (an integer, a float, a
+; string, a boolean, a name, and a list of child nodes)" (type-system.md #The Abstract Syntax Tree Type
+; Is An Ordinary Sum Type) — so its constructors carry TYPED payloads: `Ast.Int` an Int64, `Ast.Name` a
+; String, `Ast.List` a list of Ast. A constructor is a single-arity function whose argument is type-checked
+; (core-semantics.md #A Sum Type Constructor Is A Single-Arity Function + #Applying A Function Binds Its
+; Parameter To Its Argument), so `(Ast.Int "x")` — a String where `Ast.Int`'s payload is Int64 — is a type
+; mismatch the compiler MUST reject (CDZ0201), exactly as a user sum's `(T.Mk "x")` for `(type T (Mk
+; Int64))` is. A compiler that checks a USER sum variant's payload type (that check landed) but not the
+; BUILT-IN `Ast` constructors' declared payloads builds a malformed `(Ast.Int "x")` node: matching it binds
+; the String where an Int64 is declared, and `(String.byte-len n)` reads it as a String and succeeds —
+; running the ill-typed program. This is the built-in-Ast companion of the user-sum unary-variant
+; payload-type case (05-compound-types.sexp): the Ast constructors are ordinary sum constructors and MUST
+; type-check their payloads identically. A self-hosted front end that builds AST nodes with the Ast.*
+; constructors depends on this — an unchecked `(Ast.Int "x")` is a malformed node it could emit. A
+; generation that does not yet check the Ast constructors' payload types declines rather than building the
+; mistyped node.
+
+(case "a built-in Ast constructor applied to a wrong-type payload is a type error"
+  (doc    "`Ast.Int`'s payload type is Int64 (the built-in `Ast` is an ordinary sum type, a variant per
+           syntactic form — type-system.md #The Abstract Syntax Tree Type Is An Ordinary Sum Type), so
+           `(Ast.Int \"x\")` applies it to a String — a type mismatch the compiler MUST reject (CDZ0201),
+           exactly as a user sum's `(T.Mk \"x\")` for `(type T (Mk Int64))` is. Pins that the built-in
+           `Ast` constructors type-check their declared payloads just as a user sum variant does — a
+           compiler that checks user variants but not the built-in Ast constructors builds a malformed
+           `(Ast.Int \"x\")` node (matching it binds the String where an Int64 is declared, and a
+           downstream String use of the payload succeeds, running the ill-typed program). A self-hosted
+           front end that constructs AST nodes with `Ast.*` depends on this check. A generation that does
+           not yet check the Ast constructors' payload types declines rather than building the mistyped
+           node.")
+  (input  (Ast.Int "x"))
+  (error  CDZ0201))
+
 (case "quote-vs-constructor AST equality holds regardless of operand order"
   (doc    "The order-flipped companion: `(= (Ast.Int 42) (quote 42))` is the same comparison of one
            sum value against itself and MUST be true. Pins that neither operand order (constructor-built
@@ -170,6 +258,22 @@
             ((Ok a)  (= a (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
             ((Err _) false)))
   (output (: true Bool)))
+
+(case "Ast.decode decodes bytes that arrive as a function argument"
+  (doc    "`Ast.decode : Bytes → Result<Ast, _>` MUST decode bytes whatever their PROVENANCE — a literal,
+           or (here) bytes passed in as a function ARGUMENT. The round-trip cases above decode a literal in
+           tail position; this decodes `b`, a parameter of `dec`, which is how a program that reads its
+           input decodes it (a compiler receives its program bytes as an argument, not a literal). The
+           result is the same total `Result<Ast, _>`, so `(dec (Ast.encode (Ast.Int 42)))` matches the `Ok`
+           arm and yields 42. A generation that realizes `Ast.decode` only over a compile-time-constant
+           argument (folding it away) declines the runtime-argument form (\"unsupported dotted-application\")
+           — but decode is an ordinary total operation on a runtime `Bytes` value, so it MUST run here.")
+  (input  (module case
+            (def (main) (dec (Ast.encode (Ast.Int 42))))
+            (def (dec b) (match (Ast.decode b)
+                           ((Ok a)  (match a ((Ast.Int n) n) (other -1)))
+                           ((Err _) -2)))))
+  (output (: 42 Int64)))
 
 (case "a quote-built and constructor-built AST of the same tree encode to identical bytes"
   (doc    "ast-encoding.md #The Encoding Is A Bijection With One Canonical Byte Form: \"Two abstract

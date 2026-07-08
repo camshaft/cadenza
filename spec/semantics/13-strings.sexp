@@ -273,6 +273,55 @@
   (input  (String.slice "hello" 2 2))
   (output (: (Some "") (Option String))))
 
+; --- String.slice over a RUNTIME string (a parameter, not a literal) ------------------------
+; The slice cases above feed a string LITERAL, so they const-fold before the runtime emitter is
+; reached. A string operation's argument may be a runtime value — a parameter, a match/if-selected
+; string — which does NOT fold: the seed must emit a runtime slice that walks the Bytes-backed UTF-8
+; leaf to map SCALAR offsets to byte offsets (String offsets are scalar positions, not bytes, unlike
+; Bytes.slice's byte length). These pin that the runtime slice agrees with the folded one on value,
+; boundary handling, AND scalar-vs-byte indexing — the reader idiom a self-hosting compiler needs.
+
+(case "a runtime string is sliced by scalar offsets"
+  (doc    "`(String.slice s 1 4)` on a string PARAMETER `s = \"hello\"` yields Some \"ell\" — scalars
+           1..4. Feeding `s` as a parameter defeats const-folding, so this exercises the runtime UTF-8
+           slice walk, which must agree with the folded literal cases above.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (f s) (Option.expect (String.slice s 1 4) "in range"))
+            (def (main) (f "hello"))))
+  (output (: "ell" String)))
+
+(case "a runtime string slice addresses scalar values, not bytes"
+  (doc    "`(String.slice s 1 3)` on `s = \"aébc\"` yields Some \"éb\" — scalars 1 and 2 (é is one
+           scalar, TWO UTF-8 bytes). A runtime slice that indexed by BYTE offset would split é or read
+           the wrong range; pins that the runtime walk maps scalar offsets to byte offsets, exactly as
+           String.at does (13-strings §reading a string's scalar addresses scalar values, not bytes).")
+  (needs  fallible-access)
+  (input  (module m
+            (def (f s) (Option.expect (String.slice s 1 3) "in range"))
+            (def (main) (f "aébc"))))
+  (output (: "éb" String)))
+
+(case "a runtime string slice out of range yields None"
+  (doc    "`(String.slice s 0 5)` on the two-scalar `s = \"hi\"` has end 5 past the length, so it yields
+           None — the runtime bounds check agrees with the folded out-of-range case. The match takes the
+           None arm (-1), witnessing the absent result rather than a trap or a short string.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (f s) (match (String.slice s 0 5) ((Some x) (String.byte-len x)) ((None _) -1)))
+            (def (main) (f "hi"))))
+  (output (: -1 Int64)))
+
+(case "a runtime string slice with an empty in-range span is Some of the empty string"
+  (doc    "`(String.slice s 2 2)` on a runtime `s = \"hello\"` selects zero scalars — Some \"\", present
+           not None (the empty-span boundary, on the runtime path). `String.byte-len` of the result is
+           0, distinguishing Some \"\" (0) from None (which the match would send elsewhere).")
+  (needs  fallible-access)
+  (input  (module m
+            (def (f s) (match (String.slice s 2 2) ((Some x) (String.byte-len x)) ((None _) -1)))
+            (def (main) (f "hello"))))
+  (output (: 0 Int64)))
+
 ; --- A string operation consumes a string SELECTED by runtime control flow -----------------
 ; A string operation (String.scalar-len/at/slice/concat) takes a string ARGUMENT; that argument may be a
 ; string SELECTED at run time by an `if` or a `match`, not only a literal. The seed resolves a string

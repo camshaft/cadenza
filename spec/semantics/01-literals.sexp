@@ -34,6 +34,27 @@
   (input  1_)
   (error  CDZ0201))
 
+; The between-digits rule holds for a FLOAT literal too, not only an integer — a `_` must sit between two
+; digits, so one adjacent to the decimal point (or trailing, or doubled) is malformed. `1._5` puts the
+; separator between the `.` and `5` — the digit on its left is missing (a `.`, not a digit) — so it is not
+; a well-formed separator, exactly as the integer `1_` is not; the compiler MUST reject it (CDZ0201) rather
+; than silently drop the `_` and read `1.5`. Same for a trailing `1.5_`, a before-dot `1_.5`, a doubled
+; `1.5__0`, and a stray `_` in the exponent (`1.5e_10`). A valid float separator sits between digits
+; (`1_000.5`, `1.2_5`) and is accepted. A reader that strips every `_` from a float token regardless of
+; position accepts these malformed forms — the between-digits rule must be applied to the float lexer as it
+; is to the integer lexer (the integer case is pinned above; this pins the float sibling was not left out).
+
+(case "a digit separator adjacent to a float's decimal point is a malformed literal"
+  (doc    "`1._5` places a digit separator between the decimal point and `5` — the `_` has no digit on its
+           left (a `.`, not a digit), so it is not BETWEEN two digits and is malformed (CDZ0201), exactly as
+           the integer `1_` above. The compiler MUST reject it rather than silently drop the `_` and read
+           `1.5`. Pins that the between-digits separator rule is applied to FLOAT literals too, not only
+           integers — a reader that strips every `_` from a float token regardless of position accepts this
+           and other misplaced forms (`1.5_`, `1_.5`, `1.5__0`, `1.5e_10`). The valid float separator
+           `1.2_5` (between digits) is accepted; only a misplaced one is rejected.")
+  (input  1._5)
+  (error  CDZ0201))
+
 ; --- The number / identifier boundary ---------------------------------------------------
 ; A token's classification as a numeric literal vs. an identifier is a lexical rule, and the
 ; digit-separator rule (above) must not swallow identifiers that merely contain the separator

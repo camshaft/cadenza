@@ -194,9 +194,9 @@ A map MUST associate keys with values as a dynamic homogeneous collection whose 
 
 Member access MUST project the field named by its key from the record it is applied to, evaluating to the value that field holds.
 
-Member access applied to a value that is not a record MUST raise a trap of a defined kind rather than produce an unspecified value.
+Member access applied to a value that is not a record MUST be rejected at compile time with the machine-readable code for a type error rather than produce an unspecified value or a runtime trap. A record's field names with their types are part of its type (*type-system.md §The Structural Types Are Record, Sum, Function, Tuple, And List*), so whether the operand is a record and which fields it has are statically known.
 
-Member access naming a field the record does not contain MUST raise a trap of a defined kind rather than produce an unspecified value.
+Member access naming a field the record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent rather than produce an unspecified value or a runtime trap, so that a projection cannot name a field the operand's type never held. This is the bare-access companion of the row-projection rule *type-system.md §A Record Is Restricted To A Named Set Of Its Fields*, under which naming an absent field is likewise a compile-time rejection: `(. r f)` and a projection of `r` onto `{f}` reject an absent `f` identically.
 
 ## Modules
 

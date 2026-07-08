@@ -95,6 +95,92 @@
   (input  (: (list 1 2) (List Bool)))
   (error  CDZ0203))
 
+; The parameter check applies to a RECORD's field type too, not only a sum's payload or a list's
+; element. `(record (a 1))` has type `(Record (a Int64))`; annotated `(Record (a Bool))`, the head
+; `Record` and the field name `a` agree but the field's type `Int64` cannot unify with `Bool` — a
+; contradiction (CDZ0203), the record analogue of the list-element and option-payload cases above. A
+; record's fields are the third structural type (type-system.md #The Structural Types Are Record, Tuple,
+; And Sum) beside the tuple's positions and the sum's payload; the annotation-parameter check the cases
+; above pin for a tuple position, a sum payload, and a list element MUST also cover a record field, or a
+; checker that verifies only the head `Record` and the field NAMES silently accepts the ill-typed
+; program and runs it, returning `(record (a 1))` under a declared `(Record (a Bool))` — the same
+; annotation-replaces-inference the section forbids. A generation that does not yet check a record
+; field's type parameter declines rather than accepting (reject-don't-miscompile).
+
+(case "a record annotated with the wrong field type is rejected"
+  (doc    "`(: (record (a 1)) (Record (a Bool)))` annotates a `(Record (a Int64))` as `(Record (a Bool))`:
+           the head `Record` and the field name `a` match but the field's type `Int64` cannot unify with
+           `Bool`, a contradiction (CDZ0203), the record companion of the list-element and option-payload
+           cases above. Pins that the annotation's parameter check covers a record's field type — the
+           third structural type beside a tuple's positions and a sum's payload — not only a sum's payload
+           or a list's element. A checker that stops at the head `Record` and the field names silently
+           accepts the ill-typed program and runs it, returning `(record (a 1))` under a declared
+           `(Record (a Bool))` (type-system.md #Annotations Constrain, Never Contradict). A generation
+           that does not yet check a record field's type declines rather than accepting
+           (reject-don't-miscompile).")
+  (input  (: (record (a 1)) (Record (a Bool))))
+  (error  CDZ0203))
+
+; The variant-payload TYPE check must fire wherever the constructor appears — including as the direct
+; scrutinee of a `match`. A sum's shape is "its variant names with their payload types" (type-system.md
+; #The Structural Types Are Record, Tuple, And Sum), and "a value of a sum type MUST be constructed
+; through one of its variants" (§A Value Of A Sum Type Is Constructed Through A Variant), so constructing
+; `(I true)` under `(type N (I Int64 | J Int64))` — where `I`'s payload type is Int64 and `true` is Bool
+; — is ill-typed and MUST be rejected (CDZ0201), no matter the surrounding context. The seed rejects it
+; in EVERY position — bare `(I true)`, let-bound `(let ((n (I true))) n)`, as a function argument, when
+; annotated `(: (I true) N)`, and over-applied `(I 5 6)` — EXCEPT when the constructor is the direct
+; scrutinee of a match: `(match (I true) ((I x) x) ((J y) y))` type-checks the constructor's payload
+; NOT AT ALL and runs, binding `x` to the Bool `true` and returning it — an ill-typed value (`true`
+; where the arm's Int64 payload is expected) crossing the run boundary. It is a wrong VALUE, not merely
+; a missed rejection: `x` is the payload of `I Int64`, so the arm's result is Int64, yet the program
+; returns Bool `true`. The match's scrutinee position suppresses the payload check that every other
+; position performs — the master-pattern gap (a check proven on operand/arg/let/annotation positions
+; not carried to the match-scrutinee position). A generation that checks the scrutinee's payload declines
+; the ill-typed program rather than running it and returning a Bool where an Int64 is required.
+(case "a variant with a wrong-type payload as a direct match scrutinee is a type error"
+  (doc    "`(match (I true) ((I x) x) ((J y) y))` under `(type N (I Int64 | J Int64))` matches a
+           constructor `(I true)` whose payload `true` is Bool where `I`'s declared payload type is Int64
+           — ill-typed exactly as the bare `(I true)` is (rejected in every other position: bare,
+           let-bound, as an argument, annotated, over-applied). MUST be rejected (CDZ0201). Pins that the
+           variant-payload type check fires in the DIRECT match-scrutinee position too, not only in
+           construction/binding positions. The seed suppresses the check here and runs the program,
+           binding `x` (declared payload type Int64) to the Bool `true` and returning it — an ill-typed
+           Bool crossing the run boundary where the arm's Int64 payload is required, a wrong value. The
+           companion `(let ((n (I true))) (match n …))` (a let-bound, then matched, scrutinee) IS rejected;
+           only the constructor written directly in scrutinee position slips. A generation that type-checks
+           the scrutinee constructor's payload declines rather than running the mistyped program.")
+  (input  (module m
+            (type N (I Int64 | J Int64))
+            (def (main) (match (I true) ((I x) x) ((J y) y)))))
+  (error  CDZ0201))
+
+; The annotation check must also catch a tuple's ARITY mismatch, not only its element TYPES. A tuple is
+; a fixed-size positional value "whose length is part of its type" (type-system.md #A Tuple Is Reshaped
+; Positionally …), and a structural type's shape is "a tuple's element types in order" (#The Structural
+; Types Are Record, Tuple, And Sum) — so a two-element tuple has type `(Tuple Int64 Int64)`, which cannot
+; unify with a three-element `(Tuple Int64 Int64 Int64)` any more than `(Tuple Int64 Bool)` (a wrong
+; element type) can. `(: (tuple 1 2) (Tuple Int64 Int64 Int64))` is therefore a contradiction the compiler
+; MUST reject (CDZ0203, #Annotations Constrain, Never Contradict). A checker that walks the annotation's
+; element types POSITIONALLY against the value's elements but never compares the two ARITIES silently
+; accepts the ill-typed program and runs it, returning `(tuple 1 2)` under a declared three-element type —
+; the arity companion of the wrong-element-type gap the list/record/sum cases close. (The element-type
+; check already fires: `(: (tuple 1 2) (Tuple Int64 Bool))` is rejected "annotation's parameter type
+; contradicts the value"; the arity check must reach the same annotation the element check does.)
+
+(case "a tuple annotated with the wrong arity is rejected"
+  (doc    "`(: (tuple 1 2) (Tuple Int64 Int64 Int64))` annotates a two-element tuple (type `(Tuple Int64
+           Int64)`) as a THREE-element tuple type: a tuple's length is part of its type (type-system.md
+           #A Tuple Is Reshaped Positionally …, #The Structural Types Are Record, Tuple, And Sum), so the
+           two arities cannot unify — a contradiction (CDZ0203), the arity companion of the wrong-element-
+           type cases above. Pins that the annotation check compares a tuple's ARITY, not only its element
+           types positionally — a checker that walks the shared positions and ignores the length silently
+           accepts the ill-typed program and runs it, returning `(tuple 1 2)` under a declared three-
+           element type. The element-type check already fires (`(: (tuple 1 2) (Tuple Int64 Bool))` is
+           rejected), so the arity check must reach the same annotation. A generation that does not yet
+           check tuple arity declines rather than accepting (reject-don't-miscompile).")
+  (input  (: (tuple 1 2) (Tuple Int64 Int64 Int64)))
+  (error  CDZ0203))
+
 (case "an unannotated program with a valid typing type-checks and runs"
   (doc    "Witnesses type-system.md #An Unannotated Program Is Accepted When It Has A Valid Typing: a
            valid typing need not be written by the author; the program type-checks and evaluates to 3.")

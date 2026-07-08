@@ -591,3 +591,29 @@
             (def (id x) x)
             (def (main) (id true))))
   (output (: true Bool)))
+
+; A function's name is an ordinary lexical binding, and #Binding Is Lexical resolves a reference to the
+; NEAREST enclosing binding of that name — regardless of the name's capitalization. So a `def` whose name
+; happens to start with an uppercase letter binds that name exactly as a lowercase one does, and a call to
+; it MUST invoke the defined function, not be reinterpreted as a constructor of some tagged variant. A
+; compiler that treats any capitalized name in call position as an ad-hoc constructor — synthesizing
+; `(Foo 10)` for `(Foo 10)` — silently IGNORES the user's `(def (Foo x) …)` binding and returns a
+; constructor value instead of the function's result: a wrong value that contradicts #Binding Is Lexical
+; (the nearest binding of `Foo` is the `def`, not a prelude constructor, and there is no `Foo` variant
+; declared) and #A Module Binds Its Name In Its Enclosing Scope. The lowercase companion `(def (bar) …)`
+; is called correctly; the uppercase one must be too — capitalization is not a binding-precedence rule.
+
+(case "a function whose name is capitalized is called, not treated as a constructor"
+  (doc    "`(def (Foo x) (+ x 1))` binds the name `Foo` to a function in the module's scope; `(Foo 10)`
+           MUST resolve to that binding (core-semantics.md #Binding Is Lexical: a name resolves to the
+           nearest enclosing binding) and invoke it, yielding 11. `Foo` is not a variant of any declared
+           sum type, and even if it were, the user's `def` is the nearest binding. A compiler that treats
+           a capitalized name in call position as an ad-hoc constructor synthesizes the value `(Foo 10)`
+           and IGNORES the `def` — a wrong value (the function computing x+1 is bypassed). Capitalization
+           is not a binding-precedence rule: the lowercase `(def (bar) …)` companion is called correctly,
+           and the uppercase one must be too. A generation that does not resolve a capitalized name to its
+           user binding declines rather than answering `(Foo 10)` (reject-don't-miscompile).")
+  (input  (module m
+            (def (Foo x) (+ x 1))
+            (def (main) (Foo 10))))
+  (output (: 11 Int64)))

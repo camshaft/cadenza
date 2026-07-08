@@ -10,6 +10,41 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A coarse kind-classifier re-derived at emission is not inference — and it fails the same way at every lattice point](./2026-07-08-a-coarse-kind-classifier-re-derived-at-emit-is-the-wrong-inference-and-fails-one-way-at-every-lattice-point.md)
+  — ~8 self-hosting cycles filed as separate return-kind gaps (recursive-Bool branch-order ask-14, list-accumulator
+  ask-18, fixpoint-OOM ask-24, polymorphic-identity-returns-1 ask-34, shape-lost-across-return ask-65, tail-recursive
+  tuple return ask-73) turned out to be ONE bug seen at different points of a coarse lattice. The seed's "inference"
+  is not inference: `Kind` is a wasm-valtype classifier (`Int64|Bool|Float64|Unit|Never|Heap`, every compound → one
+  opaque `Heap`), a separate `Shape` carries structure (so the compiler holds two disagreeing notions of a value's
+  type and a whole family of bugs lives in the gap between "it's Heap" and "its Shape"), it is re-derived ad-hoc
+  during emission ("kinds have one source of truth — emit", forcing a signature-fixpoint and an emit-time
+  re-derivation to agree, with 2ⁿ/4ⁿ cost landmines), and its "unify" is order-dependent `Option<Kind>`
+  slot-filling with no type variables — exactly the first-use-site ad-hoc guessing HM was chosen to replace,
+  reintroduced as the result-kind solver. The seed admitted the general fix in ask-14 ("order-independence is a
+  property EVERY result kind needs; fix at general result-unification, not per-kind") and instead patched each
+  lattice point. This is the empirical vindication of the 2026-07-04 HM decision: real HM (type variables + unify
+  with substitution/occurs-check, principal types) as a SEPARATE `Hir→typed-Hir` pass before lowering makes all
+  three failures structurally impossible — order-independence is free, structure IS the inferred type, and
+  monomorphization is the compile-time-eval tier. The from-scratch `cdzc` compiler builds the replacement (its
+  `Hir→Mir` step = infer + monomorphize + lower). No new requirement; it proves out type-system.md §Inference +
+  compiler-pipeline.md §"Emission Serializes A Lowered Representation".
+  — a spike porting HOL Light's LCF kernel (`fusion.ml`) to Cadenza *purely* (no refs; rules as functions over an
+  abstract `Thm = Sequent(hyps, concl)`) compiled and proved `TRANS (REFL x) (REFL x) ⊢ x = x` — but only after
+  routing around a cluster of declines. The sharpest: the natural accessor `concl : Thm → Term` that *returns*
+  the bound conclusion for a caller to inspect made the program decline, while destructuring the theorem INLINE in
+  the arm that needs the conclusion compiled. Reduced to its core: a compound bound from a sum payload is
+  matchable/projectable WITHIN its arm (arm-local shape via `infer_sum_payload_override`/`shape_of`), but the same
+  value RETURNED FROM A HELPER and then projected with `tuple.N` is not merely declined — the seed REJECTS it
+  `CDZ0201: tuple access on a non-tuple`, asserting a well-typed program is ill-typed. The shape was never wrong,
+  only not propagated across the function-return boundary; the return type inferred as an opaque heap handle. This
+  is a wrong-REJECTION (mirror of wrong-value), a decline-don't-miscompile violation: an unknown shape must route
+  to a DECLINE (todo), never a coded rejection. LCF consequence: an abstract-data-type accessor handing its
+  payload back to a caller — `concl`/`dest_thm`/`dest_eq`, the ordinary LCF shape — is exactly the pattern that
+  hits this; consume the payload where it is bound until the return threads its shape. Added the wrong-reject
+  corpus case + its inline-consume control (`05-compound-types`), plus companion gaps the same spike surfaced:
+  ctor-in-tuple-slot binder (`05`) and runtime compound / two-runtime-string `=` heap-walk (`03`), each with the
+  hand-written route that compiles. Confirmed the pure+algebraic-effects LCF rendering is viable and strictly more
+  trustworthy (axiom introduction becomes a visible effect).
 - [A fold that eliminates a branch must not eliminate that branch's type-check — const-folding is value-preserving but not rejection-preserving](./2026-07-07-a-fold-that-eliminates-a-branch-must-not-eliminate-its-type-check.md)
   — a latent miscompile: `(if false (record (a 1)) 7)` folded `false`→7, discarding the dead compound then-branch
   WITHOUT type-checking it; native rejects (branches differ, CDZ0201) but the folding compiler accepted+emitted 7
