@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A degraded representation forces the diagnostic to reconstruct intent from surface cues — an out-of-range literal arrives as a name, not a number](./2026-07-07-a-degraded-representation-forces-the-diagnostic-to-reconstruct-intent-from-surface-cues.md)
+  — the self-hosted compiler learned out-of-range int literal → CDZ0201 (agree 98→100). The mechanism: the AST
+  encoder can't fit `9223372036854775808` in an i64, so it degrades to the generic `Node::Name` tag — the SAME
+  representation a real identifier gets. The compiler distinguishes them only by a surviving surface cue (digit-led
+  → malformed literal CDZ0201; letter-led → unbound name CDZ0101). Distinct from last cycle's "provable-from-type":
+  here the rejection's premise is present but the input's INTENT was erased by a lossy encoder, so the diagnostic
+  must reconstruct intent from a cue that survived the degradation — else it emits the misleading "unbound name:
+  9223372036854775808". The discriminator must be pinned BOTH ways (isolation-verified: out-of-range → CDZ0201
+  agrees, genuine `y` → CDZ0101 still declines, so it doesn't over-fire); corpus already has both (01-literals +
+  02-binding-and-control). No corpus (both sides pinned; out-of-range flipped to agree, unbound-name is the ask-30
+  CDZ0101 frontier). Lesson: a lossy encoder erases what an ill-formed input was trying to be, so a diagnostic
+  chosen by reconstructing intent from a surface cue must pin both cue-present and cue-absent, or it mis-slices.
 - [Coded diagnostics land first where exhaustiveness is provable from the type alone — bool before user-sum, and a payload that carries the code, not a flag](./2026-07-07-coded-diagnostics-land-first-where-exhaustiveness-is-provable-from-the-type-alone.md)
   — the self-hosted `Diag` channel's `KError` payload generalized from a 0/1 decline/reject FLAG to the actual CDZ
   CODE, and the compiler detected a new family: a one-arm bool match → CDZ0210, reaching AGREE *by code* (matching
