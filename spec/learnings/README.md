@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A right rejection with the wrong code is the finest-grained diagnostic gap — the last rung before agree is category resolution, and it's a lattice question](./2026-07-07-a-right-rejection-with-the-wrong-code-is-the-finest-grained-diagnostic-gap.md)
+  — ask-55's fix took int/float-mix cases crash→reject, and the 14 remaining disagrees collapsed to one class:
+  `native=CDZ0301, comp=diagnostics[CDZ0201]` — right rejection, wrong CODE. Native distinguishes CDZ0301 (both
+  numeric, different kind: int vs float) from CDZ0201 (non-numeric mismatch: int vs bool); compiler.cdz collapses
+  both to CDZ0201 because its kind lattice has no float-numeric kind. Watching this family travel the full outcome
+  ladder in a few cycles (under-reject → crash → decline/reject → right-reject-wrong-code → agree) shows the ladder
+  has a rung finer than "does it reject?": "does it reject with the RIGHT code?" — the code is part of the
+  contract. The fix is lattice RESOLUTION not logic: a diagnostic code is a claim about kinds, so a compiler can
+  only emit a distinction its type lattice can draw (same thread as ask-53's KCompound/KUnknown) — enrich the
+  lattice and codes split, coarsen it and they collapse into the nearest general one. Filed ask-56; ask-55→pending
+  (crash fixed). No corpus (14 CDZ0301 cases already pinned; move to agree when a float/numeric kind lands).
 - [A disagree-drop hid a decline→crash regression in a node kind the new check didn't model — a conservative check must be silent on kinds it doesn't recognize](./2026-07-07-a-disagree-drop-hid-a-decline-to-crash-regression-in-a-new-node-kind.md)
   — the shape-fits-position check dropped byte-gate disagree 85→22 (63 int/type under-rejects → decline), but the
   four-bucket flow showed the 22 that REMAINED had all become one new class: the compiler component TRAPS on any
