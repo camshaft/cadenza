@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A rejection family that looks like many checks is often one check at many positions — map the frontier by cluster to find the leverage](./2026-07-07-a-rejection-family-that-looks-like-many-checks-is-often-one-check-at-many-positions.md)
+  — ask-30 is falling sub-family by sub-family (agree 79→95→98→100→105); this cycle 5 more pre-pinned cases
+  flipped under-reject→agree (malformed-`let`, duplicate field/key), no gap to fill — the port is outrunning
+  gap-finding. So I mapped the 80 remaining under-rejects by code + sub-cluster instead: 50 CDZ0201 (of which ~25
+  are ONE "operand shape doesn't fit the operation" check at many syntactic positions — comparison, member-access,
+  apply, pattern, collection-homogeneity — sharing ask-53's `ck-of`/provable-mismatch machinery), 14 CDZ0301
+  (no-promotion), 4 CDZ0210 (ask-13 user-sum), 5 CDZ04xx (capability routing), etc. Lessons: a rejection family
+  presenting as N diagnostics is often ONE check at N positions, visible only by clustering the frontier not
+  fixing case-by-case, so port order should be biggest-shared-mechanism-cluster-first; and a measurement loop's
+  advantage shifts from "detect the next bug" to "characterize the remaining distribution" as the frontier matures
+  — a well-timed frontier map saves more work than another found case. Frontier map appended to ask-30. No corpus
+  (all 80 already pinned; WRONG=0 throughout).
 - [A degraded representation forces the diagnostic to reconstruct intent from surface cues — an out-of-range literal arrives as a name, not a number](./2026-07-07-a-degraded-representation-forces-the-diagnostic-to-reconstruct-intent-from-surface-cues.md)
   — the self-hosted compiler learned out-of-range int literal → CDZ0201 (agree 98→100). The mechanism: the AST
   encoder can't fit `9223372036854775808` in an i64, so it degrades to the generic `Node::Name` tag — the SAME
