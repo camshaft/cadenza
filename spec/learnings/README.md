@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A disagree-drop hid a decline→crash regression in a node kind the new check didn't model — a conservative check must be silent on kinds it doesn't recognize](./2026-07-07-a-disagree-drop-hid-a-decline-to-crash-regression-in-a-new-node-kind.md)
+  — the shape-fits-position check dropped byte-gate disagree 85→22 (63 int/type under-rejects → decline), but the
+  four-bucket flow showed the 22 that REMAINED had all become one new class: the compiler component TRAPS on any
+  program with a float literal. Isolation confirmed a real regression (same stable seed): compiler.cdz 18:38
+  DECLINED a bare float, 18:53 TRAPS on it, native compiles it → 4.5. Per reject-don't-miscompile (wrong-value <
+  crash < decline < correct) a float moved UP the severity ladder decline→crash — a regression the falling
+  headline hid. Two lessons: (1) the conservative-check invariant has a second axis — ask-53 said "unprovable
+  operand KIND → silent"; this adds "unrecognized node KIND → silent, never trap" (a float is none of
+  Ki64/KBool/KError, and the check trapped on the node kind it didn't model instead of `CKUnk`→decline); (2)
+  strongest vindication of reading the four-bucket flow over the headline — a loop recording "85→22, progress"
+  would ship a compiler that crashes on every float. Filed ask-55; WRONG=0 for values holds but crash-on-valid is
+  a ship-blocker. No corpus (float cases already pinned; must return decline/agree).
 - [A rejection family that looks like many checks is often one check at many positions — map the frontier by cluster to find the leverage](./2026-07-07-a-rejection-family-that-looks-like-many-checks-is-often-one-check-at-many-positions.md)
   — ask-30 is falling sub-family by sub-family (agree 79→95→98→100→105); this cycle 5 more pre-pinned cases
   flipped under-reject→agree (malformed-`let`, duplicate field/key), no gap to fill — the port is outrunning
