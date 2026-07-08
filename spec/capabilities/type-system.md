@@ -91,6 +91,58 @@ The row variable of an open record type MUST be resolved to a closed set of fiel
 
 Comparison of two records MUST remain a comparison of closed shapes: a program that compares a subset of one record against another MUST first project the compared fields explicitly and compare the projections, rather than rely on an equality overloaded to ignore extra fields, so that `=` is never silently widened by row polymorphism.
 
+### A Record Row Is Reshaped Only Through An Explicit Operation Yielding A New Value
+
+A program MUST be able to derive a new record from existing records by an explicit row operation — restricting to named fields, dropping named fields, or combining two records — rather than by an implicit widening or narrowing that inference introduces, so that a shape change is always something the program wrote.
+
+A record row operation MUST yield a new record value and MUST NOT alter the operand records, consistent with the immutable value heap, so that reshaping a record is the derivation of a new value with a new shape and not a mutation of an existing one.
+
+The shape of a record row operation's result MUST be determined statically from the operands' shapes, so that the emitted component carries a concrete closed record shape and the operation introduces no runtime field set.
+
+### A Record Is Restricted To A Named Set Of Its Fields
+
+A program MUST be able to project a record onto a stated set of field names, yielding a record whose fields are exactly those names bound to the values the operand holds for them, so that narrowing a record to a sub-shape is an explicit operation rather than an overloaded equality.
+
+A projection that names a field the operand record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that a projection cannot silently produce a field the operand never held.
+
+### A Record Is Reduced By Dropping A Named Set Of Its Fields
+
+A program MUST be able to derive a record that drops a stated set of field names from an operand record, yielding a record whose fields are exactly the operand's remaining fields, so that removing a field is the complement of projecting the fields kept.
+
+A drop that names a field the operand record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that dropping a field the record never held is a static error rather than a no-op.
+
+### Two Records Are Combined Only When Their Field Sets Are Disjoint
+
+A program MUST be able to combine two records into one whose field set is the union of the operands' field sets, each field bound to the value its source record holds, so that merging records is the row analogue of forming a record from two groups of fields.
+
+A combination of two records whose field sets share a name MUST be rejected at compile time with the machine-readable code for a field that is already present, so that a combined record never has to choose which operand's value a shared field takes and the fixed-field-set invariant is preserved.
+
+### A Field Is Added To Or Replaced In A Record By A Derived Operation
+
+A program MUST be able to derive a record that adds a field absent from an operand record, and a combination that adds a field the operand already contains MUST be rejected at compile time with the machine-readable code for a field that is already present, so that adding a field never silently overwrites an existing one.
+
+A program MUST be able to derive a record that replaces a field present in an operand record with a new value of a possibly different type, so that updating a field is an explicit operation distinct from adding one and the replacement's type is whatever the new value holds.
+
+A field update whose named field is absent from the operand record MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that updating a field the record never held is a static error rather than an addition.
+
+### A Tuple Is Reshaped Positionally By An Explicit Operation Yielding A New Value
+
+A program MUST be able to derive a new tuple from existing tuples by an explicit positional operation — concatenating two tuples or splitting one at a stated position — rather than by an implicit change of arity, consistent with a tuple being a fixed-size positional value whose length is part of its type.
+
+A tuple positional operation MUST yield a new tuple value and MUST NOT alter the operand tuples, consistent with the immutable value heap, so that reshaping a tuple is the derivation of a new value and not a mutation.
+
+The arity of a tuple positional operation's result MUST be determined statically from the operands' arities, so that the emitted component carries a concrete tuple shape and the operation introduces no runtime-length tuple.
+
+### Two Tuples Are Concatenated Into One Of Their Combined Length
+
+A program MUST be able to concatenate two tuples into one whose elements are the first tuple's elements in order followed by the second tuple's elements in order, so that its arity is the sum of the operands' arities and each element keeps the type of its source position.
+
+### A Tuple Is Split At A Position Into A Prefix And A Suffix
+
+A program MUST be able to split a tuple at a stated position into a pair of tuples — a prefix holding the elements before the position and a suffix holding the elements from the position onward — so that partitioning a tuple positionally is an explicit operation yielding both parts.
+
+A split position that is not within the operand tuple's static arity range MUST be rejected at compile time as a type error, consistent with a positional tuple access whose index is out of the tuple's static arity being rejected, so that a split can never name a position the tuple does not have.
+
 ### The Effect Row Is A Row Over The Same Machinery
 
 A function's effect row MUST be tracked by the same row machinery as an open record, so that principal-type inference over effects reuses row unification rather than a separate effect-inference system.

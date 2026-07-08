@@ -2,10 +2,9 @@
 
 > **CAPABILITY SPECIFICATION.** Behavior and invariants, free of implementation detail. This
 > document defines compile-time evaluation and structural macros: the affordance by which a program
-> is transformed as data, kept deterministic, hygienic, and bounded. Requirements realize
-> [Core Principle II](../../constitution.md), [Core Principle III](../../constitution.md), and
-> [Core Principle V](../../constitution.md) and trace to [overview §3](../overview.md) and
-> [overview §13](../overview.md).
+> is transformed as data, kept deterministic and hygienic. Requirements realize
+> [Core Principle II](../../constitution.md) and [Core Principle III](../../constitution.md) and
+> trace to [overview §3](../overview.md) and [overview §13](../overview.md).
 >
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence carrying
 > exactly one obligation, under a stable heading.
@@ -14,10 +13,9 @@
 
 Because a program's canonical representation is code as data, a program can be transformed by other
 code before it is compiled. This capability fixes that compile-time evaluation and macros are pure,
-bounded by the deterministic resource measure, hygienic, and reproducible — so that metaprogramming,
-the affordance that makes Cadenza structurally malleable by agents, cannot become a hole in
-determinism, capability-safety, or reproducibility. It states the invariants; the concrete macro
-surface is governed by the code-shape default.
+hygienic, and reproducible — so that metaprogramming, the affordance that makes Cadenza structurally
+malleable by agents, cannot become a hole in determinism, capability-safety, or reproducibility. It
+states the invariants; the concrete macro surface is governed by the code-shape default.
 
 ## AST Construction
 
@@ -40,6 +38,20 @@ Quasiquote MUST nest, so that ``` ``(+ ,,x)``` evaluates the inner `,` to produc
 Unquote and unquote-splicing outside a quasiquote context MUST be a syntax error.
 
 Quote and quasiquote are construction primitives that produce AST data.
+
+### A Quasiquote In Pattern Position Destructures An AST
+
+A quasiquote template `` `<template>`` appearing in pattern position MUST destructure an abstract-syntax-tree scrutinee, matching the template's structure against the tree.
+
+A quasiquote pattern MUST be equivalent to the pattern formed from the corresponding abstract-syntax-tree sum constructors, so that a value matched through a quasiquote pattern cannot be distinguished by structural equality or by the encoding from the same value matched through the constructors.
+
+A literal subterm within a quasiquote pattern MUST match the abstract-syntax-tree node it denotes by equality, and a `,<pattern>` (unquote) subterm MUST match the sub-tree at its position against `<pattern>`, binding the sub-tree when `<pattern>` is a name.
+
+A `,@<name>` (unquote-splicing) subterm within a quasiquote pattern MUST bind the remaining elements of its enclosing list as a list, and MUST appear only as the final element of its template.
+
+A match over an abstract-syntax-tree scrutinee whose arms are quasiquote patterns MUST be subject to the exhaustiveness rule exactly as any other match, so that a quasiquote pattern is not a special case (core-semantics.md §"Matching Is Exhaustive Or Rejected").
+
+A quasiquote pattern MUST layer over the untyped abstract-syntax-tree analysis substrate, so that it may destructure arbitrary tree structure — the dual of the construction quote, which carries the type of the expression it builds (§"A Typed Quote Carries The Type Of The Expression It Builds").
 
 ## AST Evaluation (Optional)
 
@@ -66,10 +78,6 @@ A macro MUST be an ordinary compile-time function over the abstract syntax tree,
 Code evaluated at compile time MUST run in the empty effect row, so that its purity is a consequence of the effect model rather than a rule stated only for compile time (capabilities-and-effects.md §The Manifest Is The Escaping Effect Row).
 
 Code evaluated at compile time MUST NOT reach a host function, so that it performs no ambient input or output and depends on no wall-clock time or source of randomness.
-
-### Compile-Time Evaluation Is Bounded
-
-Compile-time evaluation MUST be accountable against the deterministic resource measure so that it halts at a defined point.
 
 ## Macros
 
@@ -108,10 +116,6 @@ A macro definition MUST be available in an earlier phase than the code that uses
 ### Expansion Is Reproducible
 
 Expanding the same program MUST produce the same expanded representation on every conforming compiler.
-
-### Expansion Terminates
-
-Macro expansion MUST terminate, halting at a defined point if it exceeds the deterministic resource measure.
 
 ## Meaning After Expansion
 

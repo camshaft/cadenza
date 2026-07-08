@@ -47,7 +47,7 @@ interpreter-only rung, which could have gotten by with explicit top-level recurs
 
 ```
 Behavior  = record { terminal: Terminal, host-calls: List(HostCall) }
-Terminal  = Normal(Value) | Trap(String) | Exhausted
+Terminal  = Normal(Value) | Trap(String)
 HostCall  = record { fn: Symbol, args: List(Value) }
 ```
 
@@ -58,11 +58,10 @@ HostCall  = record { fn: Symbol, args: List(Value) }
   natively; the boundary shim below applies only where a generation offers the optional interpreted
   derivation as a component.
 - Capabilities enter only in the **derived component's boundary shim**: `run(input: list<u8>)` decodes
-  the embedded AST and drives `eval` under the suspend-replay boundary — at each recorded host call it
-  yields to the host, which resolves it and re-invokes, so the host calls are made through the real
-  host imports rather than replayed from a transcript computed ahead of time
-  (build-tool-interface.md §"A Derived Component Computes Its Behavior When It Runs";
-  capabilities-and-effects.md §"Suspension Is Replay From The Host's Log").
+  the embedded AST and drives `eval`, and each host operation the program reaches is a plain call to the
+  real host import that returns its response — so the host calls are made live rather than replayed from a
+  transcript computed ahead of time (build-tool-interface.md §"A Derived Component Computes Its Behavior
+  When It Runs"; capabilities-and-effects.md §"A Host Call Returns A Response").
 
 ## Reader and printer (in the seed first; the round-trip is the first test oracle)
 
@@ -107,13 +106,14 @@ HostCall  = record { fn: Symbol, args: List(Value) }
   grants a host function yields a world importing it; a program that grants nothing yields a world with
   no import.
 
-## The tower and fuel
+## The tower and its depth
 
 Because the seed (native) runs the Cadenza-interp which interprets a program, the interpretation tower
-is deeper than a single interpreter. The seed's evaluator MUST bound depth by the resource measure
-(fuel) so a deep or non-terminating tower halts at a defined point rather than overflowing the host
-stack (determinism-and-fuel.md §"Resource Accounting"); a mature generation trampolines its evaluator
-rather than relying on host recursion.
+is deeper than a single interpreter. Bounding how deep or how long that tower runs is a concern of the
+environment that hosts the interpreter, not a language requirement (constitution Principle V, retired by
+Amendment 0.7.0): the runtime engine's own metering (fuel) interrupts a deep or non-terminating tower
+rather than letting it overflow the host stack, and a mature generation trampolines its evaluator rather
+than relying on host recursion.
 
 ## Why this is the minimal surface
 

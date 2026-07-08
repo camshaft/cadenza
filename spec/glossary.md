@@ -17,10 +17,11 @@
 - **Program** — a set of Cadenza source modules that compile together into one component.
 - **Source** — the authoritative textual or structural form of a program; the sole authority
   over the program's meaning, from which the runnable form is derived.
-- **Module** — a named unit of source that declares definitions and its required capabilities;
-  the unit of namespacing and import.
+- **Module** — a named unit of source that declares definitions, including routing-agnostic effect
+  declarations; its required capabilities are the effects its entrypoints delegate to the host, not a
+  property of the declarations themselves; the unit of namespacing.
 - **Definition** — a named binding introduced by a module: a value, function, type, or
-  capability declaration.
+  effect declaration.
 - **Documentation** — prose attached to a definition, carried in the canonical representation rather
   than as discarded lexical trivia; preserved through round-trip and structural edits, exposed
   machine-readably, and never affecting a program's runtime meaning.
@@ -89,6 +90,15 @@
   value's runtime representation.
 - **Structural type** — a type whose identity is its shape, equal to any type of the same
   shape.
+- **Row** — a set of field-name-to-type associations that may carry a row variable standing for the
+  fields not named; the type-level device by which a record type is open over the fields a function
+  does not use, and the same machinery a function's effect labels are tracked by. A row is a
+  compile-time typing device: a record value is still closed, and a row variable is resolved to a
+  closed field set before a value crosses a component boundary.
+- **Row operation** — an explicit operation that derives a new record or tuple from existing ones by
+  reshaping — restricting a record to named fields, dropping fields, combining disjoint records,
+  adding, updating, or popping a field; concatenating or splitting a tuple positionally — each
+  yielding a new value with a statically-determined shape rather than widening or narrowing implicitly.
 - **Sum type** — a type that is exactly one of several named variants, each optionally carrying
   data; the basis for typed results and error handling.
 - **Refinement** — a predicate attached to a type that constrains which of its values are
@@ -112,21 +122,18 @@
 - **Nondeterminism** — any dependence of a result on something a program did not obtain through its
   declared inputs and capabilities: uninitialized memory, thread scheduling, an unspecified numeric
   result, or an outside influence such as a clock or randomness reached without declaring it.
-- **Capability** — an authority a program must declare in order to reach a host operation; the
-  unit of what a program is permitted to do.
-- **Capability manifest** — the enumeration a program carries of every capability it requires;
-  it is both a description and the enforcement boundary.
-- **Ambient authority** — any authority a program can exercise without having declared it;
-  Cadenza has none, because the means to reach an undeclared operation is simply not present in
+- **Capability** — an authority an entrypoint must delegate to the host in order to reach a host
+  operation; the unit of what a program is permitted to do.
+- **Capability manifest** — the enumeration a program carries of every capability its entrypoints
+  delegate to the host; it is both a description and the enforcement boundary, and equals the union of
+  the entrypoints' host delegations.
+- **Ambient authority** — any authority a program can exercise without an entrypoint having delegated
+  it; Cadenza has none, because the means to reach an undelegated operation is simply not present in
   the emitted component.
 - **Host operation** — an operation a component may import to interact with its runtime, drawn
   from a versioned host interface; each import is bound only when the manifest grants it.
 - **Host interface** — the versioned set of host operations a component may import; a component
   names the exact interface version it targets.
-- **Resource measure** — the deterministic quantity against which execution is accounted, so
-  that termination does not depend on wall-clock time; commonly called fuel.
-- **Fuel** — the resource measure a running component consumes; exhausting it halts execution
-  at a defined point.
 - **Capability honesty** — the property that a component's imports mirror its manifest exactly and
   the compiler adds none of its own, so the system running the component can decide what to permit
   from the manifest alone.
@@ -136,6 +143,39 @@
 - **Effect** — an observable action a function performs through a capability; the opt-in effect-
   tracking layer annotates functions with the effects they perform and checks that they perform no
   other.
+- **Effect declaration** — the single, routing-agnostic form that names an effect and types each of its
+  operations, saying nothing about where the effect is discharged, so an effect is a namespace of
+  operations reached by member access whose routing is decided by an enclosing handler or an entrypoint
+  host delegation, not by the declaration.
+- **Host delegation** — the entrypoint form `(host (effect…) body)` that routes a set of effects to the
+  component boundary, making the host their terminal handler; the boundary counterpart of a `handle`, and
+  the grant that enters an effect into the manifest.
+- **Effect operation** — one named, typed operation an effect declares; **performing** an operation
+  applies it to arguments checked against its declared parameter types, yields its declared result
+  type, and adds the operation's effect to the performing function's effect row.
+- **Handler** — a construct that discharges an intra-program effect for the dynamic extent of a
+  sub-computation: it seeds an initial state, and for each operation it names runs an arm in place of the
+  performed operation, folding the state across the operations the body performs; the handler evaluates to
+  the value of its body. The handler discharging an operation is the nearest one active along the call
+  chain (dynamic extent, not lexical enclosure of the performing definition), resolved statically and
+  deterministically by monomorphization.
+- **Handler arm** — the clause a handler gives for one operation, binding that operation's parameters and
+  the current state, and computing both the value the performing site receives and the next state carried
+  forward; an arm may name only an operation its effect declares.
+- **Handler state** — the value a handler threads across the operations it discharges: seeded at the
+  handle site, updated by each arm, and observable only through the operations the effect declares
+  (reading it is an ordinary operation, not a separate result form). Threaded purely, so mutable-looking
+  computation leaves the value heap immutable.
+- **Continuation** — the rest of the computation from a performed operation up to its handler, which an
+  arm may resume with a value and the next state. An intra-program continuation is ephemeral and never
+  crosses the component boundary. A host call is a plain imported-function call, not a language-level
+  continuation: how a host resolves or resumes it (inline, fiber, or re-derivation from input and ordered
+  responses) is host policy, not part of the program's meaning.
+- **Resume** — the act, within a handler arm, of returning a value and the next state to the point that
+  performed the operation, continuing the handled sub-computation from there.
+- **One-shot (affine) continuation** — a continuation a handler resumes at most once by default, so a
+  suspended computation and the resources it holds are never duplicated; resuming more than once is a
+  deliberate opt-in a build's declared defaults enable.
 
 ## The runnable form
 
@@ -179,6 +219,19 @@
 - **Diagnostic** — a machine-readable message the compiler emits about a program, carrying a
   stable code, a precise source span, and the rule it enforces.
 - **Source span** — the precise region of source a diagnostic or structural element refers to.
+- **Debug information** — the optional metadata the compiler may emit for a derived artifact that
+  relates a position in the executable form back to the source span of the canonical representation it
+  derives from, together with the source-level names and types a debugger presents; it is inert (it
+  changes neither the bytes the runtime executes nor a component's manifest), carries no provenance, is
+  a deterministic function of source and toolchain, and cannot be read by the running component, so it
+  is metadata for an external tool rather than the runtime type reflection erasure removes.
+- **Debug artifact** — debug information emitted as a separate artifact that references the runnable
+  artifact it describes, so a deployment can ship the runnable artifact lean and the debug information
+  alongside it; the sidecar alternative to embedding debug information in the artifact itself.
+- **Stripping** — removing the debug information (and any other non-executed metadata) from an
+  artifact that carries it, yielding the byte-identical artifact the same source derives when debug
+  information is excluded, so debug information is a strippable addition to the runnable form rather
+  than a modification of it.
 
 ## The executable semantics and the oracle
 
@@ -214,11 +267,13 @@
   functions exist is the target's concern, not the language's (an *event* is one target's host call
   that returns unit). Distinct from an **effect**, which is the type-system label — a program's escaping
   effect row equals the host functions it imports.
-- **Terminal condition** — the one way a program run ends: a normal result, a trap of a defined kind,
-  or exhaustion of the resource measure.
+- **Terminal condition** — the way a program run that terminates ends: a normal result or a trap of a
+  defined kind. Whether a run terminates at all is a concern of the environment that hosts it (which may
+  meter or interrupt it, as it may for memory); the terminal condition of a run that *does* terminate,
+  and the value and host-call sequence it produces, are a deterministic function of its input and its
+  capabilities' responses.
 - **Trap** — a defined-kind halt of a program at a defined point, raised by a partial operation or an
-  overflow, distinct from normal termination and from resource-measure exhaustion; part of observable
-  behavior.
+  overflow, distinct from normal termination; part of observable behavior.
 
 ## Verification layers
 

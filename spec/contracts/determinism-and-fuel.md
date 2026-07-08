@@ -1,28 +1,34 @@
 # Frozen Contract — Determinism And Fuel
 
 > **FROZEN CONTRACT.** This document pins the execution-level determinism the emitted code must
-> guarantee and the resource accounting that bounds it, at the level of what the compiler emits
-> rather than what the source says. It is the contract a component's byte-identical replay
-> depends on. It is versioned and changed only by the coordinated act described in the
-> constitution's Governance Floors. Its requirements realize [Core Principle III](../../constitution.md)
-> and [Core Principle V](../../constitution.md) and trace to [overview §4](../overview.md).
+> guarantee, at the level of what the compiler emits rather than what the source says. It is the
+> contract a component's byte-identical replay depends on. It is versioned and changed only by the
+> coordinated act described in the constitution's Governance Floors. Its requirements realize
+> [Core Principle III](../../constitution.md) and trace to [overview §4](../overview.md).
+>
+> The filename retains the word "fuel" for citation stability; the resource-accounting requirements
+> this contract once carried were retired by constitution Amendment 0.7.0, which delegates bounding a
+> run's execution to the environment that hosts a component rather than to what the compiler emits, so
+> only the deterministic-emission requirements remain here.
 >
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence under a
-> stable heading. This contract names execution properties, not a concrete engine; the concrete
-> resource measure and numeric mode are pinned at the declared-default location.
+> stable heading. This contract names execution properties, not a concrete engine; the numeric mode
+> is pinned at the declared-default location.
 
 ## Purpose And Scope
 
-Determinism and bounded termination are guarantees about emitted code, not just about source. A
-program that declares no nondeterministic capability can still compile to a component whose output
-varies if the compiler emits an instruction with an unspecified result, or whose termination depends
-on timing if a loop is not accounted against a resource measure. This contract pins what the compiler
-must and must not emit so that, given the same input and the same responses to a program's declared
-capabilities, two runs produce identical bytes, and so that termination is bounded by a deterministic
-measure. It concerns the nondeterminism the compiler must not introduce on its own; a source of
-nondeterminism a program obtains through a declared capability is legible in its manifest and is the
-running system's to permit. It does not pin the concrete measure or numeric mode, which are declared
-defaults.
+Determinism is a guarantee about emitted code, not just about source. A program that declares no
+nondeterministic capability can still compile to a component whose output varies if the compiler emits
+an instruction with an unspecified result. This contract pins what the compiler must and must not emit
+so that, given the same input and the same responses to a program's declared capabilities, two runs
+produce identical bytes. It concerns the nondeterminism the compiler must not introduce on its own; a
+source of nondeterminism a program obtains through a declared capability is legible in its manifest and
+is the running system's to permit. It does not pin the numeric mode, which is a declared default.
+
+Bounding a run against a resource measure is deliberately *not* pinned here: whether and how a run's
+execution is bounded is a property of the environment that hosts a component, not of what the compiler
+emits (constitution Core Principle V, retired by Amendment 0.7.0). The concrete engine's resource
+metering is recorded at the declared-default location rather than required here.
 
 ## Deterministic Emission
 
@@ -41,22 +47,6 @@ The compiler MUST emit floating-point operations under a single fixed rounding m
 The compiler MUST NOT emit a fused or contracted floating-point operation whose result varies from the separately-rounded operations across conforming runtimes.
 
 The compiler MUST emit floating-point operations such that a not-a-number result has a canonical bit pattern rather than a runtime-dependent one.
-
-## Resource Accounting
-
-### Every Unbounded Construct Consumes The Resource Measure
-
-The compiler MUST emit code such that each loop iteration consumes the deterministic resource measure.
-
-The compiler MUST emit code such that each function call consumes the deterministic resource measure.
-
-The compiler MUST NOT emit a construct whose execution can proceed unboundedly without consuming the resource measure.
-
-### Exhaustion Halts Deterministically
-
-The compiler MUST emit code such that exhausting the resource measure halts execution at a defined point.
-
-The point at which exhaustion halts execution MUST be a deterministic function of the input and the measure, not of wall-clock timing.
 
 ## Additive Evolution
 

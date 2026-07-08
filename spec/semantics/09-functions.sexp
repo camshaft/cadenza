@@ -188,6 +188,31 @@
   (input  (Some 1 2 3))
   (error  CDZ0201))
 
+; The arity check has a lower end too: a UNARY variant applied to ZERO arguments is under-applied. A
+; sum type constructor is a single-arity function that produces the tagged variant "when applied to
+; EXACTLY ONE argument" (core-semantics.md #A Sum Type Constructor Is A Single-Arity Function). `Some`
+; is unary (Option's non-nullary variant, argument type the payload T), so `(Some)` supplies no
+; argument — the mirror of the over-application above. A compiler that fabricates a Unit payload for a
+; missing argument produces `(Some unit)` — a value of type `Option Unit` the program never wrote,
+; observable by matching `(Some x)` binding x=unit, and one that slips past the payload-annotation check
+; (`(: (Some) (Option Int64))` yields `(Some unit)` where `(: (Some unit) (Option Int64))` is correctly
+; rejected — a Unit payload under an `Int64` annotation). The Unit filler is right only for a NULLARY
+; variant, whose argument type IS Unit; a unary variant applied to zero arguments MUST be rejected
+; (CDZ0201), exactly as over-application is. A generation that does not yet check the low end declines
+; rather than fabricating the payload (reject-don't-miscompile).
+
+(case "under-applying a unary constructor is a type error, not a fabricated unit payload"
+  (doc    "`(Some)` applies the unary constructor `Some` to zero arguments — under-application, the
+           mirror of `(Some 1 2)` over-application. `Some` produces its Sum value only when applied to
+           exactly one argument (core-semantics.md #A Sum Type Constructor Is A Single-Arity Function),
+           so `(Some)` MUST be rejected (CDZ0201). A compiler that fabricates a Unit payload yields
+           `(Some unit)` — a value of type `Option Unit` the program never wrote, observable by matching
+           `(Some x)` and slipping past the payload-annotation check. The Unit filler is correct only for
+           a NULLARY variant (argument type Unit); a unary variant demands its one argument. A generation
+           that does not yet check the low arity end declines rather than fabricating the payload.")
+  (input  (Some))
+  (error  CDZ0201))
+
 (case "a recursive def computes over its argument"
   (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments:
            sum-to counts down to 0 through direct self-recursion. sum-to(3) = 3 + 2 + 1 + 0 = 6.")

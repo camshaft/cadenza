@@ -34,10 +34,10 @@ representation win on the self-hosting path, because name comparison is the comp
   ADDITIVE change: it defines a canonical/boundary form for a value that previously had none, permitted
   by deterministic-value-form.md #Additive Evolution and component-abi.md #Additive Evolution without a
   contract version increment.
-- The interned-value obligations stay accountable against the deterministic resource measure: the
-  intern table is retained storage that MUST be accounted for what it holds live and MUST NOT let a
-  program allocate unboundedly without consuming the measure (memory-and-resource-model.md #Allocation
-  Is Accountable, #Retained Storage Is Accounted For What It Holds Live).
+- The intern table is retained storage accounted for what its representation actually holds live
+  (memory-and-resource-model.md #Retained Storage Is What A Value's Representation Holds Live); bounding
+  how much a program may allocate is a concern of the environment that runs it, not a language
+  requirement (constitution Principle V, retired by Amendment 0.7.0).
 
 **Why this is an isolated decision.** A `Symbol` is a nominal value over the existing `String` form
 (type-system.md #User Types Are Declarable As Nominal Or Structural): a structural `String` carrying an

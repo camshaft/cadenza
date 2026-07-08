@@ -94,6 +94,16 @@ A list MUST be an ordered sequence whose elements share one type.
 
 Two lists MUST be equal exactly when they have equal elements in the same order.
 
+### A List Is Grown By Functional Construction
+
+A list MUST offer an operation that appends an element and an operation that replaces the element at an index, each of which MUST produce a new list value and leave its operand list unchanged, so that a list is immutable under growth exactly as it is under reading.
+
+The replace-at-index operation MUST be defined only for an index that is in bounds, consistent with the fallible reading rule below, so that growth never observes an element at a position the list does not have.
+
+### A List's Representation Is Unspecified And Unobservable
+
+A conforming implementation MAY back a list with any internal representation — a contiguous array, a persistent tree, or a structure it selects and changes by size or usage — and MUST NOT let that choice be observable, so that two lists with equal elements in the same order are indistinguishable by every operation, including equality, length, indexing, and the list's canonical byte form, regardless of how each is stored. This realizes memory-and-resource-model.md §"Sharing Is Not Observable" for the list type; it introduces no way for a program to name, select, or branch on a list's representation.
+
 ### Indexing And Lookup Are Fallible, Not Trapping
 
 An operation that reads an element of a sequence by position — indexing a list, a string (by scalar or byte offset), or a `Bytes` value, or taking a sub-sequence slice — MUST be total, yielding an optional value that is present when the position is in bounds and absent when it is out of bounds, rather than trapping or producing an unspecified value.
@@ -111,6 +121,24 @@ A map MUST associate keys of one type with values of one type.
 A map MUST contain each key at most once.
 
 Two maps MUST be equal exactly when they associate the same keys with equal values, independent of insertion order.
+
+### A Map Is Built By Functional Construction
+
+A map MUST offer an empty map value, an operation that adds or replaces the association for a key, and an operation that removes the association for a key. Each MUST produce a new map value and leave its operand map unchanged, so that a map is immutable under update exactly as a list is under growth (*A List Is Grown By Functional Construction*).
+
+Adding a key already present MUST replace that key's value rather than introduce a second entry, preserving the *A Map Associates Keys With Values* rule that a map contains each key at most once. Removing a key the map does not contain MUST yield a map equal to the operand rather than trapping, so that removal is total.
+
+A map MUST report the number of keys it associates, and that count MUST equal the number of distinct keys added and not since removed.
+
+The add-or-replace and the remove operations MUST each come in two forms: a plain form yielding only the new map, and a form that additionally yields the value the key held before the operation as an optional — present when the key was associated beforehand and absent when it was not — paired with the new map. The plain form is the common case that discards the prior value; the value-yielding form lets a program observe what an add replaced or a remove dropped in a single operation, without a separate lookup. The two forms MUST agree on the resulting map, so that the only difference is whether the prior value is reported.
+
+### Keys Are Compared By Value, Not Representation
+
+Whether a map contains a key, and which entry a lookup or removal names, MUST be decided by the key's value under *core-semantics.md §Equality Is Structural* — two keys that are equal as values name the same entry regardless of how each was constructed or stored. A map therefore MUST NOT expose or depend on any hashing, ordering, or internal placement of its keys as observable behavior; only membership, association, size, equality, and the deterministic iteration order below are observable. This realizes *memory-and-resource-model.md §Sharing Is Not Observable* for the map type, exactly as *A List's Representation Is Unspecified And Unobservable* does for lists.
+
+### A Map Renders As Its Entries In Canonical Key Order
+
+A map's canonical form MUST present its entries as key-value pairs in the deterministic order of *Map Iteration Is Deterministic*, so that two equal maps have identical canonical forms regardless of the order their entries were added. The canonical form MUST be distinguishable from a record's, so that a map and a record are never confused by their rendered form even when they carry the same keys and values (a map's keys are values of one key type; a record's field names are fixed compile-time labels).
 
 ### Map Iteration Is Deterministic
 

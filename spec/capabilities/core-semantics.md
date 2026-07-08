@@ -4,9 +4,8 @@
 > document defines evaluation, binding, scope, control flow, pattern matching, failure and
 > termination, equality and ordering, and the observable-behavior projection, and binds their
 > behavior to the single executable-semantics corpus. Requirements realize
-> [Core Principle III](../../constitution.md), [Core Principle V](../../constitution.md),
-> [Core Principle IX](../../constitution.md), and [Core Principle XIV](../../constitution.md) and
-> trace to [overview §3](../overview.md), [overview §4](../overview.md),
+> [Core Principle III](../../constitution.md), [Core Principle IX](../../constitution.md), and
+> [Core Principle XIV](../../constitution.md) and trace to [overview §3](../overview.md),
 > [overview §10](../overview.md), and [overview §11](../overview.md).
 >
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence carrying
@@ -36,10 +35,6 @@ Evaluation of an expression MUST depend only on the expression, the bindings in 
 Evaluation MUST NOT depend on any outside influence the expression did not obtain through a binding in scope or a declared capability.
 
 Evaluation of an expression MUST NOT observe an order among independent subexpressions beyond the order their data dependencies impose.
-
-### Evaluation Is Bounded
-
-Evaluation MUST be accountable against the deterministic resource measure so that a non-terminating program halts at a defined point rather than running unboundedly.
 
 ## Binding And Scope
 
@@ -81,10 +76,6 @@ Partial application MUST be natural: applying a curried function to fewer argume
 
 Applying a function to its argument MUST evaluate the function body in an environment that extends the function's captured environment with its parameter bound to the argument.
 
-### Recursion Is Accountable Against The Resource Measure
-
-A function that applies itself, directly or indirectly, MUST consume the deterministic resource measure so that unbounded recursion halts at a defined point rather than running unboundedly.
-
 ## Control Flow
 
 ### Conditionals Evaluate One Branch
@@ -92,6 +83,14 @@ A function that applies itself, directly or indirectly, MUST consume the determi
 A conditional MUST evaluate only the branch its condition selects.
 
 Every branch of a conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated branch cannot carry a deferred error.
+
+### Boolean Connectives Short-Circuit
+
+The language MUST offer a logical conjunction, a logical disjunction, and a logical negation over boolean values, so that a program composes conditions without nesting a conditional per condition.
+
+A logical conjunction MUST evaluate its right operand only when its left operand is true, and a logical disjunction MUST evaluate its right operand only when its left operand is false, so that a connective shields a trapping or effectful right operand exactly as the unselected branch of a conditional does.
+
+Each operand of a boolean connective MUST be type-checked as a boolean whether or not it is evaluated, so that an unevaluated operand cannot carry a deferred error, exactly as every branch of a conditional is type-checked.
 
 ## Sequencing
 
@@ -120,6 +119,26 @@ A match MUST evaluate the branch of the first pattern that matches the scrutinee
 A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
 
 A pattern MUST bind each name at most once; a pattern that binds the same name more than once MUST be a compile-time error (`CDZ0102`), so that a pattern is linear rather than silently shadowing an earlier binder or imposing a hidden equality constraint.
+
+### Patterns Compose
+
+A pattern MUST admit any pattern in each of its binder positions, so that a constructor pattern's binder and a tuple pattern's element MAY themselves be a wildcard, a name, a tuple pattern, or a constructor pattern, matched recursively to any depth.
+
+A composed pattern MUST bind the union of its sub-patterns' bindings, matched recursively, and MUST remain linear across the whole pattern, so that a name appearing in more than one sub-pattern is the same `CDZ0102` error as one appearing twice in a flat pattern.
+
+A destructuring of a tagged value carrying a tuple of sub-values in a single arm — the shape every tree-walking pass over a recursive sum takes — MUST therefore be expressible directly as one nested pattern rather than requiring a bind-then-rematch.
+
+### A List Is Deconstructed By Element Patterns With An Optional Rest
+
+A list MUST be matchable by an element pattern that names some number of leading elements positionally and MAY end in a rest binder for the remaining elements.
+
+An element pattern naming exactly `n` elements with no rest binder MUST match a list of length exactly `n`, binding each named element position to the corresponding element; a list of any other length MUST NOT match that pattern. An element pattern naming `n` leading elements followed by a rest binder MUST match any list of length at least `n`, binding the leading positions to the first `n` elements and the rest binder to a list of the remaining elements in order. In particular, the empty element pattern MUST match exactly the empty list, and a single-leading-element-plus-rest pattern MUST match any non-empty list, binding its first element and the rest of the list.
+
+Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`). The rest binder MUST bind a value of the same list type as the scrutinee, so a recursive function MAY match it again.
+
+A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list — for example an empty-list arm together with a leading-element-plus-rest arm, or an arm ending in a rest binder that names no leading elements — and a set of arms that leaves some length uncovered MUST be a compile-time error under *Matching Is Exhaustive Or Rejected* unless a later arm (a name or wildcard pattern) covers the remainder.
+
+An element pattern MUST observe a list only through its length and its elements in order; it MUST NOT expose or depend on any internal cell or node structure of the list's representation, so that the same pattern matches a list regardless of how the list is represented.
 
 ## Types As First-Class Values
 
@@ -201,13 +220,23 @@ A module MUST carry the capabilities it declares as metadata separate from its e
 
 A module's metadata MUST be reachable by a metadata key distinct from every export name, so that metadata access cannot collide with an export.
 
+### A Built-In Module Is A Record Of Its Operations
+
+A built-in module — a collection of operations the language provides rather than a program defines — MUST be a record whose fields name those operations, indistinguishable in form from a module a program defines. A reference to a built-in module's name MUST resolve to that record under the same scope and shadowing rules as any other binding, and an operation MUST be reached by member access on that record, so that projecting a built-in operation (`Mod.op` denoting `(. Mod op)`) is the ordinary record projection of *Member Access Projects A Record Field*, not a distinct construct. A built-in module and a program-defined module MUST be accessed by the identical mechanism; the language MUST NOT recognize a built-in module's name in any position a program-defined module's name would not be recognized.
+
+A field of a built-in module whose implementation the language provides MUST hold a **built-in operation value** — a first-class value denoting that operation. A built-in operation value MUST be a value in the sense of *A Function Is A First-Class Value*: projecting it MUST yield the value itself, so that member access on a built-in module evaluates to the operation it names without applying it.
+
+Applying a built-in operation value to arguments MUST produce the same result the operation defines for those arguments, so that `(Mod.op args)` — the application of the projected field — is equivalent to invoking the built-in operation directly. Applying it at an argument count the operation does not accept MUST be a compile-time error under *Applying A Function Binds Its Parameter To Its Argument* and the arity rules, exactly as for any other function value, rather than an unspecified result.
+
+A built-in operation value used other than by application — bound to a name, stored in a data structure, compared, or partially applied — has no outcome fixed by this document beyond that it MUST NOT produce a wrong result: a compiler that does not realize such a use MUST decline to compile the program rather than emit code that computes an incorrect value. This preserves *reject-don't-miscompile* while leaving the first-class treatment of a built-in operation value (storage, partial application) to be specified as it is realized.
+
 ## Failure And Termination
 
-### A Program Terminates In Exactly One Terminal Condition
+### A Program That Terminates Ends In One Of Two Terminal Conditions
 
-A program run MUST end in exactly one terminal condition: a normal result, a trap of a defined kind, or exhaustion of the deterministic resource measure.
+A program run that terminates MUST end in exactly one terminal condition: a normal result or a trap of a defined kind.
 
-The terminal condition of a program run MUST be a deterministic function of its input and its declared capabilities' responses.
+The terminal condition of a program run that terminates MUST be a deterministic function of its input and its declared capabilities' responses, so that whether a run terminates is a property of the environment that hosts it while the terminal condition of one that does is fixed by the program.
 
 ### A Trap Halts Execution At A Defined Point
 

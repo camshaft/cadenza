@@ -153,6 +153,14 @@ format = "markdown"
 source = "spec/capabilities/units-of-measure.md"
 format = "markdown"
 
+[[specification]]
+source = "spec/capabilities/value-interchange.md"
+format = "markdown"
+
+[[specification]]
+source = "spec/capabilities/debug-information.md"
+format = "markdown"
+
 # bootstrap
 [[specification]]
 source = "spec/bootstrap.md"

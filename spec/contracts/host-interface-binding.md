@@ -57,6 +57,10 @@ A component's imports MUST be host functions declared in the WIT-shaped world it
 
 An imported host function MUST carry a complete WIT-typed signature — its parameter types, its result type, and its error type — sufficient for the compiler to emit that import into the component's world without consulting anything outside the program's source.
 
+A host-delegated effect operation MUST appear as its declared signature verbatim: an operation `(op nm (-> P… R))` an entrypoint delegates MUST become the imported function `nm` whose parameters are `P…` and whose result is `R`, with the compiler injecting no additional parameter, no resume or continuation argument, no state, and no error or outcome arm the operation did not itself declare, so that the WIT import contract is exactly the effect operation's type and a host implements precisely what the program declared.
+
+An operation whose declared result type is itself fallible MUST carry that fallibility in its own result type, which the program handles as an ordinary value, so that error handling is the program's declared contract rather than something the boundary adds to a delegated operation.
+
 The compiler MUST reject a program that imports a host function whose declared signature it cannot emit as a well-formed WIT import, rather than emit a component whose import does not match the world it names.
 
 ### Which Host Functions Exist Is The Target's Concern
@@ -67,9 +71,9 @@ This contract MUST NOT name a concrete host function, so that the vocabulary of 
 
 ### The Manifest Is A Projection Of The Escaping Effect Row
 
-A program's escaping effect row MUST equal the set of host functions it imports, so that the manifest is a projection of that row rather than a separately-asserted list.
+A program's escaping effect row MUST equal the set of host functions it imports, where the escaping row is the union of the effects its entrypoints delegate to the host that no nearer handler discharges (capabilities-and-effects.md §A Host Import Is A Boundary Effect And The Manifest Is Its Row), so that the manifest is a projection of that delegated row rather than a separately-asserted list and an effect an enclosing handler fully interposes before a delegation generates no import.
 
-A component that reaches no host function MUST have an empty manifest, so that a program's purity is the empty row and is legible from an empty manifest.
+A component that delegates no host function, or whose every otherwise-delegated effect a nearer handler discharges, MUST have an empty manifest, so that a program's purity is the empty row and is legible from an empty manifest, and a program whose every host operation is interposed by a handler is pure.
 
 The single, well-known value-heap runtime interface the compiler emits programs against MUST NOT be counted among a component's host-function imports for the purpose of this projection, so that a component whose only import is that runtime interface still has an empty manifest and every other import remains a host function the manifest enumerates (capabilities-and-effects.md §The Value-Heap Runtime Is The One Import That Is Not A Capability).
 

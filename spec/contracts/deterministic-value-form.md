@@ -56,6 +56,20 @@ A floating-point negative zero MUST serialize distinctly from a positive zero, c
 
 Every floating-point not-a-number value MUST serialize to one canonical byte form, consistent with structural equality treating all not-a-number values as equal.
 
+## Decoding Is The Inverse Of The Canonical Byte Form
+
+### The Canonical Byte Form Has A Decode That Inverts It
+
+Decoding the canonical byte encoding of a value against the type of that value MUST yield a value equal, under the language's structural equality, to the value that was encoded.
+
+The bytes a value serializes to for hashing, cross-boundary equality, or a component's emitted output and the bytes that value serializes to for interchange MUST be the same bytes, so that there is exactly one canonical byte form of a value and not a separate interchange encoding.
+
+### Decoding Refuses Bytes That Are Not A Value Of The Expected Type
+
+Decoding a byte sequence that is not the canonical byte encoding of any value of the expected type MUST be refused rather than yield a value, so that a decode never misinterprets bytes as a value they do not encode.
+
+A byte sequence that has valid canonical bytes followed by additional bytes MUST NOT decode as the value those valid bytes encode, so that trailing bytes are a detected error rather than silently ignored.
+
 ## Additive Evolution
 
 ### Additive Evolution Of This Contract
@@ -65,3 +79,5 @@ A change to this contract that alters the canonical byte form of an already-seri
 A change to this contract that alters the canonical byte form of an already-serializable value MUST carry a stated migration path.
 
 A change to this contract that only defines a canonical byte form for a value that previously had none MUST be permitted as an additive change.
+
+A change to this contract that only defines the decode direction for a value whose canonical byte form was already pinned MUST be permitted as an additive change, because it constrains no already-produced bytes.

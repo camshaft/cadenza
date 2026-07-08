@@ -25,6 +25,7 @@
 | `spec/capabilities/memory-and-resource-model.md` | §4 |
 | `spec/capabilities/numeric-model.md` | §4, §5 |
 | `spec/capabilities/collections-and-text.md` | §4, §5 |
+| `spec/capabilities/value-interchange.md` | §4, §8 |
 | `spec/capabilities/modules-and-namespaces.md` | §2, §7 |
 | `spec/capabilities/metaprogramming.md` | §3, §13 |
 | `spec/capabilities/self-hosting-and-bootstrap.md` | §10, §11, §15 |
@@ -36,6 +37,7 @@
 | `spec/capabilities/conformance-gate.md` | §14 |
 | `spec/capabilities/build-modes.md` | §15 |
 | `spec/capabilities/tooling-and-lsp.md` | §10, §13 |
+| `spec/capabilities/debug-information.md` | §7, §13 |
 | `spec/capabilities/agent-authoring.md` | §3, §13 |
 | `spec/capabilities/units-of-measure.md` | §5, §12 |
 | `spec/bootstrap.md` | §11, §15 |
@@ -47,16 +49,16 @@
 | §1 The one idea | constitution.md |
 | §2 Why Cadenza exists | constitution.md; modules-and-namespaces.md |
 | §3 Source, programs, and the canonical form | ast-encoding.md; source-tree-encoding.md; core-semantics.md; metaprogramming.md; agent-authoring.md |
-| §4 Determinism and bounded execution | constitution.md; deterministic-value-form.md; determinism-and-fuel.md; memory-and-resource-model.md; numeric-model.md; collections-and-text.md; core-semantics.md |
+| §4 Determinism | constitution.md; deterministic-value-form.md; determinism-and-fuel.md; memory-and-resource-model.md; numeric-model.md; collections-and-text.md; core-semantics.md; value-interchange.md |
 | §5 Types | constitution.md; component-abi.md; type-system.md; numeric-model.md; collections-and-text.md; units-of-measure.md |
 | §6 Capabilities and no ambient authority | constitution.md; component-abi.md; host-interface-binding.md; capabilities-and-effects.md |
-| §7 Derivation and reproducibility | constitution.md; source-tree-encoding.md; reproducible-derivation.md; build-tool-interface.md; modules-and-namespaces.md; compiler-pipeline.md |
-| §8 The component boundary | component-abi.md; host-interface-binding.md |
+| §7 Derivation and reproducibility | constitution.md; source-tree-encoding.md; reproducible-derivation.md; build-tool-interface.md; modules-and-namespaces.md; compiler-pipeline.md; debug-information.md |
+| §8 The component boundary | component-abi.md; host-interface-binding.md; value-interchange.md |
 | §9 Cadenza as a replaceable build tool | build-tool-interface.md |
 | §10 One executable semantics | constitution.md; core-semantics.md; self-hosting-and-bootstrap.md; self-hosting-surface.md; compiler-pipeline.md; tooling-and-lsp.md |
 | §11 The executable-semantics corpus as oracle | constitution.md; core-semantics.md; self-hosting-and-bootstrap.md; self-hosting-surface.md; bootstrap.md |
 | §12 Progressive verification | constitution.md; capabilities-and-effects.md; verification-layers.md; property-based-testing.md; units-of-measure.md |
-| §13 Authored for agents | constitution.md; metaprogramming.md; diagnostics.md; tooling-and-lsp.md; agent-authoring.md |
+| §13 Authored for agents | constitution.md; metaprogramming.md; diagnostics.md; tooling-and-lsp.md; agent-authoring.md; debug-information.md |
 | §14 Conformance by two gates | constitution.md; compiler-pipeline.md; conformance-gate.md |
 | §15 Self-regeneration: the flywheel | constitution.md; self-hosting-and-bootstrap.md; self-hosting-surface.md; bootstrap.md; build-modes.md |
 | §16 What earlier generations taught | (descriptive; served by `spec/learnings/`) |

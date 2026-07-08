@@ -25,13 +25,25 @@ requiring that one exist and be respected.
 
 The compiler MUST receive the program as an AST value obtained via quote or decode from the binary form.
 
-The compiler MUST emit instructions as AST sum type values, not as string-tagged pseudo-structures.
+The compiler MUST represent the instructions it emits as values of a typed sum type — the AST sum or a dedicated instruction sum — deconstructible by pattern matching, not as string-tagged pseudo-structures, so that an instruction is inspected like any other Cadenza value rather than by matching on a string tag.
 
-The compiler MUST serialize instruction AST values to bytes through a recursive function operating on the AST sum type, so that instruction representation is deconstructible by pattern matching like any other Cadenza value.
+The compiler MUST serialize instruction values to bytes through a recursive function that pattern-matches the instruction sum type exhaustively over its variants, so that an instruction variant the serializer does not handle is a compile-time error rather than a silent fall-through.
 
-### The Compiler Constructs Instructions Via Quasiquote
+### The Compiler Resolves Names Before It Selects Instructions
 
-The compiler MUST use quasiquote to construct instruction AST values programmatically, so that instruction-building code is readable and maintainable rather than a wall of manual AST constructor calls.
+The compiler MUST lower the AST to an intermediate representation in which every name reference is resolved to the binding it denotes before it selects the instructions to emit, so that instruction selection reads a resolved binding rather than searching a scope.
+
+The compiler MUST determine the handler that discharges each performed effect operation from the structure of the resolved intermediate representation, so that the discharging handler of an operation is fixed before instruction selection rather than by state accumulated while instructions are emitted.
+
+### Emission Serializes A Lowered Representation
+
+The compiler MUST perform name resolution, type checking, and each transformation it applies to a program as a transformation of its intermediate representation rather than as an effect of emitting instruction bytes.
+
+The step that emits instruction bytes MUST consume an already-lowered representation and MUST NOT itself resolve a name, decide a type, or choose an effect's handler, so that emission is the serialization of decisions already made.
+
+### The Compiler Constructs AST Values Via Quasiquote
+
+The compiler MUST use quasiquote to construct the AST values it builds programmatically — in its frontend and its macro layer, where the values it constructs are themselves program syntax — so that AST-construction code is readable and maintainable rather than a wall of manual AST constructor calls, while a dedicated instruction sum is built by ordinary constructors and pattern-matched to bytes.
 
 ## Phases
 

@@ -238,6 +238,30 @@
   (input  ,x)
   (error  CDZ0401))
 
+; An `unquote` nested inside a PLAIN `quote` is still outside any quasiquote context — a `(quote …)`
+; body is inert data, not a selective-evaluation template. metaprogramming.md #Quote Produces An AST
+; Value: "(quote <expr>) MUST evaluate to an AST value representing the structure of <expr>, WITHOUT
+; evaluating <expr> itself"; #Quasiquote Constructs AST With Selective Evaluation: "Unquote and
+; unquote-splicing OUTSIDE a quasiquote context MUST be a syntax error." So `(quote (g ,x))` must NOT
+; evaluate `,x` — it is exactly the "unquote outside quasiquote" the bare `,x` case above pins, one
+; layer of quote deep, and MUST be rejected CDZ0401 (or preserved inert), NEVER evaluated. A compiler
+; that treats the plain-quote nesting level as an active quasiquote level silently EVALUATES `,x` under
+; `quote`, making `(quote (g ,x))` behave identically to the quasiquote `` `(g ,x) `` — a `quote` that
+; is not inert, contradicting #Quote Produces An AST Value. (The companion arity leak: `(quote (unquote
+; 1 2))` must be rejected CDZ0201 like `(quasiquote (unquote 1 2))`, not silently truncated to
+; `(Ast.Int 1)` — the arity check the quasiquote path enforces applies under plain quote too.)
+
+(case "an unquote nested inside a plain quote is a syntax error, not an active unquote"
+  (doc    "`(quote (g ,x))` places an unquote inside a PLAIN quote — still outside any quasiquote
+           context (a quote body is inert data, not a selective-evaluation template), so it is the same
+           `,`-outside-quasiquote syntax error the bare `,x` case pins, rejected CDZ0401. metaprogramming.md
+           #Quote Produces An AST Value forbids `quote` from evaluating its body; a compiler that treats
+           plain quote as an active quasiquote level evaluates `,x` and makes `(quote (g ,x))` behave as
+           the quasiquote `` `(g ,x) ``. The bug: the active-unquote test fires at quote's own nesting
+           level rather than only inside a quasiquote (spec/learnings/2026-07-07-plain-quote-evaluated-a-nested-unquote-instead-of-treating-it-as-inert.md).")
+  (input  (quote (g ,x)))
+  (error  CDZ0401))
+
 ; `unquote` takes EXACTLY ONE operand — the expression to evaluate and embed. `(unquote 1 2)` supplies
 ; two, so it is malformed and the compiler MUST reject it (CDZ0201), never index just the first and
 ; drop the rest. The same arity check applies to an unquote encountered during quasiquote expansion as

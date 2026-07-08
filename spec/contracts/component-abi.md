@@ -47,6 +47,29 @@
 > representation concern behind the opaque handle, so no artifact requires re-derivation. **Migration:**
 > none — a runtime that carried a type tag internally would still satisfy the interface; the requirement
 > only forbids the interface from EXPOSING a type identity, which no version-3 interface did.
+>
+> **Contract version: 4.** Version 4 RETRACTS version 2's suspension outcome entirely and stops encoding
+> a trap as a result arm: the component's exported entry is a **plain function `input -> output`** whose
+> signature carries the program's declared result type and nothing else — no suspension arm, no injected
+> trap arm, no resume parameter (§The Entry Is A Plain Function). Two consequences: (1) A host call is an
+> ordinary imported-function call that returns its response; how the host resolves it — synchronously, by
+> suspending a fiber and resuming in place, or by tearing the instance down and replaying from a response
+> log — is host runtime policy the ABI does not encode, the language's only cross-boundary requirement
+> being determinism (capabilities-and-effects.md §A Host Call Returns A Response; §A Run Is A Deterministic
+> Function Of Its Input And Responses). (2) A trap remains the internal halt for unexpected conditions
+> (division by zero, `expect` on absence, a host function that aborts the run), but it is wasm's
+> **out-of-band** halt the embedder observes when it invokes the entry — not a variant the component's
+> interface declares, where it would be redundant with that ambient channel. **A host-delegated effect
+> therefore appears as its WIT import contract verbatim:** an operation `(op nm (-> P… R))` becomes exactly
+> `nm: func(p: P…) -> R` in an imported interface, with the compiler injecting no error arm, no state, and
+> no extra parameter (§A Host-Delegated Operation Imports Verbatim). If an operation's own declared result
+> is fallible, that fallibility is in the operation's declared type and the program handles it — it is not
+> something the boundary adds. The v2 rationale (program carries no resume state, re-invokable from entry)
+> described one host strategy and is contradicted by fibers (which freeze the wasm stack, so the stack IS
+> the resume state); the language mandates neither. **Migration:** the entry's result loses the suspension
+> and trap arms, a boundary-representation change carrying a version increment; but both preceded any
+> deployed component, so no in-the-wild artifact requires re-derivation. A program that reaches no host
+> function keeps a plain `input -> output` entry, byte-identical to v1's normal-completion representation.
 
 ## Purpose And Scope
 
@@ -103,13 +126,15 @@ The entry's input and output MUST lower and lift across the boundary by the same
 
 The input over which a compiled program's behavior is compared to the recorded corpus semantics MUST be the input to the program's entry.
 
-### The Entry May Suspend On A Host Call
+### The Entry Is A Plain Function
 
-The entry's result MUST distinguish three outcomes — normal completion carrying the result value, a trap of a defined kind, and a suspension carrying the pending host call — so that a host call the run cannot resolve internally is returned to the host rather than blocked on inside the component.
+The entry's exported signature MUST be a plain function from the program's input type to its result type, carrying no additional outcome arm — no suspension outcome and no injected trap outcome — so that a run either returns its result value or halts out-of-band, and the interface declares nothing beyond `input -> output`.
 
-A suspension outcome MUST carry the identity of the pending host function and its arguments in their boundary representation, and nothing that identifies where in the program's execution the call arose, so that the continuation is the host's response log rather than a position recorded in the component.
+A trap MUST be an out-of-band halt the embedder observes when it invokes the entry — the wasm-level failure a partial operation or an aborting host function raises — rather than a variant the entry's result type declares, so that the internal trap mechanism (core-semantics.md §A Trap Halts Execution At A Defined Point) stays a run's terminal behavior and is not duplicated as a redundant arm of the interface.
 
-The host MUST resume a suspended run by re-invoking the entry with the same input, the run replaying to one host call further, so that the entry carries no resume parameter and re-invocation is the whole resume mechanism (capabilities-and-effects.md §Suspension Is Replay From The Host's Log).
+The entry MUST NOT carry a resume parameter and its result MUST NOT encode a pending host call or a position in the program's execution, so that how a host call suspends and resumes is host runtime policy the ABI does not represent (capabilities-and-effects.md §A Host Call Returns A Response) and the same emitted bytes serve a host that answers inline, one that suspends a fiber and resumes in place, and one that tears down and replays from a log.
+
+The host MUST NOT require the component to encode any resume state, so that whichever resumption strategy a host chooses is invisible to the emitted component and constrained only by the run's determinism (capabilities-and-effects.md §A Run Is A Deterministic Function Of Its Input And Responses).
 
 ## Boundary Memory Layout
 
@@ -165,7 +190,7 @@ A runtime value that crosses between a program and the value-heap runtime MUST c
 
 The program MUST NOT dereference or interpret a runtime handle, so that the acyclic reference-counted heap the runtime owns is not aliased by another linear memory and the handle is a capability-free token rather than a pointer into shared state.
 
-A runtime handle MUST be meaningful only within the single run and runtime instance that produced it, so that a handle is never part of a program's durable continuation (capabilities-and-effects.md §A Durable Continuation Is Canonical Data) and a resumed or replayed run reconstructs its values through the runtime rather than by carrying a handle across the boundary.
+A runtime handle MUST be meaningful only within the single run and runtime instance that produced it, so that a handle never escapes the run that produced it and a host that resumes a run by replaying it reconstructs the run's values through the runtime rather than by carrying a handle across the boundary (the handle is not durable state the ABI transports; whether and how a host replays is host policy — capabilities-and-effects.md §A Run Is A Deterministic Function Of Its Input And Responses).
 
 ### A Compound Result Is Rendered By Compiler-Emitted Code
 

@@ -66,6 +66,12 @@
   (input  (| 1 2.0))
   (error  CDZ0301))
 
+(case "bitwise XOR of an integer and a float does not silently promote"
+  (doc    "`(^ 1 2.0)` applies bitwise XOR to an Int64 and a Float64, rejected (CDZ0301). Pins
+           no-promotion for `^`, the third bitwise operator alongside `&` and `|`.")
+  (input  (^ 1 2.0))
+  (error  CDZ0301))
+
 (case "a left shift by a floating-point count does not silently promote"
   (doc    "`(<< 1 2.0)` supplies a Float64 shift count where a shift count is an Int64 bit position —
            a numeric-type mismatch rejected (CDZ0301), not a coerced `<< 2`. Pins no-promotion for the
@@ -541,6 +547,19 @@
   (input  (| 42 128))
   (output (: 170 Int64)))
 
+(case "bitwise XOR toggles bits"
+  (doc    "`(^ 12 10)` = 6: XOR sets each result bit where exactly one operand's bit is set (1100 ^ 1010
+           = 0110). The third bitwise operator alongside `&`/`|`, over Int64. XOR is its own inverse —
+           `(^ (^ a k) k)` = a — which a compiler uses for cheap toggling / masking.")
+  (input  (^ 12 10))
+  (output (: 6 Int64)))
+
+(case "bitwise XOR is its own inverse"
+  (doc    "`(^ (^ 42 255) 255)` = 42: XOR-ing twice by the same key returns the original value. Pins the
+           involution the single `(^ 12 10)` case cannot — a wrong opcode (say AND) would not round-trip.")
+  (input  (^ (^ 42 255) 255))
+  (output (: 42 Int64)))
+
 (case "arithmetic right shift"
   (doc    "The compiler needs right shift for LEB128 encoding: (>> n 7) shifts n right by 7 bits,
            extracting the next group. Arithmetic shift preserves sign for signed LEB128.")
@@ -670,6 +689,90 @@
             (def (sh a b) (>> a b))
             (def (main) (sh 256 64))))
   (trap   "integer overflow"))
+
+; --- Checked and wrapping arithmetic: the two DEFINED non-trapping overflow outcomes ----------------
+; The default `+`/`-`/`*` TRAP on overflow (the checked-Int64 default, above). numeric-model.md #Overflow
+; Is Defined admits a defined VALUE outcome too — offered here as explicit Int64 methods that never trap:
+;   `Int64.checked-add/sub/mul : (Int64, Int64) -> Option<Int64>` — the exact result when it fits,
+;      `(None unit)` on overflow (the fallible companion of the trapping operator);
+;   `Int64.wrapping-add/sub/mul : (Int64, Int64) -> Int64` — two's-complement wraparound modulo 2^64.
+; Both are OPT-IN by name at the call site (an author who writes `+` still gets the trap), so overflow is
+; never silent. The compiler reaches for `wrapping-*` where modular arithmetic is intended (hashing, LEB
+; round-trips) and `checked-*` where it must branch on overflow without trapping.
+
+(case "checked addition yields Some of the sum when it fits"
+  (doc    "`(Int64.checked-add 20 22)` = `(Some 42)`: the result is in range, so checked addition
+           returns it wrapped in `Some` (numeric-model.md #Overflow Is Defined — a defined value
+           outcome). The fallible companion of `+`, which would compute the same 42 but trap on
+           overflow rather than reporting it.")
+  (input  (Int64.checked-add 20 22))
+  (output (: (Some 42) (Option Int64))))
+
+(case "checked addition yields None on overflow instead of trapping"
+  (doc    "`(Int64.checked-add Int64.max 1)` = `(None unit)`: the sum overflows the Int64 range, so
+           checked addition reports the overflow as `None` rather than trapping (contrast the `+`
+           default at #overflow traps, `(+ Int64.max 1)` → trap). Pins the defined non-trapping overflow
+           outcome numeric-model.md #Overflow Is Defined admits alongside the trap.")
+  (input  (Int64.checked-add Int64.max 1))
+  (output (: (None unit) (Option Int64))))
+
+(case "checked multiplication reports overflow as None"
+  (doc    "`(Int64.checked-mul Int64.max 2)` = `(None unit)`: the product is out of range. Pins checked
+           multiplication's overflow detection (distinct from addition's — it is the `r/a != b` check),
+           and that a=0 and the a=-1×MIN edge are handled: `(Int64.checked-mul 6 7)` below is `(Some 42)`.")
+  (input  (Int64.checked-mul Int64.max 2))
+  (output (: (None unit) (Option Int64))))
+
+(case "checked multiplication yields Some when it fits"
+  (doc    "`(Int64.checked-mul 6 7)` = `(Some 42)`: the in-range companion the overflow case above needs
+           — a correct check must NOT report overflow here (a decline or a wrong `r/a` check would).")
+  (input  (Int64.checked-mul 6 7))
+  (output (: (Some 42) (Option Int64))))
+
+(case "a checked result is consumed by matching its Option at run time"
+  (doc    "The idiom a compiler writes: compute a checked sum of RUNTIME operands and branch on overflow
+           without trapping. `(add-or a b d)` returns the sum when it fits, else the default `d`:
+           `(add-or 20 22 -1)` = 42 (fits), `(add-or Int64.max 1 -1)` = -1 (overflowed → None → d).
+           Their sum is 41. Pins checked arithmetic flowing as a runtime `Option<Int64>` matched by its
+           `Some`/`None` arms — the fallible-arithmetic control flow, not just the folded constant.")
+  (input  (module m
+            (def (add-or a b d)
+              (match (Int64.checked-add a b)
+                ((Some v) v)
+                ((None _) d)))
+            (def (main) (+ (add-or 20 22 -1) (add-or Int64.max 1 -1)))))
+  (output (: 41 Int64)))
+
+(case "wrapping addition wraps modulo two to the sixty-fourth on overflow"
+  (doc    "`(Int64.wrapping-add Int64.max 1)` = Int64.min (-9223372036854775808): wrapping addition does
+           NOT trap on overflow — it wraps in two's complement, so MAX + 1 becomes MIN (numeric-model.md
+           #Overflow Is Defined, the modular value outcome). Contrast `(+ Int64.max 1)` → trap. This is
+           the modular arithmetic a hash or a fixed-width round-trip wants.")
+  (input  (Int64.wrapping-add Int64.max 1))
+  (output (: -9223372036854775808 Int64)))
+
+(case "wrapping addition of in-range operands is ordinary addition"
+  (doc    "`(Int64.wrapping-add 20 22)` = 42: with no overflow, wrapping addition equals `+`. The
+           in-range companion pinning that wrapping only differs from `+` at the overflow boundary.")
+  (input  (Int64.wrapping-add 20 22))
+  (output (: 42 Int64)))
+
+(case "wrapping multiplication wraps rather than trapping"
+  (doc    "`(Int64.wrapping-mul Int64.max 2)` = -2: MAX·2 = 2^64−2 ≡ −2 (mod 2^64), so wrapping
+           multiplication returns −2 rather than trapping like `*`. Pins wrapping for the multiply, whose
+           overflow is more than a single carry bit.")
+  (input  (Int64.wrapping-mul Int64.max 2))
+  (output (: -2 Int64)))
+
+(case "wrapping arithmetic over runtime operands wraps at run time"
+  (doc    "The runtime companion: `(w a b)` = `(Int64.wrapping-add a b)` over parameters wraps on the
+           i64.add path (wasm's add wraps; no overflow guard), so `(w Int64.max 1)` = Int64.min — the
+           same wrap the const fold gives. Pins that wrapping is emitted as the raw i64 op, not the
+           checked/trapping one.")
+  (input  (module m
+            (def (w a b) (Int64.wrapping-add a b))
+            (def (main) (w Int64.max 1))))
+  (output (: -9223372036854775808 Int64)))
 
 (case "greater-than comparison"
   (doc    "The compiler uses > for bounds checking and conditional logic.")

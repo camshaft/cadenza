@@ -4,10 +4,11 @@
 > decision and the requirements a choice must satisfy). It is the concrete, technology-named
 > realization of the execution-model requirements the specification states technology-neutrally: the
 > runnable form of a program is a content-addressed binary component that imports only its declared
-> host operations, runs behind a versioned host interface, executes with no undeclared
-> nondeterminism, and is bounded by a deterministic resource measure (constitution IV, V, VI;
-> host-interface-binding.md; determinism-and-fuel.md; build-tool-interface.md). It is a declared
-> choice, not a requirement.
+> host operations, runs behind a versioned host interface, and executes with no undeclared
+> nondeterminism (constitution IV, VI; host-interface-binding.md; determinism-and-fuel.md;
+> build-tool-interface.md). Bounding a run's execution is not a language requirement (constitution
+> Principle V is retired, Amendment 0.7.0); the runtime engine this choice names provides it as an
+> operational facility. It is a declared choice, not a requirement.
 
 ## The requirements this choice must satisfy (from the spec — do not weaken)
 
@@ -18,17 +19,20 @@
 - **The compiler introduces no undeclared nondeterminism; a source of nondeterminism is reachable
   only through a declared capability** (constitution III; host-interface-binding.md §"Capability
   Honesty"; determinism-and-fuel.md).
-- **Bounded termination by a deterministic resource measure** (constitution V;
-  determinism-and-fuel.md §"Resource Accounting").
+
+Bounding a run's execution is deliberately **not** in this list: it is not a language requirement any
+choice must satisfy (constitution Principle V, retired by Amendment 0.7.0). This choice's runtime engine
+nonetheless provides it as an operational facility, recorded in the table below, because a real
+environment must be able to meter and interrupt an untrusted run.
 
 ## The default choice
 
 | Concern | Default | Why it satisfies the requirements |
 |---|---|---|
 | Component format | **WebAssembly Component Model** | Sandboxed, binary, content-addressable; imports are explicit and typed (maps directly to capability-scoping); no ambient authority by construction. |
-| Runtime engine | an **embeddable component-model runtime** (default: **Wasmtime**) | Embeddable; supports the component model; supports a deterministic configuration (no wall-clock or entropy imports bound) and a deterministic resource bound (fuel metering). |
-| Determinism config | execution **fuel-metered**; deterministic floating-point mode on; which nondeterministic capabilities a component may hold is left to the running system's per-role policy | The compiler introduces no undeclared nondeterminism and surfaces every requested capability; the running system decides from the manifest what to bind (for example, binding no clock or entropy for a log-folding role). |
-| Resource measure | **fuel** (a deterministic per-instruction/per-call unit) | The deterministic resource measure the determinism-and-fuel contract requires; exhaustion halts at a defined point. |
+| Runtime engine | an **embeddable component-model runtime** (default: **Wasmtime**) | Embeddable; supports the component model; supports a deterministic configuration (no wall-clock or entropy imports bound) and its own resource metering (fuel), which the language does not require but the environment provides. |
+| Determinism config | deterministic floating-point mode on; which nondeterministic capabilities a component may hold is left to the running system's per-role policy | The compiler introduces no undeclared nondeterminism and surfaces every requested capability; the running system decides from the manifest what to bind (for example, binding no clock or entropy for a log-folding role). |
+| Resource metering | **fuel**, owned by the engine — the runtime instruments the emitted wasm at compile time (the compiler emits no measure), and the host budgets it and decides on exhaustion whether to grant more, yield the run to other work, or abort it | An operational facility of the environment, not a language requirement (constitution Principle V is retired). The gate host meters with a deterministic operation-count budget so an unbounded corpus program cannot hang the gate; a real host may pick any policy, including wall-clock, because whether a run completes is not observable behavior. Refuel is `set_fuel` on resume; live yield without recompute is async-fiber suspension (`fuel_async_yield_interval` + `call_async`); abort is letting the out-of-fuel trap unwind or dropping the resumed future. |
 | Host interface | a **versioned WIT-shaped world** the target defines; a component names its exact version explicitly and a runtime refuses any other | The mechanism, not a fixed vocabulary: a component imports the WIT-typed host functions its manifest enumerates from the world it names (host-interface-binding.md §Imports Are WIT-Typed Host Functions). |
 | Host functions | **none fixed by the language**; a target's world defines its own | Which host functions exist is the target's concern (host-interface-binding.md §Which Host Functions Exist Is The Target's Concern). The illustrative `example-host` world below is one target's set, not the language's — a program that imports none of them is pure (an empty manifest). |
 
@@ -125,7 +129,9 @@ boundary by the pinned rules.
 ## What is frozen vs. chosen
 
 - **Frozen (requirements, in the spec):** determinism, capability-binding, content-addressed binary
-  component, bounded termination, versioned interface. These do not change with the engine.
-- **Chosen (here, replaceable):** the engine and the concrete determinism configuration. The
-  component format and the `cadenza-host/N` interface version are a coordinated change if altered,
-  because derived components bind to them.
+  component, versioned interface. These do not change with the engine.
+- **Chosen (here, replaceable):** the engine, the concrete determinism configuration, and how a run's
+  execution is metered and bounded — bounding is an operational facility of the environment, not a
+  language requirement (constitution Principle V, retired by Amendment 0.7.0), so a different engine may
+  meter differently or not at all. The component format and the `cadenza-host/N` interface version are a
+  coordinated change if altered, because derived components bind to them.

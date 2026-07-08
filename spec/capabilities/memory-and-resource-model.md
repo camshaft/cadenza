@@ -3,8 +3,7 @@
 > **CAPABILITY SPECIFICATION.** Behavior and invariants, free of implementation detail. This
 > document defines how a program manages memory and how its resource use is accounted, without a
 > garbage collector and with deterministic cleanup. Requirements realize
-> [Core Principle III](../../constitution.md) and [Core Principle V](../../constitution.md) and
-> trace to [overview §4](../overview.md).
+> [Core Principle III](../../constitution.md) and trace to [overview §4](../overview.md).
 >
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence carrying
 > exactly one obligation, under a stable heading.
@@ -12,10 +11,9 @@
 ## Purpose And Scope
 
 This capability fixes the memory and resource discipline of a Cadenza program. It requires that the
-runnable form need no tracing garbage collector, that the point at which a value's storage is
-released be a deterministic function of the source, and that allocation be accountable against the
-deterministic resource measure. It further fixes the property that makes those guarantees
-realizable without a collector: because a value's contents are fixed when it is created, the
+runnable form need no tracing garbage collector and that the point at which a value's storage is
+released be a deterministic function of the source. It further fixes the property that makes those
+guarantees realizable without a collector: because a value's contents are fixed when it is created, the
 runtime value heap a program forms is acyclic, and over an acyclic heap a reference-count discipline
 reclaims every value with no cycle left uncollected — so the runnable form can carry its own
 allocation and reclamation and the runtime need provide only raw memory. It states these as
@@ -43,8 +41,6 @@ The compiler MUST NOT emit a construct that forms a cycle among heap values, so 
 
 The runnable form of a program MUST carry its own allocation and reclamation of values, so that the runtime it targets need provide only raw memory rather than a memory manager.
 
-The reclamation the runnable form carries MUST account each allocation and release against the deterministic resource measure, so that carrying its own reclamation does not escape the bound on resource use.
-
 ## Deterministic Cleanup
 
 ### Cleanup Is Source-Determined
@@ -53,19 +49,13 @@ The point at which a value's storage is released MUST be a deterministic functio
 
 A value's storage MUST be released after its last use in a way the executable semantics defines, rather than at an unspecified later time.
 
-## Bounded Allocation
+## Retained Storage
 
-### Allocation Is Accountable
+### Retained Storage Is What A Value's Representation Holds Live
 
-Allocation performed by a running component MUST be accountable against the deterministic resource measure.
+The storage a value retains MUST be the storage its representation actually holds live, so that a value that shares another value's storage keeps the shared storage retained rather than hidden.
 
-A program MUST NOT be able to allocate unboundedly without consuming the deterministic resource measure.
-
-### Retained Storage Is Accounted For What It Holds Live
-
-The storage a value retains MUST be accounted against the deterministic resource measure by the storage its representation actually holds live, so that a value that shares another value's storage keeps the shared storage accounted rather than hidden.
-
-A program MUST be able to derive from a value another value equal to it whose storage is independent of the storage the value was derived from, so that a value retaining a small part of a larger value's storage can release the larger value's storage, changing resource use without changing the value.
+A program MUST be able to derive from a value another value equal to it whose storage is independent of the storage the value was derived from, so that a value retaining a small part of a larger value's storage can release the larger value's storage, changing storage use without changing the value.
 
 ## Aliasing
 

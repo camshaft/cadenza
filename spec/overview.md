@@ -26,9 +26,8 @@ Three consequences define the whole architecture:
   source. A defect is fixed in the source or the specification and recompiled, never by editing a
   component.
 - **The properties that make a program trustworthy are guaranteed by construction, not by
-  convention.** Determinism, capability-safety, and bounded termination are not features a careful
-  author opts into; they are the floor the language stands on, enforced by the environment a program
-  compiles to.
+  convention.** Determinism and capability-safety are not features a careful author opts into; they
+  are the floor the language stands on, enforced by the environment a program compiles to.
 - **The specification is the durable artifact; the compiler is disposable.** The compiler is a
   regenerable projection of these specifications. A wrong design is fixed by reworking the spec and
   regenerating, not by patching a live compiler — which is safe because the source of every program
@@ -42,7 +41,7 @@ runnable form of that behavior is a sandboxed, content-addressed component deriv
 The environment that runs such behavior can only load, verify, and run components — it contains no
 compiler. Cadenza is the replaceable, capability-gated tool that turns source into a conformant
 component, and is itself such a component. The constraints that environment places on the behavior
-it runs — determinism, capability-safety, bounded termination, reproducible derivation, content
+it runs — determinism, capability-safety, reproducible derivation, content
 addressing — are the constraints this language is designed around. They are not a burden Cadenza
 tolerates; they are the specification it fulfills.
 
@@ -61,12 +60,13 @@ tree directly; a human reads and writes it through whichever syntax they prefer;
 same binary AST. The tree carries everything a program means to keep, including comments and
 documentation, so nothing is lost by storing the tree rather than a rendering.
 
-## 4. Determinism and bounded execution
+## 4. Determinism
 
 A compiled component produces byte-identical output given the same input and the same responses to
-its declared capabilities, on every conforming runtime, and its execution is bounded by a
-deterministic resource measure rather than by wall-clock time. Cadenza's discipline is not to forbid
-nondeterminism but to make it **legible and never latent**: a program obtains a clock, randomness, or
+its declared capabilities, on every conforming runtime. Bounding a run's execution — metering it,
+interrupting it, and deciding whether to let it complete — is a concern of the environment that hosts
+a component rather than a property the language or the compiler carries. Cadenza's discipline is not to
+forbid nondeterminism but to make it **legible and never latent**: a program obtains a clock, randomness, or
 any other outside influence only through a capability it declares, so its determinism is readable from
 its manifest — a program that declares no such capability is deterministic, and a program that declares
 one has said so where anyone can see it. The compiler's own contribution is to add **none of its own**:

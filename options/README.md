@@ -66,9 +66,13 @@ any future generation.
 | [`symbol-interning`](./symbol-interning/) | interned-string-symbol | collections-and-text.md; type-system.md; memory-and-resource-model.md |
 | [`set-collection`](./set-collection/) | persistent-ordered-set | collections-and-text.md; type-system.md; deterministic-value-form.md |
 | [`char-literal-syntax`](./char-literal-syntax/) | hash-scalar-literal | collections-and-text.md; diagnostics.md |
+| [`byte-string-literal`](./byte-string-literal/) | b-string | collections-and-text.md; code-shape.md |
 | [`verification-strategy`](./verification-strategy/) | liquid-refinements-extrinsic-proofs | verification-layers.md; property-based-testing.md |
 | [`units-of-measure`](./units-of-measure/) | erased-compile-time-quantity | units-of-measure.md; numeric-model.md; verification-layers.md |
 | [`module-pragmas`](./module-pragmas/) | keyed-registry-strict | modules-and-namespaces.md; numeric-model.md |
+| [`record-tuple-operations`](./record-tuple-operations/) | namespaced-row-operations | type-system.md |
+| [`value-interchange`](./value-interchange/) | schema-hashed-envelope | value-interchange.md; deterministic-value-form.md; ast-encoding.md |
+| [`debug-information`](./debug-information/) | dwarf-in-wasm-custom-sections | debug-information.md; reproducible-derivation.md |
 
 ## Change discipline
 

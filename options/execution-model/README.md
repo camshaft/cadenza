@@ -1,8 +1,8 @@
 # Decision — Execution Model
 
 **The decision.** The concrete component format, runtime engine, determinism configuration, resource
-measure, and host interface that realize the execution-model requirements the specification states
-technology-neutrally (constitution IV, V, VI; host-interface-binding.md; determinism-and-fuel.md;
+metering, and host interface that realize the execution-model requirements the specification states
+technology-neutrally (constitution IV, VI; host-interface-binding.md; determinism-and-fuel.md;
 build-tool-interface.md).
 
 **Requirements any choice must satisfy (from the spec — do not weaken):**
@@ -10,7 +10,10 @@ build-tool-interface.md).
 - Imports mirror the manifest exactly; the compiler adds no undeclared capability (constitution IV;
   host-interface-binding.md §Capability Honesty).
 - The compiler introduces no undeclared nondeterminism (constitution III; determinism-and-fuel.md).
-- Bounded termination by a deterministic resource measure (constitution V).
+
+Bounding a run's execution is **not** a requirement any choice must satisfy (constitution Principle V,
+retired by Amendment 0.7.0); a choice's engine provides resource metering as an operational facility,
+recorded as a declared default rather than required here.
 
 ## Choices
 

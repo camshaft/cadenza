@@ -19,6 +19,30 @@
   (input  (+ (let ((x 2)) x) (let ((x 1)) x)))
   (output (: 3 Int64)))
 
+; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
+; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
+; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`
+; binding named `list` shadows the built-in list constructor for the extent of its scope, so `(list 3 4)`
+; in its body applies the bound function (the nearest binding), yielding 7 — not the built-in list value
+; `(list 3 4)`. A compiler that dispatches an application by matching the head STRING against its built-in
+; forms before consulting the environment never sees the shadowing binding in head position: it resolves
+; a bare `list` reference to the binding (value position) but silently prefers the built-in when `list`
+; heads an application — resolving one name two ways by syntactic position, which #Binding Is Lexical
+; forbids. (The value-position companion — `(let ((list 99)) list)` = 99 — already holds; this pins the
+; head-position half.)
+
+(case "a let binding shadows a built-in constructor name in application-head position"
+  (doc    "`(let ((list (fn (a b) (+ a b)))) (list 3 4))` binds `list` to a function, then applies it in
+           head position: `list` MUST resolve to the nearest enclosing binding (core-semantics.md #Binding
+           Is Lexical), so `(list 3 4)` = 7, NOT the built-in list value `(list 3 4)`. Pins that
+           application-head resolution consults the lexical environment before the built-in constructor
+           forms — a compiler matching the head name `list` against its built-ins first ignores the
+           shadowing binding and builds a two-element list, resolving `list` to the binding in value
+           position but to the built-in in head position (the same name, two ways). A generation that does
+           not realize a shadowing built-in name declines rather than choosing the built-in.")
+  (input  (let ((list (fn (a b) (+ a b)))) (list 3 4)))
+  (output (: 7 Int64)))
+
 ; --- The bindings of one `let` take effect in order (let*, not parallel) --------------------
 ; core-semantics.md #The Bindings Of One `let` Take Effect In Order: each binding's initializer sees
 ; the bindings written before it in the SAME let, so `(let ((x 1) (y (+ x 1))) y)` is 2 — `y`'s
@@ -391,6 +415,35 @@
   (input  (if true 1 3.5))
   (error  CDZ0201))
 
+; The branch-type-agreement check must compare branches STRUCTURALLY, not only by coarse kind: two
+; branches that are both tuples but of DIFFERENT ARITY are different types (a tuple's arity is part of
+; its type, type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix), so the conditional
+; is ill-typed even though both branches are "a tuple." `(if true (tuple 1 2) (tuple 3 4 5))` pairs a
+; two-tuple with a three-tuple; the whole `if` has no single type, so the compiler MUST reject it
+; (CDZ0201) — a check that compares only the branches' KIND (tuple vs tuple) and not their arity accepts
+; the mismatch and returns whichever branch the constant condition selects, an unevaluated branch carrying
+; a deferred type error (core-semantics.md #Conditionals Evaluate One Branch — every branch type-checked).
+; A generation that does not yet compare branch shapes structurally declines rather than accepting.
+
+(case "a conditional with two tuple branches of different arity is a type error"
+  (doc    "`(if true (tuple 1 2) (tuple 3 4 5))` pairs a two-element tuple with a three-element tuple —
+           different types, since a tuple's arity is part of its type. The whole conditional has no single
+           type, so it is ill-typed and the compiler MUST reject it (CDZ0201), exactly as the Int/Bool and
+           compound/scalar branch-mismatch cases above. Pins that branch-type agreement is checked
+           STRUCTURALLY, not only at coarse kind (both branches being 'a tuple' is not enough) — a compiler
+           comparing only branch kinds accepts this and returns the two-tuple, an ill-typed program run.")
+  (input  (if true (tuple 1 2) (tuple 3 4 5)))
+  (error  CDZ0201))
+
+(case "a conditional with two tuple branches of different element type is a type error"
+  (doc    "`(if true (tuple 1 2) (tuple 1 true))` pairs `(Tuple Int64 Int64)` with `(Tuple Int64 Bool)` —
+           same arity but a different element type at position 1, so different types. The conditional is
+           ill-typed (CDZ0201), the element-type companion of the arity case above. Pins that the structural
+           branch-type comparison descends into a tuple's element types, not only its arity — the same
+           depth the list-element homogeneity check already applies.")
+  (input  (if true (tuple 1 2) (tuple 1 true)))
+  (error  CDZ0201))
+
 ; --- A conditional's condition must be a Bool --------------------------------------------
 ; core-semantics.md #Conditionals Evaluate One Branch: a conditional selects a branch by its
 ; condition, which is a Bool. A condition of any other type is ill-typed — the compiler MUST
@@ -708,6 +761,70 @@
            two-tuple `(tuple 1 2)` — a static shape mismatch, CDZ0201. Pins that BOTH too-many and
            too-few pattern elements are a type error, not a runtime non-match.")
   (input  (match (tuple 1 2) ((tuple a) a) (_ 0)))
+  (error  CDZ0201))
+
+; The tuple-pattern-arity rule applies RECURSIVELY, at every nesting depth, not only to the outermost
+; tuple pattern. core-semantics.md #Patterns Compose: a tuple pattern MUST admit any pattern in each of
+; its binder positions — its element "MAY itself be … a tuple pattern … matched recursively to any depth." So a
+; nested `(tuple b c d)` at a position whose scrutinee element is a two-tuple `(tuple 2 3)` is the same
+; wrong-arity shape mismatch the top-level cases above pin — a three-element tuple pattern can never
+; match a two-element tuple — and MUST be rejected CDZ0201, not silently fail and fall through to a
+; wildcard. A compiler that checks only the OUTERMOST tuple pattern's arity against the scrutinee's
+; (and not the arity of each nested tuple pattern against the corresponding nested scrutinee element)
+; lets the ill-typed nested arm slip past: `(match (tuple 1 (tuple 2 3)) ((tuple a (tuple b c d)) 9)
+; (_ 0))` runs to 0 (the arm silently not-matching) where it MUST reject, exactly the "silent non-match"
+; the flat cases forbid. A generation that does not yet check nested pattern arity declines rather than
+; running the program (reject-don't-miscompile).
+
+(case "a nested tuple pattern of the wrong arity is a type error"
+  (doc    "`(tuple a (tuple b c d))` is a tuple pattern whose second element is a three-element tuple
+           pattern; matched against `(tuple 1 (tuple 2 3))`, that nested pattern faces a two-element
+           tuple — a static shape mismatch, CDZ0201, exactly as the flat `(tuple a b c)` vs `(tuple 1 2)`
+           case above. The arity rule composes recursively (core-semantics.md #Patterns Compose — a tuple pattern's element MAY itself be a tuple
+           pattern, matched to any depth), so the nested arm is ill-typed and MUST be rejected, not
+           silently fail and fall through to the wildcard yielding 0. Pins that a compiler checking only
+           the OUTERMOST tuple pattern's arity does not let a nested wrong-arity pattern slip past as a
+           runtime non-match.")
+  (input  (match (tuple 1 (tuple 2 3)) ((tuple a (tuple b c d)) 9) (_ 0)))
+  (error  CDZ0201))
+
+; The recursion covers a nested LITERAL pattern's type too, not only a nested tuple's arity. A literal
+; pattern matches by equality, defined only WITHIN one type (core-semantics.md #Equality Is Structural),
+; so a literal pattern whose type differs from the value at its position can never match — CDZ0201 at the
+; top level (§"a literal pattern's type must match the scrutinee's"), and the same at every nested binder
+; position (core-semantics.md #Patterns Compose — a tuple pattern's element MAY itself be a literal pattern,
+; checked recursively). `(tuple true b)` puts a Bool literal `true` at position 0, whose scrutinee element
+; is the Int64 `1`; the arm is ill-typed and MUST be rejected, not silently fail to the wildcard yielding 0.
+
+(case "a nested literal pattern of the wrong type is a type error"
+  (doc    "`(tuple true b)` matched against `(tuple 1 2)` puts the Bool literal `true` at a position whose
+           scrutinee element is the Int64 `1` — a literal-pattern-type mismatch (core-semantics.md #Equality
+           Is Structural: equality is within one type), CDZ0201, exactly as the top-level `(match 5 (true 1)
+           …)` case is rejected. The rule composes to nested binder positions (core-semantics.md #Patterns
+           Compose), so the nested literal type is checked against the corresponding scrutinee element, not
+           only the outermost. Pins that a compiler checking only the top-level literal pattern's type does
+           not let a nested wrong-type literal slip past as a runtime non-match falling to the wildcard.")
+  (input  (match (tuple 1 2) ((tuple true b) 9) (_ 0)))
+  (error  CDZ0201))
+
+; The recursion must also enter a tuple pattern nested UNDER A CONSTRUCTOR pattern, not only one at the
+; arm's root. A constructor pattern's binder MAY itself be a tuple pattern (core-semantics.md #Patterns
+; Compose), so `(Some (tuple a b c))` carries a three-element tuple pattern in `Some`'s payload position.
+; Matched against `(Some (tuple 1 2))`, whose payload is a two-element tuple, that nested tuple pattern is
+; the same wrong-arity shape mismatch the flat and tuple-nested cases pin — CDZ0201 — reached through the
+; constructor's binder rather than a tuple element. A compiler whose shape check descends only through
+; tuple patterns (entering only when the arm's pattern is a `(tuple …)` at the root) never reaches a tuple
+; pattern sitting under a `Some`/`Ok`/user constructor, and lets the ill-typed arm slip past to a wildcard.
+
+(case "a wrong-arity tuple pattern nested under a constructor pattern is a type error"
+  (doc    "`(Some (tuple a b c))` carries a three-element tuple pattern in `Some`'s payload binder; matched
+           against `(Some (tuple 1 2))`, whose payload is a two-element tuple, the nested pattern faces a
+           two-tuple — a static arity mismatch (CDZ0201), the same rule as the tuple-nested and flat cases,
+           reached through a constructor's binder (core-semantics.md #Patterns Compose — a constructor
+           pattern's binder MAY itself be a tuple pattern, matched to any depth). Pins that the recursive
+           shape check enters a tuple pattern nested under a constructor pattern, not only one at the arm's
+           root, so the ill-typed arm is rejected rather than silently failing to the wildcard yielding 0.")
+  (input  (match (Some (tuple 1 2)) ((Some (tuple a b c)) 9) (_ 0)))
   (error  CDZ0201))
 
 ; A pattern's KIND must also match the scrutinee's kind, not only a tuple's arity: a tuple pattern

@@ -34,9 +34,8 @@ order-independence invariants) is a representation lie the language avoids. See
   (options/type-mapping/component-model-types.md). Adding it is an **additive** change (a value that
   previously had no boundary or canonical form), permitted without a contract version increment by
   deterministic-value-form.md §"Additive Evolution" and component-abi.md's additive-evolution clause.
-- The set's storage is accountable against the deterministic resource measure and lives on the
-  immutable acyclic value heap (memory-and-resource-model.md; the persistent-structure family the map
-  runtime already targets).
+- The set's storage lives on the immutable acyclic value heap (memory-and-resource-model.md; the
+  persistent-structure family the map runtime already targets).
 
 ## Choices
 

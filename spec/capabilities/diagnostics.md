@@ -38,6 +38,12 @@ Every diagnostic the compiler emits MUST carry a source span identifying the con
 
 Every diagnostic the compiler emits MUST name the rule or requirement it enforces so that an agent can trace the diagnostic to its cause.
 
+### Every Diagnostic Carries A Severity
+
+Every diagnostic the compiler emits MUST carry a severity that distinguishes an error, which denies a produced component, from a non-error such as a warning, which may accompany a produced component, so that a consumer decides from the diagnostic itself whether the outcome it reports is a failure.
+
+The severity a diagnostic carries MUST be independent of the diagnostic's kind, so that whether an outcome is a failure is read from the severity rather than inferred from whether the outcome is a rejection, a decline, or a trap.
+
 ## Determinism
 
 ### Diagnostics Are Emitted In A Deterministic Order

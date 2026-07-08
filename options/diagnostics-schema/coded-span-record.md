@@ -64,13 +64,19 @@ Diagnostic Has A Stable Code").
 | `CDZ0202` | a value used at a nominal type that is only structurally identical to its declared type | `spec/capabilities/type-system.md#user-types-are-declarable-as-nominal-or-structural` |
 | `CDZ0203` | an explicit annotation that conflicts with the type inference determines | `spec/capabilities/type-system.md#annotations-constrain-never-contradict` |
 | `CDZ0210` | a match whose patterns do not cover every value of the scrutinee's type | `spec/capabilities/core-semantics.md#matching-is-exhaustive-or-rejected` |
+| `CDZ0211` | a record row operation that would place two values under one field name — combining two records whose field sets share a name, or adding a field the operand record already contains — rejected so the combined record need not choose which value a shared field takes (the row-operation companion of the duplicate-field-literal case of `CDZ0201`) | `spec/capabilities/type-system.md#two-records-are-combined-only-when-their-field-sets-are-disjoint` |
+| `CDZ0212` | a record row operation that names a field the operand record does not contain — projecting onto, dropping, or updating an absent field — rejected so the operation cannot silently produce, no-op, or add a field the operand never held | `spec/capabilities/type-system.md#a-record-is-restricted-to-a-named-set-of-its-fields` |
 | `CDZ0220` | a binary form that is not byte-aligned or is otherwise ill-formed — bit-field widths that do not close a byte, a non-final unsized bytes segment, or a bit-field width that is not a compile-time constant | `options/binary-syntax/README.md` |
+| `CDZ0221` | a quote pattern that is ill-formed — an unquote-splicing `,@` subterm that is not the final element of its template, so it would match a variable-length gap flanked by a fixed tail | `options/quote-patterns/README.md` |
 | **`CDZ03xx` — numeric model** | | |
 | `CDZ0301` | an operation on two different numeric types without an explicit conversion | `spec/capabilities/numeric-model.md#numeric-types-do-not-silently-promote` |
 | `CDZ0302` | an integer type indexed by a width outside the admitted range — e.g. `(UInt 0)`, `(UInt 65)`, a negative width, or a non-natural width — a specialization of the compile-time-constraint rejection (type-system.md §"A Generic Constraint Is A Compile-Time Predicate Over Type-Values") for the integer width constructor | `spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width` |
 | `CDZ0303` | a `(pragma default-integer <T>)` module directive whose `<T>` is not an integer type the numeric model admits — e.g. a float, a rational, or a non-numeric type (the numeric-domain check on a well-formed directive, distinct from the structural `CDZ0602`) | `spec/capabilities/numeric-model.md#a-module-may-declare-its-default-integer-literal-type` |
 | **`CDZ04xx` — capabilities and effects** | | |
-| `CDZ0401` | a program that reaches a host operation its manifest does not enumerate | `spec/capabilities/capabilities-and-effects.md#undeclared-capability-is-a-compile-time-error` |
+| `CDZ0401` | an effect operation reached at a point with neither an enclosing handler for its effect nor an enclosing entrypoint delegation of it — so the effect would escape ungranted. This is the single "no home for a reached effect" rejection: it subsumes both the former reached-but-undelegated host operation and the former undischarged intra-program effect, which are one condition now that host-binding is an entrypoint routing decision rather than a declaration-time property | `spec/capabilities/capabilities-and-effects.md#an-ungranted-effect-is-a-compile-time-error` |
+| `CDZ0402` | *(merged into `CDZ0401`; retained as a reserved number.)* Formerly the undischarged intra-program effect, distinct from the reached-but-undeclared host operation. With host-binding relocated from the declaration to the entrypoint, the two collapsed into `CDZ0401` — an effect reached an entrypoint's top with no handler and no delegation. Not emitted | `spec/capabilities/capabilities-and-effects.md#an-ungranted-effect-is-a-compile-time-error` |
+| `CDZ0403` | a handler arm that names an operation the arm's effect does not declare, since an effect declaration is the closed set of its operations | `spec/capabilities/capabilities-and-effects.md#a-handler-arm-names-an-operation-its-effect-declares` |
+| `CDZ0404` | an entrypoint host delegation that names an effect the delegated computation never reaches, so the manifest would carry latent authority — a granted capability that is never exercised — rejected so the manifest is exactly the effects that escape, no more and no fewer | `spec/capabilities/capabilities-and-effects.md#host-delegation-is-an-entrypoints-prerogative` |
 | **`CDZ05xx` — verification layers (dimensional analysis, refinements, contracts, proofs)** | | |
 | `CDZ0501` | a combination of quantities whose dimensions are incompatible — adding, subtracting, or comparing quantities of unlike dimension, or annotating a quantity at a dimension the operation does not derive | `spec/capabilities/units-of-measure.md#dimensional-mismatch-is-an-error` |
 | **`CDZ06xx` — module directives (pragmas)** | | |
@@ -103,4 +109,8 @@ the `(compiler (error …))` clauses the seed produces
 
 The three codes the pre-existing corpus already references — `CDZ0202`, `CDZ0210`, `CDZ0301` — keep
 their numbers; the registry adds `CDZ0101`, `CDZ0201`, `CDZ0203`, and `CDZ0401` for the rejections the
-ignition witnessing cases exercise.
+ignition witnessing cases exercise. `CDZ0402` is a **reserved, no-longer-emitted** number: it was the
+undischarged-intra-program-effect rejection until host-binding moved from an effect's declaration to an
+entrypoint's delegation, at which point it merged into `CDZ0401` (an effect reached an entrypoint's top
+with neither a handler nor a delegation). `CDZ0404` is added for latent authority — a delegation naming
+an effect that is never reached.

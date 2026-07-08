@@ -19,8 +19,8 @@ A module directive is written at the top of a module as
 ```
 
 where `<key>` is a **bare identifier** naming a directive from the pinned registry below, and the
-`<arg>…` are the arguments that key defines. `pragma` is a module-level form, alongside `def`, `use`,
-and `import`; a program writes its pragmas before its definitions.
+`<arg>…` are the arguments that key defines. `pragma` is a module-level form, alongside `def` and
+`effect`; a program writes its pragmas before its definitions.
 
 ```
 (module crypto

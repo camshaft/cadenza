@@ -374,6 +374,23 @@
              (def (main)     (join "foo" "bar"))))
   (output  (: 6 Int64)))
 
+(case "a tail-recursive string accumulator builds a runtime string and its length is measured"
+  (doc    "A self-recursive function threads a runtime STRING accumulator — `(rep s n)` returns the
+           accumulator `s` in its base arm and recurses with `(String.concat s \"x\")` — the string
+           analogue of a threaded compound accumulator (a compiler builds a name or a rendered form
+           this way, appending fragment by fragment). `(String.byte-len (rep \"\" 3))` is 3: three
+           appends of a one-byte \"x\". Pins that the accumulator PARAMETER and the function's RETURN
+           both converge to the runtime-string (heap) kind even though the base arm returns the
+           parameter bare and the recursive arm is a bare self-call — neither branch of the `if`
+           independently reports a heap kind on the first inference pass. Without unifying the two
+           branches to the heap kind, the recursive `if` is rejected `if branches differ in kind`
+           (the then-branch `s` is heap, the else self-call defaulted to Int64); the same
+           accumulator-return-kind convergence a heap-list or Bytes accumulator needs.")
+  (input   (module m
+             (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+             (def (main)    (String.byte-len (rep "" 3)))))
+  (output  (: 3 Int64)))
+
 (case "the byte length of a runtime string equals the length of its encoded bytes"
   (doc    "The runtime companion of the const `byte-len`/`to-bytes` agreement: for a runtime string `s`,
            `(String.byte-len s)` MUST equal `(Bytes.len (String.to-bytes s))` — the direct byte count and
@@ -395,6 +412,31 @@
              (def (slen s) (String.scalar-len s))
              (def (main)   (slen "café"))))
   (output  (: 4 Int64)))
+
+(case "a runtime string is indexed by scalar and the extracted scalar is returned"
+  (doc    "`String.at` on a RUNTIME string — the reader's scalar cursor — reads the i-th Unicode scalar
+           as a one-scalar string, fallibly. `(at (concat s \"\") 3)` on \"café\" reads scalar 3 (é,
+           which occupies UTF-8 bytes 3–4), returning `(Some \"é\")` — indexed by SCALAR, not byte, so
+           the multi-byte é comes back whole. Pins runtime `String.at`: the seed walks the UTF-8 buffer
+           to the scalar's byte span and slices it (a String is a Bytes-backed leaf), matching the const
+           `chars().nth`. The concat forces a runtime value (a bare literal would const-fold).")
+  (needs   fallible-access)
+  (input   (module m
+             (def (at s i) (String.at (String.concat s "") i))
+             (def (main)   (at "café" 3))))
+  (output  (: (Some "é") (Option String))))
+
+(case "indexing a runtime string past its last scalar yields None"
+  (doc    "The fallible companion: `String.at` at a scalar index at or beyond the string's scalar length
+           yields `(None unit)`, never a trap (collections-and-text.md #Indexing And Lookup Are Fallible,
+           Not Trapping). `(at \"hi\" 5)` on the two-scalar \"hi\" is out of range → None. Pins that a
+           runtime `String.at` out-of-bounds is a handled absence — the branch a reader takes at
+           end-of-input.")
+  (needs   fallible-access)
+  (input   (module m
+             (def (at s i) (String.at (String.concat s "") i))
+             (def (main)   (match (at "hi" 5) ((Some c) (String.byte-len c)) ((None _) -1)))))
+  (output  (: -1 Int64)))
 
 (case "a runtime string returned across the run boundary renders as its quoted text"
   (doc    "A string BUILT at run time and returned as `main`'s value crosses the boundary as its proper
@@ -418,6 +460,19 @@
              (def (id s) (if true s s))
              (def (main) (id "café"))))
   (output  (: "café" String)))
+
+(case "a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape"
+  (doc    "A non-printable Unicode scalar (U+0007 BEL) renders VERBATIM as its raw byte, NOT as a
+           u-escape: the reader recognizes exactly the closed escape set \\n \\t \\r \\\\ \\\" 
+           (collections-and-text.md #A String Literal's Escapes Are A Closed Set), which has NO numeric
+           escape, so a u-escape would read back as its literal characters rather than the BEL — the
+           rendered string would NOT read back to the same value. (String.from-bytes (Bytes.of (list 97
+           7 98))) is the 3-scalar string a-BEL-b; it renders with the BEL byte raw. Pins the round-trip
+           the value-oracle gate now checks independently (re-reading the rendered text): a rendered
+           string MUST read back to the same value, so the renderer emits ONLY the closed escapes.")
+  (input   (module m
+             (def (main) (Option.expect (String.from-bytes (Bytes.of (list 97 7 98))) "well-formed"))))
+  (output  (: "ab" String)))
 
 ; --- Decoding bytes to a string is TOTAL, never trapping ---------------------------------------
 ; collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping. Cadenza's String is
@@ -507,6 +562,22 @@
                            ((None _) -1)))
             (def (main) (dec (Bytes.of (list 104 105))))))
   (output (: 2 Int64)))
+
+(case "decoding ill-formed bytes through a helper takes the None arm"
+  (doc    "The ill-formed companion: `String.from-bytes` of a RUNTIME Bytes that is not well-formed
+           UTF-8 yields `(None unit)`, so the helper's `None` arm returns -1 — a TOTAL decode, never a
+           trap (collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping). `(list
+           255)` is a lone `0xFF`, an invalid lead byte. Pins that the runtime UTF-8 validator (emitted
+           inline, matching `std::str::from_utf8` — rejecting invalid leads, overlong forms, surrogates,
+           and code points > U+10FFFF) drives the fallible decode's `None`, so a reader handles
+           malformed input rather than trapping on it. Companion of the well-formed case above.")
+  (needs  fallible-access)
+  (input  (module m
+            (def (dec b) (match (String.from-bytes b)
+                           ((Some s) (String.byte-len s))
+                           ((None _) -1)))
+            (def (main) (dec (Bytes.of (list 255))))))
+  (output (: -1 Int64)))
 
 (case "a utf8 bin segment binds a decoded string when the bytes are well-formed"
   (doc    "The `bin` pattern `(bin (u8 n) (utf8 name n))` reads a length byte n, then decodes exactly the

@@ -44,7 +44,7 @@ both displays. Both project losslessly to the one representation.
 ```
 (module math
   (doc "Small integer helpers.")
-  (use (capability emit-event))
+  (effect emit-event (op emit (-> String Unit)))
   (def (classify n)
     (doc "Sign of n as a tag.")
     (: (-> Int64 Sign))
@@ -60,7 +60,7 @@ both displays. Both project losslessly to the one representation.
 module math
 
 /// Small integer helpers.
-use capability emit-event
+effect emit-event { op emit(String) -> Unit } host
 
 /// Sign of n as a tag.
 fn classify(n: Int64) -> Sign =
@@ -111,8 +111,10 @@ contract, exactly as adding a construct adds a prelude symbol rather than bumpin
 | `def` | `(def (<name> <param>…) <form>…)` | a definition that registers a named export into the enclosing module's record |
 | `doc` | `(doc "<text>")` | documentation attached to the enclosing definition/module (a node, not trivia) |
 | `comment` | `(comment "<text>" <annotated>)` | a human comment attached to the node it annotates (a node, not trivia); semantically inert |
-| `use` | `(use (capability <cap>))` | a capability declaration, registering `<cap>` into the module's manifest metadata |
-| `capability` | `(capability <cap-name>)` | names a host capability inside a `use` |
+| `effect` | `(effect <name> (op <op> <type>)…)` | declares an effect and types each of its operations — a routing-agnostic contract that says nothing about where the effect is discharged (routing is decided by an enclosing `handle` or entrypoint `host`) |
+| `op` | `(op <name> (-> <T>… <R>))` | names and types one operation of an effect, inside an `(effect …)` |
+| `host` | `(host (<effect>…) <body>)` | an entrypoint delegation: within `<body>`, routes the named effects to the component boundary as plain imported-function calls the host resolves, making the host their terminal handler and enumerating them in the manifest (the delegation is the grant — there is no separate capability form) |
+| `handle` | `(handle ((<Effect>.<op> (<param>…) <body>)…) <body>)` | discharges an effect in-program; a `<body>` may `resume` the continuation at most once; a `handle` nearer a perform than an enclosing `host` interposes on an otherwise-delegated effect |
 | `:` | `(: <expr> <Type>)` / `(: (-> <T>… <R>))` | a type annotation; also the corpus value-form head `(: <value> <Type>)` |
 | `->` | `(-> <T>… <R>)` | a function type |
 | `let` | `(let ((<name> <expr>)…) <body>)` | a lexical binding form |

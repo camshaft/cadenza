@@ -101,6 +101,32 @@
   (input     (tuple.0 (record (a 1))))
   (error     CDZ0201))
 
+; The index of a positional tuple access must be WITHIN the operand tuple's static arity, not only a
+; tuple at all. A tuple's arity is part of its type (a fixed-size positional value), so an index outside
+; `0..arity` names a position the tuple does not have — a type error the compiler knows statically.
+; type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix: "a positional tuple access
+; whose index is out of the tuple's static arity [MUST be] rejected" at compile time, "so that a split
+; can never name a position the tuple does not have." This is the arity companion of the non-tuple-operand
+; cases above: `(tuple.3 (tuple 10 20 30))` accesses index 3 of a statically-3-element tuple (valid
+; indices 0..2), so the compiler MUST reject it (CDZ0201) rather than emit a component that traps at
+; run time — a compile-time-knowable ill-typing must not be deferred to a runtime trap, exactly as
+; `(tuple.0 5)` (non-tuple operand) is rejected rather than trapped. (This is DISTINCT from member
+; access of a missing record field, which traps: a record's field set can be runtime-dependent, but a
+; tuple's arity is static.) A generation that does not yet check the index range declines rather than
+; emitting the trapping access.
+
+(case "a positional tuple access out of the tuple's static arity is a type error"
+  (doc    "`(tuple.3 (tuple 10 20 30))` projects position 3 of a three-element tuple, whose valid
+           positions are 0..2 — an index outside the tuple's static arity, which names an element the
+           tuple does not have. The tuple's arity is part of its type (type-system.md #A Tuple Is Split
+           At A Position Into A Prefix And A Suffix), so the compiler knows this statically and MUST reject
+           it (CDZ0201) rather than emit a component that traps at run time, exactly as `(tuple.0 5)`
+           (a non-tuple operand) is rejected rather than trapped. A compile-time-knowable ill-typing
+           must not be deferred to a runtime trap. A generation that does not yet range-check the index
+           declines rather than emitting the trapping access.")
+  (input     (tuple.3 (tuple 10 20 30)))
+  (error     CDZ0201))
+
 (case "member access of a missing field traps"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field (3rd sentence):
            projecting a field the record does not contain traps rather than producing an
@@ -704,6 +730,24 @@
             (def (main) (List.len (iterate (FL.FCons (tuple 1 (FL.FNil ()))) (list) 2)))))
   (output (: 1 Int64)))
 
+(case "an element pattern matches a list by its length and elements"
+  (doc    "A list is deconstructed by ELEMENT patterns — `(list)` matches exactly the empty list, a
+           fixed-arity `(list a b)` matches a list of that exact length binding each position, and an
+           element pattern MAY end in a rest binder `(list x .. rest)` that matches any list of at
+           least the leading length, binding the leading positions and the rest as a `list`
+           (core-semantics.md §A List Is Deconstructed By Element Patterns With An Optional Rest).
+           This keeps the list's representation OPAQUE: the matcher observes only length and elements
+           in order, never an internal cell/node structure — matching by elements, not by exposing a
+           cons cell. Here the scrutinee is an inline list, so the whole match is decided at compile
+           time; the recursive-fold-over-a-runtime-parameter form (below) additionally needs a
+           materialized list tail for the rest binder.")
+  (needs  list-patterns)
+  (input  (module m (def (main)
+            (+ (match (list) ((list) 1) ((list a .. r) 2))
+               (+ (match (list 7 8) ((list a b) (+ a b)) (_ 0))
+                  (match (list 10 20 30) ((list) 0) ((list x .. rest) x)))))))
+  (output (: 26 Int64)))
+
 (case "the built-in list is folded by an element-with-rest pattern"
   (doc    "The natural fold over the BUILT-IN `list`, without hand-rolling a custom cons-sum. A list is
            deconstructed by ELEMENT patterns with an optional rest binder — `(list)` matches exactly the
@@ -716,9 +760,13 @@
            a call's argument list, a block's statements — is this fold; without it each must hand-roll a
            `(type FList (FNil | FCons …))` cons-sum that duplicates the sequence type the language already
            has (see the `IntList` fold above, which stands in precisely because the built-in `list` cannot
-           yet be matched). This is a spec addition — `core-semantics.md` §Pattern Matching gains list
-           deconstruction — plus seed lowering; until then it declines \"unsupported list pattern\".")
-  (needs  list-patterns)
+           yet be matched). The spec addition (`core-semantics.md` §Pattern Matching, list deconstruction)
+           and the STATIC/const-fold lowering have landed; this RUNTIME form — `sum` recurses over its
+           parameter `xs`, so the rest binder must materialize a list TAIL at run time — additionally
+           needs a list-tail primitive, so it is gated behind `list-pattern-runtime-tail` until that
+           lands (until then it declines \"runtime list element-pattern (rest binder) needs a list-tail
+           primitive\").")
+  (needs  list-pattern-runtime-tail)
   (input  (module m
             (def (sum xs) (match xs
                             ((list)           0)
@@ -885,6 +933,26 @@
                                (IntList.Cons (tuple n (count (- n 1))))))
             (def (main) (count 3))))
   (output (: (IntList.Cons (tuple 3 (IntList.Cons (tuple 2 (IntList.Cons (tuple 1 (IntList.Nil unit))))))) IntList)))
+
+(case "a recursively-built binary tree renders its full runtime structure"
+  (doc    "The MULTI-WAY recursive counterpart of the linked-list spine: a `Tree` whose `Node` variant
+           carries a `(Tuple Tree Tree)` — TWO recursive sub-references, not one — is built by a
+           self-recursive `build` and returned as the program RESULT. `build 2` yields a balanced
+           depth-2 tree; the renderer must walk BOTH sub-trees of every `Node` to their runtime depth,
+           not just a single spine. This pins that a recursive-sum render fn recurses on EACH recursive
+           payload position (a `Tree.Node`'s left and right), the render dual of a tree-consuming fold —
+           a rendering that walked only one child, or truncated at a fixed depth, would produce a wrong
+           structure (decline-don't-miscompile: the wrong shape is a FAIL, never an accepted output).")
+  (needs  sum-type-declaration)
+  (input  (module m
+            (type Tree (Leaf Int64 | Node (Tuple Tree Tree)))
+            (def (build n) (if (< n 1)
+                               (Tree.Leaf n)
+                               (Tree.Node (tuple (build (- n 1)) (build (- n 1))))))
+            (def (main) (build 2))))
+  (output (: (Tree.Node (tuple
+                (Tree.Node (tuple (Tree.Leaf 0) (Tree.Leaf 0)))
+                (Tree.Node (tuple (Tree.Leaf 0) (Tree.Leaf 0))))) Tree)))
 
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
@@ -1920,6 +1988,23 @@
             (def (main) (let ((xs (build 0 3 (list)))) (sum-at xs 0 (List.len xs))))))
   (output (: 3 Int64)))
 
+(case "a list value consumed by two operations in one function is not freed early"
+  (doc    "A list is an immutable value: passing the SAME list to two operations must let BOTH observe it
+           unchanged — reference counting must not free the shared backing after the first consumer. Here
+           `both` receives one list `e` and consumes it TWICE: `(use e 1)` pushes `1` and sums the result,
+           `(use e 2)` pushes `2` and sums, and the two are combined under arithmetic. Each `use` sees the
+           empty base independently, so `(* 10 (use e 1)) + (use e 2)` = `10*1 + 2` = 12. Pins that a value
+           consumed by multiple operations in one scope is dup'd, not freed by the first drop — the Perceus
+           reference-counting discipline for a shared immutable heap value (memory-and-resource-model.md).
+           Distinct from the single-thread push cases above, which never share a list across two consumers.")
+  (needs  list-growth)
+  (input  (module m
+            (def (scan xs k) (match (List.at xs k) ((None _) 0) ((Some h) (+ h (scan xs (+ k 1))))))
+            (def (use e n) (scan (List.push e n) 0))
+            (def (both e) (+ (* 10 (use e 1)) (use e 2)))
+            (def (main) (both (list)))))
+  (output (: 12 Int64)))
+
 (case "a recursive sum consumer whose arguments are recursive sum producers compiles"
   (doc    "The self-hosting compiler's spine: a recursive tree-walk (`lower`) whose arms combine the
            results of TWO recursive self-calls through a second recursive consumer (`code-cat`) that
@@ -1949,3 +2034,127 @@
                 ((Core.KAdd (tuple a b)) (code-cat (lower a) (code-cat (lower b) (one (Instr.IAdd ())))))))
             (def (main) (len (lower (Core.KAdd (tuple (Core.KConst 20) (Core.KConst 22))))))))
   (output (: 3 Int64)))
+
+; --- The Map OPERATION surface (collections-and-text.md §A Map Is Built By Functional Construction,
+; §Keys Are Compared By Value, §A Map Renders As Its Entries In Canonical Key Order). The map value
+; cases above pin equality/homogeneity/key-set on the `(map (k v)…)` LITERAL; these pin the OPERATIONS
+; that build and query a map — empty, insert/swap, lookup (fallible → Option), remove/take, size — and
+; the canonical render. Keys here are VALUES (integers), compared by value (§Keys Are Compared By
+; Value). Gated `(needs maps)`: the compiler does not yet lower `Map.*` to the runtime's persistent map
+; ops, so they SKIP until that lands (then each moves to a real value).
+
+(case "inserting into the empty map then looking a key up yields the value"
+  (doc    "`Map.empty` is the empty map; `Map.insert` adds an association and produces a NEW map
+           (functional construction — collections-and-text.md §A Map Is Built By Functional
+           Construction); `Map.lookup` is total, yielding `(Some v)` for a present key (§Indexing And
+           Lookup Are Fallible, Not Trapping — the map clause). Here the key `1` maps to `10`.")
+  (needs  maps)
+  (input  (module m (def (main) (Map.lookup (Map.insert Map.empty 1 10) 1))))
+  (output (: (Some 10) (Option Int64))))
+
+(case "looking up an absent key yields None"
+  (doc    "`Map.lookup` on a key the map does not contain yields `(None unit)` — the total-lookup rule
+           (collections-and-text.md, the map clause of §Indexing And Lookup Are Fallible, Not
+           Trapping): absence is data, not a trap. `2` is not a key of a map that holds only `1`.")
+  (needs  maps)
+  (input  (module m (def (main) (Map.lookup (Map.insert Map.empty 1 10) 2))))
+  (output (: (None unit) (Option Int64))))
+
+(case "inserting a key already present replaces its value, not the size"
+  (doc    "Adding a key that is already present REPLACES its value rather than adding a second entry
+           (collections-and-text.md §A Map Is Built By Functional Construction, preserving each key at
+           most once). After inserting `1↦10` then `1↦99`, `Map.size` is 1 and the key holds 99.")
+  (needs  maps)
+  (input  (module m
+            (def (main) (Map.size (Map.insert (Map.insert Map.empty 1 10) 1 99)))))
+  (output (: 1 Int64)))
+
+(case "removing a key drops its association and the size"
+  (doc    "`Map.remove` produces a NEW map without the key (functional construction), and removing a
+           key the map holds lowers the size by one. Two keys inserted, one removed → size 1.")
+  (needs  maps)
+  (input  (module m
+            (def (main)
+              (Map.size (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) 1)))))
+  (output (: 1 Int64)))
+
+(case "removing an absent key leaves the map unchanged"
+  (doc    "Removing a key the map does not contain yields a map equal to the operand rather than
+           trapping (collections-and-text.md §A Map Is Built By Functional Construction — removal is
+           total). Size is unchanged at 1.")
+  (needs  maps)
+  (input  (module m (def (main) (Map.size (Map.remove (Map.insert Map.empty 1 10) 2)))))
+  (output (: 1 Int64)))
+
+(case "the value-yielding insert reports the value it replaced"
+  (doc    "`Map.swap` is the value-yielding add: it produces `(tuple <prior-value-optional> <new-map>)`
+           (collections-and-text.md §A Map Is Built By Functional Construction — the two-form rule).
+           Replacing key `1`'s value `10` with `99` reports the prior `(Some 10)`; here we project that
+           optional. Adding a NEW key would report `(None unit)`.")
+  (needs  maps)
+  (input  (module m
+            (def (main) (tuple.0 (Map.swap (Map.insert Map.empty 1 10) 1 99)))))
+  (output (: (Some 10) (Option Int64))))
+
+(case "the value-yielding remove reports the value it dropped"
+  (doc    "`Map.take` is the value-yielding remove: it produces `(tuple <removed-value-optional>
+           <new-map>)`. Removing the present key `1` (value `10`) reports `(Some 10)`; taking an ABSENT
+           key reports `(None unit)` and leaves the map unchanged (removal is total). Here we project
+           the reported optional.")
+  (needs  maps)
+  (input  (module m
+            (def (main) (tuple.0 (Map.take (Map.insert Map.empty 1 10) 1)))))
+  (output (: (Some 10) (Option Int64))))
+
+(case "a built map renders its entries in canonical key order"
+  (doc    "A map returned as the program RESULT renders its entries as key-value pairs in the
+           deterministic canonical key order (collections-and-text.md §A Map Renders As Its Entries In
+           Canonical Key Order, §Map Iteration Is Deterministic) — independent of insertion order, and
+           distinguishable from a record. Inserting 2↦20 then 1↦10 renders in key order.")
+  (needs  maps)
+  (input  (module m (def (main) (Map.insert (Map.insert Map.empty 2 20) 1 10))))
+  (output (: (map (1 10) (2 20)) (Map Int64 Int64))))
+
+; --- Map PATTERN matching (ask-61) — a SEPARATE phase, gated `(needs map-patterns)`. A map's key set is
+; a RUNTIME collection, not a static shape, so a map pattern is a KEY-DIRECTED LOOKUP: `(map (k p) .. rest)`
+; matches when the map HAS key `k` bound to a value matching `p`, binding `rest` to the remaining map. This
+; is a QUERY (lowering to `Map.lookup` per key + `Map.remove` for the rest), distinct from the structural
+; tuple/sum/list patterns. `Map.lookup`→Option already expresses "match on a key's presence"; these pin the
+; PATTERN sugar. Skip until the clause + lowering land (a later phase after the `Map.*` ops).
+
+(case "a map pattern matches a present key and binds its value"
+  (doc    "`(map (k p) …)` is a key-directed lookup pattern (core-semantics.md §A Map Is Matched By
+           Key-Directed Patterns, ask-61): the arm matches because key `1` is present, binding `v` to
+           its value `10`. The catch-all covers the non-match — exhaustiveness needs it, since a map's
+           key set is unbounded (no shape to cover).")
+  (needs  map-patterns)
+  (input  (module m
+            (def (main)
+              (match (Map.insert Map.empty 1 10)
+                ((map (1 v)) v)
+                (_           0)))))
+  (output (: 10 Int64)))
+
+(case "a map pattern falls through when the key is absent"
+  (doc    "The companion: the `(map (2 v))` arm does NOT match a map lacking key `2`, so the match falls
+           through to the catch-all — the key-directed pattern is a genuine presence test, not a blanket
+           match. Pins the absent-key non-match.")
+  (needs  map-patterns)
+  (input  (module m
+            (def (main)
+              (match (Map.insert Map.empty 1 10)
+                ((map (2 v)) v)
+                (_           99)))))
+  (output (: 99 Int64)))
+
+(case "a map pattern binds the rest of the map after the named key"
+  (doc    "`(map (1 v) .. rest)` binds `v` to key 1's value AND `rest` to the map with key 1 removed
+           (the operand minus the named keys — the map analogue of the list `.. rest`, ask-61). Here
+           `rest` still holds key 2, so its size is 1.")
+  (needs  map-patterns)
+  (input  (module m
+            (def (main)
+              (match (Map.insert (Map.insert Map.empty 1 10) 2 20)
+                ((map (1 v) .. rest) (Map.size rest))
+                (_                   0)))))
+  (output (: 1 Int64)))

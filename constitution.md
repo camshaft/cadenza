@@ -51,13 +51,11 @@ The compiler MUST NOT emit an import that the program's declared capabilities do
 
 A program that reaches a host operation it does not declare MUST be rejected at compile time rather than compiled to a component carrying a latent import.
 
-### V. Bounded Termination By A Deterministic Measure
+### V. Bounded Execution Is Not A Language Concern
 
-The compiler MUST emit code whose execution is accountable against a deterministic resource measure rather than against wall-clock time.
+Bounding a program's execution against a resource measure is a property of the environment that runs a component, not an obligation the language or the compiler carries; this principle states no requirement on the compiler, and the specification places no requirement that a program halt at a defined point (retired by Amendment 0.7.0, which records the rationale — the heading is retained so the numbering of the principles that follow is unchanged).
 
-The compiler MUST emit code such that exhausting that resource measure halts execution at a defined point.
-
-The compiler MUST NOT emit a construct whose consumption of the resource measure is unaccountable.
+Nothing in this principle relaxes a determinism obligation: the observable behavior of a run that *completes* remains a deterministic function of its input and its declared capabilities' responses (Core Principle III), and whether a run's environment lets it complete is outside that behavior, as the availability of memory already is.
 
 ### VI. The Runnable Form Is A Verified, Content-Addressed Component
 
@@ -191,7 +189,7 @@ An amendment that weakens a governance floor MUST require explicit human approva
 
 This constitution supersedes all other specifications where they conflict on an invariant. The frozen contracts under `spec/contracts/` pin the byte- and ABI-level forms these invariants govern; the capability specifications under `spec/capabilities/` describe behavior that must satisfy these invariants; the executable semantics under `spec/semantics/` is the single source of truth for behavior. Compliance is checked by two gates: the requirement gate, under which every load-bearing requirement here must carry an implementation citation and a test citation in any promoted generation, and the behavior gate, under which every executable-semantics case must reproduce its recorded output. Amendments follow the Amendment Discipline above and are traced against the architecture in [spec/traceability.md](./spec/traceability.md).
 
-**Version**: 0.6.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-05
+**Version**: 0.7.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-06
 
 > **Amendment 0.2.0 (2026-07-02).** Core Principle VII gains a bootstrap carve-out: the
 > operator-synthesized seed generation MAY defer static typing and realize evaluation dynamically,
@@ -247,3 +245,42 @@ This constitution supersedes all other specifications where they conflict on an 
 > never-downgradable floor's audit rule, it required and received explicit human approval per the Amendment
 > Discipline. Rationale in
 > [spec/learnings/2026-07-05-the-value-heap-runtime-is-a-shared-component.md](./spec/learnings/2026-07-05-the-value-heap-runtime-is-a-shared-component.md).
+>
+> **Amendment 0.7.0 (2026-07-06).** Core Principle V ("Bounded Termination By A Deterministic
+> Measure") is RETIRED. The language no longer requires that the compiler emit code accountable
+> against a resource measure, nor that a program halt at a defined point on exhaustion; bounding a
+> run's execution is delegated entirely to the environment that hosts a component (for the default
+> engine, the runtime's own fuel metering and interrupt facilities), which owns the budget and the
+> decision — on exhaustion — to grant more, yield the run, or halt it. The principle's heading is
+> retained as a retirement marker so the numbering of Principles VI–XV, and every citation to them, is
+> unchanged. This does NOT touch a never-downgradable Governance Floor — the floors are determinism and
+> capability-safety, not bounded termination — and it does not downgrade determinism: the observable
+> behavior of a *completing* run stays a deterministic function of its input and its capabilities'
+> responses, and exhaustion becomes a host resource terminal outside that behavior, as out-of-memory
+> already is. Consequently the frozen determinism-and-fuel contract loses its "Resource Accounting"
+> section (its "Deterministic Emission" requirements are unaffected, and no emitted byte changes because
+> emitted components never carried resource-measure decrements), core-semantics.md drops its
+> bounded-evaluation and terminal-exhaustion requirements (a run ends in a normal result or a trap),
+> memory-and-resource-model.md drops its bounded-allocation requirements, and metaprogramming.md drops
+> its compile-time-bounding and expansion-termination requirements. Rationale in
+> [spec/learnings/2026-07-06-fuel-is-host-owned-runtime-policy-not-a-compiler-emitted-measure.md](./spec/learnings/2026-07-06-fuel-is-host-owned-runtime-policy-not-a-compiler-emitted-measure.md).
+>
+> **Amendment 0.8.0 (2026-07-07).** The frozen build-tool-interface contract's derivation entry is
+> generalized from a two-arm result — `result<component-bytes, diagnostics>` — to a **kinded-artifact
+> interface**: the entry takes a list of kinded input artifacts and returns a record pairing a list of
+> kinded output artifacts with a list of diagnostics. The derived component becomes one output artifact
+> identified by its kind; a debug-information sidecar, a source map, or the capability manifest is
+> another artifact of the same shape, and the input channel likewise admits further source units, a
+> build cache, or a derived dependency without changing the entry's arity. Success is the presence of a
+> component artifact with no error-severity diagnostic; failure is its absence with an error-severity
+> diagnostic; a diagnostic now carries a severity, so a warning rides alongside a produced component
+> rather than being discarded. This is a **non-additive** change to a frozen contract (it alters the
+> derivation entry's signature) and carries an ABI version increment under Governance Floor "A change to
+> the component ABI … MUST carry a version increment." **Migration path:** the realized interface remains
+> `compile: list<u8> → result<list<u8>, list<diagnostic>>` — the degenerate single-input/single-output
+> case (input = one `ast` artifact, success = the `component` artifact, failure = the diagnostics list) —
+> until the artifact-list interface is realized; a consumer of the old signature reads the same
+> component-or-diagnostics outcome the new record expresses, and no already-derived component's bytes
+> change (the entry is the tool's interface, not a program's emitted code). This does NOT touch a
+> never-downgradable Governance Floor (determinism and capability-safety). Rationale in
+> [spec/learnings/2026-07-07-the-build-tool-interface-is-a-kinded-artifact-list-not-a-two-arm-result.md](./spec/learnings/2026-07-07-the-build-tool-interface-is-a-kinded-artifact-list-not-a-two-arm-result.md).

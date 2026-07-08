@@ -69,32 +69,35 @@
             ((. lib fac) 5)))
   (output (: 120 Int64)))
 
-(case "a module's declared capability is reachable as metadata, not as an export"
+(case "a module's delegated capability is reachable as metadata, not as an export"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata:
            the capabilities are reached by the (meta …) key, distinct from the export
-           namespace, so they never collide with an export. The module imports and declares the
-           host function `log`; its capabilities metadata contains \"log\".")
+           namespace, so they never collide with an export. The module declares the routing-agnostic
+           effect `log` and its entry `main` DELEGATES it to the host with `(host (log) …)`; the manifest
+           is the union of the entry's delegations, so the capabilities metadata contains \"log\" (the
+           delegation — not the declaration — is the grant, capabilities-and-effects.md #The Program
+           Manifest Is The Union Of Its Entrypoints' Delegations).")
   (needs  collections)
+  (needs  effects)
   (input  (do
             (module m
-              (import (host log (func (String) unit)))
-              (use (capability log))
-              (def (answer) 42))
+              (effect log (op emit (-> String Unit)))
+              (def (main) (host (log) (log.emit "hi"))))
             (= (. m (meta capabilities)) (list "log"))))
   (output (: true Bool)))
 
-(case "a declared capability is not itself an export field"
+(case "a delegated capability is not itself an export field"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata (1st
-           sentence): a declared capability is carried as metadata SEPARATE from the exported fields,
-           so it is not itself an export. The module declares the host function `log` but exports only
-           `answer`; projecting `log` as an export field finds no such field and traps (the capability
-           lives in `(meta capabilities)`, witnessed by the case above), rather than resolving to the
-           manifest or to the host function.")
+           sentence): a delegated capability is carried as metadata SEPARATE from the exported fields,
+           so it is not itself an export. The module's entry delegates `log` to the host but the module
+           exports only `main`; projecting `log` as an export field finds no such field and traps (the
+           capability lives in `(meta capabilities)`, witnessed by the case above), rather than
+           resolving to the manifest or to the effect.")
+  (needs  effects)
   (input  (do
             (module m
-              (import (host log (func (String) unit)))
-              (use (capability log))
-              (def (answer) 42))
+              (effect log (op emit (-> String Unit)))
+              (def (main) (host (log) (log.emit "hi"))))
             (. m log)))
   (trap   "no such field"))
 
@@ -142,17 +145,18 @@
 (case "an export and a like-named metadata key do not collide"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata (2nd
            sentence): metadata is reached by a key distinct from every export name, so metadata access
-           cannot collide with an export. This module both declares the host function `log` AND
+           cannot collide with an export. This module's entry delegates `log` to the host AND the module
            exports a definition literally named `capabilities`. The export `(. m capabilities)` resolves
            to that definition (applied, it yields 7), while `(. m (meta capabilities))` resolves to the
            manifest — the same spelling in the two channels denotes two different things, which is the
            whole reason metadata lives behind (meta …).")
   (needs  collections)
+  (needs  effects)
   (input  (do
             (module m
-              (import (host log (func (String) unit)))
-              (use (capability log))
-              (def (capabilities) 7))
+              (effect log (op emit (-> String Unit)))
+              (def (capabilities) 7)
+              (def (main) (host (log) (log.emit "hi"))))
             (if (= ((. m capabilities) unit) 7)
                 (= (. m (meta capabilities)) (list "log"))
                 false)))

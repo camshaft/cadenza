@@ -77,7 +77,7 @@ Dependency resolution MUST NOT depend on a mutable version range whose resolutio
 
 ### Resolution Introduces No Authority
 
-The set of capabilities a program requires MUST NOT be enlarged by dependency resolution beyond the union its modules declare.
+The set of capabilities a program requires MUST NOT be enlarged by dependency resolution beyond the union its entrypoints delegate to the host, so that pulling in a dependency that declares or performs an effect grants no authority unless an entrypoint delegates that effect (capabilities-and-effects.md §The Program Manifest Is The Union Of Its Entrypoints' Delegations).
 
 ## Composition
 

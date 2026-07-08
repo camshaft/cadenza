@@ -31,15 +31,35 @@ The build tool MUST accept its input as a canonically encoded source tree as fix
 
 The build tool MUST reject an input that is not a well-formed canonical source tree with a machine-readable diagnostic rather than an opaque failure.
 
+### The Tool's Inputs Are A Kinded Artifact List
+
+The build tool's derivation entry MUST take its inputs as a list of kinded artifacts, each a named kind paired with its bytes, so that the canonical source tree is one artifact among an open set and the input channel admits further inputs — additional source units of a multi-unit program, a build cache, or a previously derived dependency — without changing the entry's arity.
+
+The kind of an artifact MUST identify how its bytes are interpreted, so that a consumer selects an input by kind rather than by position, and an input kind the tool does not recognize is reported as a diagnostic rather than silently ignored.
+
+An input artifact list that omits the source tree the tool requires to derive a component MUST be reported as a diagnostic rather than producing an empty or arbitrary output.
+
 ### The Tool Produces A Component, A Manifest, And Diagnostics
 
 The build tool MUST produce, on success, a content-addressed component together with the capability manifest against which its imports are bound.
 
 The build tool MUST produce, on failure, machine-readable diagnostics rather than an opaque error.
 
-The build tool's derivation entry MUST have a result-typed signature whose success arm carries the component bytes and whose failure arm carries the diagnostics, so that success and failure are distinguished by the interface's type rather than by an in-band sentinel such as an empty byte sequence.
+The build tool's derivation entry MUST return a record pairing a list of kinded output artifacts with a list of diagnostics, so that the byte outputs and the diagnostics are distinct channels rather than mutually exclusive arms of one result.
+
+The derived component MUST be one artifact in the output artifact list, identified by its kind, so that a byte output that is not the component — a debug-information sidecar, a source map, the capability manifest — is another artifact of the same shape rather than a second return type, and the set of output kinds is open to additive extension.
+
+The tool MUST signal a successful derivation by the presence of a component artifact in the output together with the absence of any error-severity diagnostic, and a failed derivation by the absence of a component artifact together with at least one error-severity diagnostic, so that success and failure are read from the produced artifacts and diagnostics rather than from an in-band sentinel such as an empty byte sequence.
+
+The tool MUST be able to return diagnostics alongside a produced component, so that a derivation that succeeds while reporting non-error diagnostics — a warning — carries both the component and those diagnostics rather than having to discard one.
 
 The component the build tool produces MUST have imports that mirror the manifest it produces, as fixed by the host-interface-binding contract.
+
+### A Diagnostic Carries A Severity, A Code, And A Message
+
+A diagnostic the build tool produces MUST carry a severity that distinguishes an error — one that denies a component artifact — from a non-error such as a warning that accompanies a produced component, so that a consumer decides from the diagnostic itself whether the derivation failed.
+
+A diagnostic MUST carry the machine-readable code and message fixed by the diagnostics-schema, so that a diagnostic in this interface is the same machine-actionable record the rest of the specification uses.
 
 ## The Tool Is Replaceable
 

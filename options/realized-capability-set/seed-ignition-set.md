@@ -123,6 +123,17 @@ realizes them and adds their witnessing cases:
   The seed realizes the primitive `Bytes` slice (construction, equality, length, concatenation)
   it needs to build a component's wasm bytes; the richer `bin` grammar that
   subsumes it lands in a later increment. Corpus cases carry `(needs binary-matching)`.
+- **quote-patterns** — the quasiquote surface in *pattern* position (options/quote-patterns/): a
+  `` `<template>`` inside a `match` destructures an `Ast` scrutinee, matching literal subterms by
+  equality, binding at each `,<pattern>`, and splicing a final `,@<name>`, lowering to the `Ast.*`
+  constructor patterns the seed *already* matches (the un-tagged `(match (quote (+ 1 2)) ((Ast.List
+  elems) …))` cases in 12-metaprogramming.sexp run on the seed). The seed realizes the AST sum and
+  destructures it by constructor; the one deferred piece is the reader/lowering that recognizes a
+  backtick in pattern position — pure sugar over the existing exhaustiveness (`CDZ0210`) and equality
+  rules, with `CDZ0221` for a non-final `,@`. It is the pattern-position dual of the quasiquote
+  *construction* the seed already runs and the highest-leverage readability win on the self-hosting path
+  (the compiler's core is a `match` over the decoded AST), but is not on the *ignition* path, so it is
+  realized by a later generation. Corpus cases carry `(needs quote-patterns)`.
 - **symbols** — the `Symbol` interned-name value form (options/symbol-interning/): `Symbol.of` interns
   a `String` to a `Symbol`, `Symbol.to-string` recovers it, and `=` compares two Symbols by content in
   constant time, with a `#"<text>"` reader literal. A Symbol is a nominal value over `String`, so its
@@ -131,6 +142,31 @@ realizes them and adds their witnessing cases:
   rather than an O(N) byte scan; it is the highest-leverage representation win on the self-hosting path
   but is not on the *ignition* path (the seed clears ignition with `Int64`, `Bytes`, and `String`), so
   it is realized by a later generation. Corpus cases carry `(needs symbols)`.
+- **sets** — the `Set` unordered unique-element collection (collections-and-text.md §"Sets";
+  options/set-collection/): `Set.of`/`insert`/`remove`/`contains`/`len`/`union`/`intersection`/
+  `difference`, with order-independent equality and a deterministic element-derived canonical order.
+  A `Set` is a primitive collection (not a `Map<T, Unit>`), realized by the same ordered persistent
+  structure as `Map` with the value column dropped. It is a distinct tag from the realized
+  `collections` on purpose: `collections` is realized, so tagging set cases `collections` would make
+  the seed RUN them and reject the unbound `Set` prelude name with a coded diagnostic (a gate FAIL)
+  rather than skip. A later generation realizes it; corpus cases carry `(needs sets)`.
+- **chars** — the `Char` validated-Unicode-scalar value form (collections-and-text.md §"A Char Is A
+  Single Unicode Scalar Value"; options/char-literal-syntax/): `String.scalar-at` reads one scalar as
+  an `Option<Char>`, `Char.to-int`/`from-int` convert (from-int fallible), scalar predicates classify,
+  and a `#\<scalar>` reader literal writes one (an out-of-range/surrogate literal is `CDZ0002`). `Char`
+  is the surface producer for the `char` boundary row the type mapping already carried. A later
+  generation realizes it; corpus cases carry `(needs chars)`.
+- **ordering** — the three-way `compare` yielding the `Ordering` prelude sum `(Less | Equal | Greater)`
+  (core-semantics.md §"A Total Order Is Observed Through A Three-Way Comparison"): `compare` is the
+  primitive the boolean ordering operators are definable from, and it names the canonical element order
+  `Set`/`Map` serialize in. `Ordering` is an ordinary closed prelude sum (no new contract surface). A
+  later generation realizes `compare`; corpus cases carry `(needs ordering)`.
+- **never** — the `Never` empty-sum type surface (type-system.md §"Never Is The Empty Sum"): the
+  uninhabited sum with zero variants, the dual of Unit, the type of a diverging expression (a `(trap …)`
+  or `expect` on absence), which unifies with any expected type, and over which a zero-arm match is
+  vacuously exhaustive. The seed already carries the *mechanism* (a divergent expression's kind unifies
+  with any kind); a later generation binds the `Never` prelude name and the zero-arm-match rule. Corpus
+  cases carry `(needs never)`.
 - **effect-tracking** (the optional layer of capabilities-and-effects), **verification-layers**,
   **property-based-testing**, **units-of-measure** — optional capabilities, included by default,
   realized later.
@@ -150,6 +186,18 @@ realizes them and adds their witnessing cases:
 - **metaprogramming** (macros), **modules-and-namespaces** beyond a single module, the
   **memory-and-resource-model** surface, the full **diagnostics** tooling beyond coded rejections,
   **tooling-and-lsp**, and **agent-authoring** beyond direct binary-AST read/construct.
+- **debug-information** — the optional emission of source-level debug information for a derived artifact
+  (debug-information.md; options/debug-information/). The seed clears ignition emitting the undecorated
+  artifact only, so it does not realize this capability and its requirements are not load-bearing for the
+  seed generation (conformance-gate.md §"A Generation Is Judged Against The Capabilities It Realizes").
+  Its requirements are artifact-shape and reproducibility obligations — the emitted metadata is a
+  deterministic, provenance-free function of source and toolchain, and stripping it recovers the
+  byte-identical undecorated artifact — discharged, in a generation that realizes the capability, by an
+  implementation-and-test citation that derives with and without debug information and inspects and
+  strips the artifact, the same way reproducible-derivation's obligations are discharged by re-derivation
+  rather than by a behavior-corpus case. Because debug information is inert (the executed bytes are
+  byte-identical with or without it), a seed-derived undecorated artifact is exactly the artifact a
+  debug-info-emitting generation strips back to.
 
 ## How this scopes the seed's gates
 

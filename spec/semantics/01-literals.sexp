@@ -12,6 +12,28 @@
   (input  1_000_000)
   (output (: 1000000 Int64)))
 
+; A digit separator `_` is meaningful ONLY between two digits (the between-digits rule the sections
+; below pin for the leading-underscore boundary and that the radix cases restate). A `_` that is NOT
+; between two digits — a TRAILING separator `1_` (a digit to its left, none to its right), a doubled
+; `1__0` (the second `_` sits between a `_` and a digit, not two digits), or a trailing group `1_000_` —
+; is therefore malformed, not a well-formed literal with the stray `_` silently dropped. A digit-led
+; token is a number (the number/identifier boundary below), and a malformed number is a well-formedness
+; rejection (CDZ0201), the same class as an out-of-range literal — never silently normalized to the
+; digits with the separator removed. A reader that strips every `_` regardless of position reads `1_`
+; as the value 1, silently accepting a malformed literal; the between-digits rule requires a separator
+; to have a digit on BOTH sides.
+
+(case "a trailing digit separator is a malformed literal, not the digits with it dropped"
+  (doc    "`1_` has a digit separator with a digit on its left but none on its right — not BETWEEN two
+           digits, so it is not a well-formed separator (contrast `1_000_000`, where every `_` sits
+           between digits). A digit-led token is a number, and a number with a stray separator is
+           malformed (CDZ0201), the same well-formedness class as an out-of-range literal below — never
+           silently read as the value 1 with the `_` dropped. Pins that the digit-separator rule is
+           between-digits in BOTH directions, so a reader cannot accept a trailing (or doubled) separator
+           by stripping every `_`.")
+  (input  1_)
+  (error  CDZ0201))
+
 ; --- The number / identifier boundary ---------------------------------------------------
 ; A token's classification as a numeric literal vs. an identifier is a lexical rule, and the
 ; digit-separator rule (above) must not swallow identifiers that merely contain the separator

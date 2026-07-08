@@ -52,12 +52,6 @@ A component the toolchain derives MUST exhibit, for a given program, the observa
 
 Generating a component MUST be treated as producing the runnable form of the program under the one semantics, not as a second definition of the language.
 
-### Exhaustion Is Observed As A Trap In A Derived Component
-
-A derived component that exhausts the deterministic resource measure MUST halt as a trap, so that the recorded exhaustion terminal condition and the derived component's trap are judged as agreement rather than as a divergence when a compiled program is checked against the oracle.
-
-A derived component MUST NOT be required to distinguish exhaustion from a trap in its observable behavior, because the component boundary signals a bounded halt as a trap and carries no separate exhaustion outcome.
-
 ### An Unsupported Construct Is Declined, Not Miscompiled
 
 A generation whose compiler does not yet compile a construct a program uses MUST decline to derive a component for that program rather than emit a component whose observable behavior diverges from the oracle.

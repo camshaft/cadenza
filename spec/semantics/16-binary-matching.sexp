@@ -70,6 +70,14 @@
   (input  (= (bin (i8 -1)) (Bytes.of (list 255))))
   (output (: true Bool)))
 
+(case "a u64 segment encodes eight big-endian bytes"
+  (doc    "`(bin (u64 258))` encodes 258 as eight big-endian bytes — six leading zeros then 0x0102 —
+           `(Bytes.of (list 0 0 0 0 0 0 1 2))`. Pins the widest fixed-width segment and that its width is
+           eight bytes regardless of how small the value is, the companion of the u16 and u32 cases.")
+  (needs  binary-matching)
+  (input  (= (bin (u64 258)) (Bytes.of (list 0 0 0 0 0 0 1 2))))
+  (output (: true Bool)))
+
 (case "bit-field segments pack sub-byte values into one byte"
   (doc    "`(bin (bits 1 1) (bits 2 3) (bits 5 4))` packs a 1-bit flag (1), a 3-bit tag (2 = 0b010), and a
            4-bit value (5 = 0b0101), most-significant field first: 1·010·0101 = 0b1010_0101 = 165. The
@@ -117,6 +125,117 @@
             ((bin (u16 n)) n)
             (_ 0)))
   (output (: 258 Int64)))
+
+(case "a le pattern segment reads a fixed-width integer little-endian"
+  (doc    "The construction `(bin (u16 258 le))` emitted `(list 2 1)`; matching those same bytes against
+           `(bin (u16 n le))` reads them back least-significant byte first, recovering n = 258. Pins that
+           the `le` modifier is honored in pattern position exactly as in expression position — matching is
+           the inverse of construction over the same modifier, not big-endian-only on the way in.")
+  (needs  binary-matching)
+  (input  (match (bin (u16 258 le))
+            ((bin (u16 n le)) n)
+            (_ 0)))
+  (output (: 258 Int64)))
+
+(case "a signed pattern segment reads a two's-complement integer as negative"
+  (doc    "The byte 255 read through a SIGNED `(i8 n)` pattern is -1, not 255 — a signed segment
+           interprets its two's-complement bits as a signed integer, the inverse of the `(i8 -1)`
+           construction that emitted 255. Pins that signedness governs matching too: the same byte reads
+           back as -1 under `i8` and as 255 under `u8` (next case).")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 255))
+            ((bin (i8 n)) n)
+            (_ 0)))
+  (output (: -1 Int64)))
+
+(case "an unsigned pattern segment reads the same byte as a non-negative integer"
+  (doc    "The companion of the signed-read case: the byte 255 read through an UNSIGNED `(u8 n)` pattern is
+           255. The one byte reads back as -1 under `i8` and 255 under `u8`, so signedness is a property of
+           the segment, not the bytes. Pins that the two readings of one byte differ precisely by the
+           segment's sign, mirroring the construction-side split between `(i8 -1)` and `(u8 -1)`.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 255))
+            ((bin (u8 n)) n)
+            (_ 0)))
+  (output (: 255 Int64)))
+
+(case "a bits pattern segment reads sub-byte fields back into integers"
+  (doc    "The packed byte `0b1010_0101` matched against `(bin (bits a 1) (bits b 2) (bits c 5))` reads the
+           three most-significant-field-first sub-byte fields back: a = 1, b = 0b01 = 1, c = 0b00101 = 5,
+           whose sum a + b + c is 7. Pins that `bits` segments read in the same most-significant-first order
+           they pack in — the inverse of the bit-field construction case — and that a bits-only pattern must
+           still close a whole byte to be well-formed.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 0b1010_0101))
+            ((bin (bits a 1) (bits b 2) (bits c 5)) (+ (+ a b) c))
+            (_ 0)))
+  (output (: 7 Int64)))
+
+(case "a u64 pattern segment reads eight big-endian bytes back into an integer"
+  (doc    "The eight bytes `(list 0 0 0 0 0 0 1 2)` matched against `(bin (u64 n))` read back big-endian as
+           n = 258, round-tripping the u64 construction case. Pins the widest fixed-width segment in pattern
+           position and that it consumes exactly its eight bytes.")
+  (needs  binary-matching)
+  (input  (match (bin (u64 258))
+            ((bin (u64 n)) n)
+            (_ 0)))
+  (output (: 258 Int64)))
+
+(case "a literal segment before a binder dispatches then reads the payload"
+  (doc    "The pattern `(bin (u8 1) (u16 n))` fires only when the first byte equals the tag 1, then reads
+           the following big-endian u16 as n = 258. Against a leading tag of 1 the arm matches and yields
+           258; a fixed literal and a binder compose in one pattern. Pins tag-then-field dispatch, the shape
+           a tagged binary record takes.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 1 1 2))
+            ((bin (u8 1) (u16 n)) n)
+            (_ 0)))
+  (output (: 258 Int64)))
+
+(case "a bin pattern must consume the whole scrutinee or it does not match"
+  (doc    "The scrutinee is three bytes but the arm `(bin (u16 n))` describes only two, leaving one byte
+           unconsumed, so the arm does NOT match and control falls to the catch-all, yielding 0. Pins that a
+           `bin` pattern matches the ENTIRE byte sequence — leftover bytes are a non-match, which is why a
+           trailing `(bytes rest)` segment is needed to accept a variable-length remainder (the next case).
+           This is the whole-scrutinee accounting a length-framing loop relies on.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 1 2 3))
+            ((bin (u16 n)) n)
+            (_ 0)))
+  (output (: 0 Int64)))
+
+(case "a trailing bytes segment accepts the leftover the fixed segments leave"
+  (doc    "The companion of the whole-consumption case: adding a final `(bytes rest)` to the same
+           three-byte scrutinee lets the u16 read the first two bytes (n = 258) and `rest` absorb the third,
+           so the arm matches and yields n = 258. Pins that a trailing unsized `(bytes …)` is exactly what
+           relaxes the whole-scrutinee rule to accept a variable-length tail.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 1 2 3))
+            ((bin (u16 n) (bytes rest)) n)
+            (_ 0)))
+  (output (: 258 Int64)))
+
+(case "an empty scrutinee matches an empty bin pattern"
+  (doc    "The zero-length Bytes value matches the empty pattern `(bin)` — no segments to read, nothing
+           left over — so the arm fires and yields \"empty\". The inverse of the `(bin)` construction case,
+           and the base case a recursive framing parser bottoms out on. Pins that `(bin)` in pattern
+           position matches exactly the empty sequence.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list))
+            ((bin) "empty")
+            (_ "nonempty")))
+  (output (: "empty" String)))
+
+(case "a non-empty scrutinee does not match an empty bin pattern"
+  (doc    "The companion of the empty-matches-empty case: a one-byte scrutinee has a leftover byte the empty
+           pattern `(bin)` does not consume, so the arm does not match and control falls to the catch-all.
+           Pins that `(bin)` matches ONLY the empty sequence — the whole-consumption rule applied to the
+           zero-segment pattern.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 0))
+            ((bin) "empty")
+            (_ "nonempty")))
+  (output (: "nonempty" String)))
 
 (case "a dependent-size segment binds exactly the number of bytes an earlier segment named"
   (doc    "Against `(Bytes.of (list 2 10 20 99))`, the pattern `(bin (u8 n) (bytes body n) (bytes rest))`
@@ -172,6 +291,97 @@
             ((bin (u8 n) (bytes body n)) (Bytes.len body))
             (_ -1)))
   (output (: -1 Int64)))
+
+(case "a dependent size of zero binds an empty body and leaves the rest untouched"
+  (doc    "Against `(Bytes.of (list 0 42))`, the pattern `(bin (u8 n) (bytes body n) (bytes rest))` reads
+           n = 0, so `(bytes body 0)` binds the EMPTY byte sequence and `rest` gets the whole remainder
+           `(list 42)`. This case checks `body` is empty. Pins that a zero dependent size is a valid
+           non-match-free read (an empty field), not an overrun or a special case — the degenerate framing a
+           loop hits on a zero-length record.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 0 42))
+            ((bin (u8 n) (bytes body n) (bytes rest)) (= body (Bytes.of (list))))
+            (_ false)))
+  (output (: true Bool)))
+
+(case "two dependent-size segments each bind the count a preceding segment named"
+  (doc    "Against `(Bytes.of (list 1 2 2 10 20 99))`, the pattern
+           `(bin (u8 a) (bytes x a) (u8 b) (bytes y b) (bytes rest))` reads the two length-prefixed fields
+           in sequence: a = 1 → `x` = `(list 2)`; then b = 2 → `y` = `(list 10 20)`; the final byte 99 lands
+           in `rest`. This case checks `y`. Pins that several dependent sizes chain in one pattern, each
+           reading a count bound just before it — the sequential length-prefixed framing a single `bin`
+           expresses without a loop.")
+  (needs  binary-matching)
+  (input  (match (Bytes.of (list 1 2 2 10 20 99))
+            ((bin (u8 a) (bytes x a) (u8 b) (bytes y b) (bytes rest)) (= y (Bytes.of (list 10 20))))
+            (_ false)))
+  (output (: true Bool)))
+
+(case "constructing a sized bytes segment whose value length differs from the size traps"
+  (doc    "`(bin (bytes (Bytes.of (list 1 2 3)) 2))` splices a three-byte value into a segment declared to
+           be two bytes wide; the declared size and the value's length disagree, so there is no defined
+           encoding and construction traps with reason \"binary value does not fit segment\". Pins that a
+           SIZED `(bytes b n)` build is length-checked against n — the whole-value analogue of the u8
+           out-of-range trap, and the construction-side counterpart of a matching `(bytes body n)` overrun
+           being a non-match.")
+  (needs  binary-matching)
+  (input  (bin (bytes (Bytes.of (list 1 2 3)) 2)))
+  (trap   "binary value does not fit segment"))
+
+; ============================================================================================
+; Protocol round-trips — construct and match are inverse over a whole realistic layout
+; ============================================================================================
+
+(case "a tag-length-value record round-trips through construct then match"
+  (doc    "A TLV record is built `(bin (u8 7) (u16 3) (bytes payload))` — a one-byte tag, a big-endian u16
+           length, then the payload — and matched back with `(bin (u8 7) (u16 n) (bytes body n))`: the
+           literal tag 7 dispatches, the length n = 3 sizes the dependent `body`, which recovers the
+           original payload. Pins the canonical tag-length-value shape in one expression, showing the
+           literal, fixed-width, and dependent-size segments compose into a real record grammar.")
+  (needs  binary-matching)
+  (input  (match (bin (u8 7) (u16 3) (bytes (Bytes.of (list 100 101 102))))
+            ((bin (u8 7) (u16 n) (bytes body n)) (= body (Bytes.of (list 100 101 102))))
+            (_ false)))
+  (output (: true Bool)))
+
+(case "a magic header and a length-prefixed chunk parse together"
+  (doc    "A PNG-style layout — the u32 magic `0x89504E47`, a u32 chunk length, then that many data bytes —
+           is built `(bin (u32 0x89504E47) (u32 2) (bytes data))` and parsed with
+           `(bin (u32 0x89504E47) (u32 len) (bytes body len))`: the literal magic segment gates the parse
+           and the u32 length sizes the chunk body. Pins that a magic-number guard and a dependent-size
+           chunk chain in one pattern — the shape a chunked container format (PNG, RIFF) is read with.")
+  (needs  binary-matching)
+  (input  (match (bin (u32 0x89504E47) (u32 2) (bytes (Bytes.of (list 65 66))))
+            ((bin (u32 0x89504E47) (u32 len) (bytes body len)) (= body (Bytes.of (list 65 66))))
+            (_ false)))
+  (output (: true Bool)))
+
+(case "parsing a length-framed message and rebuilding it yields the original bytes"
+  (doc    "The strongest inverse statement: a length-framed message is matched with
+           `(bin (u16 n) (bytes body n))`, then rebuilt from the bound `n` and `body` with
+           `(bin (u16 n) (bytes body))`, and the rebuilt bytes equal the original frame. Pins that
+           construction and matching are genuinely inverse — parse-then-serialize is the identity on a
+           well-formed frame — not merely that each direction works in isolation.")
+  (needs  binary-matching)
+  (input  (let ((frame (Bytes.of (list 0 3 10 20 30))))
+            (match frame
+              ((bin (u16 n) (bytes body n)) (= (bin (u16 n) (bytes body)) frame))
+              (_ false))))
+  (output (: true Bool)))
+
+(case "a header of packed nibbles and a length-prefixed body round-trips"
+  (doc    "A header packs a 4-bit version and 4-bit flags into one byte, followed by a u16 length and that
+           many payload bytes: built `(bin (bits 1 4) (bits 2 4) (u16 2) (bytes payload))`, matched with
+           `(bin (bits ver 4) (bits flags 4) (u16 n) (bytes body n))`, then rebuilt and compared to the
+           original. Pins that sub-byte bit-fields participate in a full round-trip alongside byte-aligned
+           segments — the mixed bit-and-byte header a wire protocol actually uses.")
+  (needs  binary-matching)
+  (input  (let ((msg (bin (bits 1 4) (bits 2 4) (u16 2) (bytes (Bytes.of (list 9 9))))))
+            (match msg
+              ((bin (bits ver 4) (bits flags 4) (u16 n) (bytes body n))
+               (= (bin (bits ver 4) (bits flags 4) (u16 n) (bytes body)) msg))
+              (_ false))))
+  (output (: true Bool)))
 
 ; ============================================================================================
 ; Exhaustiveness — a match over Bytes needs a catch-all (existing CDZ0210 rule, no special case)

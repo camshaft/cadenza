@@ -37,6 +37,64 @@
   (input  (: (Some 5) Bool))
   (error  CDZ0203))
 
+; The annotation check must also see a mismatch in the PARAMETER of a compound type, not only at the
+; head. `(Some true)` has type `Option Bool`, which cannot unify with `Option Int64` — the head
+; constructor `Option` agrees but the payload type does not, so the annotation contradicts the value's
+; type and MUST be rejected (CDZ0203, type-system.md #Annotations Constrain, Never Contradict: "A
+; program whose annotation cannot be unified with the type inference determines MUST be rejected").
+; An annotation checker that unifies only the head constructor and ignores the type parameter would
+; ACCEPT this ill-typed program and run it, returning `(Some true)` under a declared `Option Int64` —
+; the silent annotation-replaces-inference the section forbids. A generation that does not yet cover
+; the payload-level check DECLINES (reject-don't-miscompile); accepting the program is the failure.
+
+(case "an option value annotated with the wrong payload type is rejected"
+  (doc    "`(: (Some true) (Option Int64))` annotates a `Some true` (type `Option Bool`) as `Option
+           Int64`: the head `Option` matches but the payload `Bool` cannot unify with `Int64`, a
+           contradiction (CDZ0203). Pins that the annotation check descends into a compound type's
+           PARAMETER, not only its head constructor — a checker that stops at the head silently accepts
+           the ill-typed program and runs it, returning `(Some true)` under a wrong declared type
+           (type-system.md #Annotations Constrain, Never Contradict). A generation that does not yet
+           cover the payload-level check declines rather than accepting (reject-don't-miscompile).")
+  (input  (: (Some true) (Option Int64)))
+  (error  CDZ0203))
+
+; The payload-parameter check must RECURSE, at every nesting depth, not only one level down. `(Some (Some
+; 5))` has type `Option (Option Int64)`; annotated `Option (Option Bool)`, the outer `Option` and the
+; inner `Option` heads agree but the innermost payload `Int64` cannot unify with `Bool` — a contradiction
+; two levels deep. It is the same rule as the one-level `(: (Some true) (Option Int64))` case above, so it
+; MUST be rejected (CDZ0203). A checker that descends ONE level into the type parameter but compares the
+; nested payload only by coarse kind (both are `Option`) accepts the ill-typed program and runs it — the
+; deeper-nesting analogue of the head-only gap the one-level case closed. A generation that does not yet
+; recurse into the nested parameter declines rather than accepting (reject-don't-miscompile).
+
+(case "a nested option value annotated with the wrong inner payload type is rejected"
+  (doc    "`(: (Some (Some 5)) (Option (Option Bool)))` annotates a value of type `Option (Option Int64)`
+           as `Option (Option Bool)`: both `Option` heads agree, but the innermost payload `Int64` cannot
+           unify with `Bool` — a contradiction two levels deep (CDZ0203), the same rule as the one-level
+           `(: (Some true) (Option Int64))` case above. Pins that the annotation's payload check RECURSES
+           to any depth, not only one level — a checker that stops after one descent silently accepts the
+           ill-typed program and runs it, returning `(Some (Some 5))` under a wrong declared inner type. A
+           generation that does not yet recurse into the nested parameter declines rather than accepting.")
+  (input  (: (Some (Some 5)) (Option (Option Bool))))
+  (error  CDZ0203))
+
+; The parameter check applies to a LIST's element type too, not only a sum's payload. `(list 1 2)` has
+; type `List Int64`; annotated `List Bool`, the head `List` agrees but the element type `Int64` cannot
+; unify with `Bool` — a contradiction (CDZ0203), the list analogue of the `Option` payload case. A checker
+; that verifies only the head `List` and ignores the element parameter accepts the ill-typed program and
+; runs it, returning `(list 1 2)` under a declared `List Bool`. (A list's elements share one type — the
+; homogeneity rule — so a single provable element type suffices to contradict the annotation.)
+
+(case "a list annotated with the wrong element type is rejected"
+  (doc    "`(: (list 1 2) (List Bool))` annotates a `List Int64` as `List Bool`: the head `List` matches
+           but the element type `Int64` cannot unify with `Bool`, a contradiction (CDZ0203), the list
+           companion of the option-payload case above. Pins that the annotation's parameter check covers a
+           list's element type, not only a sum's payload — a checker that stops at the head `List` silently
+           accepts the ill-typed program and runs it. A generation that does not yet check the element
+           parameter declines rather than accepting (reject-don't-miscompile).")
+  (input  (: (list 1 2) (List Bool)))
+  (error  CDZ0203))
+
 (case "an unannotated program with a valid typing type-checks and runs"
   (doc    "Witnesses type-system.md #An Unannotated Program Is Accepted When It Has A Valid Typing: a
            valid typing need not be written by the author; the program type-checks and evaluates to 3.")
@@ -248,3 +306,54 @@
   (needs  collections)
   (input  (map (a)))
   (error  CDZ0201))
+
+; --- Never — the empty sum, the dual of Unit, the type of a diverging expression ---------------
+; type-system.md #Never Is The Empty Sum: the type universe includes the sum with ZERO variants, the
+; dual of Unit (the empty tuple / zero-field product). Never is UNINHABITED — it has no constructor and
+; no value — so it is only ever a TYPE, never a value a program builds. The type of an expression that
+; DIVERGES rather than producing a value — a `(trap …)`, or `expect` on an absent optional — is Never,
+; and Never UNIFIES WITH ANY EXPECTED TYPE (there is no value to be of the wrong type). The seed already
+; carries this mechanism internally (a divergent expression's kind unifies with any expected kind, so a
+; whole-body-trap function type-checks in any result position); these cases pin the SURFACE property.
+; Tagged `(needs never)` — a FRESH capability the seed does not surface by name — so the behavior gate
+; SKIPS them, pinning the contract a later generation binds (the `Never` prelude name and the zero-arm
+; exhaustive match) rather than forcing the seed to run them.
+
+(case "a diverging expression unifies with an integer position"
+  (doc    "Witnesses type-system.md #Never Is The Empty Sum (3rd sentence: the type of a diverging
+           expression is Never, which unifies with any expected type). In `(if b 1 (trap \"unreachable\"))`
+           the then-branch is Int64 and the else-branch diverges (type Never); the two branches unify to
+           Int64 because Never unifies with any type. With b=true the program yields 1; the else-branch
+           never runs but must TYPE-CHECK. A generation without the Never-unifies rule would reject the
+           branch-type mismatch. Pins that a divergent branch does not spoil a well-typed conditional.")
+  (needs  never)
+  (input  (module m
+            (def (f b) (if b 1 (trap "unreachable")))
+            (def (main) (f true))))
+  (output (: 1 Int64)))
+
+(case "a function whose body always diverges has result type Never"
+  (doc    "Witnesses type-system.md #Never Is The Empty Sum: `bomb` always traps, so its body has type
+           Never; calling it at a use site that expects an Int64 type-checks because Never unifies with
+           any expected type. The call diverges at run time (the trap), so the program's terminal
+           condition is the trap, not a value. Pins that a Never-returning function is callable in a
+           typed position — the honest type for a function that never returns normally.")
+  (needs  never)
+  (input  (module m
+            (def (bomb) (trap "unreachable"))
+            (def (main) (+ 1 (bomb)))))
+  (trap   "unreachable"))
+
+(case "a match on an uninhabited scrutinee is exhaustive with zero arms"
+  (doc    "Witnesses type-system.md #Never Is The Empty Sum (4th sentence: a match on a Never-typed
+           scrutinee is exhaustive with zero arms). `never-returns` has result type Never, so matching
+           its result needs NO arms to cover every variant — there are none — and the zero-arm match is
+           the degenerate BASE CASE of the exhaustiveness rule (core-semantics.md #Matching Is Exhaustive
+           Or Rejected), NOT a CDZ0210 non-exhaustive rejection. The scrutinee diverges before the match,
+           so the program traps. Pins that the empty sum makes a zero-arm match vacuously exhaustive
+           rather than an error.")
+  (needs  never)
+  (input  (module m
+            (def (never-returns) (trap "unreachable"))
+            (def (main) (match (never-returns)))))
+  (trap   "unreachable"))

@@ -47,6 +47,18 @@ An integer operation that overflows its type MUST have a defined, deterministic 
 
 The compiler MUST NOT emit an integer operation whose overflow behavior is undefined.
 
+### An Overflow-Fallible Operation Reports Overflow Rather Than Trapping
+
+An integer type MUST offer, alongside its trapping arithmetic, a named overflow-fallible form of each of addition, subtraction, and multiplication whose result is the exact value wrapped in the present case when it is in range and the absent case when the operation overflows, so that a program can branch on overflow without trapping.
+
+The overflow-fallible form MUST be opted into by name at the operation, so that an author who writes the ordinary operator still gets the trapping outcome and overflow is never silently reported.
+
+### A Wrapping Operation Has A Defined Modular Outcome
+
+An integer type MUST offer a named wrapping form of each of addition, subtraction, and multiplication whose result on overflow is the two's-complement value reduced modulo the type's range, so that modular arithmetic has a defined non-trapping outcome distinct from the trapping default.
+
+The wrapping form MUST be opted into by name at the operation, so that it never displaces the trapping default an unqualified operator selects.
+
 ## Arbitrary Precision
 
 ### An Arbitrary-Precision Integer Has Unbounded Range
