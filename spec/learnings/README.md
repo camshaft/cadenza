@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Compound coverage lands const-first because folding needs no runtime heap — the agree count on compound cases can rise while the hard part hasn't started](./2026-07-07-compound-coverage-lands-const-first-because-folding-needs-no-runtime-heap.md)
+  — the compound frontier advanced 3→6→9 agree, but probing which cases land shows a sharp gradient:
+  `(tuple.0 (tuple 7 9))` (a LITERAL compound projected to a scalar) now agrees, while `(tuple.0 (mk 5))` (project
+  off a runtime-built tuple) and `(f 3)`→`(tuple 3 1)` (return a runtime tuple) both still decline. The order is
+  what each REQUIRES: a const projection folds to `i64.const 7` — the tuple never exists at runtime, no value-heap
+  alloc/renderer; a runtime compound needs the whole value-heap machinery (M2). So "compound coverage" splits into
+  a cheap const-foldable tier and an expensive runtime-heap tier with a big capability gap. Measurement
+  consequence: a rising agree count on compound cases can be ENTIRELY the const tier while the runtime tier (the
+  bulk of the 132, and the cross-file cascade strings/bytes/list ride) sits at zero — track the two tiers
+  separately, and use a literal-vs-call-produced probe pair as the discriminator for which is actually landing.
+  No corpus (both tiers already pinned; that's why the gate shows const landing while runtime holds).
 - [Past zero disagree, the loop maps the decline pile, not the disagree frontier — soundness is a certified negative, coverage is the positive frontier](./2026-07-07-past-zero-disagree-the-loop-maps-the-decline-pile-not-the-disagree-frontier.md)
   — with the gate at 0 disagree, soundness is a certified, self-maintaining negative (any new emit path either
   matches native or the gate catches a fresh disagree), so the loop's measurement pivots to the POSITIVE frontier:
