@@ -10,6 +10,16 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Exhaustiveness hides a bug in the static-scrutinee, present-arm corner — the check must key on the arm set, not the value the scrutinee holds](./2026-07-07-exhaustiveness-hides-a-bug-in-the-static-scrutinee-present-arm-corner.md)
+  — the seed mis-accepted `(match true (true 1))` (non-exhaustive, but the constant scrutinee hit the sole present
+  arm so the static path returned it without checking coverage) while correctly rejecting `(match true (false 0))`.
+  Exhaustiveness has a 2×2 of compile paths — {present-arm, missing-value} × {constant, parameter} scrutinee — and
+  the bug always hides in the static × present-arm corner (a constant whose sole arm names its own value invites a
+  "find the matching arm, done" shortcut that skips the coverage check). The corpus had parameter-scrutinee bool
+  cases + a constant-sum present-arm case, but not the constant-bool present-arm form — exactly the hole the bug
+  sat in. Principle: exhaustiveness is a property of the ARM SET against the TYPE, never of the value the scrutinee
+  holds; a corpus proving "exhaustiveness works" must test the cross product, not the easy diagonal. Added "a bool
+  match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm" → CDZ0210 (gate 573→574).
 - [When your own change moves the denominator, count-deltas lie — isolate the single unit for ground truth](./2026-07-07-when-your-own-change-moves-the-denominator-isolate-the-unit-for-ground-truth.md)
   — the compiler agent's channel reported ask-53 "RESOLVED, agree 79→95, the 9 Bool cases fixed" (implying agree);
   my Run-106 count-flow said they went to decline. Re-deriving hit a confound: I'd ADDED a corpus case (Result.expect,

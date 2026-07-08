@@ -42,6 +42,56 @@
   (input  (let ((x 1) (x (+ x 10))) x))
   (output (: 11 Int64)))
 
+(case "a nested-let chain that reuses each binding folds to one value"
+  (doc    "Each `let` binding is referenced TWICE by the next, ten deep: `a = 1+1`, `b = a+a`, …,
+           result `j+j`. Every binding is used more than once, so a compiler that re-evaluates a
+           binding's initializer on each reference does exponential (2^depth) work; folding each
+           binding ONCE and reusing its value is linear. `(+ j j)` = 2·2^10 = 2048. Pins that a
+           `let` binding denotes a single value shared by all its references (core-semantics.md
+           #The Bindings Of One `let` Take Effect In Order) — the same value whether read once or
+           ten times — so the answer is independent of how the compiler memoizes the fold. (The
+           observable is the value; the doubling structure is what makes a non-memoizing fold blow
+           up, so this doubles as a compile-time-cost regression guard.)")
+  (input  (let ((a (+ 1 1)))
+          (let ((b (+ a a)))
+          (let ((c (+ b b)))
+          (let ((d (+ c c)))
+          (let ((e (+ d d)))
+          (let ((f (+ e e)))
+          (let ((g (+ f f)))
+          (let ((h (+ g g)))
+          (let ((i (+ h h)))
+          (let ((j (+ i i)))
+            (+ j j))))))))))))
+  (output (: 2048 Int64)))
+
+(case "a deep chain of runtime-list let-bindings compiles and returns the final length"
+  (doc    "The RUNTIME (heap-valued) companion of the fold above: twelve nested `let`s, each binding a
+           runtime `list` grown from the previous by `List.push`, ending in `(List.len l12)` = 12. Each
+           binding is a genuine value-heap handle (not a compile-time constant), so it is materialized
+           as a real local — but the compiler captures the enclosing scope at each `let` for name
+           resolution, and if that capture DEEP-CLONES the environment, the nested captures nest
+           ~2^depth copies and compilation blows its memory (the 'compile is 2ⁿ in `let` nesting'
+           ceiling). Sharing the captured environment makes the cost linear in depth. Pins that a deep
+           chain of runtime-compound `let`s compiles at all (and to the right value) — the shape a
+           compiler's threaded state / accumulator passes take. The observable is 12; the DEPTH is the
+           compile-time-cost regression guard (this depth exhausted memory before the fix).")
+  (needs  collections)
+  (input  (let ((l1  (List.push (list) 1)))
+          (let ((l2  (List.push l1 2)))
+          (let ((l3  (List.push l2 3)))
+          (let ((l4  (List.push l3 4)))
+          (let ((l5  (List.push l4 5)))
+          (let ((l6  (List.push l5 6)))
+          (let ((l7  (List.push l6 7)))
+          (let ((l8  (List.push l7 8)))
+          (let ((l9  (List.push l8 9)))
+          (let ((l10 (List.push l9 10)))
+          (let ((l11 (List.push l10 11)))
+          (let ((l12 (List.push l11 12)))
+            (List.len l12))))))))))))))
+  (output (: 12 Int64)))
+
 (case "resolving a name in a shadowing environment returns the innermost binding's slot"
   (doc    "The compiler-internal SCOPE-RESOLUTION idiom behind lexical shadowing (the value-level cases
            above pin the observable; this pins how a name resolver realizes it). A name environment is a
@@ -437,6 +487,61 @@
             (else  200)))
   (output (: 100 Int64)))
 
+; --- Requiring the value of an optional at run time -------------------------------------------
+; core-semantics.md #Requiring The Value Of An Optional Traps On Absence: `Option.expect` (and its
+; Result twin) unwraps the present variant's payload or traps on absence. The cases above exercise
+; it only on COMPILE-TIME-CONSTANT optionals (a literal slice/index). These pin it on a RUNTIME
+; optional — a parameter, or a value a runtime operation produced — where present/absent is decided
+; at run time by the sum's discriminant, not folded. This is the compiler's unwrap-or-trap idiom:
+; assert a `List.at`/`Bytes.at`/`checked-*` result is present, taking its value or trapping.
+
+(case "expect unwraps the present case of a runtime optional"
+  (doc    "`(g (Some 7))` calls `(g o) = (Option.expect o \"m\")` on a RUNTIME optional (the parameter
+           `o`, not a constant): the discriminant says Some at run time, so expect yields its payload 7.
+           Pins expect on an optional whose present/absent is decided at run time — the unwrap-or-trap
+           idiom over a value the compiler cannot fold, distinct from expect on a literal optional.")
+  (input  (module m
+            (def (g o) (Option.expect o "m"))
+            (def (main) (g (Some 7)))))
+  (output (: 7 Int64)))
+
+(case "expect traps on the absent case of a runtime optional"
+  (doc    "The absent companion: `(g (None unit))` on the same `(Option.expect o \"m\")` sees the None
+           discriminant at run time, so expect traps rather than producing a value (core-semantics.md
+           #Requiring The Value Of An Optional Traps On Absence). The terminal condition is the trap.")
+  (input  (module m
+            (def (g o) (Option.expect o "m"))
+            (def (main) (g (None unit)))))
+  (trap   "m"))
+
+(case "expect makes a checked-arithmetic result trap on overflow"
+  (doc    "The compiler idiom expect exists for: turn a non-trapping `Int64.checked-add` into a TRAPPING
+           add. `(add-ck a b) = (Option.expect (Int64.checked-add a b) \"overflow\")` yields the sum when
+           in range — `(add-ck 20 22)` = 42, usable directly in arithmetic. Pins expect on a RUNTIME
+           `Option<Int64>` a runtime operation produced, unboxing to the Int64 payload.")
+  (input  (module m
+            (def (add-ck a b) (Option.expect (Int64.checked-add a b) "overflow"))
+            (def (main) (+ (add-ck 20 22) (add-ck 1 1)))))
+  (output (: 44 Int64)))
+
+(case "expect on an overflowing checked add traps"
+  (doc    "The overflow companion: `(add-ck Int64.max 1)` computes a checked add that overflows, so its
+           `Option<Int64>` is None and expect traps — the overflow-trapping arithmetic expect+checked
+           compose into. Contrast `(Int64.wrapping-add Int64.max 1)`, which wraps to MIN without trapping.")
+  (input  (module m
+            (def (add-ck a b) (Option.expect (Int64.checked-add a b) "overflow"))
+            (def (main) (add-ck Int64.max 1))))
+  (trap   "overflow"))
+
+(case "expect unwraps the ok case of a runtime result"
+  (doc    "`Result.expect` is the Result twin of `Option.expect`: `(g (Ok 99))` on `(Result.expect r \"m\")`
+           sees the Ok discriminant at run time and yields its payload 99; the Err case would trap. Pins
+           expect on a runtime Result, the same unwrap-or-trap accessor over the two-variant Result sum.")
+  (input  (module m
+            (def (g r) (Result.expect r "m"))
+            (def (main) (g (Ok 99)))))
+  (output (: 99 Int64)))
+
 (case "matching falls through to else when no literal matches"
   (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: when no literal pattern
            matches, the else (wildcard) catches it. Without else, a non-exhaustive match traps.")
@@ -474,6 +579,20 @@
   (input  (module m
             (def (f b) (match b (false 0)))
             (def (main) (f true))))
+  (error  CDZ0210))
+
+(case "a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm"
+  (doc    "`(match true (true 1))` — the scrutinee is the COMPILE-TIME CONSTANT `true`, and the sole arm
+           `true` is exactly the value it holds. Exhaustiveness is still checked against the TYPE's value
+           set (both `true` and `false`), not against which value the constant scrutinee happens to be:
+           the arm set leaves `false` uncovered and there is no wildcard, so the match is non-exhaustive
+           and the compiler MUST reject it (CDZ0210). This is the constant-scrutinee, present-arm form —
+           distinct from the parameter-scrutinee cases above (a dynamic scrutinee) and the companion of
+           the constant-sum present-arm case below: a static-scrutinee compile path that returns the arm
+           the constant matches must NOT skip the arm-set-vs-type exhaustiveness check just because the
+           constant hit a present arm. Exhaustiveness is a property of the arm set against the type, not
+           of the scrutinee's value.")
+  (input  (match true (true 1)))
   (error  CDZ0210))
 
 ; A sum type's value set is its variant set, so exhaustiveness for a sum match is checked against
