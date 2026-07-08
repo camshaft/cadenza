@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Coded diagnostics land first where exhaustiveness is provable from the type alone — bool before user-sum, and a payload that carries the code, not a flag](./2026-07-07-coded-diagnostics-land-first-where-exhaustiveness-is-provable-from-the-type-alone.md)
+  — the self-hosted `Diag` channel's `KError` payload generalized from a 0/1 decline/reject FLAG to the actual CDZ
+  CODE, and the compiler detected a new family: a one-arm bool match → CDZ0210, reaching AGREE *by code* (matching
+  native). Byte gate agree 95→98, disagree 96→92; isolation-verified both the param and my Run-108 const-bool case
+  now agree (the case I added as an under-reject last cycle flipped to agree as the check landed). The residual
+  CDZ0210 disagreements are all user-SUM non-exhaustive (ask-13). The split is the point: bool exhaustiveness is
+  provable from the TYPE ALONE (exactly two values), user-sum needs the declared VARIANT SET the compiler doesn't
+  yet track — SAME code, ordered by whether the value-set size is a constant or a lookup. Lessons: a rejection
+  family sharing one code is several units of work ordered by what each premise needs (type-structure-provable
+  land first, declared-set lookups wait); and a channel carrying a FLAG isn't yet carrying diagnostics —
+  generalize the payload to the CODE early, because only then is the data path proven to carry real per-diagnostic
+  data end-to-end. No corpus (bool cases pinned + now agree; user-sum cases pinned as ask-13 under-rejects).
 - [Exhaustiveness hides a bug in the static-scrutinee, present-arm corner — the check must key on the arm set, not the value the scrutinee holds](./2026-07-07-exhaustiveness-hides-a-bug-in-the-static-scrutinee-present-arm-corner.md)
   — the seed mis-accepted `(match true (true 1))` (non-exhaustive, but the constant scrutinee hit the sole present
   arm so the static path returned it without checking coverage) while correctly rejecting `(match true (false 0))`.
