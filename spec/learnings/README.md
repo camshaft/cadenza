@@ -10,6 +10,17 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Settledness is the artifact ceasing to change, not the metric trending toward good — a converging count on a live file is still noise](./2026-07-07-settledness-is-the-artifact-not-changing-not-the-metric-trending-good.md)
+  — caught compiler.cdz mid-M2-work: byte gate 70 disagree (all traps, compound-heavy) then 33 a minute later —
+  a FALLING count that reads like a regression being fixed in real time. It wasn't: the file was being actively
+  rewritten (mtime advancing, size climbing), each emit a different half-wired snapshot. Polling the file's mtime
+  to quiescence (3 consecutive stable reads, ~60s) then emitting → 0 disagree, agree 134→136, fully sound. The
+  70/33 were pure noise. Sharpens the "timeout is triage not verdict" rule (Run 82/102/119): a CONVERGING metric
+  is the most dangerous mid-edit read because it mimics a recovery trajectory and invites a false regression
+  narrative. The discriminator for "may I record this?" is NOT is-the-number-good/stable-looking but has-the-
+  ARTIFACT-settled (watch mtime/size, independent of the metric) — refuse to interpret any count from a
+  still-changing file, poll to quiescence, measure once. Would have filed a false "70-disagree regression" on the
+  agent's in-flight M2 work. No corpus (loop measurement discipline).
 - [Coverage advances through two doors — decline→agree (byte-identical) and decline→soft (value-correct, byte-differ) — and the soft door opening is its own milestone](./2026-07-07-coverage-advances-through-two-doors-decline-to-agree-and-decline-to-soft.md)
   — after cycles of const-fold agree gains, this cycle agree held (134) but SOFT jumped 26→37 (decline 421→410) —
   real compiler.cdz progress (emitted component differs, corpus stable): ~11 runtime-SCALAR function/binding cases
