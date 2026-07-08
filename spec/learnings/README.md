@@ -10,6 +10,18 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The self-hosting differential gate reached zero disagree — the residual is honest declines and soft byte-differences, not miscompiles](./2026-07-07-the-self-hosting-differential-gate-reached-zero-disagree.md)
+  — the self-hosted compiler component reached **120 agree / 0 disagree / 25 soft / 434 decline**
+  (`COMPONENT-CHECK: PASS`); the last cluster (ask-56, int/float→CDZ0301 via a float/numeric kind) fell, discriminator
+  holding both ways. The durable content is HOW: the ask-30 frontier fell as a sequence of reject-don't-miscompile
+  rungs (under-reject → decline via the conservative check; decline→crash→decline via ask-55; →reject-with-code via
+  coded diagnostics; →reject-right-code via ask-56), each separately measured and audited on the four-bucket flow —
+  several times the raw disagree count moved right while the state was lateral/worse (Bool→decline-not-agree; float
+  85→22 while introducing 22 crashes), caught by reading the flow and isolating cases, not the headline. What 0
+  disagree means: SOUNDNESS (never a wrong answer on what it handles), NOT completeness (434 declines = the
+  remaining coverage, each an honestly-refused unimplemented feature). The gate proves a negative — correctness
+  never traded for coverage — and its honesty is showing rising-agree AND large-decline AND zero-disagree
+  separately, not one "percent passing." No corpus (measured over the existing corpus).
 - [A right rejection with the wrong code is the finest-grained diagnostic gap — the last rung before agree is category resolution, and it's a lattice question](./2026-07-07-a-right-rejection-with-the-wrong-code-is-the-finest-grained-diagnostic-gap.md)
   — ask-55's fix took int/float-mix cases crash→reject, and the 14 remaining disagrees collapsed to one class:
   `native=CDZ0301, comp=diagnostics[CDZ0201]` — right rejection, wrong CODE. Native distinguishes CDZ0301 (both
