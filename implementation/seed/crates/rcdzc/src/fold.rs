@@ -277,7 +277,7 @@ pub fn collect_reached_poisons<'a>(mir: &'a Mir, out: &mut Vec<&'a Reject>) {
         // shielded runtime trap, not an unconditional build failure.
         Mir::Lambda { .. } => {}
         Mir::FuncRef(_) | Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_)
-        | Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Local(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) => {}
+        | Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Local(_) | Mir::TypeVal(_) => {}
     }
 }
 
@@ -313,7 +313,7 @@ impl Ctx<'_> {
             // local — a param slot or captured outer local, handled by substitution, not renaming).
             Mir::Local(id) => Mir::Local(remap.get(&id).copied().unwrap_or(id)),
             Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Error(_) | Mir::FuncRef(_)
-            | Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) => mir,
+            | Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_) | Mir::TypeVal(_) => mir,
             Mir::Let { id, value_ty, value, body } => {
                 // The bound VALUE is in the OUTER scope (the binder is not visible in it) — rename it
                 // under the current remap. Then give the binder a fresh id and rename the body under the
@@ -474,10 +474,9 @@ impl Ctx<'_> {
     fn fold(&self, mir: Mir) -> Mir {
         match mir {
             // Leaves — already fully reduced. `Error` is already a poison. `Str` is a heap-const leaf.
-            // TypeVal/TypeCtor are compile-time-only leaves — they should never reach here (the fence
-            // rejects them). Lambda is a transient compile-time value — already reduced (its application
-            // is β-reduction).
-            Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Local(_) | Mir::Error(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) | Mir::Lambda { .. } => mir,
+            // TypeVal is a compile-time-only leaf — it should never reach here (the fence rejects it).
+            // Lambda is a transient compile-time value — already reduced (its application is β-reduction).
+            Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Local(_) | Mir::Error(_) | Mir::TypeVal(_) | Mir::Lambda { .. } => mir,
 
             Mir::Arith(op, a, b) => self.fold_arith(op, self.fold(*a), self.fold(*b)),
             Mir::Bit(op, a, b) => self.fold_bit(op, self.fold(*a), self.fold(*b)),
@@ -634,8 +633,7 @@ impl Ctx<'_> {
             }
 
             // A bare function value / intrinsic / constructor — reduced only in an `Apply` (or projected
-            // out of a record). A survivor is not runtime-emittable; `select` declines it. (TypeCtor is
-            // already handled in the leaf catch-all above, alongside TypeVal/Lambda.)
+            // out of a record). A survivor is not runtime-emittable; `select` declines it.
             Mir::FuncRef(i) => Mir::FuncRef(i),
             Mir::Intrinsic(op) => Mir::Intrinsic(op),
             Mir::Ctor { def, index } => Mir::Ctor { def, index },
@@ -740,9 +738,14 @@ impl Ctx<'_> {
                     }
                     // Apply of an INTRINSIC over all-CONSTANT args folds to the op's constant result
                     // (the op matches the value shapes it expects — not assumed integer); otherwise the
-                    // applied intrinsic stays for `select` to lower to wasm instructions.
+                    // applied intrinsic stays for `select` to lower to wasm instructions. The gate also
+                    // admits `Mir::TypeVal` args so the Layer 2 type-builder intrinsics (`TypeList`/…)
+                    // fold `(List Int64)` → `TypeVal(Ty::List(Int))`. Safe: a non-type-builder op handed a
+                    // `TypeVal` returns `None` from `fold_const` (each arm matches only its own value
+                    // shapes) and stays residual — and mixing a `TypeVal` into a value op is a `Ty`
+                    // mismatch caught at infer, so that never occurs in well-typed code.
                     Mir::Intrinsic(op) => {
-                        if all_args.iter().all(is_const) {
+                        if all_args.iter().all(|a| is_const(a) || matches!(a, Mir::TypeVal(_))) {
                             if let Some(v) = op.fold_const(&all_args) {
                                 return v;
                             }
@@ -758,40 +761,6 @@ impl Ctx<'_> {
                         let payload = all_args.into_iter().next().unwrap_or(Mir::Unit);
                         let payload_ty = mir_shape_ty(&payload);
                         Mir::Sum { def, disc, payload_ty, payload: Box::new(payload) }
-                    }
-                    // Apply of a TYPE CONSTRUCTOR builds a compound TypeVal — Layer 2 parametric types.
-                    // `(List Int64)` → `TypeVal(Ty::List(Int))`. The args must ALL be TypeVals (type-value
-                    // arguments); extract their `Ty`s and construct the compound type. This is the β-reduction
-                    // that makes `(: e (List Int64))` work: the annotation's RHS folds to a TypeVal.
-                    Mir::TypeCtor(kind) => {
-                        use crate::ir::TypeCtorKind;
-                        // Extract the Ty from each TypeVal argument.
-                        let arg_tys: Vec<crate::ty::Ty> = all_args.iter().filter_map(|a| match a {
-                            Mir::TypeVal(ty) => Some(ty.clone()),
-                            _ => None,
-                        }).collect();
-                        // If not all args are TypeVals, decline (malformed / not-a-type-ctor-application).
-                        if arg_tys.len() != all_args.len() {
-                            return Mir::Apply { func: Box::new(Mir::TypeCtor(kind)), args: all_args };
-                        }
-                        // Build the compound TypeVal based on the constructor kind and argument types.
-                        let compound_ty = match (kind, arg_tys.as_slice()) {
-                            (TypeCtorKind::List, [elem]) => crate::ty::Ty::List(Box::new(elem.clone())),
-                            (TypeCtorKind::Set, [elem]) => crate::ty::Ty::Set(Box::new(elem.clone())),
-                            (TypeCtorKind::Map, [k, v]) => crate::ty::Ty::Map(Box::new(k.clone()), Box::new(v.clone())),
-                            (TypeCtorKind::Tuple2, [a, b]) => crate::ty::Ty::Tuple(vec![a.clone(), b.clone()]),
-                            (TypeCtorKind::Option, [a]) => crate::ty::Ty::Sum {
-                                def: crate::ty::prelude_option(),
-                                args: vec![a.clone()],
-                            },
-                            (TypeCtorKind::Result, [a, e]) => crate::ty::Ty::Sum {
-                                def: crate::ty::prelude_result(),
-                                args: vec![a.clone(), e.clone()],
-                            },
-                            // Arity mismatch or unsupported form — leave as Apply; `select` declines it.
-                            _ => return Mir::Apply { func: Box::new(Mir::TypeCtor(kind)), args: all_args },
-                        };
-                        Mir::TypeVal(compound_ty)
                     }
                     // The applied value did not resolve to a function reference or intrinsic — not
                     // supported. Leave the `Apply`; `select` declines it.
@@ -961,7 +930,7 @@ fn is_const(m: &Mir) -> bool {
 /// fold's compile-time-value predicate to admit TypeVal enables type-constructor applications to reduce.
 fn is_transient(m: &Mir) -> bool {
     match m {
-        Mir::Ctor { .. } | Mir::FuncRef(_) | Mir::Intrinsic(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) | Mir::Lambda { .. } => true,
+        Mir::Ctor { .. } | Mir::FuncRef(_) | Mir::Intrinsic(_) | Mir::TypeVal(_) | Mir::Lambda { .. } => true,
         // A residual partial application: `Apply(<transient fn value>, args)` — its callee is a
         // FuncRef/Lambda (directly, or itself a residual partial application via spine).
         Mir::Apply { func, .. } => matches!(func.as_ref(), Mir::FuncRef(_) | Mir::Lambda { .. })
@@ -1122,7 +1091,7 @@ fn max_local_id(mir: &Mir) -> Option<u32> {
                 go(else_, max);
             }
             Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Error(_) | Mir::FuncRef(_)
-            | Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) => {}
+            | Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_) | Mir::TypeVal(_) => {}
         }
     }
     let mut max = None;
@@ -1137,7 +1106,7 @@ fn substitute(mir: Mir, id: u32, value: &Mir) -> Mir {
     match mir {
         Mir::Local(i) if i == id => value.clone(),
         Mir::Local(_) | Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Error(_) | Mir::FuncRef(_)
-        | Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) => mir,
+        | Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_) | Mir::TypeVal(_) => mir,
         Mir::Sum { def, disc, payload_ty, payload } => Mir::Sum {
             def,
             disc,
@@ -1313,8 +1282,8 @@ fn collect_calls(mir: &Mir, out: &mut Vec<usize>) {
         // A lambda body can close a call cycle (a recursive closure) → descend so a lambda-closed
         // recursive call is detected (and the callee not wrongly inlined into non-termination).
         Mir::Lambda { body, .. } => collect_calls(body, out),
-        // An intrinsic / ctor / wildcard / trap / str-literal / type-value / type-ctor references no module function.
+        // An intrinsic / ctor / wildcard / trap / str-literal / type-value references no module function.
         Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_)
-        | Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Local(_) | Mir::Error(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) => {}
+        | Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Local(_) | Mir::Error(_) | Mir::TypeVal(_) => {}
     }
 }

@@ -58,18 +58,21 @@ fn build() -> Prelude {
     p.insert("Bool".to_string(), Hir::TypeVal(crate::ty::Ty::Bool));
     p.insert("Unit".to_string(), Hir::TypeVal(crate::ty::Ty::Unit));
 
-    // ── Layer 2: parametric type constructors as first-class compile-time values. Each parametric
-    //    type name (`List`, `Map`, `Set`, `Tuple`, `Option`, `Result`) is a `TypeCtor` value that, when
-    //    applied to type-value arguments, β-reduces to a TypeVal of the constructed type. `(List Int64)`
-    //    → `TypeVal(Ty::List(Int))`. The fold handles the β-reduction. ──
-    use crate::ir::TypeCtorKind;
-    p.insert("List".to_string(), Hir::TypeCtor(TypeCtorKind::List));
-    p.insert("Map".to_string(), Hir::TypeCtor(TypeCtorKind::Map));
-    p.insert("Set".to_string(), Hir::TypeCtor(TypeCtorKind::Set));
-    p.insert("Tuple".to_string(), Hir::TypeCtor(TypeCtorKind::Tuple2)); // 2-arity for now
-    // Option and Result are already in the prelude as sum constructors; we need to also bind them as
-    // type constructors for use in type position. For now, skip them (they're handled via parse_type_expr
-    // which we'll delete after this works).
+    // ── Layer 2: parametric type constructors as first-class compile-time VALUES — each bound to its
+    //    own `Intrinsic` singleton (nominal identity IS the enum variant, mirroring the scalar TypeVals
+    //    above and the sum singletons below). Applied to type-value args, the op's `fold_const` builds
+    //    the compound `Ty`. `(List Int64)` → `TypeVal(Ty::List(Int))`. `List`/`Map`/`Set` ALSO name
+    //    their operation MODULE RECORD (inserted below); the collision is resolved in resolve.rs — a
+    //    bare-name → the type-builder Intrinsic, member access `(. List push)` → the record field.
+    //    `Tuple` has no module record; `Option`/`Result` also name their ctor records. So these inserts
+    //    are DEAD in the prelude map (overwritten by the records) and exist only for documentation — the
+    //    live bare-name routing is resolve.rs's special-case block. ──
+    p.insert("List".to_string(), Hir::Intrinsic(Intrinsic::TypeList));
+    p.insert("Map".to_string(), Hir::Intrinsic(Intrinsic::TypeMap));
+    p.insert("Set".to_string(), Hir::Intrinsic(Intrinsic::TypeSet));
+    p.insert("Tuple".to_string(), Hir::Intrinsic(Intrinsic::TypeTuple));
+    p.insert("Option".to_string(), Hir::Intrinsic(Intrinsic::TypeOption));
+    p.insert("Result".to_string(), Hir::Intrinsic(Intrinsic::TypeResult));
 
     // ── The prelude SUM types. Declaration order fixes discriminants (Option Some=0/None=1, …). A type
     //    NAME binds to a record of its constructor values (`(. Sign Pos)` = record projection); an

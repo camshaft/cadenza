@@ -12,7 +12,7 @@
 //! Instructions), not at emit.
 
 use crate::diag::Code;
-use crate::ir::{ArithOp, BitOp, CmpOp, Export, Hir, HirFunc, HirModule, Reject, ShiftOp};
+use crate::ir::{ArithOp, BitOp, CmpOp, Export, Hir, HirFunc, HirModule, Intrinsic, Reject, ShiftOp};
 use crate::ty::{SumDef, SumRef, Ty, VariantDef};
 use cdz_compiler::ast::Node;
 use std::collections::HashMap;
@@ -706,14 +706,25 @@ impl<'a> BodyResolver<'a> {
                     // `Bytes`, `Unit`) resolves to a `TypeVal` (typed as `Ty::Type`), not its operation
                     // record — so `(let ((t Int64)) t)` → `(: Int64 Type)`. BUT `(. Int64 wrapping-add)`
                     // still works: member access reads the record directly (below). This dual-role is the
-                    // least-invasive L1 wiring; L2 will unify both under `(meta t)` keys. Parametric types
-                    // (`List`, `Option`, etc.) stay as records for now (that's L2).
+                    // least-invasive L1 wiring.
+                    // ⚡ Layer 2 first-class types: a BARE parametric type name (`List`/`Map`/`Set`/`Tuple`/
+                    // `Option`/`Result`) resolves to its TYPE-BUILDER INTRINSIC (the head of `(List Int64)`,
+                    // or a bare `List` value). This is a dual-role parallel to the scalars: member access
+                    // `(. List push)` / `(. Option Some)` still projects the operation/ctor RECORD via the
+                    // separate `member()` path (it never enters this arm), and applying `(List Int64)` folds
+                    // the builder intrinsic to `TypeVal(Ty::List(Int))`.
                     match name.as_str() {
                         "Int64" => Hir::TypeVal(crate::ty::Ty::Int),
                         "Bool" => Hir::TypeVal(crate::ty::Ty::Bool),
                         "String" => Hir::TypeVal(crate::ty::Ty::String),
                         "Bytes" => Hir::TypeVal(crate::ty::Ty::Bytes),
                         "Unit" => Hir::TypeVal(crate::ty::Ty::Unit),
+                        "List" => Hir::Intrinsic(Intrinsic::TypeList),
+                        "Map" => Hir::Intrinsic(Intrinsic::TypeMap),
+                        "Set" => Hir::Intrinsic(Intrinsic::TypeSet),
+                        "Tuple" => Hir::Intrinsic(Intrinsic::TypeTuple),
+                        "Option" => Hir::Intrinsic(Intrinsic::TypeOption),
+                        "Result" => Hir::Intrinsic(Intrinsic::TypeResult),
                         _ => node.clone(),
                     }
 

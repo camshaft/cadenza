@@ -871,6 +871,55 @@ fn layer1_type_values() {
     assert!(out.component().is_some(), "a type-value local should bind: {:?}", out.diagnostics);
 }
 
+/// Layer 2 first-class parametric types: `(: e (List Int64))` and friends type-check via the
+/// type-builder Intrinsics (List/Map/Set/Tuple/Option/Result bound as prelude Intrinsic singletons,
+/// their `fold_const` building the compound Ty). A matching annotation compiles; a mismatch is CDZ0203.
+#[test]
+fn layer2_parametric_type_annotations() {
+    // Matching compound annotations compile. (A bare Set/Map cannot render at the run boundary yet —
+    // an unrelated later phase — so those two are wrapped in a `size` op, exactly as the existing
+    // `map_set_forms_compile` test does; the annotation machinery is still fully exercised.)
+    for body in [
+        "(: (list 1 2 3) (List Int64))",
+        "(Set.size (: (set 1 2) (Set Int64)))",
+        "(Map.size (: (map (1 2)) (Map Int64 Int64)))",
+        "(: (tuple 1 true) (Tuple Int64 Bool))",
+        "(: (Some 42) (Option Int64))",
+    ] {
+        let out = compile_program(&program_v2(body));
+        assert!(out.component().is_some(),
+            "expected {body:?} to compile: {:?}", out.diagnostics);
+    }
+
+    // Element-type mismatch inside a compound annotation is CDZ0203.
+    for body in [
+        "(: (list 1 2) (List Bool))",
+        "(: (tuple 1 2) (Tuple Int64 Bool))",
+        "(: (Some 42) (Option Bool))",
+    ] {
+        let out = compile_program(&program_v2(body));
+        assert!(out.component().is_none(), "{body:?} should be rejected");
+        assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0203"),
+            "{body:?} should be CDZ0203");
+    }
+}
+
+/// A bare, unapplied parametric type constructor cannot cross to runtime — it declines (UNCODED),
+/// like any bare intrinsic; and a type-value it builds leaking to runtime is the erasure fence
+/// (CDZ0305). Neither is a coded reject on a *valid* program — this is decline/fence discipline.
+#[test]
+fn layer2_type_ctor_as_value_declines() {
+    // A type-value returned from main must hit the erasure fence (CDZ0305), not emit.
+    let out = compile_program(&program_v2("(List Int64)"));
+    assert!(out.component().is_none(), "a bare type-value cannot cross to runtime");
+    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0305"));
+
+    // A type-builder bound to a local (never crossing to runtime) is fine — it inlines (is_transient).
+    let out = compile_program(&program_v2("(let ((l List)) 42)"));
+    assert!(out.component().is_some(),
+        "a type-builder bound but not run should compile: {:?}", out.diagnostics);
+}
+
 /// Layer 1: `(const e)` asserts `e` fully compile-time-reduces. A constant integer compiles; a
 /// runtime expression should eventually be rejected by the fence (though for Layer 1, the fence
 /// logic isn't fully implemented yet — we're just ensuring the form parses and types).

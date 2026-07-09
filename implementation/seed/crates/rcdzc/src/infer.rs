@@ -575,19 +575,6 @@ impl<'a> Infer<'a> {
                 // Used in `(: e T)`: the `T` infers to `Type`, its represented `Ty` is extracted.
                 Ok(Typed { node: TypedNode::TypeVal(ty.clone()), ty: Ty::Type })
             }
-            Hir::TypeCtor(kind) => {
-                // A parametric type constructor — `List`, `Map`, `Set`, `Tuple2`, `Option`, `Result`.
-                // Layer 2: these are first-class compile-time values typed as functions from Type(s) to Type.
-                // `List : Type → Type`, `Map : Type → Type → Type`, etc. When applied to TypeVal arguments,
-                // they β-reduce to a TypeVal of the constructed type (the fold handles this).
-                use crate::ir::TypeCtorKind;
-                let params = match kind {
-                    TypeCtorKind::List | TypeCtorKind::Set | TypeCtorKind::Option => vec![Ty::Type],
-                    TypeCtorKind::Map | TypeCtorKind::Result | TypeCtorKind::Tuple2 => vec![Ty::Type, Ty::Type],
-                };
-                let ty = Ty::Fn(params, Box::new(Ty::Type));
-                Ok(Typed { node: TypedNode::TypeCtor(*kind), ty })
-            }
             Hir::Annot(e, t) => {
                 // `(: e T)` — annotate `e` with type `T`. Infer `T` (must be `Ty::Type`-typed), extract
                 // its represented `Ty`, unify with `e`'s type (mismatch → CDZ0203). The node's type is
@@ -595,10 +582,11 @@ impl<'a> Infer<'a> {
                 // already happened).
                 //
                 // ⚡Layer 2 change: parametric type expressions — `(Option Int64)`, `(List Bool)`,
-                // `(Tuple A B)` — now ALSO type-check: they're `Apply(TypeCtor, [TypeVal, …])` which the
-                // fold β-reduces to a TypeVal. So infer `t`, check it's `Ty::Type`-typed, and after the
-                // fold it will be a TypeVal node we can extract the Ty from. If not a TypeVal after fold,
-                // decline (a malformed / not-a-type RHS).
+                // `(Tuple A B)` — now ALSO type-check: they're `Apply(Intrinsic(TypeList/…), [TypeVal, …])`
+                // where the head is a type-builder intrinsic. So infer `t`, check it's `Ty::Type`-typed,
+                // and extract the constructed `Ty` via `extract_type_value` (which reduces the builder-
+                // intrinsic application inline). If it doesn't reduce to a type-value, decline (a
+                // malformed / not-a-type RHS — an UNCODED decline, never a coded reject).
                 let tt = match self.expr(t) {
                     Ok(tt) if matches!(self.subst.apply(&tt.ty), Ty::Type) => tt,
                     _ => {
@@ -607,9 +595,9 @@ impl<'a> Infer<'a> {
                         ))
                     }
                 };
-                // Extract the Ty from the TypeVal node. Layer 2: for parametric types like `(List Int64)`,
-                // the node is `Apply(TypeCtor, [TypeVal...])`. We need to β-reduce it here during inference
-                // (before the main fold pass) to extract the constructed type. Call a helper to do this.
+                // Extract the Ty. Layer 2: for parametric types like `(List Int64)` the node is
+                // `Apply(Intrinsic(TypeList), [TypeVal…])`; `extract_type_value` reduces it via the shared
+                // `build_compound_ty` helper (the same builder `fold_const` uses at fold time).
                 let target_ty = match extract_type_value(&tt.node) {
                     Some(ty) => ty,
                     None => return Err(Reject::decline("annotation type did not reduce to a type-value")),
@@ -947,7 +935,7 @@ fn default_all_vars(ty: &Ty) -> Ty {
 fn hir_uses_local(h: &Hir) -> bool {
     match h {
         Hir::Local(_) => true,
-        Hir::Int(_) | Hir::Bool(_) | Hir::Str(_) | Hir::Unit | Hir::FuncRef(_) | Hir::Intrinsic(_) | Hir::Error(_) | Hir::TypeVal(_) | Hir::TypeCtor(_) => false,
+        Hir::Int(_) | Hir::Bool(_) | Hir::Str(_) | Hir::Unit | Hir::FuncRef(_) | Hir::Intrinsic(_) | Hir::Error(_) | Hir::TypeVal(_) => false,
         // A constructor value, a wildcard, and a trap reference no local; a match may in its scrutinee
         // or arm bodies.
         Hir::Ctor { .. } | Hir::Wildcard | Hir::Trap(_) => false,
@@ -1101,7 +1089,6 @@ fn finalize(subst: &Subst, typed: Typed) -> Result<Typed, Reject> {
             body: Box::new(finalize(subst, *body)?),
         },
         TypedNode::TypeVal(ty) => TypedNode::TypeVal(ty),
-        TypedNode::TypeCtor(kind) => TypedNode::TypeCtor(kind),
         TypedNode::Annot(e, t) => TypedNode::Annot(
             Box::new(finalize(subst, *e)?),
             Box::new(finalize(subst, *t)?),
@@ -1111,46 +1098,27 @@ fn finalize(subst: &Subst, typed: Typed) -> Result<Typed, Reject> {
     Ok(Typed { node, ty })
 }
 
-/// Extract the `Ty` from a type-valued TypedNode, β-reducing TypeCtor applications inline. This is
-/// Layer 2's mechanism for handling parametric type annotations: `(: e (List Int64))` infers the RHS
-/// as `Apply(TypeCtor(List), [TypeVal(Int)])`, and we need to extract `Ty::List(Int)` here during
-/// inference (before the main fold pass). A bare `TypeVal` is returned directly; an `Apply(TypeCtor, ...)`
-/// is β-reduced to extract the constructed type; anything else returns `None` (not a type-value).
+/// Extract the `Ty` from a type-valued TypedNode, β-reducing a type-builder-intrinsic application
+/// inline. This is Layer 2's mechanism for handling parametric type annotations: `(: e (List Int64))`
+/// infers the RHS as `Apply(Intrinsic(TypeList), [TypeVal(Int)])`, and we need to extract `Ty::List(Int)`
+/// here during inference (before the main fold pass). A bare `TypeVal` is returned directly; an
+/// `Apply(Intrinsic, …)` whose op is a type builder delegates to the SHARED `build_compound_ty` helper
+/// (also used by `fold_const` at fold time — so the two paths cannot drift). Anything else → `None`.
 fn extract_type_value(node: &TypedNode) -> Option<Ty> {
     match node {
-        // A bare TypeVal — return its Ty directly.
         TypedNode::TypeVal(ty) => Some(ty.clone()),
-        // An Apply whose func is a TypeCtor — β-reduce it to extract the constructed type.
+        // An Apply whose func is a type-builder Intrinsic — extract each arg's Ty, build the compound.
         TypedNode::Apply { func, args } => {
-            if let TypedNode::TypeCtor(kind) = &func.node {
-                // Extract the Ty from each TypeVal argument.
-                let arg_tys: Vec<Ty> = args.iter().filter_map(|a| extract_type_value(&a.node)).collect();
-                // If not all args are TypeVals, this is not a well-formed type constructor application.
+            if let TypedNode::Intrinsic(op) = &func.node {
+                let arg_tys: Vec<Ty> =
+                    args.iter().filter_map(|a| extract_type_value(&a.node)).collect();
                 if arg_tys.len() != args.len() {
                     return None;
                 }
-                // Build the compound type based on the constructor kind and argument types.
-                use crate::ir::TypeCtorKind;
-                return match (*kind, arg_tys.as_slice()) {
-                    (TypeCtorKind::List, [elem]) => Some(Ty::List(Box::new(elem.clone()))),
-                    (TypeCtorKind::Set, [elem]) => Some(Ty::Set(Box::new(elem.clone()))),
-                    (TypeCtorKind::Map, [k, v]) => Some(Ty::Map(Box::new(k.clone()), Box::new(v.clone()))),
-                    (TypeCtorKind::Tuple2, [a, b]) => Some(Ty::Tuple(vec![a.clone(), b.clone()])),
-                    (TypeCtorKind::Option, [a]) => Some(Ty::Sum {
-                        def: crate::ty::prelude_option(),
-                        args: vec![a.clone()],
-                    }),
-                    (TypeCtorKind::Result, [a, e]) => Some(Ty::Sum {
-                        def: crate::ty::prelude_result(),
-                        args: vec![a.clone(), e.clone()],
-                    }),
-                    // Arity mismatch or unsupported form.
-                    _ => None,
-                };
+                return op.build_compound_ty(&arg_tys);
             }
             None
         }
-        // Any other node is not a type-value.
         _ => None,
     }
 }

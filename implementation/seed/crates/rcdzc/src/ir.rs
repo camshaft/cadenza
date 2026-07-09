@@ -100,26 +100,6 @@ pub enum CmpOp {
     Eq,
 }
 
-/// A parametric type constructor kind — the compile-time function that builds a compound type from
-/// type arguments. `List` takes one type argument; `Map` takes two; `Tuple` is variadic (for now,
-/// implemented as arity-specific variants). Layer 2: these are first-class compile-time values that
-/// β-reduce to a TypeVal when applied. `(List Int64)` → `TypeVal(Ty::List(Int))`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeCtorKind {
-    /// `List : Type → Type` — a single-parameter type constructor.
-    List,
-    /// `Map : Type → Type → Type` — key type, value type.
-    Map,
-    /// `Set : Type → Type` — element type.
-    Set,
-    /// `Tuple2 : Type → Type → Type` — 2-tuple constructor (fixed arity for Layer 2).
-    Tuple2,
-    /// `Option : Type → Type` — the prelude Option sum as a parametric type constructor.
-    Option,
-    /// `Result : Type → Type → Type` — ok type, err type.
-    Result,
-}
-
 /// A built-in operation — the first-class VALUE a prelude record field holds (`Int64.wrapping-add` is
 /// `Intrinsic(WrappingAdd)`). An intrinsic is projected by ordinary member access and APPLIED like any
 /// function value; the translation to wasm instructions happens ONLY at `select` (`emit_intrinsic`), so
@@ -180,6 +160,20 @@ pub enum Intrinsic {
     SetUnion,
     SetIntersection,
     SetDifference,
+    /// `List : Type → Type` — the parametric list type constructor as a first-class compile-time
+    /// value. Applied to a type-value it folds to `TypeVal(Ty::List(elem))`. Layer 2.
+    TypeList,
+    /// `Map : Type → Type → Type` — key type, value type → `TypeVal(Ty::Map(k, v))`.
+    TypeMap,
+    /// `Set : Type → Type` — element type → `TypeVal(Ty::Set(elem))`.
+    TypeSet,
+    /// `Tuple : Type → Type → Type` — 2-arity for L2 → `TypeVal(Ty::Tuple([a, b]))`.
+    TypeTuple,
+    /// `Option : Type → Type` — → `TypeVal(Ty::Sum{prelude_option(), [a]})`. Identity is this variant;
+    /// the constructed type's identity is the shared `ty::prelude_option()` singleton.
+    TypeOption,
+    /// `Result : Type → Type → Type` — → `TypeVal(Ty::Sum{prelude_result(), [a, e]})`.
+    TypeResult,
     /// A built-in whose lowering BOXES a scalar argument (a list element / map key+value / set element)
     /// or unboxes by type — carried as a [`HeapIntrinsic`]. `lower` turns its application into a
     /// [`Mir::HeapOp`] that threads each argument's SOLVED type to `select`; the bare `Mir` shape cannot
@@ -223,7 +217,11 @@ impl Intrinsic {
             Intrinsic::WrappingAdd | Intrinsic::WrappingSub | Intrinsic::WrappingMul
             | Intrinsic::BytesOf | Intrinsic::BytesLen | Intrinsic::BytesConcat | Intrinsic::IntToByte
             | Intrinsic::BytesAt | Intrinsic::BytesSlice | Intrinsic::StrFromBytes
-            | Intrinsic::BytesCompact => 0,
+            | Intrinsic::BytesCompact
+            // Layer 2 type builders are MONOMORPHIC (their signature is `Fn` over concrete `Ty::Type`, no
+            // `Ty::Param`), so they instantiate no fresh vars.
+            | Intrinsic::TypeList | Intrinsic::TypeMap | Intrinsic::TypeSet
+            | Intrinsic::TypeTuple | Intrinsic::TypeOption | Intrinsic::TypeResult => 0,
             Intrinsic::ListLen | Intrinsic::ListConcat | Intrinsic::ListAt => 1,
             // Set ops are parametric in ONE element type `E` = `Ty::Param(0)`.
             Intrinsic::SetSize | Intrinsic::SetUnion | Intrinsic::SetIntersection
@@ -342,8 +340,34 @@ impl Intrinsic {
                 vec![Ty::Set(Box::new(Ty::Param(0))), Ty::Set(Box::new(Ty::Param(0)))],
                 Ty::Set(Box::new(Ty::Param(0))),
             ),
+            // Layer 2 type builders: monomorphic `Type(s) → Type`. Applied to type-value args, their
+            // `fold_const` builds the compound `Ty`. `List`/`Set`/`Option` take one type; `Map`/`Result`/
+            // `Tuple` take two.
+            Intrinsic::TypeList | Intrinsic::TypeSet | Intrinsic::TypeOption =>
+                (vec![Ty::Type], Ty::Type),
+            Intrinsic::TypeMap | Intrinsic::TypeResult | Intrinsic::TypeTuple =>
+                (vec![Ty::Type, Ty::Type], Ty::Type),
             // A boxing op delegates to its `HeapIntrinsic` signature.
             Intrinsic::Heap(h) => h.signature(),
+        }
+    }
+
+    /// Build the compound `Ty` a type-builder intrinsic produces from its type arguments, or `None`
+    /// (arity mismatch / not a type builder). The ONE compound-Ty constructor — called by both
+    /// `fold_const` (fold time, wrapping in `Mir::TypeVal`) and `infer::extract_type_value`
+    /// (annotation time, before fold) so the two paths cannot drift. Option/Result route through the
+    /// process-global `ty::prelude_option()`/`prelude_result()` singletons so identity is `Arc::ptr_eq`.
+    pub fn build_compound_ty(self, arg_tys: &[Ty]) -> Option<Ty> {
+        match (self, arg_tys) {
+            (Intrinsic::TypeList, [e]) => Some(Ty::List(Box::new(e.clone()))),
+            (Intrinsic::TypeSet, [e]) => Some(Ty::Set(Box::new(e.clone()))),
+            (Intrinsic::TypeMap, [k, v]) => Some(Ty::Map(Box::new(k.clone()), Box::new(v.clone()))),
+            (Intrinsic::TypeTuple, [a, b]) => Some(Ty::Tuple(vec![a.clone(), b.clone()])),
+            (Intrinsic::TypeOption, [a]) =>
+                Some(Ty::Sum { def: crate::ty::prelude_option(), args: vec![a.clone()] }),
+            (Intrinsic::TypeResult, [a, e]) =>
+                Some(Ty::Sum { def: crate::ty::prelude_result(), args: vec![a.clone(), e.clone()] }),
+            _ => None,
         }
     }
 
@@ -392,6 +416,19 @@ impl Intrinsic {
             | Intrinsic::MapSize
             | Intrinsic::SetSize | Intrinsic::SetUnion | Intrinsic::SetIntersection
             | Intrinsic::SetDifference => None,
+            // Layer 2 type builders: read the `Ty` out of each `Mir::TypeVal` arg and construct the
+            // compound type-value. The one place a compound `Ty` is fabricated from type args at fold
+            // time; shared with annotation-time extraction via `build_compound_ty` so the two paths
+            // cannot drift. If not all args are `TypeVal` (which never happens in well-typed code —
+            // mixing a type-value into a value op is a `Ty` mismatch caught at infer), stays residual.
+            Intrinsic::TypeList | Intrinsic::TypeMap | Intrinsic::TypeSet
+            | Intrinsic::TypeTuple | Intrinsic::TypeOption | Intrinsic::TypeResult => {
+                let arg_tys: Vec<Ty> = args.iter()
+                    .filter_map(|a| match a { Mir::TypeVal(t) => Some(t.clone()), _ => None })
+                    .collect();
+                if arg_tys.len() != args.len() { return None; } // not all TypeVals → stays residual
+                self.build_compound_ty(&arg_tys).map(Mir::TypeVal)
+            }
             // A boxing heap op builds/reads a CHAMP/vec value at run time — never a const; stays for `select`.
             Intrinsic::Heap(_) => None,
         }
@@ -483,12 +520,6 @@ pub enum Hir {
     /// the annotation infers `T` and extracts its `Ty` to unify with `e`. Compile-time-only: a `TypeVal`
     /// that survives fold is the erasure fence reject (CDZ0305).
     TypeVal(Ty),
-    /// A parametric type constructor VALUE — `List`, `Map`, `Set`, `Tuple`, `Option`, `Result`. Applied
-    /// to type-value arguments, it produces a TypeVal of the constructed type. The fold β-reduces
-    /// `Apply(TypeCtor(List), [TypeVal(Int)])` → `TypeVal(Ty::List(Int))`. This is the Layer 2 mechanism
-    /// for parametric types: a type constructor is a first-class compile-time value (transient like
-    /// `Ctor`/`FuncRef`) that, when applied to type arguments, reduces to the compound TypeVal.
-    TypeCtor(TypeCtorKind),
     /// `(: e T)` — annotate `e` with type `T`. Infer constrains/checks: `T` must type as `Ty::Type`,
     /// its represented `Ty` unifies with `e`'s type (mismatch → CDZ0203). Lowers to just `e`
     /// (transparent — the constraint already happened). `(: 42 Int64)`→42, `(: 42 Bool)`→CDZ0203.
@@ -588,8 +619,6 @@ pub enum TypedNode {
     Ctor { def: SumRef, index: usize },
     /// A type-value — typed as `Ty::Type`. The compile-time value a type name resolves to.
     TypeVal(Ty),
-    /// A parametric type constructor — typed as `Fn([Type, …], Type)`. Layer 2.
-    TypeCtor(TypeCtorKind),
     /// `(: e T)` — typed annotation. The node's `ty` is `e`'s type (unified with `T`'s extracted `Ty`).
     /// Lowers to just `e` (transparent).
     Annot(Box<Typed>, Box<Typed>),
@@ -676,9 +705,6 @@ pub enum Mir {
     /// type-value in diagnostic. A `TypeVal` that reaches `lower` IS the erasure fence error; it should
     /// never reach `select` or serialize. `Annot` lowers to just its expr; `Const` lowers to `fold(e)`.
     TypeVal(Ty),
-    /// A parametric type constructor (NON-SERIALIZED, transient) — β-reduced away by fold when applied.
-    /// A bare survivor is the erasure fence error. Layer 2.
-    TypeCtor(TypeCtorKind),
     /// Construct a heap SUM value `(disc, payload-handle)` via `sum-new`. `disc` = the variant's
     /// declaration index; `payload_ty` types the payload for boxing (Unit → the empty-`arr` unit
     /// payload). Distinct from `Tuple`/`List` — a two-field (tag, payload) heap object.

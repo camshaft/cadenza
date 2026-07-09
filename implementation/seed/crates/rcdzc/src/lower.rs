@@ -218,9 +218,6 @@ pub fn lower(typed: Typed) -> Mir {
         // TypeVal — a type-value (compile-time-only). Lowered to `Mir::TypeVal` so the post-fold
         // erasure fence can point at it when rejecting a leak (CDZ0305). It should never survive fold.
         TypedNode::TypeVal(ty) => Mir::TypeVal(ty),
-        // TypeCtor — a parametric type constructor (compile-time-only). Layer 2: lowered to `Mir::TypeCtor`
-        // so it can β-reduce when applied. Should never survive fold (transient like Ctor/FuncRef).
-        TypedNode::TypeCtor(kind) => Mir::TypeCtor(kind),
         // Annot — `(: e T)` lowers to just `e` (transparent — the constraint already happened at infer).
         TypedNode::Annot(e, _t) => lower(*e),
         // Const — `(const e)` lowers to `fold(e)` (the fold + fence will check it reduced fully).

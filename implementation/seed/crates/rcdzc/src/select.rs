@@ -310,10 +310,9 @@ impl Sel<'_> {
                 self.slot_of.insert(*id, slot);
                 self.emit(body, out)
             }
-            // A type-value or type-constructor that survived the fold/fence is a compiler bug — should have
-            // been rejected by the erasure fence in fold. Decline rather than emit invalid wasm.
+            // A type-value that survived the fold/fence is a compiler bug — should have been rejected by
+            // the erasure fence in fold. Decline rather than emit invalid wasm.
             Mir::TypeVal(_) => Err("a type-value reached select (erasure fence should have rejected it)".to_string()),
-            Mir::TypeCtor(_) => Err("a type constructor reached select (should have β-reduced in fold)".to_string()),
             Mir::Error(_) => {
                 out.push(Lir::Unreachable);
                 Ok(())
@@ -810,6 +809,17 @@ impl Sel<'_> {
             // solved types) — decline rather than shape-guess.
             Intrinsic::Heap(_) => Err(
                 "a Heap intrinsic must be lowered to Mir::HeapOp (a bare heap-op value is a later phase)"
+                    .to_string(),
+            ),
+            // Layer 2 type-builder intrinsics (`List`/`Map`/`Set`/`Tuple`/`Option`/`Result`) are
+            // compile-time-only: an application over type-value args β-reduces to a `TypeVal` in fold, and
+            // the erasure fence rejects any leaked `TypeVal`. A type builder reaching `emit_intrinsic`
+            // means an APPLICATION survived to runtime (its args did not fully reduce to type-values) —
+            // decline (an UNCODED reject), never emit. A bare unapplied one declines at the outer
+            // bare-`Intrinsic` arm before reaching here.
+            Intrinsic::TypeList | Intrinsic::TypeMap | Intrinsic::TypeSet
+            | Intrinsic::TypeTuple | Intrinsic::TypeOption | Intrinsic::TypeResult => Err(
+                "a type constructor cannot cross to run time (a type-value is compile-time-only)"
                     .to_string(),
             ),
         }

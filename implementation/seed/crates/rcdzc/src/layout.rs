@@ -181,9 +181,9 @@ fn collect_callees(m: &Mir, out: &mut Vec<usize>) {
         // A lambda body can reference functions (a recursive closure) — descend so a closed FuncRef
         // keeps the callee reachable.
         Mir::Lambda { body, .. } => collect_callees(body, out),
-        // An intrinsic / ctor / wildcard / trap / str-literal / type-value / type-ctor references no module function.
+        // An intrinsic / ctor / wildcard / trap / str-literal / type-value references no module function.
         Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_)
-        | Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Local(_) | Mir::Error(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) => {}
+        | Mir::Int(_) | Mir::Bool(_) | Mir::Str(_) | Mir::Unit | Mir::Local(_) | Mir::Error(_) | Mir::TypeVal(_) => {}
     }
 }
 
@@ -225,7 +225,7 @@ fn body_uses_heap(m: &Mir) -> bool {
         // A string literal builds a `bytes-*` heap leaf.
         Mir::Str(_) => true,
         Mir::FuncRef(_) | Mir::Intrinsic(_) | Mir::Ctor { .. } | Mir::Wildcard | Mir::Trap(_)
-        | Mir::Int(_) | Mir::Bool(_) | Mir::Unit | Mir::Local(_) | Mir::Error(_) | Mir::TypeVal(_) | Mir::TypeCtor(_) => false,
+        | Mir::Int(_) | Mir::Bool(_) | Mir::Unit | Mir::Local(_) | Mir::Error(_) | Mir::TypeVal(_) => false,
     }
 }
 
