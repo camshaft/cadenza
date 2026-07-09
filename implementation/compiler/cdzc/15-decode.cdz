@@ -1,0 +1,139 @@
+; ─── decode : Bytes → Ast ───────────────────────────────────────────────────
+; The front end's keystone: a hand-rolled recursive-descent parser over the
+; program's CBOR bytes, producing the LANGUAGE'S OWN built-in `Ast` sum (which
+; `resolve` then consumes). We build `Ast.*` values at run time (verified to flow
+; through the seed) rather than calling a runtime `Ast.decode` host op — the parser
+; lives IN the compiler, keeping the runtime tag-free.
+;
+; The binary-sexpr format (spec/contracts/ast-encoding.md, options/ast-encoding/):
+;   root = CBOR array [version:uint, prelude:array-of-tstr, node]
+;   node:
+;     uint / nint            → an integer literal      → Ast.Int
+;     tstr                   → a string literal         → Ast.Str
+;     tag 39 (0xD8 0x27) uint→ a bare name by prelude ix → Ast.Name prelude[ix]
+;     array [head-ix, child…]→ an application; head-ix names the head in the prelude,
+;                              children follow → Ast.List [Ast.Name prelude[head-ix], child…]
+; (Ast.Bool/Ast.Float appear via CBOR simple/float heads; added when a program needs them.)
+;
+; Position threading: each `decode-*` returns a `(tuple <Ast> <next-offset>)`; the
+; caller destructures and threads the offset — the standard recursive-descent shape.
+
+; ─── CBOR head decoding ──────────────────────────────────────────────────────
+; A CBOR item begins with an initial byte: major type = byte >> 5, additional-info
+; = byte & 0x1F. info < 24 is the immediate argument; 24/25/26 are 1/2/4 trailing
+; big-endian argument bytes. (The AST encoder never needs 8-byte args here.)
+(def (cbor-major b i)
+  (doc "The CBOR major type (0..7) of the item whose initial byte is at i.")
+  (match (Bytes.at b i) ((Some x) (>> x 5)) ((None _) -1)))
+
+(def (cbor-info b i)
+  (doc "The CBOR additional-info (low 5 bits) of the item's initial byte at i.")
+  (match (Bytes.at b i) ((Some x) (& x 31)) ((None _) -1)))
+
+(def (byte-at b i)
+  (doc "The unsigned byte at i, or 0 past the end (callers guard bounds via the CBOR structure).")
+  (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+
+(def (cbor-arg b i)
+  (doc "The CBOR argument value of the item at i: the immediate info if < 24, else the 1/2/4 trailing
+        big-endian bytes for info 24/25/26.")
+  (let ((info (cbor-info b i)))
+    (if (< info 24) info
+    (if (= info 24) (byte-at b (+ i 1))
+    (if (= info 25) (| (<< (byte-at b (+ i 1)) 8) (byte-at b (+ i 2)))
+    (if (= info 26) (| (| (<< (byte-at b (+ i 1)) 24) (<< (byte-at b (+ i 2)) 16))
+                       (| (<< (byte-at b (+ i 3)) 8) (byte-at b (+ i 4))))
+        (- 0 1)))))))
+
+(def (cbor-arg-len b i)
+  (doc "How many bytes the item's ARGUMENT occupies after the initial byte: 0 for info<24, else 1/2/4
+        for info 24/25/26. The item's payload (array elements, string bytes) begins at i+1+this.")
+  (let ((info (cbor-info b i)))
+    (if (< info 24) 0 (if (= info 24) 1 (if (= info 25) 2 (if (= info 26) 4 0))))))
+
+(def (cbor-payload-off b i)
+  (doc "The offset of the item's payload (first array element / first string byte): past the initial
+        byte and its argument bytes.")
+  (+ (+ i 1) (cbor-arg-len b i)))
+
+; ─── prelude access ──────────────────────────────────────────────────────────
+; The root is [version, prelude, node]. The prelude is a CBOR array of tstr symbol
+; names; an application head and a bare name reference the prelude by index. To
+; resolve an index to its name we walk the prelude array to the k-th tstr and read
+; its bytes into a String.
+(def (prelude-off b)
+  (doc "The offset of the prelude array within the root: root is an array whose element 0 is `version`
+        (a uint) and element 1 is the prelude. Skip the root's initial byte, then skip element 0.")
+  (let ((e0 (cbor-payload-off b 0)))                 ; offset of element 0 (version)
+    (skip-item b e0)))                               ; the prelude begins right after version
+
+(def (prelude-name b k)
+  (doc "The Ast.Name for prelude index k: walk the prelude array's tstr entries to the k-th, read its
+        byte range as a String. The prelude array's first entry is at its payload offset.")
+  (prelude-name-go b (cbor-payload-off b (prelude-off b)) k))
+
+(def (prelude-name-go b entry k)
+  (doc "From prelude entry at `entry`, return the name at index k (0 = this entry), skipping k tstrs.")
+  (if (= k 0)
+      (match (Bytes.slice b (cbor-payload-off b entry) (cbor-arg b entry))
+        ((Some sub) (match (String.from-bytes sub) ((Some s) (Ast.Name s)) ((None _) (Ast.Name ""))))
+        ((None _) (Ast.Name "")))
+      (prelude-name-go b (skip-item b entry) (- k 1))))
+
+; ─── skip-item : the offset just past the CBOR item at i (for walking siblings) ─
+(def (skip-item b i)
+  (doc "The offset immediately after the complete CBOR item at i. uint/nint/tag-arg: past the head+arg.
+        tstr: past the string bytes. array: recursively past every element. (tag 39 is handled by
+        skipping the tag head then its single tagged item.)")
+  (let ((mt (cbor-major b i)))
+    (if (= mt 3)                                         ; tstr: payload = arg bytes
+        (+ (cbor-payload-off b i) (cbor-arg b i))
+    (if (= mt 4)                                         ; array: skip each of `arg` elements
+        (skip-elems b (cbor-payload-off b i) (cbor-arg b i))
+    (if (= mt 6)                                         ; tag: skip the head, then the tagged item
+        (skip-item b (cbor-payload-off b i))
+        (cbor-payload-off b i))))))                      ; uint/nint/simple: just the head+arg
+
+(def (skip-elems b i n)
+  (doc "Skip n consecutive CBOR items starting at i; return the offset past the last.")
+  (if (< n 1) i (skip-elems b (skip-item b i) (- n 1))))
+
+; ─── the recursive node decoder ──────────────────────────────────────────────
+(def (decode-node b i)
+  (doc "Decode the CBOR node at offset i to `(tuple <Ast> <next-offset>)`. uint/nint → Ast.Int; tstr →
+        Ast.Str; tag 39 + uint → Ast.Name (prelude); array → Ast.List headed by the head-index's name
+        followed by the decoded children.")
+  (let ((mt (cbor-major b i)))
+    (if (= mt 0) (tuple (Ast.Int (cbor-arg b i)) (skip-item b i))            ; uint literal
+    (if (= mt 1) (tuple (Ast.Int (- (- 0 1) (cbor-arg b i))) (skip-item b i)); nint literal (= -1-arg)
+    (if (= mt 3)                                                             ; tstr literal
+        (tuple (match (Bytes.slice b (cbor-payload-off b i) (cbor-arg b i))
+                 ((Some sub) (match (String.from-bytes sub) ((Some s) (Ast.Str s)) ((None _) (Ast.Str ""))))
+                 ((None _) (Ast.Str "")))
+               (skip-item b i))
+    (if (= mt 6)                                                             ; tag 39: bare name by index
+        (tuple (prelude-name b (cbor-arg b (cbor-payload-off b i))) (skip-item b i))
+    (if (= mt 4)                                                             ; array: application
+        (tuple (Ast.List (decode-app-children b
+                            (skip-item b (cbor-payload-off b i))             ; first CHILD (past head-index)
+                            (- (cbor-arg b i) 1)                             ; child count = arity - 1
+                            (list (prelude-name b (cbor-arg b (cbor-payload-off b i))))))  ; seed acc = [head-name]
+               (skip-item b i))
+        (tuple (Ast.Int 0) (skip-item b i)))))))))                           ; unknown head → placeholder
+
+(def (decode-app-children b i n acc)
+  (doc "Decode n consecutive child nodes starting at offset i, appending each decoded Ast to acc (which
+        already holds the head name). Returns the full element list for the Ast.List.")
+  (if (< n 1)
+      acc
+      (match (decode-node b i)
+        ((tuple child nxt) (decode-app-children b nxt (- n 1) (List.push acc child))))))
+
+; ─── decode : Bytes → Ast (the program's root node) ──────────────────────────
+(def (decode b)
+  (doc "Decode the program's CBOR bytes to its root Ast node. The root is [version, prelude, node]; the
+        program node is element 2 — skip version (element 0, at the root payload) and the prelude
+        (element 1), then decode the node. Returns the Ast (the `(tuple _ pos)` position is discarded —
+        the root is the whole input).")
+  (match (decode-node b (skip-item b (prelude-off b)))    ; node = past version, past prelude
+    ((tuple ast pos) ast)))

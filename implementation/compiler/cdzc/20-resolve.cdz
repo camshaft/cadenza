@@ -1,0 +1,108 @@
+; ─── resolve : Ast → Hir ──────────────────────────────────────────────────────
+; ⚠⚠⚠ BROKEN MODEL — TO BE REPLACED (user directive 2026-07-08; task #16). ⚠⚠⚠
+; `find-main-body`/`def-is-main` HUNT the module for a def named "main". This
+; single-entry, name-hunting model is COMPLETELY BROKEN — the ratified model is
+; MULTI-EXPORT: visibility is EXPLICIT via `(export name…)`, names VERBATIM (no
+; main→run rename), a module has ONE OR MORE exports each carried by its SIGNATURE.
+; The native reference compiler `rcdzc` (seed/crates/rcdzc/: resolve.rs collects
+; (export …); layout.rs carries every export by signature; component.rs emits the
+; N-export envelope byte-identical to the wasm-encoder oracle at N=1 AND N=2) is the
+; design to MIRROR here. Deleting this front-end + 40-frame's single-`run` envelope
+; to rebuild clean is sanctioned. (The IR-port / op-enum / bit-shift work is fine and
+; STAYS; this flag is about the export/entry model only.)
+;
+; PHASE 0 (the code below, being replaced): recognize `(module <name> (def (main) <body>))`
+; and resolve the main body. A scalar-int body → HInt; else HError 0 (decline).
+(def (resolve-program a)
+  (doc "Resolve a decoded program Ast to the Hir of its `main` body. PHASE 0: the program is a
+        `(module <name> <def>…)` list; find `main`'s body and resolve it. Non-scalar bodies decline.")
+  (match a
+    ((Ast.List forms) (resolve-main-body (find-main-body forms)))
+    ((Ast.Int n) (Hir.HInt n))              ; a bare-expression program (harness wraps, but be total)
+    ((Ast.Float f) (Hir.HError 0))
+    ((Ast.Str s) (Hir.HError 0))
+    ((Ast.Bool b) (Hir.HError 0))
+    ((Ast.Name nm) (Hir.HError 0))))
+
+(def (find-main-body forms)
+  (doc "Given the top-level module form's element list `[Name \"module\", Name, def…]`, return the body
+        Ast of the `(def (main) <body>)` definition, or a sentinel `(Ast.Name \"\")` if absent (declines).
+        PHASE 0: scan for the first def whose signature head is `main`.")
+  (find-main-body-go forms 0 (List.len forms)))
+
+(def (find-main-body-go forms i n)
+  (doc "Scan module elements i..n for the `(def (main) body)` form; return its body Ast.")
+  (if (< i n)
+      (match (List.at forms i)
+        ((None _) (Ast.Name ""))
+        ((Some e) (if (def-is-main e) (def-body e) (find-main-body-go forms (+ i 1) n))))
+      (Ast.Name "")))
+
+(def (def-is-main e)
+  (doc "Is Ast `e` a `(def (main) <body>)` — a list whose head is Name `def`, whose element 1 is a list
+        headed by Name `main`?")
+  (match e
+    ((Ast.List xs)
+      (if (and (name-head-is xs "def") (>= (List.len xs) 3))
+          (match (List.at xs 1)
+            ((Some sig) (match sig ((Ast.List sxs) (name-head-is sxs "main"))
+                                   ((Ast.Int n) false) ((Ast.Float f) false) ((Ast.Str s) false)
+                                   ((Ast.Bool b) false) ((Ast.Name nm) false)))
+            ((None _) false))
+          false))
+    ((Ast.Int n) false) ((Ast.Float f) false) ((Ast.Str s) false)
+    ((Ast.Bool b) false) ((Ast.Name nm) false)))
+
+(def (def-body e)
+  (doc "The body Ast (element 2) of a `(def (main) body)` list. Callers guarantee the shape via def-is-main.")
+  (match e
+    ((Ast.List xs) (match (List.at xs 2) ((Some b) b) ((None _) (Ast.Name ""))))
+    ((Ast.Int n) (Ast.Name "")) ((Ast.Float f) (Ast.Name "")) ((Ast.Str s) (Ast.Name ""))
+    ((Ast.Bool b) (Ast.Name "")) ((Ast.Name nm) (Ast.Name ""))))
+
+(def (name-head-is xs s)
+  (doc "Is the head (element 0) of Ast-list `xs` an `Ast.Name` equal to string `s`?")
+  (match (List.at xs 0)
+    ((None _) false)
+    ((Some h) (match h ((Ast.Name nm) (= nm s))
+                       ((Ast.Int n) false) ((Ast.Float f) false) ((Ast.Str t) false)
+                       ((Ast.Bool b) false) ((Ast.List ys) false)))))
+
+(def (resolve-main-body a)
+  (doc "Resolve a `main` body Ast to Hir. A scalar Int literal → HInt; a binary operator application
+        (`+ - *` → HArith, `& | ^ / %` → HBit, `<< >>` → HShift) over the resolved operands (a decoded
+        application is `(Ast.List (Ast.Name <op>) <arg>…)` — head prepended as an Ast.Name); else declines.")
+  (match a
+    ((Ast.Int n) (Hir.HInt n))
+    ((Ast.Float f) (Hir.HError 0))
+    ((Ast.Str s) (Hir.HError 0))
+    ((Ast.Bool b) (Hir.HError 0))
+    ((Ast.Name nm) (Hir.HError 0))
+    ((Ast.List xs) (resolve-app xs))))
+
+(def (resolve-app xs)
+  (doc "Resolve an application list `xs` = [head, arg…] to Hir. A binary operator head over exactly two
+        operands → the matching node: `+ - *` → checked HArith; `& | ^ / %` → HBit; `<< >>` → HShift; any
+        other head/arity declines (0). Operands are themselves resolved (nested ops compose).")
+  (if (arith-app? xs "+" 2)  (Hir.HArith (tuple (ArithOp.OpAdd ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs "-" 2)  (Hir.HArith (tuple (ArithOp.OpSub ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs "*" 2)  (Hir.HArith (tuple (ArithOp.OpMul ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs "&" 2)  (Hir.HBit (tuple (BitOp.OpAnd ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs "|" 2)  (Hir.HBit (tuple (BitOp.OpOr ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs "^" 2)  (Hir.HBit (tuple (BitOp.OpXor ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs "/" 2)  (Hir.HBit (tuple (BitOp.OpDiv ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs "%" 2)  (Hir.HBit (tuple (BitOp.OpRem ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs "<<" 2) (Hir.HShift (tuple (ShiftOp.OpShl ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+  (if (arith-app? xs ">>" 2) (Hir.HShift (tuple (ShiftOp.OpShr ()) (resolve-arg xs 1) (resolve-arg xs 2)))
+      (Hir.HError 0))))))))))))
+
+(def (arith-app? xs op nargs)
+  (doc "Is application list `xs` headed by the Ast.Name `op` with exactly `nargs` operands (so len = nargs+1)?")
+  (and (name-head-is xs op) (= (List.len xs) (+ nargs 1))))
+
+(def (resolve-arg xs i)
+  (doc "Resolve the i-th element of application list `xs` (element 0 is the head) to Hir; a missing element
+        declines. Recurses through resolve-main-body so nested arithmetic composes.")
+  (match (List.at xs i)
+    ((Some a) (resolve-main-body a))
+    ((None _) (Hir.HError 0))))

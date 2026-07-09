@@ -1,0 +1,207 @@
+; ─── lower : Hir → Mir ─────────────────────────────────────────────────────────
+(def (lower h)
+  (doc "Lower resolved Hir to Mir. Structural 1:1 at this rung: HInt→MInt; HArith/HBit/HShift→
+        MArith/MBit/MShift over the lowered operands (the operator enum carried through); HError→MError.")
+  (match h
+    ((Hir.HInt n) (Mir.MInt n))
+    ((Hir.HArith (tuple o a b)) (Mir.MArith (tuple o (lower a) (lower b))))
+    ((Hir.HBit (tuple o a b)) (Mir.MBit (tuple o (lower a) (lower b))))
+    ((Hir.HShift (tuple o a b)) (Mir.MShift (tuple o (lower a) (lower b))))
+    ((Hir.HError c) (Mir.MError c))))
+
+; ─── eval : Mir → Mir (the one compile-time evaluator) ──────────────────────────
+; Identity over arithmetic: the IDEAL lowering of `+ - *` is a RUNTIME checked op that
+; TRAPS on overflow (spec numeric-model: `(+ Int64.max 1)` traps, never wraps). Const-
+; folding `(+ 1 2)`→3 would be a valid future optimization, but folding must preserve the
+; overflow TRAP (a fold that turns an overflowing const add into a value is a miscompile),
+; so it is deferred to when the evaluator carries that check. Phase 1: no fold — emit the
+; runtime checked op, which is correct for both in-range and overflow inputs.
+(def (eval-mir m)
+  (doc "The compile-time evaluator (Mir→Mir). Phase 1: identity (ops are emitted as runtime checked ops,
+        not folded — folding must preserve the overflow/div/shift traps, deferred to when eval carries them).")
+  (match m
+    ((Mir.MInt n) (Mir.MInt n))
+    ((Mir.MArith (tuple o a b)) (Mir.MArith (tuple o (eval-mir a) (eval-mir b))))
+    ((Mir.MBit (tuple o a b)) (Mir.MBit (tuple o (eval-mir a) (eval-mir b))))
+    ((Mir.MShift (tuple o a b)) (Mir.MShift (tuple o (eval-mir a) (eval-mir b))))
+    ((Mir.MError c) (Mir.MError c))))
+
+; ─── scratch-local budget: how many i64 scratch locals a Mir body needs ─────────
+; A node uses DISJOINT scratch slots from its operands (an inner op must not clobber an
+; outer's mid-evaluation), so the budget is (this node's own slots) + (sum over operands).
+; Own slots by category: checked arith = 3 ($a $b $r); a left shift = 3 ($a $b $r); a
+; right shift = 2 ($a $b); a bit op (and/or/xor/div/rem) = 0 (pure stack, div/rem trap
+; natively). `select` assigns each op a unique base by threading a running slot counter.
+(def (mir-scratch-count m)
+  (doc "The number of i64 scratch locals a Mir body needs, summed over the tree: arith=3, left-shift=3,
+        right-shift=2, bit-op=0, plus each operand's own need (disjoint slots).")
+  (match m
+    ((Mir.MInt n) 0)
+    ((Mir.MArith (tuple o a b)) (+ 3 (+ (mir-scratch-count a) (mir-scratch-count b))))
+    ((Mir.MBit (tuple o a b)) (+ 0 (+ (mir-scratch-count a) (mir-scratch-count b))))
+    ((Mir.MShift (tuple o a b)) (+ (shift-scratch o) (+ (mir-scratch-count a) (mir-scratch-count b))))
+    ((Mir.MError c) 0)))
+
+(def (shift-scratch o)
+  (doc "Own scratch slots for a shift: left needs 3 ($a $b $r — the overflow guard re-shifts the result),
+        right needs 2 ($a $b — count guard then arithmetic shift).")
+  (match o ((ShiftOp.OpShl _) 3) ((ShiftOp.OpShr _) 2)))
+
+; ─── select : Mir → list Lir (a flat instruction sequence for the body) ─────────
+; Emits the body as a flat instruction list, threading `base` = the next free scratch
+; slot. An arithmetic op emits: <operand-A code> local.set $a ; <operand-B code>
+; local.set $b ; get$a get$b <op> local.set $r ; <overflow guard on $a $b $r> ; get$r.
+; The op claims slots [base, base+1, base+2] and gives its operands the slots ABOVE that
+; (base+3 onward), threaded left-to-right so no two live ops share a slot.
+(def (select m base)
+  (doc "Select Mir → a flat `list Lir` body, using scratch slots from `base` up. MInt→[LConst]; MArith→the
+        overflow-guarded checked sequence (ideal — traps on overflow, never wraps); MBit→raw stack ops
+        (div/rem trap natively); MShift→the guarded shift sequence; MError→[LUnreachable]. Operands recurse
+        with a higher base so live ops never share a scratch slot.")
+  (match m
+    ((Mir.MInt n) (list (Lir.LConst n)))
+    ((Mir.MArith (tuple o a b)) (select-arith o a b base))
+    ((Mir.MBit (tuple o a b)) (select-bit o a b base))
+    ((Mir.MShift (tuple o a b)) (select-shift o a b base))
+    ((Mir.MError c) (list (Lir.LUnreachable ())))))
+
+(def (select-arith o a b base)
+  (doc "Checked Int64 arithmetic. Map the ArithOp to its operator Lir + overflow-guard tag, then emit the
+        common checked-binary sequence. add=0, sub=1, mul=2 (see overflow-guard).")
+  (match o
+    ((ArithOp.OpAdd _) (select-checked a b base (Lir.LAdd ()) 0))
+    ((ArithOp.OpSub _) (select-checked a b base (Lir.LSub ()) 1))
+    ((ArithOp.OpMul _) (select-checked a b base (Lir.LMul ()) 2))))
+
+(def (select-bit o a b base)
+  (doc "Bitwise & | ^ and div/rem — raw i64 stack ops (no scratch): `<a> <b> <op>`. div_s/rem_s trap
+        natively on /0 and Int64.min/-1 (numeric-model: a defined trap, not wrap). Operands take slots from
+        `base` up (b after a's need), disjoint.")
+  (let ((acode (select a base))
+        (bcode (select b (+ base (mir-scratch-count a)))))
+    (cat-lir acode (cat-lir bcode (list (bit-instr o))))))
+
+(def (bit-instr o)
+  (doc "The single stack instruction for a BitOp.")
+  (match o
+    ((BitOp.OpAnd _) (Lir.LAnd ())) ((BitOp.OpOr _) (Lir.LOr ())) ((BitOp.OpXor _) (Lir.LXor ()))
+    ((BitOp.OpDiv _) (Lir.LDivS ())) ((BitOp.OpRem _) (Lir.LRemS ()))))
+
+(def (select-shift o a b base)
+  (doc "A guarded shift `(<< a b)`/`(>> a b)` (numeric-model #Overflow Is Defined). $a=base (value),
+        $b=base+1 (count); a LEFT shift also uses $r=base+2. Count guard: `(u64)count >= 64` traps (also
+        catches a negative count = a huge unsigned). RIGHT shift = arithmetic `i64.shr_s`. LEFT shift also
+        traps on overflow (a bit shifted past the sign): re-shift the result right and compare to $a.
+        Matches the native rcdzc `emit_shift`. Operands take slots above this op's own.")
+  (let ((sa base) (sb (+ base 1)))
+    (let ((acode (select a (+ base (shift-scratch o))))
+          (bcode (select b (+ (+ base (shift-scratch o)) (mir-scratch-count a)))))
+      (cat-lir acode
+      (cat-lir (list (Lir.LLocalSet sa))
+      (cat-lir bcode
+      (cat-lir (list (Lir.LLocalSet sb))
+      (cat-lir (count-guard sb)                                   ; (u64)count>=64 → trap
+               (shift-op-body o sa sb base)))))))))
+
+(def (count-guard sb)
+  (doc "Shift-count guard: `local.get $b ; i64.const 64 ; i64.ge_u ; if unreachable end` — trap when the
+        count (as unsigned) is >= 64 (also catches a negative count).")
+  (list (Lir.LLocalGet sb) (Lir.LConst 64) (Lir.LGeU ()) (Lir.LIfUnreachableEnd ())))
+
+(def (shift-op-body o sa sb base)
+  (doc "The shift proper after the count guard. RIGHT: `get$a get$b i64.shr_s`. LEFT: `get$a get$b i64.shl`
+        into $r=base+2, then overflow guard `get$r get$b i64.shr_s get$a i64.ne → if unreachable`, then get$r.")
+  (match o
+    ((ShiftOp.OpShr _)
+     (list (Lir.LLocalGet sa) (Lir.LLocalGet sb) (Lir.LShrS ())))
+    ((ShiftOp.OpShl _)
+     (let ((sr (+ base 2)))
+       (cat-lir (list (Lir.LLocalGet sa) (Lir.LLocalGet sb) (Lir.LShl ()) (Lir.LLocalSet sr))
+       (cat-lir (list (Lir.LLocalGet sr) (Lir.LLocalGet sb) (Lir.LShrS ()) (Lir.LLocalGet sa) (Lir.LNe ()) (Lir.LIfUnreachableEnd ()))
+                (list (Lir.LLocalGet sr))))))))
+
+(def (select-checked a b base opinstr optag)
+  (doc "Emit the flat checked-binary sequence for `(op a b)` — scratch slots $a=base, $b=base+1, $r=base+2,
+        `opinstr` the operator Lir (LAdd/LSub/LMul), `optag` selecting the overflow guard (0=add, 1=sub,
+        2=mul). Operands take slots from base+3 up (a: base+3..; b: after a's) so nested ops never share a
+        slot; A is stored to $a right after its code so B's code can't disturb it. SIGNED-OVERFLOW GUARD
+        (trap when the true mathematical result is out of Int64 range), and the correct test DIFFERS by op:
+          add r=a+b: overflow iff ((r xor a) and (r xor b)) < 0
+          sub r=a-b: overflow iff ((a xor b) and (a xor r)) < 0
+          mul r=a*b: overflow iff a≠0 and r/a≠b   (r/a is i64.div_s of the wrapped product; the one case
+                     div can't express — Int64.min/-1 — is where div_s itself traps, which IS the overflow)
+        All VALIDATED against exact arithmetic (add: 1+2→3, -5+-3→-8, traps max+1; sub: 10-3→7, 5--3→8, traps
+        min-1, max--1; mul: exhaustive edge + 172k random, 0 mismatches — 2*3→6, traps max*2, min*-1, √-boundary).
+        `overflow-guard` builds the right one; a nonzero test result trips `if unreachable`.")
+  (let ((sa base) (sb (+ base 1)) (sr (+ base 2)))
+    (let ((acode (select a (+ base 3)))
+          (bcode (select b (+ (+ base 3) (mir-scratch-count a)))))
+      (cat-lir acode
+      (cat-lir (list (Lir.LLocalSet sa))
+      (cat-lir bcode
+      (cat-lir (list (Lir.LLocalSet sb))
+      (cat-lir (list (Lir.LLocalGet sa) (Lir.LLocalGet sb) opinstr (Lir.LLocalSet sr))
+      (cat-lir (overflow-guard sa sb sr optag)
+               (list (Lir.LLocalGet sr)))))))))))
+
+(def (overflow-guard sa sb sr optag)
+  (doc "The signed-overflow guard instruction run for slots $a=sa,$b=sb,$r=sr: leaves nothing on the stack
+        except via a trap. add (0): `((r^a) & (r^b)) < 0` → if-unreachable. sub (1): `((a^b) & (a^r)) < 0`.
+        mul (2): `if a≠0 { if r/a ≠ b { unreachable } }` — the nested-if guards div against a=0 (a=0 can't
+        overflow); the inner i64.div_s traps on Int64.min/-1 on its own, which is exactly the sole overflow
+        case r/a can't detect, so no extra check is needed for it.")
+  (if (= optag 0)
+      (list (Lir.LLocalGet sr) (Lir.LLocalGet sa) (Lir.LXor ())
+            (Lir.LLocalGet sr) (Lir.LLocalGet sb) (Lir.LXor ())
+            (Lir.LAnd ()) (Lir.LConst 0) (Lir.LLtS ()) (Lir.LIfUnreachableEnd ()))
+  (if (= optag 1)
+      (list (Lir.LLocalGet sa) (Lir.LLocalGet sb) (Lir.LXor ())
+            (Lir.LLocalGet sa) (Lir.LLocalGet sr) (Lir.LXor ())
+            (Lir.LAnd ()) (Lir.LConst 0) (Lir.LLtS ()) (Lir.LIfUnreachableEnd ()))
+      (list (Lir.LLocalGet sa) (Lir.LConst 0) (Lir.LNe ()) (Lir.LIfOpen ())     ; if a != 0 {
+            (Lir.LLocalGet sr) (Lir.LLocalGet sa) (Lir.LDivS ())                ;   r / a
+            (Lir.LLocalGet sb) (Lir.LNe ()) (Lir.LIfUnreachableEnd ())          ;   if (r/a) != b { unreachable }
+            (Lir.LEnd ())))))                                                   ; }
+
+(def (cat-lir xs ys)
+  (doc "Concatenate two `list Lir` instruction sequences (List.concat — landed 2026-07-08, ask-76).")
+  (List.concat xs ys))
+
+; ─── serialize : list Lir → bytes (exhaustive per instruction) ──────────────────
+(def (serialize-body code)
+  (doc "Serialize a flat `list Lir` body to its wasm bytes, in order. Folds `serialize` over the list.")
+  (serialize-body-go code 0 (List.len code) (empty-bytes)))
+
+(def (serialize-body-go code i n acc)
+  (doc "Append the bytes of instructions [i,n) of `code` to `acc`, in order.")
+  (if (< i n)
+      (match (List.at code i)
+        ((Some ins) (serialize-body-go code (+ i 1) n (cat acc (serialize ins))))
+        ((None _) acc))
+      acc))
+
+(def (serialize ins)
+  (doc "Serialize one Lir instruction to its wasm opcode bytes. Exhaustive over Lir. Opcode bytes come from
+        the shared generated `op` table (05-op.cdz, @generated from wasm-encoder) — NOT hardcoded here — so
+        cdzc and the Rust seed share one authoritative opcode source and can never disagree on a byte.")
+  (match ins
+    ((Lir.LConst n) (cat (u8 op.i64-const) (sleb n)))         ; i64.const n
+    ((Lir.LLocalGet i) (cat (u8 op.local-get) (uleb i)))      ; local.get i
+    ((Lir.LLocalSet i) (cat (u8 op.local-set) (uleb i)))      ; local.set i
+    ((Lir.LAdd _) (u8 op.i64-add))                            ; i64.add
+    ((Lir.LSub _) (u8 op.i64-sub))                            ; i64.sub
+    ((Lir.LMul _) (u8 op.i64-mul))                            ; i64.mul
+    ((Lir.LDivS _) (u8 op.i64-div-s))                         ; i64.div_s
+    ((Lir.LRemS _) (u8 op.i64-rem-s))                         ; i64.rem_s
+    ((Lir.LXor _) (u8 op.i64-xor))                            ; i64.xor
+    ((Lir.LAnd _) (u8 op.i64-and))                            ; i64.and
+    ((Lir.LOr _) (u8 op.i64-or))                              ; i64.or
+    ((Lir.LShl _) (u8 op.i64-shl))                            ; i64.shl
+    ((Lir.LShrS _) (u8 op.i64-shr-s))                         ; i64.shr_s
+    ((Lir.LGeU _) (u8 op.i64-ge-u))                           ; i64.ge_u
+    ((Lir.LLtS _) (u8 op.i64-lt-s))                           ; i64.lt_s
+    ((Lir.LNe _) (u8 op.i64-ne))                              ; i64.ne
+    ((Lir.LIfOpen _) (cat (u8 op.if) (u8 0x40)))              ; if (empty blocktype)
+    ((Lir.LEnd _) (u8 op.end))                                ; end
+    ((Lir.LIfUnreachableEnd _) (cat (u8 op.if) (cat (u8 0x40) (cat (u8 op.unreachable) (u8 op.end)))))  ; if(empty) unreachable end
+    ((Lir.LUnreachable _) (u8 op.unreachable))))              ; unreachable

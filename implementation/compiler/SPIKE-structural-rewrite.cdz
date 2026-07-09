@@ -1,0 +1,82 @@
+; A SCRIPTABLE REWRITE over the AST-as-a-value — the "program transformation is a program" spike.
+; A peephole simplifier: (+ e 0)→e, (0 + e)→e, (* e 1)→e, (1 * e)→e, (if 1 t _)→t, (if 0 _ e)→e.
+; Applied BOTTOM-UP to a fixpoint over the whole tree. `main` returns the number of NODES the
+; rewrite eliminated, GUARDED by a proof that evaluation is preserved (else -1) — so one scalar
+; witnesses both "the refactor fired" and "it kept the program's meaning".
+(module rewrite
+
+  ; The expression AST, as an ordinary user sum (the idiom the seed walks across calls).
+  (type Exp
+    (Lit Int64
+     | Var Int64                        ; a variable, by index (eval looks it up in a fixed env)
+     | Add (Tuple Exp Exp)
+     | Mul (Tuple Exp Exp)
+     | If  (Tuple Exp Exp Exp)))        ; (cond then else); cond truthy = non-zero
+
+  ; ── the rewrite: one bottom-up pass. Children are simplified first (the recursive calls),
+  ;    then the local peephole rule fires on the already-simplified children.
+  (def (simp e)
+    (match e
+      ((Exp.Lit n) (Exp.Lit n))
+      ((Exp.Var i) (Exp.Var i))
+      ((Exp.Add (tuple a b))    (peep-add (simp a) (simp b)))
+      ((Exp.Mul (tuple a b))    (peep-mul (simp a) (simp b)))
+      ((Exp.If  (tuple c th el)) (peep-if (simp c) (simp th) (simp el)))))
+
+  ; is `e` the literal `k`?  (payload must be BOUND then compared — the seed declines a literal
+  ;  payload pattern like `(Exp.Lit 0)`, so we bind `n` and test `(= n k)`.)
+  (def (is-lit e k) (match e ((Exp.Lit n) (= n k)) (_ false)))
+
+  ; (+ a 0) → a ; (+ 0 b) → b ; else rebuild
+  (def (peep-add a b)
+    (if (is-lit b 0) a
+    (if (is-lit a 0) b
+        (Exp.Add (tuple a b)))))
+
+  ; (* a 1) → a ; (* 1 b) → b ; else rebuild
+  (def (peep-mul a b)
+    (if (is-lit b 1) a
+    (if (is-lit a 1) b
+        (Exp.Mul (tuple a b)))))
+
+  ; (if c t e) with a CONSTANT cond → the taken branch (dead-branch elimination)
+  (def (peep-if c t e)
+    (match c
+      ((Exp.Lit k) (if (= k 0) e t))
+      (_ (Exp.If (tuple c t e)))))
+
+  ; ── size: count nodes, so we can measure how much the rewrite removed
+  (def (size e)
+    (match e
+      ((Exp.Lit n) 1)
+      ((Exp.Var i) 1)
+      ((Exp.Add (tuple a b))    (+ 1 (+ (size a) (size b))))
+      ((Exp.Mul (tuple a b))    (+ 1 (+ (size a) (size b))))
+      ((Exp.If  (tuple c th el)) (+ 1 (+ (size c) (+ (size th) (size el)))))))
+
+  ; ── eval against a fixed env (Var 0 → 5, Var 1 → 3, else 0), so we can prove meaning preserved
+  (def (env i) (if (= i 0) 5 (if (= i 1) 3 0)))
+  (def (eval e)
+    (match e
+      ((Exp.Lit n) n)
+      ((Exp.Var i) (env i))
+      ((Exp.Add (tuple a b))    (+ (eval a) (eval b)))
+      ((Exp.Mul (tuple a b))    (* (eval a) (eval b)))
+      ((Exp.If  (tuple c th el)) (if (= (eval c) 0) (eval el) (eval th)))))
+
+  ; The program under transformation:  (+ (* x 1) (if 1 (+ y 0) x))
+  ; hand-built tree with x=Var 0, y=Var 1. It has redundancy at three sites:
+  ;   (* x 1) → x,  (+ y 0) → y,  (if 1 _ _) → then-branch.
+  (def (subject)
+    (Exp.Add (tuple
+      (Exp.Mul (tuple (Exp.Var 0) (Exp.Lit 1)))
+      (Exp.If  (tuple (Exp.Lit 1)
+                      (Exp.Add (tuple (Exp.Var 1) (Exp.Lit 0)))
+                      (Exp.Var 0))))))
+
+  (def (main)
+    (let ((orig (subject)))
+    (let ((opt  (simp orig)))
+      (if (= (eval orig) (eval opt))          ; semantic-preservation guard
+          (- (size orig) (size opt))           ; nodes eliminated by the rewrite
+          -1)))))                              ; -1 would mean the refactor changed meaning (a bug)

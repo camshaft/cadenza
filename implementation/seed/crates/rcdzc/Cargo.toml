@@ -1,0 +1,33 @@
+# rcdzc — the rewritten reference Cadenza → WebAssembly-component compiler.
+#
+# A from-scratch reimplementation with the spec-shaped architecture the `cdzc.cdz` rewrite proved
+# (Ast → Hir → Mir → Lir, nanopass single-task passes, real Hindley-Milner inference as a separate
+# pass), replacing the 16k-line fused-emit `cdz-compiler/src/codegen.rs`. The old crate stays the
+# shipping compiler and the BYTE ORACLE until this one reaches parity; rcdzc is opt-in
+# (`CADENZA_COMPILER=v2`) during build-up.
+#
+# It reuses the old crate's GENERATED backend building blocks (the AST codec, the wasm opcode table,
+# the scalar-component frame segments, the value-heap envelope, the diagnostic codes), so there is no
+# second copy of a generated artifact to drift — only the compiler's ANALYSIS is rewritten.
+#
+# ABI: artifacts-in / {artifacts, diagnostics}-out (build-tool-interface.md, Amendment 0.8.0) — the
+# same kinded-artifact interface across every entry, for consistency with the eventual self-hosted
+# compiler. The degenerate `list<u8> -> result<list<u8>, list<diagnostic>>` case is derived from it.
+[package]
+name = "rcdzc"
+version = "0.0.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Reused as-is: `ast` (Node + s-expr reader + binary codec), `op` (opcode table), `frame` (scalar
+# component frame segments), `heap_envelope` (value-heap envelope, Phase 3+), `diagnostics` (CDZ codes).
+cdz-compiler = { path = "../cdz-compiler" }
+
+[dev-dependencies]
+# The COMPONENT-MODEL byte ORACLE — used ONLY by tests. rcdzc hand-builds the N-export component
+# envelope (so the byte path ports 1:1 to the Cadenza self-host, no external encoder); this crate is
+# the authoritative encoder we diff those hand-built bytes against. It never enters the compile path.
+wasm-encoder = "0.239"

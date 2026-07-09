@@ -1,0 +1,266 @@
+// The Cadenza value-heap runtime interface (M2, Phase C — TAG-FREE, complete compound set).
+// A shared component the emitted PROGRAM imports and the host composes; the program threads
+// OPAQUE u32 handles (indices into THIS runtime's value store — the program never dereferences
+// them) between the constructors and reads values back through the accessors.
+//
+// ── TAG-FREE ─────────────────────────────────────────────────────────────────────────────────
+// There is NO per-object type tag. Cadenza has no type erasure — generics monomorphize, so the
+// COMPILER knows the exact static type at every use site. It therefore never asks the runtime
+// "what is this?": `get-int` is only ever emitted where the static type says Int, and the
+// type-directed renderer the compiler bakes into the program walks a value of KNOWN shape. The
+// runtime stores raw payloads plus exactly two pieces of GENUINE runtime data — an array's element
+// count and a sum's variant discriminant — NEITHER of which is a universal type tag. (There used
+// to be a `tag-of`; it is deliberately gone.)
+//
+// ── NAME-FREE ────────────────────────────────────────────────────────────────────────────────
+// A record is a positional product (a tuple; field names are compile-time indices) and a sum is a
+// (discriminant, payload). Field/variant names are compile-time knowledge the runtime does not
+// hold. Rendering a value to its canonical s-expression text is type-directed code the COMPILER
+// emits into the program, walking the value through these accessors and baking every name/keyword
+// as a static constant (component-abi.md §The Runtime Does Not Name Or Render Values).
+//
+// Importing this interface is NOT a host effect — it is a COMPOSED, non-effect import (the M2
+// shared-runtime decision; distinct from a capability import, which suspends). The heap is acyclic
+// + reference-counted; `dup`/`drop` are the RC calling convention (no-ops until Phase D).
+//
+// ⚠ FROZEN CONTRACT — the function SET and ORDER below are the interface between this runtime and
+// the compiler-emitted program: the compiler bakes each import's index (0..=28, in the order
+// declared here) into the program's fixed component envelope. Do NOT reorder or remove functions.
+// New ops are APPENDED only (each append costs a one-time envelope re-derivation on the compiler
+// side). See spec/learnings/2026-07-05-emitting-a-component-with-an-import-is-a-fixed-envelope.md.
+package cadenza:runtime;
+
+interface heap {
+  // ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
+  //    ever called where the compiler's static type already says which primitive this handle
+  //    holds, so a mismatched read is a compiler bug, not a runtime-checked condition. ──
+  box-int: func(v: s64) -> u32;      // 0
+  get-int: func(handle: u32) -> s64; // 1
+  box-bool: func(v: bool) -> u32;    // 2
+  get-bool: func(handle: u32) -> bool; // 3
+  box-float: func(v: f64) -> u32;    // 4
+  get-float: func(handle: u32) -> f64; // 5
+
+  // ── Positional array (indices 6–9) — the fixed-arity product shape for TUPLE and RECORD.
+  //    A record IS a tuple (field names are compile-time indices); the two differ only in their
+  //    static type, which the compiler renders as `(tuple …)` vs `(record (k v)…)`. Elements are
+  //    handles. `arr-set` returns the array handle for convenient threading. `arr-len` returns the
+  //    element count. A LIST is NOT this array — a list is growable and runtime-length, so it is
+  //    the persistent-sequence trie (`vec-*`, indices 24–28) instead; the flat array backs only a
+  //    fixed-arity tuple/record. (Which representation is unobservable — a list renders `(list …)`
+  //    regardless.) ──
+  arr-alloc: func(len: u32) -> u32;                       // 6
+  arr-set: func(arr: u32, index: u32, elem: u32) -> u32;  // 7
+  arr-get: func(arr: u32, index: u32) -> u32;             // 8
+  arr-len: func(arr: u32) -> u32;                         // 9
+
+  // ── Sum (indices 10–12) — a discriminant (WHICH variant: a genuine runtime choice, a small
+  //    per-sum-type index the compiler assigns 0,1,2,… over the variants in declaration order and
+  //    `switch`es on when rendering/matching; NOT a universal type tag) plus a payload handle.
+  //    A nullary variant carries the unit value (an arr of length 0) as its payload. The runtime
+  //    stores the discriminant verbatim and hands it back; only the compiler knows which variant
+  //    name a discriminant denotes. ──
+  sum-new: func(disc: u32, payload: u32) -> u32; // 10
+  sum-disc: func(handle: u32) -> u32;            // 11
+  sum-payload: func(handle: u32) -> u32;         // 12
+
+  // ── Bytes (indices 13–16) — a packed immutable byte buffer (NOT an array of boxed ints; the
+  //    values are 0–255 and packing matters). Canonical text is `(Bytes.of (list b0 b1 …))`, which
+  //    the compiler's renderer produces by looping `bytes-get`. `bytes-set` returns the buffer
+  //    handle for threading; a byte value MUST be 0–255 (the compiler guarantees this — an
+  //    out-of-range byte is a compile-time trap on Cadenza's side). ──
+  bytes-alloc: func(len: u32) -> u32;                       // 13
+  bytes-set: func(buf: u32, index: u32, value: u32) -> u32; // 14
+  bytes-get: func(buf: u32, index: u32) -> u32;             // 15
+  bytes-len: func(buf: u32) -> u32;                         // 16
+
+  // ── String (indices 17–18) — a stored UTF-8 string leaf. The component model marshals the
+  //    `string` across the boundary, so the runtime just stores/returns the bytes VERBATIM: it
+  //    performs NO normalization or scalar-counting (those are language semantics the compiler
+  //    owns; the compiler normalizes before `str-new` if a rule requires it). `str-new` stores a
+  //    string and returns its handle; `str-get` returns the stored string (the compiler-emitted
+  //    renderer pulls it back to quote/escape it into the output, matching the corpus `"…"` form).
+  //    ──
+  str-new: func(s: string) -> u32;    // 17
+  str-get: func(handle: u32) -> string; // 18
+
+  // ── Reference-count calling convention (Perceus, indices 19–20). No-ops in Phase B/C; Phase D
+  //    makes `drop` decrement-and-maybe-reclaim and `dup` increment. Emitting the calls now fixes
+  //    the call sites so Phase D needs no re-emit. ──
+  dup: func(handle: u32);  // 19
+  drop: func(handle: u32); // 20
+
+  // ── Map (indices 21–25) — a key→value collection with DYNAMIC keys, a DISTINCT type from a
+  //    record (whose field set is fixed and whose "keys" are compile-time indices). Both keys and
+  //    values are handles. Stored as positional (key, value) pairs; the runtime stores them
+  //    VERBATIM and does NOT sort or dedup — key ordering / order-independent equality are
+  //    language semantics the compiler owns (a map's canonical rendering is not yet pinned by the
+  //    corpus, so this API exists to construct/inspect maps that flow at runtime; rendering lands
+  //    when the map value form is specified). `map-set` returns the map handle for threading. ──
+  map-alloc: func(len: u32) -> u32;                                // 21
+  map-set: func(m: u32, index: u32, key: u32, value: u32) -> u32;  // 22
+  map-key: func(m: u32, index: u32) -> u32;                        // 23
+  map-val: func(m: u32, index: u32) -> u32;                        // 24
+  map-len: func(m: u32) -> u32;                                    // 25
+
+  // ── Reuse / FBIP (Perceus reset + reuse, indices 26–28). The in-place update story: when an
+  //    `rc==1` value is consumed and a same-arity value is built in the same breath (`List.map`,
+  //    record update, a functional cons rebuild), hand the dying node's shell straight to the new
+  //    allocation instead of free→malloc. This is Koka/Lean's core perf win, made frame-limited by
+  //    the P3/P4 rule below: reuse fires ONLY when the node is UNIQUE (`rc==1`), so peak heap can
+  //    never grow — a reused shell is memory that was already live and is about to die.
+  //
+  //    `reset(node) -> u32` — the drop-to-token op. If `node` is UNIQUE (`rc==1`): drop the
+  //    children it owns (a normal cascading drop of each child reference), then RETAIN the emptied
+  //    shell and return it as a non-null REUSE TOKEN (the same handle, now childless, rc still 1).
+  //    If `node` is SHARED (`rc>1`): decrement and return 0 (null token) — no reuse, the other
+  //    owners keep the node intact. A null token is always safe to pass on: the reuse-constructors
+  //    treat it as "no cell to reuse" and allocate fresh. So the compiler emits `reset` on the
+  //    scrutinee/old value and threads the token into the constructor that rebuilds it.
+  //
+  //    `arr-alloc-reuse(len, token) -> u32` — like `arr-alloc(len)`, but if `token` is a non-null
+  //    reuse token, refit that shell to `len` NULL slots and return it (no allocation); else
+  //    allocate fresh. `sum-new-reuse(disc, payload, token)` — like `sum-new`, reusing `token`'s
+  //    shell for the new `(disc, payload)` node when non-null. Passing token 0 makes both behave
+  //    exactly as their non-reuse forms, so a reset that declined to yield a token is transparent.
+  reset: func(node: u32) -> u32;                                   // 26
+  arr-alloc-reuse: func(len: u32, token: u32) -> u32;              // 27
+  sum-new-reuse: func(disc: u32, payload: u32, token: u32) -> u32; // 28
+
+  // ── List representation: a 32-way radix trie (indices 29–33) — an IMMUTABLE, structurally-shared
+  //    growable sequence. This is the runtime representation of the language's LIST type: a list is
+  //    runtime-length and grows/updates functionally (`List.push`/`List.update`) with O(log₃₂ N)
+  //    push/get/update and path-copying sharing, which the flat `arr` (fixed-arity, for tuple/record)
+  //    cannot do. There is NO separate `Vec` type in the language — a list built as a `(list …)`
+  //    literal and a list grown by push are the SAME type over THIS representation; which structure
+  //    backs a list is unobservable (a list renders `(list …)` regardless), so the runtime is free to
+  //    use the flat array for a small/literal list or this trie for a grown one. The representation is
+  //    a pure runtime concern (see lib.rs § "Persistent vector"): these five signatures are the frozen
+  //    contract; a later switch to a tail-optimized trie or an RRB tree keeps them byte-identical.
+  //
+  //    Ownership (DESIGN-rc-calling-convention.md §1): `vec-empty` produces a new owned list.
+  //    `vec-push`/`vec-update` are CONSTRUCTORS — they CONSUME the input list and the element and
+  //    produce a NEW owned list; the old version is untouched (persistence), so a caller keeping
+  //    both versions `dup`s the input first. `vec-get` BORROWS (rc unchanged; the list still owns
+  //    the element). `vec-len` returns a `u32` by value. An out-of-bounds `vec-get`/`vec-update`
+  //    index TRAPS (fail-fast, like `arr-get`; the compiler emits the bounds check on its side).
+  vec-empty: func() -> u32;                              // 29 — a new empty vector
+  vec-len: func(v: u32) -> u32;                          // 30 — element count
+  vec-get: func(v: u32, index: u32) -> u32;              // 31 — element at index (borrowed)
+  vec-push: func(v: u32, elem: u32) -> u32;              // 32 — v with elem appended (consumes both)
+  vec-update: func(v: u32, index: u32, elem: u32) -> u32; // 33 — v with index set (consumes both)
+
+  // ── Bytes rope (indices 34–36) — O(1) concat/slice over SHARED byte leaves. A Bytes value becomes
+  //    a rope: a tree of concat/slice nodes bottoming out in the existing byte leaves (13–16), so
+  //    `bytes-concat`/`bytes-slice` allocate one node and copy NO bytes — killing the O(n²) copy
+  //    cascade the self-hosting compiler hits assembling a wasm module by concatenating encoded
+  //    sections (DESIGN-rope-bytes.md / RUNTIME-REQUESTS Request 1). The representation is a pure
+  //    runtime concern: it reuses the existing tagless node (`handles.len()` ∈ {0,1,2} selects
+  //    leaf/slice/concat — see lib.rs § "Bytes rope"), so 13–16 are byte-unchanged and a rope is
+  //    INDISTINGUISHABLE from a flat buffer by `bytes-len`/`bytes-get`/equality (a rope node
+  //    flattens to a leaf on first full read — unobservable per memory-and-resource-model.md
+  //    #Sharing Is Not Observable). A later balancing/tail change keeps these three signatures
+  //    byte-identical.
+  //
+  //    Ownership (DESIGN-rc-calling-convention.md §1): all three are CONSTRUCTORS — they CONSUME
+  //    their Bytes operand(s) (stored in the new node's `handles` without dup, like `arr-set`) and
+  //    produce a NEW owned Bytes; a caller keeping an operand `dup`s it first. `bytes-concat` is the
+  //    bytes of `a` then `b` (empty is the identity). `bytes-slice(buf, start, len)` is `len` bytes
+  //    from `start`, total-or-trap (`start + len > bytes-len(buf)` traps; `len == 0` is empty, never
+  //    a trap). `bytes-compact(buf)` returns a Bytes equal by content whose storage is INDEPENDENT
+  //    of any larger buffer `buf` was sliced from (memory-and-resource-model.md #Retained Storage) —
+  //    a slice that pinned a huge parent releases it. `bytes-set` is unchanged: it targets only a
+  //    freshly `bytes-alloc`'d leaf, never a rope node.
+  bytes-concat: func(a: u32, b: u32) -> u32;             // 34 — bytes of a then b (consumes both)
+  bytes-slice: func(buf: u32, start: u32, len: u32) -> u32; // 35 — len bytes from start (consumes buf)
+  bytes-compact: func(buf: u32) -> u32;                  // 36 — content-equal, storage-independent
+
+  // ── Map (CHAMP, indices 37–45) — the REAL persistent key→value map, replacing the positional
+  //    stub (21–25, now vestigial). Internally a Compressed Hash-Array Mapped Prefix tree over the
+  //    SAME tagless node (no new field): a node's `raw` holds [datamap:u32][nodemap:u32][size:u32]
+  //    and its `handles` hold data entries (2/entry: k,v) then subnodes, in bit-position order. Keys
+  //    cross as PLAIN handles; the runtime hashes + STRUCTURALLY compares them (tag-free — no
+  //    serialization, no upcall, no reentrancy). Correct because keys within one map are homogeneous
+  //    (one key type/map; cross-type = compile-time reject) and every value form is canonical modulo
+  //    Bytes-rope compaction (the compiler emits `bytes-compact` on a Bytes key before these ops).
+  //    Iteration is deterministic (hash order); the compiler owns the canonical byte-form sort.
+  map-empty: func() -> u32;                            // 37 — the canonical empty map
+  map-insert: func(m: u32, key: u32, val: u32) -> u32; // 38 — m with key↦val (consumes m, key, val)
+  map-lookup: func(m: u32, key: u32) -> u32;           // 39 — val, or NULL if absent (borrows m + key)
+  map-remove: func(m: u32, key: u32) -> u32;           // 40 — m without key (consumes m; borrows key)
+  map-size: func(m: u32) -> u32;                       // 41 — entry count (O(1), from the root's size)
+
+  // ── Map cursor (indices 42–45) — non-allocating iteration (rendering, equality, folds). A cursor
+  //    is a STATELESS value: `map-iter-next` CONSUMES the cursor and returns the advanced one — at
+  //    rc==1 it refits in place (FBIP, zero steady-state alloc), at rc>1 it path-copies (forkable /
+  //    peekable / tee for free). `map-iter` borrows m (dups its root to keep the tree live for the
+  //    walk); the cursor OWNS its descent-path frames, so the existing iterative `op_drop` reclaims
+  //    it with no special-casing. `map-iter-key` returns NULL when exhausted (a key is never NULL);
+  //    the projections BORROW (a kept key/val escapes the loop via a compiler-emitted `dup`, like
+  //    `arr-get`). Static dispatch: the compiler emits map- vs set-iter directly (no cursor tag).
+  map-iter: func(m: u32) -> u32;                       // 42 — cursor at the first entry (or exhausted)
+  map-iter-next: func(cur: u32) -> u32;                // 43 — advance (consumes cur, returns new cursor)
+  map-iter-key: func(cur: u32) -> u32;                 // 44 — current key, or NULL if exhausted (borrows)
+  map-iter-val: func(cur: u32) -> u32;                 // 45 — current value (borrows)
+
+  // ── Set (CHAMP, indices 46–53) — the CHAMP minus the value column: entries are 1 handle, not 2.
+  //    Same trie core, hashing, structural comparison, and RC as the map (a shared Rust core behind
+  //    the distinct `set-*` ops — the economy does not leak across the seam). A Set is a PRIMITIVE
+  //    collection, not a Map<T,Unit>. `set-contains` is a TOTAL predicate (no positional access;
+  //    sets are unordered). Mirrors the map ops; the cursor obeys the same stateless/FBIP contract.
+  set-empty: func() -> u32;                            // 46 — the canonical empty set
+  set-insert: func(s: u32, elem: u32) -> u32;          // 47 — s with elem (consumes s, elem)
+  set-contains: func(s: u32, elem: u32) -> bool;       // 48 — total membership test (borrows s + elem)
+  set-remove: func(s: u32, elem: u32) -> u32;          // 49 — s without elem (consumes s; borrows elem)
+  set-size: func(s: u32) -> u32;                       // 50 — element count (O(1))
+  set-iter: func(s: u32) -> u32;                       // 51 — cursor at the first element (or exhausted)
+  set-iter-next: func(cur: u32) -> u32;                // 52 — advance (consumes cur, returns new cursor)
+  set-iter-elem: func(cur: u32) -> u32;                // 53 — current element, or NULL if exhausted
+
+  // ── Debug leak oracle (index 54). Returns the number of live heap objects (allocated and not yet
+  //    freed). This is a VERIFICATION AID, not part of the language: the compiler NEVER imports or
+  //    emits a call to it (it is absent from the compiler's allow-list, so the envelope and every
+  //    emitted program are unchanged), and it composes as an extra export the program ignores
+  //    (component-model width subtyping). A leak-check harness reads it after `run()` and asserts it
+  //    is 0 to prove the compiler's Perceus dup/drop discipline balances. The live counter is compiled
+  //    ONLY under the `debug-counters` cargo feature; in the default (shipped) build the counter is
+  //    absent and this returns 0 at zero cost, so the runtime stays effectively unchanged.
+  live-objects: func() -> u32;                         // 54 — live heap-object count (0 unless debug)
+
+  // ── Vector concat (RRB relaxed radix, index 55) — O(log N) concatenation. Joining two persistent
+  //    vectors marks the boundary node(s) RELAXED with a per-child cumulative size table (u32 LE in
+  //    the tagless node's `raw`, one entry per child), so the radix↔RRB distinction is an INTERNAL
+  //    representation concern: a concatenated vector is INDISTINGUISHABLE from a push-built one by
+  //    `vec-len`/`vec-get` (and remains valid for further `vec-push`/`vec-update`). Ownership
+  //    (DESIGN-rc-calling-convention.md §1): a CONSTRUCTOR — CONSUMES both operands and produces a NEW
+  //    owned vector (a caller keeping either version `dup`s it first). An empty operand is the identity
+  //    (`concat(empty, b) == b`, `concat(a, empty) == a`).
+  vec-concat: func(a: u32, b: u32) -> u32;             // 55 — a then b (consumes both)
+
+  // ── Vector split (RRB relaxed radix, index 56) — O(log N) split by index. `vec-split(v, index)`
+  //    returns `(left, right)` where `left` is elements `[0, index)` and `right` is `[index, len)`.
+  //    Trimming the boundary spine marks the affected interior nodes RELAXED (a per-child cumulative
+  //    size table in `raw`), so both halves are valid persistent vectors indistinguishable from
+  //    push-built ones by `vec-len`/`vec-get` and remain valid for further push/update/concat.
+  //    Ownership (DESIGN-rc-calling-convention.md §1): a CONSTRUCTOR — CONSUMES `v` and produces TWO
+  //    new owned vectors (a caller keeping `v` `dup`s it first). Boundary: `index == 0` → `(empty, v)`,
+  //    `index >= len` → `(v, empty)`. The pair crosses as a WIT `tuple<u32, u32>` (flattened to two
+  //    return values by the component ABI).
+  vec-split: func(v: u32, index: u32) -> tuple<u32, u32>; // 56 — (left, right) at index (consumes v)
+
+  // ── Set algebra (CHAMP, indices 57–59) — structural union / intersection / difference over the
+  //    persistent set. Correctness-first over insert+contains+iterate (a recursive CHAMP node-merge
+  //    sharing whole shared subnodes is the eventual O(min) form, DESIGN-champ-map.md — deferred); the
+  //    result is CANONICAL by construction (built via `set-insert`, so byte-identical `champ_eq`/
+  //    `champ_hash` regardless of build order). Ownership (DESIGN-rc-calling-convention.md §1): all
+  //    three are CONSTRUCTORS — they CONSUME both operands and produce a NEW owned set (a caller
+  //    keeping an operand `dup`s it first). Identities: `union(empty,b)=b`, `union(a,empty)=a`,
+  //    `intersection(_,empty)=empty`, `difference(a,empty)=a`, `difference(empty,_)=empty`.
+  set-union: func(a: u32, b: u32) -> u32;              // 57 — elements in a OR b (consumes both)
+  set-intersection: func(a: u32, b: u32) -> u32;       // 58 — elements in a AND b (consumes both)
+  set-difference: func(a: u32, b: u32) -> u32;         // 59 — elements in a but NOT b (consumes both)
+}
+
+world runtime {
+  export heap;
+}

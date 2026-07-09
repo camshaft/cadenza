@@ -20,3 +20,6 @@ result
 # stray editor/rust-analyzer flycheck output at repo root
 target/
 
+
+# Compiled seed compiler binary (regenerable via cargo build)
+implementation/stable/cadenza-seed

@@ -1,0 +1,132 @@
+; ─── ty : the type language + the Hindley-Milner engine, via EFFECTS ────────────
+; Mirrors the native reference compiler `rcdzc`'s `ty.rs` — but where the Rust threads
+; two pieces of MUTABLE STATE (`&mut TVarSupply`, `&mut Subst`), the Cadenza version
+; performs two EFFECTS, so `unify`/`apply`/`occurs` are PURE functions that perform
+; operations and one `handle` per effect discharges them. The imperative "extend the
+; substitution" becomes "perform `Subst.bind`; the handler folds it into its state".
+;
+;   rcdzc (Rust, mutable)        cdzc (Cadenza, effects)
+;   ─────────────────────        ───────────────────────
+;   supply.fresh()          →    (Fresh.next ())          ; handler state = the counter
+;   subst.bind(v, t)        →    (Subst.bind (tuple v t)) ; handler state = the TVar→Ty map
+;   subst.apply(ty)         →    (apply ty)  (reads Subst.find)
+;
+; Three effect FLAVORS appear, which is much of the point of doing it this way:
+;   • Fresh  — STATE (a monotonic counter): the type-variable supply.
+;   • Subst  — STATE (a CHAMP map TVar→Ty): the growing substitution.
+;   • Fail   — ABORTIVE (never resumes): a type error aborts inference to a diagnostic.
+; The `handle` wrappers live in `24-infer.cdz` (the pass); this file is the engine.
+
+; ─── the type language (rcdzc `Ty`) ────────────────────────────────────────────
+; Inference solves STRUCTURE; the wasm valtype is a read-off of the SOLVED type later
+; (Int→i64, Bool→i32), never the thing inferred. `TVar` carries a fresh integer from
+; the Fresh supply. (Tuple/Record/Sum/Fn grow as new variants + unify arms, not a new
+; mechanism — exactly as rcdzc notes.)
+(type Ty
+  (TInt Unit          ; the 64-bit signed integer
+   | TBool Unit       ; the boolean
+   | TUnit Unit       ; the empty product
+   | TVar Int64))     ; an unsolved type variable (bound in the Subst once unified)
+
+; The result of unifying two types: success, or a mismatch carrying the two SOLVED
+; conflicting types (rcdzc's `Result<(), UnifyError>`).
+(type UnifyResult
+  (UOk Unit | UMismatch (Tuple Ty Ty)))
+
+; ─── the two state effects + the abortive error effect ──────────────────────────
+; A supply of fresh type variables — a monotonic counter (rcdzc's `TVarSupply`).
+(effect Fresh
+  (op next (-> Unit Int64)))
+
+; The substitution: TVar → its solved Ty. `bind` records a solution; `find` reads one.
+; The handler carries a CHAMP map as its state (rcdzc's `Subst`'s `HashMap`).
+(effect Subst
+  (op bind (-> (Tuple Int64 Ty) Unit))
+  (op find (-> Int64 (Option Ty))))
+
+; A unification failure — ABORTIVE: the handler does NOT resume, so a type error
+; short-circuits the whole inference to a diagnostic (rcdzc surfaces this as CDZ0201).
+(effect Fail
+  (op type-error (-> (Tuple Ty Ty) Unit)))
+
+; ─── fresh : a brand-new type variable ──────────────────────────────────────────
+(def (fresh-ty)
+  (doc "A fresh, never-before-issued type variable — `(TVar n)` for the next counter value.")
+  (Ty.TVar (Fresh.next ())))
+
+; ─── apply : resolve a type under the current substitution ──────────────────────
+; rcdzc's `Subst::apply`: follow TVar→Ty chains to a ground type or an unbound var. A
+; var may resolve to another var, so recurse. (Occurs-check in `unify` prevents cycles.)
+(def (apply t)
+  (doc "Fully resolve `t` under the current substitution (performs Subst.find), following var→type
+        chains transitively to a ground type or an unbound var.")
+  (match t
+    ((Ty.TVar v)
+     (match (Subst.find v)
+       ((Some u) (apply u))       ; bound → keep resolving
+       ((None _) t)))             ; unbound → itself
+    (_ t)))                       ; already ground
+
+; ─── occurs-check ───────────────────────────────────────────────────────────────
+; Does TVar `v` appear in `t` (under the substitution)? Prevents an infinite type
+; (`a = a → a`). No type constructor CONTAINS a type yet (TInt/TBool/TUnit are leaves),
+; so after `apply` this only compares var identities; written to recurse so later
+; structural variants (TTuple …) are covered by adding an arm, not new logic.
+(def (occurs v t)
+  (doc "Whether TVar `v` occurs in `t` under the substitution (after apply). Leaf types can't contain a
+        var, so this compares var identities; a structural type would recurse into its elements.")
+  (match (apply t)
+    ((Ty.TVar w) (= v w))
+    (_ false)))
+
+; ─── ground-type equality ───────────────────────────────────────────────────────
+(def (ty-eq a b)
+  (doc "Structural equality of two GROUND (non-var) types. Two leaves are equal iff same constructor.")
+  (match a
+    ((Ty.TInt _)  (match b ((Ty.TInt _) true)  (_ false)))
+    ((Ty.TBool _) (match b ((Ty.TBool _) true) (_ false)))
+    ((Ty.TUnit _) (match b ((Ty.TUnit _) true) (_ false)))
+    ((Ty.TVar _)  false)))   ; a var is not a ground type (unify handles vars before calling this)
+
+; ─── unify : make two types equal, extending the substitution ───────────────────
+; Standard HM (rcdzc's `unify`), ORDER-INDEPENDENT by construction — the whole point of
+; real unification (the seed's coarse-Kind bugs ask-14/…/77 were order-dependence the
+; old compiler faked with tie-break tables; here it comes free):
+;   • a var unifies with anything (after occurs-check) by binding it;
+;   • the SAME var unifies with itself with no change;
+;   • two identical ground types succeed; two different ground types FAIL.
+; `unify` READS the substitution via `apply` and EXTENDS it via `Subst.bind` — all
+; through effects; it takes/returns no substitution.
+(def (unify a b)
+  (doc "Unify `a` and `b` under the substitution (performs Subst.find via apply, Subst.bind to extend).
+        Order-independent: (unify var int) and (unify int var) both bind the var to int. Returns UOk, or
+        UMismatch of the two solved conflicting types.")
+  (let ((a2 (apply a)) (b2 (apply b)))
+    (match a2
+      ((Ty.TVar v)
+       (match b2
+         ((Ty.TVar w) (if (= v w) (UnifyResult.UOk ()) (bind-var v b2)))  ; same var: nothing to do
+         (_ (bind-var v b2))))
+      (_ (match b2
+           ((Ty.TVar w) (bind-var w a2))                                  ; symmetric: bind the var side
+           (_ (if (ty-eq a2 b2)
+                  (UnifyResult.UOk ())
+                  (UnifyResult.UMismatch (tuple a2 b2)))))))))
+
+(def (bind-var v t)
+  (doc "Bind TVar `v := t` after the occurs-check. Occurs failure → UMismatch (an infinite type). Success
+        performs `Subst.bind` and returns UOk.")
+  (if (occurs v t)
+      (UnifyResult.UMismatch (tuple (Ty.TVar v) t))
+      (do (Subst.bind (tuple v t)) (UnifyResult.UOk ()))))
+
+; ─── must-unify : unify or ABORT with a type error ──────────────────────────────
+; The abortive bridge the inference pass uses: on a mismatch, perform `Fail.type-error`
+; (the handler does not resume) so inference short-circuits to a diagnostic — instead of
+; threading a Result through every node the way rcdzc must in Rust.
+(def (must-unify a b)
+  (doc "Unify `a` and `b`, or ABORT via the Fail effect on a mismatch (the abortive handler yields the
+        diagnostic). Returns Unit on success — the caller need not thread a result.")
+  (match (unify a b)
+    ((UnifyResult.UOk _) unit)
+    ((UnifyResult.UMismatch p) (Fail.type-error p))))

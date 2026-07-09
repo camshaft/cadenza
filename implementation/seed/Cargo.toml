@@ -1,0 +1,23 @@
+# Seed toolchain workspace — the operator-synthesized generation 0 of Cadenza.
+#
+# DISPOSABLE PROJECTION of the specification (README.md, AGENTS.md): the spec tree is the
+# durable artifact; this workspace is regenerable and gitignored.
+#
+# Two crates, split so the compiler core is pure and portable:
+#   - cdz-compiler : the reference Cadenza→wasm-component COMPILER (cdz-rustc). Pure
+#                    `ast_bytes → component_bytes`; NO wasmtime, NO filesystem. Compiles to
+#                    wasm32 so it can itself be wrapped as a component exporting the same
+#                    `compile : list<u8> -> list<u8>` ABI as the Cadenza-authored compiler.
+#   - cadenza-seed : the native host/CLI. Runs finished components (wasmtime), reads the
+#                    corpus, runs the gates. wasmtime + filesystem live ONLY here.
+# (spec/learnings/2026-07-04-two-compilers-not-an-interpreter-and-a-compiler.md;
+#  memory: cdz-rustc-pure-core-wasm-targetable)
+[workspace]
+resolver = "3"
+members = ["crates/cdz-compiler", "crates/cadenza-seed", "crates/rcdzc"]
+# The wasm-component wrapper AND the heap runtime are built separately for the wasm32 target;
+# neither is part of the default native `cargo build` of the seed toolchain.
+exclude = ["crates/cdz-compiler-component", "crates/cdz-runtime"]
+
+[profile.dev]
+debug = false

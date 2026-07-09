@@ -1,0 +1,54 @@
+# cdz-runtime — the Cadenza value-heap runtime, compiled to a self-contained wasm core module
+# and EMBEDDED (as checked-in bytes) into every compound-returning component the seed emits (M2).
+#
+# It owns all of linear memory: a bump/free-list heap of reference-counted, immutable, acyclic
+# value objects (tuple/record/sum/list/bytes/str/int/bool/float), constructors that build them,
+# and a `render` that walks a value to its canonical s-expression text. The seed-generated PROGRAM
+# module holds only opaque i32 handles and calls into this runtime by index — it never touches
+# memory itself. Authored in Rust for maintainability; to be re-authored in Cadenza at M8/M9
+# self-hosting (see the plan / [[rc-heap-persistent-ds-sota-2026-07-05]]).
+#
+# Built separately for wasm32-unknown-unknown (like cdz-compiler-component); NOT in the native
+# workspace. `cargo build --release --target wasm32-unknown-unknown -p cdz-runtime` → a core
+# module whose exports the seed's envelope links against.
+# Standalone (own workspace) so the native `cargo build` of the seed toolchain ignores it — it
+# only ever builds for wasm32-unknown-unknown, like cdz-compiler-component.
+[workspace]
+
+[package]
+name = "cdz-runtime"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# Compile the live-object counter (the `live-objects` export's real value) into the wasm build.
+# OFF by default so the shipped runtime is zero-cost and byte-stable; a leak-check harness turns it
+# on to verify the compiler's Perceus dup/drop discipline (assert live-objects() == 0 after a run).
+debug-counters = []
+
+[dependencies]
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+
+# The embedded wasm allocator (see src/allocator.rs) — the runtime ships its own allocator. Gated to
+# wasm only: native `cargo test` uses the system allocator, so the Handle-typed core stays testable
+# natively without pulling talc in. Swappable in one file — the heap core never references it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+talc = "5"
+
+[package.metadata.component]
+package = "cadenza:runtime"
+
+[package.metadata.component.target]
+path = "wit"
+world = "runtime"
+
+[profile.release]
+# Small, deterministic output: no unwinding, size-optimized, single codegen unit.
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1

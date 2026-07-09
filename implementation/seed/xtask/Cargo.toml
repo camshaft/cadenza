@@ -1,0 +1,34 @@
+# xtask — build choreography for the compiler↔runtime versioned pair (M2, Amendment 0.6.0).
+#
+# The compiler and the value-heap runtime are ONE versioned pair
+# (reproducible-derivation.md: "built as one versioned pair — the runtime derived first, its
+# content address computed, and the compiler built against that content address"). The single
+# `build` task enforces that order AND is the compiler's code generator:
+#   1. Build the runtime component (cargo component, wasm32).
+#   2. Compute its content address (SHA-256, the recorded hashing choice).
+#   3. GENERATE the compiler's envelope sources from the runtime's WIT contract (the source of
+#      truth) + the compiler's ordered allow-list of the heap functions it lowers, baking the
+#      runtime hash in as `REQUIRED_RUNTIME_HASH`. Component byte-chunks are built with
+#      `wasm-encoder` and self-validated with `wasmparser`; nothing is hand-derived.
+#   4. Build the compiler component against the freshly-generated sources.
+#   5. Place both artifacts in a content-addressed store (<store>/<hash>.wasm).
+#
+# `wasm-encoder`/`wasmparser`/`wit-parser` live HERE, out-of-band — they are a dev-desk oracle used
+# to derive the envelope, never a dependency of the shipped compiler (component-abi.md: "the
+# compiler builds components ITSELF"). Standalone (own workspace), like the wasm crates — not part
+# of the native seed `cargo build`.
+[workspace]
+
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+sha2 = "0.10"
+# Envelope generation: parse the runtime contract, build reference components, self-validate.
+# Pinned to the version already resolved across the seed (`Cargo.lock`), so no new network fetch.
+wit-parser = "0.239"
+wasm-encoder = "0.239"
+wasmparser = "0.239"

@@ -1,0 +1,29 @@
+# cdz-compiler-component — cdz-rustc wrapped as a real WebAssembly component.
+#
+# This is the WHOLE point of the pure-core split: the reference compiler, compiled to a
+# component exporting `compile : list<u8> -> result<list<u8>, list<diagnostic>>` — the SAME
+# world the Cadenza-authored compiler will export. The one host (cadenza-seed) then runs
+# either component interchangeably (memory: cdz-rustc-pure-core-wasm-targetable).
+#
+# Built with `cargo component build`: cargo-component generates the WIT bindings + canonical
+# ABI and wraps the core wasm into a component. This crate is a thin adapter — all logic lives
+# in the pure `cdz-compiler` lib.
+[package]
+name = "cdz-compiler-component"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cdz-compiler = { path = "../cdz-compiler" }
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+
+[package.metadata.component]
+package = "cadenza:compiler"
+
+[package.metadata.component.target]
+path = "wit"
+world = "compiler"

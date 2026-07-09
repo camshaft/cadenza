@@ -1,0 +1,67 @@
+; ─── The IR sum types (the ladder) ──────────────────────────────────────────
+; Each rung is a user-declared sum matched exhaustively by the pass below it. As
+; later phases add forms, each rung grows a variant and the passes grow an arm —
+; an unhandled variant is a compile error, never a silent fall-through.
+; This ladder mirrors the native reference compiler `rcdzc` (crate rcdzc, ir.rs) —
+; the two are deliberate twins; port a design here, not re-invent it.
+
+; ─── operator enums (the operator is DATA the node carries, not a string head) ──
+; A binary operator category is a small sum carried in ONE node variant (HArith/HBit/
+; HShift/HCmp), so a pass has ONE arm per category and dispatches on the op — instead
+; of N node variants. (rcdzc's ArithOp/BitOp/ShiftOp/CmpOp.)
+
+(type ArithOp                    ; Int64 → Int64, CHECKED: traps on overflow, never wraps
+  (OpAdd Unit | OpSub Unit | OpMul Unit))
+
+(type BitOp                      ; Int64 → Int64. And/Or/Xor total; Div/Rem = i64.div_s/rem_s
+  (OpAnd Unit | OpOr Unit        ;   (trap natively on /0 and on Int64.min/-1 — a defined trap)
+   | OpXor Unit | OpDiv Unit | OpRem Unit))
+
+(type ShiftOp                    ; << / >>. Count guarded (>=64 → trap); left also traps on overflow.
+  (OpShl Unit | OpShr Unit))
+
+; Hir — resolved, desugared. A binary op is a node carrying its operator (an op enum)
+; and its two operand subtrees — no string heads.
+(type Hir
+  (HInt Int64                    ; an integer literal
+   | HArith (Tuple ArithOp Hir Hir)   ; checked Int64 +/-/*  (traps on overflow)
+   | HBit (Tuple BitOp Hir Hir)       ; bitwise & | ^ and div/rem
+   | HShift (Tuple ShiftOp Hir Hir)   ; guarded << >>
+   | HError Int64))              ; an unsupported/rejected form; carries a CDZ code (0 = silent decline)
+
+; Mir — the resolved mid rung. Same structure as Hir here (Phase 1); the passes
+; that will distinguish them (fold/monomorphize) grow later.
+(type Mir
+  (MInt Int64
+   | MArith (Tuple ArithOp Mir Mir)
+   | MBit (Tuple BitOp Mir Mir)
+   | MShift (Tuple ShiftOp Mir Mir)
+   | MError Int64))
+
+; Lir — a single flat stock-wasm instruction. A function body is a `list Lir`
+; (the real wasm code-body shape: a sequence). `serialize-body` maps each to bytes.
+; The checked-arithmetic guard is emitted as a run of these flat instructions over
+; scratch locals — no tree, matching wasm's stack+locals model.
+; The nullary opcodes carry a `Unit` payload (a nullary variant is a single-arity function of Unit —
+; core-semantics.md; the seed requires the payload slot, `(Lir.LAdd ())`, not a bare `| LAdd`).
+(type Lir
+  (LConst Int64                  ; i64.const n
+   | LLocalGet Int64             ; local.get i
+   | LLocalSet Int64             ; local.set i
+   | LAdd Unit                   ; i64.add
+   | LSub Unit                   ; i64.sub
+   | LMul Unit                   ; i64.mul
+   | LDivS Unit                  ; i64.div_s  (traps on x/0 and on Int64.min/-1 — the latter IS a mul overflow)
+   | LRemS Unit                  ; i64.rem_s  (traps on x/0 and on Int64.min/-1)
+   | LXor Unit                   ; i64.xor
+   | LAnd Unit                   ; i64.and
+   | LOr Unit                    ; i64.or
+   | LShl Unit                   ; i64.shl
+   | LShrS Unit                  ; i64.shr_s
+   | LGeU Unit                   ; i64.ge_u  (→ i32 bool; the shift-count guard)
+   | LLtS Unit                   ; i64.lt_s  (→ i32 bool)
+   | LNe Unit                    ; i64.ne    (→ i32 bool)
+   | LIfOpen Unit                ; if (empty blocktype) — opens a stack-neutral conditional block
+   | LEnd Unit                   ; end       — closes a block opened by LIfOpen
+   | LIfUnreachableEnd Unit      ; if (empty) unreachable end   — trap when the i32 cond is nonzero
+   | LUnreachable Unit))         ; unreachable (the bare decline trap)
