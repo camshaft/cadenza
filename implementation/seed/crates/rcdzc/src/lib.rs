@@ -28,6 +28,25 @@ pub mod infer;
 pub mod lower;
 pub mod resolve;
 
-// Shared test fixtures (compiled only under `#[cfg(test)]`).
+// The target-neutral boundary layout (exports by declared signature, reachable set, emission order),
+// computed once above the backend seam.
+pub mod layout;
+
+// The backend seam + the wasm backend. Everything above the seam is target-neutral; a backend is a
+// function of the typed core and the layout, chosen at the seam by `Target`.
+pub mod backend;
+
+// The build-tool ABI (kinded artifacts + diagnostics) and the pure compilation entry (no I/O — the
+// part that ports to the Cadenza self-host). A CLI bin puts filesystem/args on top of `compile`.
+pub mod abi;
+pub mod compile;
+
+pub use abi::{Artifact, CompileOutput, Diagnostic, Severity};
+pub use backend::Target;
+pub use compile::{compile, compile_component};
+
+// Shared test fixtures + the Stage-0 end-to-end tests (compiled only under `#[cfg(test)]`).
 #[cfg(test)]
 mod testkit;
+#[cfg(test)]
+mod tests;
