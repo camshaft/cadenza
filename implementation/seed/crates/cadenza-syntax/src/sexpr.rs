@@ -12,9 +12,7 @@
 //! arbitrary-precision `Int` and an exact `Decimal` (no `i64`/`f64` ceiling). The ML lexer MUST
 //! classify literals identically to this, or the round-trip fails.
 
-use crate::ast::{Arenas, Builder, Decimal, Leaf, Radix, StructId};
-use num_bigint::BigInt;
-use std::str::FromStr;
+use crate::ast::{Arenas, Builder, Leaf, StructId};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug)]
@@ -182,19 +180,13 @@ impl<'a, 'b> Reader<'a, 'b> {
     }
 
     /// Classify a whitespace-delimited token into a leaf occurrence. A dotted token `a.b.c` is
-    /// display sugar for nested member access `(. (. a b) c)`.
+    /// display sugar for nested member access `(. (. a b) c)`; otherwise the shared
+    /// [`crate::literal::classify_word`] decides Int / Float / Bool / Name — the SAME layer the ML
+    /// surface uses, so literal values are byte-identical across surfaces.
     fn classify_token(&mut self, tok: &str) -> StructId {
-        match tok {
-            "true" => return self.b.atom_leaf(Leaf::Bool(true)),
-            "false" => return self.b.atom_leaf(Leaf::Bool(false)),
-            _ => {}
-        }
-        if let Some((value, radix)) = parse_int_literal(tok) {
-            return self.b.atom_leaf(Leaf::Int { value, radix });
-        }
-        if let Some(d) = parse_float_literal(tok) {
-            return self.b.atom_leaf(Leaf::Float(d));
-        }
+        // A segmented identifier (`Sign.Neg`, `a.b.c`) desugars to nested member access. This is
+        // checked before `classify_word` because a numeric literal (`3.5`) is not a dotted name
+        // (its segments start with digits), so the two never conflict.
         if is_dotted_name(tok) {
             let mut segs = tok.split('.');
             let mut node = self.b.name(segs.next().unwrap());
@@ -205,132 +197,13 @@ impl<'a, 'b> Reader<'a, 'b> {
             }
             return node;
         }
-        self.b.name(tok)
+        self.b.atom_leaf(crate::literal::classify_word(tok))
     }
-}
-
-// ============================================================================
-// Numeric classification — the strict rule (ported and generalized to BigInt/Decimal).
-// ============================================================================
-
-/// True iff every `_` in `body` sits BETWEEN two `is_digit` chars — no leading, trailing, or
-/// doubled separator. Matches the between-digits rule in both directions.
-fn separators_between_digits(body: &str, is_digit: impl Fn(char) -> bool) -> bool {
-    let chars: Vec<char> = body.chars().collect();
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '_' {
-            let prev_ok = i > 0 && is_digit(chars[i - 1]);
-            let next_ok = i + 1 < chars.len() && is_digit(chars[i + 1]);
-            if !(prev_ok && next_ok) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn is_radix_digit(c: char, is_hex: bool) -> bool {
-    if is_hex {
-        c.is_ascii_hexdigit()
-    } else {
-        c == '0' || c == '1'
-    }
-}
-
-/// Parse a decimal / `0x…` / `0b…` integer token into its exact value and the base its text used,
-/// or `None` if the token is not a well-formed integer literal (leaving it to be read as a
-/// name/float). There is NO magnitude ceiling — a value of any size parses. The radix is recorded
-/// so the printed form re-reads to the same leaf.
-fn parse_int_literal(tok: &str) -> Option<(BigInt, Radix)> {
-    let (neg, body) = match tok.strip_prefix('-') {
-        Some(r) => (true, r),
-        None => (false, tok.strip_prefix('+').unwrap_or(tok)),
-    };
-    // Radix-prefixed literal.
-    if let Some(radix_body) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0b")) {
-        let is_hex = body.as_bytes().get(1) == Some(&b'x');
-        let well_formed = !radix_body.is_empty()
-            && radix_body.chars().next().is_some_and(|c| is_radix_digit(c, is_hex))
-            && radix_body.chars().all(|c| is_radix_digit(c, is_hex) || c == '_')
-            && separators_between_digits(radix_body, |c| is_radix_digit(c, is_hex));
-        if !well_formed {
-            return None;
-        }
-        let digits: String = radix_body.chars().filter(|&c| c != '_').collect();
-        let radix = if is_hex { 16 } else { 2 };
-        let mag = BigInt::parse_bytes(digits.as_bytes(), radix)?;
-        let value = if neg { -mag } else { mag };
-        return Some((value, if is_hex { Radix::Hex } else { Radix::Bin }));
-    }
-    // Plain decimal: must start with a digit, only digits + between-digits `_`.
-    let starts_digit = body.chars().next().is_some_and(|c| c.is_ascii_digit());
-    let only_digits_seps = body.chars().all(|c| c.is_ascii_digit() || c == '_');
-    if !(starts_digit && only_digits_seps && separators_between_digits(body, |c| c.is_ascii_digit()))
-    {
-        return None;
-    }
-    let digits: String = body.chars().filter(|&c| c != '_').collect();
-    let mag = BigInt::from_str(&digits).ok()?;
-    Some((if neg { -mag } else { mag }, Radix::Dec))
-}
-
-/// Parse a float token into an exact `Decimal`, or `None`. A float must start with a digit and
-/// contain a `.` or exponent; `_` separators must sit between digits. Captures the value EXACTLY
-/// (no `f64`): `significand * 10^exponent`.
-fn parse_float_literal(tok: &str) -> Option<Decimal> {
-    let (neg, body) = match tok.strip_prefix('-') {
-        Some(r) => (true, r),
-        None => (false, tok.strip_prefix('+').unwrap_or(tok)),
-    };
-    if !body.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let has_point_or_exp = body.contains('.') || body.contains('e') || body.contains('E');
-    if !has_point_or_exp {
-        return None;
-    }
-    if !body
-        .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-' | '_'))
-    {
-        return None;
-    }
-    if !separators_between_digits(body, |c| c.is_ascii_digit()) {
-        return None;
-    }
-    // Split mantissa and exponent.
-    let clean: String = body.chars().filter(|&c| c != '_').collect();
-    let (mantissa, exp_part) = match clean.find(['e', 'E']) {
-        Some(i) => (clean[..i].to_string(), Some(&clean[i + 1..])),
-        None => (clean.clone(), None),
-    };
-    // The mantissa's fractional digits become negative exponent.
-    let (int_digits, frac_digits) = match mantissa.find('.') {
-        Some(i) => (mantissa[..i].to_string(), mantissa[i + 1..].to_string()),
-        None => (mantissa.clone(), String::new()),
-    };
-    // A trailing `.` with no fraction (`1.`) or a stray extra `.` -> not a well-formed float here.
-    if int_digits.contains('.') || frac_digits.contains('.') {
-        return None;
-    }
-    let mut digits = String::new();
-    digits.push_str(&int_digits);
-    digits.push_str(&frac_digits);
-    if digits.is_empty() {
-        return None;
-    }
-    let significand = BigInt::from_str(&digits).ok()?;
-    let mut exponent: i64 = -(frac_digits.len() as i64);
-    if let Some(e) = exp_part {
-        let e = e.strip_prefix('+').unwrap_or(e);
-        let e_val = i64::from_str(e).ok()?;
-        exponent = exponent.checked_add(e_val)?;
-    }
-    Some(Decimal { negative: neg, significand, exponent })
 }
 
 /// True for an `a.b`(`.c…`) segmented identifier: at least one dot, every segment non-empty and
-/// starting with a letter or `_` (so a float like `3.5` — parsed above — never reaches here).
+/// starting with a letter or `_` (so a float like `3.5` never reaches here — its segments are
+/// digit-led).
 fn is_dotted_name(tok: &str) -> bool {
     if !tok.contains('.') {
         return false;
@@ -347,7 +220,9 @@ fn is_dotted_name(tok: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Leaf, Struct};
+    use crate::ast::{Decimal, Radix, Struct};
+    use num_bigint::BigInt;
+    use std::str::FromStr;
 
     #[test]
     fn reads_a_form() {

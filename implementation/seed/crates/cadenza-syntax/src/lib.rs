@@ -13,6 +13,7 @@ pub mod codec;
 pub mod iter;
 pub mod leb128;
 pub mod lexer;
+pub mod literal;
 pub mod sexpr;
 pub mod span;
 pub mod token;
