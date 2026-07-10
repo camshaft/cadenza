@@ -76,19 +76,47 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
     }
 }
 
-/// Write `arenas` in `to` format to bytes.
-pub fn write(arenas: &Arenas, to: Format) -> Result<Vec<u8>, ConvertError> {
-    match to {
-        Format::Binary => Ok(codec::encode(arenas)),
-        Format::Sexpr => Ok(sexpr::print(arenas).into_bytes()),
-        Format::Ml => Ok(crate::printer::print_ml(arenas).into_bytes()),
+/// Output options. Currently just the ML target line width.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// Target line width for the ML pretty-printer.
+    pub width: usize,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options { width: crate::printer::DEFAULT_WIDTH }
     }
 }
 
-/// Convert `input` from `from` to `to` in one step.
+/// Write `arenas` in `to` format to bytes, with default options.
+pub fn write(arenas: &Arenas, to: Format) -> Result<Vec<u8>, ConvertError> {
+    write_with(arenas, to, Options::default())
+}
+
+/// Write `arenas` in `to` format to bytes, with explicit options (the ML width).
+pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>, ConvertError> {
+    match to {
+        Format::Binary => Ok(codec::encode(arenas)),
+        Format::Sexpr => Ok(sexpr::print(arenas).into_bytes()),
+        Format::Ml => Ok(crate::printer::print(arenas, opts.width).into_bytes()),
+    }
+}
+
+/// Convert `input` from `from` to `to` in one step, with default options.
 pub fn convert(input: &[u8], from: Format, to: Format) -> Result<Vec<u8>, ConvertError> {
+    convert_with(input, from, to, Options::default())
+}
+
+/// Convert `input` from `from` to `to`, with explicit options (the ML width).
+pub fn convert_with(
+    input: &[u8],
+    from: Format,
+    to: Format,
+    opts: Options,
+) -> Result<Vec<u8>, ConvertError> {
     let arenas = read(input, from)?;
-    write(&arenas, to)
+    write_with(&arenas, to, opts)
 }
 
 fn utf8(input: &[u8]) -> Result<&str, ConvertError> {
@@ -128,6 +156,17 @@ mod tests {
         let bin = convert(b"1 + 2 * 3", Format::Ml, Format::Binary).unwrap();
         let sexpr = convert(&bin, Format::Binary, Format::Sexpr).unwrap();
         assert_eq!(String::from_utf8(sexpr).unwrap(), "(+ 1 (* 2 3))");
+    }
+
+    #[test]
+    fn ml_width_option_controls_wrapping() {
+        let src = b"(outer (inner aaaa bbbb) (inner cccc dddd))";
+        // wide: one line
+        let wide = convert_with(src, Format::Sexpr, Format::Ml, Options { width: 100 }).unwrap();
+        assert_eq!(String::from_utf8(wide).unwrap(), "outer(inner(aaaa, bbbb), inner(cccc, dddd))");
+        // narrow: breaks
+        let narrow = convert_with(src, Format::Sexpr, Format::Ml, Options { width: 20 }).unwrap();
+        assert!(String::from_utf8(narrow).unwrap().contains('\n'));
     }
 
     #[test]
