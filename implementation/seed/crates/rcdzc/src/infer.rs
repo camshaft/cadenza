@@ -134,7 +134,10 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 Ty::Any => {}
                 other => out.push(Reject::coded(
                     Code::Malformed,
-                    format!("member access requires a record, found {}", other.render_name()),
+                    format!(
+                        "member access requires a record, found {}",
+                        other.render_name()
+                    ),
                 )),
             }
             collect(db, operand, out);
@@ -195,6 +198,9 @@ mod tests {
         let (ast, body) = scalar_program();
         let mut db = Db::load(ast);
         let _ = type_of(&mut db, body);
-        assert!(matches!(db.core.get(body), Slot::Absent), "core filled without demand");
+        assert!(
+            matches!(db.core.get(body), Slot::Absent),
+            "core filled without demand"
+        );
     }
 }
