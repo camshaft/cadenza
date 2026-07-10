@@ -263,7 +263,10 @@ impl<'a> Printer<'a> {
     /// `(name p …)`; `args[1]` is the body. Never parenthesized (a def is a declaration, only valid
     /// at a statement/module position, so `parent_prec` does not apply).
     fn print_def(&mut self, args: &[StructId]) {
-        self.doc.cbox(INDENT);
+        // Offset 0: a hugged block body (match/let/…) carries its own indentation relative to its
+        // own start column, so the def box must not add another level on top. A plain-expression
+        // body that overflows is indented explicitly by `body_after_eq`.
+        self.doc.cbox(0);
         self.doc.word("fn ");
         if let Struct::List(sig) = self.a.get(args[0]) {
             let sig = sig.clone();
@@ -278,9 +281,41 @@ impl<'a> Printer<'a> {
             }
             self.doc.word(") =");
         }
-        self.doc.space();
-        self.expr(args[1], 0);
+        self.body_after_eq(args[1]);
         self.doc.end();
+    }
+
+    /// Emit ` body` after a `=`/`in`-style keyword: a block-like body (a `match`, `let`, `if`, …
+    /// that manages its own multi-line layout) HUGS the `=` — a plain space keeps it on the line so
+    /// it breaks internally (`fn f(x) = match … {` … ). A plain-expression body uses a breakable
+    /// space so a long flat expression instead drops to an indented line (`fn f(x) =\n  a + b + …`).
+    fn body_after_eq(&mut self, body: StructId) {
+        if self.is_block_body(body) {
+            // Hug: a plain space keeps the block on the `=` line; it breaks internally at its own
+            // indentation (the def box is at offset 0, so no extra level is added).
+            self.doc.word(" ");
+            self.expr(body, 0);
+        } else {
+            // Plain expression: a breakable space, and its own indented box so a long flat body
+            // drops to an indented continuation line.
+            self.doc.ibox(INDENT);
+            self.doc.space();
+            self.expr(body, 0);
+            self.doc.end();
+        }
+    }
+
+    /// True if `id` is a BRACE-DELIMITED construct (`match`, `module`) that manages its own
+    /// self-contained indentation, so a `= <body>` hugs it — the opening `{` stays on the `=` line
+    /// and the contents break inside. Non-brace forms (`let`, `if`, `fn`) are NOT hugged: they take
+    /// the plain-expression path, so they stay inline when they fit and otherwise drop to an
+    /// indented continuation line (where e.g. a `let … in` chain lays out flat at that indent).
+    fn is_block_body(&self, id: StructId) -> bool {
+        let head = match self.a.get(id) {
+            Struct::List(items) => items.first().and_then(|&h| self.head_name(h)),
+            _ => None,
+        };
+        matches!(head.as_deref(), Some("match" | "module"))
     }
 
     /// `module name { form… }` — one form per line (consistent box) when broken.
@@ -543,6 +578,22 @@ mod tests {
     fn module_block() {
         let out = assert_roundtrip("module math { fn add(a, b) = a + b fn main() = add(2, 3) }", 80);
         assert_eq!(out, "module math {\n  fn add(a, b) = a + b\n  fn main() = add(2, 3)\n}");
+    }
+
+    #[test]
+    fn def_match_body_hugs_the_eq() {
+        // A brace-delimited body (match) stays on the `=` line and breaks internally; arms indent
+        // one level under the def, not two.
+        let out = assert_roundtrip("fn describe(s) = match s { A(_) => 1, B(_) => 2 }", 80);
+        assert_eq!(out, "fn describe(s) = match s {\n  A(_) => 1,\n  B(_) => 2,\n}");
+    }
+
+    #[test]
+    fn def_let_body_drops_and_indents() {
+        // A non-brace body (let) is not hugged: it drops to an indented continuation line and lays
+        // out flat at that indent.
+        let out = assert_roundtrip("fn f(x) = let y = x + 1 in y * y", 80);
+        assert_eq!(out, "fn f(x) =\n  let y = x + 1 in\n  y * y");
     }
 
     #[test]
