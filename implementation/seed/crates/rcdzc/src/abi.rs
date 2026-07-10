@@ -24,7 +24,10 @@ pub struct Artifact {
 
 impl Artifact {
     pub fn new(kind: impl Into<String>, bytes: Vec<u8>) -> Artifact {
-        Artifact { kind: kind.into(), bytes }
+        Artifact {
+            kind: kind.into(),
+            bytes,
+        }
     }
     /// The canonical-binary-AST input artifact.
     pub const KIND_AST: &'static str = "ast";
@@ -38,7 +41,6 @@ impl Artifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
-    #[allow(dead_code)]
     Warning,
 }
 
@@ -63,7 +65,11 @@ impl CompileOutput {
     /// The produced component's bytes, if a `component` artifact is present AND no diagnostic has
     /// error severity (the success predicate). `None` otherwise — a failed or diagnostic-only run.
     pub fn component(&self) -> Option<&[u8]> {
-        if self.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        if self
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error)
+        {
             return None;
         }
         self.artifacts

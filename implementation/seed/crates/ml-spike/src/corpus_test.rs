@@ -3,7 +3,7 @@
 //! `(input <program>)` argument as the Ast to round-trip through the ML surface.
 
 use crate::{print_ml, read_ml};
-use cdz_compiler::ast::{self, Node};
+use rcdzc::ast::{self, Node};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -66,6 +66,7 @@ pub fn test_corpus_file(corpus_file: &Path) -> CorpusResult {
 
     for original in &inputs {
         let ml = print_ml(original);
+        println!("=====\n{}\n-----\n{ml}\n=====\n", corpus_file.display());
         match read_ml(&ml) {
             Ok(round) => {
                 if &round == original {

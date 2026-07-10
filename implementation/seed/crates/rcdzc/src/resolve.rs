@@ -11,10 +11,12 @@
 //! Resolution happens HERE, once (compiler-pipeline.md §The Compiler Resolves Names Before It Selects
 //! Instructions), not at emit.
 
+use crate::ast::Node;
 use crate::diag::Code;
-use crate::ir::{ArithOp, BitOp, CmpOp, Export, Hir, HirFunc, HirModule, Intrinsic, Reject, ShiftOp};
+use crate::ir::{
+    ArithOp, BitOp, CmpOp, Export, Hir, HirFunc, HirModule, Intrinsic, Reject, ShiftOp,
+};
 use crate::ty::{SumDef, SumRef, Ty, VariantDef};
-use cdz_compiler::ast::Node;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -727,7 +729,6 @@ impl<'a> BodyResolver<'a> {
                         "Tuple" => Hir::Intrinsic(Intrinsic::TypeTuple),
                         _ => node.clone(),
                     }
-
                 } else if looks_like_numeric_literal(name) {
                     // A digit-led token that reached resolution as a NAME is a numeric literal the
                     // reader could not parse — out of the Int64 range, or a malformed digit-separator
@@ -866,7 +867,11 @@ impl<'a> BodyResolver<'a> {
                         Node::List(kv) if kv.len() == 2 => {
                             entries.push((self.expr(&kv[0], scope), self.expr(&kv[1], scope)));
                         }
-                        _ => return Hir::Error(Reject::decline("a map entry is not a (key value) pair")),
+                        _ => {
+                            return Hir::Error(Reject::decline(
+                                "a map entry is not a (key value) pair",
+                            ))
+                        }
                     }
                 }
                 Hir::Map(entries)
@@ -989,7 +994,9 @@ impl<'a> BodyResolver<'a> {
                                 return ctor.clone(); // Hir::Ctor{def, index}
                             }
                         }
-                        return Hir::Error(Reject::decline("(meta apply) operand is not a sum name"));
+                        return Hir::Error(Reject::decline(
+                            "(meta apply) operand is not a sum name",
+                        ));
                     }
                     "t" => {
                         // (. SumName (meta t)) → the type-of-types constant (Ty::Type).
@@ -1135,7 +1142,9 @@ impl<'a> BodyResolver<'a> {
         seen: &mut std::collections::HashSet<String>,
     ) -> Result<(), Reject> {
         match node {
-            Node::Name(n) if n != "_" && !matches!(self.prelude.get(n.as_str()), Some(Hir::Ctor { .. })) => {
+            Node::Name(n)
+                if n != "_" && !matches!(self.prelude.get(n.as_str()), Some(Hir::Ctor { .. })) =>
+            {
                 // It's a binder (not `_`, not a ctor). Check for duplicate.
                 if !seen.insert(n.clone()) {
                     return Err(Reject::coded(
@@ -1225,9 +1234,10 @@ impl<'a> BodyResolver<'a> {
                 let type_name = name_of(&items[1])?;
                 let variant_name = name_of(&items[2])?;
                 match self.prelude.get(type_name) {
-                    Some(Hir::Record(fields)) => {
-                        fields.iter().find(|(n, _)| n == variant_name).map(|(_, v)| v.clone())
-                    }
+                    Some(Hir::Record(fields)) => fields
+                        .iter()
+                        .find(|(n, _)| n == variant_name)
+                        .map(|(_, v)| v.clone()),
                     _ => None,
                 }
             }
@@ -1240,7 +1250,13 @@ impl<'a> BodyResolver<'a> {
     /// `cont(self, scope)` resolves whatever the binders scope over (the rest of a let-chain + body, or a
     ///   function body) UNDER the passed scope — so a multi-binding let threads its remaining bindings here.
     /// Returns the continuation's Hir, wrapped so the pattern's binders are in scope in it.
-    fn bind_irrefutable<F>(&mut self, pat_node: &Node, scrutinee: Hir, cont: F, scope: &Scope) -> Hir
+    fn bind_irrefutable<F>(
+        &mut self,
+        pat_node: &Node,
+        scrutinee: Hir,
+        cont: F,
+        scope: &Scope,
+    ) -> Hir
     where
         F: FnOnce(&mut Self, &Scope) -> Hir,
     {
@@ -1251,7 +1267,9 @@ impl<'a> BodyResolver<'a> {
 
         match pat_node {
             // ── (: <pat> T) — peel the annotation, wrap the SCRUTINEE in Hir::Annot, recurse on <pat>.
-            Node::List(items) if items.first().and_then(name_of) == Some(":") && items.len() == 3 => {
+            Node::List(items)
+                if items.first().and_then(name_of) == Some(":") && items.len() == 3 =>
+            {
                 let ty = self.expr(&items[2], scope);
                 let annotated = Hir::Annot(Box::new(scrutinee), Box::new(ty));
                 return self.bind_irrefutable(&items[1], annotated, cont, scope);

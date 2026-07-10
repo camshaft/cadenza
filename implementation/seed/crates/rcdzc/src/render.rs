@@ -10,7 +10,6 @@
 
 // Drafted with the heap path; wired into the pipeline in the tuple slice. Staged, so silence the
 // interim dead-code noise wholesale (see `heap.rs`).
-#![allow(dead_code)]
 
 use crate::heap::{RT_FUNC_BASE, RT_ITOA};
 use crate::heap_envelope::himport;
@@ -26,7 +25,10 @@ const STR_BASE: i64 = 16;
 /// code-section entries. `n_user` fixes the first render fn's index: `RT_FUNC_BASE + n_user + pos`.
 pub fn build(ret: &Ty, n_user: usize) -> Result<(Vec<Vec<u8>>, Vec<u8>), String> {
     let render_base = RT_FUNC_BASE + n_user as u32;
-    let mut r = Renderer { types: Vec::new(), render_base };
+    let mut r = Renderer {
+        types: Vec::new(),
+        render_base,
+    };
 
     // run: local 0 = the entry result (a handle for a compound, or the raw scalar), local 1 = cursor
     // (i32). The entry result local's TYPE is the entry return type's core valtype (i32 handle for a
@@ -107,7 +109,13 @@ impl Renderer {
     /// heap-RESIDENT value read through the runtime's box accessors), the entry result is the raw
     /// value the entry returned: a compound is a heap handle (same as `render_into`), but a SCALAR is
     /// the raw i64/i32/f64 (NOT boxed) — so it renders directly, without a `get-int`/`get-bool` unbox.
-    fn render_entry(&mut self, ty: &Ty, val_expr: &[u8], cur: u32, c: &mut Vec<u8>) -> Result<(), String> {
+    fn render_entry(
+        &mut self,
+        ty: &Ty,
+        val_expr: &[u8],
+        cur: u32,
+        c: &mut Vec<u8>,
+    ) -> Result<(), String> {
         match ty {
             Ty::Int => {
                 // Raw i64 → itoa(value, cursor) directly.
@@ -132,9 +140,15 @@ impl Renderer {
                 Ok(())
             }
             // A compound entry result is a heap handle — identical to a heap-resident value.
-            Ty::Tuple(_) | Ty::Record(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Sum { .. } | Ty::Bytes | Ty::String | Ty::Unit => {
-                self.render_into(ty, val_expr, cur, c)
-            }
+            Ty::Tuple(_)
+            | Ty::Record(_)
+            | Ty::List(_)
+            | Ty::Map(..)
+            | Ty::Set(_)
+            | Ty::Sum { .. }
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Unit => self.render_into(ty, val_expr, cur, c),
             // A Type-TYPED value (whose type is `Ty::Type`) renders `(: <the-type-name> Type)`. But this
             // arm is for when the VALUE's type is checked (at the entry level); we don't have the actual
             // TypeVal node here. For Layer 1, a type-value should never reach render (the fence catches
@@ -151,7 +165,13 @@ impl Renderer {
     /// Emit code that renders the value denoted by `h_expr` (bytes that push its i32 handle/scalar)
     /// of type `ty` into the cursor local `cur`, updating `cur`. A scalar renders inline; a compound
     /// calls its render fn (interning it).
-    fn render_into(&mut self, ty: &Ty, h_expr: &[u8], cur: u32, c: &mut Vec<u8>) -> Result<(), String> {
+    fn render_into(
+        &mut self,
+        ty: &Ty,
+        h_expr: &[u8],
+        cur: u32,
+        c: &mut Vec<u8>,
+    ) -> Result<(), String> {
         match ty {
             Ty::Int => {
                 // For an Int LEAF that is boxed on the heap, `h_expr` pushes the boxed handle and we
@@ -186,7 +206,14 @@ impl Renderer {
                 write_lit(b"unit", cur, c);
                 Ok(())
             }
-            Ty::Tuple(_) | Ty::Record(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Sum { .. } | Ty::Bytes | Ty::String => {
+            Ty::Tuple(_)
+            | Ty::Record(_)
+            | Ty::List(_)
+            | Ty::Map(..)
+            | Ty::Set(_)
+            | Ty::Sum { .. }
+            | Ty::Bytes
+            | Ty::String => {
                 // Compound: call its render fn with (handle, cur), take the returned cursor.
                 let pos = self.intern(ty);
                 c.extend_from_slice(h_expr);
@@ -199,7 +226,9 @@ impl Renderer {
                 Ok(())
             }
             // A type-value should never reach render_into (the fence catches it at fold time).
-            Ty::Type => Err("a type-value reached render (erasure fence should have rejected it)".to_string()),
+            Ty::Type => Err(
+                "a type-value reached render (erasure fence should have rejected it)".to_string(),
+            ),
             Ty::Fn(..) => Err("cannot render a function value".to_string()),
             Ty::Param(_) | Ty::Var(_) => Err("cannot render an unsolved type".to_string()),
         }
@@ -417,8 +446,24 @@ fn emit_string_byte_escape(bv: u8, cur: u32, c: &mut Vec<u8>) {
         depth += 1;
     }
     // else: write the byte RAW — `cur[0] = bv ; cur += 1`.
-    c.extend_from_slice(&[op::LOCAL_GET, cur as u8, op::LOCAL_GET, bv, op::I32_STORE8, 0, 0]);
-    c.extend_from_slice(&[op::LOCAL_GET, cur as u8, op::I32_CONST, 1, op::I32_ADD, op::LOCAL_SET, cur as u8]);
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        cur as u8,
+        op::LOCAL_GET,
+        bv,
+        op::I32_STORE8,
+        0,
+        0,
+    ]);
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        cur as u8,
+        op::I32_CONST,
+        1,
+        op::I32_ADD,
+        op::LOCAL_SET,
+        cur as u8,
+    ]);
     for _ in 0..depth {
         c.push(op::END);
     }
@@ -459,15 +504,31 @@ fn emit_byte_escape(bv: u8, nib: u8, cur: u32, c: &mut Vec<u8>) {
     c.push(0x71); // i32.and
     c.extend_from_slice(&[op::IF, 0x40]);
     // raw: cur[0] = bv ; cur += 1
-    c.extend_from_slice(&[op::LOCAL_GET, cur as u8, op::LOCAL_GET, bv, op::I32_STORE8, 0, 0]);
-    c.extend_from_slice(&[op::LOCAL_GET, cur as u8, op::I32_CONST, 1, op::I32_ADD, op::LOCAL_SET, cur as u8]);
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        cur as u8,
+        op::LOCAL_GET,
+        bv,
+        op::I32_STORE8,
+        0,
+        0,
+    ]);
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        cur as u8,
+        op::I32_CONST,
+        1,
+        op::I32_ADD,
+        op::LOCAL_SET,
+        cur as u8,
+    ]);
     c.push(op::ELSE);
     // else: `\xNN` — write '\','x', then the high and low hex nibbles.
     write_lit(b"\\x", cur, c);
     emit_hex_nibble(bv, nib, 4, cur, c); // high nibble = bv >> 4
     emit_hex_nibble(bv, nib, 0, cur, c); // low nibble  = bv & 15
     c.push(op::END); // close the printable-if
-    // Close all the named-escape else-blocks.
+                     // Close all the named-escape else-blocks.
     for _ in 0..depth {
         c.push(op::END);
     }
@@ -485,7 +546,13 @@ fn emit_hex_nibble(bv: u8, nib: u8, shift: i64, cur: u32, c: &mut Vec<u8>) {
     }
     c.extend_from_slice(&[op::I32_CONST, 15, 0x71 /*i32.and*/, op::LOCAL_SET, nib]);
     // digit = nib + (nib < 10 ? 48 : 87)   (87 = 'a' - 10)
-    c.extend_from_slice(&[op::LOCAL_GET, nib, op::I32_CONST, 10, 0x48 /*i32.lt_s*/]);
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        nib,
+        op::I32_CONST,
+        10,
+        0x48, /*i32.lt_s*/
+    ]);
     c.extend_from_slice(&[op::IF, 0x7F]); // → i32 (the ASCII digit)
     c.extend_from_slice(&[op::LOCAL_GET, nib, op::I32_CONST, 48, op::I32_ADD]);
     c.push(op::ELSE);
@@ -496,8 +563,24 @@ fn emit_hex_nibble(bv: u8, nib: u8, shift: i64, cur: u32, c: &mut Vec<u8>) {
     c.push(op::END);
     c.extend_from_slice(&[op::LOCAL_SET, nib]);
     // cur[0] = digit ; cur += 1
-    c.extend_from_slice(&[op::LOCAL_GET, cur as u8, op::LOCAL_GET, nib, op::I32_STORE8, 0, 0]);
-    c.extend_from_slice(&[op::LOCAL_GET, cur as u8, op::I32_CONST, 1, op::I32_ADD, op::LOCAL_SET, cur as u8]);
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        cur as u8,
+        op::LOCAL_GET,
+        nib,
+        op::I32_STORE8,
+        0,
+        0,
+    ]);
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        cur as u8,
+        op::I32_CONST,
+        1,
+        op::I32_ADD,
+        op::LOCAL_SET,
+        cur as u8,
+    ]);
 }
 
 /// Bytes that push the i32 handle of tuple element `index`: `arr-get(local[handle_local], index)`.

@@ -15,9 +15,6 @@ name = "cadenza-seed"
 path = "src/main.rs"
 
 [dependencies]
-cdz-compiler = { path = "../cdz-compiler" }
-# The rewritten reference compiler (rcdzc). Opt-in via `CADENZA_COMPILER=v2`; the old `cdz-compiler`
-# stays the default/shipping compiler and byte oracle until rcdzc reaches parity. See `compiler.rs`.
 rcdzc = { path = "../rcdzc" }
 # SHA-256 content addressing of components (options/hashing-and-encoding/).
 sha2 = "0.10"
@@ -36,4 +33,4 @@ tracing-subscriber = { version = "0.3", optional = true, default-features = fals
 [features]
 # `trace`: turn on compilation-decision tracing — enables `cdz-compiler`'s `trace` feature and pulls
 # in the native subscriber. Additive, default-off; the wasm-component build never sees this feature.
-trace = ["cdz-compiler/trace", "dep:tracing", "dep:tracing-subscriber"]
+trace = ["dep:tracing", "dep:tracing-subscriber"]

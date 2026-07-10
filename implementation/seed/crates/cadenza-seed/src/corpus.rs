@@ -4,9 +4,9 @@
 //! 2026-07-04). A case the compiler cannot yet lower is reported as `todo`, an honest
 //! backlog entry, not a failure.
 
-use cdz_compiler::ast::{self, Node};
-use cdz_compiler::codegen;
 use crate::host::{self, RunOutcome};
+use rcdzc::ast::{self, Node};
+use rcdzc::codegen;
 
 /// The capabilities the seed realizes, used to filter `(needs …)` cases. Cases needing an
 /// unrealized capability are skipped by both gates.
@@ -70,7 +70,10 @@ pub enum CaseLoad {
 /// The first `(needs …)` capability a case requires that the seed does not realize, or
 /// `None` if the seed realizes them all (so the case is runnable).
 pub fn first_unrealized(needs: &[String]) -> Option<String> {
-    needs.iter().find(|n| !REALIZED.contains(&n.as_str())).cloned()
+    needs
+        .iter()
+        .find(|n| !REALIZED.contains(&n.as_str()))
+        .cloned()
 }
 
 /// Load every case in the corpus (all `.sexp` files under `dir`), file-sorted, in-file
@@ -174,7 +177,8 @@ fn parse_case(node: &Node) -> Result<Case, String> {
                     for ev in &c[1..] {
                         if let Node::List(ep) = ev {
                             if let Some(Node::Str(kind)) = ep.get(1) {
-                                let payload = ep.get(2).cloned().unwrap_or(Node::Name("unit".into()));
+                                let payload =
+                                    ep.get(2).cloned().unwrap_or(Node::Name("unit".into()));
                                 evs.push((kind.clone(), payload));
                             }
                         }
@@ -276,7 +280,10 @@ pub fn run_corpus(dir: &str) -> std::io::Result<Vec<CaseResult>> {
             CaseLoad::Parsed(c) => results.push(run_case_guarded(c)),
             CaseLoad::Malformed { description, error } => results.push(CaseResult {
                 description,
-                status: CaseStatus::Failed { expected: "well-formed case".into(), observed: error },
+                status: CaseStatus::Failed {
+                    expected: "well-formed case".into(),
+                    observed: error,
+                },
             }),
         }
     }
@@ -363,16 +370,15 @@ pub fn as_program_v2(input: &Node) -> Node {
 
 fn run_case(case: Case) -> CaseResult {
     if let Some(need) = first_unrealized(&case.needs) {
-        return CaseResult { description: case.description, status: CaseStatus::Skipped(need) };
+        return CaseResult {
+            description: case.description,
+            status: CaseStatus::Skipped(need),
+        };
     }
     // Wrap the input in the program shape the SELECTED compiler expects: the old compiler takes the
     // `(module …)`/`main`-convention shape; rcdzc (`v2`) takes the implicit-module `(do … (export …))`
     // shape. Both grade against the same corpus oracle (run the emitted component, check the value).
-    let program = if crate::compiler::use_v2() {
-        as_program_v2(&case.input)
-    } else {
-        as_program(&case.input)
-    };
+    let program = as_program_v2(&case.input);
     let compiled = crate::compiler::compile_program(&program);
 
     // The diagnostic code cdz-rustc must reject with, if any: a `(compiler (error CDZ####))`
@@ -386,9 +392,10 @@ fn run_case(case: Case) -> CaseResult {
     });
     if let Some(expected_code) = &expected_reject {
         return match &compiled {
-            Err(d) if d.code() == Some(expected_code.as_str()) => {
-                CaseResult { description: case.description, status: CaseStatus::Passed }
-            }
+            Err(d) if d.code() == Some(expected_code.as_str()) => CaseResult {
+                description: case.description,
+                status: CaseStatus::Passed,
+            },
             Err(d) if d.code().is_some() => CaseResult {
                 description: case.description,
                 status: CaseStatus::Failed {
@@ -428,7 +435,12 @@ fn run_case(case: Case) -> CaseResult {
                 },
             }
         }
-        Err(d) => return CaseResult { description: case.description, status: CaseStatus::Todo(d.0) },
+        Err(d) => {
+            return CaseResult {
+                description: case.description,
+                status: CaseStatus::Todo(d.0),
+            }
+        }
     };
 
     // The component must validate and run.
@@ -442,24 +454,27 @@ fn run_case(case: Case) -> CaseResult {
         };
     }
     let manifest: Vec<String> = Vec::new(); // host imports are bound from the component itself
-    // Seed the host's response log from the `(host-responses …)` fixture (value forms → `Val`).
-    let responses: Vec<host::Val> =
-        case.host_responses.iter().filter_map(val_of_form).collect();
-    let (outcome, state) = match host::run_component_with_responses(&component, &manifest, &responses) {
-        Ok(r) => r,
-        Err(e) => {
-            return CaseResult {
-                description: case.description,
-                status: CaseStatus::Failed {
-                    expected: describe_primary(&case.primary),
-                    observed: format!("failed to run: {}", first_line(&e.to_string())),
-                },
+                                            // Seed the host's response log from the `(host-responses …)` fixture (value forms → `Val`).
+    let responses: Vec<host::Val> = case.host_responses.iter().filter_map(val_of_form).collect();
+    let (outcome, state) =
+        match host::run_component_with_responses(&component, &manifest, &responses) {
+            Ok(r) => r,
+            Err(e) => {
+                return CaseResult {
+                    description: case.description,
+                    status: CaseStatus::Failed {
+                        expected: describe_primary(&case.primary),
+                        observed: format!("failed to run: {}", first_line(&e.to_string())),
+                    },
+                }
             }
-        }
-    };
+        };
 
     let status = compare(&case, &outcome, &state);
-    CaseResult { description: case.description, status }
+    CaseResult {
+        description: case.description,
+        status,
+    }
 }
 
 /// Compare a run's observable behavior against the case's recorded clauses.
@@ -531,8 +546,10 @@ fn compare(case: &Case, outcome: &RunOutcome, state: &host::HostState) -> CaseSt
             };
         }
         for ((ename, eargs), ocall) in expected_calls.iter().zip(observed) {
-            let erendered: Vec<String> =
-                eargs.iter().map(|a| expected_render(a).unwrap_or_default()).collect();
+            let erendered: Vec<String> = eargs
+                .iter()
+                .map(|a| expected_render(a).unwrap_or_default())
+                .collect();
             if ename != &ocall.name || erendered != ocall.args {
                 return CaseStatus::Failed {
                     expected: format!("call ({ename} {})", erendered.join(" ")),
@@ -654,7 +671,11 @@ fn type_name_of(node: &Node) -> Option<String> {
 /// compound values (tuple/list/record/sum/AST/bytes) render to their canonical s-expression
 /// text — the same text the compiled component's `display()` produces.
 pub fn expected_render(form: &Node) -> Option<String> {
-    let value = if let Some(args) = form.as_form(":") { args.get(0)? } else { form };
+    let value = if let Some(args) = form.as_form(":") {
+        args.get(0)?
+    } else {
+        form
+    };
     render_value_node(value)
 }
 
@@ -689,7 +710,7 @@ fn render_value_node(value: &Node) -> Option<String> {
             // and renders to the canonical `b"…"` display text the compiled component produces. This
             // is what makes the two spellings round-trip: both observe as one form.
             if let Some(bytes) = bytes_of_tree(items) {
-                return Some(cdz_compiler::codegen::bytes_literal_text(&bytes));
+                return Some(rcdzc::codegen::bytes_literal_text(&bytes));
             }
             let parts: Vec<String> = items.iter().map(render_value_node).collect::<Option<_>>()?;
             Some(format!("({})", parts.join(" ")))
@@ -730,7 +751,10 @@ fn bytes_of_tree(items: &[Node]) -> Option<Vec<u8>> {
 
 fn describe_primary(p: &PrimaryClause) -> String {
     match p {
-        PrimaryClause::Output(form) => format!("output {}", expected_render(form).unwrap_or_else(|| "<compound>".into())),
+        PrimaryClause::Output(form) => format!(
+            "output {}",
+            expected_render(form).unwrap_or_else(|| "<compound>".into())
+        ),
         PrimaryClause::Trap(r) => format!("trap {r:?}"),
         PrimaryClause::Exhausted => "exhausted".into(),
         PrimaryClause::Error(c) => format!("error {c}"),

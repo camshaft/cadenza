@@ -17,8 +17,6 @@
 # to derive the envelope, never a dependency of the shipped compiler (component-abi.md: "the
 # compiler builds components ITSELF"). Standalone (own workspace), like the wasm crates — not part
 # of the native seed `cargo build`.
-[workspace]
-
 [package]
 name = "xtask"
 version = "0.0.0"

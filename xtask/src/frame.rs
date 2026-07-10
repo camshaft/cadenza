@@ -57,7 +57,8 @@ fn reference_scalar_component(body: i64) -> Vec<u8> {
         m.section(&e);
         let mut code = CodeSection::new();
         let mut b = Function::new([]);
-        b.instruction(&Instruction::I64Const(body)).instruction(&Instruction::End);
+        b.instruction(&Instruction::I64Const(body))
+            .instruction(&Instruction::End);
         code.function(&b);
         m.section(&code);
         m.finish()
@@ -82,15 +83,55 @@ fn reference_scalar_component(body: i64) -> Vec<u8> {
 /// self-checked by validating the assembled reference component below.
 fn segments() -> Vec<Seg> {
     vec![
-        Seg { name: "frame-core-magic",       doc: "core module: \\0asm v1 preamble",                    bytes: vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00] },
-        Seg { name: "frame-functype-run",     doc: "functype () -> i64",                                 bytes: functype_run_i64() },
-        Seg { name: "frame-run-name",         doc: "the export name \"run\"",                            bytes: b"run".to_vec() },
-        Seg { name: "frame-comp-magic",       doc: "component: preamble",                                bytes: vec![0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00] },
-        Seg { name: "frame-comp-instance",    doc: "section 2: core instance (instantiate module 0)",    bytes: vec![0x02, 0x04, 0x01, 0x00, 0x00, 0x00] },
-        Seg { name: "frame-comp-type-run",    doc: "section 7: component type () -> s64 (0x78)",         bytes: vec![0x07, 0x05, 0x01, 0x40, 0x00, 0x00, 0x78] },
-        Seg { name: "frame-comp-canon-lift",  doc: "section 6: canon lift of core run",                  bytes: vec![0x06, 0x09, 0x01, 0x00, 0x00, 0x01, 0x00, 0x03, 0x72, 0x75, 0x6E] },
-        Seg { name: "frame-comp-func-alias",  doc: "section 8: component func alias",                     bytes: vec![0x08, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00] },
-        Seg { name: "frame-comp-export-run",  doc: "section 11: export \"run\"",                         bytes: vec![0x0B, 0x09, 0x01, 0x00, 0x03, 0x72, 0x75, 0x6E, 0x01, 0x00, 0x00] },
+        Seg {
+            name: "frame-core-magic",
+            doc: "core module: \\0asm v1 preamble",
+            bytes: vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00],
+        },
+        Seg {
+            name: "frame-functype-run",
+            doc: "functype () -> i64",
+            bytes: functype_run_i64(),
+        },
+        Seg {
+            name: "frame-run-name",
+            doc: "the export name \"run\"",
+            bytes: b"run".to_vec(),
+        },
+        Seg {
+            name: "frame-comp-magic",
+            doc: "component: preamble",
+            bytes: vec![0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00],
+        },
+        Seg {
+            name: "frame-comp-instance",
+            doc: "section 2: core instance (instantiate module 0)",
+            bytes: vec![0x02, 0x04, 0x01, 0x00, 0x00, 0x00],
+        },
+        Seg {
+            name: "frame-comp-type-run",
+            doc: "section 7: component type () -> s64 (0x78)",
+            bytes: vec![0x07, 0x05, 0x01, 0x40, 0x00, 0x00, 0x78],
+        },
+        Seg {
+            name: "frame-comp-canon-lift",
+            doc: "section 6: canon lift of core run",
+            bytes: vec![
+                0x06, 0x09, 0x01, 0x00, 0x00, 0x01, 0x00, 0x03, 0x72, 0x75, 0x6E,
+            ],
+        },
+        Seg {
+            name: "frame-comp-func-alias",
+            doc: "section 8: component func alias",
+            bytes: vec![0x08, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00],
+        },
+        Seg {
+            name: "frame-comp-export-run",
+            doc: "section 11: export \"run\"",
+            bytes: vec![
+                0x0B, 0x09, 0x01, 0x00, 0x03, 0x72, 0x75, 0x6E, 0x01, 0x00, 0x00,
+            ],
+        },
     ]
 }
 
@@ -106,7 +147,12 @@ fn render_cadenza(segs: &[Seg]) -> String {
     s.push('\n');
     for seg in segs {
         let lits: Vec<String> = seg.bytes.iter().map(|b| format!("0x{b:02X}")).collect();
-        s.push_str(&format!("(def {} (Bytes.of (list {})))   ; {}\n", seg.name, lits.join(" "), seg.doc));
+        s.push_str(&format!(
+            "(def {} (Bytes.of (list {})))   ; {}\n",
+            seg.name,
+            lits.join(" "),
+            seg.doc
+        ));
     }
     s.push('\n');
     s.push_str(ASSEMBLY);
@@ -122,7 +168,12 @@ fn render_rust(segs: &[Seg]) -> String {
     s.push_str("\n#![allow(dead_code)]\n\n");
     for seg in segs {
         let lits: Vec<String> = seg.bytes.iter().map(|b| b.to_string()).collect();
-        s.push_str(&format!("/// {}\npub const {}: &[u8] = &[{}];\n", seg.doc, screaming(seg.name), lits.join(", ")));
+        s.push_str(&format!(
+            "/// {}\npub const {}: &[u8] = &[{}];\n",
+            seg.doc,
+            screaming(seg.name),
+            lits.join(", ")
+        ));
     }
     s
 }
@@ -138,14 +189,17 @@ pub fn generate(seed: &Path, repo: &Path) -> Result<bool, String> {
     // body) must validate. The Cadenza side reuses these exact segments; the differential gate is the
     // byte-level backstop on the full assembled result.
     let reference = reference_scalar_component(0);
-    wasmparser::validate(&reference).map_err(|e| format!("scalar frame reference failed validation: {e}"))?;
+    wasmparser::validate(&reference)
+        .map_err(|e| format!("scalar frame reference failed validation: {e}"))?;
 
     let cdz = render_cadenza(&segs);
     let rs = render_rust(&segs);
     let cdz_path = repo.join("implementation/compiler/cdzc/40-frame.cdz");
-    let rs_path = seed.join("crates/cdz-compiler/src/frame.rs");
-    let a = write_if_changed(&cdz_path, &cdz).map_err(|e| format!("write {}: {e}", cdz_path.display()))?;
-    let b = write_if_changed(&rs_path, &rs).map_err(|e| format!("write {}: {e}", rs_path.display()))?;
+    let rs_path = seed.join("crates/rcdzc/src/frame.rs");
+    let a = write_if_changed(&cdz_path, &cdz)
+        .map_err(|e| format!("write {}: {e}", cdz_path.display()))?;
+    let b =
+        write_if_changed(&rs_path, &rs).map_err(|e| format!("write {}: {e}", rs_path.display()))?;
     Ok(a || b)
 }
 

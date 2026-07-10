@@ -22,9 +22,8 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-# Reused as-is: `ast` (Node + s-expr reader + binary codec), `op` (opcode table), `frame` (scalar
-# component frame segments), `heap_envelope` (value-heap envelope, Phase 3+), `diagnostics` (CDZ codes).
-cdz-compiler = { path = "../cdz-compiler" }
+ciborium = "0.2"
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 # The COMPONENT-MODEL byte ORACLE — used ONLY by tests. rcdzc hand-builds the N-export component

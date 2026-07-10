@@ -235,7 +235,9 @@ impl HeapIntrinsic {
     pub fn param_count(self) -> usize {
         match self {
             HeapIntrinsic::ListPush
-            | HeapIntrinsic::SetOf | HeapIntrinsic::SetInsert | HeapIntrinsic::SetContains
+            | HeapIntrinsic::SetOf
+            | HeapIntrinsic::SetInsert
+            | HeapIntrinsic::SetContains
             | HeapIntrinsic::SetRemove => 1,
             HeapIntrinsic::MapInsert | HeapIntrinsic::MapLookup | HeapIntrinsic::MapRemove => 2,
         }
@@ -251,26 +253,33 @@ impl HeapIntrinsic {
                 Ty::List(Box::new(param(0))),
             ),
             HeapIntrinsic::MapInsert => (
-                vec![Ty::Map(Box::new(param(0)), Box::new(param(1))), param(0), param(1)],
+                vec![
+                    Ty::Map(Box::new(param(0)), Box::new(param(1))),
+                    param(0),
+                    param(1),
+                ],
                 Ty::Map(Box::new(param(0)), Box::new(param(1))),
             ),
             HeapIntrinsic::MapLookup => (
                 vec![Ty::Map(Box::new(param(0)), Box::new(param(1))), param(0)],
-                Ty::Sum { def: crate::ty::prelude_option(), args: vec![param(1)] },
+                Ty::Sum {
+                    def: crate::ty::prelude_option(),
+                    args: vec![param(1)],
+                },
             ),
             HeapIntrinsic::MapRemove => (
                 vec![Ty::Map(Box::new(param(0)), Box::new(param(1))), param(0)],
                 Ty::Map(Box::new(param(0)), Box::new(param(1))),
             ),
-            HeapIntrinsic::SetOf => (vec![Ty::List(Box::new(param(0)))], Ty::Set(Box::new(param(0)))),
+            HeapIntrinsic::SetOf => (
+                vec![Ty::List(Box::new(param(0)))],
+                Ty::Set(Box::new(param(0))),
+            ),
             HeapIntrinsic::SetInsert => (
                 vec![Ty::Set(Box::new(param(0))), param(0)],
                 Ty::Set(Box::new(param(0))),
             ),
-            HeapIntrinsic::SetContains => (
-                vec![Ty::Set(Box::new(param(0))), param(0)],
-                Ty::Bool,
-            ),
+            HeapIntrinsic::SetContains => (vec![Ty::Set(Box::new(param(0))), param(0)], Ty::Bool),
             HeapIntrinsic::SetRemove => (
                 vec![Ty::Set(Box::new(param(0))), param(0)],
                 Ty::Set(Box::new(param(0))),
@@ -298,7 +307,10 @@ impl Intrinsic {
             // a `Heap` op — its signature is on `HeapIntrinsic`.)
             Intrinsic::ListLen => (vec![Ty::List(Box::new(Ty::Param(0)))], Ty::Int),
             Intrinsic::ListConcat => (
-                vec![Ty::List(Box::new(Ty::Param(0))), Ty::List(Box::new(Ty::Param(0)))],
+                vec![
+                    Ty::List(Box::new(Ty::Param(0))),
+                    Ty::List(Box::new(Ty::Param(0))),
+                ],
                 Ty::List(Box::new(Ty::Param(0))),
             ),
             // FALLIBLE reads → `Option elem` (the SHARED prelude `Option`, so a match on the result
@@ -306,21 +318,33 @@ impl Intrinsic {
             // `List.at : List a → Int → Option a` (parametric).
             Intrinsic::BytesAt => (
                 vec![Ty::Bytes, Ty::Int],
-                Ty::Sum { def: crate::ty::prelude_option(), args: vec![Ty::Int] },
+                Ty::Sum {
+                    def: crate::ty::prelude_option(),
+                    args: vec![Ty::Int],
+                },
             ),
             Intrinsic::ListAt => (
                 vec![Ty::List(Box::new(Ty::Param(0))), Ty::Int],
-                Ty::Sum { def: crate::ty::prelude_option(), args: vec![Ty::Param(0)] },
+                Ty::Sum {
+                    def: crate::ty::prelude_option(),
+                    args: vec![Ty::Param(0)],
+                },
             ),
             // `Bytes.slice : Bytes → Int → Int → Option Bytes`.
             Intrinsic::BytesSlice => (
                 vec![Ty::Bytes, Ty::Int, Ty::Int],
-                Ty::Sum { def: crate::ty::prelude_option(), args: vec![Ty::Bytes] },
+                Ty::Sum {
+                    def: crate::ty::prelude_option(),
+                    args: vec![Ty::Bytes],
+                },
             ),
             // `String.from-bytes : Bytes → Option String` — the TOTAL UTF-8 decode.
             Intrinsic::StrFromBytes => (
                 vec![Ty::Bytes],
-                Ty::Sum { def: crate::ty::prelude_option(), args: vec![Ty::String] },
+                Ty::Sum {
+                    def: crate::ty::prelude_option(),
+                    args: vec![Ty::String],
+                },
             ),
             // `Bytes.compact : Bytes → Bytes` (content-identity, storage-independent).
             Intrinsic::BytesCompact => (vec![Ty::Bytes], Ty::Bytes),
@@ -332,16 +356,17 @@ impl Intrinsic {
             // `Set E` non-boxing ops — parametric in E=`Param(0)`. Size + the set algebra.
             Intrinsic::SetSize => (vec![Ty::Set(Box::new(Ty::Param(0)))], Ty::Int),
             Intrinsic::SetUnion | Intrinsic::SetIntersection | Intrinsic::SetDifference => (
-                vec![Ty::Set(Box::new(Ty::Param(0))), Ty::Set(Box::new(Ty::Param(0)))],
+                vec![
+                    Ty::Set(Box::new(Ty::Param(0))),
+                    Ty::Set(Box::new(Ty::Param(0))),
+                ],
                 Ty::Set(Box::new(Ty::Param(0))),
             ),
             // Layer 2 type builders: monomorphic `Type(s) → Type`. Applied to type-value args, their
             // `fold_const` builds the compound `Ty`. `List`/`Set`/`Option` take one type; `Map`/`Result`/
             // `Tuple` take two.
-            Intrinsic::TypeList | Intrinsic::TypeSet =>
-                (vec![Ty::Type], Ty::Type),
-            Intrinsic::TypeMap | Intrinsic::TypeTuple =>
-                (vec![Ty::Type, Ty::Type], Ty::Type),
+            Intrinsic::TypeList | Intrinsic::TypeSet => (vec![Ty::Type], Ty::Type),
+            Intrinsic::TypeMap | Intrinsic::TypeTuple => (vec![Ty::Type, Ty::Type], Ty::Type),
             // A boxing op delegates to its `HeapIntrinsic` signature.
             Intrinsic::Heap(h) => h.signature(),
         }
@@ -405,19 +430,29 @@ impl Intrinsic {
             // never a compile-time constant; they stay for `select`.
             Intrinsic::BytesCompact
             | Intrinsic::MapSize
-            | Intrinsic::SetSize | Intrinsic::SetUnion | Intrinsic::SetIntersection
+            | Intrinsic::SetSize
+            | Intrinsic::SetUnion
+            | Intrinsic::SetIntersection
             | Intrinsic::SetDifference => None,
             // Layer 2 type builders: read the `Ty` out of each `Mir::TypeVal` arg and construct the
             // compound type-value. The one place a compound `Ty` is fabricated from type args at fold
             // time; shared with annotation-time extraction via `build_compound_ty` so the two paths
             // cannot drift. If not all args are `TypeVal` (which never happens in well-typed code —
             // mixing a type-value into a value op is a `Ty` mismatch caught at infer), stays residual.
-            Intrinsic::TypeList | Intrinsic::TypeMap | Intrinsic::TypeSet
+            Intrinsic::TypeList
+            | Intrinsic::TypeMap
+            | Intrinsic::TypeSet
             | Intrinsic::TypeTuple => {
-                let arg_tys: Vec<Ty> = args.iter()
-                    .filter_map(|a| match a { Mir::TypeVal(t) => Some(t.clone()), _ => None })
+                let arg_tys: Vec<Ty> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        Mir::TypeVal(t) => Some(t.clone()),
+                        _ => None,
+                    })
                     .collect();
-                if arg_tys.len() != args.len() { return None; } // not all TypeVals → stays residual
+                if arg_tys.len() != args.len() {
+                    return None;
+                } // not all TypeVals → stays residual
                 self.build_compound_ty(&arg_tys).map(Mir::TypeVal)
             }
             // A boxing heap op builds/reads a CHAMP/vec value at run time — never a const; stays for `select`.
@@ -483,7 +518,10 @@ pub enum Hir {
     /// A parameter or `let`-bound local, by the id `resolve` assigned it.
     Local(u32),
     /// A call to module function `func` with `args`.
-    Call { func: usize, args: Vec<Hir> },
+    Call {
+        func: usize,
+        args: Vec<Hir>,
+    },
     /// A top-level/module function AS A VALUE — a reference to function `func` (its module-function
     /// index). A module field holding a function is a `FuncRef`; projecting it yields the reference, and
     /// applying it (`Apply`) resolves to a direct `Call`. Not a closure (a closed function captures no
@@ -497,7 +535,10 @@ pub enum Hir {
     /// `def`'s variant `index`. Bare in value position it IS the constructor (the prelude binds
     /// Constructor values, not pre-applied sums); applied (`Apply`) it constructs the tagged variant.
     /// Transient like `FuncRef`/`Intrinsic` — the fold reduces every application to a `Mir::Sum`.
-    Ctor { def: SumRef, index: usize },
+    Ctor {
+        def: SumRef,
+        index: usize,
+    },
     /// `_` in PATTERN position — matches anything and binds nothing. Distinct from a `Local` binder (a
     /// binding occurrence) so a match interpreter binds nothing and placement is checkable (a `let`
     /// cannot bind a wildcard). Never appears in value position.
@@ -505,7 +546,10 @@ pub enum Hir {
     /// `(match scrutinee (pattern body)…)` — dispatch on the scrutinee's shape. Each `pattern` is an
     /// ordinary `Hir` (a `Ctor`-application / `Tuple` / literal / `Local` binder / `Wildcard`). Arms in
     /// source order; the first matching pattern's body is the value. Exhaustiveness (CDZ0210) at infer.
-    Match { scrutinee: Box<Hir>, arms: Vec<(Hir, Hir)> },
+    Match {
+        scrutinee: Box<Hir>,
+        arms: Vec<(Hir, Hir)>,
+    },
     /// A type-value — `Int64`/`Bool`/`String`/`Bytes`/`Unit` as a compile-time VALUE (not a type
     /// annotation). Bare `Int64` resolves to `TypeVal(Ty::Int)` typed as `Ty::Type`. Used in `(: e T)`:
     /// the annotation infers `T` and extracts its `Ty` to unify with `e`. Compile-time-only: a `TypeVal`
@@ -530,7 +574,10 @@ pub enum Hir {
     /// Apply a function-VALUE expression `func` to `args` — distinct from `Call`, whose callee is
     /// already a resolved function index. `(( . m f) x)` reads as `Apply { func: (. m f), args: [x] }`;
     /// the fold reduces `Apply(FuncRef(i), args)` to `Call { func: i, args }`.
-    Apply { func: Box<Hir>, args: Vec<Hir> },
+    Apply {
+        func: Box<Hir>,
+        args: Vec<Hir>,
+    },
     /// `(tuple e0 … en)` — construct a heap tuple from its element expressions.
     Tuple(Vec<Hir>),
     /// `(record (k0 e0) … (kn en))` — construct a heap record. Fields in SOURCE order (sorted by
@@ -556,14 +603,21 @@ pub enum Hir {
     Shift(ShiftOp, Box<Hir>, Box<Hir>),
     Cmp(CmpOp, Box<Hir>, Box<Hir>),
     If(Box<Hir>, Box<Hir>, Box<Hir>),
-    Let { id: u32, value: Box<Hir>, body: Box<Hir> },
+    Let {
+        id: u32,
+        value: Box<Hir>,
+        body: Box<Hir>,
+    },
     /// `(fn (p…) body)` — a lambda. `params` are the fresh local ids resolve assigned its parameters
     /// (bound in the body's scope exactly like a function's params bind `Local(0..arity)`). Multi-arity
     /// to match the existing function/`Call` model (NOT curried in the IR — the spec's currying is a
     /// surface semantic realized by multi-arity application + compile-time spine collapse of a completed
     /// partial application into a direct call). A lambda is a transient compile-time value: the `eval`
     /// fold β-reduces `Apply(Lambda, args)` to substitute params into the body; a survivor declines.
-    Lambda { params: Vec<u32>, body: Box<Hir> },
+    Lambda {
+        params: Vec<u32>,
+        body: Box<Hir>,
+    },
     /// An unsupported / rejected form, carrying its diagnostic.
     Error(Reject),
 }
@@ -602,12 +656,18 @@ pub enum TypedNode {
     Str(String),
     Unit,
     Local(u32),
-    Call { func: usize, args: Vec<Typed> },
+    Call {
+        func: usize,
+        args: Vec<Typed>,
+    },
     FuncRef(usize),
     Intrinsic(Intrinsic),
     /// A sum constructor value (`def`'s variant `index`); its `ty` is the instantiated `Fn([payload],
     /// Sum{def,args})`.
-    Ctor { def: SumRef, index: usize },
+    Ctor {
+        def: SumRef,
+        index: usize,
+    },
     /// A type-value — typed as `Ty::Type`. The compile-time value a type name resolves to.
     TypeVal(Ty),
     /// `(: e T)` — typed annotation. The node's `ty` is `e`'s type (unified with `T`'s extracted `Ty`).
@@ -620,10 +680,16 @@ pub enum TypedNode {
     Wildcard,
     /// `(match …)` — the scrutinee and typed arms; each arm is `(typed-pattern, typed-body)`. The node's
     /// `ty` is the (unified) arm-body result type.
-    Match { scrutinee: Box<Typed>, arms: Vec<(Typed, Typed)> },
+    Match {
+        scrutinee: Box<Typed>,
+        arms: Vec<(Typed, Typed)>,
+    },
     /// A runtime trap (Never) — the node's `ty` is whatever it was unified to (its arm's result type).
     Trap(String),
-    Apply { func: Box<Typed>, args: Vec<Typed> },
+    Apply {
+        func: Box<Typed>,
+        args: Vec<Typed>,
+    },
     Tuple(Vec<Typed>),
     /// `(record …)` — typed fields in source order (sorted at lowering to the canonical slot order).
     Record(Vec<(String, Typed)>),
@@ -644,9 +710,16 @@ pub enum TypedNode {
     Shift(ShiftOp, Box<Typed>, Box<Typed>),
     Cmp(CmpOp, Box<Typed>, Box<Typed>),
     If(Box<Typed>, Box<Typed>, Box<Typed>),
-    Let { id: u32, value: Box<Typed>, body: Box<Typed> },
+    Let {
+        id: u32,
+        value: Box<Typed>,
+        body: Box<Typed>,
+    },
     /// `(fn (p…) body)` — a typed lambda. The node's `ty` is `Ty::Fn(param_tys, ret)`. Transient.
-    Lambda { params: Vec<u32>, body: Box<Typed> },
+    Lambda {
+        params: Vec<u32>,
+        body: Box<Typed>,
+    },
 }
 
 // ─── Mir — resolved mid rung ───────────────────────────────────────────────────────────
@@ -669,7 +742,6 @@ pub struct MirFunc {
 /// Mir — the resolved mid rung. Phase 2a mirrors typed-Hir with types resolved to ground `Ty`; the
 /// passes that make it distinct (fold/monomorphize) grow later.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum Mir {
     Int(i64),
     Bool(bool),
@@ -678,7 +750,10 @@ pub enum Mir {
     Str(String),
     Unit,
     Local(u32),
-    Call { func: usize, args: Vec<Mir> },
+    Call {
+        func: usize,
+        args: Vec<Mir>,
+    },
     /// TRANSIENT — a function value / its application, present only between `lower` and `eval`. The fold
     /// reduces `Apply(FuncRef(i), args)` to a `Call` (β-reducing const args) and folds a module
     /// `Proj`→`FuncRef` away; a `FuncRef`/`Apply` that SURVIVES folding is a function value that cannot
@@ -691,7 +766,10 @@ pub enum Mir {
     /// from a bare `Ctor`; `lower` turns `Apply(Ctor,arg)` directly into `Mir::Sum`, so a bare `Ctor`
     /// only survives when used as a value then applied (`Apply(Ctor, [unit])` — the bare-`None` case),
     /// which the fold reduces to `Mir::Sum`. A bare survivor declines in `select`.
-    Ctor { def: SumRef, index: usize },
+    Ctor {
+        def: SumRef,
+        index: usize,
+    },
     /// A type-value (NON-SERIALIZED) — exists only so the post-fold erasure fence can point at a leaked
     /// type-value in diagnostic. A `TypeVal` that reaches `lower` IS the erasure fence error; it should
     /// never reach `select` or serialize. `Annot` lowers to just its expr; `Const` lowers to `fold(e)`.
@@ -699,18 +777,31 @@ pub enum Mir {
     /// Construct a heap SUM value `(disc, payload-handle)` via `sum-new`. `disc` = the variant's
     /// declaration index; `payload_ty` types the payload for boxing (Unit → the empty-`arr` unit
     /// payload). Distinct from `Tuple`/`List` — a two-field (tag, payload) heap object.
-    Sum { def: SumRef, disc: u32, payload_ty: Ty, payload: Box<Mir> },
+    Sum {
+        def: SumRef,
+        disc: u32,
+        payload_ty: Ty,
+        payload: Box<Mir>,
+    },
     /// `_` in a lowered pattern — matches anything, binds nothing.
     Wildcard,
     /// `(match …)` lowered — the scrutinee, its solved type, the arms (each a `(lowered-pattern,
     /// body)`), and the result type. Each pattern is a `Mir` tree (`Sum{disc,payload}` / `Tuple` /
     /// `Int`/`Bool` literal / `Local` binder / `Wildcard`) — `select` walks it to emit disc-compares +
     /// payload binds; the fold selects a known-disc arm. `scrut_ty` carries the `Arc<SumDef>`.
-    Match { scrutinee: Box<Mir>, scrut_ty: Ty, arms: Vec<(Mir, Mir)>, ty: Ty },
+    Match {
+        scrutinee: Box<Mir>,
+        scrut_ty: Ty,
+        arms: Vec<(Mir, Mir)>,
+        ty: Ty,
+    },
     /// A runtime trap — `select` emits `unreachable`. The intended runtime halt for a match's absent
     /// arm (e.g. an `expect` desugar). NOT a poison — it never fails the build.
     Trap(String),
-    Apply { func: Box<Mir>, args: Vec<Mir> },
+    Apply {
+        func: Box<Mir>,
+        args: Vec<Mir>,
+    },
     /// Construct a heap product — a tuple, OR a record whose fields are already sorted into slot order.
     /// Each element carries its type (to box it correctly). The named/positional distinction is gone by
     /// this rung: a record is just a product whose slot order was fixed (by field-name sort) at
@@ -734,12 +825,19 @@ pub enum Mir {
     /// handle). `select` reads `op` + `args[i].0` to emit the right box/guard sequence. Distinct from
     /// `Apply(Intrinsic, …)` (which loses the types at lowering) — `lower` builds this for exactly the
     /// [`HeapIntrinsic`] ops. (`Mir::Sum`/`Mir::Tuple`/`Mir::List` carry solved types the same way.)
-    HeapOp { op: HeapIntrinsic, args: Vec<(Ty, Mir)> },
+    HeapOp {
+        op: HeapIntrinsic,
+        args: Vec<(Ty, Mir)>,
+    },
     /// Project the value at `slot` (of type `elem_ty`) from a heap product operand — the ONE projection
     /// for both tuple (`slot` = literal index) and record (`slot` = the field's position in the sorted
     /// field list, resolved at lowering). This is the unified access the record generalization buys:
     /// `select` has ONE arr-get+unbox arm, not one per compound shape.
-    Proj { slot: usize, elem_ty: Ty, operand: Box<Mir> },
+    Proj {
+        slot: usize,
+        elem_ty: Ty,
+        operand: Box<Mir>,
+    },
     Arith(ArithOp, Box<Mir>, Box<Mir>),
     Bit(BitOp, Box<Mir>, Box<Mir>),
     Shift(ShiftOp, Box<Mir>, Box<Mir>),
@@ -747,14 +845,32 @@ pub enum Mir {
     /// unified them). Selection needs it to pick the machine comparison: an `Int` operand uses the
     /// signed i64 ops; a `Bool` operand uses the unsigned i32 ops (false=0 < true=1). The RESULT is
     /// always `Bool`; this is the input type.
-    Cmp { op: CmpOp, operand_ty: Ty, a: Box<Mir>, b: Box<Mir> },
-    If { cond: Box<Mir>, then_: Box<Mir>, else_: Box<Mir>, ty: Ty },
-    Let { id: u32, value_ty: Ty, value: Box<Mir>, body: Box<Mir> },
+    Cmp {
+        op: CmpOp,
+        operand_ty: Ty,
+        a: Box<Mir>,
+        b: Box<Mir>,
+    },
+    If {
+        cond: Box<Mir>,
+        then_: Box<Mir>,
+        else_: Box<Mir>,
+        ty: Ty,
+    },
+    Let {
+        id: u32,
+        value_ty: Ty,
+        value: Box<Mir>,
+        body: Box<Mir>,
+    },
     /// `(fn (p…) body)` — a lowered lambda. TRANSIENT — present only between `lower` and `eval`. The
     /// fold reduces `Apply(Lambda, args)` by β-reduction (substitute params into body, α-renamed); a
     /// `Lambda` that SURVIVES folding is a runtime closure → `select` declines it (Increment B). Sibling
     /// to `FuncRef`/`Ctor`/`Intrinsic` — a compile-time function value.
-    Lambda { params: Vec<u32>, body: Box<Mir> },
+    Lambda {
+        params: Vec<u32>,
+        body: Box<Mir>,
+    },
     Error(Reject),
 }
 
@@ -764,7 +880,6 @@ pub enum Mir {
 /// stack + locals model). `serialize` maps each to bytes by an exhaustive match. The checked-
 /// arithmetic overflow guard is a run of these flat instructions over scratch locals — no tree.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum Lir {
     ConstI64(i64),
     ConstI32(i32),
@@ -837,9 +952,15 @@ pub struct Reject {
 
 impl Reject {
     pub fn decline(message: impl Into<String>) -> Reject {
-        Reject { code: None, message: message.into() }
+        Reject {
+            code: None,
+            message: message.into(),
+        }
     }
     pub fn coded(code: Code, message: impl Into<String>) -> Reject {
-        Reject { code: Some(code), message: message.into() }
+        Reject {
+            code: Some(code),
+            message: message.into(),
+        }
     }
 }

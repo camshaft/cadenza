@@ -47,7 +47,20 @@ a compiled program means. It states five architectural disciplines and their obl
 It does not restate the language semantics, the component ABI, or the byte-level contracts; those remain in
 [capabilities](../capabilities/) and [contracts](../contracts/). The value-heap runtime the compiler emits
 against — the artifact these programs import — has its own reference architecture in
-[value-heap-runtime.md](./value-heap-runtime.md). This document realizes [overview §7](../overview.md),
+[value-heap-runtime.md](./value-heap-runtime.md). The *representational shape* of the rungs this document names
+by role — which are source-structured trees and which are flat sequences of named bindings, where
+single-static-assignment lives, and how nodes are stored — is fixed in its shape companion
+[intermediate-representations.md](./intermediate-representations.md), which cross-references this document's
+A-normal-form and solve-once disciplines rather than restating them. The *mechanism* by which a name acquires
+meaning — that resolution is two generic operations over one map, that a built-in type is a record carrying a
+meta channel — is fixed in [prelude-and-resolution.md](./prelude-and-resolution.md), the enforceable-mechanism
+companion to §Nothing Is Privileged By Name below. The *seam* between this document's target-neutral front and
+its target-specific back — where a second backend plugs in, and why the flat instruction rung this document
+describes is one backend's representation rather than a shared rung — is fixed in
+[backends-and-targets.md](./backends-and-targets.md). The *model* by which every fact this document's passes
+determine is stored and read — the compiler's state as columns keyed by node identity, a query as a column
+read, and the emitted artifact as the terminal column — is fixed in [query-engine.md](./query-engine.md).
+This document realizes [overview §7](../overview.md),
 [overview §8](../overview.md), [overview §10](../overview.md), and [overview §14](../overview.md), and it is
 the architecture-level response to the failures recorded in [overview §16](../overview.md).
 
@@ -76,6 +89,17 @@ perturbed every other.
 The compiler MUST proceed through a sequence of intermediate representations in which each representation is
 a value of a distinct type and each pass is a function from one representation to the next, so that a
 concern has exactly one rung at which it is the only concern and cannot leak into the others.
+
+### The Compiler Is A Deterministic Function Of Its Input
+
+Every pass MUST be a deterministic function of the representation it consumes, and no pass MUST let the
+iteration order of an unordered container, an allocation address, or any other run-to-run-varying quantity
+reach a representation it produces or the artifact it emits, so that the compiler's own output — not only the
+runtime behavior of what it compiles — is byte-reproducible across runs and generations
+([constitution §II](../../constitution.md), [constitution §III](../../constitution.md)). Where a pass must
+order the members of an unordered collection, it MUST order them by a fixed function of the members
+themselves, consistent with the canonical value form
+([deterministic-value-form.md §Ordering Of Aggregate Members Is Fixed](../contracts/deterministic-value-form.md)).
 
 ### Each Rung Is A Typed Sum Matched Exhaustively
 
@@ -183,6 +207,26 @@ applied to its arguments, a built-in operation applied to constants, a construct
 MUST reduce to its value through that evaluator and leave no trace of itself in the emitted component, so
 that these constructs are compile-time structure rather than runtime cost.
 
+### The Evaluator Bounds Its Own Reduction And Declines Rather Than Diverges
+
+The compiler MUST bound the evaluator's own reduction so that a reduction that would not terminate — an
+unbounded specialization, a recursive expansion with no fixed point — causes a clean decline rather than a
+hang, and the bound MUST hold for the smallest target the compiler runs on, so that a program the evaluator
+cannot reduce to a value is refused observably rather than by the compiler failing to finish
+(§An Unbounded Handler Context is the effect-specific instance of this rule; §A Guarded Operation Reserves
+Bounded Scratch Or Declines is its emission-side sibling).
+
+### A Value Built At Compile Time Is Indistinguishable From One Built At Run Time
+
+A value the evaluator constructs at compile time MUST be indistinguishable, to every operation that later
+consumes it — equality, hashing, use as a collection key, projection — from the same value constructed at run
+time, so that folding a construction to a compile-time value never changes an observable outcome and a folded
+value and a runtime-built value cannot compare or key differently. This is the rule whose violation across the
+const/runtime construction boundary is recorded in
+[map equality miscompiles across the const/runtime construction boundary](../learnings/2026-07-08-map-equality-miscompiles-across-the-const-runtime-construction-boundary.md);
+it is what makes const-folding sound in the presence of the value heap, whose canonical value forms the
+agreement rests on ([value-heap-runtime.md §Every Value Form Is Canonical So Structural Comparison Is A Value Comparison](./value-heap-runtime.md)).
+
 ### A Compile-Provable Trap Fails The Build
 
 An operation all of whose operands the evaluator determines at compile time, and whose defined outcome on
@@ -275,6 +319,61 @@ A user-defined record MUST be treated as closed: access to a field the record's 
 be rejected with the machine-readable code for an absent field, so that the open treatment of a built-in
 module never widens to a program's own records
 ([core-semantics.md §Member Access Projects A Record Field](../capabilities/core-semantics.md)).
+
+## Matching Is One Engine Of Probes And Binders
+
+A pattern is an ordinary expression distinguished only by a binder leaf and a wildcard leaf (§A Type, A
+Constructor, And A Pattern Are Ordinary Values And Expressions); this section fixes the *one engine* every
+kind of matching runs through. A sum, a tuple, a record, a string, a list, a map, and a bit-string are all
+matched by the same shape — an arm is a conjunction of *probes* (observations of an opaque value that
+succeed or fail: a discriminant test, a length test, a byte comparison, a key-presence test) and *binders*
+(extractions of a sub-value into a name), and a match is a top-to-bottom disjunction of arms. Because the
+value heap is tagless, the engine observes a value *only* through probes and binders, never by inspecting a
+representation ([value-heap-runtime.md §The Heap Holds Structure And Data, Never A Type Or A Name](./value-heap-runtime.md)).
+This unification is what lets a new category of pattern be a new *kind of probe* on the one engine rather
+than a parallel matching path. It is grounded in
+[the design directions fold into one architecture](../learnings/2026-07-10-the-implementation-design-directions-fold-into-the-architecture-records-everywhere-first.md).
+
+### Every Kind Of Match Is Compiled By One Engine Of Probes And Binders
+
+The compiler MUST compile every kind of match — over a sum, a product, a collection, a string, or a
+bit-string — through one engine whose arm is a conjunction of probes and binders and whose match is a
+top-to-bottom disjunction of arms, so that a new pattern category is a new kind of probe added to the one
+engine rather than a second matching mechanism that must agree with the first.
+
+A first-match arm order and the scoping of a binder to the path on which its probes succeeded MUST be
+preserved by however the engine schedules and shares probes, so that sharing a common leading probe across
+arms never reorders a later arm ahead of an earlier one and a binder is in scope only where its value was
+actually matched.
+
+### A Binding Position Is A Single-Arm Irrefutable Match
+
+A binding position — a parameter, a `let` binder, a lambda parameter — that holds a destructuring pattern
+MUST be compiled as a single-arm match whose pattern must cover every value of its type, so that a binding
+pattern is the existing match engine applied to one irrefutable arm rather than a separate destructuring
+mechanism.
+
+A pattern in a binding position that does not cover every value of its type MUST be rejected as a coverage
+defect with the same machine-readable code the equivalent single-arm non-exhaustive match produces, so that
+the desugared path and a directly written match agree on how an uncovered binding is reported.
+
+### Refutability, Coverage, And Shape Are Distinguished Where The Match Is Decided
+
+The compiler MUST distinguish, at the point a match or binding is checked, a pattern that cannot cover its
+type's values (a coverage defect, reported as non-exhaustiveness) from a pattern whose shape can never match
+the scrutinee's type (a shape or arity defect, reported as a type mismatch), so that two different faults in
+a pattern carry two different machine-readable codes rather than one conflated rejection.
+
+A pattern the compiler could match in principle but does not yet realize MUST decline rather than reject, so
+that an unbuilt pattern category is a capability the compiler lacks rather than a program that is ill-formed,
+keeping the accept, reject, and decline outcomes distinct at the point the match is decided (§A "No" Is A
+First-Class Value Produced Where The Decision Is Made).
+
+### A Name Binds At Most Once Across A Whole Pattern
+
+The compiler MUST reject a pattern that binds the same name more than once, checking across the whole pattern
+including its nested sub-patterns rather than only its immediate siblings, so that linearity is a property of
+the entire pattern and a repeat buried in a nested position is caught rather than silently shadowed.
 
 ## The Component Boundary Is Explicit Data
 
@@ -440,6 +539,28 @@ A performance within a handler arm's body MUST resolve against the handlers encl
 not those enclosing the point the discharged operation was performed, so that a forwarding or interposing
 handler re-performs into the context it was written in
 ([capabilities-and-effects.md §A Handler May Interpose](../capabilities/capabilities-and-effects.md)).
+
+### An Effect Is Declared Routing-Agnostically And Routed By Delegation
+
+An effect MUST be declared as an interface of typed operations with no marker fixing where it is discharged,
+so that the same declaration is dischargeable by an in-program handler or routed to the host, and whether an
+effect crosses the host boundary is a property of how a program delegates it rather than of how the effect is
+declared ([capabilities-and-effects.md](../capabilities/capabilities-and-effects.md)).
+
+A capability the emitted component requires MUST be the declared interface of an effect the program delegates
+to the host, so that a capability is a declared, typed contract rather than an ambient authority the compiler
+infers from a body ([reference-compiler.md §The Exported Interface Is The Declared Signature](./reference-compiler.md)).
+
+### The Manifest Is The Computed Union Of Delegated, Reached Effects
+
+The component's import manifest MUST be computed as the union of the effects a program both delegates to the
+host and actually reaches from an entrypoint, so that the boundary a program requires is derived from its
+delegations rather than declared separately, and an effect discharged by a nearer in-program handler is
+absent from the manifest because it never escapes to the host.
+
+Each delegated effect MUST lower to the boundary as its own named interface whose operations are its
+operations, so that two effects that happen to share an operation name cross as two distinct interfaces
+rather than colliding in one flat namespace of qualified names.
 
 ### A Reified Continuation Does Not Span A Host Call
 

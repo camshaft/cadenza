@@ -1,5 +1,4 @@
 use super::*;
-use cdz_compiler::ast;
 
 /// Parse a program's source text to its canonical binary AST bytes (the `ast` artifact form) —
 /// the same path the CLI takes: read s-expr → `Node` → `ast::encode`.
@@ -11,28 +10,9 @@ fn ast_bytes(src: &str) -> Vec<u8> {
 /// Build the NEW canonical program shape for rcdzc from a body expression: `(do (def (main) E)
 /// (export main))`. rcdzc requires an explicit `(export …)` (visibility is explicit; no `main`
 /// magic), so a test's body is wrapped this way. Returns the decoded `Node`.
-fn program_v2(body_src: &str) -> cdz_compiler::ast::Node {
+fn program_v2(body_src: &str) -> ast::Node {
     let src = format!("(do (def (main) {body_src}) (export main))");
     ast::read(&src).expect("parse v2 program")
-}
-
-/// Phase 0's core obligation: rcdzc's component bytes are BYTE-IDENTICAL to the old compiler
-/// (the oracle) for a scalar-integer entry, across single- and multi-byte LEB values. rcdzc names
-/// exports VERBATIM (no `main`→`run` rename), and the old compiler renames its `main` entry to the
-/// external name `run`; so the like-for-like comparison uses a source entry already named `run`
-/// (`(def (run) …) (export run)`), and both emit the identical `run` export.
-#[test]
-fn scalar_entry_byte_identical_to_oracle() {
-    for body in ["42", "7", "0", "300" /* multi-byte LEB */] {
-        let src = format!("(do (def (run) {body}) (export run))");
-        let ours = compile_program(&ast::read(&src).expect("parse"))
-            .component()
-            .expect("rcdzc produced a component")
-            .to_vec();
-        let oracle_node = ast::read(&format!("(module m (def (main) {body}))")).expect("parse");
-        let oracle = cdz_compiler::codegen::compile_program(&oracle_node).expect("oracle compiled");
-        assert_eq!(ours, oracle, "byte mismatch for body {body:?}");
-    }
 }
 
 /// The scalar component is the expected 89 bytes for a `run`-named `42` entry (a fixed anchor, so
@@ -171,11 +151,11 @@ fn record_forms_compile() {
 #[test]
 fn bytes_forms_compile() {
     for body in [
-        "(Bytes.of (list 1 2 3))",                          // construct + render b"…"
-        "(Bytes.of (list 65 66 67))",                        // printable render
-        "(Bytes.len (Bytes.of (list 0 255 128)))",           // measure → scalar
+        "(Bytes.of (list 1 2 3))",                 // construct + render b"…"
+        "(Bytes.of (list 65 66 67))",              // printable render
+        "(Bytes.len (Bytes.of (list 0 255 128)))", // measure → scalar
         "(Bytes.len (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))))", // concat
-        "(Int64.to-byte 300)",                               // low-8-bits (folds → 44)
+        "(Int64.to-byte 300)",                     // low-8-bits (folds → 44)
         "(Bytes.of (list (Int64.to-byte (| (& 300 127) 128))))", // the LEB128 non-final byte compose
     ] {
         let out = compile_program(&program_v2(body));
@@ -194,9 +174,9 @@ fn bytes_forms_compile() {
 #[test]
 fn list_ops_compile() {
     for body in [
-        "(List.len (list 1 2 3))",                              // len → scalar
-        "(List.len (List.concat (list 1 2) (list 3 4 5)))",      // concat then measure
-        "(List.len (List.push (list 1 2) 3))",                   // push a literal Int element
+        "(List.len (list 1 2 3))",                          // len → scalar
+        "(List.len (List.concat (list 1 2) (list 3 4 5)))", // concat then measure
+        "(List.len (List.push (list 1 2) 3))",              // push a literal Int element
     ] {
         let out = compile_program(&program_v2(body));
         assert!(
@@ -207,9 +187,14 @@ fn list_ops_compile() {
     }
     // Pushing a RUNTIME-scalar element (a bound Local, not a literal) also compiles — the solved element
     // type is threaded to select, so the shape-guess that would have mis-boxed a runtime Int is gone.
-    let src = "(do (def (g x) (List.len (List.push (list 10 20) x))) (def (main) (g 99)) (export main))";
+    let src =
+        "(do (def (g x) (List.len (List.push (list 10 20) x))) (def (main) (g 99)) (export main))";
     let out = compile_program(&ast::read(src).expect("parse"));
-    assert!(out.component().is_some(), "runtime-scalar push: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "runtime-scalar push: {:?}",
+        out.diagnostics
+    );
 }
 
 /// Map/Set compile — the `(map …)`/`(set …)` literals (built via `map-insert`/`set-insert` from empty),
@@ -219,14 +204,14 @@ fn list_ops_compile() {
 #[test]
 fn map_set_forms_compile() {
     for body in [
-        "(Map.size (map (1 10) (2 20)))",                                   // map literal + size
-        "(Map.size (Map.insert Map.empty 5 42))",                           // Map.empty alias + insert
-        "(match (Map.lookup (map (5 42)) 5) ((Some v) v) ((None _) -1))",   // lookup → Option (hit)
-        "(match (Map.lookup (map (5 42)) 9) ((Some v) v) ((None _) -1))",   // lookup → Option (miss)
-        "(Set.size (set 1 2 1 3))",                                         // set literal (dedup) + size
-        "(Set.size (Set.insert Set.empty 7))",                              // Set.empty alias + insert
-        "(Set.contains (Set.of (list 1 2 3)) 2)",                           // Set.of + contains → Bool
-        "(Set.size (Set.union (set 1 2) (set 2 3)))",                        // set algebra
+        "(Map.size (map (1 10) (2 20)))",         // map literal + size
+        "(Map.size (Map.insert Map.empty 5 42))", // Map.empty alias + insert
+        "(match (Map.lookup (map (5 42)) 5) ((Some v) v) ((None _) -1))", // lookup → Option (hit)
+        "(match (Map.lookup (map (5 42)) 9) ((Some v) v) ((None _) -1))", // lookup → Option (miss)
+        "(Set.size (set 1 2 1 3))",               // set literal (dedup) + size
+        "(Set.size (Set.insert Set.empty 7))",    // Set.empty alias + insert
+        "(Set.contains (Set.of (list 1 2 3)) 2)", // Set.of + contains → Bool
+        "(Set.size (Set.union (set 1 2) (set 2 3)))", // set algebra
     ] {
         let out = compile_program(&program_v2(body));
         assert!(
@@ -237,7 +222,10 @@ fn map_set_forms_compile() {
     }
     // A map with values of two different types is CDZ0201 (values are of ONE type).
     let out = compile_program(&program_v2("(map (1 1) (2 true))"));
-    assert!(out.component().is_none(), "heterogeneous map values must reject");
+    assert!(
+        out.component().is_none(),
+        "heterogeneous map values must reject"
+    );
     assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0201"));
 }
 
@@ -247,8 +235,8 @@ fn map_set_forms_compile() {
 #[test]
 fn tuple_scrutinee_match_compiles() {
     for body in [
-        "(match (tuple 3 4) ((tuple a b) (+ a b)))",         // destructure + use both
-        "(match (tuple 9 (tuple 1 2)) ((tuple a b) a))",     // a nested-tuple element bound as a handle
+        "(match (tuple 3 4) ((tuple a b) (+ a b)))", // destructure + use both
+        "(match (tuple 9 (tuple 1 2)) ((tuple a b) a))", // a nested-tuple element bound as a handle
     ] {
         let out = compile_program(&program_v2(body));
         assert!(
@@ -295,8 +283,8 @@ fn string_literals_compile() {
     // Both a well-formed and an ill-formed literal input build a component (the value/`None`
     // correctness is the host/corpus test).
     for body in [
-        "(String.from-bytes (Bytes.of (list 104 105)))",            // "hi" — well-formed
-        "(String.from-bytes (Bytes.of (list 255)))",                // 0xFF — ill-formed
+        "(String.from-bytes (Bytes.of (list 104 105)))", // "hi" — well-formed
+        "(String.from-bytes (Bytes.of (list 255)))",     // 0xFF — ill-formed
         "(match (String.from-bytes (Bytes.of (list 104 105))) ((Some s) s) ((None _) \"\"))",
     ] {
         let out = compile_program(&program_v2(body));
@@ -363,7 +351,10 @@ fn list_forms_compile() {
 #[test]
 fn mixed_element_list_is_cdz0201() {
     let out = compile_program(&program_v2("(list 1 true)"));
-    assert!(out.component().is_none(), "a mixed-element list should not compile");
+    assert!(
+        out.component().is_none(),
+        "a mixed-element list should not compile"
+    );
     assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0201"));
 }
 
@@ -376,7 +367,11 @@ fn list_element_type_is_inferred() {
     // solve to Int (from `2`/`3`), `ground` would decline "type could not be determined".
     let src = "(do (def (mk n) (list n 2 3)) (def (main) (mk 1)) (export main))";
     let out = compile_program(&ast::read(src).expect("parse"));
-    assert!(out.component().is_some(), "diagnostics {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "diagnostics {:?}",
+        out.diagnostics
+    );
 }
 
 /// SUM construction + match compile (the runtime-compound path via `sum-new`/`sum-disc`). Built-in
@@ -385,12 +380,12 @@ fn list_element_type_is_inferred() {
 #[test]
 fn sum_forms_compile() {
     for body in [
-        "(Some 42)",                                  // a unary constructor applied
-        "(None unit)",                                // a nullary constructor applied to unit
+        "(Some 42)",   // a unary constructor applied
+        "(None unit)", // a nullary constructor applied to unit
         "(Ok 5)",
         "(match (Some 42) ((Some x) x) ((None _) 0))", // match binding a payload
         "(match (Ok 5) ((Ok n) n) ((Err _) 0))",
-        "(let ((c None)) (c unit))",                  // a bare constructor used as a first-class value
+        "(let ((c None)) (c unit))", // a bare constructor used as a first-class value
     ] {
         let out = compile_program(&program_v2(body));
         assert!(
@@ -623,14 +618,24 @@ fn missing_ast_artifact_is_a_diagnostic() {
 /// evaluator collapsed the operation, not that it merely compiled.
 #[test]
 fn constant_arith_folds_to_a_single_const() {
-    let bytes = compile_program(&program_v2("(+ 2 3)")).component().unwrap().to_vec();
+    let bytes = compile_program(&program_v2("(+ 2 3)"))
+        .component()
+        .unwrap()
+        .to_vec();
     // The code body carries `i64.const 5` = 0x42 0x05; a runtime add would carry local.get/i64.add
     // and the overflow-guard `unreachable` (0x00). Assert the const is present and no add (0x7c) /
     // unreachable (0x00) guard bytes are in the code region.
-    assert!(bytes.windows(2).any(|w| w == [0x42, 0x05]), "expected a folded i64.const 5");
+    assert!(
+        bytes.windows(2).any(|w| w == [0x42, 0x05]),
+        "expected a folded i64.const 5"
+    );
     // `(+ 2 3)` folded leaves the function body tiny; a runtime checked-add is far larger. Pin the
     // whole component stays small (the 89-byte scalar anchor + a one-byte const payload).
-    assert!(bytes.len() <= 92, "folded constant should be a minimal body, got {} bytes", bytes.len());
+    assert!(
+        bytes.len() <= 92,
+        "folded constant should be a minimal body, got {} bytes",
+        bytes.len()
+    );
 }
 
 /// A constant operation whose defined outcome is a trap is a COMPILE-TIME diagnostic (CDZ0304), not a
@@ -638,18 +643,21 @@ fn constant_arith_folds_to_a_single_const() {
 #[test]
 fn constant_trap_is_cdz0304() {
     for body in [
-        "(+ Int64.max 1)",   // overflow
-        "(- Int64.min 1)",   // overflow
-        "(* Int64.max 2)",   // overflow
-        "(/ 5 0)",           // divide by zero
-        "(% 5 0)",           // modulo by zero
-        "(/ Int64.min -1)",  // MIN / -1 overflow
-        "(<< 1 64)",         // shift count out of range
-        "(<< 1 -1)",         // negative shift count
-        "(>> 256 64)",       // right-shift count out of range
+        "(+ Int64.max 1)",  // overflow
+        "(- Int64.min 1)",  // overflow
+        "(* Int64.max 2)",  // overflow
+        "(/ 5 0)",          // divide by zero
+        "(% 5 0)",          // modulo by zero
+        "(/ Int64.min -1)", // MIN / -1 overflow
+        "(<< 1 64)",        // shift count out of range
+        "(<< 1 -1)",        // negative shift count
+        "(>> 256 64)",      // right-shift count out of range
     ] {
         let out = compile_program(&program_v2(body));
-        assert!(out.component().is_none(), "{body:?} should be rejected, not compiled");
+        assert!(
+            out.component().is_none(),
+            "{body:?} should be rejected, not compiled"
+        );
         assert_eq!(
             out.diagnostics[0].code.as_deref(),
             Some("CDZ0304"),
@@ -682,7 +690,11 @@ fn unreached_constant_trap_is_dropped() {
 #[test]
 fn modulo_by_minus_one_folds_to_zero_not_a_trap() {
     let out = compile_program(&program_v2("(% Int64.min -1)"));
-    assert!(out.component().is_some(), "`(% Int64.min -1)` must fold to 0, not trap: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "`(% Int64.min -1)` must fold to 0, not trap: {:?}",
+        out.diagnostics
+    );
 }
 
 /// A constant trap the compiler PROVES by inlining a constant-argument call fails the build (the
@@ -691,7 +703,10 @@ fn modulo_by_minus_one_folds_to_zero_not_a_trap() {
 fn laundered_constant_trap_through_a_call_is_cdz0304() {
     let src = "(do (def (div a b) (/ a b)) (def (main) (div 5 0)) (export main))";
     let out = compile_program(&ast::read(src).expect("parse"));
-    assert!(out.component().is_none(), "an inlined constant divide-by-zero should be rejected");
+    assert!(
+        out.component().is_none(),
+        "an inlined constant divide-by-zero should be rejected"
+    );
     assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0304"));
 }
 
@@ -699,8 +714,14 @@ fn laundered_constant_trap_through_a_call_is_cdz0304() {
 #[test]
 fn constant_call_beta_reduces() {
     let src = "(do (def (double n) (* n 2)) (def (main) (double 21)) (export main))";
-    let bytes = compile_program(&ast::read(src).expect("parse")).component().unwrap().to_vec();
-    assert!(bytes.windows(2).any(|w| w == [0x42, 42]), "expected the call to fold to i64.const 42");
+    let bytes = compile_program(&ast::read(src).expect("parse"))
+        .component()
+        .unwrap()
+        .to_vec();
+    assert!(
+        bytes.windows(2).any(|w| w == [0x42, 42]),
+        "expected the call to fold to i64.const 42"
+    );
 }
 
 /// The multi-diagnostic ABI: TWO reached constant traps in one module report BOTH, not just the first
@@ -710,8 +731,15 @@ fn multiple_constant_traps_report_all() {
     let src = "(do (def (a) (/ 5 0)) (def (b) (+ Int64.max 1)) (export a b))";
     let out = compile_program(&ast::read(src).expect("parse"));
     assert!(out.component().is_none());
-    assert_eq!(out.diagnostics.len(), 2, "both constant traps should be reported");
-    assert!(out.diagnostics.iter().all(|d| d.code.as_deref() == Some("CDZ0304")));
+    assert_eq!(
+        out.diagnostics.len(),
+        2,
+        "both constant traps should be reported"
+    );
+    assert!(out
+        .diagnostics
+        .iter()
+        .all(|d| d.code.as_deref() == Some("CDZ0304")));
 }
 
 // ─── modules (a compile-time record of exports; folds away) ───────────────────────────────
@@ -752,7 +780,10 @@ fn duplicate_module_definition_is_cdz0201() {
 fn module_hides_non_exported_definitions() {
     let src = "(do (module m (def (secret) 1) (def (pub) 2) (export pub)) (def (main) ((. m secret) unit)) (export main))";
     let out = compile_program(&ast::read(src).expect("parse"));
-    assert!(out.component().is_none(), "a non-exported member must not be reachable");
+    assert!(
+        out.component().is_none(),
+        "a non-exported member must not be reachable"
+    );
     assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0201"));
 }
 
@@ -761,7 +792,11 @@ fn module_hides_non_exported_definitions() {
 fn nested_module_compiles() {
     let src = "(do (module outer (module inner (def (v) 5) (export v)) (export inner)) (def (main) ((. (. outer inner) v) unit)) (export main))";
     let out = compile_program(&ast::read(src).expect("parse"));
-    assert!(out.component().is_some(), "nested module should compile: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "nested module should compile: {:?}",
+        out.diagnostics
+    );
 }
 
 /// Module encapsulation is TRANSITIVE: a grandparent reaches a nested submodule ONLY when every
@@ -771,17 +806,27 @@ fn nested_module_compiles() {
 fn module_encapsulation_is_transitive() {
     // Full re-export chain: reachable via chained projection.
     let ok = "(do (module outer (module mid (def (v) 5) (export v)) (export mid)) (def (main) ((. (. outer mid) v) unit)) (export main))";
-    assert!(compile_program(&ast::read(ok).unwrap()).component().is_some());
+    assert!(compile_program(&ast::read(ok).unwrap())
+        .component()
+        .is_some());
 
     // `outer` does not export `mid` → the grandparent cannot project it.
     let no_mid = "(do (module outer (module mid (def (v) 5) (export v)) (export)) (def (main) ((. (. outer mid) v) unit)) (export main))";
     let out = compile_program(&ast::read(no_mid).unwrap());
-    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0201"), "unexported submodule is unreachable");
+    assert_eq!(
+        out.diagnostics[0].code.as_deref(),
+        Some("CDZ0201"),
+        "unexported submodule is unreachable"
+    );
 
     // `mid` does not export `deep` → the grandchild is unreachable even though `outer` exports `mid`.
     let no_deep = "(do (module outer (module mid (module deep (def (v) 5) (export v)) (export)) (export mid)) (def (main) ((. (. (. outer mid) deep) v) unit)) (export main))";
     let out = compile_program(&ast::read(no_deep).unwrap());
-    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0201"), "unexported grandchild is unreachable");
+    assert_eq!(
+        out.diagnostics[0].code.as_deref(),
+        Some("CDZ0201"),
+        "unexported grandchild is unreachable"
+    );
 }
 
 /// A module may export MORE than the consumer uses — an unused export must not block compilation.
@@ -792,7 +837,11 @@ fn module_encapsulation_is_transitive() {
 fn module_with_unused_export_compiles() {
     let src = "(do (module m (def (one) 1) (def (two) 2) (export one two)) (def (main) ((. m one) unit)) (export main))";
     let out = compile_program(&ast::read(src).unwrap());
-    assert!(out.component().is_some(), "an unused export must not block compilation: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "an unused export must not block compilation: {:?}",
+        out.diagnostics
+    );
 }
 
 // ─── intrinsics (prelude-record built-in operations, lowered to wasm at select) ───────────
@@ -809,31 +858,54 @@ fn wrapping_intrinsics_compile_and_fold() {
         "(Int64.wrapping-mul Int64.max 2)",
     ] {
         let out = compile_program(&program_v2(body));
-        assert!(out.component().is_some(), "expected a component for {body:?}: {:?}", out.diagnostics);
+        assert!(
+            out.component().is_some(),
+            "expected a component for {body:?}: {:?}",
+            out.diagnostics
+        );
     }
     // `(Int64.wrapping-add 20 22)` folds to exactly `i64.const 42` (0x42 0x2a) — no runtime add.
-    let bytes = compile_program(&program_v2("(Int64.wrapping-add 20 22)")).component().unwrap().to_vec();
-    assert!(bytes.windows(2).any(|w| w == [0x42, 0x2a]), "wrapping-add should fold to i64.const 42");
+    let bytes = compile_program(&program_v2("(Int64.wrapping-add 20 22)"))
+        .component()
+        .unwrap()
+        .to_vec();
+    assert!(
+        bytes.windows(2).any(|w| w == [0x42, 0x2a]),
+        "wrapping-add should fold to i64.const 42"
+    );
 }
 
 /// `Int64.max`/`Int64.min` still resolve to their constants (now prelude-record fields, not a special
 /// case); a bare (unapplied) intrinsic value declines (no first-class runtime intrinsic values yet).
 #[test]
 fn int64_constants_and_bare_intrinsic() {
-    assert!(compile_program(&program_v2("Int64.max")).component().is_some());
-    assert!(compile_program(&program_v2("Int64.min")).component().is_some());
+    assert!(compile_program(&program_v2("Int64.max"))
+        .component()
+        .is_some());
+    assert!(compile_program(&program_v2("Int64.min"))
+        .component()
+        .is_some());
     // A bare projected intrinsic value is not runtime-emittable → declines (uncoded, a later phase).
     let out = compile_program(&program_v2("(. Int64 wrapping-add)"));
     assert!(out.component().is_none());
-    assert_eq!(out.diagnostics[0].code, None, "a bare intrinsic value declines, not a coded reject");
+    assert_eq!(
+        out.diagnostics[0].code, None,
+        "a bare intrinsic value declines, not a coded reject"
+    );
 }
 
 /// A user binding named `Int64` SHADOWS the prelude module (built-in modules are ordinary records
 /// under ordinary scope — no privileged name recognition).
 #[test]
 fn user_binding_shadows_prelude_module() {
-    let out = compile_program(&ast::read("(do (def (Int64) 5) (def (main) (Int64)) (export main))").unwrap());
-    assert!(out.component().is_some(), "a user `Int64` def must shadow the prelude: {:?}", out.diagnostics);
+    let out = compile_program(
+        &ast::read("(do (def (Int64) 5) (def (main) (Int64)) (export main))").unwrap(),
+    );
+    assert!(
+        out.component().is_some(),
+        "a user `Int64` def must shadow the prelude: {:?}",
+        out.diagnostics
+    );
 }
 
 /// Layer 1 first-class types: `(: e T)` annotations where `T` is a scalar type name compile and
@@ -841,10 +913,18 @@ fn user_binding_shadows_prelude_module() {
 #[test]
 fn layer1_scalar_type_annotations() {
     // Valid annotations — expression type matches the annotation.
-    assert!(compile_program(&program_v2("(: 42 Int64)")).component().is_some());
+    assert!(compile_program(&program_v2("(: 42 Int64)"))
+        .component()
+        .is_some());
     let out = compile_program(&program_v2("(: true Bool)"));
-    assert!(out.component().is_some(), "expected (: true Bool) to compile: {:?}", out.diagnostics);
-    assert!(compile_program(&program_v2("(: (+ 1 2) Int64)")).component().is_some());
+    assert!(
+        out.component().is_some(),
+        "expected (: true Bool) to compile: {:?}",
+        out.diagnostics
+    );
+    assert!(compile_program(&program_v2("(: (+ 1 2) Int64)"))
+        .component()
+        .is_some());
 
     // Invalid annotations — expression type contradicts the annotation (CDZ0203).
     let out = compile_program(&program_v2("(: 42 Bool)"));
@@ -868,7 +948,11 @@ fn layer1_type_values() {
     // A type name bound to a local types correctly. (It can't be returned from main yet — that
     // would trigger the erasure fence since main's result would need to cross to runtime.)
     let out = compile_program(&program_v2("(let ((t Int64)) 42)"));
-    assert!(out.component().is_some(), "a type-value local should bind: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "a type-value local should bind: {:?}",
+        out.diagnostics
+    );
 }
 
 /// Layer 2 first-class parametric types: `(: e (List Int64))` and friends type-check via the
@@ -887,8 +971,11 @@ fn layer2_parametric_type_annotations() {
         "(: (Some 42) (Option Int64))",
     ] {
         let out = compile_program(&program_v2(body));
-        assert!(out.component().is_some(),
-            "expected {body:?} to compile: {:?}", out.diagnostics);
+        assert!(
+            out.component().is_some(),
+            "expected {body:?} to compile: {:?}",
+            out.diagnostics
+        );
     }
 
     // Element-type mismatch inside a compound annotation is CDZ0203.
@@ -899,8 +986,11 @@ fn layer2_parametric_type_annotations() {
     ] {
         let out = compile_program(&program_v2(body));
         assert!(out.component().is_none(), "{body:?} should be rejected");
-        assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0203"),
-            "{body:?} should be CDZ0203");
+        assert_eq!(
+            out.diagnostics[0].code.as_deref(),
+            Some("CDZ0203"),
+            "{body:?} should be CDZ0203"
+        );
     }
 }
 
@@ -911,13 +1001,19 @@ fn layer2_parametric_type_annotations() {
 fn layer2_type_ctor_as_value_declines() {
     // A type-value returned from main must hit the erasure fence (CDZ0305), not emit.
     let out = compile_program(&program_v2("(List Int64)"));
-    assert!(out.component().is_none(), "a bare type-value cannot cross to runtime");
+    assert!(
+        out.component().is_none(),
+        "a bare type-value cannot cross to runtime"
+    );
     assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0305"));
 
     // A type-builder bound to a local (never crossing to runtime) is fine — it inlines (is_transient).
     let out = compile_program(&program_v2("(let ((l List)) 42)"));
-    assert!(out.component().is_some(),
-        "a type-builder bound but not run should compile: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "a type-builder bound but not run should compile: {:?}",
+        out.diagnostics
+    );
 }
 
 /// Layer 1: `(const e)` asserts `e` fully compile-time-reduces. A constant integer compiles; a
@@ -926,8 +1022,12 @@ fn layer2_type_ctor_as_value_declines() {
 #[test]
 fn layer1_const_form() {
     // A constant value in a `const` compiles.
-    assert!(compile_program(&program_v2("(const 42)")).component().is_some());
-    assert!(compile_program(&program_v2("(const (+ 20 22))")).component().is_some());
+    assert!(compile_program(&program_v2("(const 42)"))
+        .component()
+        .is_some());
+    assert!(compile_program(&program_v2("(const (+ 20 22))"))
+        .component()
+        .is_some());
 
     // A const form wrapping a non-const expr will eventually be rejected by the fence, but for now
     // it at least types correctly (the fence implementation is the next step).
@@ -942,30 +1042,54 @@ fn layer1_const_form() {
 fn compile_time_closures() {
     // Immediately-applied lambda: `((fn (x) (+ x 1)) 5)` → 6 (β-reduces to `(+ 5 1)` → 6).
     let out = compile_program(&program_v2("((fn (x) (+ x 1)) 5)"));
-    assert!(out.component().is_some(), "immediate lambda application should β-reduce: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "immediate lambda application should β-reduce: {:?}",
+        out.diagnostics
+    );
 
     // Let-bound lambda: `(let ((inc (fn (x) (+ x 1)))) (inc 10))` → 11 (let inlines the transient).
     let out = compile_program(&program_v2("(let ((inc (fn (x) (+ x 1)))) (inc 10))"));
-    assert!(out.component().is_some(), "let-bound lambda should β-reduce on application: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "let-bound lambda should β-reduce on application: {:?}",
+        out.diagnostics
+    );
 
     // Named HOF with lambda: `(def (ap g v) (g v))` `(ap (fn (x) (* x 2)) 7)` → 14 (force-inline).
     let prog = "(do (def (ap g v) (g v)) (def (main) (ap (fn (x) (* x 2)) 7)) (export main))";
     let out = compile_program(&ast::read(prog).unwrap());
-    assert!(out.component().is_some(), "named HOF with lambda arg should β-reduce: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "named HOF with lambda arg should β-reduce: {:?}",
+        out.diagnostics
+    );
 
     // Curried application: `((add 3) 4)` where `add` is 2-arity → spine collapses to `Call{add,[3,4]}` → 7.
     let prog = "(do (def (add x y) (+ x y)) (def (main) ((add 3) 4)) (export main))";
     let out = compile_program(&ast::read(prog).unwrap());
-    assert!(out.component().is_some(), "curried application completed at compile time should reduce: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "curried application completed at compile time should reduce: {:?}",
+        out.diagnostics
+    );
 
     // Closure factory: `(adder 10)` returns a lambda capturing `n=10`; `((adder 10) 5)` → 15.
     let prog = "(do (def (adder n) (fn (x) (+ x n))) (def (main) ((adder 10) 5)) (export main))";
     let out = compile_program(&ast::read(prog).unwrap());
-    assert!(out.component().is_some(), "closure factory should capture and β-reduce in place: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "closure factory should capture and β-reduce in place: {:?}",
+        out.diagnostics
+    );
 
     // Lambda stored in tuple: `((tuple.0 (tuple (fn (x) (+ x 1)) 9)) 5)` → 6 (projection + β-reduce).
     let out = compile_program(&program_v2("((. (tuple (fn (x) (+ x 1)) 9) 0) 5)"));
-    assert!(out.component().is_some(), "lambda in tuple element should project and β-reduce: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "lambda in tuple element should project and β-reduce: {:?}",
+        out.diagnostics
+    );
 }
 
 /// Irrefutable binding patterns (Increment A) — `let`, `def` param, `fn` param accept tuple patterns.
@@ -974,36 +1098,73 @@ fn compile_time_closures() {
 fn binding_patterns_compile() {
     // LET with tuple pattern — destructure + sum.
     let out = compile_program(&program_v2("(let (((tuple a b) (tuple 3 4))) (+ a b))"));
-    assert!(out.component().is_some(), "let tuple pattern: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "let tuple pattern: {:?}",
+        out.diagnostics
+    );
 
     // NESTED tuple pattern.
-    let out = compile_program(&program_v2("(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))"));
-    assert!(out.component().is_some(), "nested tuple pattern: {:?}", out.diagnostics);
+    let out = compile_program(&program_v2(
+        "(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))",
+    ));
+    assert!(
+        out.component().is_some(),
+        "nested tuple pattern: {:?}",
+        out.diagnostics
+    );
 
     // DEF param with tuple pattern — `fst` extracts first element (used via call).
-    let prog = "(do (def (fst p) (match p ((tuple a b) a))) (def (main) (fst (tuple 7 8))) (export main))";
+    let prog =
+        "(do (def (fst p) (match p ((tuple a b) a))) (def (main) (fst (tuple 7 8))) (export main))";
     let out = compile_program(&ast::read(prog).unwrap());
-    assert!(out.component().is_some(), "def param (via match baseline): {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "def param (via match baseline): {:?}",
+        out.diagnostics
+    );
 
     // Actually test pattern param - define inline and apply.
     let out = compile_program(&program_v2("((fn ((tuple a b)) (+ a b)) (tuple 10 20))"));
-    assert!(out.component().is_some(), "fn param pattern applied: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "fn param pattern applied: {:?}",
+        out.diagnostics
+    );
 
     // FN param with tuple pattern.
     let out = compile_program(&program_v2("((fn ((tuple a b)) (+ a b)) (tuple 3 4))"));
-    assert!(out.component().is_some(), "fn param tuple pattern: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "fn param tuple pattern: {:?}",
+        out.diagnostics
+    );
 
     // WILDCARD discard.
     let out = compile_program(&program_v2("(let ((_ (tuple 1 2))) 42)"));
-    assert!(out.component().is_some(), "wildcard discard: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "wildcard discard: {:?}",
+        out.diagnostics
+    );
 
     // ANNOTATED binder — accept (fn param).
     let out = compile_program(&program_v2("((fn ((: x Int64)) x) 5)"));
-    assert!(out.component().is_some(), "annotated param: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_some(),
+        "annotated param: {:?}",
+        out.diagnostics
+    );
 
     // Annotated tuple pattern (let).
-    let out = compile_program(&program_v2("(let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 1 2))) (+ a b))"));
-    assert!(out.component().is_some(), "annotated tuple pattern: {:?}", out.diagnostics);
+    let out = compile_program(&program_v2(
+        "(let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 1 2))) (+ a b))",
+    ));
+    assert!(
+        out.component().is_some(),
+        "annotated tuple pattern: {:?}",
+        out.diagnostics
+    );
 }
 
 /// Binding patterns must be irrefutable — refutable patterns (ctors, literals) are rejected with CDZ0210.
@@ -1012,15 +1173,27 @@ fn refutable_binding_pattern_rejects() {
     // A multi-variant ctor in binding position → CDZ0210 (non-exhaustive).
     let out = compile_program(&program_v2("(let (((Some x) (Some 5))) x)"));
     assert!(out.component().is_none(), "Some binding should reject");
-    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0210"), "refutable ctor → CDZ0210");
+    assert_eq!(
+        out.diagnostics[0].code.as_deref(),
+        Some("CDZ0210"),
+        "refutable ctor → CDZ0210"
+    );
 
     // A literal in binding position → CDZ0210 (fn param with literal).
     let out = compile_program(&program_v2("((fn (0) 42) 0)"));
-    assert!(out.component().is_none(), "literal param should reject: {:?}", out.diagnostics);
+    assert!(
+        out.component().is_none(),
+        "literal param should reject: {:?}",
+        out.diagnostics
+    );
     if out.diagnostics.is_empty() || out.diagnostics[0].code.is_none() {
         panic!("Expected CDZ0210, got: {:?}", out.diagnostics);
     }
-    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0210"), "literal → CDZ0210");
+    assert_eq!(
+        out.diagnostics[0].code.as_deref(),
+        Some("CDZ0210"),
+        "literal → CDZ0210"
+    );
 
     // Boolean literal.
     let out = compile_program(&program_v2("(let ((true v)) 1)"));
@@ -1034,16 +1207,29 @@ fn nonlinear_pattern_rejects() {
     // Flat non-linear — same name twice in one tuple.
     let out = compile_program(&program_v2("(let (((tuple x x) (tuple 1 2))) x)"));
     assert!(out.component().is_none(), "flat non-linear should reject");
-    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0102"), "flat non-linear → CDZ0102");
+    assert_eq!(
+        out.diagnostics[0].code.as_deref(),
+        Some("CDZ0102"),
+        "flat non-linear → CDZ0102"
+    );
 
     // NESTED non-linear — name repeated across sub-patterns (the anticipatory-pinned case).
-    let out = compile_program(&program_v2("(let (((tuple x (tuple x y)) (tuple 1 (tuple 2 3)))) x)"));
+    let out = compile_program(&program_v2(
+        "(let (((tuple x (tuple x y)) (tuple 1 (tuple 2 3)))) x)",
+    ));
     assert!(out.component().is_none(), "nested non-linear should reject");
-    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0102"), "nested non-linear → CDZ0102");
+    assert_eq!(
+        out.diagnostics[0].code.as_deref(),
+        Some("CDZ0102"),
+        "nested non-linear → CDZ0102"
+    );
 
     // Non-linear in MATCH arm (the linearity check also fires for match).
     let out = compile_program(&program_v2("(match (tuple 1 2) ((tuple x x) x))"));
-    assert!(out.component().is_none(), "match arm non-linear should reject");
+    assert!(
+        out.component().is_none(),
+        "match arm non-linear should reject"
+    );
     assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0102"));
 }
 
@@ -1051,16 +1237,28 @@ fn nonlinear_pattern_rejects() {
 #[test]
 fn annotated_binding_contradiction_rejects() {
     let out = compile_program(&program_v2("(let (((: x Bool) 42)) x)"));
-    assert!(out.component().is_none(), "annotation contradiction should reject");
-    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0203"), "annotation mismatch → CDZ0203");
+    assert!(
+        out.component().is_none(),
+        "annotation contradiction should reject"
+    );
+    assert_eq!(
+        out.diagnostics[0].code.as_deref(),
+        Some("CDZ0203"),
+        "annotation mismatch → CDZ0203"
+    );
 }
 
 /// Record binding patterns and single-variant-sum patterns are Increment B — decline, not reject.
 #[test]
 fn increment_b_patterns_decline() {
     // Record pattern → decline (not a reject).
-    let out = compile_program(&program_v2("(let (((record (a x) (b y)) (record (a 1) (b 2)))) x)"));
+    let out = compile_program(&program_v2(
+        "(let (((record (a x) (b y)) (record (a 1) (b 2)))) x)",
+    ));
     assert!(out.component().is_none(), "record pattern should decline");
     // Decline means no CDZ code, just an internal decline message.
-    assert!(out.diagnostics[0].code.is_none(), "record pattern declines (no code)");
+    assert!(
+        out.diagnostics[0].code.is_none(),
+        "record pattern declines (no code)"
+    );
 }

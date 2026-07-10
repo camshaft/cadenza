@@ -4,7 +4,7 @@
 //! `emit` + `wasm-tools` on every change: a test asserts a `Probe` outcome, and a compiler
 //! emission/validation regression surfaces as a failing assertion rather than a manual eyeball.
 
-use cdz_compiler::{ast, codegen};
+use rcdzc::{ast, codegen};
 
 use crate::host::{self, RunOutcome};
 
@@ -35,7 +35,7 @@ pub fn probe(src: &str) -> Probe {
 }
 
 /// Probe an already-parsed program node (bare expressions are wrapped as a nullary `main`).
-pub fn probe_node(node: &cdz_compiler::Node) -> Probe {
+pub fn probe_node(node: &rcdzc::Node) -> Probe {
     let program = crate::corpus::as_program(node);
     match codegen::compile_program(&program) {
         Err(d) => match d.code() {
@@ -50,7 +50,9 @@ pub fn probe_node(node: &cdz_compiler::Node) -> Probe {
                 Ok((RunOutcome::Value(v), _)) => Probe::Value(v),
                 Ok((RunOutcome::Trap(_), _)) => Probe::Trap,
                 Ok((RunOutcome::Suspended(_), _)) => Probe::Trap,
-                Err(e) => Probe::InvalidComponent(format!("run failed: {}", first_line(&e.to_string()))),
+                Err(e) => {
+                    Probe::InvalidComponent(format!("run failed: {}", first_line(&e.to_string())))
+                }
             }
         }
     }

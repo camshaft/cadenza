@@ -73,6 +73,12 @@ Releasing a value's storage MUST NOT recurse in proportion to the value's depth,
 deeply nested unique value cannot exhaust the runtime's own call stack — the release of a value's
 children is driven by an explicit work list rather than by nested calls.
 
+No operation over a value of unbounded depth — its reclamation, its structural comparison, its hashing for
+use as a collection key, or the materialization of a deferred view — MUST consume host stack in proportion to
+that value's depth, so that observing, comparing, or keying a deeply nested value can no more exhaust the
+runtime's call stack than reclaiming one can, and a valid value never crashes the runtime by the act of being
+read.
+
 ### One Product Primitive And One Sum Primitive
 
 The runtime MUST provide one positional-array primitive that backs every product — a tuple and a record

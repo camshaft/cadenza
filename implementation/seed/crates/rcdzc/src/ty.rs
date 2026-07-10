@@ -45,16 +45,31 @@ pub struct SumDef {
 impl SumDef {
     /// A fully-defined sum (variants known up front) — the prelude path. Wraps the variants in the
     /// `OnceLock` immediately.
-    pub fn new(name: String, params: Vec<String>, variants: Vec<VariantDef>, qualified: bool) -> SumDef {
+    pub fn new(
+        name: String,
+        params: Vec<String>,
+        variants: Vec<VariantDef>,
+        qualified: bool,
+    ) -> SumDef {
         let cell = OnceLock::new();
         let _ = cell.set(variants);
-        SumDef { name, params, variants: cell, qualified }
+        SumDef {
+            name,
+            params,
+            variants: cell,
+            qualified,
+        }
     }
 
     /// A FORWARD declaration — the Arc is allocated with variants unset (phase 1 of the two-phase
     /// recursive build). `set_variants` fills them (phase 2).
     pub fn forward(name: String, params: Vec<String>, qualified: bool) -> SumDef {
-        SumDef { name, params, variants: OnceLock::new(), qualified }
+        SumDef {
+            name,
+            params,
+            variants: OnceLock::new(),
+            qualified,
+        }
     }
 
     /// Fill the variants of a forward-declared sum (phase 2). Idempotent-safe: a second call is a
@@ -119,9 +134,16 @@ fn subst_params(t: &Ty, args: &[Ty]) -> Ty {
     match t {
         Ty::Param(i) => args.get(*i).cloned().unwrap_or(Ty::Param(*i)),
         Ty::Tuple(es) => Ty::Tuple(es.iter().map(|e| subst_params(e, args)).collect()),
-        Ty::Record(fs) => Ty::Record(fs.iter().map(|(n, e)| (n.clone(), subst_params(e, args))).collect()),
+        Ty::Record(fs) => Ty::Record(
+            fs.iter()
+                .map(|(n, e)| (n.clone(), subst_params(e, args)))
+                .collect(),
+        ),
         Ty::List(e) => Ty::List(Box::new(subst_params(e, args))),
-        Ty::Map(k, v) => Ty::Map(Box::new(subst_params(k, args)), Box::new(subst_params(v, args))),
+        Ty::Map(k, v) => Ty::Map(
+            Box::new(subst_params(k, args)),
+            Box::new(subst_params(v, args)),
+        ),
         Ty::Set(e) => Ty::Set(Box::new(subst_params(e, args))),
         Ty::Sum { def, args: sargs } => Ty::Sum {
             def: def.clone(),
@@ -155,8 +177,14 @@ struct PreludeSums {
 
 fn prelude() -> &'static PreludeSums {
     PRELUDE_SUMS.get_or_init(|| {
-        let nullary = |name: &str| VariantDef { name: name.to_string(), payload: None };
-        let unary = |name: &str, p: usize| VariantDef { name: name.to_string(), payload: Some(Ty::Param(p)) };
+        let nullary = |name: &str| VariantDef {
+            name: name.to_string(),
+            payload: None,
+        };
+        let unary = |name: &str, p: usize| VariantDef {
+            name: name.to_string(),
+            payload: Some(Ty::Param(p)),
+        };
         // `Ast` — the built-in metaprogramming sum, an ORDINARY sum whose variants carry typed payloads
         // (type-system.md #The Abstract Syntax Tree Type Is An Ordinary Sum Type). RECURSIVE via
         // `List (List Ast)`, so it is built in two phases: allocate the Arc forward, then fill its
@@ -167,12 +195,33 @@ fn prelude() -> &'static PreludeSums {
         let ast_def = Arc::new(SumDef::forward("Ast".to_string(), vec![], true));
         let ast = SumRef(ast_def.clone());
         ast_def.set_variants(vec![
-            VariantDef { name: "Int".to_string(), payload: Some(Ty::Int) },
-            VariantDef { name: "Float".to_string(), payload: Some(Ty::Unit) }, // Float64 unimplemented; placeholder
-            VariantDef { name: "Str".to_string(), payload: Some(Ty::String) },
-            VariantDef { name: "Bool".to_string(), payload: Some(Ty::Bool) },
-            VariantDef { name: "Name".to_string(), payload: Some(Ty::String) },
-            VariantDef { name: "List".to_string(), payload: Some(Ty::List(Box::new(Ty::Sum { def: ast.clone(), args: vec![] }))) },
+            VariantDef {
+                name: "Int".to_string(),
+                payload: Some(Ty::Int),
+            },
+            VariantDef {
+                name: "Float".to_string(),
+                payload: Some(Ty::Unit),
+            }, // Float64 unimplemented; placeholder
+            VariantDef {
+                name: "Str".to_string(),
+                payload: Some(Ty::String),
+            },
+            VariantDef {
+                name: "Bool".to_string(),
+                payload: Some(Ty::Bool),
+            },
+            VariantDef {
+                name: "Name".to_string(),
+                payload: Some(Ty::String),
+            },
+            VariantDef {
+                name: "List".to_string(),
+                payload: Some(Ty::List(Box::new(Ty::Sum {
+                    def: ast.clone(),
+                    args: vec![],
+                }))),
+            },
         ]);
         PreludeSums {
             option: SumRef(Arc::new(SumDef::new(
@@ -231,7 +280,6 @@ pub fn prelude_ast() -> SumRef {
 /// (`Unit` is defined now for the `do`/`if`-with-unit forms a later phase adds; it participates in
 /// `unify`/`core_valtype` already so those forms are a resolve/infer change, not a `Ty` change.)
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Ty {
     /// The 64-bit signed integer — the default integer type.
     Int,
@@ -316,12 +364,12 @@ impl Ty {
             Ty::Int => Some(ValType::I64),
             Ty::Bool => Some(ValType::I32),
             Ty::Tuple(_) | Ty::Record(_) => Some(ValType::I32), // a heap handle (an `arr`)
-            Ty::List(_) => Some(ValType::I32),                  // a heap handle (a persistent `vec`)
-            Ty::Map(..) | Ty::Set(_) => Some(ValType::I32),     // a heap handle (a CHAMP map/set)
-            Ty::Sum { .. } => Some(ValType::I32),               // a heap handle (a `(disc, payload)`)
-            Ty::Bytes => Some(ValType::I32),                    // a heap handle (a `bytes-*` leaf)
-            Ty::String => Some(ValType::I32),                   // a heap handle (a Bytes-backed leaf)
-            Ty::Unit => None,                                   // no wasm value
+            Ty::List(_) => Some(ValType::I32), // a heap handle (a persistent `vec`)
+            Ty::Map(..) | Ty::Set(_) => Some(ValType::I32), // a heap handle (a CHAMP map/set)
+            Ty::Sum { .. } => Some(ValType::I32), // a heap handle (a `(disc, payload)`)
+            Ty::Bytes => Some(ValType::I32),   // a heap handle (a `bytes-*` leaf)
+            Ty::String => Some(ValType::I32),  // a heap handle (a Bytes-backed leaf)
+            Ty::Unit => None,                  // no wasm value
             // A function value is not (yet) a runtime value — the fold resolves it to a direct call.
             Ty::Fn(..) => None,
             // A type-value is compile-time-only, erased before runtime (no wasm rep).
@@ -361,9 +409,18 @@ impl Ty {
     /// Is this a compound (heap) type — one whose VALUE lives on the value heap and crosses the run
     /// boundary via the runtime-compound render envelope rather than as a scalar? A tuple/record/list/
     /// sum is; later strings/bytes are too. (Consumed by the heap path.)
-    #[allow(dead_code)]
     pub fn is_compound(&self) -> bool {
-        matches!(self, Ty::Tuple(_) | Ty::Record(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Sum { .. } | Ty::Bytes | Ty::String)
+        matches!(
+            self,
+            Ty::Tuple(_)
+                | Ty::Record(_)
+                | Ty::List(_)
+                | Ty::Map(..)
+                | Ty::Set(_)
+                | Ty::Sum { .. }
+                | Ty::Bytes
+                | Ty::String
+        )
     }
 }
 
@@ -377,9 +434,7 @@ impl Ty {
 pub fn is_comptime_only(ty: &Ty) -> bool {
     match ty {
         Ty::Type => true,
-        Ty::Fn(params, ret) => {
-            params.iter().any(is_comptime_only) || is_comptime_only(ret)
-        }
+        Ty::Fn(params, ret) => params.iter().any(is_comptime_only) || is_comptime_only(ret),
         Ty::Tuple(elems) => elems.iter().any(is_comptime_only),
         Ty::Record(fields) => fields.iter().any(|(_, t)| is_comptime_only(t)),
         Ty::List(elem) => is_comptime_only(elem),
@@ -399,7 +454,9 @@ pub struct Subst {
 
 impl Subst {
     pub fn new() -> Subst {
-        Subst { map: HashMap::new() }
+        Subst {
+            map: HashMap::new(),
+        }
     }
 
     /// Fully resolve `ty` under the current substitution: follow var→type chains to a ground type or
@@ -413,12 +470,16 @@ impl Subst {
                 None => Ty::Var(*v),
             },
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| self.apply(e)).collect()),
-            Ty::Record(fields) => {
-                Ty::Record(fields.iter().map(|(n, t)| (n.clone(), self.apply(t))).collect())
-            }
-            Ty::Fn(params, ret) => {
-                Ty::Fn(params.iter().map(|p| self.apply(p)).collect(), Box::new(self.apply(ret)))
-            }
+            Ty::Record(fields) => Ty::Record(
+                fields
+                    .iter()
+                    .map(|(n, t)| (n.clone(), self.apply(t)))
+                    .collect(),
+            ),
+            Ty::Fn(params, ret) => Ty::Fn(
+                params.iter().map(|p| self.apply(p)).collect(),
+                Box::new(self.apply(ret)),
+            ),
             Ty::List(elem) => Ty::List(Box::new(self.apply(elem))),
             Ty::Map(k, v) => Ty::Map(Box::new(self.apply(k)), Box::new(self.apply(v))),
             Ty::Set(elem) => Ty::Set(Box::new(self.apply(elem))),
@@ -455,12 +516,19 @@ pub fn unify(a: &Ty, b: &Ty, subst: &mut Subst) -> Result<(), UnifyError> {
     let a = subst.apply(a);
     let b = subst.apply(b);
     match (&a, &b) {
-        (Ty::Int, Ty::Int) | (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit)
-        | (Ty::Bytes, Ty::Bytes) | (Ty::String, Ty::String) | (Ty::Type, Ty::Type) => Ok(()),
+        (Ty::Int, Ty::Int)
+        | (Ty::Bool, Ty::Bool)
+        | (Ty::Unit, Ty::Unit)
+        | (Ty::Bytes, Ty::Bytes)
+        | (Ty::String, Ty::String)
+        | (Ty::Type, Ty::Type) => Ok(()),
         (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
         (Ty::Var(v), t) | (t, Ty::Var(v)) => {
             if occurs(*v, t, subst) {
-                return Err(UnifyError { left: a.clone(), right: b.clone() });
+                return Err(UnifyError {
+                    left: a.clone(),
+                    right: b.clone(),
+                });
             }
             subst.bind(*v, t.clone());
             Ok(())
@@ -477,7 +545,10 @@ pub fn unify(a: &Ty, b: &Ty, subst: &mut Subst) -> Result<(), UnifyError> {
         (Ty::Record(xs), Ty::Record(ys)) if xs.len() == ys.len() => {
             for ((xn, xt), (yn, yt)) in xs.iter().zip(ys) {
                 if xn != yn {
-                    return Err(UnifyError { left: a.clone(), right: b.clone() });
+                    return Err(UnifyError {
+                        left: a.clone(),
+                        right: b.clone(),
+                    });
                 }
                 unify(xt, yt, subst)?;
             }

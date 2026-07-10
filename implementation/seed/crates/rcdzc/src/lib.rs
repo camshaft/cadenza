@@ -29,6 +29,7 @@
 //! compiler. Opt-in (`CADENZA_COMPILER=v2`) until parity; the old crate stays the byte oracle.
 
 pub mod abi;
+pub mod ast;
 mod component;
 mod diag;
 mod fold;
@@ -49,9 +50,7 @@ mod wasm;
 
 // The generated backend tables, reused verbatim from the old crate's source (one derivation, no
 // copy — `xtask build` owns these files). They are self-contained constant tables.
-#[path = "../../cdz-compiler/src/frame.rs"]
 mod frame;
-#[path = "../../cdz-compiler/src/op.rs"]
 mod op;
 // The value-heap runtime envelope: RT_HEAD/RT_TAIL/RT_IMPORT_CONTENT/RT_MEM/RT_GLOBAL byte
 // constants, `mod himport` (import indices), `rt_import_types()`, `RT_N_IMPORTS`, the required-runtime
@@ -60,8 +59,6 @@ mod op;
 // Not every generated envelope constant is consumed yet (the compile-ABI heads/tails land with the
 // `compile` surface); it is a shared GENERATED file, so silence its interim dead-code here rather
 // than edit the generator's output.
-#[allow(dead_code)]
-#[path = "../../cdz-compiler/src/heap_envelope.rs"]
 mod heap_envelope;
 
 pub use abi::{Artifact, CompileOutput, Diagnostic, Severity};

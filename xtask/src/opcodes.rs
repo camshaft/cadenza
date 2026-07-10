@@ -23,7 +23,11 @@ use wasm_encoder::{BlockType, Encode, Ieee64, Instruction, MemArg};
 /// A memarg/blocktype/index immediate contributes trailing bytes we drop: `opcode_byte` keeps only
 /// the leading byte(s) that ARE the opcode (all of these are single-byte opcodes in the MVP).
 fn opcodes() -> Vec<(&'static str, Instruction<'static>)> {
-    let m = MemArg { offset: 0, align: 0, memory_index: 0 };
+    let m = MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    };
     vec![
         // Control / calls / locals.
         ("UNREACHABLE", Instruction::Unreachable),
@@ -122,7 +126,9 @@ fn render_cadenza(ops: &[(&str, u8)]) -> String {
     let mut s = String::new();
     s.push_str(CDZ_HEADER);
     s.push_str("\n(def op\n  (doc \"WebAssembly opcode bytes — the SAME table the Rust seed's `mod op` is\n");
-    s.push_str("        generated from, so both compiler implementations agree on every byte.\")\n");
+    s.push_str(
+        "        generated from, so both compiler implementations agree on every byte.\")\n",
+    );
     s.push_str("  (record\n");
     for (name, byte) in ops {
         s.push_str(&format!("    ({} 0x{byte:02X})\n", kebab(name)));
@@ -157,25 +163,32 @@ const CDZ_HEADER: &str = "\
 /// `repo` is the repository root (for `implementation/compiler/op.cdz`). Returns whether either
 /// changed (write-if-changed, so an unchanged table leaves both files — and cargo's cache — alone).
 pub fn generate(seed: &Path, repo: &Path) -> Result<bool, String> {
-    let table: Vec<(&str, u8)> = opcodes().iter().map(|(n, i)| (*n, opcode_byte(i))).collect();
+    let table: Vec<(&str, u8)> = opcodes()
+        .iter()
+        .map(|(n, i)| (*n, opcode_byte(i)))
+        .collect();
 
     // Sanity: no duplicate names, no duplicate bytes-per-name mistake (a byte MAY legitimately be
     // shared across names? no — each opcode is distinct, so duplicate bytes signal a wrong variant).
     let mut seen_bytes = std::collections::HashMap::new();
     for (name, byte) in &table {
         if let Some(prev) = seen_bytes.insert(*byte, *name) {
-            return Err(format!("opcode 0x{byte:02X} maps to both `{prev}` and `{name}` — a wrong variant?"));
+            return Err(format!(
+                "opcode 0x{byte:02X} maps to both `{prev}` and `{name}` — a wrong variant?"
+            ));
         }
     }
 
     let rs = render_rust(&table);
     let cdz = render_cadenza(&table);
-    let rs_path = seed.join("crates/cdz-compiler/src/op.rs");
+    let rs_path = seed.join("crates/rcdzc/src/op.rs");
     // The Cadenza table is a MERGE INPUT of the rewritten compiler `cdzc.cdz` (built by
     // implementation/compiler/Makefile from `cdzc/*.cdz`), so it lands under that source dir. The `05-`
     // prefix places it in the merge's sort order (a foundational data table, alongside the byte primitives).
     let cdz_path = repo.join("implementation/compiler/cdzc/05-op.cdz");
-    let a = crate::write_if_changed(&rs_path, &rs).map_err(|e| format!("write {}: {e}", rs_path.display()))?;
-    let b = crate::write_if_changed(&cdz_path, &cdz).map_err(|e| format!("write {}: {e}", cdz_path.display()))?;
+    let a = crate::write_if_changed(&rs_path, &rs)
+        .map_err(|e| format!("write {}: {e}", rs_path.display()))?;
+    let b = crate::write_if_changed(&cdz_path, &cdz)
+        .map_err(|e| format!("write {}: {e}", cdz_path.display()))?;
     Ok(a || b)
 }

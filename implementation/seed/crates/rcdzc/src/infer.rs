@@ -55,7 +55,12 @@ pub fn infer_module(module: HirModule) -> Result<TypedModule, Reject> {
         if f.arity == 0 {
             if let Hir::Record(_) = &f.body {
                 if !hir_uses_local(&f.body) {
-                    let mut ctx = Infer { supply: &mut supply, subst: &mut subst, sigs: &sigs, locals: HashMap::new() };
+                    let mut ctx = Infer {
+                        supply: &mut supply,
+                        subst: &mut subst,
+                        sigs: &sigs,
+                        locals: HashMap::new(),
+                    };
                     let typed = ctx.expr(&f.body)?;
                     unify_at(&mut subst, &typed.ty, &sig.ret, "module record type")?;
                 }
@@ -112,26 +117,6 @@ pub fn infer_module(module: HirModule) -> Result<TypedModule, Reject> {
     })
 }
 
-/// Phase-0/1 single-body entry retained for the unit tests + the `compile_program` degenerate path:
-/// infer a lone body as `main`'s (a nullary entry). Delegates to `infer_module` on a one-function
-/// module.
-#[allow(dead_code)]
-pub fn infer(hir: Hir) -> Result<Typed, Reject> {
-    let module = HirModule {
-        funcs: vec![HirFunc {
-            name: "main".to_string(),
-            arity: 0,
-            body: hir,
-        }],
-        exports: vec![crate::ir::Export {
-            name: "main".to_string(),
-            func: 0,
-        }],
-    };
-    let typed = infer_module(module)?;
-    Ok(typed.funcs.into_iter().next().unwrap().body)
-}
-
 struct Infer<'a> {
     supply: &'a mut TVarSupply,
     subst: &'a mut Subst,
@@ -151,8 +136,14 @@ impl<'a> Infer<'a> {
                 node: TypedNode::Bool(*b),
                 ty: Ty::Bool,
             }),
-            Hir::Str(s) => Ok(Typed { node: TypedNode::Str(s.clone()), ty: Ty::String }),
-            Hir::Unit => Ok(Typed { node: TypedNode::Unit, ty: Ty::Unit }),
+            Hir::Str(s) => Ok(Typed {
+                node: TypedNode::Str(s.clone()),
+                ty: Ty::String,
+            }),
+            Hir::Unit => Ok(Typed {
+                node: TypedNode::Unit,
+                ty: Ty::Unit,
+            }),
             // `_` in VALUE position is meaningless (it is only a pattern leaf, handled by
             // `infer_pattern`); reaching here means a `_` outside a pattern — a clean reject.
             Hir::Wildcard => Err(Reject::decline("`_` is only valid in a pattern")),
@@ -185,7 +176,11 @@ impl<'a> Infer<'a> {
                 if args.len() > sig.params.len() {
                     return Err(Reject::coded(
                         Code::TypeError,
-                        format!("function expects {} argument(s), got {}", sig.params.len(), args.len()),
+                        format!(
+                            "function expects {} argument(s), got {}",
+                            sig.params.len(),
+                            args.len()
+                        ),
                     ));
                 }
                 let mut targs = Vec::with_capacity(args.len());
@@ -217,7 +212,10 @@ impl<'a> Infer<'a> {
                     .ok_or_else(|| Reject::decline("reference to unknown function"))?
                     .clone();
                 let ty = Ty::Fn(sig.params, Box::new(sig.ret));
-                Ok(Typed { node: TypedNode::FuncRef(*func), ty })
+                Ok(Typed {
+                    node: TypedNode::FuncRef(*func),
+                    ty,
+                })
             }
             Hir::Intrinsic(op) => {
                 // A built-in operation value: its type is `Fn(params, ret)` from the op's signature.
@@ -226,9 +224,15 @@ impl<'a> Infer<'a> {
                 // element type is fresh per use. A monomorphic op (`param_count`=0) instantiates trivially.
                 let (params, ret) = op.signature();
                 let args: Vec<Ty> = (0..op.param_count()).map(|_| self.supply.fresh()).collect();
-                let params = params.iter().map(|p| instantiate(&Some(p.clone()), &args)).collect();
+                let params = params
+                    .iter()
+                    .map(|p| instantiate(&Some(p.clone()), &args))
+                    .collect();
                 let ret = instantiate(&Some(ret), &args);
-                Ok(Typed { node: TypedNode::Intrinsic(*op), ty: Ty::Fn(params, Box::new(ret)) })
+                Ok(Typed {
+                    node: TypedNode::Intrinsic(*op),
+                    ty: Ty::Fn(params, Box::new(ret)),
+                })
             }
             Hir::Ctor { def, index } => {
                 // A constructor VALUE — a single-arity function `Fn([payload], Sum{def, args})`.
@@ -238,7 +242,10 @@ impl<'a> Infer<'a> {
                 // a` with a fresh `a` each occurrence.
                 let args: Vec<Ty> = def.params.iter().map(|_| self.supply.fresh()).collect();
                 let is_nullary = def.variants()[*index].payload.is_none();
-                let ret = Ty::Sum { def: def.clone(), args: args.clone() };
+                let ret = Ty::Sum {
+                    def: def.clone(),
+                    args: args.clone(),
+                };
                 // ⚡A BARE NULLARY constructor in VALUE position IS the nullary sum value (05-compound-
                 // types.sexp "a bare nullary constructor is the nullary sum value"; core-semantics.md:
                 // its argument type is Unit, so `NNil` ≡ `(NNil unit)`). So type it as the SUM directly,
@@ -248,13 +255,19 @@ impl<'a> Infer<'a> {
                 // `Apply(NNil, [unit])`, `infer_apply` still sees a `Ctor` node — handled there.)
                 if is_nullary {
                     Ok(Typed {
-                        node: TypedNode::Ctor { def: def.clone(), index: *index },
+                        node: TypedNode::Ctor {
+                            def: def.clone(),
+                            index: *index,
+                        },
                         ty: ret,
                     })
                 } else {
                     let payload = instantiate(&def.variants()[*index].payload, &args);
                     Ok(Typed {
-                        node: TypedNode::Ctor { def: def.clone(), index: *index },
+                        node: TypedNode::Ctor {
+                            def: def.clone(),
+                            index: *index,
+                        },
                         ty: Ty::Fn(vec![payload], Box::new(ret)),
                     })
                 }
@@ -263,7 +276,10 @@ impl<'a> Infer<'a> {
             Hir::Trap(msg) => {
                 // A runtime trap is Never — a fresh var unifies it with any sibling (an arm's result
                 // type), so `(match o ((Some x) x) ((None _) (trap)))` unifies the trap arm with `x`.
-                Ok(Typed { node: TypedNode::Trap(msg.clone()), ty: self.supply.fresh() })
+                Ok(Typed {
+                    node: TypedNode::Trap(msg.clone()),
+                    ty: self.supply.fresh(),
+                })
             }
             Hir::Apply { func, args } => {
                 // A NULLARY constructor applied to `unit` — `(None unit)` / `(NNil unit)` / `(Sign.Pos
@@ -276,10 +292,17 @@ impl<'a> Infer<'a> {
                     if def.variants()[*index].payload.is_none() && args.len() == 1 {
                         let targ = self.expr(&args[0])?;
                         self.unify_at(&targ.ty, &Ty::Unit, "a nullary constructor takes unit")?;
-                        let sum_args: Vec<Ty> = def.params.iter().map(|_| self.supply.fresh()).collect();
+                        let sum_args: Vec<Ty> =
+                            def.params.iter().map(|_| self.supply.fresh()).collect();
                         return Ok(Typed {
-                            node: TypedNode::Ctor { def: def.clone(), index: *index },
-                            ty: Ty::Sum { def: def.clone(), args: sum_args },
+                            node: TypedNode::Ctor {
+                                def: def.clone(),
+                                index: *index,
+                            },
+                            ty: Ty::Sum {
+                                def: def.clone(),
+                                args: sum_args,
+                            },
                         });
                     }
                 }
@@ -293,7 +316,10 @@ impl<'a> Infer<'a> {
                 let func_for_typeapp = if let Hir::Record(fields) = func.as_ref() {
                     if let Some((_, Hir::Ctor { def, .. })) = fields.first() {
                         // Sum-ctor record — project the first ctor for type-application.
-                        &Hir::Ctor { def: def.clone(), index: 0 }
+                        &Hir::Ctor {
+                            def: def.clone(),
+                            index: 0,
+                        }
                     } else {
                         func.as_ref()
                     }
@@ -305,14 +331,23 @@ impl<'a> Infer<'a> {
                     // Infer each arg; if ALL are TypeVals typed as Ty::Type, this is type-application.
                     let targs: Result<Vec<Typed>, _> = args.iter().map(|a| self.expr(a)).collect();
                     if let Ok(targs) = targs {
-                        let all_typevals = !targs.is_empty() && targs.iter().all(|ta| {
-                            matches!(ta.node, TypedNode::TypeVal(_)) && matches!(self.subst.apply(&ta.ty), Ty::Type)
-                        });
+                        let all_typevals = !targs.is_empty()
+                            && targs.iter().all(|ta| {
+                                matches!(ta.node, TypedNode::TypeVal(_))
+                                    && matches!(self.subst.apply(&ta.ty), Ty::Type)
+                            });
                         if all_typevals {
                             // Type-application: extract the Ty from each TypeVal, build Ty::Sum{def, type_args}.
-                            let type_args: Vec<Ty> = targs.iter().filter_map(|ta| {
-                                if let TypedNode::TypeVal(ty) = &ta.node { Some(ty.clone()) } else { None }
-                            }).collect();
+                            let type_args: Vec<Ty> = targs
+                                .iter()
+                                .filter_map(|ta| {
+                                    if let TypedNode::TypeVal(ty) = &ta.node {
+                                        Some(ty.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
                             // Arity check: type_args.len() must equal def.params.len().
                             if type_args.len() != def.params.len() {
                                 return Err(Reject::decline(format!(
@@ -334,7 +369,10 @@ impl<'a> Infer<'a> {
                 // Apply a function-VALUE. Infer the callee to a `Ty::Fn`, unify each arg with its
                 // parameter type, result is the function's return type.
                 let tfunc = self.expr(func)?;
-                let targs: Vec<Typed> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
+                let targs: Vec<Typed> = args
+                    .iter()
+                    .map(|a| self.expr(a))
+                    .collect::<Result<_, _>>()?;
                 // NULLARY-as-value convention: a nullary function projected from a module is applied as
                 // `((. m answer) unit)`. If the callee is a `Fn([], ret)` and the sole argument is
                 // `unit`, the application yields `ret` — the unit is the calling convention for a
@@ -343,9 +381,18 @@ impl<'a> Infer<'a> {
                 // export would leave unsolved.
                 let solved_func = self.subst.apply(&tfunc.ty);
                 if let Ty::Fn(ps, r) = &solved_func {
-                    if ps.is_empty() && targs.len() == 1 && matches!(self.subst.apply(&targs[0].ty), Ty::Unit) {
+                    if ps.is_empty()
+                        && targs.len() == 1
+                        && matches!(self.subst.apply(&targs[0].ty), Ty::Unit)
+                    {
                         let ret = (**r).clone();
-                        return Ok(Typed { node: TypedNode::Apply { func: Box::new(tfunc), args: targs }, ty: ret });
+                        return Ok(Typed {
+                            node: TypedNode::Apply {
+                                func: Box::new(tfunc),
+                                args: targs,
+                            },
+                            ty: ret,
+                        });
                     }
                 }
                 // Applying a value that is ALREADY the nullary sum VALUE to `unit` is identity — the
@@ -378,13 +425,32 @@ impl<'a> Infer<'a> {
                         }
                         let remaining: Vec<Ty> = ps[targs.len()..].to_vec();
                         let ty = Ty::Fn(remaining, r.clone());
-                        return Ok(Typed { node: TypedNode::Apply { func: Box::new(tfunc), args: targs }, ty });
+                        return Ok(Typed {
+                            node: TypedNode::Apply {
+                                func: Box::new(tfunc),
+                                args: targs,
+                            },
+                            ty,
+                        });
                     }
                 }
                 let ret = self.supply.fresh();
-                let expected = Ty::Fn(targs.iter().map(|t| t.ty.clone()).collect(), Box::new(ret.clone()));
-                self.unify_at(&tfunc.ty, &expected, "applied value must be a function of the argument types")?;
-                Ok(Typed { node: TypedNode::Apply { func: Box::new(tfunc), args: targs }, ty: ret })
+                let expected = Ty::Fn(
+                    targs.iter().map(|t| t.ty.clone()).collect(),
+                    Box::new(ret.clone()),
+                );
+                self.unify_at(
+                    &tfunc.ty,
+                    &expected,
+                    "applied value must be a function of the argument types",
+                )?;
+                Ok(Typed {
+                    node: TypedNode::Apply {
+                        func: Box::new(tfunc),
+                        args: targs,
+                    },
+                    ty: ret,
+                })
             }
             Hir::Tuple(elems) => {
                 let telems: Vec<Typed> = elems
@@ -405,10 +471,15 @@ impl<'a> Infer<'a> {
                 for (name, e) in fields {
                     tfields.push((name.clone(), self.expr(e)?));
                 }
-                let mut field_tys: Vec<(String, Ty)> =
-                    tfields.iter().map(|(n, t)| (n.clone(), t.ty.clone())).collect();
+                let mut field_tys: Vec<(String, Ty)> = tfields
+                    .iter()
+                    .map(|(n, t)| (n.clone(), t.ty.clone()))
+                    .collect();
                 field_tys.sort_by(|a, b| a.0.cmp(&b.0));
-                Ok(Typed { node: TypedNode::Record(tfields), ty: Ty::Record(field_tys) })
+                Ok(Typed {
+                    node: TypedNode::Record(tfields),
+                    ty: Ty::Record(field_tys),
+                })
             }
             Hir::List(elems) => {
                 // The list's element type is a SINGLE fresh var to which EVERY element unifies — the
@@ -621,7 +692,10 @@ impl<'a> Infer<'a> {
             Hir::TypeVal(ty) => {
                 // A type-value (a bare `Int64`/`Bool`/… as a compile-time VALUE) — typed as `Ty::Type`.
                 // Used in `(: e T)`: the `T` infers to `Type`, its represented `Ty` is extracted.
-                Ok(Typed { node: TypedNode::TypeVal(ty.clone()), ty: Ty::Type })
+                Ok(Typed {
+                    node: TypedNode::TypeVal(ty.clone()),
+                    ty: Ty::Type,
+                })
             }
             Hir::Annot(e, t) => {
                 // `(: e T)` — annotate `e` with type `T`. Infer `T` (must be `Ty::Type`-typed), extract
@@ -648,7 +722,11 @@ impl<'a> Infer<'a> {
                 // `build_compound_ty` helper (the same builder `fold_const` uses at fold time).
                 let target_ty = match extract_type_value(&tt.node) {
                     Some(ty) => ty,
-                    None => return Err(Reject::decline("annotation type did not reduce to a type-value")),
+                    None => {
+                        return Err(Reject::decline(
+                            "annotation type did not reduce to a type-value",
+                        ))
+                    }
                 };
                 let te = self.expr(e)?;
                 // Unify `e`'s type with the annotation target, mapping failure to CDZ0203.
@@ -662,7 +740,10 @@ impl<'a> Infer<'a> {
                     ));
                 }
                 let ty = self.subst.apply(&te.ty);
-                Ok(Typed { node: TypedNode::Annot(Box::new(te), Box::new(tt)), ty })
+                Ok(Typed {
+                    node: TypedNode::Annot(Box::new(te), Box::new(tt)),
+                    ty,
+                })
             }
             Hir::Const(e) => {
                 // `(const e)` — assert `e` fully compile-time-reduces. Infer types it; the fold +
@@ -670,7 +751,10 @@ impl<'a> Infer<'a> {
                 // `e`'s type. Lowers to `fold(e)`.
                 let te = self.expr(e)?;
                 let ty = te.ty.clone();
-                Ok(Typed { node: TypedNode::Const(Box::new(te)), ty })
+                Ok(Typed {
+                    node: TypedNode::Const(Box::new(te)),
+                    ty,
+                })
             }
             Hir::Lambda { params, body } => {
                 // `(fn (p…) body)` — a lambda. Fresh var per param; insert each into `self.locals`; infer
@@ -728,13 +812,19 @@ impl<'a> Infer<'a> {
                     "a tuple-scrutinee match with more than one arm is a later phase",
                 ));
             }
-            if !matches!(targs[0].0.node, TypedNode::Tuple(_) | TypedNode::Wildcard | TypedNode::Local(_)) {
+            if !matches!(
+                targs[0].0.node,
+                TypedNode::Tuple(_) | TypedNode::Wildcard | TypedNode::Local(_)
+            ) {
                 return Err(Reject::decline(
                     "a tuple-scrutinee match arm must be a tuple pattern or a binder",
                 ));
             }
             return Ok(Typed {
-                node: TypedNode::Match { scrutinee: Box::new(tscrut), arms: targs },
+                node: TypedNode::Match {
+                    scrutinee: Box::new(tscrut),
+                    arms: targs,
+                },
                 ty: result,
             });
         }
@@ -743,7 +833,11 @@ impl<'a> Infer<'a> {
         // miscompile through the sum path.
         let def = match self.subst.apply(&tscrut.ty) {
             Ty::Sum { def, .. } => def,
-            _ => return Err(Reject::decline("a match on a non-sum scrutinee is a later phase")),
+            _ => {
+                return Err(Reject::decline(
+                    "a match on a non-sum scrutinee is a later phase",
+                ))
+            }
         };
         // This slice's `emit_match` guards ONLY on the top constructor's discriminant + binds its
         // payload (a binder / wildcard / tuple of binders). It does NOT yet refine on an inner LITERAL
@@ -781,7 +875,10 @@ impl<'a> Infer<'a> {
             }
         }
         Ok(Typed {
-            node: TypedNode::Match { scrutinee: Box::new(tscrut), arms: targs },
+            node: TypedNode::Match {
+                scrutinee: Box::new(tscrut),
+                arms: targs,
+            },
             ty: result,
         })
     }
@@ -793,20 +890,32 @@ impl<'a> Infer<'a> {
     /// Mirrors the shapes `resolve` emits for a pattern — no separate `Pattern` type.
     fn infer_pattern(&mut self, pat: &Hir, expected: &Ty) -> Result<Typed, Reject> {
         match pat {
-            Hir::Wildcard => Ok(Typed { node: TypedNode::Wildcard, ty: expected.clone() }),
+            Hir::Wildcard => Ok(Typed {
+                node: TypedNode::Wildcard,
+                ty: expected.clone(),
+            }),
             Hir::Local(id) => {
                 // A binding occurrence — bind it at the type it faces.
                 self.locals.insert(*id, expected.clone());
-                Ok(Typed { node: TypedNode::Local(*id), ty: expected.clone() })
+                Ok(Typed {
+                    node: TypedNode::Local(*id),
+                    ty: expected.clone(),
+                })
             }
             // A BARE constructor in pattern position (`None`, not `(None _)`) — the "bare nullary
             // constructor is the nullary sum value" case. Its uniform form is `(Ctor _)`; a bare ctor
             // pattern is a later phase, so DECLINE (a clean todo) rather than unify its `Fn` type against
             // the scrutinee and wrongly reject (decline-don't-miscompile).
-            Hir::Ctor { .. } => Err(Reject::decline("a bare nullary constructor pattern is a later phase")),
+            Hir::Ctor { .. } => Err(Reject::decline(
+                "a bare nullary constructor pattern is a later phase",
+            )),
             Hir::Int(_) | Hir::Bool(_) => {
                 let t = self.expr(pat)?;
-                self.unify_at(&t.ty, expected, "a literal pattern matches the scrutinee type")?;
+                self.unify_at(
+                    &t.ty,
+                    expected,
+                    "a literal pattern matches the scrutinee type",
+                )?;
                 Ok(t)
             }
             // `(Ctor sub)` — a constructor pattern. A NULLARY ctor head (`(Ready _)`, `(None _)`) now
@@ -831,22 +940,36 @@ impl<'a> Infer<'a> {
                         ))
                     }
                 };
-                self.unify_at(&ret_ty, expected, "a constructor pattern matches its sum type")?;
+                self.unify_at(
+                    &ret_ty,
+                    expected,
+                    "a constructor pattern matches its sum type",
+                )?;
                 let tsub = self.infer_pattern(&args[0], &payload_ty)?;
                 Ok(Typed {
-                    node: TypedNode::Apply { func: Box::new(tfunc), args: vec![tsub] },
+                    node: TypedNode::Apply {
+                        func: Box::new(tfunc),
+                        args: vec![tsub],
+                    },
                     ty: ret_ty,
                 })
             }
             Hir::Tuple(subs) => {
                 let elem_tys: Vec<Ty> = subs.iter().map(|_| self.supply.fresh()).collect();
-                self.unify_at(expected, &Ty::Tuple(elem_tys.clone()), "a tuple pattern matches a tuple")?;
+                self.unify_at(
+                    expected,
+                    &Ty::Tuple(elem_tys.clone()),
+                    "a tuple pattern matches a tuple",
+                )?;
                 let tsubs = subs
                     .iter()
                     .zip(&elem_tys)
                     .map(|(s, t)| self.infer_pattern(s, t))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Typed { node: TypedNode::Tuple(tsubs), ty: Ty::Tuple(elem_tys) })
+                Ok(Typed {
+                    node: TypedNode::Tuple(tsubs),
+                    ty: Ty::Tuple(elem_tys),
+                })
             }
             // Any other shape (e.g. a bare nullary `Ctor` with no payload — matched as `(Ctor _)` so
             // this is the ctor value itself): infer as an expression and unify with `expected`.
@@ -872,7 +995,9 @@ fn typed_pattern_simple(node: &TypedNode) -> bool {
         TypedNode::Wildcard | TypedNode::Local(_) => true,
         // `(Ctor inner)` — a single-arg application of a constructor; the inner must be simple, but NOT
         // itself a nested constructor (a `Ctor`-application inner is a nested-ctor refinement).
-        TypedNode::Apply { func, args } if matches!(func.node, TypedNode::Ctor { .. }) && args.len() == 1 => {
+        TypedNode::Apply { func, args }
+            if matches!(func.node, TypedNode::Ctor { .. }) && args.len() == 1 =>
+        {
             let inner = &args[0].node;
             // A nested constructor application inside the payload is NOT yet supported.
             let nested_ctor = matches!(inner,
@@ -901,8 +1026,12 @@ fn typed_pattern_variant(node: &TypedNode) -> Option<usize> {
 
 /// Unify two types, mapping a failure to CDZ0201 with the solved conflicting types named.
 fn unify_at(subst: &mut Subst, a: &Ty, b: &Ty, msg: &str) -> Result<(), Reject> {
-    unify(a, b, subst)
-        .map_err(|e| Reject::coded(Code::TypeError, format!("{msg}: {:?} vs {:?}", e.left, e.right)))
+    unify(a, b, subst).map_err(|e| {
+        Reject::coded(
+            Code::TypeError,
+            format!("{msg}: {:?} vs {:?}", e.left, e.right),
+        )
+    })
 }
 
 /// Resolve a type against the substitution to a GROUND type; a residual `Var` — at the top OR nested
@@ -939,9 +1068,16 @@ fn default_phantom_sum_args(ty: &Ty) -> Ty {
                 .collect(),
         },
         Ty::Tuple(es) => Ty::Tuple(es.iter().map(default_phantom_sum_args).collect()),
-        Ty::Record(fs) => Ty::Record(fs.iter().map(|(n, t)| (n.clone(), default_phantom_sum_args(t))).collect()),
+        Ty::Record(fs) => Ty::Record(
+            fs.iter()
+                .map(|(n, t)| (n.clone(), default_phantom_sum_args(t)))
+                .collect(),
+        ),
         Ty::List(e) => Ty::List(Box::new(default_phantom_sum_args(e))),
-        Ty::Map(k, v) => Ty::Map(Box::new(default_phantom_sum_args(k)), Box::new(default_phantom_sum_args(v))),
+        Ty::Map(k, v) => Ty::Map(
+            Box::new(default_phantom_sum_args(k)),
+            Box::new(default_phantom_sum_args(v)),
+        ),
         Ty::Set(e) => Ty::Set(Box::new(default_phantom_sum_args(e))),
         // A `Fn` type is ALWAYS a compile-time-only value in rcdzc — a function / constructor / intrinsic
         // value folds away (an `Apply` reduces to a `Call`/`Mir::Sum`/`emit_intrinsic`; a bare survivor
@@ -966,12 +1102,22 @@ fn default_all_vars(ty: &Ty) -> Ty {
     match ty {
         Ty::Var(_) => Ty::Unit,
         Ty::Tuple(es) => Ty::Tuple(es.iter().map(default_all_vars).collect()),
-        Ty::Record(fs) => Ty::Record(fs.iter().map(|(n, t)| (n.clone(), default_all_vars(t))).collect()),
+        Ty::Record(fs) => Ty::Record(
+            fs.iter()
+                .map(|(n, t)| (n.clone(), default_all_vars(t)))
+                .collect(),
+        ),
         Ty::List(e) => Ty::List(Box::new(default_all_vars(e))),
         Ty::Map(k, v) => Ty::Map(Box::new(default_all_vars(k)), Box::new(default_all_vars(v))),
         Ty::Set(e) => Ty::Set(Box::new(default_all_vars(e))),
-        Ty::Sum { def, args } => Ty::Sum { def: def.clone(), args: args.iter().map(default_all_vars).collect() },
-        Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(default_all_vars).collect(), Box::new(default_all_vars(r))),
+        Ty::Sum { def, args } => Ty::Sum {
+            def: def.clone(),
+            args: args.iter().map(default_all_vars).collect(),
+        },
+        Ty::Fn(ps, r) => Ty::Fn(
+            ps.iter().map(default_all_vars).collect(),
+            Box::new(default_all_vars(r)),
+        ),
         // Type is a ground leaf — no vars to default.
         Ty::Type => Ty::Type,
         other => other.clone(),
@@ -983,7 +1129,14 @@ fn default_all_vars(ty: &Ty) -> Ty {
 fn hir_uses_local(h: &Hir) -> bool {
     match h {
         Hir::Local(_) => true,
-        Hir::Int(_) | Hir::Bool(_) | Hir::Str(_) | Hir::Unit | Hir::FuncRef(_) | Hir::Intrinsic(_) | Hir::Error(_) | Hir::TypeVal(_) => false,
+        Hir::Int(_)
+        | Hir::Bool(_)
+        | Hir::Str(_)
+        | Hir::Unit
+        | Hir::FuncRef(_)
+        | Hir::Intrinsic(_)
+        | Hir::Error(_)
+        | Hir::TypeVal(_) => false,
         // A constructor value, a wildcard, and a trap reference no local; a match may in its scrutinee
         // or arm bodies.
         Hir::Ctor { .. } | Hir::Wildcard | Hir::Trap(_) => false,
@@ -995,7 +1148,9 @@ fn hir_uses_local(h: &Hir) -> bool {
         Hir::Record(fields) => fields.iter().any(|(_, e)| hir_uses_local(e)),
         Hir::Tuple(elems) => elems.iter().any(hir_uses_local),
         Hir::List(elems) => elems.iter().any(hir_uses_local),
-        Hir::Map(entries) => entries.iter().any(|(k, v)| hir_uses_local(k) || hir_uses_local(v)),
+        Hir::Map(entries) => entries
+            .iter()
+            .any(|(k, v)| hir_uses_local(k) || hir_uses_local(v)),
         Hir::Set(elems) => elems.iter().any(hir_uses_local),
         Hir::TupleProj(_, t) => hir_uses_local(t),
         Hir::RecordProj(_, t) => hir_uses_local(t),
@@ -1038,7 +1193,10 @@ fn finalize(subst: &Subst, typed: Typed) -> Result<Typed, Reject> {
     // A WILDCARD binds and emits nothing, so its type is irrelevant — never ground it (a `(Err _)` arm
     // leaves the discarded payload type free, which is fine; grounding it would false-decline).
     if matches!(typed.node, TypedNode::Wildcard) {
-        return Ok(Typed { node: TypedNode::Wildcard, ty: Ty::Unit });
+        return Ok(Typed {
+            node: TypedNode::Wildcard,
+            ty: Ty::Unit,
+        });
     }
     let ty = ground(subst, &typed.ty)?;
     let node = match typed.node {
@@ -1068,7 +1226,10 @@ fn finalize(subst: &Subst, typed: Typed) -> Result<Typed, Reject> {
         TypedNode::Trap(msg) => TypedNode::Trap(msg),
         TypedNode::Apply { func, args } => TypedNode::Apply {
             func: Box::new(finalize(subst, *func)?),
-            args: args.into_iter().map(|a| finalize(subst, a)).collect::<Result<_, _>>()?,
+            args: args
+                .into_iter()
+                .map(|a| finalize(subst, a))
+                .collect::<Result<_, _>>()?,
         },
         TypedNode::Tuple(elems) => TypedNode::Tuple(
             elems
@@ -1160,7 +1321,10 @@ fn extract_type_value(node: &TypedNode) -> Option<Ty> {
             // NEW: Sum type-constructor application (e.g., (Option Int64) in an annotation).
             // The func is a Hir::Ctor (projected via (meta apply)) carrying the sum's SumRef.
             if let TypedNode::Ctor { def, .. } = &func.node {
-                let type_args: Vec<Ty> = args.iter().filter_map(|a| extract_type_value(&a.node)).collect();
+                let type_args: Vec<Ty> = args
+                    .iter()
+                    .filter_map(|a| extract_type_value(&a.node))
+                    .collect();
                 if type_args.len() == args.len() {
                     // Arity check: type_args.len() must equal def.params.len().
                     if type_args.len() != def.params.len() {
@@ -1174,8 +1338,10 @@ fn extract_type_value(node: &TypedNode) -> Option<Ty> {
             }
             // EXISTING: Intrinsic type-constructor (List/Map/Set/Tuple).
             if let TypedNode::Intrinsic(op) = &func.node {
-                let arg_tys: Vec<Ty> =
-                    args.iter().filter_map(|a| extract_type_value(&a.node)).collect();
+                let arg_tys: Vec<Ty> = args
+                    .iter()
+                    .filter_map(|a| extract_type_value(&a.node))
+                    .collect();
                 if arg_tys.len() != args.len() {
                     return None;
                 }

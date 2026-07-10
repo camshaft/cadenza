@@ -1,4 +1,4 @@
-//! ML-surface spike for Cadenza. Prints the real `cdz_compiler::ast::Node` to an ML-flavored
+//! ML-surface spike for Cadenza. Prints the real `rcdzc::ast::Node` to an ML-flavored
 //! text surface and reads it back, validating a lossless round-trip against the s-expr corpus.
 //!
 //! Architecture:
@@ -12,7 +12,7 @@
 //! The printer emits MINIMAL parentheses using the precedence table; the reader is a Pratt parser
 //! that reconstructs the identical Ast. `read_ml(print_ml(read_sexpr(x))) == read_sexpr(x)`.
 
-use cdz_compiler::ast::{self, Node};
+use rcdzc::ast::{self, Node};
 
 mod corpus_test;
 
@@ -170,7 +170,11 @@ fn print_list(items: &[Node], parent_prec: u8) -> String {
         // ---- Generic application / call form: head(a, b, c) ----
         // This is the lossless bijection for every other Name-headed list. The head goes through
         // emit_name so symbolic/keyword heads (`:`, `->`, `type` is fine, etc.) round-trip.
-        let arglist = args.iter().map(|a| print_prec(a, 0)).collect::<Vec<_>>().join(", ");
+        let arglist = args
+            .iter()
+            .map(|a| print_prec(a, 0))
+            .collect::<Vec<_>>()
+            .join(", ");
         return format!("{}({})", emit_name(head), arglist);
     }
 
@@ -179,7 +183,11 @@ fn print_list(items: &[Node], parent_prec: u8) -> String {
     // nested list. A match arm `((pat…) body)` is structurally the same as such an application, so
     // this rule round-trips arms with compound patterns too.
     let head = print_prec(&items[0], PREC_MEMBER);
-    let arglist = items[1..].iter().map(|a| print_prec(a, 0)).collect::<Vec<_>>().join(", ");
+    let arglist = items[1..]
+        .iter()
+        .map(|a| print_prec(a, 0))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!("{}({})", head, arglist)
 }
 
@@ -218,7 +226,9 @@ fn is_let_shape(args: &[Node]) -> bool {
         return false;
     }
     if let Node::List(binds) = &args[0] {
-        return binds.iter().all(|b| matches!(b, Node::List(p) if p.len() == 2 && matches!(p[0], Node::Name(_))));
+        return binds
+            .iter()
+            .all(|b| matches!(b, Node::List(p) if p.len() == 2 && matches!(p[0], Node::Name(_))));
     }
     false
 }
@@ -316,7 +326,11 @@ fn print_match(args: &[Node], parent_prec: u8) -> String {
     let mut arms = Vec::new();
     for arm in &args[1..] {
         if let Node::List(p) = arm {
-            arms.push(format!("  {} => {}", print_prec(&p[0], 0), print_prec(&p[1], 0)));
+            arms.push(format!(
+                "  {} => {}",
+                print_prec(&p[0], 0),
+                print_prec(&p[1], 0)
+            ));
         }
     }
     let s = format!("match {} {{\n{}\n}}", scrut, arms.join(",\n"));
@@ -337,18 +351,30 @@ enum Tok {
     Float(f64),
     Str(String),
     Bool(bool),
-    Name(String),          // identifiers, kebab-case, dotted positional (tuple.0)
-    Op(String),            // infix operator symbol
-    Let, In, If, Then, Fn, Match,
-    LParen, RParen,
-    LBrace, RBrace,        // match block delimiters
-    LBracket, RBracket,    // #[ ... ] escape uses these after '#'
-    Hash,                  // '#'
-    Backtick,              // ` quasiquote prefix
-    UnquoteSplice,         // ,@ unquote-splicing prefix
+    Name(String), // identifiers, kebab-case, dotted positional (tuple.0)
+    Op(String),   // infix operator symbol
+    Let,
+    In,
+    If,
+    Then,
+    Fn,
+    Match,
+    LParen,
+    RParen,
+    LBrace,
+    RBrace, // match block delimiters
+    LBracket,
+    RBracket,      // #[ ... ] escape uses these after '#'
+    Hash,          // '#'
+    Backtick,      // ` quasiquote prefix
+    UnquoteSplice, // ,@ unquote-splicing prefix
     // `Comma` doubles as the unquote prefix `,` — the Pratt parser reads it as unquote in prefix
     // position and as a separator in argument/binding/arm loops; the two positions never overlap.
-    Comma, Dot, FatArrow, Arrow, Colon,
+    Comma,
+    Dot,
+    FatArrow,
+    Arrow,
+    Colon,
     Eof,
 }
 
@@ -359,7 +385,10 @@ struct Lexer {
 
 impl Lexer {
     fn new(s: &str) -> Self {
-        Lexer { src: s.chars().collect(), pos: 0 }
+        Lexer {
+            src: s.chars().collect(),
+            pos: 0,
+        }
     }
     fn peek(&self) -> Option<char> {
         self.src.get(self.pos).copied()
@@ -402,13 +431,34 @@ impl Lexer {
                 Some(c) => c,
             };
             let t = match c {
-                '(' => { self.bump(); Tok::LParen }
-                ')' => { self.bump(); Tok::RParen }
-                '{' => { self.bump(); Tok::LBrace }
-                '}' => { self.bump(); Tok::RBrace }
-                '[' => { self.bump(); Tok::LBracket }
-                ']' => { self.bump(); Tok::RBracket }
-                '#' => { self.bump(); Tok::Hash }
+                '(' => {
+                    self.bump();
+                    Tok::LParen
+                }
+                ')' => {
+                    self.bump();
+                    Tok::RParen
+                }
+                '{' => {
+                    self.bump();
+                    Tok::LBrace
+                }
+                '}' => {
+                    self.bump();
+                    Tok::RBrace
+                }
+                '[' => {
+                    self.bump();
+                    Tok::LBracket
+                }
+                ']' => {
+                    self.bump();
+                    Tok::RBracket
+                }
+                '#' => {
+                    self.bump();
+                    Tok::Hash
+                }
                 ',' => {
                     self.bump();
                     if self.peek() == Some('@') {
@@ -419,7 +469,10 @@ impl Lexer {
                     }
                 }
                 // `` `{ … } `` is a quasiquote block; `` `name` `` is a symbolic-name escape.
-                '`' if self.peek2() == Some('{') => { self.bump(); Tok::Backtick }
+                '`' if self.peek2() == Some('{') => {
+                    self.bump();
+                    Tok::Backtick
+                }
                 '`' => Tok::Name(self.read_backtick_name()?),
                 '"' => Tok::Str(self.read_string()?),
                 '+' | '*' | '%' | '&' | '^' => {
@@ -432,8 +485,14 @@ impl Lexer {
                         Tok::Op(c.to_string())
                     }
                 }
-                '|' => { self.bump(); Tok::Op("|".into()) }
-                '/' => { self.bump(); Tok::Op("/".into()) }
+                '|' => {
+                    self.bump();
+                    Tok::Op("|".into())
+                }
+                '/' => {
+                    self.bump();
+                    Tok::Op("/".into())
+                }
                 '=' => {
                     self.bump();
                     if self.peek() == Some('>') {
@@ -446,16 +505,28 @@ impl Lexer {
                 '<' => {
                     self.bump();
                     match self.peek() {
-                        Some('=') => { self.bump(); Tok::Op("<=".into()) }
-                        Some('<') => { self.bump(); Tok::Op("<<".into()) }
+                        Some('=') => {
+                            self.bump();
+                            Tok::Op("<=".into())
+                        }
+                        Some('<') => {
+                            self.bump();
+                            Tok::Op("<<".into())
+                        }
                         _ => Tok::Op("<".into()),
                     }
                 }
                 '>' => {
                     self.bump();
                     match self.peek() {
-                        Some('=') => { self.bump(); Tok::Op(">=".into()) }
-                        Some('>') => { self.bump(); Tok::Op(">>".into()) }
+                        Some('=') => {
+                            self.bump();
+                            Tok::Op(">=".into())
+                        }
+                        Some('>') => {
+                            self.bump();
+                            Tok::Op(">>".into())
+                        }
                         _ => Tok::Op(">".into()),
                     }
                 }
@@ -485,8 +556,14 @@ impl Lexer {
                         }
                     }
                 }
-                '.' => { self.bump(); Tok::Dot }
-                ':' => { self.bump(); Tok::Colon }
+                '.' => {
+                    self.bump();
+                    Tok::Dot
+                }
+                ':' => {
+                    self.bump();
+                    Tok::Colon
+                }
                 c if c.is_ascii_digit() || c.is_alphabetic() || c == '_' => {
                     self.read_number_or_word()?
                 }
@@ -551,7 +628,12 @@ impl Lexer {
         while let Some(c) = self.peek() {
             if c.is_alphanumeric() || c == '_' {
                 self.bump();
-            } else if c == '-' && self.peek2().map(|n| n.is_alphanumeric() || n == '_').unwrap_or(false) {
+            } else if c == '-'
+                && self
+                    .peek2()
+                    .map(|n| n.is_alphanumeric() || n == '_')
+                    .unwrap_or(false)
+            {
                 // kebab: hyphen glued between word chars
                 self.bump();
             } else if c == '.' && self.peek2().map(|n| n.is_ascii_digit()).unwrap_or(false) {
@@ -637,7 +719,9 @@ fn looks_like_float(tok: &str) -> bool {
         return false;
     }
     (body.contains('.') || body.contains('e') || body.contains('E'))
-        && body.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-' | '_'))
+        && body
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-' | '_'))
 }
 
 // ===================================================================================
@@ -688,7 +772,7 @@ impl Parser {
                 break;
             }
             self.bump(); // operator
-            // left-assoc: right side parses at prec+1
+                         // left-assoc: right side parses at prec+1
             let right = self.parse_expr(prec + 1)?;
             left = Node::List(vec![Node::Name(op), left, right]);
         }
@@ -698,11 +782,26 @@ impl Parser {
     /// Prefix: literals, names (with member access + application), keyword forms, grouping.
     fn parse_prefix(&mut self) -> Result<Node, String> {
         let node = match self.peek().clone() {
-            Tok::Int(n) => { self.bump(); Node::Int(n) }
-            Tok::Float(f) => { self.bump(); Node::Float(f) }
-            Tok::Str(s) => { self.bump(); Node::Str(s) }
-            Tok::Bool(b) => { self.bump(); Node::Bool(b) }
-            Tok::Name(n) => { self.bump(); Node::Name(n) }
+            Tok::Int(n) => {
+                self.bump();
+                Node::Int(n)
+            }
+            Tok::Float(f) => {
+                self.bump();
+                Node::Float(f)
+            }
+            Tok::Str(s) => {
+                self.bump();
+                Node::Str(s)
+            }
+            Tok::Bool(b) => {
+                self.bump();
+                Node::Bool(b)
+            }
+            Tok::Name(n) => {
+                self.bump();
+                Node::Name(n)
+            }
             Tok::Let => return self.parse_let(),
             Tok::If => return self.parse_if(),
             Tok::Fn => return self.parse_fn(),
@@ -725,7 +824,10 @@ impl Parser {
                 // `,@X` or `,@{X}` -> (unquote-splicing X)
                 self.bump();
                 let inner = self.parse_sigil_body()?;
-                return Ok(Node::List(vec![Node::Name("unquote-splicing".into()), inner]));
+                return Ok(Node::List(vec![
+                    Node::Name("unquote-splicing".into()),
+                    inner,
+                ]));
             }
             Tok::LParen => {
                 self.bump();
@@ -763,7 +865,9 @@ impl Parser {
                     let key = match self.bump() {
                         Tok::Name(n) => n,
                         Tok::Int(i) => i.to_string(), // shouldn't happen (positional glued in lexer)
-                        other => return Err(format!("expected member name after '.', got {:?}", other)),
+                        other => {
+                            return Err(format!("expected member name after '.', got {:?}", other))
+                        }
                     };
                     node = Node::List(vec![Node::Name(".".into()), node, Node::Name(key)]);
                 }
@@ -809,7 +913,11 @@ impl Parser {
         }
         self.expect(Tok::In)?;
         let body = self.parse_expr(0)?;
-        Ok(Node::List(vec![Node::Name("let".into()), Node::List(binds), body]))
+        Ok(Node::List(vec![
+            Node::Name("let".into()),
+            Node::List(binds),
+            body,
+        ]))
     }
 
     fn parse_if(&mut self) -> Result<Node, String> {
@@ -846,7 +954,11 @@ impl Parser {
         self.expect(Tok::RParen)?;
         self.expect(Tok::FatArrow)?;
         let body = self.parse_expr(0)?;
-        Ok(Node::List(vec![Node::Name("fn".into()), Node::List(params), body]))
+        Ok(Node::List(vec![
+            Node::Name("fn".into()),
+            Node::List(params),
+            body,
+        ]))
     }
 
     /// `match SCRUT { PAT => BODY, PAT => BODY, … }`. The PAT side is parsed as an ordinary
@@ -989,7 +1101,10 @@ fn main() {
         println!("\n=== Corpus Coverage ===");
         println!("Round-trip identical: {} / {}", total_passed, total);
         if total > 0 {
-            println!("Success rate: {:.1}%", 100.0 * total_passed as f64 / total as f64);
+            println!(
+                "Success rate: {:.1}%",
+                100.0 * total_passed as f64 / total as f64
+            );
         }
 
         println!("\n=== Per-construct failure buckets ===");
@@ -1028,7 +1143,12 @@ fn run_demos() {
     ];
     for c in prec_cases {
         let (ok, ml, _orig, _back) = rt(c);
-        println!("{} s-expr {:28} =>  ML  {:22}", if ok { "OK " } else { "BAD" }, c, ml);
+        println!(
+            "{} s-expr {:28} =>  ML  {:22}",
+            if ok { "OK " } else { "BAD" },
+            c,
+            ml
+        );
     }
 
     println!("\n=== Hand-written ML parses to the intended Ast (anti-collusion) ===\n");
@@ -1085,15 +1205,26 @@ mod spike_tests {
     #[test]
     fn hand_written_precedence() {
         // 1 + 2 * 3 must be (+ 1 (* 2 3)), NOT (* (+ 1 2) 3)
-        assert_eq!(read_ml("1 + 2 * 3").unwrap(), ast::read("(+ 1 (* 2 3))").unwrap());
-        assert_eq!(read_ml("1 - 2 - 3").unwrap(), ast::read("(- (- 1 2) 3)").unwrap());
-        assert_eq!(read_ml("a or b and c").unwrap(), ast::read("(or a (and b c))").unwrap());
+        assert_eq!(
+            read_ml("1 + 2 * 3").unwrap(),
+            ast::read("(+ 1 (* 2 3))").unwrap()
+        );
+        assert_eq!(
+            read_ml("1 - 2 - 3").unwrap(),
+            ast::read("(- (- 1 2) 3)").unwrap()
+        );
+        assert_eq!(
+            read_ml("a or b and c").unwrap(),
+            ast::read("(or a (and b c))").unwrap()
+        );
     }
 
     #[test]
     fn core_forms() {
         for c in [
-            "42", "true", "\"hi\"",
+            "42",
+            "true",
+            "\"hi\"",
             "(let ((x 10)) x)",
             "(if (< 1 2) 10 20)",
             "(fn (x y) (+ x y))",
@@ -1165,7 +1296,10 @@ mod spike_tests {
     #[test]
     fn kebab_rule() {
         // `-` between word chars is part of the identifier; spaced `-` is subtraction.
-        assert_eq!(read_ml("byte-at(b, 3)").unwrap(), ast::read("(byte-at b 3)").unwrap());
+        assert_eq!(
+            read_ml("byte-at(b, 3)").unwrap(),
+            ast::read("(byte-at b 3)").unwrap()
+        );
         assert_eq!(read_ml("a - b").unwrap(), ast::read("(- a b)").unwrap());
         assert_eq!(read_ml("x - 1").unwrap(), ast::read("(- x 1)").unwrap());
         assert_eq!(read_ml("a-b").unwrap(), Node::Name("a-b".into()));

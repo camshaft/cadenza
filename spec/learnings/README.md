@@ -10,6 +10,67 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [The compiler is columns indexed by node identity — a query is a column read, and the artifact is just the last column](./2026-07-10-the-compiler-is-columns-indexed-by-node-identity-a-query-is-a-column-read.md)
+  — the operator named the organizing model for a from-scratch rebuild, sharper than the incremental-computation
+  direction the IR-shape research had floated. The compiler's WHOLE STATE is columns (a bunch of `Vec`s) keyed
+  by `NodeId`; a phase FILLS columns by reading earlier columns (following a node's origin id back for spans);
+  a fact is `Some`/`None` and that's it — NO cache, NO dependency graph, NO invalidation. A QUERY IS A COLUMN
+  READ (`types[N]`), and GETTING THE ARTIFACT OUT IS A QUERY TOO — the artifact is the TERMINAL column a
+  backend fills, so "give me the bytes" = "give me the type of node N", differing only in which column. Makes
+  three obligations free/trivial: the queryable-oracle capability (no second impl to keep in agreement — the
+  query IS the read → the debugging affordance the operator wants is the default), "incremental equals batch"
+  (true by construction — no cache to go stale; incrementality = coarse module re-run), and emission (a
+  producer reading earlier columns structurally CAN'T re-derive). The one hazard pinned normative: `None` means
+  ONLY "no answer"; a decline/reject/poison is a VALUE in the column; a reader needing a value at `None`
+  DECLINES, never defaults. Explicitly REJECTS Salsa/caching. Subsumes the arena+side-tables of
+  [[2026-07-10-the-pipeline-is-a-tree-above-and-a-flat-anf-core-below-and-ssa-is-a-property-not-a-fourth-ir]]
+  (which gets a superseding note — physical side table stands, cache dropped). Drove NEW
+  `spec/architecture/query-engine.md` + recast of intermediate-representations.md + 3 folded invariants into
+  reference-compiler.md (compiler is a deterministic fn of its input; evaluator bounds its own reduction /
+  declines-not-diverges; a compile-time-built value is indistinguishable from a runtime-built one). No corpus
+  (compiler-internal; byte-identity unaffected).
+- [The implementation's design directions fold into the durable architecture — and records-everywhere is the foundation built first](./2026-07-10-the-implementation-design-directions-fold-into-the-architecture-records-everywhere-first.md)
+  — a survey of the dozen `implementation/` design docs (records-everywhere resolver, binding + collection +
+  binary patterns, effects, CHAMP map, inline-handle tagging, bytes rope, int widths, configurable backend,
+  retirement/xtask plans), sorting durable architecture from ephemeral detail and already-covered
+  declared-default. Confirmed the operator's instinct: these read as separate features but are ONE
+  architecture resting on two decisions — records-everywhere and solve-once — and records-everywhere is the
+  FOUNDATION built first (a width is a record, an effect is a record, a module is a record; the compile-time
+  evaluator that reduces records is where meaning lives; building it late accretes the name-dispatch it
+  exists to forbid). Key folds: records-everywhere is a MECHANISM (two generic operations over one map + a
+  fixed grammar + a resolution mode + a type-record's meta channel read at the use site) enforcing the
+  already-normative "Nothing Is Privileged By Name"; int-widths is a worked example (`Int64`=`(Int 64)`,
+  signedness meta RESOLVES the arith-vs-logical-shift question the IR-shape research left open); effects add
+  the declaration-routing-agnostic + manifest-as-computed-union principle; patterns are ONE probe/binder
+  engine (binding = single-arm irrefutable match; accept/reject/decline triad); a backend is a function of
+  the typed core + neutral layout, and the flat instruction rung is a LINEARIZING BACKEND'S representation,
+  NOT a shared rung — correcting [[2026-07-10-the-pipeline-is-a-tree-above-and-a-flat-anf-core-below-and-ssa-is-a-property-not-a-fourth-ir]].
+  CHAMP/inline-handle/rope are declared-default (one durable gap folded: no-recursion-in-depth extends from
+  reclamation to hashing/compare/materialize). Drove two new architecture docs (prelude-and-resolution.md,
+  backends-and-targets.md) + additions to reference-compiler.md (unified match engine; effect
+  declaration/manifest), intermediate-representations.md, value-heap-runtime.md. No corpus (durable
+  architecture prose; behavior invariant).
+- [The pipeline is a source-structured tree above and a flat A-normal core below — and single-static-assignment is a property of that core, not a fourth IR to build](./2026-07-10-the-pipeline-is-a-tree-above-and-a-flat-anf-core-below-and-ssa-is-a-property-not-a-fourth-ir.md)
+  — an adversarially-fact-checked research pass settled a recurring pull toward "make the IR fancier sooner"
+  (sea-of-nodes? SSA at `Mir`? SSA at `Hir`? flatten early?). Real-compiler precedent gave a gradient, not
+  "SSA/flat everywhere ASAP": V8 LEFT sea-of-nodes for a flat CFG IR (~3× more L1 d-cache misses, optimizer
+  compile time halved, effect/control-chain complexity bugs) — but the "HotSpot C2 regretted it" premise is
+  FALSE (C2/GraalVM still ship it; the regret is V8/JIT-specific). Rust keeps `HIR` a source tree and `MIR`
+  FLAT but deliberately NON-SSA (SSA is a computed subset of locals); Swift's `SIL` is a flat mid-level IR that
+  IS SSA (block arguments, not phi-nodes), and even it builds SSA a pass after first lowering. The unifying
+  finding, matching Appel: an A-normal core with join-point parameters ALREADY IS SSA, so single-assignment is
+  a property of the core, never a fourth representation reached by a phi-construction pass — and effects lower
+  THROUGH that core (Koka's monadic translation, Flambda2's CPS). "Flat" is two independent wins conflated:
+  arena-of-nodes-by-index STORAGE (buys locality + kills deep recursion, applies to the trees too) vs.
+  single-assignment LINEARIZATION (a semantic property, ANF). This CONFIRMED two decisions the spec already made
+  — ANF-at-the-core [[2026-07-09-the-resolved-core-wants-anf-name-every-intermediate-so-perceus-and-effect-capture-are-precise]]
+  and solve-once [[2026-07-09-solve-the-type-once-read-it-downstream-never-re-derive]] — and added the physical
+  side table realization (type + position keyed by node identity, over interned types; a demand-driven
+  incremental cache needs position OUT of the nodes). Drove a new shape-companion architecture doc,
+  [intermediate-representations.md](../architecture/intermediate-representations.md): tree above / flat below,
+  SSA-as-a-property, arena+index storage, no unbounded native recursion, type/position side tables. No corpus
+  (an internal-representation shape, invariant under the behavior oracle; byte-identity shifts only after
+  administrative-binding elimination, as the ANF learning records).
 - [A coarse kind-classifier re-derived at emission is not inference — and it fails the same way at every lattice point](./2026-07-08-a-coarse-kind-classifier-re-derived-at-emit-is-the-wrong-inference-and-fails-one-way-at-every-lattice-point.md)
   — ~8 self-hosting cycles filed as separate return-kind gaps (recursive-Bool branch-order ask-14, list-accumulator
   ask-18, fixpoint-OOM ask-24, polymorphic-identity-returns-1 ask-34, shape-lost-across-return ask-65, tail-recursive

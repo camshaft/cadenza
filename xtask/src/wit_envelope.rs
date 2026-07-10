@@ -36,21 +36,52 @@ use wit_parser::{Resolve, Type as WitType};
 /// name is absent from the WIT or is `string`-typed (unlowerable), so the allow-list cannot drift
 /// from the contract silently.
 pub const HEAP_ALLOWLIST: &[&str] = &[
-    "box-int", "get-int", "box-bool", "get-bool", "box-float", "get-float",
-    "arr-alloc", "arr-set", "arr-get", "arr-len",
-    "sum-new", "sum-disc", "sum-payload",
-    "bytes-alloc", "bytes-set", "bytes-get", "bytes-len",
-    "dup", "drop",
-    "map-alloc", "map-set", "map-key", "map-val", "map-len",
-    "vec-empty", "vec-len", "vec-get", "vec-push", "vec-update",
-    "bytes-concat", "bytes-slice", "bytes-compact",
+    "box-int",
+    "get-int",
+    "box-bool",
+    "get-bool",
+    "box-float",
+    "get-float",
+    "arr-alloc",
+    "arr-set",
+    "arr-get",
+    "arr-len",
+    "sum-new",
+    "sum-disc",
+    "sum-payload",
+    "bytes-alloc",
+    "bytes-set",
+    "bytes-get",
+    "bytes-len",
+    "dup",
+    "drop",
+    "map-alloc",
+    "map-set",
+    "map-key",
+    "map-val",
+    "map-len",
+    "vec-empty",
+    "vec-len",
+    "vec-get",
+    "vec-push",
+    "vec-update",
+    "bytes-concat",
+    "bytes-slice",
+    "bytes-compact",
     // CHAMP persistent map (WIT 37–45): the REAL key→value map the `Map.*` surface lowers to
     // (the `map-alloc`/`map-set`/… above are the vestigial positional stub). Appended LAST so every
     // existing himport index is frozen (this list's ORDER is the index assignment; a name-resolving
     // runtime tolerates the divergence from WIT order). The 5 core ops + the 4-op cursor: the cursor
     // drives the type-directed renderer's map walk (`map-iter`/`-next`/`-key`/`-val`).
-    "map-empty", "map-insert", "map-lookup", "map-remove", "map-size",
-    "map-iter", "map-iter-next", "map-iter-key", "map-iter-val",
+    "map-empty",
+    "map-insert",
+    "map-lookup",
+    "map-remove",
+    "map-size",
+    "map-iter",
+    "map-iter-next",
+    "map-iter-key",
+    "map-iter-val",
     // `vec-concat` (WIT 55): O(log N) list concatenation over the RRB trie, `List.concat`'s lowering.
     // Appended LAST so every himport index above stays frozen. `vec-split` (WIT 56) returns a
     // `tuple<u32,u32>` — a component multi-return the envelope's canon cannot lower yet — so it is
@@ -61,9 +92,17 @@ pub const HEAP_ALLOWLIST: &[&str] = &[
     // stays frozen. All take/return `u32`/`bool` (lowerable). The 6 core ops (`of` builds via repeated
     // `insert` from `empty`), the 3 algebra ops (union/intersection/difference), + the 2-op cursor the
     // renderer walks (`set-iter`/`-next`/`-elem`).
-    "set-empty", "set-insert", "set-contains", "set-remove", "set-size",
-    "set-iter", "set-iter-next", "set-iter-elem",
-    "set-union", "set-intersection", "set-difference",
+    "set-empty",
+    "set-insert",
+    "set-contains",
+    "set-remove",
+    "set-size",
+    "set-iter",
+    "set-iter-next",
+    "set-iter-elem",
+    "set-union",
+    "set-intersection",
+    "set-difference",
 ];
 
 /// The interface name the runtime exports (also the WIT world's import name the program uses).
@@ -146,14 +185,15 @@ fn resolve_iface(wit_path: &Path) -> Result<Vec<HeapFn>, String> {
 
     let mut out = Vec::with_capacity(HEAP_ALLOWLIST.len());
     for &want in HEAP_ALLOWLIST {
-        let f = iface
-            .functions
-            .get(want)
-            .ok_or_else(|| format!("allow-list names `{want}`, absent from the runtime `heap` interface"))?;
+        let f = iface.functions.get(want).ok_or_else(|| {
+            format!("allow-list names `{want}`, absent from the runtime `heap` interface")
+        })?;
         let mut params = Vec::with_capacity(f.params.len());
         for (pname, ty) in &f.params {
             params.push(LogTy::from_wit(*ty).ok_or_else(|| {
-                format!("`{want}` param `{pname}` has a type the envelope cannot lower (e.g. string)")
+                format!(
+                    "`{want}` param `{pname}` has a type the envelope cannot lower (e.g. string)"
+                )
             })?);
         }
         let result = match f.result {
@@ -162,7 +202,11 @@ fn resolve_iface(wit_path: &Path) -> Result<Vec<HeapFn>, String> {
             })?),
             None => None,
         };
-        out.push(HeapFn { name: want.to_string(), params, result });
+        out.push(HeapFn {
+            name: want.to_string(),
+            params,
+            result,
+        });
     }
     Ok(out)
 }
@@ -187,7 +231,12 @@ fn build_heap_reference(iface: &[HeapFn]) -> Vec<u8> {
             .params
             .iter()
             .enumerate()
-            .map(|(j, p)| (param_name(&f.name, j), ComponentValType::Primitive(p.comp())))
+            .map(|(j, p)| {
+                (
+                    param_name(&f.name, j),
+                    ComponentValType::Primitive(p.comp()),
+                )
+            })
             .collect();
         {
             // The func-type encoder holds a mutable borrow of `it`; scope it so `export` (below)
@@ -216,8 +265,11 @@ fn build_heap_reference(iface: &[HeapFn]) -> Vec<u8> {
 
     // (5) Instantiate it, threading the lowered heap funcs (core funcs 0..n) in as an instance
     //     named "heap" (matching the stub's import module name).
-    let heap_args: Vec<(&str, ExportKind, u32)> =
-        iface.iter().enumerate().map(|(i, f)| (f.name.as_str(), ExportKind::Func, i as u32)).collect();
+    let heap_args: Vec<(&str, ExportKind, u32)> = iface
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), ExportKind::Func, i as u32))
+        .collect();
     let heap_inst = c.core_instantiate_exports(heap_args); // core instance 0
     let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
 
@@ -228,9 +280,8 @@ fn build_heap_reference(iface: &[HeapFn]) -> Vec<u8> {
 
     // (7) Lift `run` as `() -> string` with utf8 + the aliased memory/realloc, and export it.
     let (run_ty, mut enc) = c.type_function();
-    enc.params::<[(&str, ComponentValType); 0], _>([]).result(Some(ComponentValType::Primitive(
-        PrimitiveValType::String,
-    )));
+    enc.params::<[(&str, ComponentValType); 0], _>([])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::String)));
     let run_comp = c.lift_func(
         run_core,
         run_ty,
@@ -267,7 +318,12 @@ fn build_compile_reference(iface: &[HeapFn]) -> Vec<u8> {
             .params
             .iter()
             .enumerate()
-            .map(|(j, p)| (param_name(&f.name, j), ComponentValType::Primitive(p.comp())))
+            .map(|(j, p)| {
+                (
+                    param_name(&f.name, j),
+                    ComponentValType::Primitive(p.comp()),
+                )
+            })
             .collect();
         {
             let mut ft = it.ty().function();
@@ -292,8 +348,11 @@ fn build_compile_reference(iface: &[HeapFn]) -> Vec<u8> {
     let module_idx = c.core_module_raw(&core); // core module 0
 
     // (4) Instantiate, threading the lowered heap funcs in as an instance named "heap".
-    let heap_args: Vec<(&str, ExportKind, u32)> =
-        iface.iter().enumerate().map(|(i, f)| (f.name.as_str(), ExportKind::Func, i as u32)).collect();
+    let heap_args: Vec<(&str, ExportKind, u32)> = iface
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), ExportKind::Func, i as u32))
+        .collect();
     let heap_inst = c.core_instantiate_exports(heap_args); // core instance 0
     let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
 
@@ -311,7 +370,10 @@ fn build_compile_reference(iface: &[HeapFn]) -> Vec<u8> {
     let compile_comp = c.lift_func(
         compile_core,
         compile_ty,
-        [CanonicalOption::Memory(mem), CanonicalOption::Realloc(realloc)],
+        [
+            CanonicalOption::Memory(mem),
+            CanonicalOption::Realloc(realloc),
+        ],
     );
     c.export("compile", ComponentExportKind::Func, compile_comp, None);
 
@@ -340,7 +402,12 @@ fn build_compile_result_reference(iface: &[HeapFn]) -> Vec<u8> {
             .params
             .iter()
             .enumerate()
-            .map(|(j, p)| (param_name(&f.name, j), ComponentValType::Primitive(p.comp())))
+            .map(|(j, p)| {
+                (
+                    param_name(&f.name, j),
+                    ComponentValType::Primitive(p.comp()),
+                )
+            })
             .collect();
         {
             let mut ft = it.ty().function();
@@ -364,8 +431,11 @@ fn build_compile_result_reference(iface: &[HeapFn]) -> Vec<u8> {
     let module_idx = c.core_module_raw(&core);
 
     // (4) Instantiate, threading the lowered heap funcs in as instance "heap".
-    let heap_args: Vec<(&str, ExportKind, u32)> =
-        iface.iter().enumerate().map(|(i, f)| (f.name.as_str(), ExportKind::Func, i as u32)).collect();
+    let heap_args: Vec<(&str, ExportKind, u32)> = iface
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), ExportKind::Func, i as u32))
+        .collect();
     let heap_inst = c.core_instantiate_exports(heap_args);
     let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
 
@@ -386,8 +456,14 @@ fn build_compile_result_reference(iface: &[HeapFn]) -> Vec<u8> {
     ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
     let (diagnostic, ddef) = c.type_defined();
     ddef.record([
-        ("code", ComponentValType::Primitive(PrimitiveValType::String)),
-        ("message", ComponentValType::Primitive(PrimitiveValType::String)),
+        (
+            "code",
+            ComponentValType::Primitive(PrimitiveValType::String),
+        ),
+        (
+            "message",
+            ComponentValType::Primitive(PrimitiveValType::String),
+        ),
     ]);
     // Exporting the record yields a NEW type index that IS the named export; the func signature must
     // reference THAT (not the anonymous `diagnostic`) so `all_valtypes_named` sees a named type.
@@ -395,7 +471,10 @@ fn build_compile_result_reference(iface: &[HeapFn]) -> Vec<u8> {
     let (list_diag, lddef) = c.type_defined();
     lddef.list(ComponentValType::Type(diagnostic_named));
     let (result_ty, rdef) = c.type_defined();
-    rdef.result(Some(ComponentValType::Type(list_u8)), Some(ComponentValType::Type(list_diag)));
+    rdef.result(
+        Some(ComponentValType::Type(list_u8)),
+        Some(ComponentValType::Type(list_diag)),
+    );
 
     // (7) Lift `compile` as `func(list<u8>) -> result<list<u8>, list<diagnostic>>` and export it.
     let (compile_ty, mut enc) = c.type_function();
@@ -404,7 +483,10 @@ fn build_compile_result_reference(iface: &[HeapFn]) -> Vec<u8> {
     let compile_comp = c.lift_func(
         compile_core,
         compile_ty,
-        [CanonicalOption::Memory(mem), CanonicalOption::Realloc(realloc)],
+        [
+            CanonicalOption::Memory(mem),
+            CanonicalOption::Realloc(realloc),
+        ],
     );
     c.export("compile", ComponentExportKind::Func, compile_comp, None);
 
@@ -437,7 +519,12 @@ fn build_compile_artifacts_reference(iface: &[HeapFn]) -> Vec<u8> {
             .params
             .iter()
             .enumerate()
-            .map(|(j, p)| (param_name(&f.name, j), ComponentValType::Primitive(p.comp())))
+            .map(|(j, p)| {
+                (
+                    param_name(&f.name, j),
+                    ComponentValType::Primitive(p.comp()),
+                )
+            })
             .collect();
         {
             let mut ft = it.ty().function();
@@ -460,8 +547,11 @@ fn build_compile_artifacts_reference(iface: &[HeapFn]) -> Vec<u8> {
     let module_idx = c.core_module_raw(&core);
 
     // (4) Instantiate, threading the lowered heap funcs in as instance "heap".
-    let heap_args: Vec<(&str, ExportKind, u32)> =
-        iface.iter().enumerate().map(|(i, f)| (f.name.as_str(), ExportKind::Func, i as u32)).collect();
+    let heap_args: Vec<(&str, ExportKind, u32)> = iface
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), ExportKind::Func, i as u32))
+        .collect();
     let heap_inst = c.core_instantiate_exports(heap_args);
     let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
 
@@ -483,7 +573,10 @@ fn build_compile_artifacts_reference(iface: &[HeapFn]) -> Vec<u8> {
     let (artifact, adef) = c.type_defined();
     adef.record([
         ("bytes", ComponentValType::Type(list_u8)),
-        ("kind", ComponentValType::Primitive(PrimitiveValType::String)),
+        (
+            "kind",
+            ComponentValType::Primitive(PrimitiveValType::String),
+        ),
     ]);
     let artifact_named = c.export("artifact", ComponentExportKind::Type, artifact, None);
     //   diagnostic = record { code: string, message: string, severity: enum }  (sorted: code < message < severity)
@@ -492,8 +585,14 @@ fn build_compile_artifacts_reference(iface: &[HeapFn]) -> Vec<u8> {
     let severity_named = c.export("severity", ComponentExportKind::Type, severity, None);
     let (diagnostic, ddef) = c.type_defined();
     ddef.record([
-        ("code", ComponentValType::Primitive(PrimitiveValType::String)),
-        ("message", ComponentValType::Primitive(PrimitiveValType::String)),
+        (
+            "code",
+            ComponentValType::Primitive(PrimitiveValType::String),
+        ),
+        (
+            "message",
+            ComponentValType::Primitive(PrimitiveValType::String),
+        ),
         ("severity", ComponentValType::Type(severity_named)),
     ]);
     let diagnostic_named = c.export("diagnostic", ComponentExportKind::Type, diagnostic, None);
@@ -509,7 +608,12 @@ fn build_compile_artifacts_reference(iface: &[HeapFn]) -> Vec<u8> {
         ("artifacts", ComponentValType::Type(list_artifact)),
         ("diagnostics", ComponentValType::Type(list_diag)),
     ]);
-    let compile_output_named = c.export("compile-output", ComponentExportKind::Type, compile_output, None);
+    let compile_output_named = c.export(
+        "compile-output",
+        ComponentExportKind::Type,
+        compile_output,
+        None,
+    );
     //   the input list<artifact> references the SAME exported `artifact`.
     let (in_list_artifact, iladef) = c.type_defined();
     iladef.list(ComponentValType::Type(artifact_named));
@@ -521,7 +625,10 @@ fn build_compile_artifacts_reference(iface: &[HeapFn]) -> Vec<u8> {
     let compile_comp = c.lift_func(
         compile_core,
         compile_ty,
-        [CanonicalOption::Memory(mem), CanonicalOption::Realloc(realloc)],
+        [
+            CanonicalOption::Memory(mem),
+            CanonicalOption::Realloc(realloc),
+        ],
     );
     c.export("compile", ComponentExportKind::Func, compile_comp, None);
 
@@ -549,9 +656,14 @@ fn build_compile_stub_core_module(iface: &[HeapFn]) -> Vec<u8> {
         types.ty().function(params, results);
     }
     let ty_compile = n; // (i32,i32)->i32
-    types.ty().function([ValType::I32, ValType::I32], [ValType::I32]);
+    types
+        .ty()
+        .function([ValType::I32, ValType::I32], [ValType::I32]);
     let ty_realloc = n + 1; // (i32×4)->i32
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]);
+    types.ty().function(
+        [ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+        [ValType::I32],
+    );
     m.section(&types);
 
     // Imports: heap.<name> : type i.
@@ -568,7 +680,13 @@ fn build_compile_stub_core_module(iface: &[HeapFn]) -> Vec<u8> {
     m.section(&funcs);
 
     let mut mems = MemorySection::new();
-    mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    mems.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     m.section(&mems);
 
     let mut exports = ExportSection::new();
@@ -599,8 +717,8 @@ fn build_compile_stub_core_module(iface: &[HeapFn]) -> Vec<u8> {
 /// `memory`/`run`/`cabi_realloc`.
 fn build_stub_core_module(iface: &[HeapFn]) -> Vec<u8> {
     use wasm_encoder::{
-        CodeSection, ConstExpr, ExportSection, Function, FunctionSection, ImportSection, Instruction,
-        MemorySection, MemoryType, Module as CoreModule, TypeSection, ValType,
+        CodeSection, ConstExpr, ExportSection, Function, FunctionSection, ImportSection,
+        Instruction, MemorySection, MemoryType, Module as CoreModule, TypeSection, ValType,
     };
     let n = iface.len() as u32;
     let mut m = CoreModule::new();
@@ -617,7 +735,10 @@ fn build_stub_core_module(iface: &[HeapFn]) -> Vec<u8> {
     let ty_run = n; // ()->i32
     types.ty().function([], [ValType::I32]);
     let ty_realloc = n + 1; // (i32×4)->i32
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]);
+    types.ty().function(
+        [ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+        [ValType::I32],
+    );
     m.section(&types);
 
     // Imports: heap.<name> : type i, for each function in order.
@@ -636,7 +757,13 @@ fn build_stub_core_module(iface: &[HeapFn]) -> Vec<u8> {
 
     // Memory: 1 page.
     let mut mems = MemorySection::new();
-    mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    mems.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     m.section(&mems);
 
     // Exports: memory, run (func n), cabi_realloc (func n+1).
@@ -717,7 +844,11 @@ fn split_at_core_module(data: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         }
         if ok && j == pos {
             let core_end = pos + val as usize;
-            return (data[..id_pos].to_vec(), data[pos..core_end].to_vec(), data[core_end..].to_vec());
+            return (
+                data[..id_pos].to_vec(),
+                data[pos..core_end].to_vec(),
+                data[core_end..].to_vec(),
+            );
         }
     }
     panic!("could not locate the core-module section framing");
@@ -788,13 +919,22 @@ fn build_host_mem_module() -> Vec<u8> {
     };
     let mut m = CoreModule::new();
     let mut types = TypeSection::new();
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]);
+    types.ty().function(
+        [ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+        [ValType::I32],
+    );
     m.section(&types);
     let mut funcs = FunctionSection::new();
     funcs.function(0);
     m.section(&funcs);
     let mut mems = MemorySection::new();
-    mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    mems.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     m.section(&mems);
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
@@ -851,7 +991,13 @@ fn build_runnable_reference() -> Vec<u8> {
         funcs.function(0); // display
         m.section(&funcs);
         let mut mems = MemorySection::new();
-        mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
         m.section(&mems);
         let mut exports = ExportSection::new();
         exports.export("memory", ExportKind::Memory, 0);
@@ -861,13 +1007,18 @@ fn build_runnable_reference() -> Vec<u8> {
         m.section(&exports);
         let mut code = CodeSection::new();
         let mut realloc = Function::new([(1, ValType::I32)]);
-        realloc.instruction(&Instruction::I32Const(0)).instruction(&Instruction::End);
+        realloc
+            .instruction(&Instruction::I32Const(0))
+            .instruction(&Instruction::End);
         code.function(&realloc);
         let mut make = Function::new([]);
-        make.instruction(&Instruction::I32Const(0)).instruction(&Instruction::End);
+        make.instruction(&Instruction::I32Const(0))
+            .instruction(&Instruction::End);
         code.function(&make);
         let mut display = Function::new([]);
-        display.instruction(&Instruction::I32Const(0)).instruction(&Instruction::End);
+        display
+            .instruction(&Instruction::I32Const(0))
+            .instruction(&Instruction::End);
         code.function(&display);
         m.section(&code);
         m.finish()
@@ -893,7 +1044,8 @@ fn build_runnable_reference() -> Vec<u8> {
     };
     let make_fnty = {
         let (idx, mut enc) = c.type_function();
-        enc.params::<[(&str, ComponentValType); 0], _>([]).result(Some(ComponentValType::Type(own_ty)));
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_ty)));
         idx
     };
     let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
@@ -917,7 +1069,10 @@ fn build_runnable_reference() -> Vec<u8> {
     let display_fn = c.lift_func(
         display_core,
         display_fnty,
-        [CanonicalOption::Memory(mem), CanonicalOption::Realloc(realloc)],
+        [
+            CanonicalOption::Memory(mem),
+            CanonicalOption::Realloc(realloc),
+        ],
     ); // component func 1
 
     // ── The nested inner component: imports the resource/method/make, re-exports them under the
@@ -930,11 +1085,20 @@ fn build_runnable_reference() -> Vec<u8> {
         inner_idx,
         [
             ("import-type-value", ComponentExportKind::Type, res_ty),
-            ("import-method-value-display", ComponentExportKind::Func, display_fn),
+            (
+                "import-method-value-display",
+                ComponentExportKind::Func,
+                display_fn,
+            ),
             ("import-func-make", ComponentExportKind::Func, make_fn),
         ],
     ); // instance 0
-    c.export("cadenza:run/run", ComponentExportKind::Instance, run_inst, None);
+    c.export(
+        "cadenza:run/run",
+        ComponentExportKind::Instance,
+        run_inst,
+        None,
+    );
 
     let bytes = c.finish();
     validate_component(&bytes, "runnable (resource-with-display) reference");
@@ -948,7 +1112,10 @@ fn build_runnable_inner() -> ComponentBuilder {
     use wasm_encoder::TypeBounds;
     let mut ic = ComponentBuilder::default();
     // import "import-type-value" (type (sub resource)) → type 0
-    let v = ic.import("import-type-value", ComponentTypeRef::Type(TypeBounds::SubResource));
+    let v = ic.import(
+        "import-type-value",
+        ComponentTypeRef::Type(TypeBounds::SubResource),
+    );
     // display: (borrow v) -> string
     let borrow = {
         let (idx, enc) = ic.type_defined();
@@ -961,7 +1128,10 @@ fn build_runnable_inner() -> ComponentBuilder {
             .result(Some(ComponentValType::Primitive(PrimitiveValType::String)));
         idx
     };
-    let disp = ic.import("import-method-value-display", ComponentTypeRef::Func(disp_ty));
+    let disp = ic.import(
+        "import-method-value-display",
+        ComponentTypeRef::Func(disp_ty),
+    );
     // make: () -> own v
     let own = {
         let (idx, enc) = ic.type_defined();
@@ -970,7 +1140,8 @@ fn build_runnable_inner() -> ComponentBuilder {
     };
     let make_ty = {
         let (idx, mut enc) = ic.type_function();
-        enc.params::<[(&str, ComponentValType); 0], _>([]).result(Some(ComponentValType::Type(own)));
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own)));
         idx
     };
     let mk = ic.import("import-func-make", ComponentTypeRef::Func(make_ty));
@@ -1002,10 +1173,16 @@ fn build_runnable_inner() -> ComponentBuilder {
     };
     let make_ext_ty = {
         let (idx, mut enc) = ic.type_function();
-        enc.params::<[(&str, ComponentValType); 0], _>([]).result(Some(ComponentValType::Type(ev_own)));
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(ev_own)));
         idx
     };
-    ic.export("make", ComponentExportKind::Func, mk, Some(ComponentTypeRef::Func(make_ext_ty)));
+    ic.export(
+        "make",
+        ComponentExportKind::Func,
+        mk,
+        Some(ComponentTypeRef::Func(make_ext_ty)),
+    );
     ic
 }
 
@@ -1080,7 +1257,10 @@ fn render_heap_envelope(iface: &[HeapFn], runtime_hash: &str, host_mem: &[u8]) -
          pub mod himport {\n",
     );
     for (i, f) in iface.iter().enumerate() {
-        s.push_str(&format!("    pub const {}: u32 = {i};\n", screaming(&f.name)));
+        s.push_str(&format!(
+            "    pub const {}: u32 = {i};\n",
+            screaming(&f.name)
+        ));
     }
     s.push_str("}\n\n");
 
@@ -1094,13 +1274,25 @@ fn render_heap_envelope(iface: &[HeapFn], runtime_hash: &str, host_mem: &[u8]) -
     for f in iface {
         let bytes = import_functype_bytes(f);
         let lits: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
-        s.push_str(&format!("        vec![{}], // {}\n", lits.join(", "), f.name));
+        s.push_str(&format!(
+            "        vec![{}], // {}\n",
+            lits.join(", "),
+            f.name
+        ));
     }
     s.push_str("    ]\n}\n\n");
 
     // The byte constants.
-    s.push_str(&const_bytes("RT_HEAD", "component HEAD: magic + heap import instance-type + the canon-lowers", &head));
-    s.push_str(&const_bytes("RT_TAIL", "component TAIL: core instance, run/memory/realloc aliases, run:()->string lift+export", &tail));
+    s.push_str(&const_bytes(
+        "RT_HEAD",
+        "component HEAD: magic + heap import instance-type + the canon-lowers",
+        &head,
+    ));
+    s.push_str(&const_bytes(
+        "RT_TAIL",
+        "component TAIL: core instance, run/memory/realloc aliases, run:()->string lift+export",
+        &tail,
+    ));
     s.push_str(&const_bytes(
         "RT_IMPORT_CONTENT",
         "the import section CONTENT the compiler puts inside its core module (count + per-import heap/name/type)",
@@ -1112,8 +1304,16 @@ fn render_heap_envelope(iface: &[HeapFn], runtime_hash: &str, host_mem: &[u8]) -
          pub const RT_TAIL_PREFIX_LEN: usize = {prefix_len};\n\n"
     ));
     // The memory + global sections are fixed (1 page; bump ptr = 16).
-    s.push_str(&const_bytes("RT_MEM", "memory section content (one memory, min 1 page)", &[1, 0, 1]));
-    s.push_str(&const_bytes("RT_GLOBAL", "global section content (bump ptr = 16)", &[1, 127, 1, 65, 16, 11]));
+    s.push_str(&const_bytes(
+        "RT_MEM",
+        "memory section content (one memory, min 1 page)",
+        &[1, 0, 1],
+    ));
+    s.push_str(&const_bytes(
+        "RT_GLOBAL",
+        "global section content (bump ptr = 16)",
+        &[1, 127, 1, 65, 16, 11],
+    ));
 
     // The host-import shared-memory core module (fixed; used by the host-import component path).
     s.push_str(&const_bytes(
@@ -1234,10 +1434,12 @@ pub fn generate(seed: &Path, runtime_hash: &str) -> Result<bool, String> {
     let envelope = render_heap_envelope(&iface, runtime_hash, &host_mem);
     let funcs = render_runtime_funcs(&iface);
 
-    let env_path = seed.join("crates/cdz-compiler/src/heap_envelope.rs");
+    let env_path = seed.join("crates/rcdzc/src/heap_envelope.rs");
     let funcs_path = seed.join("crates/cadenza-seed/src/runtime_funcs.rs");
-    let a = write_if_changed(&env_path, &envelope).map_err(|e| format!("write {}: {e}", env_path.display()))?;
-    let b = write_if_changed(&funcs_path, &funcs).map_err(|e| format!("write {}: {e}", funcs_path.display()))?;
+    let a = write_if_changed(&env_path, &envelope)
+        .map_err(|e| format!("write {}: {e}", env_path.display()))?;
+    let b = write_if_changed(&funcs_path, &funcs)
+        .map_err(|e| format!("write {}: {e}", funcs_path.display()))?;
     Ok(a || b)
 }
 

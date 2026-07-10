@@ -6,10 +6,10 @@
 //! {artifacts, diagnostics}-out ABI.
 
 use crate::abi::{Artifact, CompileOutput, Diagnostic, Severity};
+use crate::ast::{self, Node};
 use crate::ir::Reject;
 use crate::layout::Layout;
 use crate::{infer, lower, resolve, select, serialize};
-use cdz_compiler::ast::{self, Node};
 
 /// Compile a single already-parsed program `Node` to its `CompileOutput` — a `component` artifact on
 /// success, or one or more error diagnostics (no component) on a decline/reject.

@@ -13,7 +13,7 @@
 /// this is `dead_code` until then (component-abi.md §The Emitted Component Records Its
 /// Required Runtime).
 #[allow(dead_code)]
-pub const REQUIRED_RUNTIME_HASH: &str = "d3f1a14d2675c6c21667dfd6bf07298856950a673d7c52d0cdd080e93a2519b5";
+pub const REQUIRED_RUNTIME_HASH: &str = "ebfd3c87bec8b9093c642e8b412c2b5be08e72c2fdd8adb2ab7635fcfee56f50";
 
 /// How many heap functions the envelope imports + lowers (indices 0..RT_N_IMPORTS).
 pub const RT_N_IMPORTS: u32 = 53;

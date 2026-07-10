@@ -21,7 +21,6 @@
 // The runtime-compound (heap-returning) path is DRAFTED but not yet wired into the pipeline (it
 // lands with the tuple slice, on top of the multi-export foundation). Everything here is staged for
 // that slice; suppress the interim dead-code noise wholesale rather than scatter per-item allows.
-#![allow(dead_code)]
 
 use crate::heap_envelope::{
     himport, rt_import_types, RT_GLOBAL, RT_HEAD, RT_IMPORT_CONTENT, RT_MEM, RT_N_IMPORTS, RT_TAIL,
@@ -54,13 +53,32 @@ fn realloc_body() -> Vec<u8> {
     let mut inner = vec![0x01, 0x01, 0x7F]; // local decls: 1 group of 1 i32
     inner.extend_from_slice(&[
         // ret(4) = (global0 + align - 1) & -align
-        op::GLOBAL_GET, 0, op::LOCAL_GET, 2, op::I32_ADD, op::I32_CONST, 1, op::I32_SUB,
-        op::I32_CONST, 0, op::LOCAL_GET, 2, op::I32_SUB,
+        op::GLOBAL_GET,
+        0,
+        op::LOCAL_GET,
+        2,
+        op::I32_ADD,
+        op::I32_CONST,
+        1,
+        op::I32_SUB,
+        op::I32_CONST,
+        0,
+        op::LOCAL_GET,
+        2,
+        op::I32_SUB,
         I32_AND,
-        op::LOCAL_SET, 4,
+        op::LOCAL_SET,
+        4,
         // global0 = ret + new_size
-        op::LOCAL_GET, 4, op::LOCAL_GET, 3, op::I32_ADD, op::GLOBAL_SET, 0,
-        op::LOCAL_GET, 4,
+        op::LOCAL_GET,
+        4,
+        op::LOCAL_GET,
+        3,
+        op::I32_ADD,
+        op::GLOBAL_SET,
+        0,
+        op::LOCAL_GET,
+        4,
         op::END,
     ]);
     sized(inner)
@@ -74,15 +92,36 @@ fn putu_body() -> Vec<u8> {
     const I64_REM_U: u8 = 0x82;
     const I32_WRAP_I64: u8 = 0xA7;
     let mut inner = vec![0x00]; // no extra locals
-    // if v > 9 { cursor = putu(v/10, cursor) }
+                                // if v > 9 { cursor = putu(v/10, cursor) }
     inner.extend_from_slice(&[op::LOCAL_GET, 0, op::I64_CONST, 9, I64_GT_U, op::IF, 0x40]);
-    inner.extend_from_slice(&[op::LOCAL_GET, 0, op::I64_CONST, 10, I64_DIV_U, op::LOCAL_GET, 1, op::CALL]);
+    inner.extend_from_slice(&[
+        op::LOCAL_GET,
+        0,
+        op::I64_CONST,
+        10,
+        I64_DIV_U,
+        op::LOCAL_GET,
+        1,
+        op::CALL,
+    ]);
     uleb128(RT_PUTU as u64, &mut inner);
     inner.extend_from_slice(&[op::LOCAL_SET, 1, op::END]);
     // cursor[0] = '0' + (v % 10) ; return cursor + 1
     inner.extend_from_slice(&[
-        op::LOCAL_GET, 1, op::I32_CONST, 48, op::LOCAL_GET, 0, op::I64_CONST, 10, I64_REM_U,
-        I32_WRAP_I64, op::I32_ADD, op::I32_STORE8, 0, 0,
+        op::LOCAL_GET,
+        1,
+        op::I32_CONST,
+        48,
+        op::LOCAL_GET,
+        0,
+        op::I64_CONST,
+        10,
+        I64_REM_U,
+        I32_WRAP_I64,
+        op::I32_ADD,
+        op::I32_STORE8,
+        0,
+        0,
     ]);
     inner.extend_from_slice(&[op::LOCAL_GET, 1, op::I32_CONST, 1, op::I32_ADD, op::END]);
     sized(inner)
@@ -92,10 +131,34 @@ fn putu_body() -> Vec<u8> {
 /// One i64 local (index 2). Verbatim from `rt_itoa_body`.
 fn itoa_body() -> Vec<u8> {
     let mut inner = vec![0x01, 0x01, 0x7E]; // 1 i64 local (index 2)
-    inner.extend_from_slice(&[op::LOCAL_GET, 0, op::I64_CONST, 0, op::I64_LT_S, op::IF, 0x40]);
+    inner.extend_from_slice(&[
+        op::LOCAL_GET,
+        0,
+        op::I64_CONST,
+        0,
+        op::I64_LT_S,
+        op::IF,
+        0x40,
+    ]);
     inner.extend_from_slice(&[op::LOCAL_GET, 1, op::I32_CONST, 45, op::I32_STORE8, 0, 0]);
-    inner.extend_from_slice(&[op::LOCAL_GET, 1, op::I32_CONST, 1, op::I32_ADD, op::LOCAL_SET, 1]);
-    inner.extend_from_slice(&[op::I64_CONST, 0, op::LOCAL_GET, 0, op::I64_SUB, op::LOCAL_SET, 2]);
+    inner.extend_from_slice(&[
+        op::LOCAL_GET,
+        1,
+        op::I32_CONST,
+        1,
+        op::I32_ADD,
+        op::LOCAL_SET,
+        1,
+    ]);
+    inner.extend_from_slice(&[
+        op::I64_CONST,
+        0,
+        op::LOCAL_GET,
+        0,
+        op::I64_SUB,
+        op::LOCAL_SET,
+        2,
+    ]);
     inner.extend_from_slice(&[op::ELSE, op::LOCAL_GET, 0, op::LOCAL_SET, 2, op::END]);
     inner.extend_from_slice(&[op::LOCAL_GET, 2, op::LOCAL_GET, 1, op::CALL]);
     uleb128(RT_PUTU as u64, &mut inner);
@@ -127,7 +190,8 @@ fn utf8_valid_body() -> Vec<u8> {
     const EQZ: u8 = 0x45;
     let _ = NE;
     // Local indices (buf is param 0).
-    let (buf, n, len, lead, seq, k, cb, lo, hi, valid) = (0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8);
+    let (buf, n, len, lead, seq, k, cb, lo, hi, valid) =
+        (0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8);
     // 9 i32 locals (indices 1..=9).
     let mut c = vec![0x01, 0x09, 0x7F];
     let konst = |c: &mut Vec<u8>, val: i64| {
@@ -179,7 +243,18 @@ fn utf8_valid_body() -> Vec<u8> {
     lead_get(&mut c);
     konst(&mut c, 0xe0);
     c.push(GE_U);
-    c.extend_from_slice(&[op::IF, 0x7F, op::I32_CONST, 2, op::ELSE, op::I32_CONST, 1, op::END, op::END, op::END]);
+    c.extend_from_slice(&[
+        op::IF,
+        0x7F,
+        op::I32_CONST,
+        2,
+        op::ELSE,
+        op::I32_CONST,
+        1,
+        op::END,
+        op::END,
+        op::END,
+    ]);
     c.extend_from_slice(&[op::LOCAL_SET, seq]);
     // Default first-continuation range 0x80..0xBF; narrow for special leads.
     konst(&mut c, 0x80);
@@ -220,7 +295,9 @@ fn utf8_valid_body() -> Vec<u8> {
     c.extend_from_slice(&[op::LOCAL_GET, k, op::LOCAL_GET, seq, GT_U]);
     c.extend_from_slice(&[op::LOCAL_GET, valid, EQZ, OR, op::BR_IF, 1]);
     // cb = get(n + k)
-    get(&mut c, &|c| c.extend_from_slice(&[op::LOCAL_GET, n, op::LOCAL_GET, k, op::I32_ADD]));
+    get(&mut c, &|c| {
+        c.extend_from_slice(&[op::LOCAL_GET, n, op::LOCAL_GET, k, op::I32_ADD])
+    });
     c.extend_from_slice(&[op::LOCAL_SET, cb]);
     // cbok = (k==1) ? cb in [lo,hi] : cb in [0x80,0xBF]
     c.extend_from_slice(&[op::LOCAL_GET, k, op::I32_CONST, 1, EQ, op::IF, 0x7F]);
@@ -235,13 +312,36 @@ fn utf8_valid_body() -> Vec<u8> {
     // valid = valid & cbok
     c.extend_from_slice(&[op::LOCAL_GET, valid, AND, op::LOCAL_SET, valid]);
     // k += 1 ; loop
-    c.extend_from_slice(&[op::LOCAL_GET, k, op::I32_CONST, 1, op::I32_ADD, op::LOCAL_SET, k, op::BR, 0]);
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        k,
+        op::I32_CONST,
+        1,
+        op::I32_ADD,
+        op::LOCAL_SET,
+        k,
+        op::BR,
+        0,
+    ]);
     c.extend_from_slice(&[op::END, op::END]); // inner loop, inner block
     c.push(op::END); // if valid (continuation check)
-    // n += 1 + seq ; loop
-    c.extend_from_slice(&[op::LOCAL_GET, n, op::I32_CONST, 1, op::I32_ADD, op::LOCAL_GET, seq, op::I32_ADD, op::LOCAL_SET, n, op::BR, 0]);
+                     // n += 1 + seq ; loop
+    c.extend_from_slice(&[
+        op::LOCAL_GET,
+        n,
+        op::I32_CONST,
+        1,
+        op::I32_ADD,
+        op::LOCAL_GET,
+        seq,
+        op::I32_ADD,
+        op::LOCAL_SET,
+        n,
+        op::BR,
+        0,
+    ]);
     c.extend_from_slice(&[op::END, op::END]); // outer loop, outer block
-    // return valid
+                                              // return valid
     c.extend_from_slice(&[op::LOCAL_GET, valid, op::END]);
     sized(c)
 }
