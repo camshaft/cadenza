@@ -1,22 +1,20 @@
-//! Token kinds and the precedence table
+//! Token kinds and the precedence table.
 //!
-//! `Kind` is both the lexer's token kind AND the rowan `SyntaxKind` space (node kinds live above the
-//! token kinds, see the `Node*` block). `infix_prec` is the single source of truth the parser's
-//! Pratt loop and the printer's minimal-paren split both read — sharing it is what guarantees the
-//! text round-trip.
+//! `Kind` is the lexer's token kind. `infix_prec` is the single source of truth the parser's Pratt
+//! loop and the printer's minimal-paren split both read — sharing it is what guarantees the text
+//! round-trip.
 //!
 //! The lexer is deliberately KEYWORD-FREE: every word lexes to `Ident`, and the PARSER decides
 //! whether a given `Ident` is a keyword from its text and grammatical position (contextual
 //! keywords). See [`keyword`] and [`is_reserved`]. This keeps the lexer a simple total tokenizer
-//! shared by both the ML and s-expression surfaces.
+//! shared by both the ML and s-expression surfaces. `and`/`or` are word-spelled infix operators
+//! (also `Ident`; see [`word_op`]), not distinct token kinds.
 
-/// A lexical token kind and, above `Eof`, the parser's syntax-node kinds. `#[repr(u16)]` so it maps
-/// to rowan's `SyntaxKind(u16)` by transmute.
+/// A lexical token kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u16)]
 pub enum Kind {
     // ---- trivia (lossless; skipped by the parser grammar) ----
-    Whitespace = 0,
+    Whitespace,
     LineComment, // `// …`
     DocComment,  // `/// …`
 
@@ -26,12 +24,10 @@ pub enum Kind {
     Str,
 
     // ---- identifiers (keywords are NOT lexed; the parser recognizes them from Ident text) ----
-    Ident,        // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/… — all Ident
+    Ident,        // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/…, `and`/`or` — all Ident
     BacktickName, // `` `|` ``, `` `->` `` — the lossless escape for symbolic/keyword names
 
     // ---- operators (each has a binding power in `infix_prec`) ----
-    Or,       // `or`
-    And,      // `and`
     Eq,       // `=`
     Lt,       // `<`
     Gt,       // `>`
@@ -68,53 +64,19 @@ pub enum Kind {
     UnquoteSplice, // `,@`
 
     Error,
-    Eof,
-
-    // ---- syntax-node kinds (parser output; never produced by the lexer) ----
-    NodeRoot,
-    NodeLiteral,
-    NodeName,
-    NodeParen,
-    NodeBinary,
-    NodePrefix,
-    NodeMember,
-    NodeCall,
-    NodeArgList,
-    NodeLet,
-    NodeBinding,
-    NodeIf,
-    NodeFn,
-    NodeParamList,
-    NodeMatch,
-    NodeMatchArm,
-    NodePattern,
-    NodeGuard,
-    NodeQuasiquote,
-    NodeUnquote,
-    NodeUnquoteSplice,
-    NodeHashList,
-    NodeComment,
-    NodeDoc,
-    NodeError,
 }
 
 impl Kind {
-    /// True for lexer trivia (whitespace / comments) — carried into the green tree for
-    /// losslessness but skipped when reading the grammar. NOTE comments are trivia *tokens* but the
-    /// lower step turns them into real `(comment …)`/`(doc …)` nodes, so they still survive.
+    /// True for lexer trivia (whitespace / comments). Skipped by the grammar; comment tokens still
+    /// become real `(comment …)`/`(doc …)` arena nodes at parse time, so they survive.
     pub fn is_trivia(self) -> bool {
-        matches!(
-            self,
-            Kind::Whitespace | Kind::LineComment | Kind::DocComment
-        )
+        matches!(self, Kind::Whitespace | Kind::LineComment | Kind::DocComment)
     }
 
-    /// The operator symbol a `Kind` denotes, for building the head `Name` of an infix node and for
-    /// the printer. `None` for non-operator kinds.
+    /// The operator symbol a `Kind` denotes, for building the head `Name` of an infix form and for
+    /// the printer. `None` for non-operator kinds. (`and`/`or` are `Ident`; see [`word_op`].)
     pub fn op_str(self) -> Option<&'static str> {
         Some(match self {
-            Kind::Or => "or",
-            Kind::And => "and",
             Kind::Eq => "=",
             Kind::Lt => "<",
             Kind::Gt => ">",
@@ -213,8 +175,6 @@ mod tests {
     fn op_str_and_infix_prec_agree() {
         // Every operator Kind must have a name, and that name must be infix.
         for k in [
-            Kind::Or,
-            Kind::And,
             Kind::Eq,
             Kind::Lt,
             Kind::Gt,
@@ -236,6 +196,10 @@ mod tests {
         ] {
             let s = k.op_str().expect("operator kind has a name");
             assert!(infix_prec(s).is_some(), "operator {s} has a precedence");
+        }
+        // The word-spelled operators live in `word_op`, not `Kind`.
+        for w in ["and", "or"] {
+            assert!(infix_prec(word_op(w).unwrap()).is_some());
         }
     }
 

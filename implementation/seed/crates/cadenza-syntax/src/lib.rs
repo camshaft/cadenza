@@ -14,8 +14,10 @@ pub mod iter;
 pub mod leb128;
 pub mod lexer;
 pub mod literal;
+pub mod parser;
 pub mod sexpr;
 pub mod span;
+pub mod spans;
 pub mod token;
 
 pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Radix, Struct, StructId};

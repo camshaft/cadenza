@@ -13,6 +13,7 @@
 use crate::ast::{Decimal, Leaf, Radix};
 use num_bigint::BigInt;
 use std::str::FromStr;
+use unicode_normalization::UnicodeNormalization;
 
 /// Classify a bare word/number token into a leaf value. `true`/`false` are booleans; a well-formed
 /// integer or float is that literal; anything else (including a malformed number) is a `Name`.
@@ -122,6 +123,62 @@ pub fn parse_float(tok: &str) -> Option<Decimal> {
         exponent = exponent.checked_add(e_val)?;
     }
     Some(Decimal { negative: neg, significand, exponent })
+}
+
+/// Unescape a string literal's INNER content (between the quotes) and NFC-normalize it — the
+/// shared escape table both surfaces use, so a string leaf is identical however it was written. The
+/// escape set is `\n \t \r \\ \"`; any other `\x` passes the following char through verbatim.
+pub fn unescape_string(inner: &str) -> String {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some(other) => out.push(other),
+                None => {} // trailing backslash: drop
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.nfc().collect()
+}
+
+/// Unescape a `"…"` string TOKEN (quotes included, as the lexer spans it). Strips the surrounding
+/// quotes then delegates to [`unescape_string`]. Returns `""` if the token is not quote-delimited.
+pub fn unescape_string_token(token: &str) -> String {
+    let inner = token
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or("");
+    unescape_string(inner)
+}
+
+/// Decode a backtick-name TOKEN (`` `…` ``, backticks included) to the escaped name it denotes.
+/// Inside backticks, `\`` and `\\` are the only escapes; anything else passes through.
+pub fn unescape_backtick_name(token: &str) -> String {
+    let inner = token
+        .strip_prefix('`')
+        .and_then(|s| s.strip_suffix('`'))
+        .unwrap_or("");
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(e) => out.push(e),
+                None => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// True iff every `_` in `body` sits BETWEEN two `is_digit` chars — no leading, trailing, or
