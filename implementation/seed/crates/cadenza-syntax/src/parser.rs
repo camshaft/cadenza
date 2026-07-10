@@ -238,9 +238,13 @@ impl<'a> Parser<'a> {
                 }
             },
             Kind::LParen => self.paren(),
+            Kind::LBracket => self.list_literal(),
+            Kind::LBrace => self.record_literal(),
             Kind::Backtick => self.quasiquote(),
             Kind::Comma => self.unquote("unquote"),
             Kind::UnquoteSplice => self.unquote("unquote-splicing"),
+            // `#{` is a map literal; `#[` is the raw-list escape.
+            Kind::Hash if self.nth_kind(1) == Kind::LBrace => self.map_literal(),
             Kind::Hash => self.hash_list(),
             _ => {
                 self.error("expected an expression");
@@ -318,7 +322,9 @@ impl<'a> Parser<'a> {
         args
     }
 
-    /// `( expr )` grouping, or `()` the unit form.
+    /// `()` the unit form, `( expr )` grouping, or `( e, e, … )` a tuple literal `(tuple e …)`.
+    /// A single `(e)` is transparent grouping (NOT a 1-tuple); a 1-tuple is uncommon and, if ever
+    /// needed, is written as the explicit `tuple(e)` call form.
     fn paren(&mut self) -> StructId {
         let start = self.cur_span();
         self.expect(Kind::LParen, "`(`");
@@ -327,9 +333,25 @@ impl<'a> Parser<'a> {
             let span = start.merge(self.prev_span());
             return self.name("unit", span);
         }
-        let inner = self.expr(0);
+        let first = self.expr(0);
+        if self.at(Kind::Comma) {
+            // a tuple: gather the rest
+            let head = self.name("tuple", start);
+            let mut items = vec![head, first];
+            while self.at(Kind::Comma) {
+                self.bump();
+                // allow a trailing comma before `)`
+                if self.at(Kind::RParen) {
+                    break;
+                }
+                items.push(self.expr(0));
+            }
+            self.expect(Kind::RParen, "`)`");
+            let span = start.merge(self.prev_span());
+            return self.list(items, span);
+        }
         self.expect(Kind::RParen, "`)`");
-        inner // grouping is transparent in the arena
+        first // grouping is transparent in the arena
     }
 
     // ---- keyword forms ----
@@ -638,6 +660,90 @@ impl<'a> Parser<'a> {
         };
         let span = start.merge(self.prev_span());
         self.list(vec![head, inner], span)
+    }
+
+    /// `[ e, … ]`  ->  `(list e …)`. A homogeneous sequence literal.
+    fn list_literal(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.name("list", start);
+        self.bump(); // '['
+        let mut items = vec![head];
+        if !self.at(Kind::RBracket) {
+            loop {
+                items.push(self.expr(0));
+                if self.at(Kind::Comma) {
+                    self.bump();
+                    if self.at(Kind::RBracket) {
+                        break; // trailing comma
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(Kind::RBracket, "`]`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// `{ name = e, … }`  ->  `(record (name e) …)`. Fixed named fields (distinct from a map).
+    fn record_literal(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.name("record", start);
+        self.bump(); // '{'
+        let mut items = vec![head];
+        if !self.at(Kind::RBrace) {
+            loop {
+                let f_start = self.cur_span();
+                let name = self.binder();
+                self.expect(Kind::Eq, "`=`");
+                let value = self.expr(0);
+                let f_span = f_start.merge(self.prev_span());
+                items.push(self.list(vec![name, value], f_span));
+                if self.at(Kind::Comma) {
+                    self.bump();
+                    if self.at(Kind::RBrace) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(Kind::RBrace, "`}`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// `#{ key: v, … }`  ->  `(map (key v) …)`. A dynamic key→value map (keys are arbitrary
+    /// expressions), distinct from a record's fixed fields.
+    fn map_literal(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.name("map", start);
+        self.bump(); // '#'
+        self.bump(); // '{'
+        let mut items = vec![head];
+        if !self.at(Kind::RBrace) {
+            loop {
+                let e_start = self.cur_span();
+                let key = self.expr(0);
+                self.expect(Kind::Colon, "`:`");
+                let value = self.expr(0);
+                let e_span = e_start.merge(self.prev_span());
+                items.push(self.list(vec![key, value], e_span));
+                if self.at(Kind::Comma) {
+                    self.bump();
+                    if self.at(Kind::RBrace) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(Kind::RBrace, "`}`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
     }
 
     /// `#[ e, … ]`  ->  a `List` of the forms (the raw list escape).

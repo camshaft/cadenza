@@ -118,6 +118,10 @@ impl<'a> Printer<'a> {
                 "match" if self.is_match_shape(args) => return self.print_match(args, parent_prec),
                 "def" if self.is_def_shape(args) => return self.print_def(args),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
+                "list" => return self.print_list_literal(args),
+                "tuple" if args.len() >= 2 => return self.print_tuple(args),
+                "record" if self.is_record_shape(args) => return self.print_record(args),
+                "map" if self.is_map_shape(args) => return self.print_map(args),
                 _ => {}
             }
             // ---- generic call form: head(a, b, c) ----
@@ -425,6 +429,73 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
+    /// A bracketed, comma-separated sequence with all-or-nothing breaking: `open a, b, c close`
+    /// inline if it fits, else one item per line block-indented with the close on its own dedented
+    /// line. `emit` renders one item. Braces get inner padding (`{ … }`); brackets/parens do not.
+    fn bracketed<T: Copy>(
+        &mut self,
+        open: &str,
+        close: &str,
+        pad: bool,
+        items: &[T],
+        mut emit: impl FnMut(&mut Self, T),
+    ) {
+        self.doc.cbox(INDENT);
+        self.doc.word(open.to_string());
+        if items.is_empty() {
+            self.doc.word(close.to_string());
+            self.doc.end();
+            return;
+        }
+        // opening break: a space inside braces when flat (`{ x }`), nothing for `[`/`(`.
+        self.doc.break_with(if pad { 1 } else { 0 }, 0);
+        for (i, &item) in items.iter().enumerate() {
+            if i > 0 {
+                self.doc.word(",");
+                self.doc.space();
+            }
+            emit(self, item);
+        }
+        // closing break: dedent to the open column; a padding space when flat if `pad`.
+        self.doc.break_with(if pad { 1 } else { 0 }, -INDENT);
+        self.doc.word(close.to_string());
+        self.doc.end();
+    }
+
+    /// `[e, …]`.
+    fn print_list_literal(&mut self, elems: &[StructId]) {
+        self.bracketed("[", "]", false, elems, |p, e| p.expr(e, 0));
+    }
+
+    /// `(e, …)` — a tuple of 2+ elements.
+    fn print_tuple(&mut self, elems: &[StructId]) {
+        self.bracketed("(", ")", false, elems, |p, e| p.expr(e, 0));
+    }
+
+    /// `{ name = e, … }`.
+    fn print_record(&mut self, fields: &[StructId]) {
+        self.bracketed("{", "}", true, fields, |p, field| {
+            if let Struct::List(pair) = p.a.get(field) {
+                let (name, value) = (pair[0], pair[1]);
+                p.expr(name, 0);
+                p.doc.word(" = ");
+                p.expr(value, 0);
+            }
+        });
+    }
+
+    /// `#{ key: v, … }`.
+    fn print_map(&mut self, entries: &[StructId]) {
+        self.bracketed("#{", "}", true, entries, |p, entry| {
+            if let Struct::List(pair) = p.a.get(entry) {
+                let (key, value) = (pair[0], pair[1]);
+                p.expr(key, 0);
+                p.doc.word(": ");
+                p.expr(value, 0);
+            }
+        });
+    }
+
     /// `match scrut { pat => body, … }` — one arm per line (consistent box) when broken.
     fn print_match(&mut self, args: &[StructId], parent_prec: u8) {
         let paren = parent_prec > 0;
@@ -576,6 +647,29 @@ impl<'a> Printer<'a> {
         })
     }
 
+    /// Every arg is a 2-element `(key value)` pair — the shape the record/map surfaces render. A
+    /// malformed record/map (an arg that isn't a pair) falls back to the generic call form so it
+    /// still round-trips. A record additionally needs its field key to be a name; a map key is any
+    /// expression.
+    fn is_pairs(&self, args: &[StructId]) -> bool {
+        args.iter().all(|&a| matches!(self.a.get(a), Struct::List(p) if p.len() == 2))
+    }
+
+    /// A record the `{ name = e, … }` surface handles: every field is a `(name value)` pair whose
+    /// key is a plain field name (so it re-reads as a `name = value` binding).
+    fn is_record_shape(&self, args: &[StructId]) -> bool {
+        self.is_pairs(args)
+            && args.iter().all(|&a| match self.a.get(a) {
+                Struct::List(p) => self.plain_key(p[0]).is_some(),
+                _ => false,
+            })
+    }
+
+    /// A map the `#{ key: v, … }` surface handles: every entry is a `(key value)` pair (any key).
+    fn is_map_shape(&self, args: &[StructId]) -> bool {
+        self.is_pairs(args)
+    }
+
     /// A def the `fn name(…) = body` surface handles: exactly a signature list `(name p…)` (whose
     /// head is a name — so the params can be lowered as binders) and a single body form. A def with
     /// extra body forms (a `(doc …)` or `(: type)` annotation) falls back to the generic form so it
@@ -720,6 +814,46 @@ mod tests {
         // A call with no block-like last arg breaks all args one per line when it overflows.
         let out = assert_roundtrip("some-function(alpha, beta, gamma, delta)", 20);
         assert_eq!(out, "some-function(\n  alpha,\n  beta,\n  gamma,\n  delta\n)");
+    }
+
+    #[test]
+    fn literals_render_and_round_trip() {
+        assert_eq!(assert_roundtrip("{ x = 1, y = 2 }", 80), "{ x = 1, y = 2 }");
+        assert_eq!(assert_roundtrip("[1, 2, 3]", 80), "[1, 2, 3]");
+        assert_eq!(assert_roundtrip("(1, 2)", 80), "(1, 2)");
+        assert_eq!(assert_roundtrip("(1, 2, 3)", 80), "(1, 2, 3)");
+        assert_eq!(assert_roundtrip("#{ \"a\": 1, \"b\": 2 }", 80), "#{ \"a\": 1, \"b\": 2 }");
+        assert_eq!(assert_roundtrip("#{ 1: 10 }", 80), "#{ 1: 10 }");
+    }
+
+    #[test]
+    fn empty_literals() {
+        // Empty list and map from the s-expr surface (`(list)`, `(map)`) render as `[]` / `#{}`.
+        assert_eq!(print(&sexpr::read("(list)").unwrap(), 80), "[]");
+        assert_eq!(print(&sexpr::read("(map)").unwrap(), 80), "#{}");
+    }
+
+    #[test]
+    fn literals_break_all_or_nothing_when_wide() {
+        let out = assert_roundtrip("{ name = \"alice\", scores = [90, 85, 95], active = true }", 30);
+        assert_eq!(out, "{\n  name = \"alice\",\n  scores = [90, 85, 95],\n  active = true\n}");
+    }
+
+    #[test]
+    fn paren_grouping_is_not_a_tuple() {
+        // `(1 + 2) * 3` — the parens are transparent grouping, NOT a 1-tuple.
+        assert_eq!(assert_roundtrip("(1 + 2) * 3", 80), "(1 + 2) * 3");
+    }
+
+    #[test]
+    fn record_key_must_be_a_name_else_falls_back() {
+        // A `record` whose field key is not a plain name can't use the `{…}` surface; it falls back
+        // to the generic call form and still round-trips.
+        let a = sexpr::read("(record (1 v))").unwrap();
+        let printed = print(&a, 80);
+        // generic form: `record` applied to the field-list `(1 v)`, which prints as `1(v)`.
+        assert_eq!(printed, "record(1(v))");
+        assert!(parser::read_ml(&printed).arenas.structurally_eq(&a));
     }
 
     #[test]
