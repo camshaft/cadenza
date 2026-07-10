@@ -219,3 +219,112 @@ fn export_name_is_verbatim() {
     // If the name were renamed, `run_returns_s64(.., "main")` would fail to find the export.
     assert_eq!(run_returns_s64(&bytes, "main"), 42);
 }
+
+// ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────
+//
+// Each case mirrors a `05-compound-types.sexp` / `02-binding-and-control.sexp` witness. A record
+// whose field is read FOLDS to a scalar (no value heap), so the component runs to that scalar; a
+// record used as a runtime value declines (needs the heap, a later stage). Programs are built with
+// the test s-expr reader in `testkit`.
+mod stage1 {
+    use super::run_returns_s64;
+    use crate::compile::compile_component;
+    use crate::testkit::parse;
+
+    /// Compile `(module m (def (main) BODY) (export main))` and run `main`, returning its s64 result.
+    fn run_main(body: &str) -> i64 {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        run_returns_s64(&bytes, "main")
+    }
+
+    /// Compile the same program shape and expect a DECLINE/reject, returning the error message.
+    fn expect_decline(body: &str) -> String {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        compile_component(&crate::codec::encode(&parse(&src)))
+            .expect_err("must decline/reject")
+            .message
+    }
+
+    #[test]
+    fn let_binding_in_scope_in_body() {
+        // 02-binding-and-control: (let ((x 10)) x) = 10.
+        assert_eq!(run_main("(let ((x 10)) x)"), 10);
+    }
+
+    #[test]
+    fn name_resolves_to_nearest_enclosing_binding() {
+        // (let ((x 1)) (let ((x 2)) x)) = 2 — inner shadows outer.
+        assert_eq!(run_main("(let ((x 1)) (let ((x 2)) x))"), 2);
+    }
+
+    #[test]
+    fn a_later_let_binding_sees_an_earlier_one() {
+        // (let ((x 1) (y x)) y) = 1 — the second initializer sees the first binding.
+        assert_eq!(run_main("(let ((x 1) (y x)) y)"), 1);
+    }
+
+    #[test]
+    fn a_repeated_binding_shadows_the_earlier_one() {
+        // (let ((x 1) (x 2)) x) = 2 — a repeat shadows for what follows.
+        assert_eq!(run_main("(let ((x 1) (x 2)) x)"), 2);
+    }
+
+    #[test]
+    fn record_field_read_folds_to_the_field() {
+        // 05-compound-types: (let ((p (record (x 1) (y 2)))) p.x) = 1 (written in canonical dot form).
+        assert_eq!(run_main("(let ((p (record (x 1) (y 2)))) (. p x))"), 1);
+    }
+
+    #[test]
+    fn projection_is_order_independent() {
+        // (. (record (b 2) (a 1)) a) = 1 — projection resolves by NAME, not written position.
+        assert_eq!(run_main("(. (record (b 2) (a 1)) a)"), 1);
+    }
+
+    #[test]
+    fn member_access_chains_through_a_nested_record() {
+        // (. (. (record (outer (record (inner 7)))) outer) inner) = 7.
+        assert_eq!(
+            run_main("(. (. (record (outer (record (inner 7)))) outer) inner)"),
+            7
+        );
+    }
+
+    #[test]
+    fn unbound_name_is_rejected() {
+        // 02-binding-and-control: a reference to an unbound name is rejected before running.
+        assert!(expect_decline("nope").contains("unbound name"));
+    }
+
+    #[test]
+    fn duplicate_field_name_is_rejected() {
+        // 05-compound-types: (record (a 1) (a 2)) — a record's field names are a SET → CDZ0201. Read a
+        // field so the record is reached (a bare record value would decline for the heap first).
+        assert!(expect_decline("(. (record (a 1) (a 2)) a)").contains("more than once"));
+    }
+
+    #[test]
+    fn non_adjacent_duplicate_field_name_is_rejected() {
+        // (record (a 1) (b 2) (a 3)) — the check is over the whole field list, not adjacent pairs.
+        assert!(expect_decline("(. (record (a 1) (b 2) (a 3)) b)").contains("more than once"));
+    }
+
+    #[test]
+    fn member_access_on_a_non_record_is_a_type_error() {
+        // 05-compound-types: (. 5 x) — member access requires a record → CDZ0201.
+        assert!(expect_decline("(. 5 x)").contains("requires a record"));
+    }
+
+    #[test]
+    fn member_access_of_a_missing_field_is_a_type_error() {
+        // (. (record (x 1)) y) — the user record is CLOSED; a missing field rejects (CDZ0201).
+        assert!(expect_decline("(. (record (x 1)) y)").contains("no field"));
+    }
+
+    #[test]
+    fn returning_a_record_declines_pending_the_value_heap() {
+        // A record used as a runtime VALUE (returned, not projected) needs the value heap — declines.
+        assert!(expect_decline("(record (x 1))").contains("value heap"));
+    }
+}

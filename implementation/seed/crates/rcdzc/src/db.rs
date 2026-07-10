@@ -69,6 +69,14 @@ pub struct Db {
     /// The requested exports, from the scan.
     pub exports: Vec<Export>,
 
+    /// For each `StructId`, the `List` occurrence that holds it as a child, or `None` for the root.
+    /// The structure arena is NOT deduplicated, so every occurrence has exactly one parent — this is
+    /// one deterministic scan, filled at load. It is what lets `resolve` derive a name's LEXICAL scope
+    /// from the node's POSITION (walking parents to the nearest enclosing binder) rather than
+    /// threading a scope argument that would break per-`StructId` memoization — the same
+    /// provenance-by-back-reference the columns model uses for source position.
+    parent: Vec<Option<StructId>>,
+
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
     /// The solved-type column. Filled only by [`crate::infer`].
@@ -83,14 +91,22 @@ impl Db {
     /// it.
     pub fn load(ast: Arenas) -> Db {
         let (defs, exports) = scan_top_level(&ast);
+        let parent = parent_index(&ast);
         Db {
             ast,
             defs,
             exports,
+            parent,
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),
         }
+    }
+
+    /// The `List` occurrence that holds `id` as a child, or `None` if `id` is the root — the one step
+    /// of the lexical-scope walk.
+    pub fn parent_of(&self, id: StructId) -> Option<StructId> {
+        *self.parent.get(id.0 as usize).unwrap_or(&None)
     }
 
     /// The definition of the given name, if one exists — how an export resolves its target and how a
@@ -105,6 +121,21 @@ impl Db {
         }
         None
     }
+}
+
+/// Build the parent index: for each structure occurrence, the `List` occurrence that holds it as a
+/// child (`None` for the root). One pass over the whole arena — deterministic (a child's parent is a
+/// fixed function of the arena, no ordering or address involved).
+fn parent_index(ast: &Arenas) -> Vec<Option<StructId>> {
+    let mut parent = vec![None; ast.structure.len()];
+    for i in 0..ast.structure.len() {
+        if let Struct::List(children) = &ast.structure[i] {
+            for &child in children {
+                parent[child.0 as usize] = Some(StructId(i as u32));
+            }
+        }
+    }
+    parent
 }
 
 /// The one cheap top-level scan: gather the definitions and export requests from the top form only,

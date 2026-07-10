@@ -19,8 +19,10 @@
 
 use crate::ast::{IntValue, StructId};
 use crate::diag::Reject;
+use crate::resolved::Symbol;
+use std::collections::BTreeMap;
 
-/// The core (A-normal) form of one node. Frozen for Stage 0; every operand is an atom.
+/// The core (A-normal) form of one node.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Core {
     /// An integer constant at exact arbitrary precision. The narrowing to the machine width its
@@ -30,6 +32,12 @@ pub enum Core {
     ConstBool(bool),
     /// The unit value.
     Unit,
+    /// A record value — a fixed set of named fields, each field's value referenced by its AST
+    /// occurrence. Stage 1 FOLDS a record at a field read (`core_of` of a member projects the field's
+    /// core directly), so a `Record` that SURVIVES to selection is one used as a runtime value (e.g.
+    /// returned) — which needs the value heap and therefore DECLINES for now. Carrying the variant
+    /// lets member-access fold read the field set.
+    Record { fields: BTreeMap<Symbol, StructId> },
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
     If { cond: StructId, then_: StructId, else_: StructId },
     /// A produced "no" carried into the core.

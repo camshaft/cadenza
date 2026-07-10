@@ -71,6 +71,12 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
             // Unit occupies no slot and pushes nothing.
             Ok(())
         }
+        // A record that SURVIVED folding to selection is used as a runtime value (not just to read a
+        // field, which folds away). Constructing a compound at run time needs the value-heap runtime,
+        // a later stage — so decline cleanly rather than emit a plausible-but-wrong sequence.
+        Core::Record { .. } => {
+            Err(Reject::decline("constructing a record at run time needs the value heap (not yet built)"))
+        }
         Core::If { cond, then_, else_ } => {
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.

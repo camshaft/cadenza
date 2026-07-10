@@ -64,7 +64,7 @@ impl IntTy {
     }
 }
 
-/// A solved type. Frozen for Stage 0 at the scalars the slice exercises, plus `Any`.
+/// A solved type. Frozen for Stage 0/1 at the scalars the slice exercises, records, and `Any`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Ty {
     /// An integer of a given signedness and a possibly-deferred width.
@@ -73,6 +73,11 @@ pub enum Ty {
     Bool,
     /// The unit value: no information, no runtime slot.
     Unit,
+    /// A record: a fixed SET of named fields, each with its own type. Held as a canonically-ordered
+    /// `BTreeMap` so two records of the same field-set are the SAME type regardless of the order the
+    /// fields were written (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields), and a
+    /// field's type is looked up by name in O(log n).
+    Record(std::collections::BTreeMap<crate::resolved::Symbol, Ty>),
     /// The type of a node the compiler could not type — a poison's type. It is COMPATIBLE with every
     /// type, so a "no" never induces a spurious mismatch upward (the poison itself is the reported
     /// fault, not a type error it would otherwise cascade). A top type for Stage 0's purposes.
@@ -106,6 +111,14 @@ impl Ty {
             }
             (Ty::Bool, Ty::Bool) => true,
             (Ty::Unit, Ty::Unit) => true,
+            // Two records agree iff they have the same field-name set and each field's types agree.
+            (Ty::Record(a), Ty::Record(b)) => {
+                a.len() == b.len()
+                    && a.iter().all(|(k, ta)| match b.get(k) {
+                        Some(tb) => ta.agrees_with(tb),
+                        None => false,
+                    })
+            }
             _ => false,
         }
     }
@@ -119,6 +132,18 @@ impl Ty {
             (Ty::Int(a), Ty::Int(b)) => {
                 let width = a.width.or(b.width); // prefer whichever branch fixed the width.
                 Ty::Int(IntTy { signed: a.signed, width })
+            }
+            // Two agreeing records join field-wise (a deferred width in one branch's field is fixed by
+            // the other). If they disagree, keep `self` — the branches-agree check reports the fault.
+            (Ty::Record(a), Ty::Record(b)) if self.agrees_with(other) => {
+                let joined = a
+                    .iter()
+                    .map(|(k, ta)| {
+                        let t = b.get(k).map(|tb| ta.join(tb)).unwrap_or_else(|| ta.clone());
+                        (k.clone(), t)
+                    })
+                    .collect();
+                Ty::Record(joined)
             }
             _ => self.clone(),
         }
@@ -137,6 +162,16 @@ impl Ty {
             }
             Ty::Bool => "Bool".to_string(),
             Ty::Unit => "Unit".to_string(),
+            // A record renders as `(record (name Type) …)` in canonical (sorted) field order — the
+            // shape the renderer walks. The runtime holds no field names; this type does.
+            Ty::Record(fields) => {
+                let mut s = String::from("(record");
+                for (k, t) in fields {
+                    s.push_str(&format!(" ({} {})", k.name, t.render_name()));
+                }
+                s.push(')');
+                s
+            }
             Ty::Any => "Any".to_string(),
         }
     }
