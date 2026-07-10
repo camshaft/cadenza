@@ -10,11 +10,14 @@
 //! replace the fixed pipeline here with a program the caller supplies; the pure core is unchanged.)
 //!
 //! Usage:
-//!   rcdzc <input.ast>… [--target wasm]… [-o OUTDIR]
+//!   rcdzc <input.ast>… [--target wasm]… [-o OUT]
 //!   rcdzc kind:name=path.ast --target wasm -o build/
+//!   rcdzc main.ast -o out/hello.wasm       # single output → an exact file path
 //!
 //! An input is `path`, `name=path`, or `kind:name=path`; kind defaults to `ast`, name to the file
-//! stem. Each produced artifact is written to `OUTDIR/<name>.<ext-for-kind>` (default OUTDIR `.`).
+//! stem. `-o` is a DIRECTORY into which each artifact is written as `<name>.<ext-for-kind>` — EXCEPT
+//! when exactly one artifact is produced and `-o` does not name an existing directory, in which case
+//! `-o` is the exact output FILE path. With no `-o`, artifacts are written to the current directory.
 
 use clap::Parser;
 use rcdzc::{compile, Artifact, Severity, Target};
@@ -33,9 +36,11 @@ struct Cli {
     #[arg(long, short, value_name = "TARGET")]
     target: Vec<TargetArg>,
 
-    /// Directory to write produced artifacts into.
-    #[arg(long, short, value_name = "OUTDIR", default_value = ".")]
-    out: PathBuf,
+    /// Where to write output. A directory holding `<name>.<ext>` per artifact; or, when a single
+    /// artifact is produced and this is not an existing directory, the exact output file path.
+    /// Defaults to the current directory.
+    #[arg(long, short, value_name = "OUT")]
+    out: Option<PathBuf>,
 }
 
 /// A backend target, as a clap-parsed value (its own enum so clap validates the spelling and `--help`
@@ -91,10 +96,24 @@ fn main() -> ExitCode {
         }
     }
 
+    // Decide whether `-o` names an exact output FILE (single artifact, not an existing directory) or
+    // a DIRECTORY to write each `<name>.<ext>` into.
+    let single_file_out: Option<&PathBuf> = match (&cli.out, out.artifacts.as_slice()) {
+        (Some(p), [_one]) if !p.is_dir() => Some(p),
+        _ => None,
+    };
+
     // Write each produced artifact.
     for art in &out.artifacts {
-        let ext = ext_for_kind(&art.kind);
-        let path = cli.out.join(format!("{}.{ext}", art.name));
+        let path = match single_file_out {
+            // Single artifact, `-o FILE`: write bytes to that exact path.
+            Some(file) => file.clone(),
+            // Otherwise: `<outdir>/<name>.<ext>`, outdir defaulting to the current directory.
+            None => {
+                let dir = cli.out.clone().unwrap_or_else(|| PathBuf::from("."));
+                dir.join(format!("{}.{}", art.name, ext_for_kind(&art.kind)))
+            }
+        };
         if let Err(e) = std::fs::write(&path, &art.bytes) {
             eprintln!("rcdzc: cannot write {}: {e}", path.display());
             return ExitCode::FAILURE;
