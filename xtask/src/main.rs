@@ -48,6 +48,16 @@ enum Cmd {
         #[arg(long)]
         store: Option<PathBuf>,
     },
+    /// Run one or more corpus files: compile+run each case through the pipeline and compare the
+    /// result against the recorded outcome. Reports pass / todo (a case the compiler can't yet
+    /// handle) / fail (a real disagreement). Exits non-zero only on a fail.
+    Gate {
+        /// The corpus `.sexp` files to run. [default: all of spec/semantics/*.sexp]
+        files: Vec<PathBuf>,
+        /// Content-addressed store the runtime is resolved from. [default: <repo>/target/cadenza-store]
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -55,6 +65,7 @@ fn main() {
     match Cli::parse().command {
         Cmd::Build { store } => build(&paths, store),
         Cmd::Run { file, from, store } => run(&paths, &file, &from, store),
+        Cmd::Gate { files, store } => gate(&paths, files, store),
     }
 }
 
@@ -128,20 +139,13 @@ fn run(paths: &Paths, file: &Path, from: &str, store: Option<PathBuf>) {
         std::process::exit(1);
     }
 
-    // Build the three tools once (one cargo invocation), so the pipe below runs the finished
-    // binaries rather than three concurrent `cargo run`s racing the build lock.
-    eprintln!("== xtask run: building the pipeline tools ==");
-    let sh = Shell::new().expect("open a shell");
-    sh.change_dir(&paths.repo);
-    if let Err(e) = cmd!(sh, "cargo build --quiet -p cadenza-syntax -p rcdzc -p cdz-run").run() {
-        eprintln!("xtask run: building the tools failed: {e}");
-        std::process::exit(1);
-    }
-    let bin = paths.repo.join("target/debug");
+    // Build the three tools once, so the pipe below runs finished binaries rather than three
+    // concurrent `cargo run`s racing the build lock.
+    let tools = build_tools(paths);
 
     // ── The pipe: cdz-syntax <file> | rcdzc - -o - | cdz-run - ──
     // Stage 1 reads the program file and writes binary AST to stdout.
-    let mut syntax = Command::new(bin.join("cdz-syntax"))
+    let mut syntax = Command::new(&tools.syntax)
         .args(["--from", from, "--to", "binary"])
         .arg(file)
         .stdout(Stdio::piped())
@@ -149,7 +153,7 @@ fn run(paths: &Paths, file: &Path, from: &str, store: Option<PathBuf>) {
         .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
 
     // Stage 2 reads AST from stage 1's stdout, writes the component to stdout.
-    let mut rcdzc = Command::new(bin.join("rcdzc"))
+    let mut rcdzc = Command::new(&tools.rcdzc)
         .args(["-", "-o", "-"])
         .stdin(Stdio::from(syntax.stdout.take().expect("cdz-syntax stdout")))
         .stdout(Stdio::piped())
@@ -158,7 +162,7 @@ fn run(paths: &Paths, file: &Path, from: &str, store: Option<PathBuf>) {
 
     // Stage 3 reads the component from stage 2's stdout, runs it, and prints the result to OUR
     // stdout (inherited). The store the runtime is resolved from is forwarded when given.
-    let mut run = Command::new(bin.join("cdz-run"));
+    let mut run = Command::new(&tools.run);
     run.arg("-").stdin(Stdio::from(rcdzc.stdout.take().expect("rcdzc stdout")));
     if let Some(dir) = &store {
         run.arg("--store").arg(dir);
@@ -189,6 +193,253 @@ fn run(paths: &Paths, file: &Path, from: &str, store: Option<PathBuf>) {
 fn launch_fail(stage: &str, e: std::io::Error) -> ! {
     eprintln!("xtask run: could not launch {stage}: {e}");
     std::process::exit(1);
+}
+
+/// Where the paths to the built pipeline binaries live, resolved once.
+struct Tools {
+    syntax: PathBuf,
+    rcdzc: PathBuf,
+    run: PathBuf,
+}
+
+/// Build the three pipeline tools once and return their binary paths — shared by `run` and `gate`
+/// so neither pays a per-invocation `cargo run` build.
+fn build_tools(paths: &Paths) -> Tools {
+    let sh = Shell::new().expect("open a shell");
+    sh.change_dir(&paths.repo);
+    if let Err(e) = cmd!(sh, "cargo build --quiet -p cadenza-syntax -p rcdzc -p cdz-run").quiet().run() {
+        eprintln!("xtask: building the tools failed: {e}");
+        std::process::exit(1);
+    }
+    let bin = paths.repo.join("target/debug");
+    Tools { syntax: bin.join("cdz-syntax"), rcdzc: bin.join("rcdzc"), run: bin.join("cdz-run") }
+}
+
+/// The outcome of driving one program (sexpr text) through the pipeline.
+enum Ran {
+    /// Ran to a value, rendered to canonical text.
+    Value(String),
+    /// The compiler rejected/declined the program.
+    Declined,
+    /// The component ran but trapped.
+    Trap(String),
+}
+
+/// Drive one program's s-expression `text` through cdz-syntax → rcdzc → cdz-run, returning the
+/// outcome. Uses a real pipe with the program fed on cdz-syntax's stdin (no temp files).
+fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str) -> Ran {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Stage 1: program text (stdin) → binary AST (stdout).
+    let mut syntax = Command::new(&tools.syntax)
+        .args(["--from", "sexpr", "--to", "binary", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+    syntax.stdin.take().unwrap().write_all(program.as_bytes()).ok();
+
+    // Stage 2: AST → component; capture stderr so a decline carries its diagnostic.
+    let rcdzc = Command::new(&tools.rcdzc)
+        .args(["-", "-o", "-"])
+        .stdin(Stdio::from(syntax.stdout.take().unwrap()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("rcdzc", e));
+    let rcdzc_out = rcdzc.wait_with_output().expect("wait rcdzc");
+    let _ = syntax.wait();
+    if !rcdzc_out.status.success() {
+        return Ran::Declined;
+    }
+
+    // Stage 3: run the component (its stdout is the value; a trap goes to stderr with exit 1).
+    let mut run = Command::new(&tools.run);
+    run.arg("-").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Some(dir) = store {
+        run.arg("--store").arg(dir);
+    }
+    let mut child = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
+    child.stdin.take().unwrap().write_all(&rcdzc_out.stdout).ok();
+    let run_out = child.wait_with_output().expect("wait cdz-run");
+    if run_out.status.success() {
+        Ran::Value(String::from_utf8_lossy(&run_out.stdout).trim().to_string())
+    } else {
+        Ran::Trap(first_line(&run_out.stderr))
+    }
+}
+
+fn first_line(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).lines().next().unwrap_or("").to_string()
+}
+
+/// Run one or more corpus files through the pipeline and grade each case against its recorded
+/// outcome. Delegates case parsing + normalization to `cdz-syntax corpus`, then drives each program.
+fn gate(paths: &Paths, files: Vec<PathBuf>, store: Option<PathBuf>) {
+    let tools = build_tools(paths);
+
+    // Default to the whole corpus when no files are named.
+    let files = if files.is_empty() {
+        default_corpus_files(paths)
+    } else {
+        files
+    };
+
+    let (mut pass, mut todo, mut fail) = (0u32, 0u32, 0u32);
+    let mut failures: Vec<String> = Vec::new();
+
+    for file in &files {
+        let records = read_corpus(&tools, file);
+        for rec in records {
+            match grade(&tools, &store, &rec) {
+                Grade::Pass => pass += 1,
+                Grade::Todo => todo += 1,
+                Grade::Fail(why) => {
+                    fail += 1;
+                    failures.push(format!("{}: {why}", rec.description));
+                }
+            }
+        }
+    }
+
+    println!("\ngate: {pass} pass, {todo} todo, {fail} fail");
+    if !failures.is_empty() {
+        println!("\nfailures:");
+        for f in &failures {
+            println!("  FAIL  {f}");
+        }
+        std::process::exit(1);
+    }
+}
+
+/// One graded case's verdict.
+enum Grade {
+    /// Ran and matched the recorded outcome.
+    Pass,
+    /// The compiler can't yet handle it (declined), or the expectation needs machinery not wired
+    /// yet (error-code matching, traps) — not a disagreement, just not-yet.
+    Todo,
+    /// Ran to an outcome that disagrees with the record — the actionable frontier.
+    Fail(String),
+}
+
+/// A parsed corpus record (the flat stream `cdz-syntax corpus` emits).
+struct CorpusRecord {
+    description: String,
+    program: String,
+    /// The `expect` line's payload, e.g. `output (: 42 Int64)`, `error CDZ0201`, `trap "…"`.
+    expect: String,
+    needs: Vec<String>,
+}
+
+/// Run `cdz-syntax corpus <file>` and parse its record stream.
+fn read_corpus(tools: &Tools, file: &Path) -> Vec<CorpusRecord> {
+    use std::process::Command;
+    let out = Command::new(&tools.syntax)
+        .arg("corpus")
+        .arg(file)
+        .output()
+        .unwrap_or_else(|e| launch_fail("cdz-syntax corpus", e));
+    if !out.status.success() {
+        eprintln!("xtask gate: reading {}: {}", file.display(), first_line(&out.stderr));
+        std::process::exit(1);
+    }
+    parse_records(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse the flat record stream: `key\tvalue` lines, records separated by a `---` line.
+fn parse_records(text: &str) -> Vec<CorpusRecord> {
+    let mut records = Vec::new();
+    let (mut desc, mut prog, mut expect, mut needs) = (String::new(), String::new(), String::new(), Vec::new());
+    for line in text.lines() {
+        if line == "---" {
+            records.push(CorpusRecord {
+                description: std::mem::take(&mut desc),
+                program: std::mem::take(&mut prog),
+                expect: std::mem::take(&mut expect),
+                needs: std::mem::take(&mut needs),
+            });
+            continue;
+        }
+        if let Some((key, val)) = line.split_once('\t') {
+            match key {
+                "case" => desc = val.to_string(),
+                "program" => prog = val.to_string(),
+                "expect" => expect = val.to_string(),
+                "needs" => needs.push(val.to_string()),
+                _ => {}
+            }
+        }
+    }
+    records
+}
+
+/// Grade one case: drive its program and compare against the recorded expectation.
+fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord) -> Grade {
+    // A case that needs an unrealized capability is out of scope for this generation — treat as todo.
+    if !rec.needs.is_empty() {
+        return Grade::Todo;
+    }
+    let (kind, payload) = rec.expect.split_once(' ').unwrap_or((rec.expect.as_str(), ""));
+    let ran = run_program(tools, store, &rec.program);
+    match kind {
+        // `output (: <value> <Type>)`: the run must produce that value. cdz-run renders the value
+        // alone, so compare against the value-form's value (the first element after `:`).
+        "output" => {
+            let expected = expected_value(payload);
+            match ran {
+                Ran::Value(v) if v == expected => Grade::Pass,
+                Ran::Value(v) => Grade::Fail(format!("expected {expected}, ran → {v}")),
+                Ran::Declined => Grade::Todo, // compiler can't compile it yet
+                Ran::Trap(t) => Grade::Fail(format!("expected {expected}, trapped: {t}")),
+            }
+        }
+        // `error CODE` / `trap …`: matching a rejection code or a trap reason needs machinery not yet
+        // wired (rcdzc's diagnostics aren't coded yet, traps need the runtime). Count as todo unless a
+        // clear disagreement — a program the corpus says is REJECTED that instead ran to a value.
+        "error" => match ran {
+            Ran::Value(v) => Grade::Fail(format!("expected rejection {payload}, ran → {v}")),
+            _ => Grade::Todo,
+        },
+        "trap" => match ran {
+            Ran::Value(v) => Grade::Fail(format!("expected a trap, ran → {v}")),
+            _ => Grade::Todo,
+        },
+        _ => Grade::Todo,
+    }
+}
+
+/// The value out of an `output` payload `(: <value> <Type>)` — the text of `<value>`. Falls back to
+/// the whole payload if it is not the `(: value Type)` shape.
+fn expected_value(payload: &str) -> String {
+    // payload looks like `(: 42 Int64)`; take the token(s) between `(:` and the trailing ` Type)`.
+    let inner = payload.trim();
+    if let Some(rest) = inner.strip_prefix("(:") {
+        let rest = rest.trim_end_matches(')').trim();
+        // `<value> <Type>` — the value is everything up to the LAST whitespace-separated token (Type).
+        if let Some(idx) = rest.rfind(char::is_whitespace) {
+            return rest[..idx].trim().to_string();
+        }
+    }
+    inner.to_string()
+}
+
+/// The default corpus: every `spec/semantics/*.sexp`, sorted for stable order.
+fn default_corpus_files(paths: &Paths) -> Vec<PathBuf> {
+    let dir = paths.repo.join("spec/semantics");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| {
+            eprintln!("xtask gate: reading {}: {e}", dir.display());
+            std::process::exit(1);
+        })
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "sexp"))
+        .collect();
+    files.sort();
+    files
 }
 
 /// SHA-256 of the bytes, lowercase hex (the recorded hashing choice).

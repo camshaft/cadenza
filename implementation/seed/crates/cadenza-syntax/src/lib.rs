@@ -11,6 +11,7 @@
 pub mod ast;
 pub mod codec;
 pub mod convert;
+pub mod corpus;
 pub mod doc;
 pub mod iter;
 pub mod leb128;
