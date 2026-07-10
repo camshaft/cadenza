@@ -48,10 +48,15 @@ both displays. Both project losslessly to the one representation.
   (def (classify n)
     (doc "Sign of n as a tag.")
     (: (-> Int64 Sign))
-    (match n
-      ((< n 0) Sign.Neg)
-      ((= n 0) Sign.Zero)
-      (else    Sign.Pos))))
+    (if (< n 0) (Sign.Neg unit)
+        (if (= n 0) (Sign.Zero unit) (Sign.Pos unit))))
+  (def (describe s)
+    (doc "Name a sign.")
+    (: (-> Sign String))
+    (match s
+      ((Sign.Neg _)  "negative")
+      ((Sign.Zero _) "zero")
+      ((Sign.Pos _)  "positive"))))
 ```
 
 **Conventional display** (a projection of the very same representation):
@@ -64,12 +69,26 @@ effect emit-event { op emit(String) -> Unit } host
 
 /// Sign of n as a tag.
 fn classify(n: Int64) -> Sign =
-  match n {
-    n < 0 => Sign.Neg
-    n = 0 => Sign.Zero
-    else  => Sign.Pos
+  if n < 0 then Sign.Neg(unit)
+  else if n = 0 then Sign.Zero(unit)
+  else Sign.Pos(unit)
+
+/// Name a sign.
+fn describe(s: Sign) -> String =
+  match s {
+    Sign.Neg(_)  => "negative"
+    Sign.Zero(_) => "zero"
+    Sign.Pos(_)  => "positive"
   }
 ```
+
+The two definitions show a division of labor the surface makes visible: a *value* condition (is `n`
+negative?) is an `if`, while `match` is used **only** to destructure a value's variants. A match arm's
+head is a **pattern** — a constructor that destructures, a literal, a binding, or the `_`/`else`
+catch-all — never an arbitrary boolean predicate, so `match` is not a `cond` in disguise and the set of
+arms can be checked against the scrutinee's type for exhaustiveness. Value-level refinement of a pattern
+(a `pattern if guard` clause) is a separate, optional concern deliberately kept out of the arm head, and
+a guard, were one added, would not count toward exhaustiveness.
 
 Documentation is a node in the representation (the `doc` form / `///` projection), not lexical
 trivia, so it survives the round-trip in either direction (agent-authoring.md §Documentation).

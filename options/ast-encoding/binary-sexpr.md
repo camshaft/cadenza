@@ -124,20 +124,21 @@ below.
 
 ## Worked example
 
-A documented `classify` function, shown first in a textual s-expression display and then as the
+A documented `describe` function, shown first in a textual s-expression display and then as the
 stored structure. The two are the same tree; the file stores the structure, and the display is one
-projection of it.
+projection of it. A `match` destructures a value's variants — its arm heads are *patterns*
+(a constructor pattern `(Sign.Neg _)`, the `else` catch-all), never boolean predicates.
 
 Textual s-expression display:
 
 ```
 (module math
   (doc "Small integer helpers.")
-  (def (classify n)
-    (doc "Sign of n as a tag.")
-    (match n
-      ((< n 0) Sign.Neg)
-      (else    Sign.Pos))))
+  (def (describe s)
+    (doc "Name a sign.")
+    (match s
+      ((Sign.Neg _) "negative")
+      (else         "non-negative"))))
 ```
 
 Stored structure (indices refer to the prelude below):
@@ -149,20 +150,19 @@ prelude:
   1 = [cadenza/core, doc]
   2 = [cadenza/core, def]
   3 = [cadenza/core, match]
-  4 = [cadenza/core, <]
+  4 = [math, Sign.Neg]
   5 = [cadenza/core, else]
-  6 = [math, classify]
-  7 = [math, n]
-  8 = [math, Sign.Neg]
-  9 = [math, Sign.Pos]
+  6 = [math, describe]
+  7 = [math, s]
+  8 = [cadenza/core, _]
 root:
   (0 "math"
      (1 "Small integer helpers.")
      (2 (6 7)
-        (1 "Sign of n as a tag.")
+        (1 "Name a sign.")
         (3 7
-           ((4 7 0) 8)
-           (5 9))))
+           ((4 8) "negative")
+           (5 "non-negative"))))
 ```
 
 Comments and documentation are ordinary nodes here (symbols `cadenza/core:doc` and
