@@ -214,21 +214,51 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// `l op r`, left-associative. The break sits BEFORE the operator so a wrapped right side lands
-    /// with the operator leading its line.
+    /// A left-associative infix chain at precedence `prec`. A run of same-precedence operators
+    /// (`a + b - c`) is FLATTENED into one box so, if it overflows, the operators break at ONE
+    /// consistent indent rather than compounding a level per nesting. The break sits BEFORE each
+    /// operator (R10) so a wrapped operand lands with its operator leading the line.
     fn infix(&mut self, op: &str, prec: u8, l: StructId, r: StructId, parent_prec: u8) {
         let paren = prec < parent_prec;
+        // Collect the flat chain: descend the left spine while the operator has the SAME precedence.
+        // Result is operands `[o0, o1, …]` and the operators `[op1, …]` between them.
+        let mut operands = vec![r];
+        let mut ops = vec![op.to_string()];
+        let mut left = l;
+        loop {
+            match self.a.get(left) {
+                Struct::List(items) if items.len() == 3 => {
+                    if let Some(h) = self.head_name(items[0]) {
+                        if infix_prec(&h) == Some(prec) {
+                            operands.push(items[2]);
+                            ops.push(h);
+                            left = items[1];
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        operands.push(left);
+        operands.reverse(); // now left-to-right
+        ops.reverse();
+
         self.doc.ibox(INDENT);
         if paren {
             self.doc.word("(");
         }
-        self.expr(l, prec); // left child may share precedence (left-assoc)
-        self.doc.space();
-        // In infix position the operator prints VERBATIM (`+`, `and`), never escaped — the escape
-        // is only for an operator glyph used as an ordinary NAME (a list element, a head).
-        self.doc.word(op.to_string());
-        self.doc.word(" ");
-        self.expr(r, prec + 1); // right child must bind tighter
+        // first operand (its left child, if any, already bound at this prec)
+        self.expr(operands[0], prec);
+        for (i, o) in ops.iter().enumerate() {
+            self.doc.space(); // break BEFORE the operator
+            // In infix position the operator prints VERBATIM (`+`, `and`) — the backtick escape is
+            // only for an operator glyph used as an ordinary NAME.
+            self.doc.word(o.clone());
+            self.doc.word(" ");
+            self.expr(operands[i + 1], prec + 1); // right operand binds one tighter
+        }
         if paren {
             self.doc.word(")");
         }
@@ -675,6 +705,14 @@ mod tests {
     fn last_arg_hug_fits_inline() {
         // When the whole call fits, hugging is invisible — it stays on one line.
         assert_eq!(assert_roundtrip("map(items, fn(x) => x + 1)", 80), "map(items, fn(x) => x + 1)");
+    }
+
+    #[test]
+    fn infix_chain_breaks_at_one_indent() {
+        // A same-precedence chain flattens: operators break at ONE consistent 2-space indent, each
+        // leading its continuation line; tighter sub-terms (`*`) stay intact.
+        let out = assert_roundtrip("aaaa * bbbb + cccc * dddd", 15);
+        assert_eq!(out, "aaaa * bbbb\n  + cccc * dddd");
     }
 
     #[test]
