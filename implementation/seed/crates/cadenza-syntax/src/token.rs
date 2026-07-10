@@ -113,6 +113,7 @@ pub enum Keyword {
     Else,
     Fn,
     Match,
+    Module,
 }
 
 /// The keyword an identifier's text denotes, if any.
@@ -125,6 +126,7 @@ pub fn keyword(text: &str) -> Option<Keyword> {
         "else" => Keyword::Else,
         "fn" => Keyword::Fn,
         "match" => Keyword::Match,
+        "module" => Keyword::Module,
         _ => return None,
     })
 }

@@ -221,8 +221,9 @@ impl<'a> Parser<'a> {
             Kind::Ident => match keyword(self.cur_text()) {
                 Some(Keyword::Let) => self.let_expr(),
                 Some(Keyword::If) => self.if_expr(),
-                Some(Keyword::Fn) => self.fn_expr(),
+                Some(Keyword::Fn) => self.fn_or_def(),
                 Some(Keyword::Match) => self.match_expr(),
+                Some(Keyword::Module) => self.module_expr(),
                 Some(_) => {
                     // `in`/`then`/`else` bare in prefix position is an error; keep the ident as a
                     // name so we make progress and the arena stays well-formed.
@@ -374,11 +375,79 @@ impl<'a> Parser<'a> {
         self.list(vec![head, c, t, e], span)
     }
 
+    /// `fn` begins either an anonymous lambda `fn(p, …) => body` or a named definition
+    /// `fn name(p, …) = body`. The disambiguator is whether a NAME follows `fn` (a lambda's `fn` is
+    /// immediately followed by `(`).
+    fn fn_or_def(&mut self) -> StructId {
+        // `fn` then a name then `(` => a def; `fn` then `(` => a lambda.
+        if matches!(self.nth_kind(1), Kind::Ident | Kind::BacktickName) {
+            self.def_expr()
+        } else {
+            self.fn_expr()
+        }
+    }
+
     /// `fn(p, …) => body`  ->  `(fn (p …) body)`
     fn fn_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("fn", start);
         self.bump(); // `fn`
+        let param_list = self.param_list();
+        self.expect(Kind::FatArrow, "`=>`");
+        let body = self.expr(0);
+        let span = start.merge(self.prev_span());
+        self.list(vec![head, param_list, body], span)
+    }
+
+    /// `fn name(p, …) = body`  ->  `(def (name p …) body)`. The signature `(name p …)` mirrors the
+    /// s-expr surface: the def's first child is the name-and-params list, then the single body.
+    fn def_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        let def_head = self.keyword_head("def", start);
+        self.bump(); // `fn`
+        // signature: name then params -> (name p …)
+        let sig_start = self.cur_span();
+        let name = self.binder();
+        let mut sig = vec![name];
+        // parameters (the `(...)` after the name)
+        self.expect(Kind::LParen, "`(`");
+        if !self.at(Kind::RParen) {
+            loop {
+                sig.push(self.binder());
+                if self.at(Kind::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(Kind::RParen, "`)`");
+        let sig_span = sig_start.merge(self.prev_span());
+        let signature = self.list(sig, sig_span);
+        self.expect(Kind::Eq, "`=`");
+        let body = self.expr(0);
+        let span = start.merge(self.prev_span());
+        self.list(vec![def_head, signature, body], span)
+    }
+
+    /// `module name { form… }`  ->  `(module name form…)`.
+    fn module_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.keyword_head("module", start);
+        self.bump(); // `module`
+        let name = self.binder();
+        let mut items = vec![head, name];
+        self.expect(Kind::LBrace, "`{`");
+        while !self.at(Kind::RBrace) && !self.at_end() {
+            items.push(self.expr(0));
+        }
+        self.expect(Kind::RBrace, "`}`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// A parenthesized parameter list `(p, …)` -> `(p …)`.
+    fn param_list(&mut self) -> StructId {
         let params_start = self.cur_span();
         self.expect(Kind::LParen, "`(`");
         let mut params = Vec::new();
@@ -394,11 +463,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(Kind::RParen, "`)`");
         let params_span = params_start.merge(self.prev_span());
-        let param_list = self.list(params, params_span);
-        self.expect(Kind::FatArrow, "`=>`");
-        let body = self.expr(0);
-        let span = start.merge(self.prev_span());
-        self.list(vec![head, param_list, body], span)
+        self.list(params, params_span)
     }
 
     /// `match scrut { pat [if g] => body, … }`  ->  `(match scrut (pat body) …)`, where a guarded

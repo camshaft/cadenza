@@ -116,6 +116,8 @@ impl<'a> Printer<'a> {
                 "if" if args.len() == 3 => return self.print_if(args, parent_prec),
                 "fn" if args.len() == 2 => return self.print_fn(args, parent_prec),
                 "match" if self.is_match_shape(args) => return self.print_match(args, parent_prec),
+                "def" if self.is_def_shape(args) => return self.print_def(args),
+                "module" if self.is_module_shape(args) => return self.print_module(args),
                 _ => {}
             }
             // ---- generic call form: head(a, b, c) ----
@@ -254,6 +256,45 @@ impl<'a> Printer<'a> {
         if paren {
             self.doc.word(")");
         }
+        self.doc.end();
+    }
+
+    /// `fn name(p, …) = body` — a named function definition. `args[0]` is the signature list
+    /// `(name p …)`; `args[1]` is the body. Never parenthesized (a def is a declaration, only valid
+    /// at a statement/module position, so `parent_prec` does not apply).
+    fn print_def(&mut self, args: &[StructId]) {
+        self.doc.cbox(INDENT);
+        self.doc.word("fn ");
+        if let Struct::List(sig) = self.a.get(args[0]) {
+            let sig = sig.clone();
+            // name
+            self.expr(sig[0], 0);
+            self.doc.word("(");
+            for (i, &p) in sig[1..].iter().enumerate() {
+                if i > 0 {
+                    self.doc.word(", ");
+                }
+                self.expr(p, 0);
+            }
+            self.doc.word(") =");
+        }
+        self.doc.space();
+        self.expr(args[1], 0);
+        self.doc.end();
+    }
+
+    /// `module name { form… }` — one form per line (consistent box) when broken.
+    fn print_module(&mut self, args: &[StructId]) {
+        self.doc.cbox(INDENT);
+        self.doc.word("module ");
+        self.expr(args[0], 0); // name
+        self.doc.word(" {");
+        for &form in &args[1..] {
+            self.doc.hardbreak(); // one member per line
+            self.expr(form, 0);
+        }
+        self.doc.break_with(1, -INDENT);
+        self.doc.word("}");
         self.doc.end();
     }
 
@@ -409,6 +450,21 @@ impl<'a> Printer<'a> {
             _ => false,
         })
     }
+
+    /// A def the `fn name(…) = body` surface handles: exactly a signature list `(name p…)` (whose
+    /// head is a name — so the params can be lowered as binders) and a single body form. A def with
+    /// extra body forms (a `(doc …)` or `(: type)` annotation) falls back to the generic form so it
+    /// still round-trips.
+    fn is_def_shape(&self, args: &[StructId]) -> bool {
+        args.len() == 2
+            && matches!(self.a.get(args[0]), Struct::List(sig) if !sig.is_empty()
+                && self.head_name(sig[0]).is_some())
+    }
+
+    /// A module the `module name { … }` surface handles: a name followed by zero or more forms.
+    fn is_module_shape(&self, args: &[StructId]) -> bool {
+        !args.is_empty() && self.head_name(args[0]).is_some()
+    }
 }
 
 /// A name prints bare when it re-lexes to exactly itself as a single `Ident`/operator token AND is
@@ -475,6 +531,31 @@ mod tests {
         // `let … in` always breaks the body to its own line at the let column (ML idiom).
         assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
         assert_eq!(assert_roundtrip("fn(x, y) => x + y", 80), "fn(x, y) => x + y");
+    }
+
+    #[test]
+    fn function_definition() {
+        // named def vs anonymous lambda are distinct surfaces.
+        assert_eq!(assert_roundtrip("fn add(a, b) = a + b", 80), "fn add(a, b) = a + b");
+        assert_eq!(assert_roundtrip("fn main() = 42", 80), "fn main() = 42");
+        assert_eq!(assert_roundtrip("fn(x) => x * 2", 80), "fn(x) => x * 2");
+    }
+
+    #[test]
+    fn module_block() {
+        let out = assert_roundtrip("module math { fn add(a, b) = a + b fn main() = add(2, 3) }", 80);
+        assert_eq!(out, "module math {\n  fn add(a, b) = a + b\n  fn main() = add(2, 3)\n}");
+    }
+
+    #[test]
+    fn multi_form_def_falls_back_but_round_trips() {
+        // A def carrying a doc form has no dedicated surface; it prints as the generic call form
+        // and still round-trips.
+        let a = sexpr::read("(def (f x) (doc \"hi\") (+ x 1))").unwrap();
+        let printed = print(&a, 80);
+        assert_eq!(printed, "def(f(x), doc(\"hi\"), x + 1)");
+        let b = parser::read_ml(&printed);
+        assert!(b.ok() && b.arenas.structurally_eq(&a));
     }
 
     #[test]
