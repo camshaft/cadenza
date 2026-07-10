@@ -31,8 +31,15 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-# No runtime dependencies: the copied-in syntax layer represents an integer literal as a plain
-# (sign, magnitude bytes) struct, so nothing is pulled in for arbitrary precision.
+# The PURE COMPILER CORE (lib) has NO runtime dependencies — an integer literal is a plain
+# (sign, magnitude bytes) struct, so nothing is pulled in for arbitrary precision, and the core
+# ports cleanly to the Cadenza self-host.
+
+[dependencies.clap]
+# Used ONLY by the CLI bin (the host boundary — filesystem + args), never by the lib core. Same
+# clap 4 + derive the workspace's xtask uses.
+version = "4"
+features = ["derive"]
 
 [dev-dependencies]
 # The independent byte ORACLE (tests only): licenses the hand-emitted byte path by asserting it is
