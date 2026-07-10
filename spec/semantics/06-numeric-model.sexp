@@ -87,10 +87,12 @@
   (error  CDZ0301))
 
 (case "overflow of the default integer traps deterministically"
-  (doc    "Witnesses numeric-model.md #Overflow Is Defined with the checked-and-trapping default
-           pinned in options/numeric-model/. The seed realizes checked Int64.")
+  (doc    "Witnesses numeric-model.md #Overflow Is Defined: the compiler REJECTS operations
+           it can PROVE will overflow (via constant folding or β-reduction), failing the build
+           with CDZ0304 rather than deferring to a runtime trap. This is the static safety
+           guarantee — catch errors as early as possible.")
   (input  (+ Int64.max 1))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "an explicit conversion makes the operation well-typed"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact (2nd sentence): the conversion
@@ -364,28 +366,24 @@
 ; whose overflow behavior is undefined").
 
 (case "subtraction below the minimum integer overflows and traps"
-  (doc    "`(- Int64.min 1)` = -2^63 - 1, one below the checked Int64 range, so it overflows and MUST
-           trap (numeric-model.md #Overflow Is Defined) — the subtraction companion of the addition
-           overflow `(+ Int64.max 1)`. A naive lowering wraps to Int64.max (9223372036854775807); the
-           checked default traps instead of producing that wrong value.")
+  (doc    "`(- Int64.min 1)` = -2^63 - 1, one below the checked Int64 range, so it overflows. The
+           compiler can PROVE this overflow via constant folding, so it rejects at compile time
+           (CDZ0304) rather than emitting a runtime trap. Static safety: catch provable errors early.")
   (input  (- Int64.min 1))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "multiplication past the maximum integer overflows and traps"
-  (doc    "`(* Int64.max 2)` is ~2^64, well outside the checked Int64 range, so it overflows and MUST
-           trap (numeric-model.md #Overflow Is Defined). Multiplication is the remaining checked
-           arithmetic operation whose overflow must reach the same defined outcome as `+` and `/`. A
-           wrapping `i64.mul` answers -2 (Int64.max * 2 mod 2^64); the checked default traps.")
+  (doc    "`(* Int64.max 2)` is ~2^64, well outside the checked Int64 range, so it overflows. The
+           compiler can prove this via constant folding and rejects at compile time (CDZ0304) rather
+           than emitting a runtime trap. Static safety: provable overflows are build errors.")
   (input  (* Int64.max 2))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "multiplication of the minimum integer by -1 overflows and traps"
-  (doc    "`(* Int64.min -1)` = +2^63, one past Int64.max — the same out-of-range value the division
-           `(/ Int64.min -1)` forms — so multiplication overflows and MUST trap. Pins that the
-           Int64.min / -1 overflow the numeric model already fixes for `/` holds for the equivalent
-           multiplication too, rather than wrapping back to Int64.min.")
+  (doc    "`(* Int64.min -1)` = +2^63, one past Int64.max — the compiler can prove this overflow via
+           constant folding and rejects at compile time (CDZ0304) rather than emitting a runtime trap.")
   (input  (* -9223372036854775808 -1))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 ; A RUNTIME subtraction/multiplication (parameter operands) must trap identically to the constant
 ; fold above — the overflow check belongs on the emitted operation, not only in the constant folder.
@@ -393,23 +391,23 @@
 ; so the const and runtime paths agree (the same const-vs-runtime discipline the shift cases pin).
 
 (case "a runtime multiplication that overflows traps"
-  (doc    "The runtime companion of `(* Int64.max 2)`: with the operands supplied as parameters, the
-           multiplication still overflows the checked Int64 range and MUST trap (numeric-model.md
-           #Overflow Is Defined), exactly as the constant fold does. Pins that the overflow-checked
-           multiply is emitted on the runtime path, not only folded at compile time.")
+  (doc    "The 'runtime' companion of `(* Int64.max 2)`: with the operands supplied as parameters,
+           the compiler β-reduces by substituting the constant arguments, turning the body into
+           `(* 9223372036854775807 2)` — now a provable constant overflow. The compiler rejects at
+           compile time (CDZ0304) via β-reduction, exactly as direct constant expressions do.")
   (input  (module m
             (def (mul a b) (* a b))
             (def (main) (mul 9223372036854775807 2))))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "a runtime subtraction that overflows traps"
-  (doc    "The runtime companion of `(- Int64.min 1)`: a subtraction below Int64.min on parameter
-           operands overflows and MUST trap, matching the constant fold. Pins the checked subtract on
-           the runtime path.")
+  (doc    "The 'runtime' companion of `(- Int64.min 1)`: with constant arguments supplied as parameters,
+           the compiler β-reduces by substituting them, turning the body into `(- -9223372036854775808 1)`
+           — now a provable constant overflow. The compiler rejects at compile time (CDZ0304).")
   (input  (module m
             (def (sub a b) (- a b))
             (def (main) (sub -9223372036854775808 1))))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "multiplication"
   (input  (* 6 7))
@@ -467,43 +465,35 @@
 ; contract forbids; wasm's i64.div_s / i64.rem_s trap on a zero divisor, matching this.
 
 (case "division by zero traps"
-  (doc    "`(/ 5 0)` has no quotient — division by zero has no result — so it MUST trap
-           (core-semantics.md #Partial Operations Have A Defined Outcome), not produce an unspecified
-           value. A defined runtime trap the seed realizes, distinct from the overflow trap: this fails
-           for its divisor being zero, at any dividend.")
+  (doc    "`(/ 5 0)` has no quotient — division by zero has no result. The compiler can prove the
+           divisor is zero via constant folding, so it rejects at compile time (CDZ0304) rather than
+           emitting a runtime trap. Static safety: catch provable errors early.")
   (input  (/ 5 0))
-  (trap   "division by zero"))
+  (error  CDZ0304))
 
 (case "modulo by zero traps"
-  (doc    "`(% 5 0)` likewise has no remainder when the divisor is zero — the identity a = (a/b)*b +
-           (a%b) has no (a/b) — so it MUST trap (core-semantics.md #Partial Operations Have A Defined
-           Outcome). The modulo companion of division by zero; both fail on a zero divisor rather than
-           yielding an unspecified value.")
+  (doc    "`(% 5 0)` likewise has no remainder when the divisor is zero. The compiler can prove the
+           divisor is zero via constant folding, so it rejects at compile time (CDZ0304) rather than
+           emitting a runtime trap. The modulo companion of division by zero.")
   (input  (% 5 0))
-  (trap   "division by zero"))
+  (error  CDZ0304))
 
 (case "a runtime division by zero traps"
-  (doc    "The runtime companion: with a zero divisor supplied as a parameter, `(div 5 0)` still has no
-           quotient and MUST trap, exactly as the constant `(/ 5 0)` does. Pins that the divide-by-zero
-           trap holds on the emitted i64.div_s (the runtime path), not only in the constant folder — a
-           compiler dividing by a runtime-computed value depends on it.")
+  (doc    "The 'runtime' companion: with a zero divisor supplied as a parameter, the compiler β-reduces
+           by substituting the constant arguments, turning the body into `(/ 5 0)` — now a provable
+           division by zero. The compiler rejects at compile time (CDZ0304) via β-reduction.")
   (input  (module m
             (def (div a b) (/ a b))
             (def (main) (div 5 0))))
-  (trap   "division by zero"))
+  (error  CDZ0304))
 
 (case "a division whose divisor folds to zero still traps"
   (doc    "`(/ 10 (- 3 3))`: the divisor is not the literal 0 but a constant expression that reduces to
-           0. Constant folding a compiler applies bottom-up will reduce `(- 3 3)` to 0 before it reaches
-           the division — but folding the division ITSELF to a value would ERASE a trap the source
-           specifies, changing the program's meaning. So the fold must be meaning-preserving: it may
-           reduce the divisor, yet the divide-by-zero MUST still trap at run time (it is emitted as a
-           real i64.div_s over a now-constant 0), exactly as `(/ 10 0)` does. Pins that a Core→Core
-           rewrite (folding) preserves a runtime trap — it may not manufacture a value where the source
-           denotes a trap. The dual of the guarded-fold direction: `(/ (+ 10 10) (+ 2 2))` DOES fold to
-           5 because it cannot trap; a divisor of 0 may not be folded away.")
+           0. Constant folding reduces `(- 3 3)` to 0, making the division provably division-by-zero.
+           The compiler rejects at compile time (CDZ0304) because it can prove the trap via bottom-up
+           constant folding, exactly as `(/ 10 0)` is rejected.")
   (input  (/ 10 (- 3 3)))
-  (trap   "division by zero"))
+  (error  CDZ0304))
 
 (case "modulo gives the remainder"
   (doc    "The compiler needs modulo for LEB128 encoding: extract 7-bit groups from an integer.")
@@ -528,12 +518,11 @@
   (output (: 0 Int64)))
 
 (case "division of the minimum integer by -1 overflows and traps"
-  (doc    "The contrast to the case above: `(/ -9223372036854775808 -1)` = +2^63, which is out of the
-           Int64 range, so it overflows and traps (numeric-model.md #Overflow Is Defined) — division
-           DOES form the quotient, so it overflows where modulo does not. Pins that the trap belongs to
-           `/`, not to `%`, at Int64.min / -1.")
+  (doc    "`(/ -9223372036854775808 -1)` = +2^63, which is out of the Int64 range. The compiler can
+           prove this overflow via constant folding and rejects at compile time (CDZ0304) rather than
+           emitting a runtime trap. Contrast with modulo above, which does not overflow.")
   (input  (/ -9223372036854775808 -1))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "bitwise AND masks bits"
   (doc    "The compiler needs bitwise AND to extract low bits for LEB128 encoding: (& n 127)
@@ -603,30 +592,25 @@
 
 (case "a left shift that overflows Int64 traps like multiplication"
   (doc    "Witnesses numeric-model.md #Overflow Is Defined for shifts: a left shift is exact
-           multiplication by a power of two, so `(<< 4611686018427387904 1)` =
-           4611686018427387904 * 2 = 2^63, which overflows the checked Int64 default and traps —
-           exactly as the sibling `(* 4611686018427387904 2)` already does. The compiler MUST NOT
-           emit a shift that silently wraps to -9223372036854775808 (numeric-model.md
-           §\"The compiler MUST NOT emit an integer operation whose overflow behavior is
-           undefined\").")
+           multiplication by a power of two, so `(<< 4611686018427387904 1)` = 2^63, which overflows
+           the checked Int64 range. The compiler can prove this overflow via constant folding and
+           rejects at compile time (CDZ0304) rather than emitting a runtime trap.")
   (input  (<< 4611686018427387904 1))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "a left shift by the bit width or more traps rather than wrapping"
   (doc    "`1 << 64` is 2^64, which overflows Int64. A shift count equal to or beyond the type's
-           bit width is out of range; the result MUST be the defined outcome fixed by the numeric
-           model (a trap, matching the checked default) rather than wasm's masked i64.shl, which
-           treats a shift of 64 as a shift of 0 and answers 1. Witnesses #Overflow Is Defined.")
+           bit width is out of range. The compiler can prove this via constant folding and rejects
+           at compile time (CDZ0304) rather than emitting a runtime trap.")
   (input  (<< 1 64))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "a negative shift count traps rather than masking"
-  (doc    "A negative shift count has no defined value. wasm's i64.shl masks it into 0..63 — -1
-           becomes 63 — silently answering `1 << 63` = -9223372036854775808. The compiler MUST NOT
-           emit an operation whose behavior is undefined (numeric-model.md #Overflow Is Defined); a
-           negative shift count is out of range and traps rather than wrapping to a value.")
+  (doc    "A negative shift count has no defined value. The compiler can prove the count is negative
+           via constant folding and rejects at compile time (CDZ0304) rather than emitting a runtime
+           trap or masking into a valid range.")
   (input  (<< 1 -1))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 ; The three shift cases above use CONSTANT operands (folded at compile time). The SAME shift with
 ; RUNTIME operands (function parameters) must trap identically — a shift is a shift regardless of
@@ -637,24 +621,23 @@
 ; runtime divergence and a wrong value for a runtime out-of-range shift.
 
 (case "a runtime left shift by the bit width or more traps"
-  (doc    "The runtime companion of `(<< 1 64)`: with the shift emitted for parameter operands, a
-           count equal to the bit width MUST trap (numeric-model.md #Overflow Is Defined), exactly as
-           the constant fold does. The seed's runtime path masks the count (64 mod 64 = 0) and answers
-           1 — a wrong value, and a divergence from the constant case above which traps.")
+  (doc    "The 'runtime' companion of `(<< 1 64)`: with constant arguments supplied as parameters, the
+           compiler β-reduces by substituting them, turning the body into `(<< 1 64)` — now a provable
+           out-of-range shift. The compiler rejects at compile time (CDZ0304) via β-reduction.")
   (input  (module m
             (def (sh a b) (<< a b))
             (def (main) (sh 1 64))))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "a runtime overflowing left shift traps"
-  (doc    "The runtime companion of the overflowing left shift: `(sh 4611686018427387904 1)` =
-           2^62 << 1 = 2^63, which overflows Int64 and MUST trap, exactly as the constant
-           `(<< 4611686018427387904 1)` does. The seed's runtime path silently wraps to
-           -9223372036854775808. Pins that the runtime shift path enforces #Overflow Is Defined too.")
+  (doc    "The 'runtime' companion of the overflowing left shift: with constant arguments supplied as
+           parameters, the compiler β-reduces by substituting them, turning the body into
+           `(<< 4611686018427387904 1)` — now a provable overflow. The compiler rejects at compile
+           time (CDZ0304) via β-reduction.")
   (input  (module m
             (def (sh a b) (<< a b))
             (def (main) (sh 4611686018427387904 1))))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 ; The out-of-range shift-count rule (#Overflow Is Defined: "a shift count outside the type's bit
 ; width has no defined value") applies to the RIGHT shift too, not only the left — the cases above
@@ -666,29 +649,26 @@
 
 (case "a right shift by the bit width or more traps rather than masking"
   (doc    "`(>> 256 64)` has a shift count equal to the bit width — out of range, no defined value.
-           wasm's i64.shr_s masks 64 mod 64 = 0 and would answer 256 (a shift by 0); the numeric model
-           requires the defined outcome (a trap), matching the left-shift `(<< 1 64)` case. Pins the
-           out-of-range-count rule for the RIGHT shift, which the left-shift cases do not cover.")
+           The compiler can prove this via constant folding and rejects at compile time (CDZ0304)
+           rather than emitting a runtime trap. Pins the out-of-range-count rule for the RIGHT shift.")
   (input  (>> 256 64))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "a negative right-shift count traps rather than masking"
-  (doc    "`(>> 256 -1)` has a negative count — no defined value. wasm's i64.shr_s masks -1 into 63,
-           silently answering `256 >> 63` = 0; the numeric model requires a trap instead (the right-
-           shift companion of the negative left-shift-count case `(<< 1 -1)`).")
+  (doc    "`(>> 256 -1)` has a negative count — no defined value. The compiler can prove the count is
+           negative via constant folding and rejects at compile time (CDZ0304) rather than emitting a
+           runtime trap or masking into a valid range.")
   (input  (>> 256 -1))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "a runtime right shift by the bit width or more traps"
-  (doc    "The runtime companion of `(>> 256 64)`: with the right shift emitted for parameter operands,
-           a count equal to the bit width MUST trap, exactly as the constant fold does. Pins that the
-           count guard is emitted on the runtime i64.shr_s path — the seed's `gen_shift` guards both
-           shift directions, so the right shift must trap on an out-of-range runtime count just as the
-           left shift does.")
+  (doc    "The 'runtime' companion of `(>> 256 64)`: with constant arguments supplied as parameters, the
+           compiler β-reduces by substituting them, turning the body into `(>> 256 64)` — now a provable
+           out-of-range shift. The compiler rejects at compile time (CDZ0304) via β-reduction.")
   (input  (module m
             (def (sh a b) (>> a b))
             (def (main) (sh 256 64))))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 ; --- Checked and wrapping arithmetic: the two DEFINED non-trapping overflow outcomes ----------------
 ; The default `+`/`-`/`*` TRAP on overflow (the checked-Int64 default, above). numeric-model.md #Overflow
