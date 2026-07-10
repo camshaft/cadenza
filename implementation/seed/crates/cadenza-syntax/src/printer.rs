@@ -308,19 +308,17 @@ impl<'a> Printer<'a> {
         self.doc.word("match ");
         self.expr(args[0], 0);
         self.doc.word(" {");
-        // Arms are comma-SEPARATED: a comma sits between arms, none after the last. Each arm is
-        // preceded by a break, so a consistent box puts one arm per line when it breaks and packs
-        // them (`{ a => 1, b => 2 }`) when it fits.
-        for (i, &arm) in args[1..].iter().enumerate() {
-            if i > 0 {
-                self.doc.word(",");
-            }
-            self.doc.space();
+        // Match arms ALWAYS go one per line (ML/Rust convention — arms are never packed onto a
+        // line, even when they'd fit), each with a trailing comma, and the closing `}` dedents to
+        // the `match` column.
+        for &arm in &args[1..] {
+            self.doc.hardbreak();
             if let Struct::List(pair) = self.a.get(arm) {
                 let (pat, body) = (pair[0], pair[1]);
                 self.pattern(pat);
                 self.doc.word(" => ");
                 self.expr(body, 0);
+                self.doc.word(",");
             }
         }
         self.doc.break_with(1, -INDENT);
@@ -566,10 +564,11 @@ mod tests {
     }
 
     #[test]
-    fn match_one_arm_per_line_when_broken() {
-        let out = assert_roundtrip("match e { Some(n) => n, None => 0, _ => neg }", 20);
-        assert!(out.contains("match e {\n"), "got:\n{out}");
-        assert!(out.contains("  Some(n) => n,"), "got:\n{out}");
+    fn match_always_one_arm_per_line() {
+        // Arms go one per line even at a WIDE width where they would fit on one line — the ML/Rust
+        // convention, never packed.
+        let out = assert_roundtrip("match e { Some(n) => n, None => 0, _ => neg }", 200);
+        assert_eq!(out, "match e {\n  Some(n) => n,\n  None => 0,\n  _ => neg,\n}", "got:\n{out}");
     }
 
     #[test]
