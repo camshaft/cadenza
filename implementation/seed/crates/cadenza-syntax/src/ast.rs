@@ -185,6 +185,26 @@ impl Arenas {
             _ => None,
         }
     }
+
+    /// Structural (denotational) equality with another arena: do the two `root`s denote the same
+    /// tree of leaves? This is the right comparison for round-trips — the raw `Arenas` fields differ
+    /// after a round-trip (leaf interning order, occurrence numbering) even when the programs are
+    /// identical, so `derive(PartialEq)` is too strict. Canonical form (`canon`) is the alternative,
+    /// but this direct walk needs no rewrite.
+    pub fn structurally_eq(&self, other: &Arenas) -> bool {
+        self.node_eq(self.root, other, other.root)
+    }
+
+    fn node_eq(&self, a: StructId, other: &Arenas, b: StructId) -> bool {
+        match (self.get(a), other.get(b)) {
+            (Struct::Atom(la), Struct::Atom(lb)) => self.leaf(*la) == other.leaf(*lb),
+            (Struct::List(xs), Struct::List(ys)) => {
+                xs.len() == ys.len()
+                    && xs.iter().zip(ys).all(|(&x, &y)| self.node_eq(x, other, y))
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -49,8 +49,10 @@ pub struct Doc {
     tokens: Vec<Token>,
 }
 
-/// A break wide enough that it can never fit, so it always fires (the forced-newline idiom).
-const HARDBREAK_WIDTH: usize = usize::MAX / 4;
+/// A break's flat width when it is a hard break: larger than any real line width, so a box
+/// containing it never "fits" and thus breaks — but small (Oppen's `0xffff` sentinel) so summing
+/// many of them into the running total cannot overflow. Callers must use a width below this.
+const HARDBREAK_WIDTH: usize = 0xffff;
 
 impl Doc {
     pub fn new() -> Doc {
@@ -119,7 +121,7 @@ impl Doc {
                 Token::Text(s) => {
                     let w = s.chars().count() as isize;
                     size[i] = w;
-                    total += w;
+                    total = total.saturating_add(w);
                 }
                 Token::Begin { .. } => {
                     // placeholder: resolved at the matching End
@@ -137,7 +139,7 @@ impl Doc {
                     }
                     size[i] = -total;
                     stack.push(i);
-                    total += flat_break_width(*blank_space);
+                    total = total.saturating_add(flat_break_width(*blank_space));
                 }
                 Token::End => {
                     // Resolve a trailing pending break, then the matching Begin.

@@ -444,9 +444,56 @@ impl<'a> Parser<'a> {
 
     // ---- structural pattern grammar ----
 
-    /// A structural pattern occurrence: a literal, a binding, `_`, or a (possibly dotted)
-    /// constructor optionally applied to sub-patterns. Never a predicate.
+    /// A structural pattern occurrence. A pattern's tree is a plain `(head child…)` form (the same
+    /// shape the pattern printer emits): a head atom — a literal, a binding/wildcard name, a
+    /// backtick name, or a grouped sub-pattern — followed by an optional `.member` chain and/or a
+    /// `(sub-pattern, …)` application, left-nested. It is never an infix expression. This mirrors
+    /// the printer exactly, so constructor patterns (`Some(x)`), dotted constructors (`Sign.Neg`),
+    /// literal-headed forms (`1(v)`), and quoted patterns (`quasiquote(…)`) all parse uniformly.
     fn pattern(&mut self) -> StructId {
+        let start = self.cur_span();
+        let mut node = self.pattern_atom();
+        loop {
+            match self.kind() {
+                Kind::Dot if matches!(self.nth_kind(1), Kind::Ident | Kind::BacktickName) => {
+                    self.bump(); // '.'
+                    let seg_span = self.cur_span();
+                    let seg_t = self.bump().unwrap();
+                    let seg = match seg_t.kind {
+                        Kind::BacktickName => {
+                            self.name(literal::unescape_backtick_name(self.text(seg_t)), seg_span)
+                        }
+                        _ => self.name(self.text(seg_t), seg_span),
+                    };
+                    let dot_span = start.merge(self.prev_span());
+                    let dot = self.name(".", dot_span);
+                    node = self.list(vec![dot, node, seg], dot_span);
+                }
+                Kind::LParen => {
+                    self.bump();
+                    let mut items = vec![node];
+                    if !self.at(Kind::RParen) {
+                        loop {
+                            items.push(self.pattern());
+                            if self.at(Kind::Comma) {
+                                self.bump();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Kind::RParen, "`)`");
+                    let span = start.merge(self.prev_span());
+                    node = self.list(items, span);
+                }
+                _ => break,
+            }
+        }
+        node
+    }
+
+    /// The head atom of a pattern (before any `.member` / application postfix).
+    fn pattern_atom(&mut self) -> StructId {
         let span = self.cur_span();
         match self.kind() {
             Kind::Int | Kind::Float => {
@@ -461,9 +508,19 @@ impl<'a> Parser<'a> {
                 let t = self.bump().unwrap();
                 self.name(literal::unescape_backtick_name(self.text(t)), span)
             }
-            Kind::Ident => self.constructor_or_binding_pattern(),
+            Kind::Ident => {
+                let t = self.bump().unwrap();
+                let word = self.text(t);
+                // A word that heads a `.member` chain or an application is a constructor NAME; a
+                // bare word that is a literal in shape (`true`/`false`/number) is a LITERAL pattern
+                // (matching the oracle); any other bare word is a binding/wildcard name.
+                if self.at(Kind::Dot) || self.at(Kind::LParen) {
+                    self.name(word, span)
+                } else {
+                    self.atom(literal::classify_word(word), span)
+                }
+            }
             Kind::LParen => {
-                // grouped sub-pattern
                 self.bump();
                 let inner = if self.at(Kind::RParen) {
                     let s = self.cur_span();
@@ -481,47 +538,6 @@ impl<'a> Parser<'a> {
                 }
                 self.error_node(span)
             }
-        }
-    }
-
-    /// An identifier pattern: a binding/wildcard name, a nullary constructor, a dotted constructor
-    /// (`Sign.Neg`), or a constructor applied to sub-patterns (`Some(p, …)` -> `(Some p …)`).
-    fn constructor_or_binding_pattern(&mut self) -> StructId {
-        let start = self.cur_span();
-        // head name, possibly dotted: build `(. a b)` chain like the member accessor
-        let t = self.bump().unwrap();
-        let mut head = self.name(self.text(t), start);
-        while self.at(Kind::Dot) && matches!(self.nth_kind(1), Kind::Ident | Kind::BacktickName) {
-            self.bump(); // '.'
-            let seg_span = self.cur_span();
-            let seg_t = self.bump().unwrap();
-            let seg = match seg_t.kind {
-                Kind::BacktickName => self.name(literal::unescape_backtick_name(self.text(seg_t)), seg_span),
-                _ => self.name(self.text(seg_t), seg_span),
-            };
-            let dot_span = start.merge(self.prev_span());
-            let dot = self.name(".", dot_span);
-            head = self.list(vec![dot, head, seg], dot_span);
-        }
-        if self.at(Kind::LParen) {
-            // constructor applied to sub-patterns
-            self.bump();
-            let mut items = vec![head];
-            if !self.at(Kind::RParen) {
-                loop {
-                    items.push(self.pattern());
-                    if self.at(Kind::Comma) {
-                        self.bump();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            self.expect(Kind::RParen, "`)`");
-            let span = start.merge(self.prev_span());
-            self.list(items, span)
-        } else {
-            head
         }
     }
 

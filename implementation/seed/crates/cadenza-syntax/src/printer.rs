@@ -199,7 +199,10 @@ impl<'a> Printer<'a> {
         }
         self.doc.end();
         self.doc.word(" in");
-        self.doc.space();
+        // The body always starts a new line at the `let`'s own column (offset 0, not indented), so
+        // a chain of `let … in` reads as a flat sequence. This is the ML idiom for an
+        // expression-only language where `let … in` is pervasive.
+        self.doc.hardbreak();
         self.expr(args[1], 0);
         if paren {
             self.doc.word(")");
@@ -264,14 +267,19 @@ impl<'a> Printer<'a> {
         self.doc.word("match ");
         self.expr(args[0], 0);
         self.doc.word(" {");
-        for &arm in &args[1..] {
+        // Arms are comma-SEPARATED: a comma sits between arms, none after the last. Each arm is
+        // preceded by a break, so a consistent box puts one arm per line when it breaks and packs
+        // them (`{ a => 1, b => 2 }`) when it fits.
+        for (i, &arm) in args[1..].iter().enumerate() {
+            if i > 0 {
+                self.doc.word(",");
+            }
             self.doc.space();
             if let Struct::List(pair) = self.a.get(arm) {
                 let (pat, body) = (pair[0], pair[1]);
                 self.pattern(pat);
                 self.doc.word(" => ");
                 self.expr(body, 0);
-                self.doc.word(",");
             }
         }
         self.doc.break_with(1, -INDENT);
@@ -464,7 +472,8 @@ mod tests {
         assert_eq!(assert_roundtrip("f(a, b, c)", 80), "f(a, b, c)");
         assert_eq!(assert_roundtrip("a.b.c", 80), "a.b.c");
         assert_eq!(assert_roundtrip("if a then b else c", 80), "if a then b else c");
-        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in x");
+        // `let … in` always breaks the body to its own line at the let column (ML idiom).
+        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
         assert_eq!(assert_roundtrip("fn(x, y) => x + y", 80), "fn(x, y) => x + y");
     }
 

@@ -198,8 +198,15 @@ impl<'a> Lexer<'a> {
     /// vs Name from the exact text.
     fn number(&mut self, a: Char) -> Token {
         let mut end = a.span;
-        // radix prefix `0x` / `0b` (only when `a` is the `0`).
-        if a.value == '0' && matches!(self.peek(), Some('x' | 'X' | 'b' | 'B')) {
+        // For a `-0x…`/`-0b…` (the `minus` path, `a` is the `-`), consume the `0` so the radix
+        // prefix `x`/`b` becomes the current char, exactly as when `a` is the bare `0`.
+        if a.value == '-' && self.peek() == Some('0') && matches!(self.peek2(), Some('x' | 'X' | 'b' | 'B')) {
+            end = self.bump().unwrap().span; // the `0`
+        }
+        // radix prefix: current char is x/X/b/B, and the char before it was `0` (either `a` itself,
+        // or the `0` just consumed on the `-0` path).
+        let after_zero = a.value == '0' || (a.value == '-' && end != a.span);
+        if after_zero && matches!(self.peek(), Some('x' | 'X' | 'b' | 'B')) {
             end = self.bump().unwrap().span; // x/b
             while matches!(self.peek(), Some(c) if c.is_ascii_hexdigit() || c == '_') {
                 end = self.bump().unwrap().span;
