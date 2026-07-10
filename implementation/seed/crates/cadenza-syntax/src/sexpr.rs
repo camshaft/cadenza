@@ -12,7 +12,7 @@
 //! arbitrary-precision `Int` and an exact `Decimal` (no `i64`/`f64` ceiling). The ML lexer MUST
 //! classify literals identically to this, or the round-trip fails.
 
-use crate::ast::{Arenas, Builder, Leaf, StructId};
+use crate::ast::{Arenas, Builder, Leaf, Struct, StructId};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug)]
@@ -52,6 +52,50 @@ pub fn read_all(text: &str) -> Result<Arenas, ReadError> {
     items.extend(roots);
     let root = b.list(items);
     Ok(b.finish(root))
+}
+
+// ============================================================================
+// Printer: Arenas -> s-expression text. The direct code-as-data rendering, and the dual of the
+// reader above (it re-reads to a structurally-equal arena).
+// ============================================================================
+
+/// Render `arenas` as an s-expression string.
+pub fn print(arenas: &Arenas) -> String {
+    let mut out = String::new();
+    print_node(arenas, arenas.root, &mut out);
+    out
+}
+
+fn print_node(a: &Arenas, id: StructId, out: &mut String) {
+    match a.get(id) {
+        Struct::Atom(l) => print_leaf(a.leaf(*l), out),
+        Struct::List(items) => {
+            out.push('(');
+            for (i, &child) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                print_node(a, child, out);
+            }
+            out.push(')');
+        }
+    }
+}
+
+fn print_leaf(leaf: &Leaf, out: &mut String) {
+    match leaf {
+        Leaf::Int { value, radix } => out.push_str(&crate::literal::render_int(value, *radix)),
+        Leaf::Float(d) => out.push_str(&crate::literal::render_decimal(d)),
+        Leaf::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Leaf::Str(s) => {
+            out.push('"');
+            out.push_str(&crate::literal::escape_string(s));
+            out.push('"');
+        }
+        // A name is written verbatim. (The s-expr surface has no reserved words — `let`, `+`, `|`
+        // are all ordinary atoms — so no escaping is needed here, unlike the ML surface.)
+        Leaf::Name(n) => out.push_str(n),
+    }
 }
 
 struct Reader<'a, 'b> {
@@ -220,7 +264,7 @@ fn is_dotted_name(tok: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Decimal, Radix, Struct};
+    use crate::ast::{Decimal, Radix};
     use num_bigint::BigInt;
     use std::str::FromStr;
 
@@ -228,6 +272,30 @@ mod tests {
     fn reads_a_form() {
         let a = read("(+ 1 2)").unwrap();
         assert_eq!(a.head_name(a.root), Some("+"));
+    }
+
+    /// print∘read is stable: reading printed text yields a structurally-equal arena, and printing
+    /// it again is byte-identical (the s-expr surface is its own canonical form).
+    #[test]
+    fn print_reads_back() {
+        for src in [
+            "(+ 1 2)",
+            "(let ((p (record (x 1) (y 2)))) (. p x))",
+            "(match e ((Some n) n) ((None _) 0))",
+            "42",
+            "0x2A",
+            "1.5",
+            "-0.25",
+            "\"a\\nb\"",
+            "true",
+            "(f a b c)",
+            "(quasiquote (unquote x))",
+        ] {
+            let a = read(src).unwrap();
+            let printed = print(&a);
+            let b = read(&printed).unwrap();
+            assert_eq!(print(&b), printed, "print∘read stable for {src:?} (printed {printed:?})");
+        }
     }
 
     #[test]

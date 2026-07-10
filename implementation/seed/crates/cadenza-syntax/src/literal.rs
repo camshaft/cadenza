@@ -122,7 +122,23 @@ pub fn parse_float(tok: &str) -> Option<Decimal> {
         let e_val = i64::from_str(e).ok()?;
         exponent = exponent.checked_add(e_val)?;
     }
-    Some(Decimal { negative: neg, significand, exponent })
+    Some(normalize_decimal(neg, significand, exponent))
+}
+
+/// Put a decimal in canonical form: one representation per value, so render∘parse is identity.
+/// Trailing zeros of the significand move into the exponent (`150 * 10^-1` == `15 * 10^0`), and a
+/// zero significand canonicalizes to exponent 0 (preserving the sign, so `-0.0` stays negative).
+fn normalize_decimal(negative: bool, mut significand: BigInt, mut exponent: i64) -> Decimal {
+    use num_bigint::Sign;
+    if significand.sign() == Sign::NoSign {
+        return Decimal { negative, significand, exponent: 0 };
+    }
+    let ten = BigInt::from(10);
+    while (&significand % &ten).sign() == Sign::NoSign {
+        significand /= &ten;
+        exponent += 1;
+    }
+    Decimal { negative, significand, exponent }
 }
 
 /// Unescape a string literal's INNER content (between the quotes) and NFC-normalize it — the
@@ -176,6 +192,69 @@ pub fn unescape_backtick_name(token: &str) -> String {
             }
         } else {
             out.push(c);
+        }
+    }
+    out
+}
+
+// ============================================================================
+// Rendering — the duals of the parsers above, shared by both surface printers so a leaf renders to
+// text that re-reads to the same leaf (round-trip).
+// ============================================================================
+
+/// Render an integer in the base its text used, so it re-reads to the same `Int` leaf. Hex/bin get
+/// their `0x`/`0b` prefix (with the sign, if any, before the prefix, as the reader accepts).
+pub fn render_int(value: &BigInt, radix: Radix) -> String {
+    use num_bigint::Sign;
+    let (sign, mag) = value.to_bytes_be();
+    let neg = matches!(sign, Sign::Minus);
+    let digits = match radix {
+        Radix::Dec => BigInt::from_bytes_be(num_bigint::Sign::Plus, &mag).to_str_radix(10),
+        Radix::Hex => format!("0x{}", BigInt::from_bytes_be(num_bigint::Sign::Plus, &mag).to_str_radix(16)),
+        Radix::Bin => format!("0b{}", BigInt::from_bytes_be(num_bigint::Sign::Plus, &mag).to_str_radix(2)),
+    };
+    if neg { format!("-{digits}") } else { digits }
+}
+
+/// Render an exact `Decimal` as the shortest text that re-parses to the same value. Always contains
+/// a `.` or exponent so it re-lexes as a Float, never an Int. `nan`/`inf` are not `Decimal`s (they
+/// are names), so this only ever renders a finite value; `-0.0` prints with its sign.
+pub fn render_decimal(d: &Decimal) -> String {
+    let sign = if d.negative { "-" } else { "" };
+    let digits = d.significand.to_str_radix(10); // non-negative magnitude
+    // Place the decimal point per the base-10 exponent: value = digits * 10^exponent.
+    let text = if d.exponent == 0 {
+        // integer-valued: force a fractional part so it lexes as a float
+        format!("{digits}.0")
+    } else if d.exponent > 0 {
+        // shift left: append zeros, then `.0`
+        let zeros = "0".repeat(d.exponent as usize);
+        format!("{digits}{zeros}.0")
+    } else {
+        // exponent < 0: place a decimal point `-exponent` digits from the right
+        let frac = (-d.exponent) as usize;
+        if digits.len() > frac {
+            let point = digits.len() - frac;
+            format!("{}.{}", &digits[..point], &digits[point..])
+        } else {
+            let pad = "0".repeat(frac - digits.len());
+            format!("0.{pad}{digits}")
+        }
+    };
+    format!("{sign}{text}")
+}
+
+/// Escape a string's contents for a `"…"` literal (the dual of [`unescape_string`]).
+pub fn escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
         }
     }
     out
@@ -252,5 +331,39 @@ mod tests {
         assert_eq!(classify_word("1_"), Leaf::Name("1_".to_string()));
         // Keywords are ordinary names here — the parser decides keyword-ness.
         assert_eq!(classify_word("let"), Leaf::Name("let".to_string()));
+    }
+
+    #[test]
+    fn int_render_reparses() {
+        for (v, r) in [
+            (42i64, Radix::Dec), (42, Radix::Hex), (42, Radix::Bin),
+            (-16, Radix::Hex), (0, Radix::Dec), (255, Radix::Hex), (-1, Radix::Dec),
+        ] {
+            let value = BigInt::from(v);
+            let text = render_int(&value, r);
+            assert_eq!(parse_int(&text), Some((value, r)), "render {v} base {r:?} -> {text}");
+        }
+    }
+
+    #[test]
+    fn float_render_reparses() {
+        for d in [
+            Decimal { negative: false, significand: BigInt::from(15), exponent: -1 }, // 1.5
+            Decimal { negative: false, significand: BigInt::from(15), exponent: 9 },   // 15e9
+            Decimal { negative: true, significand: BigInt::from(25), exponent: -2 },   // -0.25
+            Decimal { negative: false, significand: BigInt::from(5), exponent: 0 },    // 5.0
+            Decimal { negative: true, significand: BigInt::from(0u32), exponent: 0 },  // -0.0
+            Decimal { negative: false, significand: BigInt::from(1), exponent: -10 },  // 0.0000000001
+        ] {
+            let text = render_decimal(&d);
+            assert_eq!(parse_float(&text), Some(d.clone()), "render {d:?} -> {text}");
+        }
+    }
+
+    #[test]
+    fn string_escape_reparses() {
+        for s in ["hello", "a\nb", "tab\there", "quote\"inside", "back\\slash", ""] {
+            assert_eq!(unescape_string(&escape_string(s)), s);
+        }
     }
 }
