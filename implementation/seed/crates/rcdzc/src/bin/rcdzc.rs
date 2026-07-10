@@ -13,6 +13,7 @@
 //!   rcdzc <input.ast>… [--target wasm]… [-o OUT]
 //!   rcdzc kind:name=path.ast --target wasm -o build/
 //!   rcdzc main.ast -o out/hello.wasm       # single output → an exact file path
+//!   rcdzc - -o -                           # stdin → stdout: composes in a pipe (single artifact)
 //!
 //! An input is `path`, `name=path`, or `kind:name=path`; kind defaults to `ast`, name to the file
 //! stem. `-o` is a DIRECTORY into which each artifact is written as `<name>.<ext-for-kind>` — EXCEPT
@@ -62,15 +63,26 @@ impl From<TargetArg> for Target {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // Read each named input artifact from disk.
+    // Read each named input artifact — from disk, or from stdin when the path is `-` (so the bin
+    // composes in a pipe: `… | rcdzc - -o -`). A `-` input takes the kind/name from its spec, both
+    // defaulting to `ast`/`main` since a piped artifact has no file stem to name it after.
     let mut inputs: Vec<Artifact> = Vec::new();
     for spec in &cli.inputs {
         let parsed = parse_input_spec(spec);
-        let bytes = match std::fs::read(&parsed.path) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("rcdzc: cannot read {}: {e}", parsed.path.display());
+        let bytes = if parsed.path.as_os_str() == "-" {
+            let mut buf = Vec::new();
+            if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf) {
+                eprintln!("rcdzc: cannot read stdin: {e}");
                 return ExitCode::FAILURE;
+            }
+            buf
+        } else {
+            match std::fs::read(&parsed.path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("rcdzc: cannot read {}: {e}", parsed.path.display());
+                    return ExitCode::FAILURE;
+                }
             }
         };
         inputs.push(Artifact::new(parsed.kind, parsed.name, bytes));
@@ -94,6 +106,26 @@ fn main() -> ExitCode {
             Some(code) => eprintln!("rcdzc: {sev} [{code}]: {}", d.message),
             None => eprintln!("rcdzc: {sev}: {}", d.message),
         }
+    }
+
+    // `-o -`: write the single produced artifact's bytes to stdout (so the bin composes in a pipe:
+    // `… | rcdzc - -o - | cdz-run`). Only meaningful for a single artifact — a multi-artifact build
+    // has no one stream to write, so that is an error rather than an ambiguous concatenation.
+    if cli.out.as_deref().map(|p| p.as_os_str()) == Some(std::ffi::OsStr::new("-")) {
+        match out.artifacts.as_slice() {
+            [art] => {
+                if let Err(e) = std::io::Write::write_all(&mut std::io::stdout(), &art.bytes) {
+                    eprintln!("rcdzc: cannot write stdout: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            [] => {} // no artifact (errors already reported); fall through to the exit status.
+            many => {
+                eprintln!("rcdzc: `-o -` writes ONE artifact to stdout, but {} were produced", many.len());
+                return ExitCode::FAILURE;
+            }
+        }
+        return if out.has_error() { ExitCode::FAILURE } else { ExitCode::SUCCESS };
     }
 
     // Decide whether `-o` names an exact output FILE (single artifact, not an existing directory) or

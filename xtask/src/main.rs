@@ -36,12 +36,25 @@ enum Cmd {
         #[arg(long)]
         store: Option<PathBuf>,
     },
+    /// Compile a Cadenza program and run it, printing the result — the whole pipeline end-to-end:
+    /// surface → binary AST (cadenza-syntax) → component (rcdzc) → run (cdz-run).
+    Run {
+        /// The Cadenza program file to compile and run.
+        file: PathBuf,
+        /// The input surface. Defaults to `sexpr` (what `.cdz`/`.sexp` files carry).
+        #[arg(long, default_value = "sexpr")]
+        from: String,
+        /// Content-addressed store the runtime is resolved from. [default: <repo>/target/cadenza-store]
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
 }
 
 fn main() {
     let paths = Paths::resolve();
     match Cli::parse().command {
         Cmd::Build { store } => build(&paths, store),
+        Cmd::Run { file, from, store } => run(&paths, &file, &from, store),
     }
 }
 
@@ -94,6 +107,88 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     println!("\n== xtask: done ==");
     println!("   store:   {}", store.display());
     println!("   runtime: {runtime_hash}");
+}
+
+/// Compile a Cadenza program and run it — the whole pipeline end-to-end, delegating each stage to
+/// its binary (xtask pulls in none of them as a library; it only choreographs):
+///   1. `cdz-syntax` — the program's surface (sexpr/ml) → binary AST.
+///   2. `rcdzc`      — binary AST → a wasm component.
+///   3. `cdz-run`    — instantiate + run the component; its stdout is the result.
+///
+/// The three are wired as a real OS PIPE (each stage's stdout is the next's stdin) — NO temp files,
+/// so concurrent `xtask run` invocations never share or clobber state, and each stage's own stderr
+/// (a parse error, a diagnostic) inherits straight to the terminal. The tools are built ONCE first,
+/// then the built binaries are piped, so the three piped stages don't contend on cargo's build lock.
+/// cdz-run's stdout — the program's result — is inherited to this process's stdout.
+fn run(paths: &Paths, file: &Path, from: &str, store: Option<PathBuf>) {
+    use std::process::{Command, Stdio};
+
+    if !file.exists() {
+        eprintln!("xtask run: no such file: {}", file.display());
+        std::process::exit(1);
+    }
+
+    // Build the three tools once (one cargo invocation), so the pipe below runs the finished
+    // binaries rather than three concurrent `cargo run`s racing the build lock.
+    eprintln!("== xtask run: building the pipeline tools ==");
+    let sh = Shell::new().expect("open a shell");
+    sh.change_dir(&paths.repo);
+    if let Err(e) = cmd!(sh, "cargo build --quiet -p cadenza-syntax -p rcdzc -p cdz-run").run() {
+        eprintln!("xtask run: building the tools failed: {e}");
+        std::process::exit(1);
+    }
+    let bin = paths.repo.join("target/debug");
+
+    // ── The pipe: cdz-syntax <file> | rcdzc - -o - | cdz-run - ──
+    // Stage 1 reads the program file and writes binary AST to stdout.
+    let mut syntax = Command::new(bin.join("cdz-syntax"))
+        .args(["--from", from, "--to", "binary"])
+        .arg(file)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+
+    // Stage 2 reads AST from stage 1's stdout, writes the component to stdout.
+    let mut rcdzc = Command::new(bin.join("rcdzc"))
+        .args(["-", "-o", "-"])
+        .stdin(Stdio::from(syntax.stdout.take().expect("cdz-syntax stdout")))
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("rcdzc", e));
+
+    // Stage 3 reads the component from stage 2's stdout, runs it, and prints the result to OUR
+    // stdout (inherited). The store the runtime is resolved from is forwarded when given.
+    let mut run = Command::new(bin.join("cdz-run"));
+    run.arg("-").stdin(Stdio::from(rcdzc.stdout.take().expect("rcdzc stdout")));
+    if let Some(dir) = &store {
+        run.arg("--store").arg(dir);
+    }
+    let mut run = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
+
+    // Wait on every stage; the first that fails determines the exit code. Waiting on all (rather
+    // than short-circuiting) reaps each child and lets its stderr finish flushing to the terminal.
+    let statuses = [
+        ("cdz-syntax", syntax.wait()),
+        ("rcdzc", rcdzc.wait()),
+        ("cdz-run", run.wait()),
+    ];
+    for (stage, status) in statuses {
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+            Err(e) => {
+                eprintln!("xtask run: {stage} did not complete: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// A stage's binary could not be spawned at all (missing/not-executable) — distinct from it running
+/// and exiting non-zero, which is surfaced by its wait status.
+fn launch_fail(stage: &str, e: std::io::Error) -> ! {
+    eprintln!("xtask run: could not launch {stage}: {e}");
+    std::process::exit(1);
 }
 
 /// SHA-256 of the bytes, lowercase hex (the recorded hashing choice).
