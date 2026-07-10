@@ -442,6 +442,33 @@ impl<'a> Infer<'a> {
                     self.unify_at(&tk.ty, &key, "map keys must all have the same type")?;
                     self.unify_at(&tv.ty, &val, "map values must all have the same type")?;
                 }
+
+                // Duplicate key check: if all keys are CONSTANT (Int/Bool/String literals), check for
+                // duplicates at compile time (a type error per 05-compound-types.sexp "a map with a
+                // duplicate key is a type error"). This is a STATIC check — keys must be compile-time
+                // constants to detect duplicates here; runtime-computed keys are unchecked (the runtime
+                // map implementation will silently overwrite, which is the correct semantic).
+                use std::collections::HashSet;
+                let mut seen_keys: HashSet<String> = HashSet::new();
+                for (tk, _) in &tentries {
+                    // Extract the key's CONSTANT value if it's a literal (Int/Bool/String).
+                    let key_repr = match &tk.node {
+                        TypedNode::Int(n) => Some(format!("Int:{}", n)),
+                        TypedNode::Bool(b) => Some(format!("Bool:{}", b)),
+                        TypedNode::Str(s) => Some(format!("String:{}", s)),
+                        _ => None, // Non-constant key — skip duplicate check
+                    };
+                    if let Some(k) = key_repr {
+                        if !seen_keys.insert(k.clone()) {
+                            // Duplicate key detected
+                            return Err(Reject::coded(
+                                Code::TypeError,
+                                format!("map has duplicate key: {}", k),
+                            ));
+                        }
+                    }
+                }
+
                 Ok(Typed {
                     node: TypedNode::Map(tentries),
                     ty: Ty::Map(Box::new(key), Box::new(val)),
@@ -581,6 +608,36 @@ impl<'a> Infer<'a> {
             Hir::Cmp(op, a, b) => {
                 let ta = self.expr(a)?;
                 let tb = self.expr(b)?;
+
+                // BEFORE unifying, check for INCOMPATIBLE type-category comparisons that should be
+                // explicit type errors (not just unification failures). Example: comparing a Map to a
+                // Record is a type error (05-compound-types.sexp "comparing a map to a record is a
+                // type error"). Unify would reject this anyway, but with a generic "types don't match"
+                // message; we want a SPECIFIC diagnostic.
+                let solved_a = self.subst.apply(&ta.ty);
+                let solved_b = self.subst.apply(&tb.ty);
+                match (&solved_a, &solved_b) {
+                    (Ty::Map(..), Ty::Record(_)) | (Ty::Record(_), Ty::Map(..)) => {
+                        return Err(Reject::coded(
+                            Code::TypeError,
+                            "comparing a map to a record is a type error".to_string(),
+                        ));
+                    }
+                    (Ty::Map(..), _) if !matches!(solved_b, Ty::Map(..) | Ty::Var(_)) => {
+                        return Err(Reject::coded(
+                            Code::TypeError,
+                            format!("cannot compare a map to a {:?}", solved_b),
+                        ));
+                    }
+                    (_, Ty::Map(..)) if !matches!(solved_a, Ty::Map(..) | Ty::Var(_)) => {
+                        return Err(Reject::coded(
+                            Code::TypeError,
+                            format!("cannot compare a {:?} to a map", solved_a),
+                        ));
+                    }
+                    _ => {}
+                }
+
                 self.unify_at(
                     &ta.ty,
                     &tb.ty,
