@@ -15,9 +15,24 @@ use wasmtime::{Engine, Store};
 mod render;
 pub use render::render_val;
 
-/// The well-known import a compound-returning program declares; the host composes the value-heap
-/// runtime to satisfy it (component-abi.md §The Value-Heap Runtime Crosses By A Well-Known Import).
+/// The fixed identity of the value-heap runtime interface — the same for every program a generation
+/// emits (component-abi.md §The Value-Heap Runtime Crosses By A Well-Known Import: the interface
+/// identity is fixed at the declared-default location). A program imports it under this name plus a
+/// content-address suffix (below), so this is the PREFIX the runtime import is recognized by.
 const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
+
+/// The required runtime a component records: the exact import name it declares, and the content
+/// address (hash) of the runtime that satisfies it. Per component-abi.md §The Emitted Component
+/// Records Its Required Runtime, a program's runtime import name is `cadenza:runtime/heap@0.0.0+<hash>`
+/// — the fixed interface plus the runtime's content address as semver build-metadata. The host reads
+/// the hash back to resolve the exact runtime (§The Host Resolves The Runtime By Content Address).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeReq {
+    /// The verbatim import name the component declares — the linker MUST bind under exactly this.
+    pub import_name: String,
+    /// The content address (lowercase hex SHA-256) the component requires, extracted from the name.
+    pub hash: String,
+}
 
 /// What a run produced.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,7 +43,7 @@ pub enum Outcome {
     Trap(String),
 }
 
-/// How to run a component: which export, what arguments, and where the value-heap runtime lives.
+/// How to run a component: which export, what arguments, and the value-heap runtime to compose.
 #[derive(Debug, Default, Clone)]
 pub struct RunOpts {
     /// The export to invoke. `None` selects the sole function export (by signature) — the common
@@ -36,8 +51,10 @@ pub struct RunOpts {
     pub export: Option<String>,
     /// Raw, still-untyped argument strings from the CLI; coerced to the export's declared param types.
     pub args: Vec<String>,
-    /// The value-heap runtime component bytes, if the caller resolved one. Required only when the
-    /// component imports `cadenza:runtime/heap`.
+    /// The value-heap runtime component bytes the caller resolved BY CONTENT ADDRESS. Required only
+    /// when the component records a required runtime (see [`required_runtime`]); the caller is
+    /// responsible for having fetched the runtime whose content address matches, and for binding it
+    /// under the component's exact import name.
     pub runtime: Option<Vec<u8>>,
 }
 
@@ -56,13 +73,13 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
 
     let mut linker: Linker<()> = Linker::new(&engine);
 
-    // If the component imports the value-heap runtime, satisfy that import by forwarding every
-    // function the runtime's `cadenza:runtime/heap` instance exports. The function set is DISCOVERED
-    // from the runtime component's own type — never a hard-coded list — so it can never drift from
-    // the runtime the caller actually supplied.
+    // If the component records a required runtime, satisfy that import by forwarding every function
+    // the runtime's heap interface exports. The linker binds under the component's EXACT import name
+    // (the hashed one), while the function set is DISCOVERED from the runtime component's own type —
+    // never a hard-coded list — so it can never drift from the runtime the caller supplied.
     let mut store = Store::new(&engine, ());
-    if component_imports_runtime(&engine, &component) {
-        compose_runtime(&engine, &mut store, &mut linker, opts)?;
+    if let Some(req) = find_runtime_req(&engine, &component) {
+        compose_runtime(&engine, &mut store, &mut linker, &req, opts)?;
     }
 
     let instance =
@@ -101,28 +118,65 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
     }
 }
 
-/// Does `component` import the value-heap runtime interface?
-fn component_imports_runtime(engine: &Engine, component: &Component) -> bool {
-    component.component_type().imports(engine).any(|(name, _)| name == RUNTIME_IFACE)
+/// The required runtime a `component` records, if any: its runtime import (recognized by the fixed
+/// `cadenza:runtime/heap` interface prefix) and the content address carried in that import name.
+/// A component with no such import produces `None` (a scalar/const program needs no runtime).
+pub fn required_runtime(component_bytes: &[u8]) -> Result<Option<RuntimeReq>> {
+    let engine = Engine::default();
+    let component =
+        Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    Ok(find_runtime_req(&engine, &component))
+}
+
+/// Find the runtime import on `component` and parse its content-address suffix into a [`RuntimeReq`].
+fn find_runtime_req(engine: &Engine, component: &Component) -> Option<RuntimeReq> {
+    component
+        .component_type()
+        .imports(engine)
+        .map(|(name, _)| name.to_string())
+        .find(|name| import_is_runtime(name))
+        .map(|import_name| {
+            let hash = hash_from_import(&import_name);
+            RuntimeReq { import_name, hash }
+        })
+}
+
+/// Is `name` the value-heap runtime import? It is `cadenza:runtime/heap` optionally followed by a
+/// version/build-metadata suffix (`@…`) — so match the interface up to the version boundary.
+fn import_is_runtime(name: &str) -> bool {
+    name == RUNTIME_IFACE || name.starts_with(&format!("{RUNTIME_IFACE}@"))
+}
+
+/// The content address recorded in a runtime import name. The name is
+/// `cadenza:runtime/heap@<semver>+<hash>`; the hash is the semver build-metadata (after `+`). An
+/// import with no `+<hash>` (an unpinned interface) yields an empty string — no content address recorded.
+fn hash_from_import(name: &str) -> String {
+    name.rsplit_once('+').map(|(_, h)| h.to_string()).unwrap_or_default()
 }
 
 /// Compose the value-heap runtime: instantiate the runtime component, then forward each function its
-/// `cadenza:runtime/heap` export exposes into the program's matching import. The function names are
-/// read off the runtime's own instance type, so the composition always matches the supplied runtime.
+/// heap interface exports into the program's import — bound under the program's EXACT import name
+/// (`req.import_name`, which carries the content-address suffix). The function names are read off the
+/// runtime's own instance type, so the composition always matches the supplied runtime.
 fn compose_runtime(
     engine: &Engine,
     store: &mut Store<()>,
     linker: &mut Linker<()>,
+    req: &RuntimeReq,
     opts: &RunOpts,
 ) -> Result<()> {
-    let runtime_bytes = opts
-        .runtime
-        .as_deref()
-        .ok_or_else(|| anyhow!("component imports {RUNTIME_IFACE} but no runtime was provided (pass --runtime, or build the store with `cargo xtask build`)"))?;
+    let runtime_bytes = opts.runtime.as_deref().ok_or_else(|| {
+        anyhow!(
+            "component requires the value-heap runtime {} but none was provided (the host resolves \
+             it by content address from the store; build it with `cargo xtask build`)",
+            req.hash
+        )
+    })?;
     let runtime = Component::new(engine, runtime_bytes)
         .map_err(|e| anyhow!("value-heap runtime component invalid: {e}"))?;
 
-    // Discover the heap functions the runtime exports (name-by-name), off its component type.
+    // Discover the heap functions the runtime exports (name-by-name), off its component type. The
+    // runtime component exports the interface under its plain, un-pinned name `cadenza:runtime/heap`.
     let heap_func_names = heap_interface_funcs(engine, &runtime)?;
 
     let rt_linker: Linker<()> = Linker::new(engine);
@@ -132,8 +186,11 @@ fn compose_runtime(
         .get_export_index(&mut *store, None, RUNTIME_IFACE)
         .ok_or_else(|| anyhow!("runtime does not export {RUNTIME_IFACE}"))?;
 
-    let mut iface =
-        linker.instance(RUNTIME_IFACE).map_err(|e| anyhow!("linker instance {RUNTIME_IFACE}: {e}"))?;
+    // Bind under the program's exact (hashed) import name, not the bare interface — that is the name
+    // the program declared, and the linker matches names verbatim.
+    let mut iface = linker
+        .instance(&req.import_name)
+        .map_err(|e| anyhow!("linker instance {}: {e}", req.import_name))?;
     for fname in &heap_func_names {
         let fidx = rt_instance
             .get_export_index(&mut *store, Some(&heap_idx), fname)
@@ -220,17 +277,6 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
     })
 }
 
-/// Shared: this is a component that imports the value-heap runtime (so a caller knows a runtime is
-/// required before running).
-pub fn needs_runtime(component_bytes: &[u8]) -> Result<bool> {
-    let engine = Engine::default();
-    let component =
-        Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
-    Ok(component_imports_runtime(&engine, &component))
-}
-
-// A tiny witness that the crate wires together; real behavior is exercised end-to-end against
-// components built by `xtask`/`rcdzc` (see the integration checks).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +284,23 @@ mod tests {
     #[test]
     fn empty_bytes_is_invalid() {
         assert!(validate(&[]).is_err());
+    }
+
+    #[test]
+    fn hash_extracted_from_pinned_import() {
+        let name = "cadenza:runtime/heap@0.0.0+abc123";
+        assert!(import_is_runtime(name));
+        assert_eq!(hash_from_import(name), "abc123");
+    }
+
+    #[test]
+    fn bare_interface_import_has_no_hash() {
+        assert!(import_is_runtime(RUNTIME_IFACE));
+        assert_eq!(hash_from_import(RUNTIME_IFACE), "");
+    }
+
+    #[test]
+    fn non_runtime_import_is_not_matched() {
+        assert!(!import_is_runtime("cadenza:host/emit-event"));
     }
 }

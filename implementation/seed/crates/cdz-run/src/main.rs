@@ -1,12 +1,13 @@
 //! `cdz-run` — the generic wasm-component runner CLI.
 //!
-//! `cdz-run <component.wasm> [--call <export>] [--arg <v> …] [--runtime <wasm>]`
+//! `cdz-run <component.wasm> [--call <export>] [--arg <v> …] [--store <dir>]`
 //!
-//! Instantiates the component, composes the value-heap runtime when the component imports it,
-//! invokes the export (the sole function export by default), and prints the rendered result to
+//! Instantiates the component; if it records a required value-heap runtime, resolves that runtime BY
+//! CONTENT ADDRESS from the store (the exact hash the component records — refusing if absent);
+//! invokes the export (the sole function export by default); and prints the rendered result to
 //! stdout. A trap or any error goes to stderr with a non-zero exit — clean to diff in tests.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -27,12 +28,13 @@ struct Cli {
     #[arg(long = "arg", value_name = "VALUE", allow_hyphen_values = true)]
     args: Vec<String>,
 
-    /// The value-heap runtime `.wasm` to compose. Required only if the component imports
-    /// `cadenza:runtime/heap`; if omitted, resolved from the content-addressed store.
+    /// Override the value-heap runtime `.wasm` (escape hatch). Normally the runtime is resolved BY
+    /// CONTENT ADDRESS from the store: the exact hash the component records must be present. This
+    /// bypasses that lookup — use for local runtime debugging, not conformance.
     #[arg(long)]
     runtime: Option<PathBuf>,
 
-    /// The content-addressed store to resolve the runtime from when `--runtime` is not given.
+    /// The content-addressed store to resolve the runtime from (`<store>/<hash>.wasm`).
     /// [default: <repo>/target/cadenza-store]
     #[arg(long)]
     store: Option<PathBuf>,
@@ -53,12 +55,12 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
     let component_bytes = std::fs::read(&cli.component)
         .map_err(|e| anyhow::anyhow!("read component {}: {e}", cli.component.display()))?;
 
-    // Resolve the value-heap runtime ONLY if the component needs it — a scalar/const component
-    // imports nothing and needs no runtime, so a missing store is not an error there.
-    let runtime = if cdz_run::needs_runtime(&component_bytes)? {
-        Some(resolve_runtime(cli)?)
-    } else {
-        None
+    // Resolve the value-heap runtime ONLY if the component records one — a scalar/const component
+    // imports nothing and needs no runtime, so a missing store is not an error there. When it does,
+    // resolve BY CONTENT ADDRESS: the exact hash the component records must be in the store.
+    let runtime = match cdz_run::required_runtime(&component_bytes)? {
+        Some(req) => Some(resolve_runtime(cli, &req)?),
+        None => None,
     };
 
     let opts = cdz_run::RunOpts {
@@ -79,21 +81,58 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
-/// Resolve the value-heap runtime bytes: `--runtime <path>` if given, else the runtime recorded by
-/// the content-addressed store (`<store>/runtime.toml` → `<store>/<hash>.wasm`).
-fn resolve_runtime(cli: &Cli) -> anyhow::Result<Vec<u8>> {
+/// Resolve the value-heap runtime bytes the component requires, BY CONTENT ADDRESS. The component
+/// records the exact hash it was emitted against (component-abi.md §The Emitted Component Records Its
+/// Required Runtime); the host locates `<store>/<hash>.wasm` and REFUSES to run if that exact hash is
+/// absent — never substituting a different runtime (§The Host Resolves The Runtime By Content
+/// Address). `--runtime <path>` is a debugging escape hatch that bypasses the store lookup.
+fn resolve_runtime(cli: &Cli, req: &cdz_run::RuntimeReq) -> anyhow::Result<Vec<u8>> {
     if let Some(path) = &cli.runtime {
         return std::fs::read(path).map_err(|e| anyhow::anyhow!("read --runtime {}: {e}", path.display()));
     }
+
+    if req.hash.is_empty() {
+        return Err(anyhow::anyhow!(
+            "component imports the value-heap runtime but records no content address to resolve it by \
+             (an unpinned runtime import); pass --runtime <path> explicitly"
+        ));
+    }
+
     let store = cli.store.clone().unwrap_or_else(default_store);
-    let path = runtime_from_store(&store).ok_or_else(|| {
-        anyhow::anyhow!(
-            "component imports the value-heap runtime, but no --runtime was given and no runtime was \
-             found in the store at {} (build it with `cargo xtask build`)",
+    let path = store.join(format!("{}.wasm", req.hash));
+    if !path.exists() {
+        return Err(anyhow::anyhow!(
+            "no runtime of content address {} in the store at {} — refusing to run rather than \
+             substitute a different runtime (build the required runtime with `cargo xtask build`)",
+            req.hash,
             store.display()
-        )
-    })?;
-    std::fs::read(&path).map_err(|e| anyhow::anyhow!("read stored runtime {}: {e}", path.display()))
+        ));
+    }
+    let bytes = std::fs::read(&path)
+        .map_err(|e| anyhow::anyhow!("read stored runtime {}: {e}", path.display()))?;
+
+    // Verify the stored bytes actually hash to the required address — a store entry misnamed or
+    // corrupted would otherwise be a silent substitution, exactly what content addressing prevents.
+    let actual = content_address(&bytes);
+    if actual != req.hash {
+        return Err(anyhow::anyhow!(
+            "store entry {} has content address {actual}, not the required {} — refusing",
+            path.display(),
+            req.hash
+        ));
+    }
+    Ok(bytes)
+}
+
+/// SHA-256 of `bytes`, lowercase hex — the store's content-address function (matches xtask).
+fn content_address(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut s = String::with_capacity(64);
+    for b in digest {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }
 
 /// The default content-addressed store: `<repo>/target/cadenza-store`, resolved from this crate's
@@ -101,39 +140,6 @@ fn resolve_runtime(cli: &Cli) -> anyhow::Result<Vec<u8>> {
 fn default_store() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // <repo>/implementation/seed/crates/cdz-run → up 4 → <repo>
-    let repo = manifest
-        .ancestors()
-        .nth(4)
-        .unwrap_or(&manifest)
-        .to_path_buf();
+    let repo = manifest.ancestors().nth(4).unwrap_or(&manifest).to_path_buf();
     repo.join("target/cadenza-store")
-}
-
-/// The runtime `.wasm` a store records: prefer the hash in `runtime.toml`, else the sole `.wasm`.
-fn runtime_from_store(store: &Path) -> Option<PathBuf> {
-    // `runtime.toml` records `runtime = "<hash>"`; the file is `<store>/<hash>.wasm`.
-    if let Ok(toml) = std::fs::read_to_string(store.join("runtime.toml")) {
-        if let Some(hash) = toml
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("runtime = ").map(str::trim))
-            .map(|v| v.trim_matches('"').to_string())
-        {
-            let candidate = store.join(format!("{hash}.wasm"));
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    // Fallback: the sole `.wasm` in the store, if there is exactly one.
-    let mut wasm = None;
-    for entry in std::fs::read_dir(store).ok()?.flatten() {
-        let p = entry.path();
-        if p.extension().is_some_and(|e| e == "wasm") {
-            if wasm.is_some() {
-                return None; // ambiguous
-            }
-            wasm = Some(p);
-        }
-    }
-    wasm
 }
