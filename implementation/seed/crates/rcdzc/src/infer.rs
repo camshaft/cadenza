@@ -46,6 +46,26 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Int(_) => Ty::int(),
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Unit => Ty::Unit,
+        // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
+        Resolved::Ref { value } => type_of(db, value),
+        // A `let`'s type is its body's type (the bindings are compile-time structure that folds away).
+        Resolved::Let { body, .. } => type_of(db, body),
+        // A record's type is the record of its fields' types — each a lazy `type_of` on the value occ.
+        Resolved::Record { fields } => {
+            let mut field_tys = std::collections::BTreeMap::new();
+            for (label, value) in fields {
+                let t = type_of(db, value);
+                field_tys.insert(label, t);
+            }
+            Ty::Record(field_tys)
+        }
+        // Member access projects the field's type from the operand's record type. A non-record operand
+        // or an absent field has no field type — typed `Any` here so it does not cascade; the actual
+        // fault (CDZ0201) is reported by `type_errors`.
+        Resolved::Member { operand, key } => match type_of(db, operand) {
+            Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
+            _ => Ty::Any,
+        },
         Resolved::If { cond, then_, else_ } => {
             // Reading the children's types is the backward demand: each is a lazy `type_of`.
             let _cond_ty = type_of(db, cond);
@@ -71,29 +91,73 @@ pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
 }
 
 fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
-    if let Resolved::If { cond, then_, else_ } = resolved_of(db, id) {
-        let cond_ty = type_of(db, cond);
-        if !cond_ty.agrees_with(&Ty::Bool) {
-            out.push(Reject::coded(
-                Code::TypeMismatch,
-                format!("if condition must be Bool, found {}", cond_ty.render_name()),
-            ));
+    match resolved_of(db, id) {
+        Resolved::If { cond, then_, else_ } => {
+            let cond_ty = type_of(db, cond);
+            if !cond_ty.agrees_with(&Ty::Bool) {
+                out.push(Reject::coded(
+                    Code::TypeMismatch,
+                    format!("if condition must be Bool, found {}", cond_ty.render_name()),
+                ));
+            }
+            let then_ty = type_of(db, then_);
+            let else_ty = type_of(db, else_);
+            if !then_ty.agrees_with(&else_ty) {
+                out.push(Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "if branches differ: {} vs {}",
+                        then_ty.render_name(),
+                        else_ty.render_name()
+                    ),
+                ));
+            }
+            collect(db, cond, out);
+            collect(db, then_, out);
+            collect(db, else_, out);
         }
-        let then_ty = type_of(db, then_);
-        let else_ty = type_of(db, else_);
-        if !then_ty.agrees_with(&else_ty) {
-            out.push(Reject::coded(
-                Code::TypeMismatch,
-                format!(
-                    "if branches differ: {} vs {}",
-                    then_ty.render_name(),
-                    else_ty.render_name()
-                ),
-            ));
+        // Member access: the operand must be a record, and it must have the named field. Both faults
+        // are CDZ0201 (`core-semantics.md` §Member Access Projects A Record Field — projecting a field
+        // of a non-record, or an absent field, has no defined result). The user record is CLOSED (a
+        // missing field rejects) — distinct from an open built-in module (a later stage).
+        Resolved::Member { operand, key } => {
+            match type_of(db, operand) {
+                Ty::Record(fields) => {
+                    if !fields.contains_key(&key) {
+                        out.push(Reject::coded(
+                            Code::Malformed,
+                            format!("record has no field `{}`", key.name),
+                        ));
+                    }
+                }
+                // `Any` is a poison operand — its own fault is already reported; don't double-report.
+                Ty::Any => {}
+                other => out.push(Reject::coded(
+                    Code::Malformed,
+                    format!("member access requires a record, found {}", other.render_name()),
+                )),
+            }
+            collect(db, operand, out);
         }
-        collect(db, cond, out);
-        collect(db, then_, out);
-        collect(db, else_, out);
+        // Descend into the new binding/aggregate forms for their own faults.
+        Resolved::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect(db, value, out);
+            }
+            collect(db, body, out);
+        }
+        Resolved::Record { fields } => {
+            for (_, value) in fields {
+                collect(db, value, out);
+            }
+        }
+        // A ref's fault (if any) lives at the value occurrence, reached when that node is collected on
+        // its own; following it here would re-report. Leaves have no sub-faults.
+        Resolved::Ref { .. }
+        | Resolved::Int(_)
+        | Resolved::Bool(_)
+        | Resolved::Unit
+        | Resolved::Poison(_) => {}
     }
 }
 

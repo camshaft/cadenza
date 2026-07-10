@@ -111,6 +111,14 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // The condition is unconditionally evaluated; the branches are not (they are guarded).
             collect_reached_poisons(db, cond, out);
         }
+        // A record's field values are all unconditionally part of the value — descend into each. (A
+        // record used only to read a field folds away before reaching here; one that survives is a
+        // runtime value whose fields are all reached.)
+        Core::Record { fields } => {
+            for (_, value) in fields {
+                collect_reached_poisons(db, value, out);
+            }
+        }
         Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => {}
     }
 }

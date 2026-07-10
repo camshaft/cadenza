@@ -73,6 +73,10 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         Ty::Int(it) => Some(int_valtype(*it)),
         Ty::Bool => Some(ValType::I32),
         Ty::Unit => None,
+        // A record is a value-heap compound (a handle), not a scalar slot — Stage 1 folds records at
+        // compile time and does not construct one at runtime, so a record reaching a machine slot has
+        // no scalar representation here and DECLINES (the value heap is a later stage).
+        Ty::Record(_) => None,
         // A poison's `Any` type never reaches a real machine slot (a poison fails the build before
         // emission); treat it as no representation rather than guess one.
         Ty::Any => None,
@@ -109,6 +113,9 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         }
         Ty::Bool => Some(0x7F), // bool
         Ty::Unit => None,
+        // A record crosses the boundary as a compound value the runtime holds — deferred to the
+        // value-heap stage; no scalar boundary valtype, so it declines here.
+        Ty::Record(_) => None,
         Ty::Any => None,
     }
 }
