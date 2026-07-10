@@ -298,6 +298,27 @@ mod stage1 {
     }
 
     #[test]
+    fn if_condition_must_be_bool() {
+        // A non-boolean condition is a type error (CDZ0203) — `(if 5 1 2)` has an Int64 condition.
+        let msg = expect_decline("(if 5 1 2)");
+        assert!(msg.contains("condition must be Bool"), "got: {msg}");
+    }
+
+    #[test]
+    fn if_branches_must_agree() {
+        // Branches of differing type are a type error (CDZ0203) — Int64 `then` vs Bool `else`.
+        let msg = expect_decline("(if true 1 true)");
+        assert!(msg.contains("branches differ"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_type_fault_inside_a_let_body_is_still_caught() {
+        // The check descends through a `let` — a bad condition in the body is still reported.
+        let msg = expect_decline("(let ((x 5)) (if x 1 2))");
+        assert!(msg.contains("condition must be Bool"), "got: {msg}");
+    }
+
+    #[test]
     fn duplicate_field_name_is_rejected() {
         // 05-compound-types: (record (a 1) (a 2)) — a record's field names are a SET → CDZ0201. Read a
         // field so the record is reached (a bare record value would decline for the heap first).
