@@ -11,5 +11,6 @@
 pub mod ast;
 pub mod codec;
 pub mod leb128;
+pub mod sexpr;
 
 pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Struct, StructId};
