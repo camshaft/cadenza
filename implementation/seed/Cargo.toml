@@ -14,7 +14,7 @@
 #  memory: cdz-rustc-pure-core-wasm-targetable)
 [workspace]
 resolver = "3"
-members = ["crates/cdz-compiler", "crates/cadenza-seed", "crates/rcdzc"]
+members = ["crates/cdz-compiler", "crates/cadenza-seed", "crates/rcdzc", "crates/cadenza-syntax"]
 # The wasm-component wrapper AND the heap runtime are built separately for the wasm32 target;
 # neither is part of the default native `cargo build` of the seed toolchain.
 exclude = ["crates/cdz-compiler-component", "crates/cdz-runtime"]

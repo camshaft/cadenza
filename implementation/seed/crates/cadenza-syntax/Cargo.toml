@@ -1,0 +1,23 @@
+# cadenza-syntax — the decoupled ML front-end library.
+#
+# Owns ALL front-end tooling: lexer, rowan-based Pratt parser, CST->AST lowering, AST->text
+# printer, the hand-rolled binary codec, and (later) code-transform tooling. The syntax is
+# decoupled from the compiler: this crate owns the AST type and its encoding; a compiler merely
+# consumes the two arenas. COMPLETELY STANDALONE — depends on no compiler crate, in any phase.
+#
+# This is a REFERENCE implementation; the front-end is destined to be rewritten in Cadenza itself.
+# The durable artifacts are the CONTRACTS (AST shape, binary bytes, text grammar, span table,
+# total decode), not this code. Keep it plain.
+#
+# A member of the seed workspace; standalone-ness is enforced by taking no compiler-crate
+# dependency (not the workspace boundary).
+[package]
+name = "cadenza-syntax"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rowan = "0.16"                   # lossless green/red syntax tree (the requested Pratt substrate)
+unicode-normalization = "0.1.25" # NFC on string/name leaves
+sha2 = "0.10"                    # 8-byte schema-hash header over the arena type term
+num-bigint = "0.4"               # arbitrary-precision Int and the Decimal significand
