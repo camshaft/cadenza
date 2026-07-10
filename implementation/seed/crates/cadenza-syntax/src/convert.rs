@@ -81,12 +81,7 @@ pub fn write(arenas: &Arenas, to: Format) -> Result<Vec<u8>, ConvertError> {
     match to {
         Format::Binary => Ok(codec::encode(arenas)),
         Format::Sexpr => Ok(sexpr::print(arenas).into_bytes()),
-        Format::Ml => {
-            // The ML printer is not yet implemented; until it lands, `--to ml` is unavailable.
-            Err(ConvertError(
-                "ML output is not implemented yet (the ML printer is pending)".into(),
-            ))
-        }
+        Format::Ml => Ok(crate::printer::print_ml(arenas).into_bytes()),
     }
 }
 
@@ -124,7 +119,6 @@ mod tests {
 
     #[test]
     fn ml_to_sexpr() {
-        // ML input works even though ML OUTPUT is pending.
         let out = convert(b"f(a, b)", Format::Ml, Format::Sexpr).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "(f a b)");
     }
@@ -137,9 +131,17 @@ mod tests {
     }
 
     #[test]
-    fn ml_output_is_pending_not_a_panic() {
-        let err = convert(b"42", Format::Sexpr, Format::Ml).unwrap_err();
-        assert!(err.0.contains("not implemented"));
+    fn sexpr_to_ml() {
+        // The full conversion matrix is now closed: sexpr -> ml works.
+        let out = convert(b"(+ 1 (* 2 3))", Format::Sexpr, Format::Ml).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "1 + 2 * 3");
+    }
+
+    #[test]
+    fn binary_to_ml() {
+        let bin = convert(b"(let ((x 1)) x)", Format::Sexpr, Format::Binary).unwrap();
+        let ml = convert(&bin, Format::Binary, Format::Ml).unwrap();
+        assert_eq!(String::from_utf8(ml).unwrap(), "let x = 1 in x");
     }
 
     #[test]
