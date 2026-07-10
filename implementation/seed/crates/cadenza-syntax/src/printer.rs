@@ -401,17 +401,29 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// True if `id` is a BRACE-DELIMITED construct (`match`, `module`) that manages its own
-    /// self-contained indentation, so a `= <body>` hugs it — the opening `{` stays on the `=` line
-    /// and the contents break inside. Non-brace forms (`let`, `if`, `fn`) are NOT hugged: they take
-    /// the plain-expression path, so they stay inline when they fit and otherwise drop to an
-    /// indented continuation line (where e.g. a `let … in` chain lays out flat at that indent).
+    /// True if `id` is a BRACKET-DELIMITED construct that manages its own self-contained
+    /// indentation, so a `= <body>` hugs it — the opening delimiter stays on the `=` line and the
+    /// contents break inside. That is `match`/`module` and the literal forms `record`/`list`/
+    /// `tuple`/`map` (each opens its own indented box). Only the WELL-FORMED shapes qualify: a
+    /// malformed literal falls back to the (non-self-indenting) call form, which must NOT be hugged
+    /// or it would double-indent. Non-bracket forms (`let`, `if`, `fn`) are NOT hugged: they take
+    /// the plain-expression path — inline when they fit, else a flat-laid-out indented continuation.
     fn is_block_body(&self, id: StructId) -> bool {
-        let head = match self.a.get(id) {
-            Struct::List(items) => items.first().and_then(|&h| self.head_name(h)),
-            _ => None,
+        let (head, args) = match self.a.get(id) {
+            Struct::List(items) if !items.is_empty() => {
+                (self.head_name(items[0]), &items[1..])
+            }
+            _ => return false,
         };
-        matches!(head.as_deref(), Some("match" | "module"))
+        match head.as_deref() {
+            Some("match") => self.is_match_shape(args),
+            Some("module") => self.is_module_shape(args),
+            Some("list") => true,
+            Some("tuple") => args.len() >= 2,
+            Some("record") => self.is_record_shape(args),
+            Some("map") => self.is_map_shape(args),
+            _ => false,
+        }
     }
 
     /// `module name { form… }` — one form per line (consistent box) when broken.
@@ -780,6 +792,15 @@ mod tests {
         // out flat at that indent.
         let out = assert_roundtrip("fn f(x) = let y = x + 1 in y * y", 80);
         assert_eq!(out, "fn f(x) =\n  let y = x + 1 in\n  y * y");
+    }
+
+    #[test]
+    fn def_record_body_hugs_the_eq() {
+        // A literal body (record) hugs the `=` too: `{` stays on the line, fields indent one level.
+        let out = assert_roundtrip("fn point() = { x = 1, y = 2, z = 3 }", 20);
+        assert_eq!(out, "fn point() = {\n  x = 1,\n  y = 2,\n  z = 3\n}");
+        // and inline when it fits
+        assert_eq!(assert_roundtrip("fn point() = { x = 1 }", 80), "fn point() = { x = 1 }");
     }
 
     #[test]
