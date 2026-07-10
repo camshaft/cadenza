@@ -16,7 +16,8 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(name = "cdz-run", about = "Run a wasm component: link, call an export, print the result.")]
 struct Cli {
-    /// The component `.wasm` to run.
+    /// The component `.wasm` to run, or `-` to read it from stdin (so it composes in a pipe:
+    /// `rcdzc - -o - | cdz-run -`).
     component: PathBuf,
 
     /// The export to call. Defaults to the component's sole function export.
@@ -52,8 +53,16 @@ fn main() -> ExitCode {
 }
 
 fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
-    let component_bytes = std::fs::read(&cli.component)
-        .map_err(|e| anyhow::anyhow!("read component {}: {e}", cli.component.display()))?;
+    // The component bytes: from a file, or from stdin when the path is `-`.
+    let component_bytes = if cli.component.as_os_str() == "-" {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)
+            .map_err(|e| anyhow::anyhow!("read component from stdin: {e}"))?;
+        buf
+    } else {
+        std::fs::read(&cli.component)
+            .map_err(|e| anyhow::anyhow!("read component {}: {e}", cli.component.display()))?
+    };
 
     // Resolve the value-heap runtime ONLY if the component records one — a scalar/const component
     // imports nothing and needs no runtime, so a missing store is not an error there. When it does,
