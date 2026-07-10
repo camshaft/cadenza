@@ -19,5 +19,15 @@ pub mod ty;
 pub mod core;
 pub mod resolved;
 
-// The query engine: the single `Db` holding every column, filled lazily by backward demand.
+// The query engine: the single `Db` is PURE DATA (the AST + the columns); each query is a free
+// function in its own module over `&mut Db`, and each module owns exactly one column's fills —
+// `resolve` fills `resolved`, `infer` fills `types`, `lower` fills `core`. A query reads another
+// module's fact by calling that module's producer (which fills it lazily), never a raw column.
 pub mod db;
+pub mod infer;
+pub mod lower;
+pub mod resolve;
+
+// Shared test fixtures (compiled only under `#[cfg(test)]`).
+#[cfg(test)]
+mod testkit;
