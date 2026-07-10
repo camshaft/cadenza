@@ -1,4 +1,4 @@
-//! Byte spans. Lifted from `main:crates/cadenza-syntax/src/span.rs`, serde derive dropped.
+//! Byte spans
 
 use std::ops::Range;
 
@@ -30,19 +30,28 @@ impl Span {
     }
 
     pub fn merge(self, other: Self) -> Self {
-        Self { start: self.start.min(other.start), end: self.end.max(other.end) }
+        Self {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
     }
 }
 
 impl From<usize> for Span {
     fn from(value: usize) -> Self {
-        Self { start: value, end: value }
+        Self {
+            start: value,
+            end: value,
+        }
     }
 }
 
 impl From<Range<usize>> for Span {
     fn from(value: Range<usize>) -> Self {
-        Self { start: value.start, end: value.end }
+        Self {
+            start: value.start,
+            end: value.end,
+        }
     }
 }
 

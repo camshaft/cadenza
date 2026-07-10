@@ -29,12 +29,23 @@ use std::collections::HashMap;
 /// made here. `nan`/`inf`/`-inf` are ordinary `Name`s, so a `Float` only ever holds a finite value.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Leaf {
-    Int(BigInt),
+    /// An integer literal: its exact value plus the base its text used. The base is display-only
+    /// (`42`, `0x2A`, `0b101010` are the same value) but is recorded so the printed form re-reads to
+    /// the same leaf — a faithful text round-trip. Digit-separator (`_`) positions are NOT recorded.
+    Int { value: BigInt, radix: Radix },
     Float(Decimal),
     Str(String),
     Bool(bool),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
     Name(String),
+}
+
+/// The base an integer literal's text used. Display-only — it does not change the value.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Radix {
+    Dec,
+    Hex,
+    Bin,
 }
 
 /// A structure entry. Frozen at 2 variants.

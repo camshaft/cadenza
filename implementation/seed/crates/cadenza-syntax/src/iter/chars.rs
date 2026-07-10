@@ -1,4 +1,4 @@
-//! A span-carrying char iterator. Lifted as-is from `main:crates/cadenza-syntax/src/iter/chars.rs`.
+//! A span-carrying char iterator.
 
 use crate::span::Span;
 use std::str::CharIndices;
@@ -52,7 +52,9 @@ pub struct Chars<'a> {
 
 impl<'a> Chars<'a> {
     pub fn new(input: &'a str) -> Self {
-        Self { inner: input.char_indices() }
+        Self {
+            inner: input.char_indices(),
+        }
     }
 }
 

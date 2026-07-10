@@ -16,4 +16,4 @@ pub mod sexpr;
 pub mod span;
 pub mod token;
 
-pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Struct, StructId};
+pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Radix, Struct, StructId};

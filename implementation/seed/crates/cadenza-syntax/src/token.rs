@@ -1,5 +1,4 @@
-//! Token kinds and the ONE precedence table — hand-written (no build-script codegen), because the
-//! grammar's operator set and precedence are themselves a contract, best stated plainly in one place.
+//! Token kinds and the precedence table
 //!
 //! `Kind` is both the lexer's token kind AND the rowan `SyntaxKind` space (node kinds live above the
 //! token kinds, see the `NODE_*` block). `infix_prec` is the single source of truth the parser's
@@ -13,8 +12,8 @@
 pub enum Kind {
     // ---- trivia (lossless; skipped by the parser grammar) ----
     Whitespace = 0,
-    LineComment,  // `// …`
-    DocComment,   // `/// …`
+    LineComment, // `// …`
+    DocComment,  // `/// …`
 
     // ---- literals ----
     Int,
@@ -37,26 +36,26 @@ pub enum Kind {
     Match,
 
     // ---- operators (each has a binding power in `infix_prec`) ----
-    Or,          // `or`
-    And,         // `and`
-    Eq,          // `=`
-    Lt,          // `<`
-    Gt,          // `>`
-    Le,          // `<=`
-    Ge,          // `>=`
-    Pipe,        // `|`
-    Caret,       // `^`
-    Amp,         // `&`
-    Shl,         // `<<`
-    Shr,         // `>>`
-    Plus,        // `+`
-    Minus,       // `-`
-    PlusPct,     // `+%`
-    MinusPct,    // `-%`
-    Star,        // `*`
-    Slash,       // `/`
-    Percent,     // `%`
-    StarPct,     // `*%`
+    Or,       // `or`
+    And,      // `and`
+    Eq,       // `=`
+    Lt,       // `<`
+    Gt,       // `>`
+    Le,       // `<=`
+    Ge,       // `>=`
+    Pipe,     // `|`
+    Caret,    // `^`
+    Amp,      // `&`
+    Shl,      // `<<`
+    Shr,      // `>>`
+    Plus,     // `+`
+    Minus,    // `-`
+    PlusPct,  // `+%`
+    MinusPct, // `-%`
+    Star,     // `*`
+    Slash,    // `/`
+    Percent,  // `%`
+    StarPct,  // `*%`
 
     // ---- delimiters / punctuation ----
     LParen,
@@ -65,13 +64,13 @@ pub enum Kind {
     RBrace,
     LBracket,
     RBracket,
-    Comma,       // arg/binding/arm separator, and the `,` unquote prefix
-    Dot,         // `.`
-    Colon,       // `:`
-    FatArrow,    // `=>`
-    Arrow,       // `->`
-    Hash,        // `#`
-    Backtick,    // `` ` `` beginning a `` `{ … } `` quasiquote
+    Comma,         // arg/binding/arm separator, and the `,` unquote prefix
+    Dot,           // `.`
+    Colon,         // `:`
+    FatArrow,      // `=>`
+    Arrow,         // `->`
+    Hash,          // `#`
+    Backtick,      // `` ` `` beginning a `` `{ … } `` quasiquote
     UnquoteSplice, // `,@`
 
     Error,
@@ -110,7 +109,10 @@ impl Kind {
     /// losslessness but skipped when reading the grammar. NOTE comments are trivia *tokens* but the
     /// lower step turns them into real `(comment …)`/`(doc …)` nodes, so they still survive.
     pub fn is_trivia(self) -> bool {
-        matches!(self, Kind::Whitespace | Kind::LineComment | Kind::DocComment)
+        matches!(
+            self,
+            Kind::Whitespace | Kind::LineComment | Kind::DocComment
+        )
     }
 
     /// The operator symbol a `Kind` denotes, for building the head `Name` of an infix node and for
@@ -173,9 +175,26 @@ mod tests {
     fn op_str_and_infix_prec_agree() {
         // Every operator Kind must have a name, and that name must be infix.
         for k in [
-            Kind::Or, Kind::And, Kind::Eq, Kind::Lt, Kind::Gt, Kind::Le, Kind::Ge, Kind::Pipe,
-            Kind::Caret, Kind::Amp, Kind::Shl, Kind::Shr, Kind::Plus, Kind::Minus, Kind::PlusPct,
-            Kind::MinusPct, Kind::Star, Kind::Slash, Kind::Percent, Kind::StarPct,
+            Kind::Or,
+            Kind::And,
+            Kind::Eq,
+            Kind::Lt,
+            Kind::Gt,
+            Kind::Le,
+            Kind::Ge,
+            Kind::Pipe,
+            Kind::Caret,
+            Kind::Amp,
+            Kind::Shl,
+            Kind::Shr,
+            Kind::Plus,
+            Kind::Minus,
+            Kind::PlusPct,
+            Kind::MinusPct,
+            Kind::Star,
+            Kind::Slash,
+            Kind::Percent,
+            Kind::StarPct,
         ] {
             let s = k.op_str().expect("operator kind has a name");
             assert!(infix_prec(s).is_some(), "operator {s} has a precedence");

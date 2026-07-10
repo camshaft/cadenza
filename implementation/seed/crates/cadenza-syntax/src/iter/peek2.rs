@@ -1,5 +1,4 @@
-//! Two-item lookahead over any iterator. Lifted from `main:crates/cadenza-syntax/src/iter/peek2.rs`
-//! (the bolero model test dropped; the logic is unchanged).
+//! Two-item lookahead over any iterator.
 
 pub struct Peek2<I: Iterator> {
     iter: I,
@@ -10,7 +9,12 @@ pub struct Peek2<I: Iterator> {
 
 impl<I: Iterator> Peek2<I> {
     pub fn new(iter: I) -> Self {
-        Self { iter, len: 0, ended: false, buf: [None, None] }
+        Self {
+            iter,
+            len: 0,
+            ended: false,
+            buf: [None, None],
+        }
     }
 
     pub fn peek(&mut self) -> Option<&I::Item> {
@@ -33,7 +37,11 @@ impl<I: Iterator> Peek2<I> {
 
     pub fn next_if(&mut self, f: impl FnOnce(&I::Item) -> bool) -> Option<I::Item> {
         let v = self.peek()?;
-        if f(v) { self.next() } else { None }
+        if f(v) {
+            self.next()
+        } else {
+            None
+        }
     }
 
     pub fn next_if_eq<V>(&mut self, v: V) -> Option<I::Item>

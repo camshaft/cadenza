@@ -1,66 +1,82 @@
 //! The binary codec — a plain hand-rolled byte format for [`Arenas`]. No CBOR, no serde.
 //!
-//! Wire layout (all multi-byte counts/ids/lengths are LEB128 via [`crate::leb128`]):
+//! Wire layout (counts / ids / lengths are `VarU64` unsigned LEB128 via [`crate::leb128`]):
 //!
 //! ```text
-//! [ header:8 ]                       first 8 bytes of SHA-256 over the arena TYPE TERM (MSB-first)
-//! [ leaf_count:u ]
+//! [ header:8 ]                       schema tag (TABLED — a fixed placeholder for now, see below)
+//! [ leaf_count:var ]
 //!   for each leaf, in canonical order:
 //!     [ kind:1 ]
-//!       0 Int    [ sign:1 ][ mag_len:u ][ mag_be:bytes ]        big-endian magnitude, arbitrary precision
-//!       1 Float  [ sign:1 ][ exp:i ][ sig_len:u ][ sig_be:bytes ]   exact decimal; sign carries -0.0
-//!       2 Str    [ len:u ][ utf8:bytes ]                        NFC
-//!       3 Bool   [ 0 | 1 ]
-//!       4 Name   [ len:u ][ utf8:bytes ]
-//! [ struct_count:u ]
+//!       0  IntPosDec / … the sign AND radix are folded into the kind tag (see the kind constants):
+//!          IntPos{Dec,Hex,Bin} / IntNeg{Dec,Hex,Bin}  [ mag_len:var ][ mag_be:bytes ]
+//!       Float                         [ sign:1 ][ exp:i64-be ][ sig_len:var ][ sig_be:bytes ]
+//!       Str                           [ len:var ][ utf8:bytes ]
+//!       BoolFalse | BoolTrue          (no payload)
+//!       Name                          [ len:var ][ utf8:bytes ]
+//! [ struct_count:var ]
 //!   for each structure entry, in canonical (post-order) order:
 //!     [ tag:1 ]
-//!       0 Atom   [ leaf_id:u ]
-//!       1 List   [ child_count:u ][ child_id:u ]*
-//! [ root:u ]                         a StructId
+//!       Atom  [ leaf_id:var ]
+//!       List  [ child_count:var ][ child_id:var ]*
+//! [ root:var ]                        a StructId
 //! ```
 //!
+//! Sign is expressed by TWO int kind tags (positive/negative) rather than a sign byte — a `-0` never
+//! arises for `Int` so there is no signed-zero ambiguity, and small ints stay one byte tighter.
+//! Radix (dec/hex/bin) is folded into the tag too, so the printed text re-reads to the same leaf.
+//!
 //! `encode` is a straight walk of the two vectors. `decode` is TOTAL: it verifies the header and
-//! refuses (returns `None`) on a wrong header, a malformed length/tag, an out-of-range id, or
-//! trailing bytes — it never panics and never returns a wrong tree. Determinism ("equal programs
-//! -> identical bytes") is a property of CANONICAL arenas (see `canon.rs`), not of the codec: the
-//! codec faithfully serializes whatever it is handed.
+//! refuses (returns `None`) on a wrong header, malformed length/tag, out-of-range id, or trailing
+//! bytes — it never panics and never returns a wrong tree. Determinism ("equal programs -> identical
+//! bytes") is a property of CANONICAL arenas (see `canon.rs`), not of the codec: the codec faithfully
+//! serializes whatever it is handed.
+//!
+//! NOTE: the 8-byte `header` is a schema tag — eventually the truncated hash of the AST type schema,
+//! so an old reader refuses newer bytes rather than misreading them. That hash is TABLED for now; a
+//! fixed placeholder stands in so the end-to-end path works. `decode` still verifies it (wrong
+//! header -> `None`), so wiring the real hash in later is a drop-in change.
 
-use crate::ast::{Arenas, Decimal, Leaf, LeafId, Struct, StructId};
+use crate::ast::{Arenas, Decimal, Leaf, LeafId, Radix, Struct, StructId};
 use crate::leb128::{self, Reader};
 use num_bigint::{BigInt, Sign};
-use sha2::{Digest, Sha256};
 
-const KIND_INT: u8 = 0;
-const KIND_FLOAT: u8 = 1;
-const KIND_STR: u8 = 2;
-const KIND_BOOL: u8 = 3;
-const KIND_NAME: u8 = 4;
+// Leaf kind tags. Int folds (sign, radix) into the tag.
+const KIND_INT_POS_DEC: u8 = 0;
+const KIND_INT_POS_HEX: u8 = 1;
+const KIND_INT_POS_BIN: u8 = 2;
+const KIND_INT_NEG_DEC: u8 = 3;
+const KIND_INT_NEG_HEX: u8 = 4;
+const KIND_INT_NEG_BIN: u8 = 5;
+const KIND_FLOAT: u8 = 6;
+const KIND_STR: u8 = 7;
+const KIND_BOOL_FALSE: u8 = 8;
+const KIND_BOOL_TRUE: u8 = 9;
+const KIND_NAME: u8 = 10;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
 
-/// The 8-byte schema-hash header: the first 8 bytes of SHA-256 over a canonical byte description of
-/// the arena's TYPE (its variant tags and payload shapes), MSB-first. Evolving the AST type yields
-/// a different header, so an old reader refuses newer bytes rather than misreading them. Fixed for
-/// a given codec version — computed from a constant string, not from any program's data.
-fn schema_header() -> [u8; 8] {
-    // A stable textual description of the frozen type. Any change to the wire shape must change
-    // this string so the header changes with it.
-    const TYPE_TERM: &[u8] = b"cadenza-syntax/arenas/v1\n\
-        leaf = Int(bigint) | Float(sign,exp:i,sig:bigint) | Str(utf8) | Bool(u8) | Name(utf8)\n\
-        struct = Atom(leafid) | List(structid*)\n\
-        file = [header:8, leaves*, structure*, root:structid]\n";
-    let digest = Sha256::digest(TYPE_TERM);
-    let mut header = [0u8; 8];
-    header.copy_from_slice(&digest[..8]);
-    header
+/// The 8-byte schema tag. TABLED: this is a fixed placeholder until the real schema hash is wired
+/// in (it will become the truncated hash of the AST type schema, so an old reader refuses newer
+/// bytes). `decode` verifies it regardless, so swapping in the real value later is a drop-in change.
+const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
+
+fn int_kind(sign: Sign, radix: Radix) -> u8 {
+    let neg = matches!(sign, Sign::Minus);
+    match (neg, radix) {
+        (false, Radix::Dec) => KIND_INT_POS_DEC,
+        (false, Radix::Hex) => KIND_INT_POS_HEX,
+        (false, Radix::Bin) => KIND_INT_POS_BIN,
+        (true, Radix::Dec) => KIND_INT_NEG_DEC,
+        (true, Radix::Hex) => KIND_INT_NEG_HEX,
+        (true, Radix::Bin) => KIND_INT_NEG_BIN,
+    }
 }
 
-/// Serialize `arenas` to bytes (with the schema-hash header).
+/// Serialize `arenas` to bytes (with the schema header).
 pub fn encode(arenas: &Arenas) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend_from_slice(&schema_header());
+    out.extend_from_slice(&SCHEMA_HEADER);
 
     leb128::write_u64(&mut out, arenas.leaves.len() as u64);
     for leaf in &arenas.leaves {
@@ -90,14 +106,16 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 
 fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
     match leaf {
-        Leaf::Int(n) => {
-            out.push(KIND_INT);
-            write_bigint(out, n);
+        Leaf::Int { value, radix } => {
+            let (sign, mag) = value.to_bytes_be();
+            out.push(int_kind(sign, *radix));
+            leb128::write_u64(out, mag.len() as u64);
+            out.extend_from_slice(&mag);
         }
         Leaf::Float(d) => {
             out.push(KIND_FLOAT);
             out.push(d.negative as u8);
-            leb128::write_i64(out, d.exponent);
+            leb128::write_i64_be(out, d.exponent);
             // The significand is a non-negative magnitude; its sign lives in `d.negative`.
             let (_sign, mag) = d.significand.to_bytes_be();
             leb128::write_u64(out, mag.len() as u64);
@@ -108,22 +126,13 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
             write_bytes(out, s.as_bytes());
         }
         Leaf::Bool(b) => {
-            out.push(KIND_BOOL);
-            out.push(*b as u8);
+            out.push(if *b { KIND_BOOL_TRUE } else { KIND_BOOL_FALSE });
         }
         Leaf::Name(n) => {
             out.push(KIND_NAME);
             write_bytes(out, n.as_bytes());
         }
     }
-}
-
-/// Write a signed big integer as `[sign:1][mag_len:u][mag_be:bytes]`, sign 0=+/zero, 1=-.
-fn write_bigint(out: &mut Vec<u8>, n: &BigInt) {
-    let (sign, mag) = n.to_bytes_be();
-    out.push(matches!(sign, Sign::Minus) as u8);
-    leb128::write_u64(out, mag.len() as u64);
-    out.extend_from_slice(&mag);
 }
 
 fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -136,37 +145,36 @@ fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 pub fn decode(bytes: &[u8]) -> Option<Arenas> {
     // Header.
     let header = bytes.get(..8)?;
-    if header != schema_header() {
+    if header != SCHEMA_HEADER {
         return None;
     }
     let mut r = Reader::new(&bytes[8..]);
 
     // Leaves.
-    let leaf_count = r.read_len()?;
+    let leaf_count = r.read_var_len()?;
     let mut leaves = Vec::with_capacity(leaf_count.min(1 << 16));
     for _ in 0..leaf_count {
         leaves.push(read_leaf(&mut r)?);
     }
 
     // Structure.
-    let struct_count = r.read_len()?;
+    let struct_count = r.read_var_len()?;
     let mut structure = Vec::with_capacity(struct_count.min(1 << 16));
     for _ in 0..struct_count {
         let tag = r.byte()?;
         let entry = match tag {
             TAG_ATOM => {
-                let leaf_id = r.read_u64()?;
-                // Referential integrity: the leaf id must be in range.
+                let leaf_id = r.read_varu64()?;
                 if leaf_id as usize >= leaves.len() {
-                    return None;
+                    return None; // referential integrity: leaf id in range
                 }
                 Struct::Atom(LeafId(u32::try_from(leaf_id).ok()?))
             }
             TAG_LIST => {
-                let n = r.read_len()?;
+                let n = r.read_var_len()?;
                 let mut children = Vec::with_capacity(n.min(1 << 16));
                 for _ in 0..n {
-                    let child = r.read_u64()?;
+                    let child = r.read_varu64()?;
                     children.push(StructId(u32::try_from(child).ok()?));
                 }
                 Struct::List(children)
@@ -177,15 +185,14 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
     }
 
     // Root.
-    let root = r.read_u64()?;
+    let root = r.read_varu64()?;
     if root as usize >= structure.len() {
         return None;
     }
     let root = StructId(u32::try_from(root).ok()?);
 
     // Referential integrity for structure child ids: every id must be in range. (Atom leaf ids
-    // were checked above.) A forward reference is permitted — canonical order is post-order, but
-    // the codec does not require it, only in-boundsness.
+    // were checked above.) A forward reference is permitted — the codec requires only in-boundsness.
     for entry in &structure {
         if let Struct::List(children) = entry {
             for StructId(id) in children {
@@ -206,34 +213,40 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
 fn read_leaf(r: &mut Reader) -> Option<Leaf> {
     let kind = r.byte()?;
     Some(match kind {
-        KIND_INT => Leaf::Int(read_bigint(r)?),
+        KIND_INT_POS_DEC | KIND_INT_POS_HEX | KIND_INT_POS_BIN | KIND_INT_NEG_DEC
+        | KIND_INT_NEG_HEX | KIND_INT_NEG_BIN => {
+            let (neg, radix) = match kind {
+                KIND_INT_POS_DEC => (false, Radix::Dec),
+                KIND_INT_POS_HEX => (false, Radix::Hex),
+                KIND_INT_POS_BIN => (false, Radix::Bin),
+                KIND_INT_NEG_DEC => (true, Radix::Dec),
+                KIND_INT_NEG_HEX => (true, Radix::Hex),
+                _ => (true, Radix::Bin),
+            };
+            let len = r.read_var_len()?;
+            let mag = r.take(len)?;
+            let sign = if neg { Sign::Minus } else { Sign::Plus };
+            let value = BigInt::from_bytes_be(sign, mag);
+            Leaf::Int { value, radix }
+        }
         KIND_FLOAT => {
             let negative = read_bool(r)?;
-            let exponent = r.read_i64()?;
-            let sig_len = r.read_len()?;
+            let exponent = r.read_i64_be()?;
+            let sig_len = r.read_var_len()?;
             let mag = r.take(sig_len)?;
             let significand = BigInt::from_bytes_be(Sign::Plus, mag);
             Leaf::Float(Decimal { negative, significand, exponent })
         }
         KIND_STR => Leaf::Str(read_string(r)?),
-        KIND_BOOL => Leaf::Bool(read_bool(r)?),
+        KIND_BOOL_FALSE => Leaf::Bool(false),
+        KIND_BOOL_TRUE => Leaf::Bool(true),
         KIND_NAME => Leaf::Name(read_string(r)?),
         _ => return None,
     })
 }
 
-fn read_bigint(r: &mut Reader) -> Option<BigInt> {
-    let neg = read_bool(r)?;
-    let len = r.read_len()?;
-    let mag = r.take(len)?;
-    let sign = if neg { Sign::Minus } else { Sign::Plus };
-    // BigInt::from_bytes_be with Sign::Minus and empty/zero magnitude yields zero (sign ignored),
-    // which is correct: a zero has no sign here.
-    Some(BigInt::from_bytes_be(sign, mag))
-}
-
 fn read_string(r: &mut Reader) -> Option<String> {
-    let len = r.read_len()?;
+    let len = r.read_var_len()?;
     let bytes = r.take(len)?;
     String::from_utf8(bytes.to_vec()).ok()
 }
@@ -254,13 +267,17 @@ mod tests {
     use std::str::FromStr;
 
     fn sample() -> Arenas {
-        // (+ x x) with a big int, an exact decimal, a string, and a bool thrown in as a list.
+        // (+ x x) plus a big int, a hex int, a negative int, an exact decimal, a string, and a bool.
         let mut b = Builder::new();
         let plus = b.name("+");
         let x1 = b.name("x");
         let x2 = b.name("x");
-        let big = b.atom_leaf(Leaf::Int(BigInt::from_str("123456789012345678901234567890").unwrap()));
-        let neg = b.atom_leaf(Leaf::Int(BigInt::from_str("-42").unwrap()));
+        let big = b.atom_leaf(Leaf::Int {
+            value: BigInt::from_str("123456789012345678901234567890").unwrap(),
+            radix: Radix::Dec,
+        });
+        let hex = b.atom_leaf(Leaf::Int { value: BigInt::from(0x2A), radix: Radix::Hex });
+        let neg = b.atom_leaf(Leaf::Int { value: BigInt::from(-42), radix: Radix::Dec });
         let flt = b.atom_leaf(Leaf::Float(Decimal {
             negative: false,
             significand: BigInt::from_str("15").unwrap(),
@@ -268,7 +285,7 @@ mod tests {
         }));
         let s = b.atom_leaf(Leaf::Str("héllo".to_string()));
         let t = b.atom_leaf(Leaf::Bool(true));
-        let root = b.list(vec![plus, x1, x2, big, neg, flt, s, t]);
+        let root = b.list(vec![plus, x1, x2, big, hex, neg, flt, s, t]);
         b.finish(root)
     }
 
@@ -280,6 +297,20 @@ mod tests {
         assert_eq!(a, back);
         // Determinism: re-encoding the decoded arenas reproduces the bytes.
         assert_eq!(bytes, encode(&back));
+    }
+
+    #[test]
+    fn radix_round_trips() {
+        // Same value, different bases -> distinct leaves that survive the round-trip.
+        let mut b = Builder::new();
+        let dec = b.atom_leaf(Leaf::Int { value: BigInt::from(42), radix: Radix::Dec });
+        let hex = b.atom_leaf(Leaf::Int { value: BigInt::from(42), radix: Radix::Hex });
+        let bin = b.atom_leaf(Leaf::Int { value: BigInt::from(42), radix: Radix::Bin });
+        let root = b.list(vec![dec, hex, bin]);
+        let a = b.finish(root);
+        assert_eq!(decode(&encode(&a)).unwrap(), a);
+        // Three distinct leaves (radix is part of leaf identity).
+        assert_eq!(a.leaves.len(), 3);
     }
 
     #[test]
@@ -301,7 +332,7 @@ mod tests {
     fn wrong_header_refused() {
         let a = sample();
         let mut bytes = encode(&a);
-        bytes[0] ^= 0xff; // corrupt the header
+        bytes[0] ^= 0xff;
         assert_eq!(decode(&bytes), None);
     }
 
@@ -318,27 +349,18 @@ mod tests {
         let a = sample();
         let bytes = encode(&a);
         for cut in 8..bytes.len() {
-            // Every prefix past the header must be refused, never panic.
             assert_eq!(decode(&bytes[..cut]), None, "prefix len {cut}");
         }
     }
 
     #[test]
     fn out_of_range_leaf_id_refused() {
-        // Hand-craft: header + 0 leaves + one Atom referencing leaf 0 (which does not exist).
-        let mut bytes = schema_header().to_vec();
+        let mut bytes = SCHEMA_HEADER.to_vec();
         leb128::write_u64(&mut bytes, 0); // leaf_count
         leb128::write_u64(&mut bytes, 1); // struct_count
         bytes.push(TAG_ATOM);
         leb128::write_u64(&mut bytes, 0); // leaf id 0 — out of range
         leb128::write_u64(&mut bytes, 0); // root
         assert_eq!(decode(&bytes), None);
-    }
-
-    #[test]
-    fn header_is_stable() {
-        // The header must not depend on program data.
-        assert_eq!(schema_header(), schema_header());
-        assert_eq!(&encode(&sample())[..8], &schema_header());
     }
 }

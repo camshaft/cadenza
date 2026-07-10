@@ -12,7 +12,7 @@
 //! arbitrary-precision `Int` and an exact `Decimal` (no `i64`/`f64` ceiling). The ML lexer MUST
 //! classify literals identically to this, or the round-trip fails.
 
-use crate::ast::{Arenas, Builder, Decimal, Leaf, StructId};
+use crate::ast::{Arenas, Builder, Decimal, Leaf, Radix, StructId};
 use num_bigint::BigInt;
 use std::str::FromStr;
 use unicode_normalization::UnicodeNormalization;
@@ -189,8 +189,8 @@ impl<'a, 'b> Reader<'a, 'b> {
             "false" => return self.b.atom_leaf(Leaf::Bool(false)),
             _ => {}
         }
-        if let Some(i) = parse_int_literal(tok) {
-            return self.b.atom_leaf(Leaf::Int(i));
+        if let Some((value, radix)) = parse_int_literal(tok) {
+            return self.b.atom_leaf(Leaf::Int { value, radix });
         }
         if let Some(d) = parse_float_literal(tok) {
             return self.b.atom_leaf(Leaf::Float(d));
@@ -237,10 +237,11 @@ fn is_radix_digit(c: char, is_hex: bool) -> bool {
     }
 }
 
-/// Parse a decimal / `0x…` / `0b…` integer token into an arbitrary-precision `BigInt`, or `None`
-/// if the token is not a well-formed integer literal (leaving it to be read as a name/float).
-/// There is NO magnitude ceiling — a value of any size parses.
-fn parse_int_literal(tok: &str) -> Option<BigInt> {
+/// Parse a decimal / `0x…` / `0b…` integer token into its exact value and the base its text used,
+/// or `None` if the token is not a well-formed integer literal (leaving it to be read as a
+/// name/float). There is NO magnitude ceiling — a value of any size parses. The radix is recorded
+/// so the printed form re-reads to the same leaf.
+fn parse_int_literal(tok: &str) -> Option<(BigInt, Radix)> {
     let (neg, body) = match tok.strip_prefix('-') {
         Some(r) => (true, r),
         None => (false, tok.strip_prefix('+').unwrap_or(tok)),
@@ -258,7 +259,8 @@ fn parse_int_literal(tok: &str) -> Option<BigInt> {
         let digits: String = radix_body.chars().filter(|&c| c != '_').collect();
         let radix = if is_hex { 16 } else { 2 };
         let mag = BigInt::parse_bytes(digits.as_bytes(), radix)?;
-        return Some(if neg { -mag } else { mag });
+        let value = if neg { -mag } else { mag };
+        return Some((value, if is_hex { Radix::Hex } else { Radix::Bin }));
     }
     // Plain decimal: must start with a digit, only digits + between-digits `_`.
     let starts_digit = body.chars().next().is_some_and(|c| c.is_ascii_digit());
@@ -269,7 +271,7 @@ fn parse_int_literal(tok: &str) -> Option<BigInt> {
     }
     let digits: String = body.chars().filter(|&c| c != '_').collect();
     let mag = BigInt::from_str(&digits).ok()?;
-    Some(if neg { -mag } else { mag })
+    Some((if neg { -mag } else { mag }, Radix::Dec))
 }
 
 /// Parse a float token into an exact `Decimal`, or `None`. A float must start with a digit and
@@ -358,8 +360,9 @@ mod tests {
         let a = read("123456789012345678901234567890").unwrap();
         let Struct::Atom(l) = a.get(a.root) else { panic!() };
         match a.leaf(*l) {
-            Leaf::Int(n) => {
-                assert_eq!(n, &BigInt::from_str("123456789012345678901234567890").unwrap())
+            Leaf::Int { value, radix } => {
+                assert_eq!(value, &BigInt::from_str("123456789012345678901234567890").unwrap());
+                assert_eq!(*radix, Radix::Dec);
             }
             other => panic!("{other:?}"),
         }
@@ -367,10 +370,18 @@ mod tests {
 
     #[test]
     fn radix_literals() {
-        for (src, val) in [("0x2A", 42), ("0b101010", 42), ("-0x10", -16)] {
+        for (src, val, radix) in [
+            ("0x2A", 42, Radix::Hex),
+            ("0b101010", 42, Radix::Bin),
+            ("-0x10", -16, Radix::Hex),
+        ] {
             let a = read(src).unwrap();
             let Struct::Atom(l) = a.get(a.root) else { panic!() };
-            assert_eq!(a.leaf(*l), &Leaf::Int(BigInt::from(val)), "src {src}");
+            assert_eq!(
+                a.leaf(*l),
+                &Leaf::Int { value: BigInt::from(val), radix },
+                "src {src}"
+            );
         }
     }
 
@@ -417,6 +428,6 @@ mod tests {
     fn digit_separators_ok() {
         let a = read("1_000_000").unwrap();
         let Struct::Atom(l) = a.get(a.root) else { panic!() };
-        assert_eq!(a.leaf(*l), &Leaf::Int(BigInt::from(1_000_000)));
+        assert_eq!(a.leaf(*l), &Leaf::Int { value: BigInt::from(1_000_000), radix: Radix::Dec });
     }
 }
