@@ -1,0 +1,34 @@
+# cdz-run — the generic wasm-component runner.
+#
+# Give it a component `.wasm`, a function to call, and its arguments; it links the value-heap runtime
+# (composing `cadenza:runtime/heap` when the component imports it), invokes the export, and prints the
+# rendered result. This is the ONE standard way to run a finished component — for tests, for the gate,
+# for the desk. wasmtime + the filesystem live HERE and nowhere in the compiler, so the compiler core
+# stays wasm-targetable (memory: cdz-rustc-pure-core-wasm-targetable).
+#
+# A member of the seed workspace (picked up by the crates/* glob). Depends on `cadenza-syntax` for
+# canonical value rendering (string escapes, decimals) — the same renderer the front-end uses, so a
+# printed value round-trips. Takes NO compiler-crate dependency.
+[package]
+name = "cdz-run"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "cdz-run"
+path = "src/main.rs"
+
+[dependencies]
+# The embeddable component-model runtime — instantiate a finished component in-process, compose the
+# value-heap runtime, invoke an export. (options/execution-model/; the wasmtime CLI is not used.)
+wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"] }
+# Typed CLI with generated --help — the same parser the rest of the workspace uses.
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+# Verify a store artifact's content address (SHA-256) equals the hash the component requires — the
+# same hashing choice the store keys on (options/hashing-and-encoding/sha256-deterministic-cbor).
+sha2 = "0.10"
+# Canonical value rendering (string escape, decimal form) — reused so a runner-printed value is
+# byte-identical to what the front-end prints and reads back.
+cadenza-syntax = { path = "../cadenza-syntax" }
