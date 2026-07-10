@@ -1,22 +1,13 @@
-# xtask — build choreography for the compiler↔runtime versioned pair (M2, Amendment 0.6.0).
+# xtask — the ONE interface for driving the workspace.
 #
-# The compiler and the value-heap runtime are ONE versioned pair
-# (reproducible-derivation.md: "built as one versioned pair — the runtime derived first, its
-# content address computed, and the compiler built against that content address"). The single
-# `build` task enforces that order AND is the compiler's code generator:
-#   1. Build the runtime component (cargo component, wasm32).
-#   2. Compute its content address (SHA-256, the recorded hashing choice).
-#   3. GENERATE the compiler's envelope sources from the runtime's WIT contract (the source of
-#      truth) + the compiler's ordered allow-list of the heap functions it lowers, baking the
-#      runtime hash in as `REQUIRED_RUNTIME_HASH`. Component byte-chunks are built with
-#      `wasm-encoder` and self-validated with `wasmparser`; nothing is hand-derived.
-#   4. Build the compiler component against the freshly-generated sources.
-#   5. Place both artifacts in a content-addressed store (<store>/<hash>.wasm).
+# Deliberately minimal today: `build` builds the value-heap runtime component (cargo component,
+# wasm32), content-addresses it (SHA-256, the recorded hashing choice), and stores it under the
+# content-addressed store (<store>/<hash>.wasm). The runtime is derived first and keyed by its hash,
+# which is what the host resolves a program's required runtime against (reproducible-derivation.md).
 #
-# `wasm-encoder`/`wasmparser`/`wit-parser` live HERE, out-of-band — they are a dev-desk oracle used
-# to derive the envelope, never a dependency of the shipped compiler (component-abi.md: "the
-# compiler builds components ITSELF"). Standalone (own workspace), like the wasm crates — not part
-# of the native seed `cargo build`.
+# The source-generation choreography (WIT envelope + opcode/frame tables, built with
+# `wasm-encoder`/`wasmparser`/`wit-parser`) was stripped out — its outputs are now frozen sources in
+# the seed crates. Recover the generators from git history if we re-derive them.
 [package]
 name = "xtask"
 version = "0.0.0"
@@ -25,8 +16,10 @@ publish = false
 
 [dependencies]
 sha2 = "0.10"
-# Envelope generation: parse the runtime contract, build reference components, self-validate.
-# Pinned to the version already resolved across the seed (`Cargo.lock`), so no new network fetch.
-wit-parser = "0.239"
-wasm-encoder = "0.239"
-wasmparser = "0.239"
+# The one argument parser for every workspace command — typed subcommands + generated `--help`,
+# replacing the hand-rolled `args.get(N)` dispatch (no positional-by-index, no env-var knobs).
+clap = { version = "4", features = ["derive"] }
+# Ergonomic process/dir handling — `cmd!` runs a child in a pushed working dir and fails on a
+# non-zero exit, replacing hand-rolled `std::process::Command` + status checks. The xtask
+# ecosystem's own shell crate (matklad).
+xshell = "0.2"
