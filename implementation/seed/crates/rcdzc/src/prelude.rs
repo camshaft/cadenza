@@ -71,8 +71,6 @@ fn build() -> Prelude {
     p.insert("Map".to_string(), Hir::Intrinsic(Intrinsic::TypeMap));
     p.insert("Set".to_string(), Hir::Intrinsic(Intrinsic::TypeSet));
     p.insert("Tuple".to_string(), Hir::Intrinsic(Intrinsic::TypeTuple));
-    p.insert("Option".to_string(), Hir::Intrinsic(Intrinsic::TypeOption));
-    p.insert("Result".to_string(), Hir::Intrinsic(Intrinsic::TypeResult));
 
     // ── The prelude SUM types. Declaration order fixes discriminants (Option Some=0/None=1, …). A type
     //    NAME binds to a record of its constructor values (`(. Sign Pos)` = record projection); an

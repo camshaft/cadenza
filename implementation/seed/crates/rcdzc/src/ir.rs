@@ -169,11 +169,6 @@ pub enum Intrinsic {
     TypeSet,
     /// `Tuple : Type → Type → Type` — 2-arity for L2 → `TypeVal(Ty::Tuple([a, b]))`.
     TypeTuple,
-    /// `Option : Type → Type` — → `TypeVal(Ty::Sum{prelude_option(), [a]})`. Identity is this variant;
-    /// the constructed type's identity is the shared `ty::prelude_option()` singleton.
-    TypeOption,
-    /// `Result : Type → Type → Type` — → `TypeVal(Ty::Sum{prelude_result(), [a, e]})`.
-    TypeResult,
     /// A built-in whose lowering BOXES a scalar argument (a list element / map key+value / set element)
     /// or unboxes by type — carried as a [`HeapIntrinsic`]. `lower` turns its application into a
     /// [`Mir::HeapOp`] that threads each argument's SOLVED type to `select`; the bare `Mir` shape cannot
@@ -221,7 +216,7 @@ impl Intrinsic {
             // Layer 2 type builders are MONOMORPHIC (their signature is `Fn` over concrete `Ty::Type`, no
             // `Ty::Param`), so they instantiate no fresh vars.
             | Intrinsic::TypeList | Intrinsic::TypeMap | Intrinsic::TypeSet
-            | Intrinsic::TypeTuple | Intrinsic::TypeOption | Intrinsic::TypeResult => 0,
+            | Intrinsic::TypeTuple => 0,
             Intrinsic::ListLen | Intrinsic::ListConcat | Intrinsic::ListAt => 1,
             // Set ops are parametric in ONE element type `E` = `Ty::Param(0)`.
             Intrinsic::SetSize | Intrinsic::SetUnion | Intrinsic::SetIntersection
@@ -343,9 +338,9 @@ impl Intrinsic {
             // Layer 2 type builders: monomorphic `Type(s) → Type`. Applied to type-value args, their
             // `fold_const` builds the compound `Ty`. `List`/`Set`/`Option` take one type; `Map`/`Result`/
             // `Tuple` take two.
-            Intrinsic::TypeList | Intrinsic::TypeSet | Intrinsic::TypeOption =>
+            Intrinsic::TypeList | Intrinsic::TypeSet =>
                 (vec![Ty::Type], Ty::Type),
-            Intrinsic::TypeMap | Intrinsic::TypeResult | Intrinsic::TypeTuple =>
+            Intrinsic::TypeMap | Intrinsic::TypeTuple =>
                 (vec![Ty::Type, Ty::Type], Ty::Type),
             // A boxing op delegates to its `HeapIntrinsic` signature.
             Intrinsic::Heap(h) => h.signature(),
@@ -363,10 +358,6 @@ impl Intrinsic {
             (Intrinsic::TypeSet, [e]) => Some(Ty::Set(Box::new(e.clone()))),
             (Intrinsic::TypeMap, [k, v]) => Some(Ty::Map(Box::new(k.clone()), Box::new(v.clone()))),
             (Intrinsic::TypeTuple, [a, b]) => Some(Ty::Tuple(vec![a.clone(), b.clone()])),
-            (Intrinsic::TypeOption, [a]) =>
-                Some(Ty::Sum { def: crate::ty::prelude_option(), args: vec![a.clone()] }),
-            (Intrinsic::TypeResult, [a, e]) =>
-                Some(Ty::Sum { def: crate::ty::prelude_result(), args: vec![a.clone(), e.clone()] }),
             _ => None,
         }
     }
@@ -422,7 +413,7 @@ impl Intrinsic {
             // cannot drift. If not all args are `TypeVal` (which never happens in well-typed code —
             // mixing a type-value into a value op is a `Ty` mismatch caught at infer), stays residual.
             Intrinsic::TypeList | Intrinsic::TypeMap | Intrinsic::TypeSet
-            | Intrinsic::TypeTuple | Intrinsic::TypeOption | Intrinsic::TypeResult => {
+            | Intrinsic::TypeTuple => {
                 let arg_tys: Vec<Ty> = args.iter()
                     .filter_map(|a| match a { Mir::TypeVal(t) => Some(t.clone()), _ => None })
                     .collect();

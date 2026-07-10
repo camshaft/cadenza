@@ -818,7 +818,7 @@ impl Sel<'_> {
             // decline (an UNCODED reject), never emit. A bare unapplied one declines at the outer
             // bare-`Intrinsic` arm before reaching here.
             Intrinsic::TypeList | Intrinsic::TypeMap | Intrinsic::TypeSet
-            | Intrinsic::TypeTuple | Intrinsic::TypeOption | Intrinsic::TypeResult => Err(
+            | Intrinsic::TypeTuple => Err(
                 "a type constructor cannot cross to run time (a type-value is compile-time-only)"
                     .to_string(),
             ),

@@ -725,8 +725,6 @@ impl<'a> BodyResolver<'a> {
                         "Map" => Hir::Intrinsic(Intrinsic::TypeMap),
                         "Set" => Hir::Intrinsic(Intrinsic::TypeSet),
                         "Tuple" => Hir::Intrinsic(Intrinsic::TypeTuple),
-                        "Option" => Hir::Intrinsic(Intrinsic::TypeOption),
-                        "Result" => Hir::Intrinsic(Intrinsic::TypeResult),
                         _ => node.clone(),
                     }
 
@@ -971,11 +969,38 @@ impl<'a> BodyResolver<'a> {
             }
             return Hir::TupleProj(*n as usize, Box::new(self.expr(&items[1], scope)));
         }
-        // A `(meta …)` key — the module-metadata channel (capabilities/entry). Realized with effects
-        // (the corpus metadata cases are `(needs effects)`); a later phase, so DECLINE for now.
+        // A `(meta …)` key — sum-type metadata (meta apply)/(meta t) OR module-metadata channel
+        // (capabilities/entry). Sum-type meta is realized now; module metadata is deferred to effects.
         if let Node::List(k) = &items[2] {
             if k.first().and_then(name_of) == Some("meta") {
-                return Hir::Error(Reject::decline("module metadata access is a later phase"));
+                let meta_key = k.get(1).and_then(name_of).unwrap_or("");
+                match meta_key {
+                    "apply" => {
+                        // (. SumName (meta apply)) → the sum's type-constructor (a Hir::Ctor carrying
+                        // the SumRef). Project the FIRST ctor from the sum's record (any ctor works—all
+                        // carry the same def; the index is vestigial for type-application).
+                        let operand = &items[1];
+                        let node = match name_of(operand) {
+                            Some(n) if scope.lookup(n).is_none() => self.prelude.get(n),
+                            _ => None,
+                        };
+                        if let Some(Hir::Record(fields)) = node {
+                            if let Some((_, ctor)) = fields.first() {
+                                return ctor.clone(); // Hir::Ctor{def, index}
+                            }
+                        }
+                        return Hir::Error(Reject::decline("(meta apply) operand is not a sum name"));
+                    }
+                    "t" => {
+                        // (. SumName (meta t)) → the type-of-types constant (Ty::Type).
+                        return Hir::TypeVal(crate::ty::Ty::Type);
+                    }
+                    _ => {
+                        return Hir::Error(Reject::decline(
+                            "unknown meta key (only `apply` and `t` are implemented; module metadata is a later phase)"
+                        ));
+                    }
+                }
             }
         }
         // Named access: a record field `(. r f)`. The field name is the key; the operand is the record.

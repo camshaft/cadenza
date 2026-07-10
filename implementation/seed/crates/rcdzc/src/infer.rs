@@ -283,6 +283,54 @@ impl<'a> Infer<'a> {
                         });
                     }
                 }
+                // Sum type-application: `(Option Int64)` where `Option` resolved to a Record of ctors,
+                // OR a direct `Apply(Ctor, [TypeVal...])` from explicit `((. Option (meta apply)) Int64)`.
+                // When ALL args are TypeVals (type-valued expressions), this is TYPE-application, not
+                // value-application. The ctor's SumRef carries the params; build Ty::Sum{def, type_args}.
+                // This path makes `(Option Int64)` work identically to the old TypeOption intrinsic.
+                //
+                // First, check if func is a Record of ctors — desugar to Apply(first-ctor, args).
+                let func_for_typeapp = if let Hir::Record(fields) = func.as_ref() {
+                    if let Some((_, Hir::Ctor { def, .. })) = fields.first() {
+                        // Sum-ctor record — project the first ctor for type-application.
+                        &Hir::Ctor { def: def.clone(), index: 0 }
+                    } else {
+                        func.as_ref()
+                    }
+                } else {
+                    func.as_ref()
+                };
+                // Now check if this is a Ctor applied to all TypeVals (type-application).
+                if let Hir::Ctor { def, .. } = func_for_typeapp {
+                    // Infer each arg; if ALL are TypeVals typed as Ty::Type, this is type-application.
+                    let targs: Result<Vec<Typed>, _> = args.iter().map(|a| self.expr(a)).collect();
+                    if let Ok(targs) = targs {
+                        let all_typevals = !targs.is_empty() && targs.iter().all(|ta| {
+                            matches!(ta.node, TypedNode::TypeVal(_)) && matches!(self.subst.apply(&ta.ty), Ty::Type)
+                        });
+                        if all_typevals {
+                            // Type-application: extract the Ty from each TypeVal, build Ty::Sum{def, type_args}.
+                            let type_args: Vec<Ty> = targs.iter().filter_map(|ta| {
+                                if let TypedNode::TypeVal(ty) = &ta.node { Some(ty.clone()) } else { None }
+                            }).collect();
+                            // Arity check: type_args.len() must equal def.params.len().
+                            if type_args.len() != def.params.len() {
+                                return Err(Reject::decline(format!(
+                                    "type-application arity mismatch: expected {} type args, got {}",
+                                    def.params.len(), type_args.len()
+                                )));
+                            }
+                            // The result is a TypeVal(Sum) typed as Ty::Type.
+                            return Ok(Typed {
+                                node: TypedNode::TypeVal(Ty::Sum {
+                                    def: def.clone(),
+                                    args: type_args,
+                                }),
+                                ty: Ty::Type,
+                            });
+                        }
+                    }
+                }
                 // Apply a function-VALUE. Infer the callee to a `Ty::Fn`, unify each arg with its
                 // parameter type, result is the function's return type.
                 let tfunc = self.expr(func)?;
@@ -1107,8 +1155,24 @@ fn finalize(subst: &Subst, typed: Typed) -> Result<Typed, Reject> {
 fn extract_type_value(node: &TypedNode) -> Option<Ty> {
     match node {
         TypedNode::TypeVal(ty) => Some(ty.clone()),
-        // An Apply whose func is a type-builder Intrinsic — extract each arg's Ty, build the compound.
+        // An Apply whose func is a type-builder Intrinsic or Ctor — extract each arg's Ty, build the compound.
         TypedNode::Apply { func, args } => {
+            // NEW: Sum type-constructor application (e.g., (Option Int64) in an annotation).
+            // The func is a Hir::Ctor (projected via (meta apply)) carrying the sum's SumRef.
+            if let TypedNode::Ctor { def, .. } = &func.node {
+                let type_args: Vec<Ty> = args.iter().filter_map(|a| extract_type_value(&a.node)).collect();
+                if type_args.len() == args.len() {
+                    // Arity check: type_args.len() must equal def.params.len().
+                    if type_args.len() != def.params.len() {
+                        return None; // Arity mismatch → fall to infer's normal arity check/decline.
+                    }
+                    return Some(Ty::Sum {
+                        def: def.clone(),
+                        args: type_args,
+                    });
+                }
+            }
+            // EXISTING: Intrinsic type-constructor (List/Map/Set/Tuple).
             if let TypedNode::Intrinsic(op) = &func.node {
                 let arg_tys: Vec<Ty> =
                     args.iter().filter_map(|a| extract_type_value(&a.node)).collect();
