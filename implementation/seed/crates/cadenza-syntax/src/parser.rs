@@ -40,12 +40,47 @@ impl Parsed {
     }
 }
 
+/// A captured doc/comment preceding a grammar token: `/// text` (doc) or `// text` (comment), with
+/// the `//`/`///` prefix and one optional leading space stripped, and the source span.
+#[derive(Clone, Debug)]
+struct Lead {
+    doc: bool,
+    text: String,
+    span: Span,
+}
+
 /// Parse `src` (in file `file`) to arenas + spans.
 pub fn parse(src: &str, file: FileId) -> Parsed {
-    let tokens: Vec<Token> = Lexer::new(src).filter(|t| !t.kind.is_trivia()).collect();
+    // Split the lexer stream into grammar tokens (everything the parser already handled) and a
+    // parallel `leading` side-table: `leading[i]` is the run of doc/comment tokens that immediately
+    // preceded grammar token `i`. The parser proper sees ONLY grammar tokens (unchanged); it
+    // consults `leading` at definition boundaries to attach docs/comments. Comments no longer
+    // vanish — they are captured here and re-emitted as `(doc …)` / `(comment …)` nodes.
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut leading: Vec<Vec<Lead>> = Vec::new();
+    let mut pending: Vec<Lead> = Vec::new();
+    for t in Lexer::new(src) {
+        match t.kind {
+            Kind::Whitespace => {}
+            Kind::LineComment | Kind::DocComment => {
+                let doc = t.kind == Kind::DocComment;
+                pending.push(Lead { doc, text: strip_comment(&src[t.span.start..t.span.end], doc), span: t.span });
+            }
+            _ => {
+                tokens.push(t);
+                leading.push(std::mem::take(&mut pending));
+            }
+        }
+    }
+    // A trailing run of comments with no following grammar token (e.g. a comment on the last line)
+    // attaches to the virtual end position.
+    let trailing = pending;
+
     let mut p = Parser {
         src,
         tokens,
+        leading,
+        trailing,
         pos: 0,
         builder: Builder::new(),
         spans: SpanTable::new(file),
@@ -53,6 +88,13 @@ pub fn parse(src: &str, file: FileId) -> Parsed {
     };
     let root = p.program();
     Parsed { arenas: p.builder.finish(root), spans: p.spans, errors: p.errors }
+}
+
+/// Strip a comment token's `//`/`///` prefix and one optional following space, yielding its text.
+fn strip_comment(raw: &str, doc: bool) -> String {
+    let prefix = if doc { "///" } else { "//" };
+    let body = raw.strip_prefix(prefix).unwrap_or(raw);
+    body.strip_prefix(' ').unwrap_or(body).to_string()
 }
 
 /// Parse `src` as an anonymous single file (`FileId(0)`).
@@ -63,6 +105,10 @@ pub fn read_ml(src: &str) -> Parsed {
 struct Parser<'a> {
     src: &'a str,
     tokens: Vec<Token>,
+    /// `leading[i]` = doc/comment tokens that immediately preceded grammar token `i`.
+    leading: Vec<Vec<Lead>>,
+    /// Doc/comments after the last grammar token.
+    trailing: Vec<Lead>,
     pos: usize,
     builder: Builder,
     spans: SpanTable,
@@ -149,6 +195,77 @@ impl<'a> Parser<'a> {
         self.name("<error>", span)
     }
 
+    // ---- doc / comment attachment ----
+
+    /// Drain and return the `//` COMMENT leads preceding the current grammar token, leaving any
+    /// `///` docs in place (a def/module drains those itself). Used at statement positions to wrap
+    /// the following form in `(comment "text" node)`.
+    fn take_comments_here(&mut self) -> Vec<Lead> {
+        let leads = if self.pos < self.leading.len() {
+            &mut self.leading[self.pos]
+        } else {
+            return Vec::new();
+        };
+        let (comments, docs): (Vec<Lead>, Vec<Lead>) =
+            std::mem::take(leads).into_iter().partition(|l| !l.doc);
+        *leads = docs;
+        comments
+    }
+
+    /// Drain and return the `///` DOC leads preceding the current grammar token. Called by a
+    /// def/module parser at entry to splice them as `(doc "text")` body forms.
+    fn take_docs_here(&mut self) -> Vec<Lead> {
+        let leads = if self.pos < self.leading.len() {
+            &mut self.leading[self.pos]
+        } else {
+            return Vec::new();
+        };
+        let (docs, comments): (Vec<Lead>, Vec<Lead>) =
+            std::mem::take(leads).into_iter().partition(|l| l.doc);
+        *leads = comments;
+        docs
+    }
+
+    /// Parse a statement (a top-level form / module member): capture any leading `//` comments and
+    /// wrap the parsed form in `(comment "text" node)`, outermost = first. Leading `///` docs are
+    /// left in place for a def/module parser to splice inside; any docs a non-def form leaves behind
+    /// are then wrapped as comments too, so no doc/comment is ever dropped.
+    fn stmt(&mut self) -> StructId {
+        let start = self.pos;
+        let comments = self.take_comments_here();
+        let node = self.expr(0);
+        // Docs still sitting at the statement's start slot were NOT consumed (the form was not a
+        // def/module), so they'd otherwise be dropped — preserve them as comments.
+        let leftover: Vec<Lead> = if start < self.leading.len() {
+            std::mem::take(&mut self.leading[start])
+        } else {
+            Vec::new()
+        };
+        let node = self.wrap_comments(leftover, node);
+        self.wrap_comments(comments, node)
+    }
+
+    /// Fold a run of comment leads around `node`: `[c0, c1]` -> `(comment c0 (comment c1 node))`.
+    fn wrap_comments(&mut self, comments: Vec<Lead>, mut node: StructId) -> StructId {
+        for lead in comments.into_iter().rev() {
+            let head = self.name("comment", lead.span);
+            let text = self.atom(Leaf::Str(lead.text), lead.span);
+            node = self.list(vec![head, text, node], lead.span);
+        }
+        node
+    }
+
+    /// Build `(doc "text")` body-form nodes from a run of doc leads.
+    fn doc_nodes(&mut self, docs: Vec<Lead>) -> Vec<StructId> {
+        docs.into_iter()
+            .map(|lead| {
+                let head = self.name("doc", lead.span);
+                let text = self.atom(Leaf::Str(lead.text), lead.span);
+                self.list(vec![head, text], lead.span)
+            })
+            .collect()
+    }
+
     // ---- program ----
 
     fn program(&mut self) -> StructId {
@@ -157,7 +274,7 @@ impl<'a> Parser<'a> {
             self.error("empty program");
             return self.error_node(span);
         }
-        let root = self.expr(0);
+        let mut root = self.stmt();
         if !self.at_end() {
             self.error("unexpected trailing input");
             // Consume the rest so we don't loop; the already-built root is returned.
@@ -165,6 +282,12 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
+        // Comments after the last grammar token (e.g. a trailing `// note` on the final line) have
+        // no following form to precede; attach them as outer `(comment …)` wrappers so nothing is
+        // dropped. (v1 scope: their printed position moves above the program — a known limitation
+        // noted for a later "trailing comment" refinement.)
+        let trailing = std::mem::take(&mut self.trailing);
+        root = self.wrap_comments(trailing, root);
         root
     }
 
@@ -425,6 +548,8 @@ impl<'a> Parser<'a> {
     /// s-expr surface: the def's first child is the name-and-params list, then the single body.
     fn def_expr(&mut self) -> StructId {
         let start = self.cur_span();
+        // Leading `///` docs attach INSIDE the def, as `(doc "text")` body forms before the body.
+        let docs = self.take_docs_here();
         let def_head = self.keyword_head("def", start);
         self.bump(); // `fn`
         // signature: name then params -> (name p …)
@@ -449,19 +574,28 @@ impl<'a> Parser<'a> {
         self.expect(Kind::Eq, "`=`");
         let body = self.expr(0);
         let span = start.merge(self.prev_span());
-        self.list(vec![def_head, signature, body], span)
+        // (def signature doc… body) — docs precede the body form, matching the spec's
+        // `(def (f) (doc "…") body)` shape.
+        let mut items = vec![def_head, signature];
+        items.extend(self.doc_nodes(docs));
+        items.push(body);
+        self.list(items, span)
     }
 
-    /// `module name { form… }`  ->  `(module name form…)`.
+    /// `module name { form… }`  ->  `(module name doc… form…)`.
     fn module_expr(&mut self) -> StructId {
         let start = self.cur_span();
+        // Leading `///` docs attach INSIDE the module as `(doc …)` forms before its members.
+        let docs = self.take_docs_here();
         let head = self.keyword_head("module", start);
         self.bump(); // `module`
         let name = self.binder();
         let mut items = vec![head, name];
+        items.extend(self.doc_nodes(docs));
         self.expect(Kind::LBrace, "`{`");
         while !self.at(Kind::RBrace) && !self.at_end() {
-            items.push(self.expr(0));
+            // members capture their own leading `//` comments and `///` docs
+            items.push(self.stmt());
         }
         self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());

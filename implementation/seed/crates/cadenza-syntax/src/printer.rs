@@ -122,6 +122,13 @@ impl<'a> Printer<'a> {
                 "tuple" if args.len() >= 2 => return self.print_tuple(args),
                 "record" if self.is_record_shape(args) => return self.print_record(args),
                 "map" if self.is_map_shape(args) => return self.print_map(args),
+                // A `(comment "text" node)` wraps a node in ANY position, so render it as `// text`
+                // above the node wherever it appears. A `(doc …)`, by contrast, is only a `///`
+                // line in a def/module BODY position (handled by print_def/print_module); a stray
+                // `(doc …)` elsewhere falls through to the generic call form.
+                "comment" if args.len() == 2 && self.is_string(args[0]) => {
+                    return self.print_comment(args[0], args[1]);
+                }
                 _ => {}
             }
             // ---- generic call form: head(a, b, c) ----
@@ -355,16 +362,26 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `fn name(p, …) = body` — a named function definition. `args[0]` is the signature list
-    /// `(name p …)`; `args[1]` is the body. Never parenthesized (a def is a declaration, only valid
-    /// at a statement/module position, so `parent_prec` does not apply).
+    /// `fn name(p, …) = body` — a named function definition. `args` is `signature doc… body`: the
+    /// signature list `(name p …)`, zero or more `(doc "…")` forms (printed as `/// …` lines above
+    /// the `fn`), and the single body. Never parenthesized (a def is a declaration).
     fn print_def(&mut self, args: &[StructId]) {
+        let signature = args[0];
+        let docs = &args[1..args.len() - 1];
+        let body = args[args.len() - 1];
         // Offset 0: a hugged block body (match/let/…) carries its own indentation relative to its
         // own start column, so the def box must not add another level on top. A plain-expression
         // body that overflows is indented explicitly by `body_after_eq`.
         self.doc.cbox(0);
+        for &d in docs {
+            // each doc member is a `(doc "text")` (guaranteed by is_def_shape) -> `/// text`
+            if let Some(a) = self.a.as_form(d, "doc") {
+                self.print_doc(a[0]);
+            }
+            self.doc.hardbreak();
+        }
         self.doc.word("fn ");
-        if let Struct::List(sig) = self.a.get(args[0]) {
+        if let Struct::List(sig) = self.a.get(signature) {
             let sig = sig.clone();
             // name
             self.expr(sig[0], 0);
@@ -377,8 +394,35 @@ impl<'a> Printer<'a> {
             }
             self.doc.word(") =");
         }
-        self.body_after_eq(args[1]);
+        self.body_after_eq(body);
         self.doc.end();
+    }
+
+    /// `(doc "text")` -> `/// text` (a documentation line). Verbatim text after the `///`.
+    fn print_doc(&mut self, text: StructId) {
+        self.doc.word(format!("///{}", self.doc_line_text(text)));
+    }
+
+    /// `(comment "text" node)` -> `// text` on its own line, then the annotated node beneath it.
+    fn print_comment(&mut self, text: StructId, node: StructId) {
+        self.doc.cbox(0);
+        self.doc.word(format!("//{}", self.doc_line_text(text)));
+        self.doc.hardbreak();
+        self.expr(node, 0);
+        self.doc.end();
+    }
+
+    /// The text of a doc/comment string leaf, prefixed with a space when non-empty so it renders as
+    /// `/// text` (and re-reads with the space stripped). An empty comment renders as bare `///`.
+    fn doc_line_text(&self, text: StructId) -> String {
+        match self.a.get(text) {
+            Struct::Atom(l) => match self.a.leaf(*l) {
+                Leaf::Str(s) if s.is_empty() => String::new(),
+                Leaf::Str(s) => format!(" {s}"),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        }
     }
 
     /// Emit ` body` after a `=`/`in`-style keyword: a block-like body (a `match`, `let`, `if`, …
@@ -434,6 +478,14 @@ impl<'a> Printer<'a> {
         self.doc.word(" {");
         for &form in &args[1..] {
             self.doc.hardbreak(); // one member per line
+            // a `(doc …)` module member renders as a `///` line (body position); anything else as
+            // its ordinary form.
+            if let Some(a) = self.a.as_form(form, "doc") {
+                if a.len() == 1 && self.is_string(a[0]) {
+                    self.print_doc(a[0]);
+                    continue;
+                }
+            }
             self.expr(form, 0);
         }
         self.doc.break_with(1, -INDENT);
@@ -682,19 +734,34 @@ impl<'a> Printer<'a> {
         self.is_pairs(args)
     }
 
-    /// A def the `fn name(…) = body` surface handles: exactly a signature list `(name p…)` (whose
-    /// head is a name — so the params can be lowered as binders) and a single body form. A def with
-    /// extra body forms (a `(doc …)` or `(: type)` annotation) falls back to the generic form so it
-    /// still round-trips.
+    /// A def the `fn name(…) = body` surface handles: a signature list `(name p…)` (head is a
+    /// name, so params lower as binders), then zero or more `(doc "…")` forms, then a single body.
+    /// Any OTHER interleaved body form (e.g. a `(: type)` annotation) falls back to the generic call
+    /// form so it still round-trips.
     fn is_def_shape(&self, args: &[StructId]) -> bool {
-        args.len() == 2
-            && matches!(self.a.get(args[0]), Struct::List(sig) if !sig.is_empty()
-                && self.head_name(sig[0]).is_some())
+        if args.len() < 2 {
+            return false;
+        }
+        let sig_ok = matches!(self.a.get(args[0]), Struct::List(sig) if !sig.is_empty()
+            && self.head_name(sig[0]).is_some());
+        // args[1..last] must all be `(doc "…")`.
+        let docs_ok = args[1..args.len() - 1].iter().all(|&a| self.is_doc(a));
+        sig_ok && docs_ok
     }
 
-    /// A module the `module name { … }` surface handles: a name followed by zero or more forms.
+    /// A module the `module name { … }` surface handles: a name, then any members (docs included).
     fn is_module_shape(&self, args: &[StructId]) -> bool {
         !args.is_empty() && self.head_name(args[0]).is_some()
+    }
+
+    /// True if `id` is a well-formed `(doc "text")` node.
+    fn is_doc(&self, id: StructId) -> bool {
+        matches!(self.a.as_form(id, "doc"), Some(a) if a.len() == 1 && self.is_string(a[0]))
+    }
+
+    /// True if `id` is a string-literal atom.
+    fn is_string(&self, id: StructId) -> bool {
+        matches!(self.a.get(id), Struct::Atom(l) if matches!(self.a.leaf(*l), Leaf::Str(_)))
     }
 }
 
@@ -878,14 +945,37 @@ mod tests {
     }
 
     #[test]
-    fn multi_form_def_falls_back_but_round_trips() {
-        // A def carrying a doc form has no dedicated surface; it prints as the generic call form
-        // and still round-trips.
+    fn documented_def_prints_doc_line() {
+        // A def carrying `(doc …)` forms renders them as `/// …` lines above the `fn`.
         let a = sexpr::read("(def (f x) (doc \"hi\") (+ x 1))").unwrap();
         let printed = print(&a, 80);
-        assert_eq!(printed, "def(f(x), doc(\"hi\"), x + 1)");
+        assert_eq!(printed, "/// hi\nfn f(x) = x + 1");
         let b = parser::read_ml(&printed);
-        assert!(b.ok() && b.arenas.structurally_eq(&a));
+        assert!(b.ok() && b.arenas.structurally_eq(&a), "printed:\n{printed}");
+    }
+
+    #[test]
+    fn non_doc_multi_form_def_falls_back() {
+        // A def whose extra body form is NOT a doc (here a `(: type)` annotation) has no dedicated
+        // surface; it falls back to the generic call form and still round-trips.
+        let a = sexpr::read("(def (f x) (: Int64) (+ x 1))").unwrap();
+        let printed = print(&a, 80);
+        assert_eq!(printed, "def(f(x), `:`(Int64), x + 1)");
+        let b = parser::read_ml(&printed);
+        assert!(b.ok() && b.arenas.structurally_eq(&a), "printed:\n{printed}");
+    }
+
+    #[test]
+    fn doc_and_comment_round_trip() {
+        // `///` doc attaches inside the def; `//` comment wraps it.
+        assert_eq!(
+            assert_roundtrip("/// Adds.\nfn add(a, b) = a + b", 80),
+            "/// Adds.\nfn add(a, b) = a + b"
+        );
+        assert_eq!(
+            assert_roundtrip("// note\nfn main() = 42", 80),
+            "// note\nfn main() = 42"
+        );
     }
 
     #[test]
