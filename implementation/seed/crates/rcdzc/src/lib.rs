@@ -19,6 +19,10 @@ pub mod ty;
 pub mod core;
 pub mod resolved;
 
+// The prelude — the one map of built-in bindings, installed as ordinary AST records at load. A
+// built-in module is just a record; nothing is privileged by name or by shape.
+pub mod prelude;
+
 // The query engine: the single `Db` is PURE DATA (the AST + the columns); each query is a free
 // function in its own module over `&mut Db`, and each module owns exactly one column's fills —
 // `resolve` fills `resolved`, `infer` fills `types`, `lower` fills `core`. A query reads another
