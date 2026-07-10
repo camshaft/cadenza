@@ -132,9 +132,21 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// `( a, b, c )` argument list — all-or-nothing: inline if it fits, else one arg per line,
-    /// block-indented, closing `)` on its own line, with a trailing comma when broken.
+    /// A call's argument list. If the LAST argument is a block-like construct (a lambda or a
+    /// `match`), it HUGS: the head args stay inline and only the trailing block breaks internally
+    /// (`map(items, fn(x) => …)`), the highest-value readability case for higher-order calls.
+    /// Otherwise it is all-or-nothing: inline if it fits, else one arg per line, block-indented,
+    /// closing `)` on its own dedented line.
     fn call_args(&mut self, args: &[StructId]) {
+        if !args.is_empty() && self.is_huggable_arg(args[args.len() - 1]) {
+            self.hug_call(args);
+        } else {
+            self.plain_call(args);
+        }
+    }
+
+    /// All-or-nothing argument layout.
+    fn plain_call(&mut self, args: &[StructId]) {
         self.doc.cbox(INDENT);
         self.doc.word("(");
         if !args.is_empty() {
@@ -146,11 +158,60 @@ impl<'a> Printer<'a> {
                 }
                 self.expr(arg, 0);
             }
-            // trailing comma appears only when broken (a zero-width break in flat mode)
+            // a zero-width break before `)` that, when the box breaks, dedents the `)` to the
+            // call's own column (nothing when flat)
             self.doc.break_with(0, -INDENT);
         }
         self.doc.word(")");
         self.doc.end();
+    }
+
+    /// Last-arg-hugging layout: `head(a, b, <block>)` where the head args `a, b` stay on the line
+    /// and `<block>` breaks internally. The head args live in their OWN box that does not contain
+    /// the block, so the block's internal hardbreaks cannot force the head args apart; they are
+    /// joined to the block with a literal `, ` that never breaks.
+    fn hug_call(&mut self, args: &[StructId]) {
+        let (head, last) = args.split_at(args.len() - 1);
+        self.doc.cbox(0);
+        self.doc.word("(");
+        // head args, comma-space separated, never broken (a small ibox keeps them flat)
+        self.doc.ibox(0);
+        for (i, &arg) in head.iter().enumerate() {
+            if i > 0 {
+                self.doc.word(", ");
+            }
+            self.expr(arg, 0);
+        }
+        self.doc.end();
+        if !head.is_empty() {
+            self.doc.word(", ");
+        }
+        // the hugged block breaks internally
+        self.expr(last[0], 0);
+        self.doc.word(")");
+        self.doc.end();
+    }
+
+    /// True if `id` is an argument worth hugging as the last argument of a call: a lambda or a
+    /// `match` — a construct that lays itself out across lines and reads well trailing a call.
+    fn is_huggable_arg(&self, id: StructId) -> bool {
+        let head = match self.a.get(id) {
+            Struct::List(items) => items.first().and_then(|&h| self.head_name(h)),
+            _ => None,
+        };
+        match head.as_deref() {
+            Some("fn") => matches!(self.a.get(id), Struct::List(i) if i.len() == 3),
+            Some("match") => self.is_match_shape_form(id),
+            _ => false,
+        }
+    }
+
+    /// True if `id` is a well-formed `(match scrut arm…)` the match surface handles.
+    fn is_match_shape_form(&self, id: StructId) -> bool {
+        match self.a.get(id) {
+            Struct::List(items) if items.len() >= 2 => self.is_match_shape(&items[1..]),
+            _ => false,
+        }
     }
 
     /// `l op r`, left-associative. The break sits BEFORE the operator so a wrapped right side lands
@@ -236,7 +297,7 @@ impl<'a> Printer<'a> {
     /// `fn(p, …) => body`.
     fn print_fn(&mut self, args: &[StructId], parent_prec: u8) {
         let paren = parent_prec > 0;
-        self.doc.ibox(INDENT);
+        self.doc.cbox(0);
         if paren {
             self.doc.word("(");
         }
@@ -251,8 +312,9 @@ impl<'a> Printer<'a> {
             }
         }
         self.doc.word(") =>");
-        self.doc.space();
-        self.expr(args[1], 0);
+        // A block-like body hugs the `=>` (breaks internally); a plain body drops to an indented
+        // line if it overflows — same discipline as a def's `=` body.
+        self.body_after_eq(args[1]);
         if paren {
             self.doc.word(")");
         }
@@ -594,6 +656,32 @@ mod tests {
         // out flat at that indent.
         let out = assert_roundtrip("fn f(x) = let y = x + 1 in y * y", 80);
         assert_eq!(out, "fn f(x) =\n  let y = x + 1 in\n  y * y");
+    }
+
+    #[test]
+    fn last_arg_lambda_hugs() {
+        // A trailing lambda stays on the call line, breaking only its own body — head args inline.
+        let out = assert_roundtrip(
+            "fold(xs, zero, fn(acc, x) => match x { Some(v) => acc + v, None(_) => acc })",
+            80,
+        );
+        assert_eq!(
+            out,
+            "fold(xs, zero, fn(acc, x) => match x {\n  Some(v) => acc + v,\n  None(_) => acc,\n})"
+        );
+    }
+
+    #[test]
+    fn last_arg_hug_fits_inline() {
+        // When the whole call fits, hugging is invisible — it stays on one line.
+        assert_eq!(assert_roundtrip("map(items, fn(x) => x + 1)", 80), "map(items, fn(x) => x + 1)");
+    }
+
+    #[test]
+    fn plain_call_all_or_nothing_when_wide() {
+        // A call with no block-like last arg breaks all args one per line when it overflows.
+        let out = assert_roundtrip("some-function(alpha, beta, gamma, delta)", 20);
+        assert_eq!(out, "some-function(\n  alpha,\n  beta,\n  gamma,\n  delta\n)");
     }
 
     #[test]

@@ -22,3 +22,4 @@ target/
 
 # Compiled seed compiler binary (regenerable via cargo build)
 implementation/stable
+Cargo.lock
