@@ -348,4 +348,41 @@ mod stage1 {
         // A record used as a runtime VALUE (returned, not projected) needs the value heap — declines.
         assert!(expect_decline("(record (x 1))").contains("value heap"));
     }
+
+    // ── the prelude: a built-in module is an arena record, reached by the same projection ──────
+
+    #[test]
+    fn int64_max_is_a_folding_constant() {
+        // `Int64.max` — a built-in reached by the SAME member-access-and-fold path as `p.x`. Folds to
+        // the constant, runs with no value heap. (The reader desugars `Int64.max` to `(. Int64 max)`.)
+        assert_eq!(run_main("(. Int64 max)"), i64::MAX);
+    }
+
+    #[test]
+    fn int64_min_is_a_folding_constant() {
+        assert_eq!(run_main("(. Int64 min)"), i64::MIN);
+    }
+
+    #[test]
+    fn a_program_binding_shadows_a_builtin() {
+        // The scope-first lookup means a `let`-bound `Int64` HIDES the built-in module — no special
+        // case (`prelude-and-resolution.md` §Name Resolution Is One Ordered Lookup).
+        assert_eq!(run_main("(let ((Int64 5)) Int64)"), 5);
+    }
+
+    #[test]
+    fn an_unrealized_builtin_field_declines() {
+        // `(. Int64 of)` — the field EXISTS (present as a poison), so projecting it declines "not yet
+        // realized" rather than rejecting as absent. No open-module rule: it is filled with a poison.
+        let msg = expect_decline("(. Int64 of)");
+        assert!(msg.contains("not yet realized"), "got: {msg}");
+    }
+
+    #[test]
+    fn an_absent_builtin_field_rejects_like_a_closed_record() {
+        // `(. Int64 bogus)` — a field the module does NOT carry rejects (CDZ0201), the same closed
+        // projection a user record takes. Realized/unrealized/absent are one uniform projection.
+        let msg = expect_decline("(. Int64 bogus)");
+        assert!(msg.contains("no field"), "got: {msg}");
+    }
 }

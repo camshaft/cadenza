@@ -32,6 +32,7 @@ use crate::ast::{Arenas, Struct, StructId};
 use crate::core::Core;
 use crate::resolved::Resolved;
 use crate::ty::Ty;
+use std::collections::BTreeMap;
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
 /// occurrences (empty = nullary), and its body occurrence (absent = malformed). The body is LOCATED,
@@ -77,6 +78,12 @@ pub struct Db {
     /// provenance-by-back-reference the columns model uses for source position.
     parent: Vec<Option<StructId>>,
 
+    /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
+    /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
+    /// occurrence it binds to. `resolve` consults it after the lexical scope, so a program binding
+    /// shadows a built-in by the ordinary lookup precedence.
+    pub prelude: BTreeMap<String, StructId>,
+
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
     /// The solved-type column. Filled only by [`crate::infer`].
@@ -90,6 +97,11 @@ impl Db {
     /// leave every derived column empty. Nothing below the top level is touched until a query demands
     /// it.
     pub fn load(ast: Arenas) -> Db {
+        let mut ast = ast;
+        // Install the prelude as ordinary AST nodes FIRST, so its records get `StructId`s (after the
+        // program's — no program id shifts) and the parent index covers them too. A built-in module is
+        // just a record in the arena; the prelude map is `name → its occurrence`.
+        let prelude = crate::prelude::install(&mut ast);
         let (defs, exports) = scan_top_level(&ast);
         let parent = parent_index(&ast);
         Db {
@@ -97,6 +109,7 @@ impl Db {
             defs,
             exports,
             parent,
+            prelude,
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),

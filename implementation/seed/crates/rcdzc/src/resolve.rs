@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 /// member access. This set does NOT grow when a built-in value is added (that is a prelude entry).
 /// A form whose head is one of these is dispatched structurally; any other head is an application (or,
 /// for a bare atom, a name looked up).
-const GRAMMAR: &[&str] = &["let", "if", "record", ".", "module", "def", "export", "do"];
+const GRAMMAR: &[&str] = &["let", "if", "record", ".", "module", "def", "export", "do", "unrealized"];
 
 /// The resolved form of the node at `id`, filling the column on demand (memoized). The query the
 /// resolved-form request answers, and the upstream read `infer`/`lower` perform.
@@ -77,6 +77,18 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("let") => resolve_let(db, id),
                 Some("record") => resolve_record(db, id),
                 Some(".") => resolve_member(db, id),
+                // `(unrealized OP)` — a prelude field for an operation the compiler does not yet
+                // realize. It resolves to a decline, so projecting it declines by the ordinary path
+                // (no open-module rule). The op name rides along for the message.
+                Some("unrealized") => {
+                    let op = db
+                        .ast
+                        .as_form(id, "unrealized")
+                        .and_then(|t| t.first())
+                        .and_then(|&s| db.ast.as_name(s))
+                        .unwrap_or("operation");
+                    Resolved::Poison(Reject::decline(format!("built-in `{op}` is not yet realized")))
+                }
                 // A grammar declaration form appearing in expression position is not an expression
                 // (Stage 0 handles module/def/export/do at the top level, not here).
                 Some(h) if GRAMMAR.contains(&h) => {
@@ -93,13 +105,20 @@ fn compute(db: &Db, id: StructId) -> Resolved {
 
 /// Resolve a bare name at occurrence `id` by the one ordered lookup: the lexical scope (walk parents
 /// to the nearest enclosing binder of `name`), then the prelude map. A hit is a `Ref` to the value the
-/// name denotes; a miss is a `Poison` (unbound).
+/// name denotes — a program binding OR a built-in — so a built-in is reached by the same mechanism as
+/// any binding, and the scope-first order means a program binding SHADOWS a built-in of the same name
+/// (`prelude-and-resolution.md` §Name Resolution Is One Ordered Lookup). A miss is a `Poison`.
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
+    // 1. Lexical scope — nearest enclosing binder.
     if let Some(value) = lookup_scope(db, id, name) {
         return Resolved::Ref { value };
     }
-    // The prelude map is the next (and last) step of the lookup. Stage 1's prelude is empty of value
-    // bindings (built-in modules arrive as entries here later); an unbound name declines.
+    // 2. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
+    // same `Ref` a program binding produces, so member access / folding treats it identically.
+    if let Some(&value) = db.prelude.get(name) {
+        return Resolved::Ref { value };
+    }
+    // 3. Off the end of the lookup — the name is unbound.
     Resolved::Poison(Reject::decline(format!("unbound name `{name}`")))
 }
 
