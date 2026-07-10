@@ -9,6 +9,7 @@
 //! code.
 
 pub mod ast;
+pub mod codec;
 pub mod leb128;
 
 pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Struct, StructId};
