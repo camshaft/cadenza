@@ -1,11 +1,16 @@
 //! Token kinds and the precedence table
 //!
 //! `Kind` is both the lexer's token kind AND the rowan `SyntaxKind` space (node kinds live above the
-//! token kinds, see the `NODE_*` block). `infix_prec` is the single source of truth the parser's
+//! token kinds, see the `Node*` block). `infix_prec` is the single source of truth the parser's
 //! Pratt loop and the printer's minimal-paren split both read — sharing it is what guarantees the
 //! text round-trip.
+//!
+//! The lexer is deliberately KEYWORD-FREE: every word lexes to `Ident`, and the PARSER decides
+//! whether a given `Ident` is a keyword from its text and grammatical position (contextual
+//! keywords). See [`keyword`] and [`is_reserved`]. This keeps the lexer a simple total tokenizer
+//! shared by both the ML and s-expression surfaces.
 
-/// A lexical token kind and, above `EOF`, the parser's syntax-node kinds. `#[repr(u16)]` so it maps
+/// A lexical token kind and, above `Eof`, the parser's syntax-node kinds. `#[repr(u16)]` so it maps
 /// to rowan's `SyntaxKind(u16)` by transmute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]
@@ -19,21 +24,10 @@ pub enum Kind {
     Int,
     Float,
     Str,
-    True,
-    False,
 
-    // ---- identifiers ----
-    Ident,        // includes kebab-case (`byte-at`) and dotted positional (`tuple.0`)
+    // ---- identifiers (keywords are NOT lexed; the parser recognizes them from Ident text) ----
+    Ident,        // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/… — all Ident
     BacktickName, // `` `|` ``, `` `->` `` — the lossless escape for symbolic/keyword names
-
-    // ---- keywords ----
-    Let,
-    In,
-    If,
-    Then,
-    Else,
-    Fn,
-    Match,
 
     // ---- operators (each has a binding power in `infix_prec`) ----
     Or,       // `or`
@@ -142,6 +136,50 @@ impl Kind {
             _ => return None,
         })
     }
+}
+
+/// A contextual keyword the parser recognizes. The lexer emits `Ident`; the parser calls
+/// [`keyword`] on the text to decide. `and`/`or` are NOT keywords — they are word-spelled infix
+/// operators (see [`word_op`]). `else` is a keyword only inside `if`/`match`; it is still reserved
+/// so it can never be a bare name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keyword {
+    Let,
+    In,
+    If,
+    Then,
+    Else,
+    Fn,
+    Match,
+}
+
+/// The keyword an identifier's text denotes, if any.
+pub fn keyword(text: &str) -> Option<Keyword> {
+    Some(match text {
+        "let" => Keyword::Let,
+        "in" => Keyword::In,
+        "if" => Keyword::If,
+        "then" => Keyword::Then,
+        "else" => Keyword::Else,
+        "fn" => Keyword::Fn,
+        "match" => Keyword::Match,
+        _ => return None,
+    })
+}
+
+/// The infix operator an identifier's text denotes, if it is a word-spelled operator (`and`/`or`).
+pub fn word_op(text: &str) -> Option<&'static str> {
+    match text {
+        "and" => Some("and"),
+        "or" => Some("or"),
+        _ => None,
+    }
+}
+
+/// True if a bare name with this text would be misread by the parser — a keyword or a word-operator.
+/// The printer backtick-escapes such a name so it round-trips as a name, not the reserved word.
+pub fn is_reserved(text: &str) -> bool {
+    keyword(text).is_some() || word_op(text).is_some()
 }
 
 /// Member access and application bind tightest.
