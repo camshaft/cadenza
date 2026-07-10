@@ -967,3 +967,100 @@ fn compile_time_closures() {
     let out = compile_program(&program_v2("((. (tuple (fn (x) (+ x 1)) 9) 0) 5)"));
     assert!(out.component().is_some(), "lambda in tuple element should project and β-reduce: {:?}", out.diagnostics);
 }
+
+/// Irrefutable binding patterns (Increment A) — `let`, `def` param, `fn` param accept tuple patterns.
+/// A destructuring binder desugars to a single-arm match; the tuple path is already green (tests.rs:248).
+#[test]
+fn binding_patterns_compile() {
+    // LET with tuple pattern — destructure + sum.
+    let out = compile_program(&program_v2("(let (((tuple a b) (tuple 3 4))) (+ a b))"));
+    assert!(out.component().is_some(), "let tuple pattern: {:?}", out.diagnostics);
+
+    // NESTED tuple pattern.
+    let out = compile_program(&program_v2("(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))"));
+    assert!(out.component().is_some(), "nested tuple pattern: {:?}", out.diagnostics);
+
+    // DEF param with tuple pattern — `fst` extracts first element (used via call).
+    let prog = "(do (def (fst p) (match p ((tuple a b) a))) (def (main) (fst (tuple 7 8))) (export main))";
+    let out = compile_program(&ast::read(prog).unwrap());
+    assert!(out.component().is_some(), "def param (via match baseline): {:?}", out.diagnostics);
+
+    // Actually test pattern param - define inline and apply.
+    let out = compile_program(&program_v2("((fn ((tuple a b)) (+ a b)) (tuple 10 20))"));
+    assert!(out.component().is_some(), "fn param pattern applied: {:?}", out.diagnostics);
+
+    // FN param with tuple pattern.
+    let out = compile_program(&program_v2("((fn ((tuple a b)) (+ a b)) (tuple 3 4))"));
+    assert!(out.component().is_some(), "fn param tuple pattern: {:?}", out.diagnostics);
+
+    // WILDCARD discard.
+    let out = compile_program(&program_v2("(let ((_ (tuple 1 2))) 42)"));
+    assert!(out.component().is_some(), "wildcard discard: {:?}", out.diagnostics);
+
+    // ANNOTATED binder — accept (fn param).
+    let out = compile_program(&program_v2("((fn ((: x Int64)) x) 5)"));
+    assert!(out.component().is_some(), "annotated param: {:?}", out.diagnostics);
+
+    // Annotated tuple pattern (let).
+    let out = compile_program(&program_v2("(let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 1 2))) (+ a b))"));
+    assert!(out.component().is_some(), "annotated tuple pattern: {:?}", out.diagnostics);
+}
+
+/// Binding patterns must be irrefutable — refutable patterns (ctors, literals) are rejected with CDZ0210.
+#[test]
+fn refutable_binding_pattern_rejects() {
+    // A multi-variant ctor in binding position → CDZ0210 (non-exhaustive).
+    let out = compile_program(&program_v2("(let (((Some x) (Some 5))) x)"));
+    assert!(out.component().is_none(), "Some binding should reject");
+    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0210"), "refutable ctor → CDZ0210");
+
+    // A literal in binding position → CDZ0210 (fn param with literal).
+    let out = compile_program(&program_v2("((fn (0) 42) 0)"));
+    assert!(out.component().is_none(), "literal param should reject: {:?}", out.diagnostics);
+    if out.diagnostics.is_empty() || out.diagnostics[0].code.is_none() {
+        panic!("Expected CDZ0210, got: {:?}", out.diagnostics);
+    }
+    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0210"), "literal → CDZ0210");
+
+    // Boolean literal.
+    let out = compile_program(&program_v2("(let ((true v)) 1)"));
+    assert!(out.component().is_none(), "bool literal should reject");
+    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0210"));
+}
+
+/// Non-linear patterns (a name repeated) are rejected with CDZ0102.
+#[test]
+fn nonlinear_pattern_rejects() {
+    // Flat non-linear — same name twice in one tuple.
+    let out = compile_program(&program_v2("(let (((tuple x x) (tuple 1 2))) x)"));
+    assert!(out.component().is_none(), "flat non-linear should reject");
+    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0102"), "flat non-linear → CDZ0102");
+
+    // NESTED non-linear — name repeated across sub-patterns (the anticipatory-pinned case).
+    let out = compile_program(&program_v2("(let (((tuple x (tuple x y)) (tuple 1 (tuple 2 3)))) x)"));
+    assert!(out.component().is_none(), "nested non-linear should reject");
+    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0102"), "nested non-linear → CDZ0102");
+
+    // Non-linear in MATCH arm (the linearity check also fires for match).
+    let out = compile_program(&program_v2("(match (tuple 1 2) ((tuple x x) x))"));
+    assert!(out.component().is_none(), "match arm non-linear should reject");
+    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0102"));
+}
+
+/// Annotated binder contradiction — annotation type does not unify with value → CDZ0203.
+#[test]
+fn annotated_binding_contradiction_rejects() {
+    let out = compile_program(&program_v2("(let (((: x Bool) 42)) x)"));
+    assert!(out.component().is_none(), "annotation contradiction should reject");
+    assert_eq!(out.diagnostics[0].code.as_deref(), Some("CDZ0203"), "annotation mismatch → CDZ0203");
+}
+
+/// Record binding patterns and single-variant-sum patterns are Increment B — decline, not reject.
+#[test]
+fn increment_b_patterns_decline() {
+    // Record pattern → decline (not a reject).
+    let out = compile_program(&program_v2("(let (((record (a x) (b y)) (record (a 1) (b 2)))) x)"));
+    assert!(out.component().is_none(), "record pattern should decline");
+    // Decline means no CDZ code, just an internal decline message.
+    assert!(out.diagnostics[0].code.is_none(), "record pattern declines (no code)");
+}

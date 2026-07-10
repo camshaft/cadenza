@@ -223,7 +223,7 @@ fn parse_type_expr(node: &Node, prelude: &Prelude) -> Result<Ty, Reject> {
 #[derive(Clone)]
 struct RawDef<'a> {
     name: &'a str,
-    params: Vec<&'a str>,
+    params: Vec<&'a Node>,
     body: &'a Node,
     is_fn: bool,
 }
@@ -312,9 +312,16 @@ pub fn resolve_program(node: &Node) -> Result<HirModule, Reject> {
                     next_local: 0,
                     prelude: &prelude,
                 };
-                let param_ids: Vec<u32> = def.params.iter().map(|_| r.fresh_local()).collect();
-                let named: Vec<(&str, u32)> = def.params.iter().copied().zip(param_ids).collect();
-                let body = resolve_with_params(&mut r, &named, def.body, &Scope::Empty);
+                // Each param gets one ABI slot (arity preserved). Collect param ids and nodes.
+                let mut param_ids: Vec<u32> = Vec::new();
+                let mut param_info: Vec<(u32, &Node)> = Vec::new();
+                for &p in &def.params {
+                    let id = r.fresh_local();
+                    param_ids.push(id);
+                    param_info.push((id, p));
+                }
+                // Build the body, wrapping in matches for destructuring params (reuse lambda helper).
+                let body = r.def_body(&param_info, def.body);
                 HirFunc {
                     name: def.name.to_string(),
                     arity: def.params.len(),
@@ -583,13 +590,8 @@ fn collect_def(form: &Node) -> Result<Option<RawDef<'_>>, Reject> {
                 Some(n) => n,
                 None => return Err(Reject::decline("function definition has no name")),
             };
-            let mut params = Vec::new();
-            for p in &sig[1..] {
-                match name_of(p) {
-                    Some(pn) => params.push(pn),
-                    None => return Err(Reject::decline("function parameter is not a name")),
-                }
-            }
+            // Collect parameter nodes (may be patterns, not just names).
+            let params: Vec<&Node> = sig[1..].iter().collect();
             let body = body_after_doc(&items[2..])
                 .ok_or_else(|| Reject::decline("function definition has no body"))?;
             Ok(Some(RawDef {
@@ -1043,8 +1045,12 @@ impl<'a> BodyResolver<'a> {
 
     /// Resolve one `(pattern, body)` arm: introduce the pattern's binders into the scope (like a `let`),
     /// then resolve the pattern AND the body under that extended scope with plain `expr`. Returns the
-    /// resolved `(pattern-Hir, body-Hir)`.
+    /// resolved `(pattern-Hir, body-Hir)`. Checks linearity (CDZ0102) — a name must appear at most once.
     fn resolve_arm(&mut self, pat_node: &Node, body_node: &Node, scope: &Scope) -> (Hir, Hir) {
+        // Check linearity first.
+        if let Err(e) = self.check_linear(pat_node) {
+            return (Hir::Error(e.clone()), Hir::Error(e));
+        }
         let binders = self.pattern_binders(pat_node);
         let ids: Vec<u32> = binders.iter().map(|_| self.fresh_local()).collect();
         let named: Vec<(&str, u32)> = binders.iter().copied().zip(ids).collect();
@@ -1086,6 +1092,206 @@ impl<'a> BodyResolver<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Check that a binding-position pattern is LINEAR — each name appears at most once (flat or nested).
+    /// This is a NON-deduping recursive walk over the whole pattern, using a HashSet to detect repeats.
+    /// core-semantics.md §Bindings Introduced By A Pattern: "a pattern MUST bind each name at most once."
+    /// Rejects with CDZ0102 if a name repeats.
+    fn check_linear(&self, pat: &Node) -> Result<(), Reject> {
+        let mut seen = std::collections::HashSet::new();
+        self.check_linear_rec(pat, &mut seen)
+    }
+
+    fn check_linear_rec(
+        &self,
+        node: &Node,
+        seen: &mut std::collections::HashSet<String>,
+    ) -> Result<(), Reject> {
+        match node {
+            Node::Name(n) if n != "_" && !matches!(self.prelude.get(n.as_str()), Some(Hir::Ctor { .. })) => {
+                // It's a binder (not `_`, not a ctor). Check for duplicate.
+                if !seen.insert(n.clone()) {
+                    return Err(Reject::coded(
+                        Code::PatternNonLinear,
+                        format!("pattern binds the name `{n}` more than once"),
+                    ));
+                }
+                Ok(())
+            }
+            Node::List(items) if !items.is_empty() => {
+                // Recurse into sub-patterns (skip the head, which is the ctor/keyword).
+                for sub in &items[1..] {
+                    self.check_linear_rec(sub, seen)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Classify a binding-position pattern: irrefutable Increment A (name/`_`/tuple), decline (Increment B),
+    /// or reject (refutable → CDZ0210, shape-incompatible → CDZ0201).
+    fn check_irrefutable(&self, pat: &Node) -> Result<(), Reject> {
+        match pat {
+            Node::Name(n) if n == "_" => Ok(()),
+            Node::Name(n) => {
+                // A bare name: a binder UNLESS it resolves to a ctor (mirror collect_binders).
+                match self.prelude.get(n.as_str()) {
+                    Some(Hir::Ctor { def, .. }) => self.classify_ctor(def),
+                    _ => Ok(()), // genuine binder
+                }
+            }
+            Node::Int(_) | Node::Bool(_) | Node::Str(_) | Node::Float(_) => Err(Reject::coded(
+                Code::NonExhaustive,
+                "a literal pattern is refutable — it cannot appear in a binding position",
+            )),
+            Node::List(items) => match items.first().and_then(name_of) {
+                Some(":") if items.len() == 3 => self.check_irrefutable(&items[1]),
+                Some("tuple") => {
+                    for sub in &items[1..] {
+                        self.check_irrefutable(sub)?;
+                    }
+                    Ok(())
+                }
+                Some("record") => Err(Reject::decline(
+                    "a record binding pattern is a later increment (B)",
+                )),
+                Some("list") => Err(Reject::decline(
+                    "a list binding pattern is a later increment",
+                )),
+                // A ctor head: bare constructor or qualified `(. T V)`.
+                _ => {
+                    // Try to resolve as a ctor (bare name or qualified).
+                    if let Some(Hir::Ctor { def, .. }) = self.resolve_ctor_head(&items[0]) {
+                        self.classify_ctor(&def)
+                    } else {
+                        Err(Reject::coded(
+                            Code::TypeError,
+                            "a binding pattern head is not a tuple, record, or constructor",
+                        ))
+                    }
+                }
+            },
+        }
+    }
+
+    /// Classify a sum ctor in binding position: single-variant → decline (Increment B), else refutable → CDZ0210.
+    fn classify_ctor(&self, def: &SumRef) -> Result<(), Reject> {
+        if def.variants().len() == 1 {
+            Err(Reject::decline(
+                "a single-variant-sum binding pattern is Increment B",
+            ))
+        } else {
+            Err(Reject::coded(
+                Code::NonExhaustive,
+                "a multi-variant constructor pattern is refutable — the other variants are uncovered",
+            ))
+        }
+    }
+
+    /// Resolve a pattern head to a Ctor if it is one (bare name or qualified `(. T V)`).
+    fn resolve_ctor_head(&self, head: &Node) -> Option<Hir> {
+        match head {
+            Node::Name(n) => self.prelude.get(n.as_str()).cloned(),
+            Node::List(items) if items.len() == 3 && items[0] == Node::Name(".".into()) => {
+                // Qualified constructor `(. T V)` — resolve via member access on the type's ctor record.
+                let type_name = name_of(&items[1])?;
+                let variant_name = name_of(&items[2])?;
+                match self.prelude.get(type_name) {
+                    Some(Hir::Record(fields)) => {
+                        fields.iter().find(|(n, _)| n == variant_name).map(|(_, v)| v.clone())
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve a BINDING-POSITION pattern + the continuation it scopes into a single-arm irrefutable match.
+    /// `scrutinee` is the resolved value being bound (a `let` value, or `Local(g)` for a parameter).
+    /// `cont(self, scope)` resolves whatever the binders scope over (the rest of a let-chain + body, or a
+    ///   function body) UNDER the passed scope — so a multi-binding let threads its remaining bindings here.
+    /// Returns the continuation's Hir, wrapped so the pattern's binders are in scope in it.
+    fn bind_irrefutable<F>(&mut self, pat_node: &Node, scrutinee: Hir, cont: F, scope: &Scope) -> Hir
+    where
+        F: FnOnce(&mut Self, &Scope) -> Hir,
+    {
+        // Check irrefutability first (covers literals, ctors, etc.) - reject before trying to bind.
+        if let Err(e) = self.check_irrefutable(pat_node) {
+            return Hir::Error(e);
+        }
+
+        match pat_node {
+            // ── (: <pat> T) — peel the annotation, wrap the SCRUTINEE in Hir::Annot, recurse on <pat>.
+            Node::List(items) if items.first().and_then(name_of) == Some(":") && items.len() == 3 => {
+                let ty = self.expr(&items[2], scope);
+                let annotated = Hir::Annot(Box::new(scrutinee), Box::new(ty));
+                return self.bind_irrefutable(&items[1], annotated, cont, scope);
+            }
+            // ── wildcard: bind scrutinee to throwaway local, discard (reuse do_seq idiom).
+            Node::Name(n) if n == "_" => {
+                let id = self.fresh_local();
+                let body = cont(self, scope);
+                return Hir::Let {
+                    id,
+                    value: Box::new(scrutinee),
+                    body: Box::new(body),
+                };
+            }
+            // ── bare name: bind directly (no match), so the trivial case stays zero-cost.
+            Node::Name(n) => {
+                let id = self.fresh_local();
+                let inner = Scope::Bind {
+                    name: n,
+                    id,
+                    parent: scope,
+                };
+                let body = cont(self, &inner);
+                return Hir::Let {
+                    id,
+                    value: Box::new(scrutinee),
+                    body: Box::new(body),
+                };
+            }
+            // ── a destructuring pattern → single-arm match.
+            Node::List(_) => {
+                if let Err(e) = self.check_linear(pat_node) {
+                    return Hir::Error(e);
+                }
+                // Collect binders, alloc a fresh local each, resolve pattern under them.
+                let binders = self.pattern_binders(pat_node);
+                let ids: Vec<u32> = binders.iter().map(|_| self.fresh_local()).collect();
+                let named: Vec<(&str, u32)> = binders.iter().copied().zip(ids).collect();
+                let pat = resolve_with_params(self, &named, pat_node, scope);
+                // Build the scoped continuation body by threading the named bindings into scope.
+                let body = self.build_scoped_body(&named, scope, cont);
+                Hir::Match {
+                    scrutinee: Box::new(scrutinee),
+                    arms: vec![(pat, body)],
+                }
+            }
+            _ => Hir::Error(Reject::decline("unsupported binding pattern")),
+        }
+    }
+
+    /// Helper to build a body under a scope extended with named bindings, then call a continuation.
+    fn build_scoped_body<F>(&mut self, bindings: &[(&str, u32)], parent: &Scope, cont: F) -> Hir
+    where
+        F: FnOnce(&mut Self, &Scope) -> Hir,
+    {
+        match bindings.split_first() {
+            None => cont(self, parent),
+            Some(((name, id), rest)) => {
+                let frame = Scope::Bind {
+                    name,
+                    id: *id,
+                    parent,
+                };
+                self.build_scoped_body(rest, &frame, cont)
+            }
         }
     }
 
@@ -1189,56 +1395,69 @@ impl<'a> BodyResolver<'a> {
         match binds.split_first() {
             None => self.expr(body, scope),
             Some((first, rest)) => {
-                let (name, value_node) = match first {
-                    Node::List(kv) if kv.len() == 2 => match name_of(&kv[0]) {
-                        Some(n) => (n, &kv[1]),
-                        None => {
-                            return Hir::Error(Reject::decline("let binding name is not a name"))
-                        }
-                    },
+                let (pat_node, value_node) = match first {
+                    Node::List(kv) if kv.len() == 2 => (&kv[0], &kv[1]),
                     _ => return Hir::Error(Reject::decline("malformed let binding")),
                 };
+                // Resolve the value in the OUTER scope (does not see its own binders).
                 let value = self.expr(value_node, scope);
-                let id = self.fresh_local();
-                let inner = Scope::Bind {
-                    name,
-                    id,
-                    parent: scope,
-                };
-                let body_hir = self.let_chain(rest, body, &inner);
-                Hir::Let {
-                    id,
-                    value: Box::new(value),
-                    body: Box::new(body_hir),
-                }
+                // The continuation is the recursive let_chain over the rest.
+                self.bind_irrefutable(
+                    pat_node,
+                    value,
+                    |r, inner| r.let_chain(rest, body, inner),
+                    scope,
+                )
             }
         }
     }
 
-    /// `(fn (p…) body)` — resolve a lambda. Collect parameter names (a non-name declines), allocate a
-    /// fresh local id per param, chain a `Scope::Bind` frame per param (reusing `resolve_with_params`),
-    /// resolve body under the extended scope, return `Hir::Lambda`.
-    fn lambda(&mut self, param_form: &Node, body: &Node, scope: &Scope) -> Hir {
-        let param_names = match param_form {
+    /// `(fn (p…) body)` — resolve a lambda. Each parameter may be a pattern. Arity is preserved — a
+    /// destructuring param still occupies one slot. Allocate a fresh local per param (the ABI slot),
+    /// then build the body with nested matches for destructuring params.
+    fn lambda(&mut self, param_form: &Node, body_node: &Node, scope: &Scope) -> Hir {
+        let param_nodes = match param_form {
             Node::List(plist) => plist,
             _ => return Hir::Error(Reject::decline("lambda parameter form is not a list")),
         };
-        let mut params: Vec<(&str, u32)> = Vec::new();
-        for p in param_names {
-            match name_of(p) {
-                Some(pn) => {
-                    let id = self.fresh_local();
-                    params.push((pn, id));
-                }
-                None => return Hir::Error(Reject::decline("lambda parameter is not a name")),
-            }
+
+        // Collect param ids and info. Each param gets one ABI slot (preserves arity).
+        let mut param_ids: Vec<u32> = Vec::new();
+        let mut param_info: Vec<(u32, &Node)> = Vec::new();
+        for p in param_nodes {
+            let id = self.fresh_local();
+            param_ids.push(id);
+            param_info.push((id, p));
         }
-        let param_ids: Vec<u32> = params.iter().map(|(_, id)| *id).collect();
-        let body_hir = resolve_with_params(self, &params, body, scope);
+
+        // Build the body by nesting destructuring wraps from outermost to innermost param.
+        let body_hir = self.lambda_body(&param_info, body_node, scope);
+
         Hir::Lambda {
             params: param_ids,
             body: Box::new(body_hir),
         }
+    }
+
+    /// Helper for lambda: resolve the body, wrapping it in matches for each destructuring param.
+    fn lambda_body(&mut self, params: &[(u32, &Node)], body_node: &Node, scope: &Scope) -> Hir {
+        match params.split_first() {
+            None => self.expr(body_node, scope),
+            Some(((id, pat_node), rest)) => {
+                let scrutinee = Hir::Local(*id);
+                self.bind_irrefutable(
+                    pat_node,
+                    scrutinee,
+                    |r, inner| r.lambda_body(rest, body_node, inner),
+                    scope,
+                )
+            }
+        }
+    }
+
+    /// Helper for def: resolve the body, wrapping it in matches for each destructuring param.
+    fn def_body(&mut self, params: &[(u32, &Node)], body_node: &Node) -> Hir {
+        self.lambda_body(params, body_node, &Scope::Empty)
     }
 }
 

@@ -13,6 +13,11 @@
 pub enum Code {
     /// CDZ0101 — an unbound name, or an export naming an item that is not defined.
     UnboundName,
+    /// CDZ0102 — a non-linear pattern: a name appears more than once in the same pattern (flat or
+    /// nested across sub-patterns). core-semantics.md §Bindings Introduced By A Pattern: "a pattern
+    /// MUST bind each name at most once … a name appearing in more than one sub-pattern is the same
+    /// CDZ0102 error as one appearing twice in a flat pattern."
+    PatternNonLinear,
     /// CDZ0201 — a type error: a type mismatch, a malformed/duplicate structural member (a duplicate
     /// top-level definition, a duplicate record field, a malformed record entry), a projection of an
     /// absent field or off a non-record/non-tuple, an out-of-range positional index.
@@ -42,6 +47,7 @@ impl Code {
     pub fn code(self) -> &'static str {
         match self {
             Code::UnboundName => "CDZ0101",
+            Code::PatternNonLinear => "CDZ0102",
             Code::TypeError => "CDZ0201",
             Code::AnnotMismatch => "CDZ0203",
             Code::NonExhaustive => "CDZ0210",
