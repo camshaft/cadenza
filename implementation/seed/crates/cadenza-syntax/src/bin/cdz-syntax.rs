@@ -1,21 +1,36 @@
-//! `cdz-syntax` — convert a Cadenza program between its three surfaces.
+//! `cdz-syntax` — convert a Cadenza program between its three surfaces, and read the corpus.
 //!
 //! Reads a program in one format and writes it in another. Formats: `binary`, `sexpr`, `ml`.
 //!
 //! ```text
 //! cdz-syntax --from <fmt> --to <fmt> [FILE]
 //! cdz-syntax -f <fmt> -t <fmt> [FILE]
+//! cdz-syntax corpus FILE…            # parse corpus cases → one normalized record per case
 //! ```
 //!
 //! With no `FILE` (or `-`), input is read from stdin. Output goes to stdout. This bin is the only
 //! place in the crate that touches the filesystem/stdio; the conversion itself is the pure
-//! `cadenza_syntax::convert` module.
+//! `cadenza_syntax::convert` module, and the corpus reading the `cadenza_syntax::corpus` module.
 
 use cadenza_syntax::convert::{self, Format, Options};
+use cadenza_syntax::corpus;
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // `corpus FILE…` is a distinct mode from the `--from/--to` converter — dispatch it first.
+    let mut argv = std::env::args().skip(1);
+    if let Some(first) = argv.next() {
+        if first == "corpus" {
+            return match run_corpus(argv.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(msg) => {
+                    eprintln!("cdz-syntax corpus: {msg}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
@@ -23,6 +38,22 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `corpus FILE…`: read each corpus file, normalize its cases, and emit the flat record stream to
+/// stdout (records from all files concatenated, in file then case order).
+fn run_corpus(files: Vec<String>) -> Result<(), String> {
+    if files.is_empty() {
+        return Err("usage: cdz-syntax corpus FILE…".to_string());
+    }
+    let mut out = String::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+        let records = corpus::read(&text).map_err(|e| format!("{path}: {e}"))?;
+        out.push_str(&corpus::render(&records));
+    }
+    std::io::stdout().write_all(out.as_bytes()).map_err(|e| format!("writing stdout: {e}"))?;
+    Ok(())
 }
 
 fn run() -> Result<(), String> {

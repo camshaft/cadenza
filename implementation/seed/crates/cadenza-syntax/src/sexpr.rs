@@ -66,6 +66,14 @@ pub fn print(arenas: &Arenas) -> String {
     out
 }
 
+/// Render one occurrence (a sub-form at `id`) as an s-expression string — for re-emitting a form
+/// extracted from a larger tree (e.g. a `(case …)`'s `(input …)` payload), on a single line.
+pub fn print_from(arenas: &Arenas, id: StructId) -> String {
+    let mut out = String::new();
+    print_node(arenas, id, &mut out);
+    out
+}
+
 fn print_node(a: &Arenas, id: StructId, out: &mut String) {
     match a.get(id) {
         Struct::Atom(l) => print_leaf(a.leaf(*l), out),
