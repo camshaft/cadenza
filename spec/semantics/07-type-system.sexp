@@ -390,7 +390,7 @@
            panicking reaching for the absent value node. Pins that both the `record` and `map`
            construction paths bounds-check an entry before indexing its value.")
   (needs  collections)
-  (input  (map (a)))
+  (input  (map ("a")))
   (error  CDZ0201))
 
 ; --- Never — the empty sum, the dual of Unit, the type of a diverging expression ---------------

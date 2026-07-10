@@ -823,14 +823,6 @@ pub enum Lir {
     If(BlockType),
     Else,
     End,
-    /// `block <blocktype>` … `end` — a labeled block for structured control flow (break target).
-    Block(BlockType),
-    /// `loop <blocktype>` … `end` — a labeled loop (branch to top).
-    Loop(BlockType),
-    /// `br <depth>` — unconditional branch to the label at depth (0 = innermost).
-    Br(u32),
-    /// `br_if <depth>` — conditional branch (pop i32, branch if nonzero).
-    BrIf(u32),
     Unreachable,
 }
 

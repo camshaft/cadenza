@@ -1671,7 +1671,7 @@
            shares one arm for Record and Map). MUST be true. Contrast the record/tuple cases above, which
            ARE non-homogeneous because field set / arity IS the type.")
   (needs     collections)
-  (input     (= (list (map (a 1)) (map (b 2))) (list (map (a 1)) (map (b 2)))))
+  (input     (= (list (map ("a" 1)) (map ("b" 2))) (list (map ("a" 1)) (map ("b" 2)))))
   (output    (: true Bool)))
 
 (case "indexing a list in bounds yields Some of the element"
@@ -1761,7 +1761,7 @@
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
   (needs collections)
-  (input  (= (map (a 1) (b 2)) (map (b 2) (a 1))))
+  (input  (= (map ("a" 1) ("b" 2)) (map ("b" 2) ("a" 1))))
   (output (: true Bool)))
 
 ; Map equality is STRUCTURAL and must not depend on whether a map's key was a compile-time constant or
@@ -1898,7 +1898,7 @@
            so the map is not well-typed and the compiler rejects it (CDZ0201, collections-and-text.md
            #A Map Associates Keys With Values — values of ONE type).")
   (needs      collections)
-  (input      (= (map (a 1) (b true)) (map (a 1) (b true))))
+  (input      (= (map ("a" 1) ("b" true)) (map ("a" 1) ("b" true))))
   (error      CDZ0201))
 
 (case "a map mixing integer and float values is a type error"
@@ -1907,7 +1907,7 @@
            value types and is ill-typed — CDZ0201. Pins that map value-homogeneity holds across the
            numeric types too, mirroring the list case.")
   (needs      collections)
-  (input      (= (map (a 1) (b 2.5)) (map (a 1) (b 2.5))))
+  (input      (= (map ("a" 1) ("b" 2.5)) (map ("a" 1) ("b" 2.5))))
   (error      CDZ0201))
 
 ; The KEY-homogeneity half of the same rule, on the `(map …)` LITERAL path. collections-and-text.md #A Map
@@ -1952,7 +1952,7 @@
            #A Map Associates Keys With Values: values of ONE type). Mirrors the list-of-diff-field-records
            case.")
   (needs      collections)
-  (input      (= (map (a (record (x 1))) (b (record (y 2)))) (map (a (record (x 1))) (b (record (y 2))))))
+  (input      (= (map ("a" (record (x 1))) ("b" (record (y 2)))) (map ("a" (record (x 1))) ("b" (record (y 2))))))
   (error      CDZ0201))
 
 (case "a map with tuple values of different arities is a type error"
@@ -1960,7 +1960,7 @@
            with them as values is not value-homogeneous — CDZ0201. Pins that the map-value homogeneity
            check compares tuple ARITY, mirroring the list case.")
   (needs      collections)
-  (input      (= (map (a (tuple 1 2)) (b (tuple 1 2 3))) (map (a (tuple 1 2)) (b (tuple 1 2 3)))))
+  (input      (= (map ("a" (tuple 1 2)) ("b" (tuple 1 2 3))) (map ("a" (tuple 1 2)) ("b" (tuple 1 2 3)))))
   (error      CDZ0201))
 
 (case "a map with a duplicate key is a type error"
@@ -1969,7 +1969,7 @@
            rejects it (CDZ0201) rather than build it — a repeated key makes the association ambiguous
            (which value does `a` hold?).")
   (needs      collections)
-  (input      (= (map (a 1) (a 2)) (map (a 1) (a 2))))
+  (input      (= (map ("a" 1) ("a" 2)) (map ("a" 1) ("a" 2))))
   (error      CDZ0201))
 
 (case "comparing a map to a record is a type error"
@@ -1980,7 +1980,7 @@
            different types is a type error the compiler rejects (CDZ0201), even though they carry the
            same keys mapped to the same values.")
   (needs      collections)
-  (input      (= (map (a 1) (b 2)) (record (a 1) (b 2))))
+  (input      (= (map ("a" 1) ("b" 2)) (record (a 1) (b 2))))
   (error      CDZ0201))
 
 (case "comparing an empty map to an empty record is a type error"
@@ -2014,7 +2014,7 @@
            Values), NOT a type error. The seed wrongly treats the key set as a shape and rejects the
            comparison (CDZ0201) — a miscompile that refuses a valid program. MUST be false.")
   (needs      collections)
-  (input      (= (map (a 1) (b 2)) (map (a 1) (c 2))))
+  (input      (= (map ("a" 1) ("b" 2)) (map ("a" 1) ("c" 2))))
   (output     (: false Bool)))
 
 (case "two maps of different sizes are unequal, not a type error"
@@ -2025,7 +2025,7 @@
            yielding false — the same miscompile. Contrast records `(= (record (a 1)) (record (a 1) (b
            2)))`, which IS a type error, because a record's field set IS its shape.")
   (needs      collections)
-  (input      (= (map (a 1)) (map (a 1) (b 2))))
+  (input      (= (map ("a" 1)) (map ("a" 1) ("b" 2))))
   (output     (: false Bool)))
 
 (case "an empty map is unequal to a non-empty map, not a type error"
@@ -2035,7 +2035,7 @@
            (contrast the empty-map-vs-empty-record case above, which IS a type error because map and
            record are different types). MUST be false.")
   (needs      collections)
-  (input      (= (map) (map (a 1))))
+  (input      (= (map) (map ("a" 1))))
   (output     (: false Bool)))
 
 (case "member access on a map is a type error"
@@ -2044,7 +2044,7 @@
            type error. A map is not a record (its keys are a collection, not a fixed field set), so
            `(. m a)` on a map `m` is rejected (CDZ0201) rather than projecting the entry for `a`.")
   (needs      collections)
-  (input      (let ((m (map (a 1) (b 2)))) (. m a)))
+  (input      (let ((m (map ("a" 1) ("b" 2)))) (. m a)))
   (error      CDZ0201))
 
 ; --- Shape-mismatch comparisons within one kind are type errors -------------------------

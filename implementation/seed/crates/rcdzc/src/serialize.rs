@@ -91,22 +91,6 @@ fn serialize_instr(instr: &Lir, out: &mut Vec<u8>) {
         }
         Lir::Else => out.push(op::ELSE),
         Lir::End => out.push(op::END),
-        Lir::Block(blocktype) => {
-            out.push(op::BLOCK);
-            out.push(blocktype.byte());
-        }
-        Lir::Loop(blocktype) => {
-            out.push(op::LOOP);
-            out.push(blocktype.byte());
-        }
-        Lir::Br(depth) => {
-            out.push(op::BR);
-            uleb128(*depth as u64, out);
-        }
-        Lir::BrIf(depth) => {
-            out.push(op::BR_IF);
-            uleb128(*depth as u64, out);
-        }
         Lir::Unreachable => out.push(op::UNREACHABLE),
     }
 }
