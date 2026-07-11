@@ -16,6 +16,9 @@
 /// consumer matches on; the enum variant is the compiler-internal handle.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Code {
+    /// A reference to a name with no binding in scope — the unbound-name rule, unconditional and not
+    /// gated on reachability (`core-semantics.md` §Binding Is Lexical).
+    Unbound,
     /// A malformed or ill-typed construct that the compiler positively proves ill-formed.
     Malformed,
     /// A type mismatch (e.g. an `if` condition that is not a boolean; branches of differing type).
@@ -36,6 +39,7 @@ impl Code {
     /// they change only by the coordinated act a code taxonomy change is.
     pub fn code(self) -> &'static str {
         match self {
+            Code::Unbound => "CDZ0101",
             Code::Malformed => "CDZ0201",
             Code::TypeMismatch => "CDZ0203",
             Code::NumericMismatch => "CDZ0301",

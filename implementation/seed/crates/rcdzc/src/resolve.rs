@@ -181,8 +181,10 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     if let Some(&value) = db.prelude.get(name) {
         return Resolved::Ref { value };
     }
-    // 3. Off the end of the lookup — the name is unbound.
-    Resolved::Poison(Reject::decline(format!("unbound name `{name}`")))
+    // 3. Off the end of the lookup — the name is unbound. This is a REJECTION (the program is
+    // ill-formed), not a decline: the unbound-name rule is unconditional (`core-semantics.md`
+    // §Binding Is Lexical).
+    Resolved::Poison(Reject::coded(Code::Unbound, format!("unbound name `{name}`")))
 }
 
 /// Walk parents from `id` to the nearest enclosing binding of `name`, returning the value occurrence

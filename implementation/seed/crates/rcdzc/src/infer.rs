@@ -214,15 +214,24 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, arg, out);
             }
         }
-        // A ref's fault (if any) lives at the value occurrence, reached when that node is collected on
-        // its own; following it here would re-report. A bare intrinsic value and the leaves have no
-        // sub-faults.
+        // A scope-error poison (an unbound name) is UNCONDITIONAL well-formedness — report it here,
+        // where the walk descends into EVERY position (including an `if`'s branches), so an unbound
+        // name in an untaken branch or an uncalled definition is still rejected (`core-semantics.md`
+        // §Binding Is Lexical — not gated on reachability). A DECLINE or a compile-provable TRAP
+        // poison is NOT reported here: a decline is not a well-formedness fault, and a trap is
+        // reachability-gated (the trap-poison walk in `compile` handles it, skipping untaken branches).
+        Resolved::Poison(r) => {
+            if r.code == Some(Code::Unbound) {
+                out.push(r);
+            }
+        }
+        // A ref's target-node fault is reported when that node is collected on its own. A bare
+        // intrinsic value and the atomic leaves have no sub-faults.
         Resolved::Intrinsic(_)
         | Resolved::Ref { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
-        | Resolved::Unit
-        | Resolved::Poison(_) => {}
+        | Resolved::Unit => {}
     }
 }
 
