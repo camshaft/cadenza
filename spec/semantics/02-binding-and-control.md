@@ -725,7 +725,7 @@ match 2 {
   0 => "zero",
   1 => "one",
   2 => "two",
-  `else` => "many",
+  _ => "many",
 }
 ```
 
@@ -775,7 +775,7 @@ Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: string literal 
 match "hello" {
   "hello" => 1,
   "world" => 2,
-  `else` => 0,
+  _ => 0,
 }
 ```
 
@@ -790,7 +790,7 @@ core-semantics.md #Matching Is Exhaustive Or Rejected: string literal patterns m
 ```cdz input
 match String.concat("a", "b") {
   "ab" => 100,
-  `else` => 200,
+  _ => 200,
 }
 ```
 
@@ -809,7 +809,7 @@ fallible-access
 ```cdz input
 match Option.expect(String.slice("hello", 0, 2), "slice is in bounds") {
   "he" => 100,
-  `else` => 200,
+  _ => 200,
 }
 ```
 
@@ -904,7 +904,7 @@ Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: when no literal
 match 99 {
   0 => "zero",
   1 => "one",
-  `else` => "other",
+  _ => "other",
 }
 ```
 
@@ -1264,7 +1264,7 @@ module m {
   def classify(n) = match n {
     0 => 100,
     1 => 200,
-    `else` => 900,
+    _ => 900,
   }
   def main() = classify(0)
 }
@@ -1284,7 +1284,7 @@ module m {
     0 => 10,
     1 => 20,
     2 => 30,
-    `else` => 99,
+    _ => 99,
   }
   def main() = classify(2)
 }
@@ -1302,7 +1302,7 @@ A negative literal pattern matches by equality against the runtime value, like a
 module m {
   def classify(n) = match n {
     -1 => 100,
-    `else` => 200,
+    _ => 200,
   }
   def main() = classify(-1)
 }

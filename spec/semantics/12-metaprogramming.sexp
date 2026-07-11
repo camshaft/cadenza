@@ -399,7 +399,7 @@
            so the compiler matches the `Ok` arm and then pattern-matches the AST within it.")
   (input  (match (Ast.decode (Ast.encode (quote 42)))
             ((Ok (Ast.Int n)) n)
-            (else             0)))
+            (_                0)))
   (output (: 42 Int64)))
 
 (case "Ast.encode and Ast.decode round-trip"
