@@ -676,6 +676,125 @@ fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::V
     func.call(&mut store, args, &mut results).is_err()
 }
 
+// ── value-heap H2b: a program that IMPORTS the runtime, run COMPOSED with it ─────────────────────
+//
+// A tuple built and projected at run time lowers to the heap ops (`arr-alloc`/`box-*`/`arr-set`/
+// `arr-get`/`get-*`), so the emitted component IMPORTS `cadenza:runtime/heap`. Running it needs the
+// runtime composed in — `cdz-run` does exactly that (the canonical runner), so the behavior test
+// drives the composed round-trip through it rather than re-implementing composition.
+
+/// Locate the built value-heap runtime component `.wasm` whose content hash matches the compiler's
+/// `REQUIRED_RUNTIME_HASH`, or `None` if it is not present (so the test SKIPS rather than fails when the
+/// runtime has not been built — `cargo xtask build`/`codegen` produces it). Searches the content-
+/// addressed store and the `cargo component` build output, relative to the repo root.
+fn find_runtime_wasm() -> Option<Vec<u8>> {
+    use crate::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
+    // `CARGO_MANIFEST_DIR` is `.../implementation/seed/crates/rcdzc`; the seed workspace root is three
+    // levels up, and the repo root one more.
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let seed = manifest.join("../..").canonicalize().ok()?; // .../implementation/seed
+    let repo = seed.join("../..").canonicalize().ok()?; // repo root
+    let candidates = [
+        // The content-addressed store (populated by `xtask build`).
+        repo.join(format!("target/cadenza-store/{REQUIRED_RUNTIME_HASH}.wasm")),
+        // The `cargo component build` output (populated by `xtask codegen`/`build`).
+        seed.join("crates/cdz-runtime/target/wasm32-unknown-unknown/release/cdz_runtime.wasm"),
+    ];
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(&path) {
+            // Only accept a runtime whose content hash matches what the compiler compiled against —
+            // a stale runtime would compose wrong ops (the /loop gotcha). Verify before use.
+            let hash = sha256_hex(&bytes);
+            if hash == REQUIRED_RUNTIME_HASH {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
+/// The SHA-256 of `bytes` as lowercase hex — the same content-address the store keys on and
+/// `REQUIRED_RUNTIME_HASH` records. (Uses `cdz-run`'s dep chain transitively; computed here to compare
+/// a found runtime against the pinned hash.)
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Compile `(module m (def (main) BODY) (export main))` — where BODY uses the value heap — and RUN it
+/// composed with the runtime via `cdz-run`, returning the rendered result string. `None` if the runtime
+/// wasm is unavailable (the caller SKIPS). Panics on a compile error or a trap (a real failure).
+fn run_heap_main(body: &str) -> Option<String> {
+    use crate::testkit::parse;
+    let runtime = find_runtime_wasm()?;
+    let src = format!("(module m (def (main) {body}) (export main))");
+    let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: Vec::new(),
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => Some(s),
+        cdz_run::Outcome::Trap(t) => panic!("composed run trapped: {t}"),
+    }
+}
+
+/// A `let`-bound tuple built ONCE from runtime params, then projected twice and summed — the composed
+/// heap round-trip. `t` is multi-use, so it is kept as a `Core::Let` binding (a real `arr-alloc`), and
+/// each `(. t i)` is a runtime `arr-get` (the binding is opaque to the fold). The two elements sum back
+/// to a scalar the boundary can carry — so this needs NO renderer, just the heap. Run composed: builds
+/// `(tuple a b)` on the heap, reads both back, adds → the scalar.
+#[test]
+fn a_runtime_tuple_round_trips_through_the_heap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // An EXPORTED function so the tuple's elements are genuine runtime params (unfoldable): build a
+    // 2-tuple from (a, b), project both, add. `t` used twice → kept → real heap construction.
+    let src = "(module m (def (pair-sum (: a Int64) (: b Int64)) \
+                 (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+
+    // It must IMPORT the runtime (the heap ops are used) — proven by the required-runtime probe.
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime tuple program must import the value-heap runtime"
+    );
+
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!(
+            "[H2b] runtime wasm not found (run `cargo xtask codegen`); skipping composed run"
+        );
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("pair-sum".to_string()),
+        args: vec!["20".to_string(), "22".to_string()],
+        runtime: Some(runtime),
+    };
+    // Compose + run: (tuple 20 22) built on the heap, both elements projected back, summed → 42.
+    let _ = Val::S64(0); // (Val import kept for parity with the other runtime tests.)
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "42", "composed heap round-trip"),
+        cdz_run::Outcome::Trap(t) => panic!("composed run trapped: {t}"),
+    }
+}
+
+/// A constant tuple built and projected at run time (forced runtime by a `let` that is multi-use) also
+/// round-trips — the elements are constants but the tuple is a real heap value here (a multi-use kept
+/// binding). Sums to a scalar. (The BUILD-ONCE optimization for a constant tuple is H2c; this only
+/// checks the heap path is correct for constant elements.)
+#[test]
+fn a_multi_use_constant_tuple_round_trips_through_the_heap() {
+    // `(let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))` — `t` multi-use → kept → real heap build; both
+    // elements read back and summed → 30. Nullary `main`, so no args.
+    match run_heap_main("(let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))") {
+        Some(s) => assert_eq!(s, "30", "composed constant-tuple round-trip"),
+        None => eprintln!("[H2b] runtime wasm not found; skipping composed run"),
+    }
+}
+
 /// `(def (main) 42)` compiles to a component that runs to 42.
 #[test]
 fn scalar_runs_to_42() {
@@ -2093,11 +2212,14 @@ mod stage1 {
     }
 
     #[test]
-    fn a_runtime_tuple_declines_pending_the_heap() {
-        // A tuple used as a runtime VALUE (returned, not projected away) needs the value heap — H2a
-        // declines it cleanly (H2b lands the heap construction). This is the byte-neutral boundary:
-        // a constant tuple folds, a surviving one declines (like a runtime record).
-        assert!(expect_decline("(tuple 1 2)").contains("value heap"));
+    fn returning_a_tuple_declines_at_the_boundary_pending_the_renderer() {
+        // A tuple RETURNED to the host builds on the heap (H2b), but a compound cannot cross the
+        // component boundary until the type-directed renderer lands (a later increment) — so it
+        // declines at the boundary, naming the missing boundary representation (NOT at construction).
+        // The internal round-trip (build + project back to a scalar) is what H2b runs; returning the
+        // compound itself waits on the renderer.
+        let msg = expect_decline("(tuple 1 2)");
+        assert!(msg.contains("boundary representation"), "got: {msg}");
     }
 
     #[test]

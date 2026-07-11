@@ -46,8 +46,10 @@ fn import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
     item
 }
 
-/// Serialize one flat instruction, appending its bytes to `out`. Exhaustive over `Lir`.
-fn instr(i: &Lir, out: &mut Vec<u8>) {
+/// Serialize one flat instruction, appending its bytes to `out`. `import_index` maps a runtime op's
+/// name to its core function index (its position `0..k` in the import section), so a `CallImport`
+/// resolves by name to the same index the import section assigned. Exhaustive over `Lir`.
+fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut Vec<u8>) {
     match i {
         Lir::ConstI64(n) => {
             out.push(op::I64_CONST);
@@ -68,6 +70,16 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
         Lir::Call(func) => {
             out.push(op::CALL);
             uleb128(*func as u64, out);
+        }
+        Lir::CallImport(name) => {
+            // Resolve the op name to its import function index (its position in the import section).
+            // A `CallImport` for an op not in the import set is a compiler bug — `collect_used_ops`
+            // computes the set from the same emit, so every emitted op is present. Fall back to a
+            // no-op index of 0 is WRONG (would call the first import); instead index the map and, if
+            // absent (a bug), emit an obviously-invalid high index so validation catches it loudly.
+            let idx = import_index.get(name).copied().unwrap_or(u32::MAX);
+            out.push(op::CALL);
+            uleb128(idx as u64, out);
         }
         Lir::If(bt) => {
             out.push(op::IF);
@@ -135,8 +147,9 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
     }
 }
 
-/// One function's code-section entry: `<size> <local-decls> <instrs> end`.
-fn code_entry(f: &SelectedFunc) -> Vec<u8> {
+/// One function's code-section entry: `<size> <local-decls> <instrs> end`. `import_index` resolves a
+/// `CallImport` op name to its import function index.
+fn code_entry(f: &SelectedFunc, import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8> {
     let mut inner = Vec::new();
     // Local declarations, run-length-encoded by value type (Stage 0 bodies declare none → count 0).
     let groups = rle(&f.declared);
@@ -146,7 +159,7 @@ fn code_entry(f: &SelectedFunc) -> Vec<u8> {
         inner.push(vt.byte());
     }
     for i in &f.code {
-        instr(i, &mut inner);
+        instr(i, import_index, &mut inner);
     }
     inner.push(op::END);
     let mut out = uleb_bytes(inner.len() as u64);
@@ -197,13 +210,17 @@ pub fn core_module(
     let type_sec = section(1, &wasm_vec(import_count + n, &type_items));
 
     // Import section (id 2) — one func import per runtime op, in order, from module `"heap"`. Occupies
-    // core FUNCTION indices `0..import_count`. Omitted entirely when there are no imports.
+    // core FUNCTION indices `0..import_count`. Omitted entirely when there are no imports. The same
+    // order fixes the `import_index` map a `CallImport` resolves against, so an op's call index equals
+    // its position here.
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let import_sec = if import_count == 0 {
         Vec::new()
     } else {
         let mut import_items = Vec::new();
         for (i, o) in imports.iter().enumerate() {
             import_items.extend_from_slice(&import_item(o.name, i as u32));
+            import_index.insert(o.name, i as u32);
         }
         section(2, &wasm_vec(import_count, &import_items))
     };
@@ -237,7 +254,7 @@ pub fn core_module(
     // Code section: bodies in emission order.
     let mut code_items = Vec::new();
     for f in funcs {
-        code_items.extend_from_slice(&code_entry(f));
+        code_items.extend_from_slice(&code_entry(f, &import_index));
     }
     let code_sec = section(10, &wasm_vec(n, &code_items));
 

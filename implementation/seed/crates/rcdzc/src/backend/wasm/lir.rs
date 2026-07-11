@@ -62,6 +62,12 @@ pub enum Lir {
     /// `call F` — call wasm function index `F` (its arguments already pushed in order). The index is a
     /// definition's ABSOLUTE emission position (`layout.abs`), resolved at selection.
     Call(u32),
+    /// `call <import-index>` — call a value-heap runtime op by NAME (`arr-alloc`, `box-int`, …). The op
+    /// name is carried symbolically because its concrete core function index (its position `0..k` in the
+    /// program's sorted used-set) is only fixed once the whole used-set is known; `serialize` resolves
+    /// the name to that index against the import order it lays. Distinct from `Call` (a defined-function
+    /// index) so the two index spaces do not collide.
+    CallImport(&'static str),
     /// `if <blocktype>` — a two-way branch leaving a value of the block type.
     If(BlockType),
     /// `else`.
@@ -175,10 +181,12 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // compile time and does not construct one at runtime, so a record reaching a machine slot has
         // no scalar representation here and DECLINES (the value heap is a later stage).
         Ty::Record(_) => None,
-        // A tuple is a value-heap compound (a handle) — the same as a record for slot purposes. H2a
-        // folds a projected tuple; a runtime tuple's heap slot (an i32 handle) arrives with H2b, so it
-        // has no scalar slot here yet and declines.
-        Ty::Tuple(_) => None,
+        // A tuple is a value-heap compound — at run time it is an OPAQUE u32 HANDLE into the runtime's
+        // store, which occupies an i32 machine slot. So a runtime tuple value (a `let`-bound tuple, a
+        // tuple threaded between construct and project) lives in an i32 local (H2b). The record path
+        // still folds at compile time, so it keeps no runtime slot — but a tuple genuinely crosses
+        // through a local, hence i32 here.
+        Ty::Tuple(_) => Some(ValType::I32),
         // A function value has no scalar machine representation (runtime closures are a later stage);
         // one reaching a slot declines.
         Ty::Fn(_, _) => None,

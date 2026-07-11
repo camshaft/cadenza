@@ -33,6 +33,37 @@ use crate::layout::Layout;
 /// Emit a WebAssembly component for the program in `db` under the boundary `layout`. Selects each
 /// definition in the layout's emission order, serializes the core module, and assembles the envelope.
 pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
+    // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
+    // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
+    // resolves to. Walk every reachable body's core for the value-heap ops it will emit
+    // (`collect_used_ops`, which mirrors `select`'s op choices exactly), collect them into a
+    // deterministic sorted set, and resolve each to its generated `RtOp`. Empty for a program that uses
+    // no runtime op — no import section, no shift → byte-identical to a runtime-free build.
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+
+    // The layout with the import base fixed to the used-set size — a defined function's absolute index
+    // is `import_base + its emission position` (imports occupy `0..import_base`). `layout` is otherwise
+    // as computed; clone-with-base so `abs` (read by both the export section and every `Lir::Call`)
+    // accounts for the shift.
+    let layout = Layout {
+        import_base: imports.len() as u32,
+        ..layout.clone()
+    };
+    let layout = &layout;
+
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
     // parameterized function (exported OR an internal callee reached by a runtime `Core::Call`) selects
     // to a real wasm function (params → local slots, body → machine ops). An EXPORT's params come from
@@ -48,11 +79,6 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         };
         funcs.push(select_function(db, body, &params, layout)?);
     }
-
-    // The per-program runtime imports (ordered as `layout` numbered them). Empty until a `Core`
-    // compound op lowers to a heap call (value-heap H2 computes the used-set); an empty set means no
-    // import section and no index shift — byte-identical to a runtime-free program.
-    let imports: Vec<&crate::backend::wasm::runtime_abi::RtOp> = Vec::new();
 
     // Serialize the embedded core module (multi-export core module, functions in emission order).
     let core = serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?;
