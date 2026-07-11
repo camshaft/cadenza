@@ -61,7 +61,9 @@ pub struct RunOpts {
 /// Validate `component_bytes` as a well-formed component — the cheap structural check before a run.
 pub fn validate(component_bytes: &[u8]) -> Result<()> {
     let engine = Engine::default();
-    Component::new(&engine, component_bytes).map(|_| ()).map_err(|e| anyhow!("invalid component: {e}"))
+    Component::new(&engine, component_bytes)
+        .map(|_| ())
+        .map_err(|e| anyhow!("invalid component: {e}"))
 }
 
 /// Instantiate `component_bytes`, compose the value-heap runtime if imported, invoke the chosen
@@ -82,14 +84,16 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
         compose_runtime(&engine, &mut store, &mut linker, &req, opts)?;
     }
 
-    let instance =
-        linker.instantiate(&mut store, &component).map_err(|e| anyhow!("instantiate: {e}"))?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| anyhow!("instantiate: {e}"))?;
 
     // Resolve the export to call: the named one, or the sole function export found by signature.
     let export_name = match &opts.export {
         Some(name) => name.clone(),
-        None => sole_func_export(&engine, &component)
-            .ok_or_else(|| anyhow!("no --call given and the component has no single function export to default to"))?,
+        None => sole_func_export(&engine, &component).ok_or_else(|| {
+            anyhow!("no --call given and the component has no single function export to default to")
+        })?,
     };
     let func = instance
         .get_func(&mut store, &export_name)
@@ -151,7 +155,9 @@ fn import_is_runtime(name: &str) -> bool {
 /// `cadenza:runtime/heap@<semver>+<hash>`; the hash is the semver build-metadata (after `+`). An
 /// import with no `+<hash>` (an unpinned interface) yields an empty string — no content address recorded.
 fn hash_from_import(name: &str) -> String {
-    name.rsplit_once('+').map(|(_, h)| h.to_string()).unwrap_or_default()
+    name.rsplit_once('+')
+        .map(|(_, h)| h.to_string())
+        .unwrap_or_default()
 }
 
 /// Compose the value-heap runtime: instantiate the runtime component, then forward each function its
@@ -180,8 +186,9 @@ fn compose_runtime(
     let heap_func_names = heap_interface_funcs(engine, &runtime)?;
 
     let rt_linker: Linker<()> = Linker::new(engine);
-    let rt_instance =
-        rt_linker.instantiate(&mut *store, &runtime).map_err(|e| anyhow!("instantiate runtime: {e}"))?;
+    let rt_instance = rt_linker
+        .instantiate(&mut *store, &runtime)
+        .map_err(|e| anyhow!("instantiate runtime: {e}"))?;
     let heap_idx = rt_instance
         .get_export_index(&mut *store, None, RUNTIME_IFACE)
         .ok_or_else(|| anyhow!("runtime does not export {RUNTIME_IFACE}"))?;
@@ -196,7 +203,7 @@ fn compose_runtime(
             .get_export_index(&mut *store, Some(&heap_idx), fname)
             .ok_or_else(|| anyhow!("runtime missing `{fname}`"))?;
         let f = rt_instance
-            .get_func(&mut *store, &fidx)
+            .get_func(&mut *store, fidx)
             .ok_or_else(|| anyhow!("runtime export `{fname}` is not a func"))?;
         iface.func_new(fname, move |mut ctx, params, results| {
             f.call(&mut ctx, params, results)?;
@@ -217,11 +224,15 @@ fn heap_interface_funcs(engine: &Engine, runtime: &Component) -> Result<Vec<Stri
         if let ComponentItem::ComponentInstance(inst) = item {
             return Ok(inst
                 .exports(engine)
-                .filter_map(|(fname, i)| matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string()))
+                .filter_map(|(fname, i)| {
+                    matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
+                })
                 .collect());
         }
     }
-    Err(anyhow!("runtime component does not export the {RUNTIME_IFACE} interface"))
+    Err(anyhow!(
+        "runtime component does not export the {RUNTIME_IFACE} interface"
+    ))
 }
 
 /// The name of the component's sole top-level FUNCTION export, if there is exactly one — the default
@@ -250,7 +261,10 @@ fn coerce_args(raw: &[String], types: &[Type]) -> Result<Vec<Val>> {
             raw.len()
         ));
     }
-    raw.iter().zip(types).map(|(s, t)| coerce_one(s, t)).collect()
+    raw.iter()
+        .zip(types)
+        .map(|(s, t)| coerce_one(s, t))
+        .collect()
 }
 
 fn coerce_one(s: &str, t: &Type) -> Result<Val> {
@@ -267,7 +281,12 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
         Type::U64 => parse(s.parse::<u64>().ok().map(Val::U64))?,
         Type::Float32 => parse(s.parse::<f32>().ok().map(Val::Float32))?,
         Type::Float64 => parse(s.parse::<f64>().ok().map(Val::Float64))?,
-        Type::Char => parse(s.chars().next().filter(|_| s.chars().count() == 1).map(Val::Char))?,
+        Type::Char => parse(
+            s.chars()
+                .next()
+                .filter(|_| s.chars().count() == 1)
+                .map(Val::Char),
+        )?,
         Type::String => Val::String(s.to_string()),
         other => {
             return Err(anyhow!(

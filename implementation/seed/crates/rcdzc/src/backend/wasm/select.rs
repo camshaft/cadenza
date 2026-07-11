@@ -14,7 +14,7 @@
 //! constant push and a structured `if`/`else`/`end`, so nothing declines here yet.
 
 use crate::ast::StructId;
-use crate::backend::wasm::lir::{valtype_of, BlockType, Lir, ValType};
+use crate::backend::wasm::lir::{BlockType, Lir, ValType, valtype_of};
 use crate::core::Core;
 use crate::db::Db;
 use crate::diag::{Code, Reject};
@@ -38,7 +38,12 @@ pub fn select_body(db: &mut Db, body: StructId) -> Result<SelectedFunc, Reject> 
     let ret = type_of(db, body);
     let mut code = Vec::new();
     emit(db, body, &mut code)?;
-    Ok(SelectedFunc { params: Vec::new(), ret, code, declared: Vec::new() })
+    Ok(SelectedFunc {
+        params: Vec::new(),
+        ret,
+        code,
+        declared: Vec::new(),
+    })
 }
 
 /// Emit the flat instructions for the node at `id`, appending to `out`. Exhaustive over `Core`.
@@ -49,13 +54,19 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
             // not fit that width (a compile-provable width violation — never a truncated value).
             let it = int_ty_of(db, id);
             let n = v.to_i64().ok_or_else(|| {
-                Reject::coded(Code::IntOutOfRange, "integer literal does not fit its width")
+                Reject::coded(
+                    Code::IntOutOfRange,
+                    "integer literal does not fit its width",
+                )
             })?;
             if it.ground_width() <= 32 {
                 // A ≤32-bit integer occupies an i32 slot. Range-check against the width later; Stage 0
                 // only produces i64, so this arm is structural until the widths stage exercises it.
                 let narrowed = i32::try_from(n).map_err(|_| {
-                    Reject::coded(Code::IntOutOfRange, "integer literal does not fit its 32-bit width")
+                    Reject::coded(
+                        Code::IntOutOfRange,
+                        "integer literal does not fit its 32-bit width",
+                    )
                 })?;
                 out.push(Lir::ConstI32(narrowed));
             } else {
@@ -74,9 +85,9 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
         // A record that SURVIVED folding to selection is used as a runtime value (not just to read a
         // field, which folds away). Constructing a compound at run time needs the value-heap runtime,
         // a later stage — so decline cleanly rather than emit a plausible-but-wrong sequence.
-        Core::Record { .. } => {
-            Err(Reject::decline("constructing a record at run time needs the value heap (not yet built)"))
-        }
+        Core::Record { .. } => Err(Reject::decline(
+            "constructing a record at run time needs the value heap (not yet built)",
+        )),
         Core::If { cond, then_, else_ } => {
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.
@@ -86,7 +97,9 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
                 other => match valtype_of(&other) {
                     Some(vt) => BlockType::Val(vt),
                     None => {
-                        return Err(Reject::decline("if result type has no machine representation"));
+                        return Err(Reject::decline(
+                            "if result type has no machine representation",
+                        ));
                     }
                 },
             };

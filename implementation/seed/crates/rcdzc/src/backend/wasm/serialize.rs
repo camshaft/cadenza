@@ -7,8 +7,8 @@
 //! Serializes A Lowered Representation). The export section names EVERY boundary function by its
 //! verbatim source name (multi-export from the start — no single hard-coded `run`).
 
-use crate::backend::wasm::encode::{op, section, uleb128, uleb_bytes, wasm_vec};
-use crate::backend::wasm::lir::{comp_valtype_of, valtype_of, Lir, ValType};
+use crate::backend::wasm::encode::{op, section, uleb_bytes, uleb128, wasm_vec};
+use crate::backend::wasm::lir::{Lir, ValType, comp_valtype_of, valtype_of};
 use crate::backend::wasm::select::SelectedFunc;
 use crate::layout::Layout;
 use crate::ty::Ty;
@@ -82,10 +82,7 @@ fn functype(f: &SelectedFunc) -> Result<Vec<u8>, String> {
 /// Assemble the embedded core module for a module's selected functions. `funcs[k]` is the function at
 /// emission position `k` (already in the layout's order), exported under `export_names[k]` when it is
 /// a boundary function. The export section names every boundary function by its absolute core index.
-pub fn core_module(
-    funcs: &[SelectedFunc],
-    layout: &Layout,
-) -> Result<Vec<u8>, String> {
+pub fn core_module(funcs: &[SelectedFunc], layout: &Layout) -> Result<Vec<u8>, String> {
     let n = funcs.len();
 
     // Type section: one functype per function, in emission order.
@@ -107,7 +104,10 @@ pub fn core_module(
     let mut export_items = Vec::new();
     for e in &layout.exports {
         let abs = layout.abs(e.def).ok_or_else(|| {
-            format!("exported definition `{}` is not in the emission order", e.name)
+            format!(
+                "exported definition `{}` is not in the emission order",
+                e.name
+            )
         })?;
         let mut item = uleb_bytes(e.name.len() as u64);
         item.extend_from_slice(e.name.as_bytes());

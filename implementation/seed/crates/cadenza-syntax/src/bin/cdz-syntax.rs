@@ -21,7 +21,10 @@ use std::io::{Read, Write};
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "cdz-syntax", about = "Convert a Cadenza program between its surfaces.")]
+#[command(
+    name = "cdz-syntax",
+    about = "Convert a Cadenza program between its surfaces."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
@@ -104,7 +107,9 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
     let opts = Options { width: args.width };
     let output = convert::convert_with(&input, from, to, opts).map_err(|e| e.to_string())?;
 
-    std::io::stdout().write_all(&output).map_err(|e| format!("writing stdout: {e}"))?;
+    std::io::stdout()
+        .write_all(&output)
+        .map_err(|e| format!("writing stdout: {e}"))?;
     // A trailing newline after text output so the terminal prompt lands on its own line; binary
     // output is emitted exactly.
     if to != Format::Binary {
@@ -146,7 +151,9 @@ fn run_corpus(files: &[String]) -> Result<(), String> {
         let records = corpus::read(&text).map_err(|e| format!("{path}: {e}"))?;
         out.push_str(&corpus::render(&records));
     }
-    std::io::stdout().write_all(out.as_bytes()).map_err(|e| format!("writing stdout: {e}"))?;
+    std::io::stdout()
+        .write_all(out.as_bytes())
+        .map_err(|e| format!("writing stdout: {e}"))?;
     Ok(())
 }
 
@@ -155,7 +162,9 @@ fn read_input(file: Option<&str>) -> Result<Vec<u8>, String> {
     match file {
         None | Some("-") => {
             let mut buf = Vec::new();
-            std::io::stdin().read_to_end(&mut buf).map_err(|e| format!("reading stdin: {e}"))?;
+            std::io::stdin()
+                .read_to_end(&mut buf)
+                .map_err(|e| format!("reading stdin: {e}"))?;
             Ok(buf)
         }
         Some(path) => std::fs::read(path).map_err(|e| format!("reading {path}: {e}")),

@@ -19,7 +19,11 @@ pub fn parse(src: &str) -> Arenas {
     let mut pos = 0;
     let root = read_node(&bytes, &mut pos, &mut b);
     skip_ws(&bytes, &mut pos);
-    assert_eq!(pos, bytes.len(), "trailing input in test s-expr at {pos}: {src}");
+    assert_eq!(
+        pos,
+        bytes.len(),
+        "trailing input in test s-expr at {pos}: {src}"
+    );
     b.finish(root)
 }
 
@@ -64,14 +68,16 @@ fn classify(tok: &str) -> Leaf {
             let body = tok.strip_prefix('-').unwrap_or(tok);
             if !body.is_empty() && body.chars().all(|c| c.is_ascii_digit()) {
                 let n: i64 = tok.parse().expect("test int fits i64");
-                Leaf::Int { value: IntValue::from_i64(n), radix: Radix::Dec }
+                Leaf::Int {
+                    value: IntValue::from_i64(n),
+                    radix: Radix::Dec,
+                }
             } else {
                 Leaf::Name(tok.to_string())
             }
         }
     }
 }
-
 
 /// Build `(module m (def (main) 42) (export main))` and return `(arenas, the-42-literal-node-id)`.
 /// The literal id is what the `type_of` / `core_of` queries are asked about.
@@ -83,7 +89,10 @@ pub fn scalar_program() -> (Arenas, StructId) {
     let def = b.name("def");
     let main_sig_name = b.name("main");
     let sig = b.list(vec![main_sig_name]);
-    let body = b.atom_leaf(Leaf::Int { value: IntValue::from_i64(42), radix: Radix::Dec });
+    let body = b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(42),
+        radix: Radix::Dec,
+    });
     let def_form = b.list(vec![def, sig, body]);
     // (export main)
     let export = b.name("export");
@@ -106,8 +115,14 @@ pub fn if_program() -> (Arenas, StructId) {
     // (if false 1 2)
     let if_head = b.name("if");
     let cond = b.atom_leaf(Leaf::Bool(false));
-    let then_ = b.atom_leaf(Leaf::Int { value: IntValue::from_i64(1), radix: Radix::Dec });
-    let else_ = b.atom_leaf(Leaf::Int { value: IntValue::from_i64(2), radix: Radix::Dec });
+    let then_ = b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(1),
+        radix: Radix::Dec,
+    });
+    let else_ = b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(2),
+        radix: Radix::Dec,
+    });
     let if_form = b.list(vec![if_head, cond, then_, else_]);
     let def_form = b.list(vec![def, sig, if_form]);
     let export = b.name("export");

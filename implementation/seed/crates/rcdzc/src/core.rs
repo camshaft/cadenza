@@ -39,13 +39,21 @@ pub enum Core {
     /// lets member-access fold read the field set.
     Record { fields: BTreeMap<Symbol, StructId> },
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
-    If { cond: StructId, then_: StructId, else_: StructId },
+    If {
+        cond: StructId,
+        then_: StructId,
+        else_: StructId,
+    },
     /// A runtime arithmetic operation on two operands (children by AST `StructId`). Present only when
     /// the fold could NOT reduce the operation to a constant (an operand is not compile-time-known —
     /// which in this increment means it declines, since there are no runtime integer operands yet
     /// without functions). Constant arithmetic folds to `ConstInt`/`Poison` in `lower`. The machine op
     /// the backend emits is selected from the operands' solved width.
-    Arith { op: Prim, lhs: StructId, rhs: StructId },
+    Arith {
+        op: Prim,
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }

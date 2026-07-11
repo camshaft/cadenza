@@ -206,7 +206,11 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
     if !r.at_end() {
         return None;
     }
-    Some(Arenas { leaves, structure, root })
+    Some(Arenas {
+        leaves,
+        structure,
+        root,
+    })
 }
 
 fn read_leaf(r: &mut Reader) -> Option<Leaf> {
@@ -226,7 +230,10 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
             let mag = r.take(len)?;
             // Store the magnitude verbatim so decode is a faithful inverse of encode. The sign is
             // carried by the kind tag; a zero value (empty magnitude) is never the negative tag.
-            let value = IntValue { negative: neg, magnitude: mag.to_vec() };
+            let value = IntValue {
+                negative: neg,
+                magnitude: mag.to_vec(),
+            };
             Leaf::Int { value, radix }
         }
         KIND_FLOAT => {
@@ -234,7 +241,11 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
             let exponent = r.read_i64_be()?;
             let sig_len = r.read_var_len()?;
             let mag = r.take(sig_len)?;
-            Leaf::Float(Decimal { negative, significand: mag.to_vec(), exponent })
+            Leaf::Float(Decimal {
+                negative,
+                significand: mag.to_vec(),
+                exponent,
+            })
         }
         KIND_STR => Leaf::Str(read_string(r)?),
         KIND_BOOL_FALSE => Leaf::Bool(false),
@@ -285,8 +296,14 @@ mod tests {
             },
             radix: Radix::Dec,
         });
-        let hex = b.atom_leaf(Leaf::Int { value: int(0x2A), radix: Radix::Hex });
-        let neg = b.atom_leaf(Leaf::Int { value: int(-42), radix: Radix::Dec });
+        let hex = b.atom_leaf(Leaf::Int {
+            value: int(0x2A),
+            radix: Radix::Hex,
+        });
+        let neg = b.atom_leaf(Leaf::Int {
+            value: int(-42),
+            radix: Radix::Dec,
+        });
         let flt = b.atom_leaf(Leaf::Float(Decimal {
             negative: false,
             significand: vec![15], // 15 * 10^-1 = 1.5
@@ -312,9 +329,18 @@ mod tests {
     fn radix_round_trips() {
         // Same value, different bases -> distinct leaves that survive the round-trip.
         let mut b = Builder::new();
-        let dec = b.atom_leaf(Leaf::Int { value: int(42), radix: Radix::Dec });
-        let hex = b.atom_leaf(Leaf::Int { value: int(42), radix: Radix::Hex });
-        let bin = b.atom_leaf(Leaf::Int { value: int(42), radix: Radix::Bin });
+        let dec = b.atom_leaf(Leaf::Int {
+            value: int(42),
+            radix: Radix::Dec,
+        });
+        let hex = b.atom_leaf(Leaf::Int {
+            value: int(42),
+            radix: Radix::Hex,
+        });
+        let bin = b.atom_leaf(Leaf::Int {
+            value: int(42),
+            radix: Radix::Bin,
+        });
         let root = b.list(vec![dec, hex, bin]);
         let a = b.finish(root);
         assert_eq!(decode(&encode(&a)).unwrap(), a);
@@ -333,7 +359,9 @@ mod tests {
         let a = b.finish(neg_zero);
         let back = decode(&encode(&a)).expect("decode");
         assert_eq!(a, back);
-        let Leaf::Float(d) = &back.leaves[0] else { panic!() };
+        let Leaf::Float(d) = &back.leaves[0] else {
+            panic!()
+        };
         assert!(d.negative, "-0.0 must stay negative");
     }
 

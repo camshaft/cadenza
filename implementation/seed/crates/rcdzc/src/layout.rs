@@ -71,7 +71,11 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         let name = db.exports[i].name.clone();
         let def = match db.exports[i].def {
             Some(d) => d,
-            None => return Err(Reject::decline(format!("export `{name}` names no definition"))),
+            None => {
+                return Err(Reject::decline(format!(
+                    "export `{name}` names no definition"
+                )));
+            }
         };
         if !db.defs[def].params.is_empty() {
             return Err(Reject::decline(format!(
@@ -80,11 +84,21 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         }
         let body = match db.defs[def].body {
             Some(b) => b,
-            None => return Err(Reject::decline(format!("export `{name}`: definition has no body"))),
+            None => {
+                return Err(Reject::decline(format!(
+                    "export `{name}`: definition has no body"
+                )));
+            }
         };
         // The result type is the entry body's solved type — a lazy read of the type column.
         let result = type_of(db, body);
-        exports.push(ExportPlan { name, def, body, params: Vec::new(), result });
+        exports.push(ExportPlan {
+            name,
+            def,
+            body,
+            params: Vec::new(),
+            result,
+        });
     }
 
     // Emission order: exported definitions first, in declaration order, deduplicated. Stage 0 has no
@@ -130,7 +144,10 @@ mod tests {
             let main = b.name("main");
             b.list(vec![main])
         };
-        let body = b.atom_leaf(Leaf::Int { value: IntValue::from_i64(42), radix: Radix::Dec });
+        let body = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(42),
+            radix: Radix::Dec,
+        });
         let def_form = b.list(vec![def, sig, body]);
         let root = b.list(vec![module, m, def_form]);
         let mut db = Db::load(b.finish(root));

@@ -114,7 +114,11 @@ struct Reader<'a, 'b> {
 
 impl<'a, 'b> Reader<'a, 'b> {
     fn new(text: &'a str, b: &'b mut Builder) -> Reader<'a, 'b> {
-        Reader { src: text.as_bytes(), pos: 0, b }
+        Reader {
+            src: text.as_bytes(),
+            pos: 0,
+            b,
+        }
     }
     fn peek(&self) -> Option<u8> {
         self.src.get(self.pos).copied()
@@ -265,7 +269,10 @@ fn is_dotted_name(tok: &str) -> bool {
         return false;
     }
     segs.iter().all(|s| {
-        !s.is_empty() && s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        !s.is_empty()
+            && s.chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_')
     })
 }
 
@@ -302,17 +309,26 @@ mod tests {
             let a = read(src).unwrap();
             let printed = print(&a);
             let b = read(&printed).unwrap();
-            assert_eq!(print(&b), printed, "print∘read stable for {src:?} (printed {printed:?})");
+            assert_eq!(
+                print(&b),
+                printed,
+                "print∘read stable for {src:?} (printed {printed:?})"
+            );
         }
     }
 
     #[test]
     fn bigint_no_ceiling() {
         let a = read("123456789012345678901234567890").unwrap();
-        let Struct::Atom(l) = a.get(a.root) else { panic!() };
+        let Struct::Atom(l) = a.get(a.root) else {
+            panic!()
+        };
         match a.leaf(*l) {
             Leaf::Int { value, radix } => {
-                assert_eq!(value, &BigInt::from_str("123456789012345678901234567890").unwrap());
+                assert_eq!(
+                    value,
+                    &BigInt::from_str("123456789012345678901234567890").unwrap()
+                );
                 assert_eq!(*radix, Radix::Dec);
             }
             other => panic!("{other:?}"),
@@ -327,10 +343,15 @@ mod tests {
             ("-0x10", -16, Radix::Hex),
         ] {
             let a = read(src).unwrap();
-            let Struct::Atom(l) = a.get(a.root) else { panic!() };
+            let Struct::Atom(l) = a.get(a.root) else {
+                panic!()
+            };
             assert_eq!(
                 a.leaf(*l),
-                &Leaf::Int { value: BigInt::from(val), radix },
+                &Leaf::Int {
+                    value: BigInt::from(val),
+                    radix
+                },
                 "src {src}"
             );
         }
@@ -339,21 +360,33 @@ mod tests {
     #[test]
     fn exact_float() {
         let a = read("1.5").unwrap();
-        let Struct::Atom(l) = a.get(a.root) else { panic!() };
+        let Struct::Atom(l) = a.get(a.root) else {
+            panic!()
+        };
         assert_eq!(
             a.leaf(*l),
-            &Leaf::Float(Decimal { negative: false, significand: BigInt::from(15), exponent: -1 })
+            &Leaf::Float(Decimal {
+                negative: false,
+                significand: BigInt::from(15),
+                exponent: -1
+            })
         );
     }
 
     #[test]
     fn exponent_float() {
         let a = read("1.5e10").unwrap();
-        let Struct::Atom(l) = a.get(a.root) else { panic!() };
+        let Struct::Atom(l) = a.get(a.root) else {
+            panic!()
+        };
         // 15 * 10^(10-1) = 15e9
         assert_eq!(
             a.leaf(*l),
-            &Leaf::Float(Decimal { negative: false, significand: BigInt::from(15), exponent: 9 })
+            &Leaf::Float(Decimal {
+                negative: false,
+                significand: BigInt::from(15),
+                exponent: 9
+            })
         );
     }
 
@@ -378,7 +411,15 @@ mod tests {
     #[test]
     fn digit_separators_ok() {
         let a = read("1_000_000").unwrap();
-        let Struct::Atom(l) = a.get(a.root) else { panic!() };
-        assert_eq!(a.leaf(*l), &Leaf::Int { value: BigInt::from(1_000_000), radix: Radix::Dec });
+        let Struct::Atom(l) = a.get(a.root) else {
+            panic!()
+        };
+        assert_eq!(
+            a.leaf(*l),
+            &Leaf::Int {
+                value: BigInt::from(1_000_000),
+                radix: Radix::Dec
+            }
+        );
     }
 }

@@ -50,7 +50,11 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
             }
             let ty = type_in_env(db, body, &env)?;
             // Only the vars actually mentioned matter; keep both lists (unused ones are harmless).
-            Some(Scheme { ty_vars, width_vars, ty })
+            Some(Scheme {
+                ty_vars,
+                width_vars,
+                ty,
+            })
         }
         // A non-lambda `(meta t)` is a monomorphic type.
         _ => typeval_of(db, t).map(Scheme::mono),
@@ -107,7 +111,10 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
 fn width_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) -> Option<Width> {
     match resolved_of(db, id) {
         Resolved::Param { binder } => env.get(&binder).map(|v| Width::Var(v.num)),
-        Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok()).map(Width::Fixed),
+        Resolved::Int(v) => v
+            .to_i64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Width::Fixed),
         Resolved::Ref { value } => width_in_env(db, value, env),
         _ => None,
     }
@@ -124,32 +131,30 @@ fn width_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) -
 /// `arg_of` maps a parameter occurrence to the argument occurrence substituted for it. A body
 /// occurrence that IS a reference to one of these params is replaced by its argument; every other node
 /// is structurally copied (its children reduced in turn).
-pub fn beta_reduce(
-    db: &mut Db,
-    body: StructId,
-    arg_of: &HashMap<StructId, StructId>,
-) -> StructId {
+pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, StructId>) -> StructId {
     // A reference to a substituted parameter → its argument. A parameter reference resolves to
     // `Ref { value: <param binder occ> }`; if that binder is one we're substituting, use the arg.
-    if let Resolved::Ref { value } = resolved_of(db, body) {
-        if let Some(&arg) = arg_of.get(&value) {
-            return arg;
-        }
+    if let Resolved::Ref { value } = resolved_of(db, body)
+        && let Some(&arg) = arg_of.get(&value)
+    {
+        return arg;
     }
     // The parameter OCCURRENCE itself (in the binder position, not a ref) is not substituted — only
     // references are; but a bare param used as a value resolves to `Param{binder}` — substitute it.
-    if let Resolved::Param { binder } = resolved_of(db, body) {
-        if let Some(&arg) = arg_of.get(&binder) {
-            return arg;
-        }
+    if let Resolved::Param { binder } = resolved_of(db, body)
+        && let Some(&arg) = arg_of.get(&binder)
+    {
+        return arg;
     }
     // Otherwise structurally copy: an atom is shared (it references only a leaf); a list is copied
     // with each child reduced.
     match db.ast.get(body).clone() {
         crate::ast::Struct::Atom(_) => body, // atoms are immutable and self-contained — reuse.
         crate::ast::Struct::List(children) => {
-            let reduced: Vec<StructId> =
-                children.iter().map(|&c| beta_reduce(db, c, arg_of)).collect();
+            let reduced: Vec<StructId> = children
+                .iter()
+                .map(|&c| beta_reduce(db, c, arg_of))
+                .collect();
             db.push_list(reduced)
         }
     }
@@ -160,7 +165,11 @@ pub fn beta_reduce(
 /// positionally: exact arity β-reduces the whole body; MORE args than params reduces then applies the
 /// remainder to the result (curried); FEWER args is a partial application, not yet supported (`Err`).
 /// A non-lambda head is `Ok(None)` — the caller tries the `(meta apply)` primitive path instead.
-pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Option<StructId>, String> {
+pub fn apply_lambda(
+    db: &mut Db,
+    head: StructId,
+    args: &[StructId],
+) -> Result<Option<StructId>, String> {
     let (params, body) = match lambda_of(db, head) {
         Some(lam) => lam,
         None => return Ok(None),
@@ -172,7 +181,9 @@ pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Op
     // check covers them all.
     if is_recursive(db, body) {
         tracing::trace!(target: "rcdzc::eval", body = body.0, "decline: recursive function (needs runtime specialization)");
-        return Err("a recursive function needs runtime specialization (not yet built)".to_string());
+        return Err(
+            "a recursive function needs runtime specialization (not yet built)".to_string(),
+        );
     }
     tracing::trace!(target: "rcdzc::eval", body = body.0, params = params.len(), args = args.len(), "β-reduce lambda application");
     if args.len() < params.len() {
@@ -206,10 +217,10 @@ fn param_name_occ(db: &Db, param: StructId) -> StructId {
     if db.ast.as_name(param).is_some() {
         return param;
     }
-    if let Some(tail) = db.ast.as_form(param, ":") {
-        if let Some(&name_occ) = tail.first() {
-            return name_occ;
-        }
+    if let Some(tail) = db.ast.as_form(param, ":")
+        && let Some(&name_occ) = tail.first()
+    {
+        return name_occ;
     }
     param
 }
@@ -366,7 +377,10 @@ pub fn meta_apply_of(db: &mut Db, id: StructId) -> Option<Prim> {
 /// record. Returns the field's value occurrence, or `None` if the value is not a record or has no such
 /// field. The one generic projection, restricted to the `meta` namespace.
 pub fn project_meta(db: &mut Db, id: StructId, key: &str) -> Option<StructId> {
-    let sym = Symbol { namespace: Some("meta".to_string()), name: key.to_string() };
+    let sym = Symbol {
+        namespace: Some("meta".to_string()),
+        name: key.to_string(),
+    };
     project_field(db, id, &sym)
 }
 
@@ -462,14 +476,20 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
         Prim::IntCtor | Prim::UIntCtor => {
             let signed = matches!(prim, Prim::IntCtor);
             if args.len() != 1 {
-                return Err(format!("{} takes one width argument", if signed { "Int" } else { "UInt" }));
+                return Err(format!(
+                    "{} takes one width argument",
+                    if signed { "Int" } else { "UInt" }
+                ));
             }
             let width = const_width(db, args[0])
                 .ok_or_else(|| "integer width must be a constant".to_string())?;
             // Build once per (ctor, width): the first demand appends the module, every later demand —
             // repeated on this occurrence, or another `(Int 64)` elsewhere — returns the same node, so
             // the reduction is idempotent and the arena holds one module per width.
-            let key = crate::db::BuildKey { prim, args: vec![width as i64] };
+            let key = crate::db::BuildKey {
+                prim,
+                args: vec![width as i64],
+            };
             if let Some(cached) = db.cached_build(&key) {
                 return Ok(cached);
             }
@@ -481,7 +501,8 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
             if args.len() != 2 {
                 return Err("-> takes two type arguments".to_string());
             }
-            let p = typeval_of(db, args[0]).ok_or_else(|| "-> parameter is not a type".to_string())?;
+            let p =
+                typeval_of(db, args[0]).ok_or_else(|| "-> parameter is not a type".to_string())?;
             let r = typeval_of(db, args[1]).ok_or_else(|| "-> result is not a type".to_string())?;
             let fn_ty = crate::ty::Ty::Fn(Box::new(p), Box::new(r));
             Ok(encode_typeval(db, &fn_ty))
@@ -552,7 +573,10 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
                 // A deferred/var width in a built type grounds to the default for encoding.
                 _ => crate::ty::DEFAULT_INT_WIDTH as i64,
             };
-            let width = db.push_atom(Leaf::Int { value: IntValue::from_i64(w), radix: crate::ast::Radix::Dec });
+            let width = db.push_atom(Leaf::Int {
+                value: IntValue::from_i64(w),
+                radix: crate::ast::Radix::Dec,
+            });
             db.push_list(vec![ctor, width])
         }
         Ty::Fn(p, r) => {
@@ -572,7 +596,10 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
 /// join it width-specialized in Milestone B; Milestone A pins the type + bounds so `(. (Int 64) max)`
 /// folds through the ordinary projection.)
 pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
-    let it = IntTy { signed, width: Width::Fixed(width) };
+    let it = IntTy {
+        signed,
+        width: Width::Fixed(width),
+    };
     let ty = crate::ty::Ty::Int(it);
 
     let mut fields: Vec<StructId> = Vec::new();
@@ -632,7 +659,10 @@ fn meta_field(db: &mut Db, key: &str, value: StructId) -> StructId {
 /// A `(name INT)` record field holding an integer constant (appended).
 fn named_int_field(db: &mut Db, name: &str, value: i64) -> StructId {
     let k = db.push_name(name);
-    let v = db.push_atom(Leaf::Int { value: IntValue::from_i64(value), radix: crate::ast::Radix::Dec });
+    let v = db.push_atom(Leaf::Int {
+        value: IntValue::from_i64(value),
+        radix: crate::ast::Radix::Dec,
+    });
     db.push_list(vec![k, v])
 }
 

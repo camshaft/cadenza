@@ -213,7 +213,11 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
     if !r.at_end() {
         return None;
     }
-    Some(Arenas { leaves, structure, root })
+    Some(Arenas {
+        leaves,
+        structure,
+        root,
+    })
 }
 
 fn read_leaf(r: &mut Reader) -> Option<Leaf> {
@@ -241,7 +245,11 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
             let sig_len = r.read_var_len()?;
             let mag = r.take(sig_len)?;
             let significand = BigInt::from_bytes_be(Sign::Plus, mag);
-            Leaf::Float(Decimal { negative, significand, exponent })
+            Leaf::Float(Decimal {
+                negative,
+                significand,
+                exponent,
+            })
         }
         KIND_STR => Leaf::Str(read_string(r)?),
         KIND_BOOL_FALSE => Leaf::Bool(false),
@@ -282,8 +290,14 @@ mod tests {
             value: BigInt::from_str("123456789012345678901234567890").unwrap(),
             radix: Radix::Dec,
         });
-        let hex = b.atom_leaf(Leaf::Int { value: BigInt::from(0x2A), radix: Radix::Hex });
-        let neg = b.atom_leaf(Leaf::Int { value: BigInt::from(-42), radix: Radix::Dec });
+        let hex = b.atom_leaf(Leaf::Int {
+            value: BigInt::from(0x2A),
+            radix: Radix::Hex,
+        });
+        let neg = b.atom_leaf(Leaf::Int {
+            value: BigInt::from(-42),
+            radix: Radix::Dec,
+        });
         let flt = b.atom_leaf(Leaf::Float(Decimal {
             negative: false,
             significand: BigInt::from_str("15").unwrap(),
@@ -309,9 +323,18 @@ mod tests {
     fn radix_round_trips() {
         // Same value, different bases -> distinct leaves that survive the round-trip.
         let mut b = Builder::new();
-        let dec = b.atom_leaf(Leaf::Int { value: BigInt::from(42), radix: Radix::Dec });
-        let hex = b.atom_leaf(Leaf::Int { value: BigInt::from(42), radix: Radix::Hex });
-        let bin = b.atom_leaf(Leaf::Int { value: BigInt::from(42), radix: Radix::Bin });
+        let dec = b.atom_leaf(Leaf::Int {
+            value: BigInt::from(42),
+            radix: Radix::Dec,
+        });
+        let hex = b.atom_leaf(Leaf::Int {
+            value: BigInt::from(42),
+            radix: Radix::Hex,
+        });
+        let bin = b.atom_leaf(Leaf::Int {
+            value: BigInt::from(42),
+            radix: Radix::Bin,
+        });
         let root = b.list(vec![dec, hex, bin]);
         let a = b.finish(root);
         assert_eq!(decode(&encode(&a)).unwrap(), a);
@@ -330,7 +353,9 @@ mod tests {
         let a = b.finish(neg_zero);
         let back = decode(&encode(&a)).expect("decode");
         assert_eq!(a, back);
-        let Leaf::Float(d) = &back.leaves[0] else { panic!() };
+        let Leaf::Float(d) = &back.leaves[0] else {
+            panic!()
+        };
         assert!(d.negative, "-0.0 must stay negative");
     }
 

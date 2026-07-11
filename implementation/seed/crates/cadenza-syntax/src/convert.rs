@@ -50,7 +50,10 @@ impl Format {
     /// s-expr, `.bin`/`.cdzb` → binary. The output-only `debug`/`flat` views have no extension.
     /// `None` if the path has no recognized extension (the caller then requires an explicit format).
     pub fn from_extension(path: &str) -> Option<Format> {
-        let ext = std::path::Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+        let ext = std::path::Path::new(path)
+            .extension()?
+            .to_str()?
+            .to_ascii_lowercase();
         match ext.as_str() {
             "cdz" | "ml" => Some(Format::Ml),
             "sexp" | "sexpr" => Some(Format::Sexpr),
@@ -98,8 +101,12 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
         }
         // `debug` is an output-only view — there is no reader from it back to arenas.
         // `debug`/`flat` are output-only views — there is no reader from them back to arenas.
-        Format::Debug => Err(ConvertError("`debug` is an output-only format, not an input".into())),
-        Format::Flat => Err(ConvertError("`flat` is an output-only format, not an input".into())),
+        Format::Debug => Err(ConvertError(
+            "`debug` is an output-only format, not an input".into(),
+        )),
+        Format::Flat => Err(ConvertError(
+            "`flat` is an output-only format, not an input".into(),
+        )),
     }
 }
 
@@ -112,7 +119,9 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { width: crate::printer::DEFAULT_WIDTH }
+        Options {
+            width: crate::printer::DEFAULT_WIDTH,
+        }
     }
 }
 
@@ -204,7 +213,10 @@ mod tests {
         let src = b"(outer (inner aaaa bbbb) (inner cccc dddd))";
         // wide: one line
         let wide = convert_with(src, Format::Sexpr, Format::Ml, Options { width: 100 }).unwrap();
-        assert_eq!(String::from_utf8(wide).unwrap(), "outer(inner(aaaa, bbbb), inner(cccc, dddd))");
+        assert_eq!(
+            String::from_utf8(wide).unwrap(),
+            "outer(inner(aaaa, bbbb), inner(cccc, dddd))"
+        );
         // narrow: breaks
         let narrow = convert_with(src, Format::Sexpr, Format::Ml, Options { width: 20 }).unwrap();
         assert!(String::from_utf8(narrow).unwrap().contains('\n'));

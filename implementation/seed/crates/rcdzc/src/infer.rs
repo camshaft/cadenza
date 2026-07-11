@@ -286,8 +286,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // Project via the evaluator (reduces refs / a ctor-built module), so a missing field on a
             // built module is caught too. A poison operand reports its OWN fault (via the descent
             // below), so we don't add a redundant "not a record" for it.
-            let operand_is_poison =
-                matches!(resolved_of(db, operand), Resolved::Poison(_));
+            let operand_is_poison = matches!(resolved_of(db, operand), Resolved::Poison(_));
             match crate::eval::member_value(db, operand, &key) {
                 crate::eval::Member::Field(_) => {}
                 crate::eval::Member::NoField => out.push(Reject::coded(

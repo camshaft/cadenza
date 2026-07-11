@@ -59,7 +59,10 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // `Bool` and structurally any value, not only integers) and the result is `Bool`. Same operator-
     // record mechanism; only the `(meta t)` type-lambda differs.
     for op in ["<", ">", "<=", ">=", "="] {
-        names.insert(op.to_string(), operator_record(ast, op, OpShape::Comparison));
+        names.insert(
+            op.to_string(),
+            operator_record(ast, op, OpShape::Comparison),
+        );
     }
 
     // `Int64` — the pre-installed width-64 integer module (the module `(Int 64)` reduces to). Its
@@ -197,7 +200,13 @@ fn int64_record(ast: &mut Arenas) -> StructId {
     // `Int64` usable as a TYPE, not only as a field-bearing module.
     let int64_ty_expr = {
         let int = push_atom(ast, Leaf::Name("Int".to_string()));
-        let w = push_atom(ast, Leaf::Int { value: IntValue::from_i64(64), radix: Radix::Dec });
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(64),
+                radix: Radix::Dec,
+            },
+        );
         push_list(ast, vec![int, w])
     };
     let mut fields = vec![
@@ -206,7 +215,13 @@ fn int64_record(ast: &mut Arenas) -> StructId {
         int_field(ast, "min", i64::MIN),
     ];
     // Operations not yet realized — present, but their value declines when projected.
-    for op in ["of", "checked-add", "checked-mul", "wrapping-add", "wrapping-mul"] {
+    for op in [
+        "of",
+        "checked-add",
+        "checked-mul",
+        "wrapping-add",
+        "wrapping-mul",
+    ] {
         fields.push(unrealized_field(ast, op));
     }
     let mut children = vec![head];
@@ -217,7 +232,13 @@ fn int64_record(ast: &mut Arenas) -> StructId {
 /// A `(name value)` record field whose value is an integer constant.
 fn int_field(ast: &mut Arenas, name: &str, value: i64) -> StructId {
     let k = push_atom(ast, Leaf::Name(name.to_string()));
-    let v = push_atom(ast, Leaf::Int { value: IntValue::from_i64(value), radix: Radix::Dec });
+    let v = push_atom(
+        ast,
+        Leaf::Int {
+            value: IntValue::from_i64(value),
+            radix: Radix::Dec,
+        },
+    );
     push_list(ast, vec![k, v])
 }
 

@@ -24,7 +24,7 @@ pub enum Kind {
     Str,
 
     // ---- identifiers (keywords are NOT lexed; the parser recognizes them from Ident text) ----
-    Ident,        // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/…, `and`/`or` — all Ident
+    Ident, // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/…, `and`/`or` — all Ident
     BacktickName, // `` `|` ``, `` `->` `` — the lossless escape for symbolic/keyword names
 
     // ---- operators (each has a binding power in `infix_prec`) ----
@@ -70,7 +70,10 @@ impl Kind {
     /// True for lexer trivia (whitespace / comments). Skipped by the grammar; comment tokens still
     /// become real `(comment …)`/`(doc …)` arena nodes at parse time, so they survive.
     pub fn is_trivia(self) -> bool {
-        matches!(self, Kind::Whitespace | Kind::LineComment | Kind::DocComment)
+        matches!(
+            self,
+            Kind::Whitespace | Kind::LineComment | Kind::DocComment
+        )
     }
 
     /// The operator symbol a `Kind` denotes, for building the head `Name` of an infix form and for

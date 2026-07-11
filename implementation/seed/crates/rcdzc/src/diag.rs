@@ -78,14 +78,22 @@ impl Reject {
     /// faulting node in hand attaches it via [`Reject::at`] (or a collector stamps it with
     /// [`Reject::set_origin_if_absent`]).
     pub fn coded(code: Code, message: impl Into<String>) -> Reject {
-        Reject { code: Some(code), message: message.into(), at: None }
+        Reject {
+            code: Some(code),
+            message: message.into(),
+            at: None,
+        }
     }
 
     /// An uncoded decline: a construct the compiler does not yet realize. NOT a statement that the
     /// program is wrong — it is the compiler declining to compile it, the safe outcome
     /// (`reference-compiler.md` §Outcomes Are Ordered By Safety).
     pub fn decline(message: impl Into<String>) -> Reject {
-        Reject { code: None, message: message.into(), at: None }
+        Reject {
+            code: None,
+            message: message.into(),
+            at: None,
+        }
     }
 
     /// Attach (or replace) the node this "no" is about — the fluent form a producer uses when it holds

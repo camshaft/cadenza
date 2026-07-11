@@ -42,8 +42,20 @@ use std::collections::BTreeMap;
 /// A form whose head is one of these is dispatched structurally; any other head is an application (or,
 /// for a bare atom, a name looked up).
 const GRAMMAR: &[&str] = &[
-    "let", "if", "record", ".", "module", "def", "export", "do", "unrealized", "intrinsic", "meta",
-    "fn", "typeval", ":",
+    "let",
+    "if",
+    "record",
+    ".",
+    "module",
+    "def",
+    "export",
+    "do",
+    "unrealized",
+    "intrinsic",
+    "meta",
+    "fn",
+    "typeval",
+    ":",
 ];
 
 /// The resolved form of the node at `id`, filling the column on demand (memoized). The query the
@@ -115,7 +127,9 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         .and_then(|t| t.first())
                         .and_then(|&s| db.ast.as_name(s))
                         .unwrap_or("operation");
-                    Resolved::Poison(Reject::decline(format!("built-in `{op}` is not yet realized")))
+                    Resolved::Poison(Reject::decline(format!(
+                        "built-in `{op}` is not yet realized"
+                    )))
                 }
                 // `(intrinsic NAME)` — a prelude built-in operation VALUE. Resolves to the operation
                 // it names (a value carried through the pipeline, lowered at selection).
@@ -141,9 +155,10 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 // (`eval::meta_apply_of`), a non-applyable head becoming a poison there. Resolve does
                 // not pre-judge the head, so the one application path stays uniform and its dispatch
                 // lives in one place (the meta channel), never the head's spelling.
-                Some(_) | None => {
-                    Resolved::Apply { head: children[0], args: children[1..].to_vec() }
-                }
+                Some(_) | None => Resolved::Apply {
+                    head: children[0],
+                    args: children[1..].to_vec(),
+                },
             }
         }
     }
@@ -169,8 +184,14 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, params = def.params.len(), "name → top-level def");
         return match def.body {
             Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
-            Some(body) => Resolved::Lambda { params: def.params.clone(), body },
-            None => Resolved::Poison(Reject::coded(Code::Malformed, format!("`{name}` has no body"))),
+            Some(body) => Resolved::Lambda {
+                params: def.params.clone(),
+                body,
+            },
+            None => Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("`{name}` has no body"),
+            )),
         };
     }
     // 3. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
@@ -183,7 +204,10 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // ill-formed), not a decline: the unbound-name rule is unconditional (`core-semantics.md`
     // §Binding Is Lexical).
     tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
-    Resolved::Poison(Reject::coded(Code::Unbound, format!("unbound name `{name}`")))
+    Resolved::Poison(Reject::coded(
+        Code::Unbound,
+        format!("unbound name `{name}`"),
+    ))
 }
 
 /// Walk parents from `id` to the nearest enclosing binding of `name`, returning the value occurrence
@@ -240,19 +264,19 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
     if let Some(tail) = db.ast.as_form(form, "fn") {
         let params_occ = tail.first().copied()?;
         let body_occ = tail.get(1).copied();
-        if Some(from) == body_occ {
-            if let Struct::List(params) = db.ast.get(params_occ) {
-                // A parameter binds the name it declares — bare `a` or annotated `(: a T)` alike.
-                let mut found = None;
-                for &p in params {
-                    if let Some((n, name_occ)) = param_name(db, p) {
-                        if n == name {
-                            found = Some(name_occ);
-                        }
-                    }
+        if Some(from) == body_occ
+            && let Struct::List(params) = db.ast.get(params_occ)
+        {
+            // A parameter binds the name it declares — bare `a` or annotated `(: a T)` alike.
+            let mut found = None;
+            for &p in params {
+                if let Some((n, name_occ)) = param_name(db, p)
+                    && n == name
+                {
+                    found = Some(name_occ);
                 }
-                return found;
             }
+            return found;
         }
         return None;
     }
@@ -262,19 +286,19 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
     if let Some(tail) = db.ast.as_form(form, "def") {
         let sig_occ = tail.first().copied()?;
         let body_occ = tail.get(1).copied();
-        if Some(from) == body_occ {
-            if let Struct::List(sig) = db.ast.get(sig_occ) {
-                // sig = [NAME, param…]; a reference binds to the matching PARAM's name occurrence.
-                let mut found = None;
-                for &p in sig.iter().skip(1) {
-                    if let Some((n, name_occ)) = param_name(db, p) {
-                        if n == name {
-                            found = Some(name_occ);
-                        }
-                    }
+        if Some(from) == body_occ
+            && let Struct::List(sig) = db.ast.get(sig_occ)
+        {
+            // sig = [NAME, param…]; a reference binds to the matching PARAM's name occurrence.
+            let mut found = None;
+            for &p in sig.iter().skip(1) {
+                if let Some((n, name_occ)) = param_name(db, p)
+                    && n == name
+                {
+                    found = Some(name_occ);
                 }
-                return found;
             }
+            return found;
         }
         return None;
     }
@@ -344,10 +368,10 @@ fn binding_pairs(db: &Db, bindings_occ: StructId) -> Vec<(StructId, StructId)> {
     let mut out = Vec::new();
     if let Struct::List(pairs) = db.ast.get(bindings_occ) {
         for &pair in pairs {
-            if let Struct::List(kv) = db.ast.get(pair) {
-                if kv.len() == 2 {
-                    out.push((kv[0], kv[1]));
-                }
+            if let Struct::List(kv) = db.ast.get(pair)
+                && kv.len() == 2
+            {
+                out.push((kv[0], kv[1]));
             }
         }
     }
@@ -358,9 +382,16 @@ fn binding_pairs(db: &Db, bindings_occ: StructId) -> Vec<(StructId, StructId)> {
 fn resolve_if(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "if").unwrap_or(&[]);
     if tail.len() != 3 {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "if takes exactly 3 operands"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "if takes exactly 3 operands",
+        ));
     }
-    Resolved::If { cond: tail[0], then_: tail[1], else_: tail[2] }
+    Resolved::If {
+        cond: tail[0],
+        then_: tail[1],
+        else_: tail[2],
+    }
 }
 
 /// Resolve `(let (BINDINGS) BODY)` into its resolved form. The bindings are `(name init)` pairs; scope
@@ -379,7 +410,10 @@ fn resolve_let(db: &Db, id: StructId) -> Resolved {
     if pairs.is_empty() {
         return Resolved::Poison(Reject::coded(Code::Malformed, "let bindings are malformed"));
     }
-    Resolved::Let { bindings: pairs, body }
+    Resolved::Let {
+        bindings: pairs,
+        body,
+    }
 }
 
 /// Read a KEY occurrence into a label [`Symbol`] — the one key-mode rule, shared by record fields and
@@ -393,10 +427,13 @@ fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
         return Some(Symbol::plain(n));
     }
     // `(meta NAME)` → the symbol `NAME` in the `meta` namespace.
-    if let Some(tail) = db.ast.as_form(node, "meta") {
-        if let Some(name) = tail.first().and_then(|&s| db.ast.as_name(s)) {
-            return Some(Symbol { namespace: Some("meta".to_string()), name: name.to_string() });
-        }
+    if let Some(tail) = db.ast.as_form(node, "meta")
+        && let Some(name) = tail.first().and_then(|&s| db.ast.as_name(s))
+    {
+        return Some(Symbol {
+            namespace: Some("meta".to_string()),
+            name: name.to_string(),
+        });
     }
     None
 }
@@ -424,7 +461,10 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 },
                 _ => None,
             })?;
-            Some(Ty::Int(IntTy { signed: head == "Int", width: Width::Fixed(w) }))
+            Some(Ty::Int(IntTy {
+                signed: head == "Int",
+                width: Width::Fixed(w),
+            }))
         }
         "->" => {
             let tail = db.ast.as_form(node, "->")?;
@@ -445,34 +485,40 @@ fn is_param_occurrence(db: &Db, id: StructId) -> bool {
     // `id` sits either directly in the param list (bare) or inside a `(: id T)` binder. Resolve the
     // node that appears IN the param list — `id` for a bare param, the `(:…)` node for an annotated
     // one — and remember whether `id` is that binder's name position.
-    let Some(parent) = db.parent_of(id) else { return false };
+    let Some(parent) = db.parent_of(id) else {
+        return false;
+    };
     let (param_node, list) = if db.ast.as_form(parent, ":").is_some() {
         // `id` is inside a `(: name T)`; it is a param NAME only if it is the name position (first),
         // never the type position. The binder node itself is what sits in the param list.
-        let is_name_position = db.ast.as_form(parent, ":").and_then(|t| t.first().copied()) == Some(id);
+        let is_name_position =
+            db.ast.as_form(parent, ":").and_then(|t| t.first().copied()) == Some(id);
         if !is_name_position {
             return false;
         }
-        let Some(list) = db.parent_of(parent) else { return false };
+        let Some(list) = db.parent_of(parent) else {
+            return false;
+        };
         (parent, list)
     } else {
         (id, parent)
     };
-    let Some(form) = db.parent_of(list) else { return false };
+    let Some(form) = db.parent_of(list) else {
+        return false;
+    };
     // A `(fn (params) body)` parameter: `list` is the fn's parameter list (its first tail element).
-    if let Some(tail) = db.ast.as_form(form, "fn") {
-        if tail.first().copied() == Some(list) {
-            return true;
-        }
+    if let Some(tail) = db.ast.as_form(form, "fn")
+        && tail.first().copied() == Some(list)
+    {
+        return true;
     }
     // A `(def (NAME param…) body)` parameter: `list` is the def's signature (its first tail element),
     // and `param_node` is NOT the signature's first element (that is the def NAME, not a parameter).
-    if let Some(tail) = db.ast.as_form(form, "def") {
-        if tail.first().copied() == Some(list) {
-            if let Struct::List(sig) = db.ast.get(list) {
-                return sig.first().copied() != Some(param_node);
-            }
-        }
+    if let Some(tail) = db.ast.as_form(form, "def")
+        && tail.first().copied() == Some(list)
+        && let Struct::List(sig) = db.ast.get(list)
+    {
+        return sig.first().copied() != Some(param_node);
     }
     false
 }
@@ -484,7 +530,9 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "fn").unwrap_or(&[]);
     let params_occ = match tail.first() {
         Some(&p) => p,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no parameter list")),
+        None => {
+            return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no parameter list"));
+        }
     };
     let body = match tail.get(1) {
         Some(&b) => b,
@@ -493,7 +541,12 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
     // The parameter occurrences (each a bare name).
     let params: Vec<StructId> = match db.ast.get(params_occ) {
         Struct::List(ps) => ps.clone(),
-        _ => return Resolved::Poison(Reject::coded(Code::Malformed, "fn parameters must be a list")),
+        _ => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "fn parameters must be a list",
+            ));
+        }
     };
     Resolved::Lambda { params, body }
 }
@@ -509,11 +562,21 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
         // Each field is `(key value)`.
         let kv = match db.ast.get(field) {
             Struct::List(kv) if kv.len() == 2 => kv,
-            _ => return Resolved::Poison(Reject::coded(Code::Malformed, "record field must be (key value)")),
+            _ => {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "record field must be (key value)",
+                ));
+            }
         };
         let label = match read_key(db, kv[0]) {
             Some(sym) => sym,
-            None => return Resolved::Poison(Reject::coded(Code::Malformed, "record field key must be a name or (meta name)")),
+            None => {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "record field key must be a name or (meta name)",
+                ));
+            }
         };
         // A duplicate field name — anywhere in the list — is ill-formed.
         if fields.insert(label.clone(), kv[1]).is_some() {
@@ -531,12 +594,19 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
 fn resolve_member(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, ".").unwrap_or(&[]);
     if tail.len() != 2 {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "member access takes an operand and a key"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "member access takes an operand and a key",
+        ));
     }
     let operand = tail[0];
     let key = match read_key(db, tail[1]) {
         Some(sym) => sym,
-        None => return Resolved::Poison(Reject::decline("a computed member key is not yet supported")),
+        None => {
+            return Resolved::Poison(Reject::decline(
+                "a computed member key is not yet supported",
+            ));
+        }
     };
     Resolved::Member { operand, key }
 }
@@ -554,7 +624,10 @@ fn resolve_annot(db: &Db, id: StructId) -> Resolved {
             "a type annotation takes an expression and a type",
         ));
     }
-    Resolved::Annot { expr: tail[0], ty_expr: tail[1] }
+    Resolved::Annot {
+        expr: tail[0],
+        ty_expr: tail[1],
+    }
 }
 
 #[cfg(test)]
@@ -567,7 +640,10 @@ mod tests {
     fn resolves_a_literal() {
         let (ast, body) = scalar_program();
         let mut db = Db::load(ast);
-        assert_eq!(resolved_of(&mut db, body), Resolved::Int(IntValue::from_i64(42)));
+        assert_eq!(
+            resolved_of(&mut db, body),
+            Resolved::Int(IntValue::from_i64(42))
+        );
     }
 
     #[test]
@@ -577,8 +653,14 @@ mod tests {
         match resolved_of(&mut db, if_node) {
             Resolved::If { cond, then_, else_ } => {
                 assert_eq!(resolved_of(&mut db, cond), Resolved::Bool(false));
-                assert_eq!(resolved_of(&mut db, then_), Resolved::Int(IntValue::from_i64(1)));
-                assert_eq!(resolved_of(&mut db, else_), Resolved::Int(IntValue::from_i64(2)));
+                assert_eq!(
+                    resolved_of(&mut db, then_),
+                    Resolved::Int(IntValue::from_i64(1))
+                );
+                assert_eq!(
+                    resolved_of(&mut db, else_),
+                    Resolved::Int(IntValue::from_i64(2))
+                );
             }
             other => panic!("expected If, got {other:?}"),
         }

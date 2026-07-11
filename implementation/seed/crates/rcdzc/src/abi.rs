@@ -21,7 +21,11 @@ pub struct Artifact {
 
 impl Artifact {
     pub fn new(kind: impl Into<String>, name: impl Into<String>, bytes: Vec<u8>) -> Artifact {
-        Artifact { kind: kind.into(), name: name.into(), bytes }
+        Artifact {
+            kind: kind.into(),
+            name: name.into(),
+            bytes,
+        }
     }
 
     /// The canonical-binary-AST input artifact kind.
@@ -75,7 +79,9 @@ pub struct CompileOutput {
 impl CompileOutput {
     /// Whether any diagnostic is an error (the failure predicate).
     pub fn has_error(&self) -> bool {
-        self.diagnostics.iter().any(|d| d.severity == Severity::Error)
+        self.diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error)
     }
 
     /// The bytes of the first artifact of the given kind, if present and no error was reported.
@@ -83,6 +89,9 @@ impl CompileOutput {
         if self.has_error() {
             return None;
         }
-        self.artifacts.iter().find(|a| a.kind == kind).map(|a| a.bytes.as_slice())
+        self.artifacts
+            .iter()
+            .find(|a| a.kind == kind)
+            .map(|a| a.bytes.as_slice())
     }
 }

@@ -14,7 +14,10 @@ use clap::Parser;
 
 /// Run a finished Cadenza wasm component and print its result.
 #[derive(Parser)]
-#[command(name = "cdz-run", about = "Run a wasm component: link, call an export, print the result.")]
+#[command(
+    name = "cdz-run",
+    about = "Run a wasm component: link, call an export, print the result."
+)]
 struct Cli {
     /// The component `.wasm` to run, or `-` to read it from stdin (so it composes in a pipe:
     /// `rcdzc - -o - | cdz-run -`).
@@ -97,7 +100,8 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
 /// Address). `--runtime <path>` is a debugging escape hatch that bypasses the store lookup.
 fn resolve_runtime(cli: &Cli, req: &cdz_run::RuntimeReq) -> anyhow::Result<Vec<u8>> {
     if let Some(path) = &cli.runtime {
-        return std::fs::read(path).map_err(|e| anyhow::anyhow!("read --runtime {}: {e}", path.display()));
+        return std::fs::read(path)
+            .map_err(|e| anyhow::anyhow!("read --runtime {}: {e}", path.display()));
     }
 
     if req.hash.is_empty() {
@@ -149,6 +153,10 @@ fn content_address(bytes: &[u8]) -> String {
 fn default_store() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // <repo>/implementation/seed/crates/cdz-run → up 4 → <repo>
-    let repo = manifest.ancestors().nth(4).unwrap_or(&manifest).to_path_buf();
+    let repo = manifest
+        .ancestors()
+        .nth(4)
+        .unwrap_or(&manifest)
+        .to_path_buf();
     repo.join("target/cadenza-store")
 }

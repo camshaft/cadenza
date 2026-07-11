@@ -28,7 +28,11 @@ pub fn canonicalize(arenas: &Arenas) -> Arenas {
         structure: Vec::new(),
     };
     let root = c.visit(arenas.root);
-    Arenas { leaves: c.leaves, structure: c.structure, root }
+    Arenas {
+        leaves: c.leaves,
+        structure: c.structure,
+        root,
+    }
 }
 
 struct Canon<'a> {
@@ -102,7 +106,10 @@ mod tests {
         // The raw structure arenas differ (different occurrence order)...
         assert_ne!(head_first.structure, operand_first.structure);
         // ...but their canonical forms — and hence their encoded bytes — are identical.
-        assert_eq!(canonicalize(&head_first).structure, canonicalize(&operand_first).structure);
+        assert_eq!(
+            canonicalize(&head_first).structure,
+            canonicalize(&operand_first).structure
+        );
         assert_eq!(codec::encode(&head_first), codec::encode(&operand_first));
     }
 

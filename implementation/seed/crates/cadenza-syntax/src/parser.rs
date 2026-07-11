@@ -16,7 +16,7 @@ use crate::lexer::{Lexer, Token};
 use crate::literal;
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
-use crate::token::{infix_prec, keyword, word_op, Keyword, Kind};
+use crate::token::{Keyword, Kind, infix_prec, keyword, word_op};
 
 /// A parse error: a message anchored to a source span.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +64,11 @@ pub fn parse(src: &str, file: FileId) -> Parsed {
             Kind::Whitespace => {}
             Kind::LineComment | Kind::DocComment => {
                 let doc = t.kind == Kind::DocComment;
-                pending.push(Lead { doc, text: strip_comment(&src[t.span.start..t.span.end], doc), span: t.span });
+                pending.push(Lead {
+                    doc,
+                    text: strip_comment(&src[t.span.start..t.span.end], doc),
+                    span: t.span,
+                });
             }
             _ => {
                 tokens.push(t);
@@ -87,7 +91,11 @@ pub fn parse(src: &str, file: FileId) -> Parsed {
         errors: Vec::new(),
     };
     let root = p.program();
-    Parsed { arenas: p.builder.finish(root), spans: p.spans, errors: p.errors }
+    Parsed {
+        arenas: p.builder.finish(root),
+        spans: p.spans,
+        errors: p.errors,
+    }
 }
 
 /// Strip a comment token's `//`/`///` prefix and one optional following space, yielding its text.
@@ -155,7 +163,9 @@ impl<'a> Parser<'a> {
         self.tok().map(|t| self.text(t)).unwrap_or("")
     }
     fn cur_span(&self) -> Span {
-        self.tok().map(|t| t.span).unwrap_or(Span::new(self.src.len(), self.src.len()))
+        self.tok()
+            .map(|t| t.span)
+            .unwrap_or(Span::new(self.src.len(), self.src.len()))
     }
     fn bump(&mut self) -> Option<Token> {
         let t = self.tok();
@@ -186,7 +196,10 @@ impl<'a> Parser<'a> {
         }
     }
     fn error(&mut self, message: &str) {
-        self.errors.push(ParseError { span: self.cur_span(), message: message.to_string() });
+        self.errors.push(ParseError {
+            span: self.cur_span(),
+            message: message.to_string(),
+        });
     }
 
     /// A synthetic error placeholder occurrence (a name `<error>`), used when a production cannot
@@ -331,7 +344,10 @@ impl<'a> Parser<'a> {
             }
             Kind::Str => {
                 let t = self.bump().unwrap();
-                self.atom(Leaf::Str(literal::unescape_string_token(self.text(t))), span)
+                self.atom(
+                    Leaf::Str(literal::unescape_string_token(self.text(t))),
+                    span,
+                )
             }
             Kind::BacktickName => {
                 let t = self.bump().unwrap();
@@ -420,7 +436,10 @@ impl<'a> Parser<'a> {
     }
 
     fn nth_kind(&self, n: usize) -> Kind {
-        self.tokens.get(self.pos + n).map(|t| t.kind).unwrap_or(Kind::Error)
+        self.tokens
+            .get(self.pos + n)
+            .map(|t| t.kind)
+            .unwrap_or(Kind::Error)
     }
 
     /// Parse `( e, … )` and return the argument occurrences.
@@ -719,7 +738,10 @@ impl<'a> Parser<'a> {
             }
             Kind::Str => {
                 let t = self.bump().unwrap();
-                self.atom(Leaf::Str(literal::unescape_string_token(self.text(t))), span)
+                self.atom(
+                    Leaf::Str(literal::unescape_string_token(self.text(t))),
+                    span,
+                )
             }
             Kind::BacktickName => {
                 let t = self.bump().unwrap();
@@ -939,7 +961,11 @@ mod tests {
 
     fn parse_ok(src: &str) -> Arenas {
         let p = read_ml(src);
-        assert!(p.ok(), "expected clean parse of {src:?}, got {:?}", p.errors);
+        assert!(
+            p.ok(),
+            "expected clean parse of {src:?}, got {:?}",
+            p.errors
+        );
         p.arenas
     }
 
@@ -997,7 +1023,9 @@ mod tests {
         let tail = a.as_form(a.root, "match").unwrap();
         assert_eq!(tail.len(), 3); // scrutinee + 2 arms
         // first arm is a 2-element list (pattern, body); pattern is (Some n)
-        let crate::ast::Struct::List(arm0) = a.get(tail[1]) else { panic!() };
+        let crate::ast::Struct::List(arm0) = a.get(tail[1]) else {
+            panic!()
+        };
         assert_eq!(arm0.len(), 2);
         assert_eq!(a.head_name(arm0[0]), Some("Some"));
     }
@@ -1007,7 +1035,9 @@ mod tests {
         // `match n { x if x < 0 => neg, _ => pos }`: first arm pattern is (guard x (< x 0))
         let a = parse_ok("match n { x if x < 0 => neg, _ => pos }");
         let tail = a.as_form(a.root, "match").unwrap();
-        let crate::ast::Struct::List(arm0) = a.get(tail[1]) else { panic!() };
+        let crate::ast::Struct::List(arm0) = a.get(tail[1]) else {
+            panic!()
+        };
         assert_eq!(a.head_name(arm0[0]), Some("guard"));
     }
 
@@ -1024,7 +1054,10 @@ mod tests {
         assert_ne!(l, r);
         let ls = p.spans.get(l).unwrap();
         let rs = p.spans.get(r).unwrap();
-        assert_ne!(ls, rs, "the two `x` occurrences map to different source spans");
+        assert_ne!(
+            ls, rs,
+            "the two `x` occurrences map to different source spans"
+        );
         // both are the text "x"
         assert_eq!(&"x + x"[ls.start..ls.end], "x");
         assert_eq!(&"x + x"[rs.start..rs.end], "x");
@@ -1047,13 +1080,20 @@ mod tests {
     #[test]
     fn string_unescape_and_nfc() {
         let a = parse_ok(r#" "a\nb" "#);
-        assert_eq!(a.leaf(match a.get(a.root) { crate::ast::Struct::Atom(l) => *l, _ => panic!() }),
-                   &Leaf::Str("a\nb".to_string()));
+        assert_eq!(
+            a.leaf(match a.get(a.root) {
+                crate::ast::Struct::Atom(l) => *l,
+                _ => panic!(),
+            }),
+            &Leaf::Str("a\nb".to_string())
+        );
     }
 
     #[test]
     fn never_panics() {
-        for src in ["", "(", ")", "let", "match {", "1 +", ".", "=>", "fn(", "if then", "`", "\""] {
+        for src in [
+            "", "(", ")", "let", "match {", "1 +", ".", "=>", "fn(", "if then", "`", "\"",
+        ] {
             let _ = read_ml(src); // must not panic
         }
     }

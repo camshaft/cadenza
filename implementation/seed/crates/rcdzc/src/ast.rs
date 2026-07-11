@@ -31,7 +31,10 @@ pub enum Leaf {
     /// An integer literal: its exact value plus the base its text used. The base is display-only
     /// (`42`, `0x2A`, `0b101010` are the same value) but is recorded so the printed form re-reads to
     /// the same leaf — a faithful text round-trip. Digit-separator (`_`) positions are NOT recorded.
-    Int { value: IntValue, radix: Radix },
+    Int {
+        value: IntValue,
+        radix: Radix,
+    },
     Float(Decimal),
     Str(String),
     Bool(bool),
@@ -60,7 +63,10 @@ pub struct IntValue {
 impl IntValue {
     /// The integer zero (positive sign, empty magnitude — zero is never negative on the wire).
     pub fn zero() -> IntValue {
-        IntValue { negative: false, magnitude: Vec::new() }
+        IntValue {
+            negative: false,
+            magnitude: Vec::new(),
+        }
     }
 
     /// Build from a machine `i64`, producing the canonical minimal big-endian magnitude.
@@ -76,7 +82,10 @@ impl IntValue {
         while start < bytes.len() && bytes[start] == 0 {
             start += 1;
         }
-        IntValue { negative: v < 0, magnitude: bytes[start..].to_vec() }
+        IntValue {
+            negative: v < 0,
+            magnitude: bytes[start..].to_vec(),
+        }
     }
 
     /// Narrow to a machine `i64`, or `None` if the value does not fit. Used where a downstream pass
@@ -94,7 +103,7 @@ impl IntValue {
             if acc > (i64::MAX as u128) + 1 {
                 return None;
             }
-            Some((acc as i128 * -1) as i64)
+            Some(-(acc as i128) as i64)
         } else {
             if acc > i64::MAX as u128 {
                 return None;
@@ -207,7 +216,11 @@ impl Builder {
     }
 
     pub fn finish(self, root: StructId) -> Arenas {
-        Arenas { leaves: self.leaves, structure: self.structure, root }
+        Arenas {
+            leaves: self.leaves,
+            structure: self.structure,
+            root,
+        }
     }
 }
 
