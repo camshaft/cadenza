@@ -229,7 +229,9 @@ fn emit(
                 }
                 // A comparison prim never reaches `Core::Arith` (it lowers to `Core::Compare`); a type
                 // constructor never lowers as a runtime op. Decline rather than emit a wrong op.
-                _ => Err(Reject::decline("not a runtime integer arithmetic operation")),
+                _ => Err(Reject::decline(
+                    "not a runtime integer arithmetic operation",
+                )),
             }
         }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector

@@ -186,14 +186,19 @@ pub fn core_module(funcs: &[SelectedFunc], layout: &Layout) -> Result<Vec<u8>, S
 }
 
 /// The component-boundary valtype of an export's result (`None` = unit / no result) — read by the
-/// envelope assembler for the component functype. A signature the boundary cannot represent is an
-/// error here (Stage 0 exports are scalar).
+/// envelope assembler for the component functype. A type with no boundary representation is an error
+/// here: a NON-ALIASED integer width (`(UInt 48)`, …) is internal-only, so an export whose result or
+/// parameter is one DECLINES (naming the width) rather than crossing as a misreported wider primitive.
 pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
     match ret {
         Ty::Unit => Ok(None),
         other => match comp_valtype_of(other) {
             Some(b) => Ok(Some(b)),
-            None => Err("export result type has no component valtype".to_string()),
+            None => Err(format!(
+                "type `{}` has no component boundary representation (only the aliased integer widths \
+                 8/16/32/64 cross the boundary)",
+                other.render_name()
+            )),
         },
     }
 }

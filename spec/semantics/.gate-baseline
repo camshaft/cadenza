@@ -47,6 +47,8 @@ pass	a runtime greater-than compares by signed order
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime remainder takes the dividend's sign
+pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a signed-byte entrypoint returns its runtime argument
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a type annotation consistent with the value is transparent
@@ -60,6 +62,7 @@ pass	an unannotated program with a valid typing type-checks and runs
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
+pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand

@@ -268,6 +268,82 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
     assert_eq!(ours, oracle, "parameterized envelope mismatch");
 }
 
+/// The NARROW component primitive valtype bytes (`u8`/`s8`/`u16`/`s16`) our `comp_valtype_of` emits are
+/// byte-identical to the `wasm-encoder` oracle — the byte-identity discipline for the R2 faithful
+/// boundary mapping (a wrong byte would misreport a value's type at the component edge). One export
+/// `(p0: u8, p1: s16) -> s8` over a `(i32, i32) -> i32` core covers three of the four narrow primitives.
+#[test]
+fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
+    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    // A minimal `(i32, i32) -> i32` core — the machine signature a narrow-width export lowers to (a
+    // ≤32-bit value occupies an i32 slot; the ABI lifts it to the narrow primitive at the edge).
+    let core = {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I32], vec![ValType::I32]);
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("f", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut fbody = Function::new(vec![]);
+        fbody.instruction(&Instruction::LocalGet(0));
+        fbody.instruction(&Instruction::End);
+        code.function(&fbody);
+        m.section(&code);
+        m.finish()
+    };
+    // Oracle: `f : (p0: u8, p1: s16) -> s8` — the narrow primitives our comp_valtype_of maps to.
+    let oracle = {
+        use wasm_encoder::*;
+        let mut c = Component::new();
+        c.section(&RawSection {
+            id: ComponentSectionId::CoreModule as u8,
+            data: &core,
+        });
+        let mut inst = InstanceSection::new();
+        inst.instantiate(0, std::iter::empty::<(&str, ModuleArg)>());
+        c.section(&inst);
+        let mut ts = ComponentTypeSection::new();
+        ts.function()
+            .params([
+                ("p0", ComponentValType::Primitive(PrimitiveValType::U8)),
+                ("p1", ComponentValType::Primitive(PrimitiveValType::S16)),
+            ])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S8)));
+        c.section(&ts);
+        let mut al = ComponentAliasSection::new();
+        al.alias(Alias::CoreInstanceExport {
+            instance: 0,
+            kind: ExportKind::Func,
+            name: "f",
+        });
+        c.section(&al);
+        let mut canon = CanonicalFunctionSection::new();
+        canon.lift(0, 0, []);
+        c.section(&canon);
+        let mut ex = ComponentExportSection::new();
+        ex.export("f", ComponentExportKind::Func, 0, None);
+        c.section(&ex);
+        c.finish()
+    };
+    let ours = assemble(
+        &core,
+        &[BoundaryExport {
+            name: "f".to_string(),
+            params: vec![0x7D, 0x7C], // u8, s16
+            result: Some(0x7E),       // s8
+        }],
+    );
+    assert_eq!(ours, oracle, "narrow-primitive envelope mismatch");
+}
+
 // ── the behavior run (wasmtime) ────────────────────────────────────────────────────────────────
 
 /// A component-boundary result type a behavior test can read back — one method decoding a wasmtime
@@ -319,6 +395,44 @@ impl FromVal for i32 {
         match v {
             wasmtime::component::Val::S32(n) => *n,
             other => panic!("expected S32 result, got {other:?}"),
+        }
+    }
+}
+
+// The narrow component primitives — an aliased ≤16-bit width crosses as its faithful `s8`/`u8`/`s16`/
+// `u16` (not the machine-slot `s32`/`u32`), so a behavior test reads it back as the matching Rust type.
+impl FromVal for i8 {
+    fn from_val(v: &wasmtime::component::Val) -> i8 {
+        match v {
+            wasmtime::component::Val::S8(n) => *n,
+            other => panic!("expected S8 result, got {other:?}"),
+        }
+    }
+}
+
+impl FromVal for u8 {
+    fn from_val(v: &wasmtime::component::Val) -> u8 {
+        match v {
+            wasmtime::component::Val::U8(n) => *n,
+            other => panic!("expected U8 result, got {other:?}"),
+        }
+    }
+}
+
+impl FromVal for i16 {
+    fn from_val(v: &wasmtime::component::Val) -> i16 {
+        match v {
+            wasmtime::component::Val::S16(n) => *n,
+            other => panic!("expected S16 result, got {other:?}"),
+        }
+    }
+}
+
+impl FromVal for u16 {
+    fn from_val(v: &wasmtime::component::Val) -> u16 {
+        match v {
+            wasmtime::component::Val::U16(n) => *n,
+            other => panic!("expected U16 result, got {other:?}"),
         }
     }
 }
@@ -833,24 +947,28 @@ mod runtime_ops {
     }
 
     // ── narrow widths (≤32-bit): compute in i32, range-check back to the N-bit type ───────────────
+    //
+    // An aliased narrow width crosses the boundary as its FAITHFUL component primitive — Int8 as `s8`,
+    // UInt8 as `u8` — so args/results are `Val::S8`/`Val::U8` and `i8`/`u8` (not the machine-slot s32).
+    // wasmtime enforces the argument is a valid s8/u8 at the edge, and the ABI lifts/lowers to the i32
+    // slot the emitted code computes in — the range-checks keep the core result in the N-bit range.
 
     #[test]
     fn runtime_narrow_signed_addition_range_checks() {
         // Int8 addition: 100+27=127 fits (Int8.max), 100+28=128 does NOT — the i32 add is exact, the
         // range-check to [-128,127] traps. A wrap would give -128 (the classic signed-overflow bug).
-        // (Int8 crosses the boundary as s32 in this codebase, so args/result are S32/i32.)
         assert_eq!(
-            run::<i32>(
+            run::<i8>(
                 "(: a Int8) (: b Int8)",
                 "(+ a b)",
-                &[Val::S32(100), Val::S32(27)]
+                &[Val::S8(100), Val::S8(27)]
             ),
             127
         );
         assert!(traps(
             "(: a Int8) (: b Int8)",
             "(+ a b)",
-            &[Val::S32(100), Val::S32(28)]
+            &[Val::S8(100), Val::S8(28)]
         ));
     }
 
@@ -861,22 +979,22 @@ mod runtime_ops {
         // the LOWER edge; -100-27=-127 fits. Pins that both narrow-sub overflow directions trap (the
         // add case only exercises the upper edge).
         assert_eq!(
-            run::<i32>(
+            run::<i8>(
                 "(: a Int8) (: b Int8)",
                 "(- a b)",
-                &[Val::S32(-100), Val::S32(27)]
+                &[Val::S8(-100), Val::S8(27)]
             ),
             -127
         );
         assert!(traps(
             "(: a Int8) (: b Int8)",
             "(- a b)",
-            &[Val::S32(100), Val::S32(-50)]
+            &[Val::S8(100), Val::S8(-50)]
         ));
         assert!(traps(
             "(: a Int8) (: b Int8)",
             "(- a b)",
-            &[Val::S32(-100), Val::S32(50)]
+            &[Val::S8(-100), Val::S8(50)]
         ));
     }
 
@@ -884,22 +1002,22 @@ mod runtime_ops {
     fn runtime_narrow_unsigned_addition_and_subtraction() {
         // UInt8: 200+55=255 fits, 200+56=256 traps (range-check to [0,255]); 0-1 traps below zero.
         assert_eq!(
-            run::<u32>(
+            run::<u8>(
                 "(: a UInt8) (: b UInt8)",
                 "(+ a b)",
-                &[Val::U32(200), Val::U32(55)]
+                &[Val::U8(200), Val::U8(55)]
             ),
             255
         );
         assert!(traps(
             "(: a UInt8) (: b UInt8)",
             "(+ a b)",
-            &[Val::U32(200), Val::U32(56)]
+            &[Val::U8(200), Val::U8(56)]
         ));
         assert!(traps(
             "(: a UInt8) (: b UInt8)",
             "(- a b)",
-            &[Val::U32(0), Val::U32(1)]
+            &[Val::U8(0), Val::U8(1)]
         ));
     }
 
@@ -907,17 +1025,17 @@ mod runtime_ops {
     fn runtime_narrow_multiplication_range_checks() {
         // UInt8 mul: 15*17=255 fits; 16*16=256 traps (the i32 product is exact, range-check to 255 traps).
         assert_eq!(
-            run::<u32>(
+            run::<u8>(
                 "(: a UInt8) (: b UInt8)",
                 "(* a b)",
-                &[Val::U32(15), Val::U32(17)]
+                &[Val::U8(15), Val::U8(17)]
             ),
             255
         );
         assert!(traps(
             "(: a UInt8) (: b UInt8)",
             "(* a b)",
-            &[Val::U32(16), Val::U32(16)]
+            &[Val::U8(16), Val::U8(16)]
         ));
     }
 
@@ -927,22 +1045,22 @@ mod runtime_ops {
         // fits i32), so the range-check catches it — the narrow-signed-division overflow the machine op
         // misses. In range: -100/3 = -33 (truncates toward zero).
         assert_eq!(
-            run::<i32>(
+            run::<i8>(
                 "(: a Int8) (: b Int8)",
                 "(/ a b)",
-                &[Val::S32(-100), Val::S32(3)]
+                &[Val::S8(-100), Val::S8(3)]
             ),
             -33
         );
         assert!(traps(
             "(: a Int8) (: b Int8)",
             "(/ a b)",
-            &[Val::S32(-128), Val::S32(-1)]
+            &[Val::S8(-128), Val::S8(-1)]
         ));
         assert!(traps(
             "(: a Int8) (: b Int8)",
             "(/ a b)",
-            &[Val::S32(5), Val::S32(0)]
+            &[Val::S8(5), Val::S8(0)]
         ));
     }
 
@@ -952,22 +1070,22 @@ mod runtime_ops {
         // is in range but the result exceeds 255) → the range-check traps. Pins the count bound is N (8),
         // not the slot width (32), and that a narrow << is range-checked.
         assert_eq!(
-            run::<u32>(
+            run::<u8>(
                 "(: a UInt8) (: b UInt8)",
                 "(<< a b)",
-                &[Val::U32(1), Val::U32(7)]
+                &[Val::U8(1), Val::U8(7)]
             ),
             128
         );
         assert!(traps(
             "(: a UInt8) (: b UInt8)",
             "(<< a b)",
-            &[Val::U32(1), Val::U32(8)]
+            &[Val::U8(1), Val::U8(8)]
         ));
         assert!(traps(
             "(: a UInt8) (: b UInt8)",
             "(<< a b)",
-            &[Val::U32(3), Val::U32(7)]
+            &[Val::U8(3), Val::U8(7)]
         ));
     }
 
@@ -976,10 +1094,10 @@ mod runtime_ops {
         // UInt8.max >> 1 = 127 (logical, zero-fill). Pins narrow shr_u — the op selection follows the
         // unsigned type.
         assert_eq!(
-            run::<u32>(
+            run::<u8>(
                 "(: a UInt8) (: b UInt8)",
                 "(>> a b)",
-                &[Val::U32(255), Val::U32(1)]
+                &[Val::U8(255), Val::U8(1)]
             ),
             127
         );
@@ -1143,6 +1261,36 @@ mod stage1 {
         compile_component(&crate::codec::encode(&parse(&src)))
             .expect_err("must decline/reject")
             .message
+    }
+
+    /// FOLD `body` (as `main`'s body) to its core `ConstInt` value at arbitrary precision — the value a
+    /// constant reduces to BEFORE any machine width or boundary. Used for a NON-ALIASED width like
+    /// `(UInt 48)`, whose bounds fold but which has no boundary representation to run across (it is
+    /// internal-only — R2). Panics if the body does not fold to a constant integer.
+    fn fold_const_u128(body: &str) -> u128 {
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let ast = parse(&src);
+        let mut db = Db::load(ast);
+        let main_body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .and_then(|d| d.body)
+            .expect("def main has a body");
+        match core_of(&mut db, main_body) {
+            Core::ConstInt(v) => {
+                assert!(!v.negative, "expected a non-negative constant, got {v:?}");
+                let mut acc: u128 = 0;
+                for &b in &v.magnitude {
+                    acc = (acc << 8) | (b as u128);
+                }
+                acc
+            }
+            other => panic!("expected the body to fold to a ConstInt, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1502,23 +1650,23 @@ mod stage1 {
 
     #[test]
     fn signed_8bit_bounds_project() {
-        // Int8 bounds are the width-8 signed range: max 127, min -128. Int8 is a ≤32-bit signed type,
-        // so it lifts at the boundary as s32 (NOT s64) — the width flows through to the machine repr.
-        let run_i32 = |body: &str| {
+        // Int8 bounds are the width-8 signed range: max 127, min -128. Int8 crosses the boundary as its
+        // FAITHFUL component primitive `s8` (NOT s32 or s64) — the width flows through to the wire repr.
+        let run_i8 = |body: &str| {
             let src = format!("(module m (def (main) {body}) (export main))");
             let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-            run_returns::<i32>(&bytes, "main")
+            run_returns::<i8>(&bytes, "main")
         };
-        assert_eq!(run_i32("(. Int8 max)"), 127);
-        assert_eq!(run_i32("(. Int8 min)"), -128);
+        assert_eq!(run_i8("(. Int8 max)"), 127);
+        assert_eq!(run_i8("(. Int8 min)"), -128);
     }
 
     #[test]
     fn unsigned_8bit_max_is_255() {
-        // UInt8.max = 2^8 - 1 = 255. A UInt8 boundary lifts as u32 (≤32-bit unsigned).
+        // UInt8.max = 2^8 - 1 = 255. A UInt8 crosses the boundary as its faithful `u8`.
         let src = "(module m (def (main) (. UInt8 max)) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u32>(&bytes, "main"), 255);
+        assert_eq!(run_returns::<u8>(&bytes, "main"), 255);
     }
 
     #[test]
@@ -1533,10 +1681,10 @@ mod stage1 {
     #[test]
     fn an_annotation_takes_a_narrower_width() {
         // 06-numeric-model `(: 200 UInt8)` = 200 : UInt8 — the annotation grounds the literal to the
-        // narrower width; 200 fits UInt8 (0..=255). Lifts as u32.
+        // narrower width; 200 fits UInt8 (0..=255). Crosses the boundary as its faithful `u8`.
         let src = "(module m (def (main) (: 200 UInt8)) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u32>(&bytes, "main"), 200);
+        assert_eq!(run_returns::<u8>(&bytes, "main"), 200);
     }
 
     #[test]
@@ -1554,27 +1702,38 @@ mod stage1 {
         // The bounds are computed FROM THE WIDTH PARAMETER, not a per-named-type table — so an ODD,
         // non-machine width works: `(UInt 7)` max = 2^7-1 = 127, `(UInt 24)` max = 2^24-1 = 16777215,
         // `(UInt 48)` max = 2^48-1 = 281474976710655. These pin that nothing assumes a power-of-two
-        // machine width. (7/24 lift as u32; 48 as u64.)
-        let run_u32 = |body: &str| {
-            let src = format!("(module m (def (main) {body}) (export main))");
-            let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-            run_returns::<u32>(&bytes, "main")
-        };
-        assert_eq!(run_u32("(. (UInt 7) max)"), 127);
-        assert_eq!(run_u32("(. (UInt 24) max)"), 16777215);
-        let src = "(module m (def (main) (. (UInt 48) max)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u64>(&bytes, "main"), 281474976710655);
+        // machine width. A non-aliased width is INTERNAL-ONLY (no boundary representation — R2), so the
+        // bound is asserted at the FOLD (the arbitrary-precision `ConstInt`), not by running it across
+        // the component edge. (`arbitrary-width value cannot be exported` is pinned separately below.)
+        assert_eq!(fold_const_u128("(. (UInt 7) max)"), 127);
+        assert_eq!(fold_const_u128("(. (UInt 24) max)"), 16777215);
+        assert_eq!(fold_const_u128("(. (UInt 48) max)"), 281474976710655);
     }
 
     #[test]
     fn an_odd_width_annotation_range_checks() {
         // `(: 127 (UInt 7))` fits (2^7-1=127); `(: 128 (UInt 7))` does NOT — the range check is
-        // width-exact, not rounded to a machine width.
-        let src = "(module m (def (main) (: 127 (UInt 7))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u32>(&bytes, "main"), 127);
+        // width-exact, not rounded to a machine width. The fit case is checked at the FOLD (a `(UInt 7)`
+        // is internal-only, no boundary form); the overflow case rejects (CDZ0302) before any boundary.
+        assert_eq!(fold_const_u128("(: 127 (UInt 7))"), 127);
         assert!(expect_decline("(: 128 (UInt 7))").contains("does not fit"));
+    }
+
+    #[test]
+    fn a_non_aliased_width_cannot_cross_the_boundary() {
+        // A `(UInt 48)` is a first-class INTERNAL type — its bounds fold and its arithmetic is correct —
+        // but only the aliased widths (8/16/32/64) have a component boundary representation. Exporting a
+        // value of a non-aliased width DECLINES (naming the width), rather than crossing as a misreported
+        // wider primitive. This is the safety property: to expose 48-bit data you take a `u64` at the
+        // boundary and convert explicitly, so the host never sees an ambiguous "48 bits in a u64".
+        let src = "(module m (def (main) (. (UInt 48) max)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a non-aliased width cannot be exported")
+            .message;
+        assert!(
+            msg.contains("boundary") || msg.contains("aliased"),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -1609,14 +1768,14 @@ mod stage1 {
     #[test]
     fn a_named_width_and_the_constructor_denote_the_same_module() {
         // `Int8` and `(Int 8)` are the SAME module — both project a bound of the same value and type.
-        // (No per-name special case; both go through the width-generic builder.) Both lift as s32.
-        let run_i32 = |body: &str| {
+        // (No per-name special case; both go through the width-generic builder.) Both cross as s8.
+        let run_i8 = |body: &str| {
             let src = format!("(module m (def (main) {body}) (export main))");
             let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-            run_returns::<i32>(&bytes, "main")
+            run_returns::<i8>(&bytes, "main")
         };
-        assert_eq!(run_i32("(. Int8 max)"), run_i32("(. (Int 8) max)"));
-        assert_eq!(run_i32("(. Int8 min)"), run_i32("(. (Int 8) min)"));
+        assert_eq!(run_i8("(. Int8 max)"), run_i8("(. (Int 8) max)"));
+        assert_eq!(run_i8("(. Int8 min)"), run_i8("(. (Int 8) min)"));
     }
 
     #[test]
@@ -1665,18 +1824,18 @@ mod stage1 {
     #[test]
     fn int_ctor_min_of_a_smaller_width() {
         // `(. (Int 8) min)` = -128 — the module `Int` builds is SPECIALIZED to the width argument, so a
-        // different width yields that width's bounds. An Int8 value lifts at the boundary as s32.
+        // different width yields that width's bounds. An Int8 value crosses the boundary as s8.
         let src = "(module m (def (main) (. (Int 8) min)) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i32>(&bytes, "main"), -128);
+        assert_eq!(run_returns::<i8>(&bytes, "main"), -128);
     }
 
     #[test]
     fn int_ctor_max_of_a_smaller_width() {
-        // `(. (Int 8) max)` = 127 (lifts as s32).
+        // `(. (Int 8) max)` = 127 (crosses as s8).
         let src = "(module m (def (main) (. (Int 8) max)) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i32>(&bytes, "main"), 127);
+        assert_eq!(run_returns::<i8>(&bytes, "main"), 127);
     }
 
     // ── functions: a lambda application β-reduces (folds/monomorphizes) ──────────────────────────
