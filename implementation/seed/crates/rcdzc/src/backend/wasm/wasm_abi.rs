@@ -20,6 +20,8 @@ pub mod op {
     pub const END: u8 = 0x0b;
     pub const LOCAL_GET: u8 = 0x20;
     pub const LOCAL_SET: u8 = 0x21;
+    pub const GLOBAL_GET: u8 = 0x23;
+    pub const GLOBAL_SET: u8 = 0x24;
     pub const CALL: u8 = 0x10;
     pub const UNREACHABLE: u8 = 0x00;
     pub const I32_ADD: u8 = 0x6a;
@@ -108,8 +110,12 @@ pub const COMP_F64: u8 = 0x75;
 pub const CORE_SEC_TYPE: u8 = 0x01;
 /// core FUNCTION section id.
 pub const CORE_SEC_FUNCTION: u8 = 0x03;
+/// core GLOBAL section id (a build-once static compound's handle global).
+pub const CORE_SEC_GLOBAL: u8 = 0x06;
 /// core EXPORT section id.
 pub const CORE_SEC_EXPORT: u8 = 0x07;
+/// core START section id (the init function that builds each static compound once).
+pub const CORE_SEC_START: u8 = 0x08;
 /// core CODE section id.
 pub const CORE_SEC_CODE: u8 = 0x0a;
 /// component CORE-MODULE section id.

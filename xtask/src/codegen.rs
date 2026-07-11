@@ -564,6 +564,8 @@ mod wasm_abi {
             op("END", Instruction::End),
             op("LOCAL_GET", Instruction::LocalGet(0)),
             op("LOCAL_SET", Instruction::LocalSet(0)),
+            op("GLOBAL_GET", Instruction::GlobalGet(0)),
+            op("GLOBAL_SET", Instruction::GlobalSet(0)),
             op("CALL", Instruction::Call(0)),
             op("UNREACHABLE", Instruction::Unreachable),
             op("I32_ADD", Instruction::I32Add),
@@ -656,9 +658,19 @@ mod wasm_abi {
                 SectionId::Function,
             ),
             core_sec(
+                "CORE_SEC_GLOBAL",
+                "core GLOBAL section id (a build-once static compound's handle global).",
+                SectionId::Global,
+            ),
+            core_sec(
                 "CORE_SEC_EXPORT",
                 "core EXPORT section id.",
                 SectionId::Export,
+            ),
+            core_sec(
+                "CORE_SEC_START",
+                "core START section id (the init function that builds each static compound once).",
+                SectionId::Start,
             ),
             core_sec("CORE_SEC_CODE", "core CODE section id.", SectionId::Code),
             comp_sec(

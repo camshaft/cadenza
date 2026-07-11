@@ -69,6 +69,14 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::LOCAL_SET);
             uleb128(*idx as u64, out);
         }
+        Lir::GlobalGet(idx) => {
+            out.push(op::GLOBAL_GET);
+            uleb128(*idx as u64, out);
+        }
+        Lir::GlobalSet(idx) => {
+            out.push(op::GLOBAL_SET);
+            uleb128(*idx as u64, out);
+        }
         Lir::Call(func) => {
             out.push(op::CALL);
             uleb128(*func as u64, out);

@@ -63,6 +63,13 @@ pub enum Lir {
     /// `local.set I` — pop the stack top into local `I`. Used by the checked-arithmetic guard to stash
     /// operands and the result in scratch locals.
     LocalSet(u32),
+    /// `global.get G` — read module global `G` (an i32 handle). A build-once static compound (§2d) is
+    /// stored in a mutable global by the init/start function; every use reads it here (then `dup`s to
+    /// retain — the global is a persistent root, so the consumer's `drop` balances the retained `dup`).
+    GlobalGet(u32),
+    /// `global.set G` — store the stack top into module global `G`. Emitted only by the init function,
+    /// which builds each static compound once and stows its handle in its global.
+    GlobalSet(u32),
     /// `call F` — call wasm function index `F` (its arguments already pushed in order). The index is a
     /// definition's ABSOLUTE emission position (`layout.abs`), resolved at selection.
     Call(u32),
