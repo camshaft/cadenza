@@ -15,15 +15,19 @@ pub enum Format {
     Sexpr,
     /// The keyword-based ML text surface.
     Ml,
+    /// A readable debug view of the arena structure — OUTPUT ONLY (not a re-readable surface). Shows
+    /// the raw shape the compiler sees, for inspecting a binary AST at a glance.
+    Debug,
 }
 
 impl Format {
-    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`). Case-insensitive.
+    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `debug`). Case-insensitive.
     pub fn parse(name: &str) -> Option<Format> {
         match name.to_ascii_lowercase().as_str() {
             "binary" | "bin" => Some(Format::Binary),
             "sexpr" | "sexp" | "s" => Some(Format::Sexpr),
             "ml" => Some(Format::Ml),
+            "debug" => Some(Format::Debug),
             _ => None,
         }
     }
@@ -33,6 +37,7 @@ impl Format {
             Format::Binary => "binary",
             Format::Sexpr => "sexpr",
             Format::Ml => "ml",
+            Format::Debug => "debug",
         }
     }
 }
@@ -73,6 +78,8 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
             }
             Ok(parsed.arenas)
         }
+        // `debug` is an output-only view — there is no reader from it back to arenas.
+        Format::Debug => Err(ConvertError("`debug` is an output-only format, not an input".into())),
     }
 }
 
@@ -100,6 +107,7 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         Format::Binary => Ok(codec::encode(arenas)),
         Format::Sexpr => Ok(sexpr::print(arenas).into_bytes()),
         Format::Ml => Ok(crate::printer::print(arenas, opts.width).into_bytes()),
+        Format::Debug => Ok(crate::debug::print(arenas).into_bytes()),
     }
 }
 
