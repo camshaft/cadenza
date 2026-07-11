@@ -9,12 +9,51 @@
 
 use crate::backend::wasm::encode::{op, section, uleb_bytes, uleb128, wasm_vec};
 use crate::backend::wasm::lir::{Lir, ValType, comp_valtype_of, valtype_of};
+use crate::backend::wasm::runtime_abi::{CoreValType, RtOp};
 use crate::backend::wasm::select::SelectedFunc;
 use crate::layout::Layout;
 use crate::ty::Ty;
 
 /// The `\0asm` version-1 core-module preamble.
 const CORE_MAGIC: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+
+/// The wasm core valtype byte for a generated-ABI `CoreValType` (i32=0x7F, i64=0x7E, f64=0x7C). The
+/// runtime-import functypes use these; the backend's own `ValType` covers only i32/i64, so this is the
+/// one place f64 (a boxed float operand) gets a byte.
+fn core_valtype_byte(c: CoreValType) -> u8 {
+    match c {
+        CoreValType::I32 => 0x7F,
+        CoreValType::I64 => 0x7E,
+        CoreValType::F64 => 0x7C,
+    }
+}
+
+/// The core functype `0x60 <params-vec> <results-vec>` of a runtime import op (from its generated
+/// signature). A runtime op returns at most one core value; `dup`/`drop` return none.
+fn import_functype(o: &RtOp) -> Vec<u8> {
+    let mut out = vec![0x60];
+    let params: Vec<u8> = o.params.iter().map(|&c| core_valtype_byte(c)).collect();
+    out.extend_from_slice(&wasm_vec(params.len(), &params));
+    match o.result {
+        Some(c) => out.extend_from_slice(&wasm_vec(1, &[core_valtype_byte(c)])),
+        None => out.extend_from_slice(&wasm_vec(0, &[])),
+    }
+    out
+}
+
+/// One core import item: `<mod-len><mod> <name-len><name> 00 <typeidx>` — importing a func (desc kind
+/// `0x00`) of the given type index from module `"heap"` (the module name the component's threaded
+/// core-instance is bound under). The runtime resolves the op by its `name`.
+fn import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
+    const HEAP_MODULE: &str = "heap";
+    let mut item = uleb_bytes(HEAP_MODULE.len() as u64);
+    item.extend_from_slice(HEAP_MODULE.as_bytes());
+    item.extend_from_slice(&uleb_bytes(op_name.len() as u64));
+    item.extend_from_slice(op_name.as_bytes());
+    item.push(0x00); // import desc: func
+    uleb128(type_idx as u64, &mut item);
+    item
+}
 
 /// Serialize one flat instruction, appending its bytes to `out`. Exhaustive over `Lir`.
 fn instr(i: &Lir, out: &mut Vec<u8>) {
@@ -139,27 +178,55 @@ fn functype(f: &SelectedFunc) -> Result<Vec<u8>, String> {
 }
 
 /// Assemble the embedded core module for a module's selected functions. `funcs[k]` is the function at
-/// emission position `k` (already in the layout's order), exported under `export_names[k]` when it is
-/// a boundary function. The export section names every boundary function by its absolute core index.
-pub fn core_module(funcs: &[SelectedFunc], layout: &Layout) -> Result<Vec<u8>, String> {
+/// emission position `k` (already in the layout's order). `imports` is the program's per-program set of
+/// runtime ops (ordered — the same order `layout` numbered them), imported from module `"heap"` at core
+/// func indices `0..imports.len()`; the program's own DEFINED functions therefore start at core index
+/// `imports.len()`, and the export section (and every `Lir::Call`, via `layout.abs`) account for that
+/// shift. An empty `imports` emits no import section and no shift — byte-identical to a runtime-free
+/// program (`component-abi.md` v3 migration: a program importing nothing crosses as under v2).
+pub fn core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
     let n = funcs.len();
+    let import_count = imports.len();
 
-    // Type section: one functype per function, in emission order.
+    // Type section: the IMPORT functypes first (type indices `0..import_count`), then one functype per
+    // defined function (type indices `import_count..import_count+n`). The type index space is separate
+    // from the function index space, but numbering imports' types first keeps a defined func's type
+    // index equal to `import_count + its emission position`, which the function section references.
     let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
-    let type_sec = section(1, &wasm_vec(n, &type_items));
+    let type_sec = section(1, &wasm_vec(import_count + n, &type_items));
 
-    // Function section: func i uses type i (1:1).
+    // Import section (id 2) — one func import per runtime op, in order, from module `"heap"`. Occupies
+    // core FUNCTION indices `0..import_count`. Omitted entirely when there are no imports.
+    let import_sec = if import_count == 0 {
+        Vec::new()
+    } else {
+        let mut import_items = Vec::new();
+        for (i, o) in imports.iter().enumerate() {
+            import_items.extend_from_slice(&import_item(o.name, i as u32));
+        }
+        section(2, &wasm_vec(import_count, &import_items))
+    };
+
+    // Function section: defined func `i` (function index `import_count + i`) uses type index
+    // `import_count + i` (the import functypes came first).
     let mut func_items = Vec::new();
     for i in 0..n {
-        uleb128(i as u64, &mut func_items);
+        uleb128((import_count + i) as u64, &mut func_items);
     }
     let func_sec = section(3, &wasm_vec(n, &func_items));
 
     // Export section: export every boundary function under its verbatim name, by its absolute core
-    // index (its position in the layout's emission order).
+    // function index (`layout.abs`, which already includes the import shift).
     let mut export_items = Vec::new();
     for e in &layout.exports {
         let abs = layout.abs(e.def).ok_or_else(|| {
@@ -186,6 +253,7 @@ pub fn core_module(funcs: &[SelectedFunc], layout: &Layout) -> Result<Vec<u8>, S
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&code_sec);

@@ -49,8 +49,13 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         funcs.push(select_function(db, body, &params, layout)?);
     }
 
+    // The per-program runtime imports (ordered as `layout` numbered them). Empty until a `Core`
+    // compound op lowers to a heap call (value-heap H2 computes the used-set); an empty set means no
+    // import section and no index shift — byte-identical to a runtime-free program.
+    let imports: Vec<&crate::backend::wasm::runtime_abi::RtOp> = Vec::new();
+
     // Serialize the embedded core module (multi-export core module, functions in emission order).
-    let core = serialize::core_module(&funcs, layout).map_err(Reject::decline)?;
+    let core = serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?;
 
     // Build the component-boundary export list (each export's parameter + result valtypes) and
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).

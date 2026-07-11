@@ -344,6 +344,69 @@ fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
     assert_eq!(ours, oracle, "narrow-primitive envelope mismatch");
 }
 
+/// Value-heap H1a: a core module that IMPORTS a runtime op (`heap.arr-alloc`) is byte-identical to the
+/// `wasm-encoder` oracle — the per-program import section + the function-index SHIFT (the imported func
+/// is index 0, so the program's own exported func is index 1). One import, one nullary `() -> i64`
+/// export. This is the byte anchor for the import machinery before any `Core` compound op drives it.
+#[test]
+fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::backend::wasm::runtime_abi::OPS;
+    use crate::backend::wasm::select::SelectedFunc;
+    use crate::backend::wasm::serialize::core_module;
+    use crate::layout::{ExportPlan, Layout};
+    use crate::ty::Ty;
+
+    // One exported nullary `() -> i64` function returning `42`. With one import, it is DEFINED func
+    // index 1 (import `arr-alloc` is index 0) — `import_base = 1` in the layout makes `abs` report 1.
+    let func = SelectedFunc {
+        params: vec![],
+        ret: Ty::int64(),
+        code: vec![Lir::ConstI64(42)],
+        declared: vec![],
+    };
+    let layout = Layout {
+        exports: vec![ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: Ty::int64(),
+        }],
+        order: vec![0],
+        import_base: 1,
+    };
+    let ours = core_module(&[func], &[OPS.arr_alloc], &layout).expect("core module");
+
+    // The oracle: a core module importing `heap."arr-alloc" : (i32) -> i32`, then one defined
+    // `() -> i64` func (function index 1) exported as `main`, returning 42.
+    let oracle = {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // type 0: arr-alloc
+        types.ty().function(vec![], vec![ValType::I64]); // type 1: main
+        m.section(&types);
+        let mut imports = ImportSection::new();
+        imports.import("heap", "arr-alloc", EntityType::Function(0));
+        m.section(&imports);
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // defined func (index 1) uses type 1
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("main", ExportKind::Func, 1); // export the DEFINED func at index 1
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut f = Function::new(vec![]);
+        f.instruction(&Instruction::I64Const(42));
+        f.instruction(&Instruction::End);
+        code.function(&f);
+        m.section(&code);
+        m.finish()
+    };
+    assert_eq!(ours, oracle, "core module with a runtime import mismatch");
+}
+
 // ── the behavior run (wasmtime) ────────────────────────────────────────────────────────────────
 
 /// A component-boundary result type a behavior test can read back — one method decoding a wasmtime
