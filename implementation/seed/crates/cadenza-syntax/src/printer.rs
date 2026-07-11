@@ -353,7 +353,7 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.doc.word(", ");
                 }
-                self.expr(p, 0);
+                self.print_param(p);
             }
         }
         self.doc.word(") =>");
@@ -394,12 +394,28 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.doc.word(", ");
                 }
-                self.expr(p, 0);
+                self.print_param(p);
             }
             self.doc.word(") =");
         }
         self.body_after_eq(body);
         self.doc.end();
+    }
+
+    /// Print a parameter binder. A type-annotated binder `(: name Type)` prints as `name: Type`;
+    /// a plain binder prints as itself. (Any other shape in parameter position — it shouldn't
+    /// occur — falls back to the ordinary expression printer.)
+    fn print_param(&mut self, p: StructId) {
+        if let Some(t) = self.a.as_form(p, ":")
+            && t.len() == 2
+        {
+            let (name, ty) = (t[0], t[1]);
+            self.expr(name, 0);
+            self.doc.word(": ");
+            self.expr(ty, 0);
+        } else {
+            self.expr(p, 0);
+        }
     }
 
     /// `(doc "text")` -> `/// text` (a documentation line). Verbatim text after the `///`.
@@ -852,6 +868,20 @@ mod tests {
         );
         assert_eq!(assert_roundtrip("fn main() = 42", 80), "fn main() = 42");
         assert_eq!(assert_roundtrip("fn(x) => x * 2", 80), "fn(x) => x * 2");
+    }
+
+    #[test]
+    fn type_annotated_parameter() {
+        // A `(: name Type)` binder in a signature prints as `name: Type` and round-trips.
+        assert_eq!(
+            assert_roundtrip("fn annotated(a: Int64, b) = a + b", 80),
+            "fn annotated(a: Int64, b) = a + b"
+        );
+        // and in a lambda parameter list
+        assert_eq!(assert_roundtrip("fn(x: Bool) => x", 80), "fn(x: Bool) => x");
+        // the underlying AST is the binder-position annotation `(: a Int64)`
+        let a = sexpr::read("(def (f (: a Int64)) a)").unwrap();
+        assert_eq!(print(&a, 80), "fn f(a: Int64) = a");
     }
 
     #[test]

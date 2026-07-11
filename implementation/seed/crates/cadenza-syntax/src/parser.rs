@@ -575,7 +575,7 @@ impl<'a> Parser<'a> {
         self.expect(Kind::LParen, "`(`");
         if !self.at(Kind::RParen) {
             loop {
-                sig.push(self.binder());
+                sig.push(self.param());
                 if self.at(Kind::Comma) {
                     self.bump();
                 } else {
@@ -624,7 +624,7 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         if !self.at(Kind::RParen) {
             loop {
-                params.push(self.binder());
+                params.push(self.param());
                 if self.at(Kind::Comma) {
                     self.bump();
                 } else {
@@ -937,6 +937,27 @@ impl<'a> Parser<'a> {
                 self.error("expected a name");
                 self.error_node(span)
             }
+        }
+    }
+
+    /// A parameter binder, optionally type-annotated: `name` or `name: Type`. An annotated parameter
+    /// lowers to the binder-position annotation form `(: name Type)` — the same shape the s-expr
+    /// surface writes — so the two surfaces agree. The `Type` is parsed as a postfix expression
+    /// (a name, a dotted/qualified name, or an application like `Option(Int64)`), which covers the
+    /// type forms a parameter annotation uses.
+    fn param(&mut self) -> StructId {
+        let start = self.cur_span();
+        let binder = self.binder();
+        if self.at(Kind::Colon) {
+            self.bump(); // `:`
+            let colon = self.name(":", start);
+            let ty_start = self.cur_span();
+            let ty = self.prefix();
+            let ty = self.postfix(ty, ty_start);
+            let span = start.merge(self.prev_span());
+            self.list(vec![colon, binder, ty], span)
+        } else {
+            binder
         }
     }
 
