@@ -288,6 +288,8 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             }
         }
         Resolved::Member { operand, .. } => collect_callees(db, operand, out),
+        // An annotation is transparent — a call inside `(: (f x) T)` is a real edge of this body.
+        Resolved::Annot { expr, .. } => collect_callees(db, expr, out),
         // A nested `fn` is a separate node — do NOT descend (its calls are its own edges). A bare ref,
         // a leaf, a prim, a param, a type value, a poison have no callees of THIS body.
         Resolved::Lambda { .. }

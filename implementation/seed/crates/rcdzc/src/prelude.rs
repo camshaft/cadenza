@@ -185,12 +185,23 @@ fn comparison_type_lambda(ast: &mut Arenas) -> StructId {
 
 /// Append the `Int64` module as a genuine `(record …)` form and return its root occurrence, so
 /// `resolve` classifies it via the same `resolve_record` path a program record takes. It carries
-/// EVERY witnessed field: `max`/`min` as realized constants, and the arithmetic/conversion operations
-/// as `unrealized` fields (each declines when projected). No field is absent, so there is no
-/// open-module case.
+/// a `(meta t)` — its TYPE-VALUE, the signed-64 integer — so `Int64` used IN TYPE POSITION (`(: e
+/// Int64)`) reduces to `Ty::Int` by the same `typeval_of` projection a ground type takes; plus EVERY
+/// witnessed field: `max`/`min` as realized constants, and the arithmetic/conversion operations as
+/// `unrealized` fields (each declines when projected). No field is absent, so there is no open-module
+/// case. `Int64` is thus the SAME module `(Int 64)` reduces to — a type value AND a bounds module.
 fn int64_record(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Name("record".to_string()));
+    // `(meta t)` = the type expression `(Int 64)`, reduced to the signed-64 type-value by the
+    // evaluator's `typeval_of` (it resolves `Int` to the ctor and applies it). This is what makes
+    // `Int64` usable as a TYPE, not only as a field-bearing module.
+    let int64_ty_expr = {
+        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+        let w = push_atom(ast, Leaf::Int { value: IntValue::from_i64(64), radix: Radix::Dec });
+        push_list(ast, vec![int, w])
+    };
     let mut fields = vec![
+        meta_field(ast, "t", int64_ty_expr),
         int_field(ast, "max", i64::MAX),
         int_field(ast, "min", i64::MIN),
     ];

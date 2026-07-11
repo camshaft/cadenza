@@ -39,6 +39,7 @@ pass	a repeated let binding shadows the earlier one for what follows
 pass	a runtime conditional selects its then-branch when the runtime condition holds
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
+pass	a type annotation consistent with the value is transparent
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
@@ -486,7 +487,6 @@ todo	a tuple payload extracted through a helper return must not be rejected as a
 todo	a tuple payload returned through a helper from a built-in Option must not trap
 todo	a tuple with a runtime element is returned as a program result
 todo	a tuple with every element computed at run time is returned as a result
-todo	a type annotation consistent with the value is transparent
 todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer

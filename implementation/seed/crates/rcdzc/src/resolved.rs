@@ -219,6 +219,17 @@ pub enum Resolved {
     /// (`prelude-and-resolution.md` §A Form Whose Head Is Not A Grammar Name Is Dispatched By The Kind
     /// Of Value Its Head Resolves To).
     Apply { head: StructId, args: Vec<StructId> },
+    /// A TYPE ANNOTATION `(: expr ty_expr)` — the value of `expr`, with its type CONSTRAINED to the
+    /// type `ty_expr` denotes. The annotation is transparent to the value: `(: e T)` evaluates and
+    /// lowers exactly as `e` (the annotation ERASES). Its force is on inference — the type `ty_expr`
+    /// reduces to is unified into `expr`'s type, so `(: 5 Int64)` pins the literal's width and `(: true
+    /// Int64)` is a conflicting-use rejection (CDZ0203). This is what disambiguates an otherwise-
+    /// ambiguous type (an integer parameter with no other constraint), which is why it must exist
+    /// before a runtime parameter can be given a definite machine width. Both children are AST
+    /// occurrences: `expr` the annotated value, `ty_expr` the type EXPRESSION — reduced to a `Ty` by
+    /// the evaluator downstream (`typeval_of`), NOT here, since resolve is a pure per-node classify and
+    /// reducing a type constructor like `(Int 8)` needs the evaluator.
+    Annot { expr: StructId, ty_expr: StructId },
     /// A first-class TYPE value. A type is an ordinary value (mixable, returnable) — using `Bool` in
     /// type position projects a record's `(meta t)` field, which holds one of these; a type
     /// constructor applied (`(Int a)`, `(-> A B)`) reduces through the one evaluator to one of these.

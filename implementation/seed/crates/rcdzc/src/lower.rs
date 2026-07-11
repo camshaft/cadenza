@@ -46,6 +46,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core — follow the ref (the `let` binding folds away).
         Resolved::Ref { value } => core_of(db, value),
+        // A type annotation ERASES to its expression's core — `(: e T)` runs exactly as `e` (the
+        // annotation's force is entirely on inference; it has no runtime trace).
+        Resolved::Annot { expr, .. } => core_of(db, expr),
         // A `let`'s value is its body's value (the bindings are compile-time structure).
         Resolved::Let { body, .. } => core_of(db, body),
         // A record value — kept as a compound; folds away only when a member reads a field of it.

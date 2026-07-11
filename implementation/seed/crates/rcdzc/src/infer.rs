@@ -96,6 +96,20 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // constructor's application yields a type value, typed `Any` at the value level. `apply_type`
         // returns the result type (unification FAULTS are surfaced separately by `type_errors`).
         Resolved::Apply { head, args } => apply_type(db, head, &args),
+        // A type annotation `(: expr T)`: the node's type is the annotation type `T`, with `expr`'s
+        // type UNIFIED into it — so a deferred width in `expr` (a bare literal) is GROUNDED by `T`
+        // (`(: 5 Int64)` types as `Int64`), and a genuine conflict (`(: true Int64)`) is a fault the
+        // `type_errors` side reports (here we return `T`, the asserted type, so the value column stays
+        // definite). If `T` is not a type expression this stage reduces, fall back to `expr`'s type.
+        Resolved::Annot { expr, ty_expr } => match crate::eval::typeval_of(db, ty_expr) {
+            Some(annot_ty) => {
+                let expr_ty = type_of(db, expr);
+                let mut subst = Subst::new();
+                let _ = crate::unify::unify(&mut subst, &annot_ty, &expr_ty);
+                subst.apply(&annot_ty)
+            }
+            None => type_of(db, expr),
+        },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
         // A lambda parameter used as a value — a formal whose type is being solved. Milestone A types
@@ -300,6 +314,28 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             for &arg in &args {
                 collect(db, arg, out);
             }
+        }
+        // A type annotation `(: expr T)`: UNIFY the asserted type `T` against `expr`'s type. A failure
+        // is the conflicting-use type error (`(: true Int64)` — Bool asserted as Int64 → CDZ0203); a
+        // success grounds a deferred width harmlessly. If `T` is not a type this stage reduces, decline
+        // the CHECK (no false reject) — the expr still type-checks on its own via the descent below.
+        Resolved::Annot { expr, ty_expr } => {
+            if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
+                let expr_ty = type_of(db, expr);
+                let mut subst = Subst::new();
+                if let Err(reject) = crate::unify::unify(&mut subst, &annot_ty, &expr_ty) {
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "annotation type {} does not match value type {}",
+                            annot_ty.render_name(),
+                            expr_ty.render_name()
+                        ),
+                    ));
+                    let _ = reject; // the annotation's own message supersedes the raw unify message.
+                }
+            }
+            collect(db, expr, out);
         }
         // A scope-error poison (an unbound name) is UNCONDITIONAL well-formedness — report it here,
         // where the walk descends into EVERY position (including an `if`'s branches), so an unbound

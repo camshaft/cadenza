@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 /// for a bare atom, a name looked up).
 const GRAMMAR: &[&str] = &[
     "let", "if", "record", ".", "module", "def", "export", "do", "unrealized", "intrinsic", "meta",
-    "fn", "typeval",
+    "fn", "typeval", ":",
 ];
 
 /// The resolved form of the node at `id`, filling the column on demand (memoized). The query the
@@ -95,6 +95,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("record") => resolve_record(db, id),
                 Some(".") => resolve_member(db, id),
                 Some("fn") => resolve_lambda(db, id),
+                Some(":") => resolve_annot(db, id),
                 // `(typeval PAYLOAD)` — a built type-value node the evaluator produced; decode the
                 // payload back to the `Ty` it carries. This is the dual of `eval::encode_typeval`.
                 Some("typeval") => match db.ast.as_form(id, "typeval").and_then(|t| t.first()) {
@@ -497,6 +498,22 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
         None => return Resolved::Poison(Reject::decline("a computed member key is not yet supported")),
     };
     Resolved::Member { operand, key }
+}
+
+/// Resolve `(: expr ty_expr)` — a type annotation. Both children stay AST occurrences: `expr` is the
+/// annotated value, `ty_expr` the type expression (reduced to a `Ty` downstream by the evaluator, not
+/// here — resolve is a pure per-node classify, and reducing a type constructor like `(Int 8)` needs
+/// `&mut Db`). The annotation is transparent to the value and constrains the type; that split is
+/// realized by `infer` (unify) and `lower` (erase).
+fn resolve_annot(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, ":").unwrap_or(&[]);
+    if tail.len() != 2 {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "a type annotation takes an expression and a type",
+        ));
+    }
+    Resolved::Annot { expr: tail[0], ty_expr: tail[1] }
 }
 
 #[cfg(test)]

@@ -653,6 +653,47 @@ mod stage1 {
         );
     }
 
+    // ── type annotations `(: e T)`: transparent to the value, constrains the type ────────────────
+
+    #[test]
+    fn an_annotation_matching_the_value_is_transparent() {
+        // `(: 5 Int64)` runs exactly as `5` — the annotation erases; 5 is already Int64.
+        assert_eq!(run_main("(: 5 Int64)"), 5);
+    }
+
+    #[test]
+    fn an_annotation_is_transparent_around_an_expression() {
+        // The annotation wraps any expression, not just a literal — `(: (+ 2 3) Int64)` = 5.
+        assert_eq!(run_main("(: (+ 2 3) Int64)"), 5);
+    }
+
+    #[test]
+    fn an_annotation_grounds_a_width_via_int_ctor() {
+        // The type side is a full type EXPRESSION reduced by the evaluator: `(: 5 (Int 64))` uses the
+        // `(Int 64)` constructor application as the annotation type. Runs as 5.
+        assert_eq!(run_main("(: 5 (Int 64))"), 5);
+    }
+
+    #[test]
+    fn a_bool_annotation_on_a_bool_is_transparent() {
+        // `(: true Bool)` — the annotation matches; the comparison-style Bool boundary returns it.
+        assert!(run_main_bool("(: true Bool)"));
+    }
+
+    #[test]
+    fn an_annotation_conflicting_with_the_value_rejects() {
+        // `(: true Int64)` — Bool asserted as Int64. Unifying the annotation type against the value's
+        // type FAILS → CDZ0203 (the disambiguation force turned against a genuine conflict).
+        let msg = expect_decline("(: true Int64)");
+        assert!(msg.contains("does not match") || msg.contains("Int") || msg.contains("Bool"), "got: {msg}");
+    }
+
+    #[test]
+    fn an_annotation_inside_arithmetic_is_transparent() {
+        // `(+ (: 2 Int64) 3)` — the annotation on an operand erases; the arithmetic folds to 5.
+        assert_eq!(run_main("(+ (: 2 Int64) 3)"), 5);
+    }
+
     // ── first-class types: `(Int W)` builds a width-specialized MODULE via the one Meta.apply path ──
 
     #[test]
