@@ -57,9 +57,12 @@ pub struct Export {
     pub def: Option<usize>,
 }
 
-/// The backstop β-reduction nesting depth. The active-set catches recursion precisely; this bounds
-/// any divergence it misses. Generous so a deep-but-terminating fold is never falsely bounded.
-pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 512;
+/// The bound on β-reduction nesting depth — a terminating fold bottoms out under it, a recursive
+/// function hits it and declines. Kept LOW for now (a recursive case reaches the decline after this
+/// many frames, and each frame appends arena nodes, so a high bound makes declining slow); no
+/// legitimate compile-time fold in the corpus nests remotely this deep. Raise it only if a real
+/// terminating fold is found to exceed it.
+pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 64;
 
 /// An RAII guard for one active β-reduction: holds the reduction depth bumped for its lifetime and
 /// decrements it on drop, so the depth exactly reflects the reductions currently on the stack. Held by
