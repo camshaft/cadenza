@@ -125,10 +125,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
         }
         Resolved::Poison(r) => Core::Poison(r),
-        // A lambda parameter used as a value has no runtime core yet (runtime closures deferred).
-        Resolved::Param { .. } => Core::Poison(Reject::decline(
-            "a lambda parameter has no runtime form yet (runtime closures not built)",
-        )),
+        // A parameter reference is a RUNTIME value — its value is unknown at compile time, so it lowers
+        // to a `Core::Param` the backend reads as a `local.get` of the parameter's slot. (A parameter
+        // only reaches lowering when its function body is emitted STANDALONE — an exported function; at
+        // a constant call site the param is substituted by the fold and never lowered as a param.)
+        Resolved::Param { binder } => Core::Param { binder },
         // A type value or a compile-time lambda is compile-time-only — no runtime core form (the
         // erasure fence forbids one reaching runtime), so lowering it as a runtime value declines.
         Resolved::TypeVal(_) | Resolved::Lambda { .. } => Core::Poison(Reject::decline(
@@ -265,10 +266,10 @@ fn checked_shr_i64(x: i64, count: i64) -> Option<i64> {
 }
 
 /// Lower a COMPARISON application (`< > <= >= =`). Folds two constant SCALARS (integers or booleans) to
-/// a `ConstBool` — a total ordering on the scalar's value. A compound or runtime operand DECLINES (I1
-/// is fold-only; structural comparison over the value heap, and runtime scalar comparison, arrive
-/// later) — the operator's type stays fully generic (`∀a. a → a → Bool`), only the fold's coverage is
-/// bounded. A poison operand propagates.
+/// a `ConstBool` — a total ordering on the scalar's value. A RUNTIME scalar operand (a function
+/// parameter) becomes a `Core::Compare` the backend emits as a machine comparison. A COMPOUND operand
+/// (a record/heap value) still declines — structural comparison over the value heap is a later stage.
+/// The operator's type stays fully generic (`∀a. a → a → Bool`). A poison operand propagates.
 fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(Reject::coded(
@@ -288,12 +289,32 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         },
         (Core::ConstBool(a), Core::ConstBool(b)) => Core::ConstBool(compare_ord(op, a.cmp(&b))),
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
-        // A compound (record/heap) or runtime operand — structural / runtime comparison is a later
-        // stage; decline cleanly rather than emit a wrong or trapping comparison.
-        _ => Core::Poison(Reject::decline(
-            "comparison of a compound or runtime value is not yet supported",
-        )),
+        // A non-constant operand: a runtime comparison IF both operands are scalars (integers or
+        // booleans, which have a machine representation the backend can compare); a compound operand
+        // still declines (heap-walk equality is a later stage).
+        _ => {
+            if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
+                Core::Compare {
+                    op,
+                    lhs: args[0],
+                    rhs: args[1],
+                }
+            } else {
+                Core::Poison(Reject::decline(
+                    "comparison of a compound value needs a heap walk (not yet built)",
+                ))
+            }
+        }
     }
+}
+
+/// Whether the node at `id` has a SCALAR solved type — an integer or a boolean, which occupies a
+/// machine slot the backend can compare or compute on directly (as opposed to a compound/heap value).
+fn is_scalar(db: &mut Db, id: StructId) -> bool {
+    matches!(
+        crate::infer::type_of(db, id),
+        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
+    )
 }
 
 /// Reduce an `Ordering` to the boolean the comparison `op` asks of it — the one place the relational

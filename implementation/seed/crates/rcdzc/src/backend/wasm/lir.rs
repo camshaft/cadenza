@@ -70,6 +70,21 @@ pub enum Lir {
     I32Add,
     I32Sub,
     I32Mul,
+    /// 64-bit integer comparisons leaving an i32 boolean. Signed variants (`_s`) for a signed integer;
+    /// equality (`eq`) is sign-agnostic. (Unsigned `_u` variants arrive with the widths/signedness
+    /// stage; the width-64 default integer is signed, so these cover it.)
+    I64Eq,
+    I64LtS,
+    I64GtS,
+    I64LeS,
+    I64GeS,
+    /// 32-bit integer comparisons leaving an i32 boolean — for a ≤32-bit integer OR a boolean operand
+    /// (a bool is an i32). Signed variants; `eq` is sign-agnostic.
+    I32Eq,
+    I32LtS,
+    I32GtS,
+    I32LeS,
+    I32GeS,
 }
 
 /// The wasm value type a value of solved type `ty` occupies inside a function body, or `None` for a

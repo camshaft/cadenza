@@ -45,15 +45,30 @@ pub enum Core {
         else_: StructId,
     },
     /// A runtime arithmetic operation on two operands (children by AST `StructId`). Present only when
-    /// the fold could NOT reduce the operation to a constant (an operand is not compile-time-known —
-    /// which in this increment means it declines, since there are no runtime integer operands yet
-    /// without functions). Constant arithmetic folds to `ConstInt`/`Poison` in `lower`. The machine op
+    /// the fold could NOT reduce the operation to a constant (an operand is not compile-time-known — a
+    /// FUNCTION PARAMETER). Constant arithmetic folds to `ConstInt`/`Poison` in `lower`. The machine op
     /// the backend emits is selected from the operands' solved width.
     Arith {
         op: Prim,
         lhs: StructId,
         rhs: StructId,
     },
+    /// A runtime comparison on two operands (children by AST `StructId`) — result is a `Bool` (an i32
+    /// at the machine level). Present only when the fold could not decide it (a runtime operand); two
+    /// constants fold to `ConstBool` in `lower`. The machine op is selected from the operands' width
+    /// and signedness.
+    Compare {
+        op: Prim,
+        lhs: StructId,
+        rhs: StructId,
+    },
+    /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
+    /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of
+    /// the parameter's slot. This is the runtime value a bare literal is not: a parameter's value is
+    /// unknown at compile time, so a `Param` reaching selection lowers to a local read rather than a
+    /// constant. (Only present when a function body is lowered STANDALONE — i.e. it is emitted as a real
+    /// wasm function, not inlined-and-folded at a constant call site.)
+    Param { binder: StructId },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }
