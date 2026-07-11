@@ -49,6 +49,62 @@ fn is_heap_type(ty: &Ty) -> bool {
     matches!(ty, Ty::Tuple(_) | Ty::Record(_))
 }
 
+/// Whether the reference to the `let` binding `binder` ESCAPES the node at `id` — i.e. its reference
+/// flows into a value that OUTLIVES the `let` (the returned result, an element of a constructed tuple,
+/// or a call argument — all CONSUMING positions), as opposed to being used only to BORROW (a
+/// `Core::Proj` operand: `arr-get` borrows and does not transfer ownership). An escaped binding must
+/// NOT be dropped — its ownership transfers to the consumer (ownership-transfer-on-return). This is a
+/// CONSERVATIVE analysis: any occurrence that is not provably a borrow is treated as an escape, so a
+/// value is never wrongly reclaimed (a false "escapes" only leaks in a case we do not yet emit; a false
+/// "does not escape" would be a use-after-free, which this avoids). `tail` marks whether `id` is in the
+/// body's TAIL (result) position — a bare `LocalRef` in tail position is the return, an escape.
+fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: bool) -> bool {
+    match core_of(db, id) {
+        // A reference to the binding: it escapes UNLESS this occurrence is a borrow (the operand of a
+        // `Proj`, which `arr-get`-borrows). `tail_borrowed` is set by the `Proj` arm below for its
+        // operand; every other occurrence (the result, a tuple element, a call arg) is consuming.
+        Core::LocalRef { binder: b } => b == binder && !tail_borrowed,
+        // A projection BORROWS its operand — so a `LocalRef` directly under a `Proj` does not escape
+        // through it. Recurse with the borrow flag set for the operand.
+        Core::Proj { operand, .. } => binding_escapes(db, operand, binder, true),
+        // A constructed tuple CONSUMES each element — a binding used as an element escapes into it.
+        Core::Tuple { elems } => elems.iter().any(|&e| binding_escapes(db, e, binder, false)),
+        // A call CONSUMES its arguments.
+        Core::Call { args, .. } => args.iter().any(|&a| binding_escapes(db, a, binder, false)),
+        // Control flow: the binding escapes if it escapes any reachable sub-position.
+        Core::If { cond, then_, else_ } => {
+            binding_escapes(db, cond, binder, false)
+                || binding_escapes(db, then_, binder, false)
+                || binding_escapes(db, else_, binder, false)
+        }
+        Core::Match { scrutinee, arms } => {
+            binding_escapes(db, scrutinee, binder, false)
+                || arms
+                    .iter()
+                    .any(|(_, b)| binding_escapes(db, *b, binder, false))
+        }
+        Core::Let { bindings, body } => {
+            bindings
+                .iter()
+                .any(|(_, v)| binding_escapes(db, *v, binder, false))
+                || binding_escapes(db, body, binder, false)
+        }
+        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+            binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
+        }
+        Core::Convert { operand, .. } => binding_escapes(db, operand, binder, false),
+        Core::Record { fields } => fields
+            .values()
+            .any(|&v| binding_escapes(db, v, binder, false)),
+        // Leaves reference no binding.
+        Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::Unit
+        | Core::Param { .. }
+        | Core::Poison(_) => false,
+    }
+}
+
 /// The runtime op that BOXES the node at `id` (a tuple element) into a u32 heap handle, by its solved
 /// scalar type: an integer → `box-int` (an i64 payload), a boolean → `box-bool`. A non-scalar element
 /// (a nested compound) is already a handle and would not be re-boxed — but H2b's tuples are scalars, so
@@ -372,11 +428,12 @@ fn emit(
         Core::Let { bindings, body } => {
             let mut extended = slots.clone();
             let mut floor = base;
-            // Track the (slot) of each HEAP-typed binding, to `drop` after the body (Perceus). A kept
-            // binding is always a genuine runtime value — a constant tuple folds and is never kept (H2c)
-            // — so every heap binding here is an owned allocation the program must release once its scope
-            // ends. (A scalar binding owns no heap cell → no drop.)
-            let mut heap_bindings: Vec<u32> = Vec::new();
+            // Track each HEAP-typed binding as `(binder, slot)`, to `drop` after the body UNLESS it
+            // escapes (Perceus). A kept binding is always a genuine runtime value — a constant tuple
+            // folds and is never kept (H2c) — so every heap binding here is an owned allocation whose
+            // reference is released once its scope ends, or transferred out if it escapes. (A scalar
+            // binding owns no heap cell → no drop.)
+            let mut heap_bindings: Vec<(StructId, u32)> = Vec::new();
             for (binder, value) in &bindings {
                 let slot = floor;
                 let ty = type_of(db, *binder);
@@ -403,22 +460,26 @@ fn emit(
                     *high = slot + 1;
                 }
                 if is_heap_type(&ty) {
-                    heap_bindings.push(slot);
+                    heap_bindings.push((*binder, slot));
                 }
                 extended.insert(*binder, slot);
                 floor = slot + 1;
             }
-            // The body computes its value (left on the stack). If it is a SCALAR — the H2b/H2d case, a
-            // projection summed to an integer — the tuple bindings are dead after it, so RECLAIM each:
-            // `local.get <slot> ; drop`. The body's result stays on top (drop consumes only its own
-            // operand). ⚠ A body that RETURNS a heap binding (escapes it) would need ownership transfer,
-            // not a drop — that path is the renderer's (a compound crossing out), not reached here (a
-            // returned compound declines at the boundary today), so dropping every heap binding is
-            // correct for every currently-emittable `let` body.
+            // The body computes its value (left on the stack). A heap binding is RECLAIMED
+            // (`local.get <slot>; drop`) only if it is DEAD after the body — used solely in BORROWING
+            // positions (a `Core::Proj` operand: `arr-get` borrows). A binding that ESCAPES — its
+            // reference flows into the RETURNED value: it IS the result (`(let ((t …)) t)`), or an
+            // element of a constructed tuple (`arr-set` CONSUMES it), or a call argument — is NOT
+            // dropped: its ownership transfers to the caller (the ownership-transfer-on-return rule of
+            // Perceus — `value-heap-runtime.md` §the ordering obligation). Dropping an escaped value
+            // would be a use-after-free / double-free; `binding_escapes` is conservative (any non-borrow
+            // use → escapes → keep), so we never drop a live value.
             emit(db, body, &extended, floor, high, scratch_ty, layout, out)?;
-            for &slot in &heap_bindings {
-                out.push(Lir::LocalGet(slot));
-                out.push(Lir::CallImport(OP_DROP));
+            for &(binder, slot) in &heap_bindings {
+                if !binding_escapes(db, body, binder, false) {
+                    out.push(Lir::LocalGet(slot));
+                    out.push(Lir::CallImport(OP_DROP));
+                }
             }
             Ok(())
         }

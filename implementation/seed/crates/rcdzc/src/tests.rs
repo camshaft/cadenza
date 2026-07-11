@@ -845,16 +845,126 @@ fn find_debug_runtime_wasm() -> Option<Vec<u8>> {
     (sha256_hex(&bytes) == DEBUG_RUNTIME_HASH).then_some(bytes)
 }
 
+/// A program COMPOSED with the value-heap runtime in ONE wasmtime store — the reusable harness for the
+/// heap behavior tests that need to (a) run a program export AND (b) call the runtime's OWN ops (read a
+/// returned handle's elements, or read `live-objects`) against the SAME store/allocator the program
+/// used. Instantiates the runtime once, forwards its heap funcs into the program's import (under the
+/// program's exact hashed name), and instantiates the program. `program` bytes must import the runtime.
+struct ComposedRuntime {
+    store: wasmtime::Store<()>,
+    program: wasmtime::component::Instance,
+    rt_instance: wasmtime::component::Instance,
+    heap_idx: wasmtime::component::ComponentExportIndex,
+}
+
+impl ComposedRuntime {
+    /// Compose `program_bytes` with `runtime_bytes`. Panics on any wiring failure (a test-only harness).
+    fn new(program_bytes: &[u8], runtime_bytes: &[u8]) -> ComposedRuntime {
+        use wasmtime::component::{Component, Linker};
+        use wasmtime::{Engine, Store};
+        let engine = Engine::default();
+        let program_component = Component::new(&engine, program_bytes).expect("program component");
+        let runtime_component = Component::new(&engine, runtime_bytes).expect("runtime component");
+        let mut store = Store::new(&engine, ());
+
+        let rt_linker: Linker<()> = Linker::new(&engine);
+        let rt_instance = rt_linker
+            .instantiate(&mut store, &runtime_component)
+            .expect("instantiate runtime");
+        let heap_idx = rt_instance
+            .get_export_index(&mut store, None, "cadenza:runtime/heap")
+            .expect("runtime exports heap");
+
+        let req = cdz_run::required_runtime(program_bytes)
+            .expect("valid")
+            .expect("program imports the runtime");
+        let mut linker: Linker<()> = Linker::new(&engine);
+        let heap_func_names = runtime_heap_func_names(&engine, &runtime_component);
+        let mut iface = linker.instance(&req.import_name).expect("linker instance");
+        for fname in &heap_func_names {
+            let fidx = rt_instance
+                .get_export_index(&mut store, Some(&heap_idx), fname)
+                .expect("heap func");
+            let f = rt_instance.get_func(&mut store, fidx).expect("func");
+            let fname = fname.clone();
+            iface
+                .func_new(&fname, move |mut ctx, params, results| {
+                    f.call(&mut ctx, params, results)?;
+                    f.post_return(&mut ctx)?;
+                    Ok(())
+                })
+                .expect("forward heap func");
+        }
+        let program = linker
+            .instantiate(&mut store, &program_component)
+            .expect("instantiate program");
+        ComposedRuntime {
+            store,
+            program,
+            rt_instance,
+            heap_idx,
+        }
+    }
+
+    /// Call the program export `name` with `args`, returning its single result value.
+    fn call(&mut self, name: &str, args: &[wasmtime::component::Val]) -> wasmtime::component::Val {
+        let func = self
+            .program
+            .get_func(&mut self.store, name)
+            .expect("export present");
+        let mut results = [wasmtime::component::Val::Bool(false)];
+        func.call(&mut self.store, args, &mut results)
+            .expect("call");
+        func.post_return(&mut self.store).expect("post_return");
+        results[0].clone()
+    }
+
+    /// Call a runtime HEAP op by name (e.g. `arr-get`, `get-int`, `arr-len`, `drop`) on the shared
+    /// runtime instance — how a test reads back a handle the program returned (the "display function"),
+    /// or releases it. Returns the op's single result, or `Val::Bool(false)` for a no-result op like
+    /// `drop` (the buffer is sized to the func's actual result count).
+    fn heap_call(
+        &mut self,
+        op: &str,
+        args: &[wasmtime::component::Val],
+    ) -> wasmtime::component::Val {
+        let idx = self
+            .rt_instance
+            .get_export_index(&mut self.store, Some(&self.heap_idx), op)
+            .unwrap_or_else(|| panic!("runtime exports `{op}`"));
+        let f = self
+            .rt_instance
+            .get_func(&mut self.store, idx)
+            .expect("heap func");
+        let mut results = vec![wasmtime::component::Val::Bool(false); f.results(&self.store).len()];
+        f.call(&mut self.store, args, &mut results)
+            .unwrap_or_else(|e| panic!("heap call `{op}`: {e}"));
+        let _ = f.post_return(&mut self.store);
+        results
+            .into_iter()
+            .next()
+            .unwrap_or(wasmtime::component::Val::Bool(false))
+    }
+
+    /// The runtime's live heap-cell count (`live-objects`) — 0 in the shipped build, real in the
+    /// debug-counters build. The Perceus leak check reads this after a run.
+    fn live_objects(&mut self) -> u32 {
+        match self.heap_call("live-objects", &[]) {
+            wasmtime::component::Val::U32(n) => n,
+            other => panic!("live-objects returned {other:?}"),
+        }
+    }
+}
+
 /// H2d ACCEPTANCE: after a heap round-trip, the runtime's live-cell count is 0 — the dup/drop discipline
-/// balanced (no leak). Composes a `debug-counters` runtime in ONE store (so the program's heap ops and
-/// the `live-objects` read share the same allocator), runs `pair-sum(20,22)` (builds a 2-tuple, boxes 2
-/// elements, projects both, drops the tuple — which cascades to the 2 boxes), then reads `live-objects`.
+/// balanced (no leak). Composes a `debug-counters` runtime in ONE store, runs `pair-sum(20,22)` (builds
+/// a 2-tuple, boxes 2 elements, projects both, drops the tuple — which cascades to the 2 boxes), then
+/// reads `live-objects`.
 #[test]
 #[ignore]
 fn perceus_balance_leaves_no_live_objects() {
     use crate::testkit::parse;
-    use wasmtime::component::{Component, Linker, Val};
-    use wasmtime::{Engine, Store};
+    use wasmtime::component::Val;
 
     let Some(runtime_bytes) = find_debug_runtime_wasm() else {
         eprintln!(
@@ -862,75 +972,115 @@ fn perceus_balance_leaves_no_live_objects() {
         );
         return;
     };
-
-    // The program: build a runtime 2-tuple, project both elements, sum. It imports the heap + `drop`.
     let src = "(module m (def (pair-sum (: a Int64) (: b Int64)) \
                  (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
     let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-
-    let engine = Engine::default();
-    let program_component = Component::new(&engine, &program).expect("program component");
-    let runtime_component = Component::new(&engine, &runtime_bytes).expect("runtime component");
-    let mut store = Store::new(&engine, ());
-
-    // Instantiate the runtime ONCE; keep the instance so we can read `live-objects` after the run.
-    let rt_linker: Linker<()> = Linker::new(&engine);
-    let rt_instance = rt_linker
-        .instantiate(&mut store, &runtime_component)
-        .expect("instantiate runtime");
-    let heap_idx = rt_instance
-        .get_export_index(&mut store, None, "cadenza:runtime/heap")
-        .expect("runtime exports heap");
-
-    // Forward every heap function into the program's import, under the program's exact (hashed) name.
-    let req = cdz_run::required_runtime(&program)
-        .expect("valid")
-        .expect("program imports the runtime");
-    let mut linker: Linker<()> = Linker::new(&engine);
-    let heap_func_names = runtime_heap_func_names(&engine, &runtime_component);
-    let mut iface = linker.instance(&req.import_name).expect("linker instance");
-    for fname in &heap_func_names {
-        let fidx = rt_instance
-            .get_export_index(&mut store, Some(&heap_idx), fname)
-            .expect("heap func");
-        let f = rt_instance.get_func(&mut store, fidx).expect("func");
-        let fname = fname.clone();
-        iface
-            .func_new(&fname, move |mut ctx, params, results| {
-                f.call(&mut ctx, params, results)?;
-                f.post_return(&mut ctx)?;
-                Ok(())
-            })
-            .expect("forward heap func");
-    }
-
-    // Run the program's export.
-    let instance = linker
-        .instantiate(&mut store, &program_component)
-        .expect("instantiate program");
-    let func = instance
-        .get_func(&mut store, "pair-sum")
-        .expect("pair-sum export");
-    let mut results = [Val::S64(0)];
-    func.call(&mut store, &[Val::S64(20), Val::S64(22)], &mut results)
-        .expect("call");
-    func.post_return(&mut store).expect("post_return");
-    assert_eq!(results[0], Val::S64(42), "the round-trip still computes 42");
-
-    // Read `live-objects` off the runtime instance — the dup/drop discipline must leave 0 live cells.
-    let live_idx = rt_instance
-        .get_export_index(&mut store, Some(&heap_idx), "live-objects")
-        .expect("runtime exports live-objects");
-    let live = rt_instance
-        .get_func(&mut store, live_idx)
-        .expect("live-objects func");
-    let mut live_out = [Val::U32(0)];
-    live.call(&mut store, &[], &mut live_out)
-        .expect("live-objects call");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
     assert_eq!(
-        live_out[0],
-        Val::U32(0),
-        "Perceus leak: {live_out:?} heap cells still live after the round-trip (expected 0)"
+        rt.call("pair-sum", &[Val::S64(20), Val::S64(22)]),
+        Val::S64(42),
+        "the round-trip still computes 42"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "Perceus leak: heap cells still live after the round-trip (expected 0)"
+    );
+}
+
+// ── value-heap H3a: a compound RETURNED as a component ref (the escape path) ──────────────────────
+
+/// H3a: a def that RETURNS a tuple hands the caller a u32 HANDLE (a ref into the composed runtime's
+/// store) — ownership transferred, NOT dropped. The caller reads the value back through the runtime's
+/// own accessors (the "display function"): `arr-len` for the arity, `arr-get` + `get-int` per element.
+/// This is the escape path that lets a genuine RUNTIME compound leave a function — no const-fold, no
+/// canonical-text renderer. Composed under wasmtime end-to-end.
+#[test]
+fn a_returned_tuple_is_a_readable_handle() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_runtime_wasm() else {
+        eprintln!(
+            "[H3a] runtime wasm not found (run `cargo xtask codegen`); skipping composed run"
+        );
+        return;
+    };
+    // `make` builds a 2-tuple from two runtime params and RETURNS it — the tuple escapes as the result,
+    // so its binding is NOT dropped (ownership transfers to the caller).
+    let src = "(module m (def (make (: a Int64) (: b Int64)) (tuple a b)) (export make))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The export's result is a compound → crosses as a u32 handle.
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    let handle = match rt.call("make", &[Val::S64(7), Val::S64(35)]) {
+        Val::U32(h) => h,
+        other => panic!("expected a u32 handle, got {other:?}"),
+    };
+    // Read the value back through the runtime accessors — the caller's "display function".
+    assert_eq!(
+        rt.heap_call("arr-len", &[Val::U32(handle)]),
+        Val::U32(2),
+        "arity 2"
+    );
+    // Element 0 is a boxed int handle; get-int reads its s64 payload. Same for element 1.
+    let e0 = rt.heap_call("arr-get", &[Val::U32(handle), Val::U32(0)]);
+    let e1 = rt.heap_call("arr-get", &[Val::U32(handle), Val::U32(1)]);
+    let (Val::U32(e0), Val::U32(e1)) = (e0, e1) else {
+        panic!("arr-get must return element handles");
+    };
+    assert_eq!(
+        rt.heap_call("get-int", &[Val::U32(e0)]),
+        Val::S64(7),
+        "element 0 = 7"
+    );
+    assert_eq!(
+        rt.heap_call("get-int", &[Val::U32(e1)]),
+        Val::S64(35),
+        "element 1 = 35"
+    );
+}
+
+/// H3a ownership: the RETURNED tuple's binding is NOT dropped (its ownership transfers to the caller),
+/// so a `let`-bound tuple that is the result balances only when the CALLER releases it. Under the
+/// debug-counters runtime: after `make` returns the handle, the tuple's cells are LIVE (NOT reclaimed —
+/// that would be use-after-free); then the test `drop`s the handle and the count returns to 0. This
+/// pins the ownership-transfer-on-return rule (an escaped value is not dropped by the callee, a caller
+/// drop reclaims it cleanly). NOTE on the count: the two small-int ELEMENTS ride INLINE in the handle
+/// bits (§2d's small-value hatch — `box-int` of a fixnum allocates no heap cell), so only the ARRAY
+/// node is a real cell → 1 live, not 3. Big elements would box; the ownership property is the same.
+#[test]
+#[ignore]
+fn a_returned_tuple_transfers_ownership_then_caller_drops() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[H3a] debug-counters runtime not in the store (run `cargo xtask build`); skipping"
+        );
+        return;
+    };
+    let src = "(module m (def (make (: a Int64) (: b Int64)) (tuple a b)) (export make))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    let handle = match rt.call("make", &[Val::S64(1), Val::S64(2)]) {
+        Val::U32(h) => h,
+        other => panic!("expected a handle, got {other:?}"),
+    };
+    // The callee did NOT drop the returned tuple: its cell is live (1 — the array; the two small-int
+    // elements ride inline, no heap cell). NOT reclaimed by the callee (that would be use-after-free).
+    assert_eq!(
+        rt.live_objects(),
+        1,
+        "a returned tuple keeps its cell live (ownership transferred, not reclaimed)"
+    );
+    // The caller now owns it — dropping the handle reclaims the value (a big-element tuple would cascade
+    // to its boxed children; here the inline elements have no cell to free).
+    rt.heap_call("drop", &[Val::U32(handle)]);
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "the caller's drop reclaims the transferred tuple"
     );
 }
 
@@ -2374,14 +2524,20 @@ mod stage1 {
     }
 
     #[test]
-    fn returning_a_tuple_declines_at_the_boundary_pending_the_renderer() {
-        // A tuple RETURNED to the host builds on the heap (H2b), but a compound cannot cross the
-        // component boundary until the type-directed renderer lands (a later increment) — so it
-        // declines at the boundary, naming the missing boundary representation (NOT at construction).
-        // The internal round-trip (build + project back to a scalar) is what H2b runs; returning the
-        // compound itself waits on the renderer.
-        let msg = expect_decline("(tuple 1 2)");
-        assert!(msg.contains("boundary representation"), "got: {msg}");
+    fn returning_a_tuple_crosses_the_boundary_as_a_handle() {
+        // A tuple RETURNED to the host crosses the component boundary as a u32 HANDLE — a ref into the
+        // composed runtime's store (H3a, the escape path). So `(tuple 1 2)` as a program result COMPILES
+        // now (it did NOT before H3a — it declined for a missing boundary representation). The caller
+        // reads the value back through the runtime accessors; the e2e ref-return test
+        // (`a_returned_tuple_is_a_readable_handle`) exercises that composed read.
+        use crate::testkit::parse;
+        let src = "(module m (def (main) (tuple 1 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)));
+        assert!(
+            bytes.is_ok(),
+            "a returned tuple must compile (crosses as a handle): {:?}",
+            bytes.err()
+        );
     }
 
     #[test]

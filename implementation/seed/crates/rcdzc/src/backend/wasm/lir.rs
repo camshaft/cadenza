@@ -250,12 +250,14 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         }
         Ty::Bool => Some(wasm_abi::COMP_BOOL), // bool
         Ty::Unit => None,
-        // A record crosses the boundary as a compound value the runtime holds — deferred to the
-        // value-heap stage; no scalar boundary valtype, so it declines here.
+        // A tuple crosses the boundary as a `u32` HANDLE — a ref into the composed runtime's value
+        // store (the same opaque handle the heap ops thread). Ownership transfers to the caller, who
+        // reads the value back through the runtime accessors (the "display function") — this is the
+        // escape path (H3a) that lets a runtime compound leave a function without the canonical-text
+        // renderer (a later increment lifts it to a rich boundary type). A record rides the same handle
+        // representation once its return path lands (H3c+); it still declines above until then.
+        Ty::Tuple(_) => Some(0x79), // u32
         Ty::Record(_) => None,
-        // A tuple crosses the boundary as a compound the runtime holds (the type-directed renderer, a
-        // later increment); no scalar boundary valtype, so it declines here.
-        Ty::Tuple(_) => None,
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,
