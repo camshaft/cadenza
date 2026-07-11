@@ -383,10 +383,45 @@ from a different input than §2a:
      H2d is the CONSERVATIVE Perceus (construct + drop, no reuse — our only tuple op is build+project, no
      update); the reuse path lands as a codegen change with tuple/record UPDATE (an H4-era operation).
 4. **(H3 — folded into H2d)** Reclamation is no longer a separate increment; see H2d.
-5. **(H4) Records at runtime** (rides H2 — a record is a positional array), then **sums** (`sum-new`/
-   `sum-disc`/`sum-payload`), then tuple/record/sum PATTERNS in match (the pattern engine grows a
-   product/sum probe), the type-directed RENDERER (a compound returned to the host), then `.of`→Option
-   (task #59).
+
+### 3a. The escape path is a component-model RESOURCE, not a raw handle (operator, 2026-07-11)
+
+**Directive:** a compound leaving the component crosses as a strongly-typed component-model **resource**
+(a "component ref"), NOT a raw `u32` handle — "get the whole thing working how it needs to work instead
+of taking shortcuts that have to be ripped out later." The handle-to-host approach (an early H3a) was a
+shortcut: the corpus mandates the host sees CANONICAL TEXT (`(: (tuple 0 true) (Tuple Int64 Bool))`), so
+a raw handle misreports. Now REMOVED (a compound host-return DECLINES pending this vertical); a compound
+consumed INTERNALLY (projected, threaded between defs) still works via the heap handle.
+
+**The architecture (strict typing at EVERY layer — program↔runtime, boundary, host):**
+- **A monomorphized resource type per concrete compound type.** `(Tuple Int64 Bool)` exports as a
+  DISTINCT resource type `tuple-int64-bool` (own<…>) — NOT a generic/erased resource. A different arity
+  or element type is a different resource. Emitted via component-model resource decls + the canonical
+  `resource.new` (wrap the runtime u32 handle) + a dtor (drop the handle).
+- **Two compiler-emitted METHODS on every generated resource:** `display-value() -> string` and
+  `display-type() -> string`. The host assembles `(: <display-value> <display-type>)`. Symmetric,
+  uniform — every resource has both.
+- **The renderer lives in the PROGRAM (compiler-emitted), returns a NATIVE component `string`.** The
+  method body is the type-directed renderer: `resource.rep` → the runtime handle → walk it via the
+  runtime accessors (`arr-get`/`get-int`/`get-bool`), assemble the text with the runtime's `str-*`/
+  `bytes-*` ops, and return a canonical-ABI `string` (needs a core memory + `cabi_realloc`). It walks
+  the STATIC shape and bakes names/keywords as constants (§the runtime is name-free).
+- **`cdz-run`'s `run` becomes resource-aware:** an export returning a resource → call `display-value` +
+  `display-type`, print `(: value type)`, then drop the resource. That rendered text is what the gate
+  compares — so the corpus's tuple/record-return cases (expected canonical text) go `todo`→PASS.
+
+Sub-increments (tasks #79–82): **R0** canonical string ABI (memory + `cabi_realloc` + `-> string` lift,
+proven by a constant-string return) → **R1** the monomorphized resource type + both methods returning
+CONSTANT strings first (prove the resource+method+string plumbing e2e) → **R2** the real type-directed
+renderer in the method bodies (walk the handle → canonical text; nested compounds recurse) → **R3**
+resource-aware `cdz-run` + the gate assembling `(: value type)`, corpus tuple-returns go green, remove
+the interim decline. The old `wit_envelope.rs` (`run: () -> string`) is the reference for the string-lift
+half; component-model resource decls (`resource.new`/`.rep`/dtor + `[method]…`) are the new byte-emission
+(hand-emit + validate under wasmtime, as with the import envelope).
+
+5. **(H4) Records at runtime** (rides H2 — a record is a positional array; its host-return rides the
+   resource vertical above), then **sums** (`sum-new`/`sum-disc`/`sum-payload`), then tuple/record/sum
+   PATTERNS in match (the pattern engine grows a product/sum probe), then `.of`→Option (task #59).
 
 ## 4. Watch-outs
 
