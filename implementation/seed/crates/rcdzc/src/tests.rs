@@ -781,17 +781,60 @@ fn a_runtime_tuple_round_trips_through_the_heap() {
     }
 }
 
-/// A constant tuple built and projected at run time (forced runtime by a `let` that is multi-use) also
-/// round-trips — the elements are constants but the tuple is a real heap value here (a multi-use kept
-/// binding). Sums to a scalar. (The BUILD-ONCE optimization for a constant tuple is H2c; this only
-/// checks the heap path is correct for constant elements.)
+// ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
+//
+// The operator directive: get the static heap-value path right FIRST — a constant compound must never
+// emit per-call `arr-alloc`. A fully-constant tuple is NOT a runtime computation, so a multi-use
+// `let`-bound constant tuple is NOT kept; each projection then folds straight through to the constant
+// element (`reduce_to_tuple_elems` follows an unkept binding). The result: the program imports NO
+// runtime op and builds no heap value — better than build-once. (The build-once GLOBAL for a constant
+// tuple that ESCAPES as a value activates with the first escape path — the type-directed renderer.)
+
+/// A multi-use `let`-bound CONSTANT tuple FOLDS AWAY: its projections reduce to the constant elements,
+/// so the program uses the value heap not at all — it imports NO runtime op and runs as a plain scalar.
+/// This is the H2c static-correctness win: zero per-call construction for a value that never varies.
 #[test]
-fn a_multi_use_constant_tuple_round_trips_through_the_heap() {
-    // `(let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))` — `t` multi-use → kept → real heap build; both
-    // elements read back and summed → 30. Nullary `main`, so no args.
-    match run_heap_main("(let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))") {
-        Some(s) => assert_eq!(s, "30", "composed constant-tuple round-trip"),
-        None => eprintln!("[H2b] runtime wasm not found; skipping composed run"),
+fn a_multi_use_constant_tuple_folds_away_with_no_heap() {
+    use crate::testkit::parse;
+    // `(let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))` — `t` is multi-use, but its value is a CONSTANT
+    // tuple, so it is not kept; both projections fold to 10 and 20, the body folds to `(+ 10 20)` → 30.
+    let src = "(module m (def (main) (let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The H2c property: NO runtime import — the static tuple left no heap trace at all.
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a constant tuple must fold away, importing no runtime op (no per-call arr-alloc)"
+    );
+    // And it runs to the folded scalar without any runtime composed in.
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
+}
+
+/// The contrast that pins the routing: the SAME program shape with a RUNTIME element (a parameter)
+/// genuinely allocates — it IS kept, imports the runtime, and round-trips through the heap (H2b). So
+/// staticness, not the syntactic shape, decides heap-vs-fold.
+#[test]
+fn a_runtime_element_tuple_still_uses_the_heap() {
+    use crate::testkit::parse;
+    // One constant, one runtime element → the tuple is NOT constant, so it is kept and built on the heap.
+    let src = "(module m (def (with-param (: a Int64)) \
+                 (let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))) (export with-param))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a tuple with a runtime element must build on the heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[H2c] runtime wasm not found; skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("with-param".to_string()),
+        args: vec!["32".to_string()],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "42", "10 + 32 through the heap"),
+        cdz_run::Outcome::Trap(t) => panic!("composed run trapped: {t}"),
     }
 }
 

@@ -474,21 +474,44 @@ fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool 
 /// unit, a bare local/param read, or a poison, which are free to duplicate. Reads the value's core
 /// (the fold has already run, so a constant-folding binding reports `false` here).
 fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
+    let core = core_of(db, init);
+    // A STATIC (fully-constant) tuple is NOT a runtime computation — keeping it would force a per-call
+    // heap build (`arr-alloc`), pure waste for a value that never varies (`value-heap-runtime.md` §2d:
+    // a static compound must not pay per-call construction). Leaving it UNKEPT lets each projection fold
+    // straight through to the constant element (`reduce_to_tuple_elems` follows an unkept binding) — so
+    // a constant tuple that is only projected emits ZERO heap ops, better than build-once. (A tuple with
+    // a RUNTIME element genuinely allocates and IS kept — the H2b round-trip. The build-once-GLOBAL path
+    // for a constant tuple that ESCAPES as a value activates with the first escape path — the renderer.)
+    if matches!(core, Core::Tuple { .. }) && is_constant_compound(db, init) {
+        return false;
+    }
     matches!(
-        core_of(db, init),
+        core,
         Core::Arith { .. }
             | Core::Compare { .. }
             | Core::Convert { .. }
             | Core::If { .. }
             | Core::Record { .. }
-            // A tuple constructs a heap value (an allocation), and a projection reads one — both are
-            // runtime computations worth naming when used more than once. Keeping a multi-use tuple as a
-            // `Core::Let` binding is ALSO what makes its projection stay runtime (the binding is opaque
-            // to the fold via `reduce_to_tuple_elems`, which does not follow a kept binding) — so a
-            // `let`-bound tuple built once and projected is the H2b runtime round-trip.
+            // A tuple with a runtime element constructs a heap value (an allocation), and a projection
+            // reads one — both are runtime computations worth naming when used more than once. Keeping a
+            // multi-use runtime tuple as a `Core::Let` binding is ALSO what makes its projection stay
+            // runtime (the binding is opaque to the fold via `reduce_to_tuple_elems`) — the H2b round-trip.
             | Core::Tuple { .. }
             | Core::Proj { .. }
     )
+}
+
+/// Whether the node at `id` lowers to a fully COMPILE-TIME-CONSTANT compound (or scalar): a constant
+/// scalar/unit, or a `Core::Tuple` all of whose elements are themselves constant (recursively). This is
+/// the classification that routes a STATIC compound away from per-call construction (§2d): a constant
+/// tuple has no runtime-varying part, so it need never be built at run time — its projections fold, and
+/// (once an escape path exists) its materialization is a build-once global rather than a per-call alloc.
+fn is_constant_compound(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => true,
+        Core::Tuple { elems } => elems.iter().all(|&e| is_constant_compound(db, e)),
+        _ => false,
+    }
 }
 
 /// The number of times the binding whose initializer is `init` is REFERENCED within the resolved
