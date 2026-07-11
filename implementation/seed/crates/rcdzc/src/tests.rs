@@ -489,6 +489,57 @@ mod stage1 {
     }
 
     #[test]
+    fn a_directly_recursive_function_declines_quickly() {
+        // `(def (loop n) (loop n))` applied — the callee reaches its own body, so the STATIC recursion
+        // check declines it before any β-reduction (a recursive function needs runtime specialization,
+        // not yet built). It must decline, not hang: the check is structural, so this returns at once.
+        let src = "(module m (def (loop n) (loop n)) (def (main) (loop 0)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("recursion must decline")
+            .message;
+        assert!(msg.contains("recursive") || msg.contains("runtime"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_branching_recursive_function_declines_and_does_not_explode() {
+        // A recursive body with TWO self-calls (the shape a CBOR tree-reader takes) would explode
+        // exponentially in appended nodes if inlined; the static check declines it up front, so this
+        // returns immediately rather than hanging. Regression for the 10-bytes.sexp gate timeout.
+        let src = "(module m \
+            (def (rec n) (+ (rec n) (rec n))) \
+            (def (main) (rec 3)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("branching recursion must decline")
+            .message;
+        assert!(msg.contains("recursive") || msg.contains("runtime"), "got: {msg}");
+    }
+
+    #[test]
+    fn mutually_recursive_functions_decline() {
+        // `f` calls `g`, `g` calls `f` — neither reaches a normal form. The transitive call-graph walk
+        // finds the cycle f→g→f, so applying `f` declines.
+        let src = "(module m \
+            (def (f n) (g n)) \
+            (def (g n) (f n)) \
+            (def (main) (f 0)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("mutual recursion must decline")
+            .message;
+        assert!(msg.contains("recursive") || msg.contains("runtime"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_self_referential_shape_that_is_not_actually_recursive_still_folds() {
+        // `(f (f v))` nests the SAME non-recursive function twice — a legitimate terminating fold, NOT
+        // recursion. The static check must NOT false-positive on it (the old body-on-stack set did):
+        // this still folds to `(+ (+ 5 1) 1)` = 7.
+        assert_eq!(
+            run_main("(let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))"),
+            7
+        );
+    }
+
+    #[test]
     fn a_type_value_has_type_type() {
         // A type is a first-class VALUE, so it has a type — `Type`. `Bool` (a ground-type record) and
         // `(Int 64)` (a built module) both type as `Type`; a type used as a value doesn't fall to Any.

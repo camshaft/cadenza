@@ -157,6 +157,14 @@ pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Op
         Some(lam) => lam,
         None => return Ok(None),
     };
+    // A RECURSIVE function is not β-reducible to a normal form at compile time — decline BEFORE
+    // inlining (the static check, not the depth backstop, is what stops the exponential node blow-up on
+    // a branching recursive body). This is the one place every lambda application funnels through (both
+    // `infer` and `lower` reach a lambda head here, and currying recurses through here), so the one
+    // check covers them all.
+    if is_recursive(db, body) {
+        return Err("a recursive function needs runtime specialization (not yet built)".to_string());
+    }
     if args.len() < params.len() {
         return Err("partial application of a function is not yet supported".to_string());
     }
@@ -180,6 +188,120 @@ pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Op
 /// recursion guard keys on (so a recursive call, which re-enters the same body, is detected).
 pub fn lambda_body(db: &mut Db, head: StructId) -> Option<StructId> {
     lambda_of(db, head).map(|(_, body)| body)
+}
+
+/// Is the function whose body is `body` (transitively) RECURSIVE — does the static call graph contain
+/// a cycle back to `body`? A recursive function cannot be β-reduced to a normal form at compile time
+/// (it would inline without end, and one that branches — several self-calls per body, like a CBOR tree
+/// reader — explodes EXPONENTIALLY in appended nodes long before any depth bound), so the evaluator
+/// reads this BEFORE reducing a call and DECLINES a recursive one (it needs runtime specialization,
+/// not yet built). This is the SOUND, PURELY STRUCTURAL recursion signal — a static property of the
+/// resolved call graph, computed WITHOUT reducing (no `apply_lambda`, no arena growth), unlike the
+/// body-on-the-stack set that false-positived on `(f (f v))`. Cached per body occurrence (the fixed
+/// def/`let` structure makes the verdict stable), the same memoization `build_cache` uses.
+pub fn is_recursive(db: &mut Db, body: StructId) -> bool {
+    if let Some(&v) = db.recursive.get(&body) {
+        return v;
+    }
+    // A cycle back to `body`: search the callee edges; `body` is recursive iff some path of ≥1 call
+    // returns to it. The search is an ITERATIVE worklist DFS over the call graph (an explicit stack,
+    // no native recursion over the potentially-unbounded graph), and it reuses the Db's pooled
+    // buffers rather than allocating per call: take them out (freeing `db` for the walk), clear, use,
+    // put back. `visited` bounds the walk to each reachable body once (finite — bodies are arena
+    // nodes). Only THIS top-level query is cached; the bodies visited along the way answer "does C
+    // reach `body`", not "is C recursive", so they are not memoized here.
+    let mut visited = std::mem::take(&mut db.rec_visited);
+    let mut worklist = std::mem::take(&mut db.rec_worklist);
+    visited.clear();
+    worklist.clear();
+
+    // Seed the frontier with `body`'s direct callees; then expand each not-yet-seen callee. A frontier
+    // entry equal to `body` closes the cycle. (`body` itself is never inserted into `visited`, so a
+    // path returning to it is detected on pop.)
+    collect_callees(db, body, &mut worklist);
+    let mut result = false;
+    while let Some(node) = worklist.pop() {
+        if node == body {
+            result = true;
+            break;
+        }
+        if visited.insert(node) {
+            collect_callees(db, node, &mut worklist);
+        }
+    }
+
+    // Return the buffers for the next body's walk to reuse.
+    db.rec_visited = visited;
+    db.rec_worklist = worklist;
+    db.recursive.insert(body, result);
+    result
+}
+
+/// Collect the callee bodies of the function whose body expression is (rooted at) `node` — a LOCAL,
+/// NON-REDUCING syntactic walk of one function's body. For each application, the head's statically-known
+/// callee body (via [`callee_body`], following refs to a lambda WITHOUT reducing) is one edge; the walk
+/// descends into every sub-expression that runs when this body runs. It STOPS at a nested `fn`
+/// boundary — a lambda defined inside this body is a SEPARATE call-graph node (its own calls are edges
+/// from IT, explored only if IT is called), so descending into it would conflate two nodes. This keeps
+/// the graph precise: over-reporting would decline a terminating fold, under-reporting would let a
+/// recursive one reach the (slow, exponential) depth backstop.
+fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
+    match resolved_of(db, node) {
+        Resolved::Apply { head, args } => {
+            if let Some(cb) = callee_body(db, head) {
+                out.push(cb);
+            }
+            // Descend into the head ONLY if it is itself an application (a computed head like
+            // `((g x) y)`); a head that is a plain function reference is captured by `callee_body`
+            // above, and descending into the lambda/ref it names would cross into another node.
+            if matches!(resolved_of(db, head), Resolved::Apply { .. }) {
+                collect_callees(db, head, out);
+            }
+            for a in args {
+                collect_callees(db, a, out);
+            }
+        }
+        Resolved::If { cond, then_, else_ } => {
+            collect_callees(db, cond, out);
+            collect_callees(db, then_, out);
+            collect_callees(db, else_, out);
+        }
+        Resolved::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_callees(db, value, out);
+            }
+            collect_callees(db, body, out);
+        }
+        Resolved::Record { fields } => {
+            for (_, value) in fields {
+                collect_callees(db, value, out);
+            }
+        }
+        Resolved::Member { operand, .. } => collect_callees(db, operand, out),
+        // A nested `fn` is a separate node — do NOT descend (its calls are its own edges). A bare ref,
+        // a leaf, a prim, a param, a type value, a poison have no callees of THIS body.
+        Resolved::Lambda { .. }
+        | Resolved::Ref { .. }
+        | Resolved::Int(_)
+        | Resolved::Bool(_)
+        | Resolved::Unit
+        | Resolved::Prim(_)
+        | Resolved::Param { .. }
+        | Resolved::TypeVal(_)
+        | Resolved::Poison(_) => {}
+    }
+}
+
+/// The statically-known callee body of an application head, if any — following a `Ref` to the lambda it
+/// binds (a `let`-bound function, or a top-level def, which resolves straight to a `Lambda`), WITHOUT
+/// reducing. `None` for a head whose callee cannot be known without evaluation (a computed head, a
+/// primitive, a non-function) — such an edge is left to the depth backstop rather than forced here.
+fn callee_body(db: &mut Db, head: StructId) -> Option<StructId> {
+    match resolved_of(db, head) {
+        Resolved::Lambda { body, .. } => Some(body),
+        Resolved::Ref { value } => callee_body(db, value),
+        _ => None,
+    }
 }
 
 /// If the value at `id` reduces to a lambda, its parameters and body. Follows a `Ref` (a `let`-bound
