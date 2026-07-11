@@ -153,7 +153,7 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
             // Component-model primitive valtype bytes (spec order): s32=0x7A, u32=0x79, s64=0x78,
             // u64=0x77. Stage 0 only ever emits s64 (`Int64`); the others are pinned for the widths
             // stage. (The `s64=0x78` byte matches the old compiler's oracle-checked frame.)
-            Some(match (it.signed, w <= 32) {
+            Some(match (it.ground_signed(), w <= 32) {
                 (true, false) => 0x78,  // s64
                 (true, true) => 0x7A,   // s32
                 (false, false) => 0x77, // u64

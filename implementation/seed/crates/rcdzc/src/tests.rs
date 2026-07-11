@@ -296,6 +296,33 @@ impl FromVal for bool {
     }
 }
 
+impl FromVal for u64 {
+    fn from_val(v: &wasmtime::component::Val) -> u64 {
+        match v {
+            wasmtime::component::Val::U64(n) => *n,
+            other => panic!("expected U64 result, got {other:?}"),
+        }
+    }
+}
+
+impl FromVal for u32 {
+    fn from_val(v: &wasmtime::component::Val) -> u32 {
+        match v {
+            wasmtime::component::Val::U32(n) => *n,
+            other => panic!("expected U32 result, got {other:?}"),
+        }
+    }
+}
+
+impl FromVal for i32 {
+    fn from_val(v: &wasmtime::component::Val) -> i32 {
+        match v {
+            wasmtime::component::Val::S32(n) => *n,
+            other => panic!("expected S32 result, got {other:?}"),
+        }
+    }
+}
+
 /// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the single
 /// result decoded to `T` — the "run the artifact" behavior check, generic over the boundary type.
 fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
@@ -1012,6 +1039,127 @@ mod stage1 {
         assert_eq!(run_main("(+ (: 2 Int64) 3)"), 5);
     }
 
+    // ── integer widths (I3, fold): named widths, per-width bounds, annotations, odd widths ────────
+
+    #[test]
+    fn signed_8bit_bounds_project() {
+        // Int8 bounds are the width-8 signed range: max 127, min -128. Int8 is a ≤32-bit signed type,
+        // so it lifts at the boundary as s32 (NOT s64) — the width flows through to the machine repr.
+        let run_i32 = |body: &str| {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+            run_returns::<i32>(&bytes, "main")
+        };
+        assert_eq!(run_i32("(. Int8 max)"), 127);
+        assert_eq!(run_i32("(. Int8 min)"), -128);
+    }
+
+    #[test]
+    fn unsigned_8bit_max_is_255() {
+        // UInt8.max = 2^8 - 1 = 255. A UInt8 boundary lifts as u32 (≤32-bit unsigned).
+        let src = "(module m (def (main) (. UInt8 max)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<u32>(&bytes, "main"), 255);
+    }
+
+    #[test]
+    fn unsigned_64bit_max_exceeds_i64_and_renders() {
+        // UInt64.max = 2^64 - 1 = 18446744073709551615 — a value ABOVE i64::MAX, so it exercises the
+        // arbitrary-precision bound + the unsigned bit-pattern emit (-1 as i64) + the u64 boundary lift.
+        let src = "(module m (def (main) (. UInt64 max)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<u64>(&bytes, "main"), u64::MAX);
+    }
+
+    #[test]
+    fn an_annotation_takes_a_narrower_width() {
+        // 06-numeric-model `(: 200 UInt8)` = 200 : UInt8 — the annotation grounds the literal to the
+        // narrower width; 200 fits UInt8 (0..=255). Lifts as u32.
+        let src = "(module m (def (main) (: 200 UInt8)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<u32>(&bytes, "main"), 200);
+    }
+
+    #[test]
+    fn a_literal_outside_the_annotated_width_is_rejected() {
+        // `(: 256 UInt8)` — 256 does not fit UInt8 (max 255): rejected (CDZ0302), never truncated to 0.
+        assert!(expect_decline("(: 256 UInt8)").contains("does not fit"));
+        // A negative into an unsigned width also fails.
+        assert!(expect_decline("(: -1 UInt8)").contains("does not fit"));
+        // And a signed-8 overflow: 128 does not fit Int8 (max 127).
+        assert!(expect_decline("(: 128 Int8)").contains("does not fit"));
+    }
+
+    #[test]
+    fn arbitrary_odd_widths_compute_their_bounds() {
+        // The bounds are computed FROM THE WIDTH PARAMETER, not a per-named-type table — so an ODD,
+        // non-machine width works: `(UInt 7)` max = 2^7-1 = 127, `(UInt 24)` max = 2^24-1 = 16777215,
+        // `(UInt 48)` max = 2^48-1 = 281474976710655. These pin that nothing assumes a power-of-two
+        // machine width. (7/24 lift as u32; 48 as u64.)
+        let run_u32 = |body: &str| {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+            run_returns::<u32>(&bytes, "main")
+        };
+        assert_eq!(run_u32("(. (UInt 7) max)"), 127);
+        assert_eq!(run_u32("(. (UInt 24) max)"), 16777215);
+        let src = "(module m (def (main) (. (UInt 48) max)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<u64>(&bytes, "main"), 281474976710655);
+    }
+
+    #[test]
+    fn an_odd_width_annotation_range_checks() {
+        // `(: 127 (UInt 7))` fits (2^7-1=127); `(: 128 (UInt 7))` does NOT — the range check is
+        // width-exact, not rounded to a machine width.
+        let src = "(module m (def (main) (: 127 (UInt 7))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<u32>(&bytes, "main"), 127);
+        assert!(expect_decline("(: 128 (UInt 7))").contains("does not fit"));
+    }
+
+    #[test]
+    fn mixing_two_widths_without_conversion_is_rejected() {
+        // 06-numeric-model: `(+ (: 1 UInt8) (: 2 Int32))` — two different integer types with no explicit
+        // conversion → CDZ0301 (no silent promotion). The one generic rule (unify the operands) catches
+        // it: UInt8 and Int32 differ in BOTH signedness and width.
+        let msg = expect_decline("(+ (: 1 UInt8) (: 2 Int32))");
+        assert!(
+            msg.contains("unify")
+                || msg.contains("width")
+                || msg.contains("Int")
+                || msg.contains("UInt"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn signed_and_unsigned_of_the_same_width_do_not_promote() {
+        // `(+ (: 1 Int8) (: 2 UInt8))` — same width (8), different SIGNEDNESS → still rejected (no
+        // implicit promotion). Pins that signedness alone is a mismatch, not just width.
+        let msg = expect_decline("(+ (: 1 Int8) (: 2 UInt8))");
+        assert!(
+            msg.contains("unify")
+                || msg.contains("Int")
+                || msg.contains("UInt")
+                || msg.contains("differ"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_named_width_and_the_constructor_denote_the_same_module() {
+        // `Int8` and `(Int 8)` are the SAME module — both project a bound of the same value and type.
+        // (No per-name special case; both go through the width-generic builder.) Both lift as s32.
+        let run_i32 = |body: &str| {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+            run_returns::<i32>(&bytes, "main")
+        };
+        assert_eq!(run_i32("(. Int8 max)"), run_i32("(. (Int 8) max)"));
+        assert_eq!(run_i32("(. Int8 min)"), run_i32("(. (Int 8) min)"));
+    }
+
     #[test]
     fn an_annotated_def_parameter_binds_and_folds() {
         // `(def (w (: a Int64) b) (+ a b))` — the annotated binder `(: a Int64)` binds `a` (the body's
@@ -1058,14 +1206,18 @@ mod stage1 {
     #[test]
     fn int_ctor_min_of_a_smaller_width() {
         // `(. (Int 8) min)` = -128 — the module `Int` builds is SPECIALIZED to the width argument, so a
-        // different width yields that width's bounds. Proves the module is parameterized over the width.
-        assert_eq!(run_main("(. (Int 8) min)"), -128);
+        // different width yields that width's bounds. An Int8 value lifts at the boundary as s32.
+        let src = "(module m (def (main) (. (Int 8) min)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i32>(&bytes, "main"), -128);
     }
 
     #[test]
     fn int_ctor_max_of_a_smaller_width() {
-        // `(. (Int 8) max)` = 127.
-        assert_eq!(run_main("(. (Int 8) max)"), 127);
+        // `(. (Int 8) max)` = 127 (lifts as s32).
+        let src = "(module m (def (main) (. (Int 8) max)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i32>(&bytes, "main"), 127);
     }
 
     // ── functions: a lambda application β-reduces (folds/monomorphizes) ──────────────────────────

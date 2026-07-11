@@ -10,15 +10,16 @@
 //! integer type. Nothing here reads a column or an AST node — it is pure over [`Ty`].
 
 use crate::diag::{Code, Reject};
-use crate::ty::{IntTy, Scheme, Ty, Width};
+use crate::ty::{IntTy, Scheme, Sign, Ty, Width};
 use std::collections::HashMap;
 
-/// A substitution: what each type variable and width variable has been solved to. Applied to a type,
+/// A substitution: what each type, width, and SIGN variable has been solved to. Applied to a type,
 /// it replaces solved variables with their solutions (transitively).
 #[derive(Clone, Debug, Default)]
 pub struct Subst {
     tys: HashMap<u32, Ty>,
     widths: HashMap<u32, Width>,
+    signs: HashMap<u32, Sign>,
 }
 
 impl Subst {
@@ -36,7 +37,7 @@ impl Subst {
                 None => Ty::Var(*v),
             },
             Ty::Int(it) => Ty::Int(IntTy {
-                signed: it.signed,
+                sign: self.apply_sign(it.sign),
                 width: self.apply_width(it.width),
             }),
             Ty::Fn(p, r) => Ty::Fn(Box::new(self.apply(p)), Box::new(self.apply(r))),
@@ -56,6 +57,17 @@ impl Subst {
             Width::Var(v) => match self.widths.get(&v) {
                 Some(&sol) => self.apply_width(sol),
                 None => Width::Var(v),
+            },
+            other => other,
+        }
+    }
+
+    /// Apply the substitution to a sign — resolve a solved sign variable.
+    fn apply_sign(&self, s: Sign) -> Sign {
+        match s {
+            Sign::Var(v) => match self.signs.get(&v) {
+                Some(&sol) => self.apply_sign(sol),
+                None => Sign::Var(v),
             },
             other => other,
         }
@@ -84,12 +96,12 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             Ok(())
         }
         (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Type, Ty::Type) => Ok(()),
-        // Integers unify only at equal signedness; their widths unify (a variable/deferred width
-        // resolves to a fixed one; two different fixed widths conflict — no implicit promotion).
+        // Integers unify on BOTH axes — sign and width. A variable/deferred axis resolves to the
+        // other's fixed value; two DIFFERENT fixed values conflict (no implicit promotion — neither a
+        // width nor a signedness silently changes). Unifying the sign first lets a `mismatch` name the
+        // conflict; a deferred literal (`Deferred` on both axes) grounds to whatever it meets.
         (Ty::Int(ia), Ty::Int(ib)) => {
-            if ia.signed != ib.signed {
-                return Err(mismatch(&a, &b));
-            }
+            unify_sign(subst, ia.sign, ib.sign, &a, &b)?;
             unify_width(subst, ia.width, ib.width)
         }
         (Ty::Fn(pa, ra), Ty::Fn(pb, rb)) => {
@@ -109,6 +121,35 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             Ok(())
         }
         _ => Err(mismatch(&a, &b)),
+    }
+}
+
+/// Unify two signednesses — a variable takes the other; a deferred sign is compatible with anything
+/// (it grounds later); two DIFFERENT fixed signs conflict (a signed and an unsigned integer are
+/// distinct types — no silent promotion). `a`/`b` are the enclosing integer types, for the error.
+fn unify_sign(subst: &mut Subst, sa: Sign, sb: Sign, a: &Ty, b: &Ty) -> Result<(), Reject> {
+    let sa = resolve_sign(subst, sa);
+    let sb = resolve_sign(subst, sb);
+    match (sa, sb) {
+        (Sign::Var(v), Sign::Var(w)) if v == w => Ok(()),
+        (Sign::Var(v), other) | (other, Sign::Var(v)) => {
+            subst.signs.insert(v, other);
+            Ok(())
+        }
+        // A deferred (literal) sign takes whatever it meets.
+        (Sign::Deferred, _) | (_, Sign::Deferred) => Ok(()),
+        (Sign::Fixed(x), Sign::Fixed(y)) if x == y => Ok(()),
+        (Sign::Fixed(_), Sign::Fixed(_)) => Err(mismatch(a, b)),
+    }
+}
+
+fn resolve_sign(subst: &Subst, s: Sign) -> Sign {
+    match s {
+        Sign::Var(v) => match subst.signs.get(&v) {
+            Some(&sol) => resolve_sign(subst, sol),
+            None => Sign::Var(v),
+        },
+        other => other,
     }
 }
 
@@ -194,7 +235,7 @@ impl Fresh {
     }
 }
 
-/// Instantiate a scheme: replace each bound type/width variable with a FRESH one, so this use is
+/// Instantiate a scheme: replace each bound type/width/sign variable with a FRESH one, so this use is
 /// independent of every other. Returns the freshened type. This is what makes `+`'s `∀a. (Int a) →
 /// (Int a) → (Int a)` apply at a fresh `a` each time — generic over the integer type.
 pub fn instantiate(scheme: &Scheme, fresh: &mut Fresh) -> Ty {
@@ -206,25 +247,34 @@ pub fn instantiate(scheme: &Scheme, fresh: &mut Fresh) -> Ty {
     for &v in &scheme.width_vars {
         width_map.insert(v, fresh.var());
     }
-    rename(&scheme.ty, &ty_map, &width_map)
+    let mut sign_map: HashMap<u32, u32> = HashMap::new();
+    for &v in &scheme.sign_vars {
+        sign_map.insert(v, fresh.var());
+    }
+    rename(&scheme.ty, &ty_map, &width_map, &sign_map)
 }
 
 /// Rename the bound variables of a type per the fresh maps (a variable not in a map is free and kept).
-fn rename(ty: &Ty, ty_map: &HashMap<u32, u32>, width_map: &HashMap<u32, u32>) -> Ty {
+fn rename(
+    ty: &Ty,
+    ty_map: &HashMap<u32, u32>,
+    width_map: &HashMap<u32, u32>,
+    sign_map: &HashMap<u32, u32>,
+) -> Ty {
     match ty {
         Ty::Var(v) => Ty::Var(*ty_map.get(v).unwrap_or(v)),
         Ty::Int(it) => Ty::Int(IntTy {
-            signed: it.signed,
+            sign: rename_sign(it.sign, sign_map),
             width: rename_width(it.width, width_map),
         }),
         Ty::Fn(p, r) => Ty::Fn(
-            Box::new(rename(p, ty_map, width_map)),
-            Box::new(rename(r, ty_map, width_map)),
+            Box::new(rename(p, ty_map, width_map, sign_map)),
+            Box::new(rename(r, ty_map, width_map, sign_map)),
         ),
         Ty::Record(fields) => Ty::Record(
             fields
                 .iter()
-                .map(|(k, t)| (k.clone(), rename(t, ty_map, width_map)))
+                .map(|(k, t)| (k.clone(), rename(t, ty_map, width_map, sign_map)))
                 .collect(),
         ),
         Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
@@ -238,10 +288,17 @@ fn rename_width(w: Width, width_map: &HashMap<u32, u32>) -> Width {
     }
 }
 
+fn rename_sign(s: Sign, sign_map: &HashMap<u32, u32>) -> Sign {
+    match s {
+        Sign::Var(v) => Sign::Var(*sign_map.get(&v).unwrap_or(&v)),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ty::{IntTy, Ty, Width};
+    use crate::ty::{IntTy, Sign, Ty, Width};
 
     #[test]
     fn unifies_a_var_with_a_concrete_type() {
@@ -263,7 +320,7 @@ mod tests {
     fn width_var_unifies_then_fixes() {
         // (Int w) unified with Int64 fixes w := 64.
         let wv = Ty::Int(IntTy {
-            signed: true,
+            sign: Sign::Fixed(true),
             width: Width::Var(5),
         });
         let mut s = Subst::new();
@@ -273,13 +330,29 @@ mod tests {
 
     #[test]
     fn different_fixed_widths_conflict() {
-        let i32t = Ty::Int(IntTy {
-            signed: true,
-            width: Width::Fixed(32),
-        });
+        let i32t = Ty::Int(IntTy::fixed(true, 32));
         let i64t = Ty::int64();
         let mut s = Subst::new();
         assert!(unify(&mut s, &i32t, &i64t).is_err());
+    }
+
+    #[test]
+    fn different_signs_conflict() {
+        // Int8 and UInt8 differ only in sign — they must NOT unify (no silent promotion).
+        let i8t = Ty::Int(IntTy::fixed(true, 8));
+        let u8t = Ty::Int(IntTy::fixed(false, 8));
+        let mut s = Subst::new();
+        assert!(unify(&mut s, &i8t, &u8t).is_err());
+    }
+
+    #[test]
+    fn a_deferred_sign_grounds_to_what_it_meets() {
+        // A bare literal (deferred sign + width) unifies with UInt8 — the annotation grounds it. The
+        // deferred axes don't conflict; the literal takes the unsigned-8 type.
+        let lit = Ty::Int(IntTy::deferred());
+        let u8t = Ty::Int(IntTy::fixed(false, 8));
+        let mut s = Subst::new();
+        assert!(unify(&mut s, &lit, &u8t).is_ok());
     }
 
     #[test]
@@ -296,6 +369,7 @@ mod tests {
         let scheme = Scheme {
             ty_vars: vec![0],
             width_vars: vec![],
+            sign_vars: vec![],
             ty: Ty::Fn(Box::new(Ty::Var(0)), Box::new(Ty::Var(0))),
         };
         let mut fresh = Fresh::new();
