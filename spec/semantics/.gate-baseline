@@ -1,0 +1,926 @@
+# gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+fail	an unbound name in an uncalled sibling definition is still rejected
+pass	a binary integer literal
+pass	a binary literal with digit separators
+pass	a conditional selects the false branch when the condition is false
+pass	a conditional's condition may itself be a conditional
+pass	a decimal integer literal
+pass	a hexadecimal integer literal
+pass	a hexadecimal literal with digit separators
+pass	a let binding is in scope in its body
+pass	a name resolves to the nearest enclosing binding
+pass	a negative hexadecimal literal negates its value
+pass	a record is constructed and a field is read
+pass	an entrypoint that delegates no effect is pure and makes no host call
+pass	an integer literal with digit separators
+pass	an underscore-letter identifier binds and resolves
+pass	an underscore-prefixed token is an identifier, not an integer
+pass	member access chains through a nested record
+pass	member access is written explicitly as the dot form in the canonical tree
+pass	projecting a field is independent of the order fields are written
+pass	the boolean literals
+pass	the maximum Int64 in hexadecimal reads as an integer
+pass	the maximum Int64 literal reads as an integer
+pass	the minimum Int64 literal reads as an integer
+todo	Ast.decode converts bytes to an AST sum type value
+todo	Ast.decode decodes bytes that arrive as a function argument
+todo	Ast.encode and Ast.decode round-trip
+todo	Ok carrying a Some keeps both variant tags
+todo	Qty.value recovers the underlying numeric value, discarding the unit
+todo	Result propagates errors without trapping
+todo	Result type for fallible operations
+todo	String.scalar-len of a string selected by a runtime if
+todo	String.scalar-len of a string selected by a runtime match
+todo	Type is a first-class value
+todo	a BigInt operation does not silently promote a fixed-width operand
+todo	a CBOR atom decodes each scalar major type to its value
+todo	a CBOR head decodes its major type and big-endian argument from the input bytes
+todo	a CBOR reader walks a variable-length array using its decoded length as the element count
+todo	a CBOR simple value that is not a known boolean is classified as not-a-boolean
+todo	a CBOR skip steps over a tagged item to the value it wraps
+todo	a CBOR skip walks past a whole nested item to the next offset
+todo	a LEB128 final byte is the shifted remainder masked to seven bits
+todo	a LEB128 non-final byte composes mask, continuation bit, and to-byte
+todo	a NaN nested in a list compares equal under the canonical byte form
+todo	a NaN nested in a sum payload compares equal under the canonical byte form
+todo	a NaN nested in a tuple compares equal under the canonical byte form
+todo	a RECURSIVE effectful walk accumulates into a list-state handler
+todo	a Result carrying a Result is matched by a nested pattern to its inner value
+todo	a Sign match missing two of three variants is non-exhaustive
+todo	a UInt32 addition that overflows the 32-bit width traps
+todo	a UInt32 holds a wasm section size at the width boundary
+todo	a UInt64 holds a value above the signed 64-bit maximum
+todo	a bare arithmetic keyword is rejected, not a crash
+todo	a bare binding form with no bindings and no body is rejected, not a crash
+todo	a bare conditional keyword is rejected, not a crash
+todo	a bare equality keyword is rejected, not a crash
+todo	a bare nullary constructor is the nullary sum value
+todo	a bin arm whose fixed-width segment overruns the input falls through
+todo	a bin pattern binds an integer read from a fixed-width segment
+todo	a bin pattern must consume the whole scrutinee or it does not match
+todo	a binary form whose bit-fields do not close a byte is ill-formed
+todo	a binding form with bindings but no body is rejected, not a crash
+todo	a bit-field width that is not a compile-time constant is ill-formed
+todo	a bits pattern segment reads sub-byte fields back into integers
+todo	a bool match missing the false arm is non-exhaustive
+todo	a bool match missing the true arm is non-exhaustive
+todo	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
+todo	a boolean connective with a non-boolean operand is a type error
+todo	a boolean function result bound by let is still a boolean
+todo	a boolean is greater-than-or-equal to itself
+todo	a boolean is less-than-or-equal to itself
+todo	a boolean literal pattern against an integer scrutinee is a type error
+todo	a boolean literal pattern matches a runtime scrutinee
+todo	a boolean parameter forwarded to a conditional result
+todo	a boolean record field is projected as the program result
+todo	a boolean result propagates through a three-deep chain of forwarding functions
+todo	a boolean result threaded through a second function
+todo	a boolean tuple element is projected as the program result
+todo	a boolean-parameter function applied to false
+todo	a boolean-returning function called with a false result
+todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
+todo	a bound name in a map key is used by its value, not the literal name
+todo	a built map renders its entries in canonical key order
+todo	a built-in Ast constructor applied to a wrong-type payload is a type error
+todo	a built-in Option is unwrapped by a helper that binds its payload
+todo	a built-in Option tuple payload consumed INLINE in the Some arm projects
+todo	a byte sequence carrying a runtime byte value is a first-class value
+todo	a byte sequence is constructed from a list of integers in range
+todo	a byte sequence written as a literal renders back to the same literal
+todo	a byte-string literal equals the explicit byte sequence it desugars to
+todo	a byte-string literal with escapes equals its explicit byte sequence
+todo	a char literal naming a surrogate is a reader error
+todo	a char order agrees with its scalar value
+todo	a checked conversion of a negative value into an unsigned type traps
+todo	a checked integer conversion that does not fit traps
+todo	a checked integer conversion that fits succeeds
+todo	a checked result is consumed by matching its Option at run time
+todo	a closure captures the binding in scope where it was created
+todo	a comparison-predicate function returns its boolean result
+todo	a compound element projected from a let-bound runtime tuple is matched
+todo	a compound if condition is a type error, not an unbound name
+todo	a conditional evaluates only the selected branch
+todo	a conditional inside a function with a constant condition and mismatched branches is a type error
+todo	a conditional selects a branch by a runtime value that is not known at compile time
+todo	a conditional shields a trap in a nested unselected branch
+todo	a conditional type error is caught even when the mismatched branch is the one taken
+todo	a conditional whose branches are unit yields unit
+todo	a conditional whose condition folds to a constant still drops the untaken trapping branch
+todo	a conditional with a compound branch and a scalar branch is a type error even when the compound branch is dead
+todo	a conditional with a missing branch is rejected, not a crash
+todo	a conditional with an integer then-branch and a boolean else-branch is a type error
+todo	a conditional with integer and floating-point branches is a type error
+todo	a conditional with too many operands is rejected, not a crash
+todo	a conditional with two list branches of different length is well-typed
+todo	a conditional with two tuple branches of different arity is a type error
+todo	a conditional with two tuple branches of different element type is a type error
+todo	a conditionally-selected nullary variant is returned as a runtime sum result
+todo	a conditionally-selected variant is returned as a runtime sum result
+todo	a conjunction guards a let over a runtime value inside a conditional
+todo	a consistent annotation type-checks against the inferred type
+todo	a constant tuple is returned as a program result
+todo	a constructor pattern in a tuple payload slot is matched in one arm
+todo	a constructor pattern nested under Some matches a runtime list element
+todo	a constructor whose payload is a constructor keeps the outer variant tag
+todo	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
+todo	a curried function can be partially applied
+todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
+todo	a declaration in a do block shadows an outer binding
+todo	a deep chain of runtime-list let-bindings compiles and returns the final length
+todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
+todo	a default-integer pragma makes a bare literal take the declared integer type
+todo	a default-integer pragma naming a non-integer type is rejected
+todo	a delegated capability is not itself an export field
+todo	a delegated effect performed inside an intra-program handler
+todo	a delegation naming an effect that is never reached is rejected as latent authority
+todo	a dependent size of zero binds an empty body and leaves the rest untouched
+todo	a dependent-size segment binds exactly the number of bytes an earlier segment named
+todo	a dependent-size segment that overruns the remaining bytes falls through
+todo	a digit separator adjacent to a float's decimal point is a malformed literal
+todo	a dimensionless quantity carries the group identity Unit.one
+todo	a diverging expression unifies with an integer position
+todo	a division whose divisor folds to zero still traps
+todo	a factorial that overflows the integer type traps through the recursion
+todo	a field is projected from a record returned by a function
+todo	a field is projected from a record returned by a let-bound function
+todo	a field is projected from a record returned by a nullary function
+todo	a field is projected off a record bound through a match arm
+todo	a field is projected off a record unwrapped from a result with expect
+todo	a field is projected off a record unwrapped from an optional with expect
+todo	a final bytes segment binds the remainder after the sized segments
+todo	a final unquote-splice binds the remaining elements as a list
+todo	a fixpoint loop that threads a growing list accumulator returns that list
+todo	a fixpoint that re-seeds a fresh list each round via a helper returns a list
+todo	a floating-point literal
+todo	a function applied to an argument
+todo	a function bound to a name and then applied
+todo	a function declaration in a do block calls an earlier sibling declaration
+todo	a function declaration in a do block is callable by the following forms
+todo	a function deriving a velocity from a distance and a time
+todo	a function is passed as an argument (higher-order)
+todo	a function is returned as a result
+todo	a function open over a record's extra fields accepts any record with the used field
+todo	a function returning None or a nested Some infers its compound result shape
+todo	a function returning a boolean predicate result
+todo	a function returns a heap sub-node selected by a match arm
+todo	a function stored in a record field is called after extraction
+todo	a function stored in a tuple element is called after extraction
+todo	a function takes a boolean parameter and branches on it
+todo	a function whose body always diverges has result type Never
+todo	a function whose name is capitalized is called, not treated as a constructor
+todo	a generic unwrap helper consumes a fallible Bytes.at result
+todo	a handler accumulates into a list and a read-out operation reads it back
+todo	a handler arm for an operation the effect does not declare is rejected
+todo	a handler folds a counter across the operations it discharges
+todo	a handler resumes its continuation at most once by default
+todo	a header of packed nibbles and a length-prefixed body round-trips
+todo	a helper decodes bytes to a string and consumes the fallible result
+todo	a hexadecimal literal is case-insensitive
+todo	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
+todo	a large whole-valued float renders its full value, not an integer saturation
+todo	a later declaration in a do block sees an earlier one
+todo	a later let binding sees an earlier one in the same let
+todo	a le pattern segment reads a fixed-width integer little-endian
+todo	a left shift by a floating-point count does not silently promote
+todo	a left shift by the bit width or more traps rather than wrapping
+todo	a left shift that overflows Int64 traps like multiplication
+todo	a length-prefixed frame is built from a size segment and a bytes segment
+todo	a let binding shadows a built-in constructor name in application-head position
+todo	a let binding with no value expression is rejected, not a crash
+todo	a let body of unit yields unit
+todo	a let shadowing a parameter with a differently-typed value is not an invalid component
+todo	a let-bound variable is in scope inside a boolean connective operand
+todo	a list annotated with the wrong element type is rejected
+todo	a list built by a recursive push-loop is then iterated by index
+todo	a list built by a runtime-length loop has that many elements
+todo	a list mixing integer and boolean elements is a type error
+todo	a list mixing integer and float elements is a type error
+todo	a list of maps with different keys is homogeneous, not a type error
+todo	a list of records with different field sets is a type error
+todo	a list of tuples with different arities is a type error
+todo	a list value consumed by two operations in one function is not freed early
+todo	a list with a runtime element is returned as a program result
+todo	a list-concatenating helper threads lists through a call
+todo	a literal inside a constructor pattern matches a runtime payload
+todo	a literal inside a tuple pattern matches a runtime element
+todo	a literal segment before a binder dispatches then reads the payload
+todo	a literal segment matches a magic-number header by equality
+todo	a literal subterm in a quote pattern matches by equality
+todo	a magic header and a length-prefixed chunk parse together
+todo	a map entry with no value expression is rejected, not a crash
+todo	a map literal with keys of two different types is a type error
+todo	a map mixing integer and float values is a type error
+todo	a map operation applies to a map passed as a function parameter
+todo	a map pattern binds the rest of the map after the named key
+todo	a map pattern falls through when the key is absent
+todo	a map pattern matches a present key and binds its value
+todo	a map with a computed key equals the same map with a constant key
+todo	a map with a duplicate key is a type error
+todo	a map with record values of different field sets is a type error
+todo	a map with tuple values of different arities is a type error
+todo	a map with values of two different types is a type error
+todo	a match arm binds a nested tuple inside a sum payload
+todo	a match arm building a fresh runtime compound infers its shape
+todo	a match not covering the scrutinee is a compile-time rejection
+todo	a match on a computed runtime value dispatches on the result
+todo	a match on a record field selects a later literal arm
+todo	a match on a record-field-access scrutinee dispatches on the field value
+todo	a match on a runtime integer scrutinee producing a boolean
+todo	a match on a tuple-element-access scrutinee dispatches on the element value
+todo	a match on an open sum omitting the open-tail arm is rejected
+todo	a match on an open sum with an open-tail arm is exhaustive
+todo	a match on an uninhabited scrutinee is exhaustive with zero arms
+todo	a match over bytes with only a bin arm and no catch-all is non-exhaustive
+todo	a match over multiple nullary constructors with uniform patterns
+todo	a match takes another match's result as its scrutinee
+todo	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
+todo	a member access with no field operand is rejected, not a crash
+todo	a module declaration binds its name in the enclosing scope
+todo	a module function calls a sibling export by name
+todo	a module function is recursive
+todo	a module value definition registers a reachable export field
+todo	a module with two definitions of the same name is rejected
+todo	a module's delegated capability is reachable as metadata, not as an export
+todo	a multi-argument call node is evaluated by iterating its payload arg list
+todo	a multi-way string-head dispatch resolves an operator name to its operation
+todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
+todo	a name bound to a string keys a map by its value, not the literal name
+todo	a name pattern binds the runtime scrutinee when no literal arm matches
+todo	a named function is partially applied, bound, and used
+todo	a named higher-order function receives a lambda argument
+todo	a named multi-argument function applies in explicit curried form
+todo	a named multi-argument function applies to all its arguments at once
+todo	a named width alias and its width-indexed expansion name the same type
+todo	a nearer handler on the call chain shadows an outer one
+todo	a negative integer literal pattern matches a runtime scrutinee
+todo	a negative right-shift count traps rather than masking
+todo	a negative shift count traps rather than masking
+todo	a negative string index yields None rather than wrapping to a large offset
+todo	a negative zero in a record field is distinct from positive zero
+todo	a negative zero nested in a tuple is distinct from positive zero
+todo	a negative-power SI prefix is an exact rational scale
+todo	a nested Result pattern selects the inner Err arm
+todo	a nested constructor payload that misses the inner variant falls through to the outer sibling
+todo	a nested constructor value dispatches on both tags in a match
+todo	a nested element kind mismatch in equality is a type error
+todo	a nested literal pattern of the wrong type is a type error
+todo	a nested match on a runtime scrutinee
+todo	a nested option value annotated with the wrong inner payload type is rejected
+todo	a nested runtime tuple is returned as a result
+todo	a nested sum match missing an inner variant is non-exhaustive
+todo	a nested tuple pattern of the wrong arity is a type error
+todo	a nested tuple-arity mismatch in equality is a type error
+todo	a nested unquote pattern matches a sub-AST by shape
+todo	a nested-let chain that reuses each binding folds to one value
+todo	a nominal record compared to a plain record of the same shape is a type error
+todo	a non-empty scrutinee does not match an empty bin pattern
+todo	a non-final unquote-splice in a quote pattern is ill-formed
+todo	a non-final unsized bytes segment is ill-formed
+todo	a non-matching literal inside a constructor pattern binds the runtime payload
+todo	a nullary Sign variant applied to a non-unit payload is a type error
+todo	a nullary constructor is a single-arity function taking unit
+todo	a nullary variant applied to a non-unit payload is a type error
+todo	a one-element tuple pattern against a two-tuple is a type error
+todo	a pattern binds a name scoped to its branch
+todo	a pattern that binds the same name across nested sub-patterns is rejected
+todo	a pattern that binds the same name twice is rejected
+todo	a peephole rewrite rule reads in the shape of the code it rewrites
+todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
+todo	a plain record compared to a nominal record of the same shape is a type error
+todo	a positional tuple access out of the tuple's static arity is a type error
+todo	a program that delegates no effect is pure and never suspends
+todo	a program that makes a host call has that call in its observable behavior
+todo	a program uses a response-returning delegated host function's return value
+todo	a program's syntax tree is an ordinary value walked recursively across calls
+todo	a program's unary variant reusing a prelude nullary variant name is unary
+todo	a quantity is constructed from a numeric value and a unit
+todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
+todo	a quantity's erased value is the identical numeric value the bare literal has
+todo	a quote pattern binds an unquoted operand of a compound form
+todo	a quote pattern is equivalent to the Ast.* constructor pattern
+todo	a quote pattern matches a fixed arity
+todo	a quote pattern used to recognize a compiler form reads as that form
+todo	a quote-built and constructor-built AST of the same tree encode to identical bytes
+todo	a quote-pattern match with no catch-all is non-exhaustive
+todo	a quoted compound form equals the same AST built by the Ast.List constructor
+todo	a quoted integer equals the same node built by the Ast.Int constructor
+todo	a quoted name equals the same node built by the Ast.Name constructor
+todo	a rational is normalized to lowest terms on construction
+todo	a rational operation does not silently promote an integer operand
+todo	a rational with numerator and denominator both negative normalizes to positive
+todo	a rational's sign is normalized onto the numerator
+todo	a rational-magnitude quantity erases to its exact rational value
+todo	a reader literal carries a qualified name with a dot
+todo	a recognized pragma with a malformed argument list is rejected
+todo	a recognized string escape denotes its one scalar value
+todo	a record annotated with the wrong field type is rejected
+todo	a record field with no value expression is rejected, not a crash
+todo	a record whose field is a runtime tuple nests across the boundary
+todo	a record with a duplicate field name is a type error
+todo	a record with a non-adjacent duplicate field name is a type error
+todo	a record with a runtime field is returned as a program result
+todo	a recursive byte walk sums a runtime sequence via Bytes.at and match
+todo	a recursive def computes over its argument
+todo	a recursive def with a match base case computes over its argument
+todo	a recursive emitter dispatches on a sum's variants to build bytes per node
+todo	a recursive fold of a cons-list to bytes is the whole program result
+todo	a recursive function counts down through a stateful effect and bails at zero
+todo	a recursive function folds a linked list of runtime-determined length
+todo	a recursive function folds a runtime linked list to a scalar
+todo	a recursive function sums a range it walks by performing a fresh-index effect
+todo	a recursive function that installs a fresh handler on each call grows its context without bound
+todo	a recursive function that threads a tuple accumulator returns it
+todo	a recursive function threads two nested handlers' states at once
+todo	a recursive list accumulator grown by push and returned in the base arm stays a list
+todo	a recursive lower from a sum to Bytes assembles its output in match arms
+todo	a recursive predicate with the self-call in the else branch is a Bool condition
+todo	a recursive predicate with the self-call in the then branch is a Bool condition
+todo	a recursive reader decodes a CBOR application tree and evaluates it by head index
+todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
+todo	a recursive resolver whose trapping arm builds a compound compiles
+todo	a recursive sum consumer whose arguments are recursive sum producers compiles
+todo	a recursive sum type works with pattern matching
+todo	a recursive user sum type is built at run time and renders with qualified variant names
+todo	a recursively-built binary tree renders its full runtime structure
+todo	a recursively-built byte sequence assembles its bytes at run time
+todo	a recursively-built linked list renders its full runtime spine
+todo	a reference to an unbound name is rejected before running
+todo	a repeated let binding shadows the earlier one for what follows
+todo	a returned runtime string with a multi-byte scalar renders the scalar verbatim
+todo	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
+todo	a right shift by a floating-point count does not silently promote
+todo	a right shift by the bit width or more traps rather than masking
+todo	a run's result is a deterministic function of a host call's recorded response
+todo	a runtime Option carrying a user sum is matched by a nested constructor pattern
+todo	a runtime compound structural equality is expressible as a hand-written recursive comparator
+todo	a runtime conditional selects its then-branch when the runtime condition holds
+todo	a runtime division by zero traps
+todo	a runtime left shift by the bit width or more traps
+todo	a runtime multiplication that overflows traps
+todo	a runtime overflowing left shift traps
+todo	a runtime right shift by the bit width or more traps
+todo	a runtime scrutinee matching no arm traps
+todo	a runtime scrutinee selects a non-first literal arm
+todo	a runtime string bound from a sum payload compares equal to a string parameter
+todo	a runtime string compared against a literal folds against the literal side
+todo	a runtime string equality selects a branch by comparing a parameter to a literal
+todo	a runtime string is indexed by scalar and the extracted scalar is returned
+todo	a runtime string is sliced by scalar offsets
+todo	a runtime string returned across the run boundary renders as its quoted text
+todo	a runtime string slice addresses scalar values, not bytes
+todo	a runtime string slice out of range yields None
+todo	a runtime string slice with an empty in-range span is Some of the empty string
+todo	a runtime subtraction that overflows traps
+todo	a runtime sum whose payload is a runtime tuple nests across the boundary
+todo	a runtime symbol compared to an interned constant matches by content
+todo	a runtime symbol that differs from the interned constant does not match
+todo	a runtime three-variant classifier dispatches to the middle arm
+todo	a runtime three-variant classifier dispatches to the negative arm
+todo	a runtime tuple with a boolean element is returned as a result
+todo	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
+todo	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
+todo	a scalar element is projected DIRECTLY from a named function's runtime tuple result
+todo	a scalar element is projected directly from a function's runtime tuple result
+todo	a scalar element is projected from a let-bound runtime tuple
+todo	a self-recursive Bool-returning function whose recursive call is the then-branch
+todo	a sequencing block discards a pure compound intermediate
+todo	a sequencing block discards a pure list intermediate
+todo	a sequencing block whose last form is unit yields unit
+todo	a sequencing block yields the value of its last form
+todo	a set collapses a duplicate element
+todo	a set is constructed from a list of its elements
+todo	a set with elements of two different types is a type error
+todo	a signed i8 segment encodes as two's complement
+todo	a signed pattern segment reads a two's-complement integer as negative
+todo	a single-form body admits a sequence by holding a do block
+todo	a slice spanning a concatenation sees the logical bytes
+todo	a slice whose end is beyond the string length yields None
+todo	a slice whose end precedes its start yields None
+todo	a slice whose start equals its end is Some of the empty string
+todo	a slice with a negative start yields None
+todo	a stateful handler threads its counter across a function boundary
+todo	a strict greater-than of equal operands is false
+todo	a strict less-than of equal operands is false
+todo	a string carried as a sum-variant payload is bound and measured at run time
+todo	a string compared to a symbol is a type error
+todo	a string literal
+todo	a string literal is normalized to the canonical text form
+todo	a string passed to a function as a runtime argument is measured by its byte length
+todo	a sum declaring a variant name twice is a type error
+todo	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
+todo	a sum type can mix nullary and payload-carrying variants
+todo	a sum type is declared with named variants
+todo	a sum type variant can carry data
+todo	a sum value annotated as a scalar type is rejected
+todo	a sum-match recursion that accumulates a built-in list returns a list
+todo	a sum-type value is constructed through a variant
+todo	a sum-type value is deconstructed by an exhaustive match
+todo	a symbol compared to a string is a type error
+todo	a symbol converts back to its content string
+todo	a symbol is constructed from a string
+todo	a symbol's identity is its content, not how the content was derived
+todo	a tag-length-value record round-trips through construct then match
+todo	a tail-recursive function returning a tuple is tuple-valued
+todo	a tail-recursive string accumulator builds a runtime string and its length is measured
+todo	a three-element runtime tuple is returned as a result
+todo	a top-level value definition binds a name usable by the program's functions
+todo	a top-level value definition binds a record projected by the program's functions
+todo	a trailing bytes segment accepts the leftover the fixed segments leave
+todo	a trailing digit separator is a malformed literal, not the digits with it dropped
+todo	a transformation maps a syntax tree to a syntax tree and preserves meaning
+todo	a transformation observably rewrites the tree, not just its value
+todo	a transformation over the built-in Ast composes across a function call
+todo	a truncating conversion keeps the low bits rather than trapping
+todo	a truncating conversion of a negative value uses two's complement
+todo	a truncating conversion to an unusual width keeps that width's low bits
+todo	a tuple access out of arity on a function-returned tuple is a type error, not a trap
+todo	a tuple accessor with no operand is rejected, not a crash
+todo	a tuple annotated as a scalar type is rejected
+todo	a tuple annotated with the wrong arity is rejected
+todo	a tuple is constructed with positional elements
+todo	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
+todo	a tuple pattern against a Sign scrutinee is a type error
+todo	a tuple pattern against a sum scrutinee is a type error
+todo	a tuple pattern of the wrong arity is a type error
+todo	a tuple payload consumed INLINE in the sum arm projects and re-matches
+todo	a tuple payload extracted through a helper return must not be rejected as a type error
+todo	a tuple payload returned through a helper from a built-in Option must not trap
+todo	a tuple with a runtime element is returned as a program result
+todo	a tuple with every element computed at run time is returned as a result
+todo	a type annotation consistent with the value is transparent
+todo	a u16 segment encodes an integer big-endian by default
+todo	a u32 segment encodes four big-endian bytes
+todo	a u64 pattern segment reads eight big-endian bytes back into an integer
+todo	a u64 segment encodes eight big-endian bytes
+todo	a unary constructor applied to a runtime value is returned as a program result
+todo	a unary constructor is a single-arity function
+todo	a unary variant applied to a wrong-arity tuple payload is a type error
+todo	a unary variant applied to a wrong-type payload is a type error
+todo	a unit multiplied by its own inverse cancels to the dimensionless unit
+todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
+todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
+todo	a utf8-decoding bin match with no catch-all is non-exhaustive
+todo	a value declaration in a do block is in scope for the following forms
+todo	a value definition may carry a leading doc, like a function definition
+todo	a variant with a wrong-type payload as a direct match scrutinee is a type error
+todo	a whole rational carries a denominator of one
+todo	a wide fixed-size integer width is reserved, not yet a valid type
+todo	a wildcard in a nested pattern position ignores that element
+todo	a wrong-arity tuple pattern nested under a constructor pattern is a type error
+todo	a zero-bit integer width is rejected
+todo	a zero-length slice is the empty byte sequence
+todo	adding quantities of incompatible dimension is a compile-time error
+todo	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
+todo	adding two quantities of the same dimension keeps that dimension
+todo	adding two units of one dimension converts to the reference unit exactly
+todo	an AST from quasiquoting a runtime value equals the same AST built by quote
+todo	an IEC binary prefix scales a unit by a power of two
+todo	an Option carrying a Result is matched across two different sum types
+todo	an SI decimal prefix scales a unit by a power of ten
+todo	an annotated value takes a narrower integer width
+todo	an annotation that contradicts the value is rejected
+todo	an arbitrary-precision integer multiplication does not overflow
+todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
+todo	an arithmetic operator with a single operand is rejected, not a crash
+todo	an association list is searched by key with a tuple-carrying Option match
+todo	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
+todo	an effect discharged by a handler does not escape to the manifest
+todo	an effect operation reached with neither a handler nor a delegation is rejected
+todo	an effect performed in a callee is discharged by the caller's handler
+todo	an effect resolves past an intermediate frame that installs no handler
+todo	an effect resolves through a deep chain of intermediate functions
+todo	an effect that declares an operation name twice is rejected
+todo	an element is projected from a runtime-constructed tuple
+todo	an element is projected from a tuple returned by a function
+todo	an element is projected from a tuple returned by a nullary function
+todo	an element pattern matches a list by its length and elements
+todo	an element read across a concatenation boundary is the right value
+todo	an empty binary form is the empty byte sequence
+todo	an empty byte-string literal is the empty byte sequence
+todo	an empty map is unequal to a non-empty map, not a type error
+todo	an empty quote is rejected, not a crash
+todo	an empty scrutinee matches an empty bin pattern
+todo	an empty string is unequal to a non-empty string
+todo	an empty-range slice of a non-empty string is Some of the empty string
+todo	an entrypoint delegation lets a program reach its host function
+todo	an entrypoint delegation reaches an effect performed in a recursive callee
+todo	an entrypoint returning a comparison presents a Bool result at the boundary
+todo	an entrypoint returning arithmetic presents an Int64 result at the boundary
+todo	an expect of a list index result is an integer usable in arithmetic
+todo	an explicit annotation overrides the default-integer pragma
+todo	an explicit conversion makes the operation well-typed
+todo	an export and a like-named metadata key do not collide
+todo	an expression tree built at run time is evaluated by matching its node variants
+todo	an in-bounds slice yields Some of the bytes at that range
+todo	an inner binding shadows an outer one only within its scope
+todo	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
+todo	an integer if condition is a type error, not a running conditional
+todo	an integer literal pattern against a boolean scrutinee is a type error
+todo	an integer literal pattern matches a runtime scrutinee
+todo	an integer width above the 64-bit ceiling is rejected
+todo	an integer width from runtime data is rejected, keeping widths non-dependent
+todo	an internally ill-typed unselected match arm body is a type error
+todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
+todo	an offered ordering is total and deterministic
+todo	an open sum payload that does not match its schema yields a typed failure, not a trap
+todo	an open sum's payload decodes against a schema to a typed result
+todo	an operation on mismatched types is rejected at compile time
+todo	an option value annotated with the wrong payload type is rejected
+todo	an ordering operator with a single operand is rejected, not a crash
+todo	an out-of-range integer literal is a malformed literal, not an unbound name
+todo	an unannotated program with a valid typing type-checks and runs
+todo	an unbound name in a map key is a scope error, not a coerced string
+todo	an unbound name in a resume's state position is rejected
+todo	an unbound name in a short-circuited boolean operand is still rejected
+todo	an unbound name in an unselected conditional branch is still rejected
+todo	an unbound name in an unselected match arm is still rejected
+todo	an underscore-prefixed function parameter binds its argument
+todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
+todo	an unquote of an expression with an unbound name is rejected, not quoted
+todo	an unrecognized pragma key is rejected rather than ignored
+todo	an unrecognized string escape is rejected
+todo	an unsigned LEB128 encoder emits a single byte below the continuation threshold
+todo	an unsigned LEB128 encoder emits the known-answer multibyte encoding
+todo	an unsigned pattern segment reads the same byte as a non-negative integer
+todo	an unsigned right shift fills with zeros, not the sign bit
+todo	an unusual in-range width is a first-class type
+todo	an unusual-width value that overflows its computed range traps
+todo	annotating a quantity at a dimension the expression does not derive is an error
+todo	applying a boolean is a type error
+todo	applying a float is a type error
+todo	applying a non-function is a type error
+todo	arithmetic right shift
+todo	arithmetic right shift of negative one is negative one
+todo	arithmetic right shift preserves the sign bit for a negative operand
+todo	arithmetic within one integer type
+todo	bit-field segments pack sub-byte values into one byte
+todo	bitwise AND masks bits
+todo	bitwise AND of an integer and a float does not silently promote
+todo	bitwise OR combines bits
+todo	bitwise OR of an integer and a float does not silently promote
+todo	bitwise XOR is its own inverse
+todo	bitwise XOR of an integer and a float does not silently promote
+todo	bitwise XOR toggles bits
+todo	byte length agrees with the length of the encoded bytes
+todo	byte length counts the normalized form, not the source spelling
+todo	byte length is the UTF-8 byte count
+todo	byte sequences are equal by their bytes in order
+todo	char to-int and from-int round-trip through the scalar value
+todo	checked addition yields None on overflow instead of trapping
+todo	checked addition yields Some of the sum when it fits
+todo	checked multiplication reports overflow as None
+todo	checked multiplication yields Some when it fits
+todo	compacting a byte sequence built at run time preserves its bytes
+todo	compacting a slice preserves its bytes
+todo	compacting is the identity on value for a whole byte sequence
+todo	comparing a greater value to a lesser yields Greater
+todo	comparing a lesser value to a greater yields Less
+todo	comparing a map to a record is a type error
+todo	comparing an empty map to an empty record is a type error
+todo	comparing equal values yields Equal
+todo	comparing quantities of incompatible dimension is a compile-time error
+todo	comparing records whose field sets differ in size is a type error
+todo	comparing records with different field-name sets is a type error
+todo	comparing same-shape nominal types is a type error
+todo	comparing sums with disjoint variant sets is a type error
+todo	comparing tuples of different lengths is a type error
+todo	comparing two quantities of the same dimension yields a Bool
+todo	comparing two same-shape nominal sum types is a type error, not false
+todo	comparing two units of one dimension converts before comparing
+todo	concatenating an empty byte sequence on the left is the identity
+todo	concatenating an empty byte sequence on the right is the identity
+todo	concatenating an empty string on the left is the identity
+todo	concatenating an empty string on the right is the identity
+todo	concatenating byte sequences built at run time appends their bytes in order
+todo	concatenating lists of different element types is a type error
+todo	concatenating tuples preserves each element's type
+todo	concatenating two byte sequences appends their bytes in order
+todo	concatenating two runtime strings and measuring the result
+todo	concatenating two tuples appends their elements
+todo	concatenating with the empty list on the right is identity
+todo	concatenation is associative by content
+todo	conjunction is true exactly when both operands are true
+todo	conjunction shields a trapping right operand when the left is false
+todo	constructing a bit-field from a value wider than its width traps
+todo	constructing a byte sequence with a negative value traps
+todo	constructing a byte sequence with a runtime value out of range traps
+todo	constructing a byte sequence with a value out of range traps
+todo	constructing a rational with a zero denominator traps
+todo	constructing a sized bytes segment whose value length differs from the size traps
+todo	constructing a u8 segment from a value above its range traps
+todo	constructing an unsigned segment from a negative value traps
+todo	constructor pattern binders capture the payload uniformly
+todo	converting a BigInt back to a fixed width is checked and traps when out of range
+todo	converting a char to its integer scalar value is total
+todo	converting a fixed-width integer to BigInt is explicit
+todo	converting a scalar-valued integer to a char yields Some
+todo	converting a surrogate code point to a char yields None
+todo	converting a unit to another unit of the same dimension is an exact rational scale
+todo	converting an out-of-range integer to a char yields None
+todo	decoding a surrogate code point encoded as UTF-8 yields none
+todo	decoding an overlong UTF-8 encoding yields none
+todo	decoding bytes that are not a canonical AST yields the error case, not a trap
+todo	decoding canonical bytes followed by a trailing byte yields the error case
+todo	decoding ill-formed UTF-8 bytes yields none, not a trap
+todo	decoding ill-formed bytes through a helper takes the None arm
+todo	decoding well-formed UTF-8 bytes yields the string
+todo	deeply nested pattern matching
+todo	dimensional equality is decided by canonical exponent map, not written form
+todo	disjunction is false exactly when both operands are false
+todo	disjunction shields a trapping right operand when the left is true
+todo	distinct large floats are not equal
+todo	distinct names bound to the same string key the same map entry
+todo	dividing quantities divides their dimensions
+todo	division by zero traps
+todo	division of an integer and a float does not silently promote
+todo	division of the minimum integer by -1 overflows and traps
+todo	dropping an absent field from a record is rejected
+todo	dropping fields from a record leaves the remaining fields
+todo	each definition in a module registers a reachable export field
+todo	encoding a decoded string round-trips to the same bytes
+todo	encoding and decoding a constructor-built AST round-trips to an equal value
+todo	encoding and decoding a constructor-built compound AST round-trips
+todo	equality across incompatible dimensions is a compile-time error
+todo	equality applied to one operand is rejected, not a crash
+todo	eval is optional for macros and interactive use
+todo	eval on malformed AST traps
+todo	every not-a-number value is equal to every not-a-number value
+todo	exact rational arithmetic is exact and normalized
+todo	exact rational division is total and exact for a nonzero divisor
+todo	expect makes a checked-arithmetic result trap on overflow
+todo	expect on an overflowing checked add traps
+todo	expect traps on the absent case of a runtime optional
+todo	expect unwraps the ok case of a runtime result
+todo	expect unwraps the present case of a runtime optional
+todo	extending a record adds a new field
+todo	extending a record with an already-present field is rejected
+todo	extracting a high byte composes shift and mask
+todo	false is less than true
+todo	floating-point uses the fixed rounding mode
+todo	functions are single-arity and curried
+todo	greater-than at the integer extremes is signed
+todo	greater-than comparison
+todo	greater-than of an integer and a float is rejected
+todo	greater-than-or-equal
+todo	greater-than-or-equal of an integer and a float is rejected
+todo	hexadecimal, binary, and decimal spellings of one value are equal
+todo	host calls are observed in the order they were made
+todo	identical negative zeros nested in a tuple compare equal
+todo	indexing a byte sequence out of bounds yields None
+todo	indexing a byte sequence returns Some of the byte at that position
+todo	indexing a byte sequence with a negative index yields None
+todo	indexing a list bound from a sum payload yields the element
+todo	indexing a list in bounds yields Some of the element
+todo	indexing a list out of bounds yields None
+todo	indexing a list with a negative index yields None
+todo	indexing a runtime string past its last scalar yields None
+todo	indexing a slice is relative to the slice's start
+todo	indexing an empty list yields None
+todo	inserting a key already present replaces its value, not the size
+todo	inserting a key of a different type into a map is a type error
+todo	inserting a present element is a no-op value
+todo	inserting a value of a different type into a map is a type error
+todo	inserting an element yields a set containing it
+todo	inserting into the empty map then looking a key up yields the value
+todo	integer division by a negative divisor truncates toward zero
+todo	integer division of a negative dividend truncates toward zero, not toward negative infinity
+todo	integer division truncates toward zero
+todo	integer to byte (truncate to 0-255)
+todo	integer to byte wraps on overflow
+todo	interning the same string twice yields equal symbols
+todo	left shift
+todo	less-than at the integer extremes is signed, not unsigned
+todo	less-than compares negative operands by signed order
+todo	less-than-or-equal
+todo	less-than-or-equal of an integer and a float is rejected
+todo	lists are equal by elements in order
+todo	looking up an absent key yields None
+todo	map equality is independent of insertion order
+todo	match on a Result returned by a fallible function
+todo	match on a function-returned sum takes the other variant at runtime
+todo	match on a sum value returned by a function selects the runtime variant
+todo	matching a lookup from a computed-key map literal selects the present-value arm
+todo	matching a runtime Bytes.at Option binds the byte in the Some arm
+todo	matching a runtime Bytes.at Option takes the None arm past the end
+todo	matching falls through to else when no literal matches
+todo	matching on a sliced string selects the literal arm
+todo	matching on a string produced by an expression
+todo	matching on integer literals
+todo	matching on string literals
+todo	member access of a field the record does not have is a type error
+todo	member access of a missing field is a type error
+todo	member access of an absent field on a function-returned record is a type error
+todo	member access on a boolean is a type error
+todo	member access on a conditionally-chosen record, other branch
+todo	member access on a map is a type error
+todo	member access on a non-record is a type error
+todo	member access on a record chosen by a conditional projects the field
+todo	member access on a string is a type error
+todo	member access on a tuple is a type error
+todo	membership of a present element is true
+todo	membership of an absent element in the empty set is false
+todo	membership of an absent element is false, not a trap
+todo	merging records that share a field name is rejected
+todo	merging two records with disjoint fields unions their fields
+todo	mixing nullary and unary constructors in one match
+todo	mixing signed and unsigned of the same width does not silently promote
+todo	mixing two integer widths without a conversion does not silently promote
+todo	mixing two numeric types without an explicit conversion does not silently promote
+todo	mixing units of DIFFERENT dimensions is still a compile-time error
+todo	modulo by -1 is zero even at the minimum integer
+todo	modulo by zero traps
+todo	modulo gives the remainder
+todo	modulo of an integer and a float does not silently promote
+todo	multi-argument application is curried application
+todo	multiplication
+todo	multiplication of an integer and a float does not silently promote
+todo	multiplication of the minimum integer by -1 overflows and traps
+todo	multiplication past the maximum integer overflows and traps
+todo	multiplying quantities multiplies their dimensions
+todo	negation inverts a boolean
+todo	negative integer to byte uses two's complement
+todo	negative zero is distinct in the canonical value form
+todo	negative zero is not equal to positive zero
+todo	nested patterns deconstruct recursively
+todo	nested patterns with literals
+todo	nullary constructor patterns are uniform with unary
+todo	ordering a string against an integer is a type error regardless of operand order
+todo	ordering an integer against a boolean is a type error
+todo	ordering an integer against a float is rejected, not silently promoted
+todo	ordering an integer against a string is a type error
+todo	over-applying a constructor by several arguments is a type error
+todo	over-applying a constructor is a type error, not a silent argument drop
+todo	overflow of the default integer traps deterministically
+todo	parsing a length-framed message and rebuilding it yields the original bytes
+todo	pattern matching over AST distinguishes forms
+todo	performing a string-parameter operation with a non-string argument is a type error
+todo	performing an operation with a wrong-type argument for a compound parameter is a type error
+todo	performing an operation with an argument of the wrong type is a type error
+todo	popping a field yields its value and the remaining record
+todo	popping a tuple yields element zero and the remaining tuple
+todo	popping an absent field is rejected
+todo	projecting a record onto an absent field is rejected
+todo	projecting a record restricts it to the named fields
+todo	projecting a tuple passed as a function parameter yields the element, never an invalid component
+todo	projecting the result of a function that threads a tuple parameter must not trap
+todo	pushing an element of a different type onto a list is a type error
+todo	pushing an element onto a list appends it
+todo	quasiquote constructs AST with selective evaluation
+todo	quasiquote makes AST construction readable
+todo	quasiquote nests with inner unquote evaluated
+todo	quasiquotes unquoting a runtime variable and a literal build equal ASTs
+todo	quote produces an AST value without evaluating
+todo	quote-vs-constructor AST equality holds regardless of operand order
+todo	reaching an effect neither handled nor delegated is rejected at compile time
+todo	reading a string's scalar addresses scalar values, not bytes
+todo	reading a string's scalar in bounds yields Some of the char
+todo	reading a string's scalar out of bounds yields None
+todo	reading the text a printer produced round-trips to an equal value
+todo	record equality is independent of the order fields are written
+todo	record fields render in canonical (key-sorted) order regardless of source order
+todo	record reshaping is subset comparison as explicit projection
+todo	recursive factorial with a match base case
+todo	recursive fibonacci with literal match base cases
+todo	removing a key drops its association and the size
+todo	removing an absent key leaves the map unchanged
+todo	removing an element yields a set without it
+todo	resolving a head against a prelude symbol rejects a length-mismatched prefix
+todo	resolving a name in a shadowing environment returns the innermost binding's slot
+todo	resuming with a value of the wrong type for the operation's result is a type error
+todo	resuming with a wrong-type value for a compound result type is a type error
+todo	runtime float equality compares by canonical byte form
+todo	runtime float inequality compares by canonical byte form
+todo	scalar length counts Unicode scalar values, not bytes
+todo	scalar length of a supplementary-plane character is one scalar value
+todo	scaling a quantity by a dimensionless quantity keeps its dimension
+todo	set equality is independent of the order elements are written
+todo	signed 8-bit addition that overflows its width traps
+todo	slicing a byte sequence built at run time yields Some of the sub-range
+todo	slicing a runtime byte sequence past the end yields None
+todo	slicing a runtime byte sequence with a negative start yields None
+todo	slicing past the end of a byte sequence yields None
+todo	slicing with a negative start yields None
+todo	splice flattens where unquote nests
+todo	splicing a non-list value into a quasiquote is a type error
+todo	splicing an integer literal directly is a type error
+todo	splitting a tuple at a position yields a prefix and a suffix
+todo	splitting a tuple at zero yields an empty prefix
+todo	splitting a tuple beyond its arity is rejected
+todo	string concatenation
+todo	string equality
+todo	string indexing addresses Unicode scalar values, not bytes
+todo	string indexing at or beyond the length yields None
+todo	string indexing past a supplementary-plane scalar lands on the next scalar
+todo	string indexing returns Some of the character
+todo	string inequality
+todo	string length
+todo	string length counts scalar values after normalization
+todo	string slicing yields Some of the substring
+todo	string to bytes (UTF-8)
+todo	string to bytes encodes multi-byte characters
+todo	strings differing only in Unicode normalization are equal
+todo	structural equality holds component-wise
+todo	subset record comparison is explicit projection, not an overloaded equality
+todo	subtracting quantities of incompatible dimension is a compile-time error
+todo	subtraction
+todo	subtraction below the minimum integer overflows and traps
+todo	subtraction of an integer and a float does not silently promote
+todo	sum type constructors are in scope after declaration
+todo	symbol identity follows String normalization
+todo	symbols interned from different strings are unequal
+todo	the AST is a sum type deconstructible by pattern matching
+todo	the LEB128 byte composition runs on a runtime operand
+todo	the boolean less-than operator agrees with the three-way comparison
+todo	the built-in Ast is transformed as an ordinary value
+todo	the built-in list is folded by an element-with-rest pattern
+todo	the byte length of a runtime string equals the length of its encoded bytes
+todo	the default-integer pragma is definition-site scoped, not use-site
+todo	the difference contains the elements not in the second set
+todo	the empty byte sequence has length zero
+todo	the empty reader literal is the empty symbol
+todo	the empty set is equal to the empty set
+todo	the empty string has length zero
+todo	the empty symbol converts to the empty string
+todo	the empty symbol equals itself
+todo	the guarded-let conditional takes its else-branch when the conjunction is false
+todo	the identity function applied to a boolean returns the boolean
+todo	the identity function applied to an integer returns the integer
+todo	the intersection contains the elements in both sets
+todo	the largest factorial that fits the integer type computes exactly
+todo	the le modifier encodes a u16 little-endian
+todo	the length of a byte sequence is its byte count
+todo	the length of a concatenation is the sum of the two lengths
+todo	the length of a fixed-width construction is the sum of its segment widths
+todo	the length of a grown list is its element count
+todo	the length of a runtime byte sequence is its byte count
+todo	the length of a slice is the slice's byte count
+todo	the maximum unsigned 8-bit value is its per-width bound
+todo	the minimum signed 8-bit value is its per-width bound
+todo	the module entrypoint is the def named main regardless of its position
+todo	the number of elements counts distinct elements
+todo	the other parity of a mutually-recursive pair
+todo	the prelude binds Constructor values not pre-applied Sums
+todo	the program manifest is the union of its entrypoints' delegations
+todo	the reader literal reads to Symbol.of
+todo	the remainder takes the sign of the dividend for a negative dividend
+todo	the remainder takes the sign of the dividend for a negative divisor
+todo	the same function called under two handlers is discharged by each in turn
+todo	the scalar length of a runtime multi-byte string counts scalars, not bytes
+todo	the three-way comparison is deconstructed by an exhaustive match
+todo	the three-way comparison orders strings lexicographically
+todo	the two variants of Result compare unequal
+todo	the underlying numeric type obeys the numeric core — no silent promotion under a unit
+todo	the union contains the elements of either set
+todo	the unit value
+todo	the value-yielding insert reports the value it replaced
+todo	the value-yielding remove reports the value it dropped
+todo	the width-indexed and aliased annotations of one value do not conflict
+todo	true is greater than false
+todo	true is not less than false
+todo	tuple access on a non-tuple is a type error
+todo	tuple access on a record is a type error
+todo	tuple access on a tuple chosen by a conditional projects the element
+todo	tuple elements are accessed by index
+todo	tuples are deconstructed by pattern matching
+todo	two dependent-size segments each bind the count a preceding segment named
+todo	two different variants of the SAME sum compare unequal
+todo	two differing runtime sum values compare unequal by a heap walk
+todo	two distinct names bound to the same value key the same map entry
+todo	two effects each declaring a same-named operation do not collide
+todo	two empty byte sequences are equal
+todo	two empty strings are equal
+todo	two equal chars compare equal
+todo	two functions defined by mutual recursion compute a result
+todo	two host calls consume their responses in order
+todo	two lists are concatenated into one flat list
+todo	two lists of different length are unequal, not a type error
+todo	two maps of different sizes are unequal, not a type error
+todo	two maps with different keys are unequal, not a type error
+todo	two rationals denoting the same number are equal regardless of how they were written
+todo	two runtime strings compare equal by their contents
+todo	two runtime sum values compare equal by a heap walk
+todo	two sets of different sizes are unequal, not a type error
+todo	two sets with different elements are unequal, not a type error
+todo	two structural values of the same shape are equal
+todo	two unequal runtime strings compare false by their contents
+todo	two variants of the same sum compare unequal regardless of operand order
+todo	under-applying a unary constructor is a type error, not a fabricated unit payload
+todo	unit and the empty tuple are the same value
+todo	unit is the empty tuple
+todo	unquote in quasiquote evaluates normally and embeds
+todo	unquote outside quasiquote is a syntax error
+todo	unquote with more than one operand inside a quasiquote is malformed
+todo	unquote-splicing splices list elements into parent
+todo	unsigned 8-bit addition that overflows its width traps
+todo	unsigned comparison orders by magnitude, not by signed interpretation
+todo	unsigned subtraction below zero traps rather than wrapping
+todo	updating a list index replaces that element, leaving others
+todo	updating a list slot with an element of a different type is a type error
+todo	updating a record field changes its type to the new value's
+todo	updating a record field replaces its value
+todo	updating an absent record field is rejected
+todo	wrapping addition of in-range operands is ordinary addition
+todo	wrapping addition wraps modulo two to the sixty-fourth on overflow
+todo	wrapping arithmetic over runtime operands wraps at run time
+todo	wrapping arithmetic uses the distinct wrapping type
+todo	wrapping multiplication wraps rather than trapping
