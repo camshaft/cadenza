@@ -456,6 +456,38 @@ mod stage1 {
         assert_eq!(run_main("(. (Int 8) max)"), 127);
     }
 
+    // ── functions: a lambda application β-reduces (folds/monomorphizes) ──────────────────────────
+
+    #[test]
+    fn a_lambda_applied_folds() {
+        // `((fn (x) (+ x 1)) 5)` = 6 — the lambda β-reduces (substitute 5 for x → `(+ 5 1)`), then the
+        // arithmetic folds. No function value emitted (monomorphized away).
+        assert_eq!(run_main("((fn (x) (+ x 1)) 5)"), 6);
+    }
+
+    #[test]
+    fn a_let_bound_function_applied() {
+        // `(let ((inc (fn (x) (+ x 1)))) (inc 10))` = 11 — a let-bound function, applied through the
+        // ref to its lambda.
+        assert_eq!(run_main("(let ((inc (fn (x) (+ x 1)))) (inc 10))"), 11);
+    }
+
+    #[test]
+    fn a_multi_param_function() {
+        // `((fn (a b) (+ a b)) 3 4)` = 7 — both params substituted.
+        assert_eq!(run_main("((fn (a b) (+ a b)) 3 4)"), 7);
+    }
+
+    #[test]
+    fn a_higher_order_function_folds() {
+        // `(let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))` = 7 — a function passed as
+        // an argument, applied twice; the whole thing β-reduces to `(+ (+ 5 1) 1)` = 7.
+        assert_eq!(
+            run_main("(let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))"),
+            7
+        );
+    }
+
     #[test]
     fn a_type_value_has_type_type() {
         // A type is a first-class VALUE, so it has a type — `Type`. `Bool` (a ground-type record) and

@@ -105,6 +105,86 @@ fn width_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) -
     }
 }
 
+/// β-REDUCE a lambda application: build a copy of `body` in the arena with each of `params` replaced
+/// by the corresponding `args`, returning the reduced body's occurrence. This is how applying a
+/// function `((fn (x) (+ x 1)) 5)` reduces — substitute the argument for the parameter, then evaluate
+/// the substituted body. It APPENDS nodes (like the type-constructor builders); the reduced body is an
+/// ordinary subtree resolved/typed/lowered by demand. Substitution is capture-safe here because the
+/// arguments are closed (they resolve in the caller's scope, and the copy carries fresh occurrences
+/// whose parent is the copied structure — a param inside `args` refers to ITS binder, unaffected).
+///
+/// `arg_of` maps a parameter occurrence to the argument occurrence substituted for it. A body
+/// occurrence that IS a reference to one of these params is replaced by its argument; every other node
+/// is structurally copied (its children reduced in turn).
+pub fn beta_reduce(
+    db: &mut Db,
+    body: StructId,
+    arg_of: &HashMap<StructId, StructId>,
+) -> StructId {
+    // A reference to a substituted parameter → its argument. A parameter reference resolves to
+    // `Ref { value: <param binder occ> }`; if that binder is one we're substituting, use the arg.
+    if let Resolved::Ref { value } = resolved_of(db, body) {
+        if let Some(&arg) = arg_of.get(&value) {
+            return arg;
+        }
+    }
+    // The parameter OCCURRENCE itself (in the binder position, not a ref) is not substituted — only
+    // references are; but a bare param used as a value resolves to `Param{binder}` — substitute it.
+    if let Resolved::Param { binder } = resolved_of(db, body) {
+        if let Some(&arg) = arg_of.get(&binder) {
+            return arg;
+        }
+    }
+    // Otherwise structurally copy: an atom is shared (it references only a leaf); a list is copied
+    // with each child reduced.
+    match db.ast.get(body).clone() {
+        crate::ast::Struct::Atom(_) => body, // atoms are immutable and self-contained — reuse.
+        crate::ast::Struct::List(children) => {
+            let reduced: Vec<StructId> =
+                children.iter().map(|&c| beta_reduce(db, c, arg_of)).collect();
+            db.push_list(reduced)
+        }
+    }
+}
+
+/// If `head` reduces to a lambda, apply it to `args` by β-reduction, returning the reduced body's
+/// occurrence. Follows a `Ref` to the lambda (so a `let`-bound function applies too). Parameters match
+/// positionally: exact arity β-reduces the whole body; MORE args than params reduces then applies the
+/// remainder to the result (curried); FEWER args is a partial application, not yet supported (`Err`).
+/// A non-lambda head is `Ok(None)` — the caller tries the `(meta apply)` primitive path instead.
+pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Option<StructId>, String> {
+    let (params, body) = match lambda_of(db, head) {
+        Some(lam) => lam,
+        None => return Ok(None),
+    };
+    if args.len() < params.len() {
+        return Err("partial application of a function is not yet supported".to_string());
+    }
+    let mut arg_of: HashMap<StructId, StructId> = HashMap::new();
+    for (p, a) in params.iter().zip(args.iter()) {
+        arg_of.insert(*p, *a);
+    }
+    let reduced = beta_reduce(db, body, &arg_of);
+    let rest = &args[params.len()..];
+    if rest.is_empty() {
+        Ok(Some(reduced))
+    } else {
+        match apply_lambda(db, reduced, rest)? {
+            Some(r) => Ok(Some(r)),
+            None => Err("applied more arguments than the function accepts".to_string()),
+        }
+    }
+}
+
+/// If the value at `id` reduces to a lambda (following a `Ref`), its parameters and body.
+fn lambda_of(db: &mut Db, id: StructId) -> Option<(Vec<StructId>, StructId)> {
+    match resolved_of(db, id) {
+        Resolved::Lambda { params, body } => Some((params, body)),
+        Resolved::Ref { value } => lambda_of(db, value),
+        _ => None,
+    }
+}
+
 /// The `(meta apply)` primitive of the head value at `id`, if the head is applyable — project the
 /// `apply` field (in the `meta` namespace) and, following a ref, read the `Prim` it holds. `None`
 /// means "not applyable" (no `(meta apply)`, or it is not a primitive). This is the one dispatch step

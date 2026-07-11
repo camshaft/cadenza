@@ -78,6 +78,14 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
         // bare type/module used at runtime declines at the erasure fence.
         Resolved::Apply { head, args } => {
+            // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
+            // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
+            // `(+ 5 1)` → `6`, with no function value emitted.
+            match crate::eval::apply_lambda(db, head, &args) {
+                Ok(Some(reduced)) => return core_of(db, reduced),
+                Ok(None) => {} // not a lambda — try the primitive `(meta apply)` path below.
+                Err(msg) => return Core::Poison(Reject::decline(msg)),
+            }
             match crate::eval::meta_apply_of(db, head) {
                 Some(prim) if prim.is_arith() => lower_arith(db, prim, &args),
                 Some(prim) => match crate::eval::reduce_ctor(db, prim, &args) {
