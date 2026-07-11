@@ -63,6 +63,19 @@ impl From<TargetArg> for Target {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    // Install the trace sink at the HOST boundary (the lib core only EMITS events). Output goes to
+    // stderr, filtered by `RUST_LOG` (e.g. `RUST_LOG=rcdzc::infer=trace` to watch only inference, or
+    // `RUST_LOG=rcdzc=trace` for every decision). With no `RUST_LOG` set, nothing is installed and the
+    // `trace!` sites compile to no-ops at runtime — a normal run pays nothing. The subscriber living
+    // only in the binary is the right split: the lib is instrumentation-only, the bin decides the sink.
+    if std::env::var("RUST_LOG").is_ok() {
+        use tracing_subscriber::{fmt, EnvFilter};
+        let _ = fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
+
     // Read each named input artifact — from disk, or from stdin when the path is `-` (so the bin
     // composes in a pipe: `… | rcdzc - -o -`). A `-` input takes the kind/name from its spec, both
     // defaulting to `ast`/`main` since a piped artifact has no file stem to name it after.

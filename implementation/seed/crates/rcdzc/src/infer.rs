@@ -34,6 +34,7 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
         return t.clone();
     }
     let t = compute(db, id);
+    tracing::trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "solved type");
     db.types.fill(id, t.clone());
     t
 }

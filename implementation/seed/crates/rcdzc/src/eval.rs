@@ -171,8 +171,10 @@ pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Op
     // `infer` and `lower` reach a lambda head here, and currying recurses through here), so the one
     // check covers them all.
     if is_recursive(db, body) {
+        tracing::trace!(target: "rcdzc::eval", body = body.0, "decline: recursive function (needs runtime specialization)");
         return Err("a recursive function needs runtime specialization (not yet built)".to_string());
     }
+    tracing::trace!(target: "rcdzc::eval", body = body.0, params = params.len(), args = args.len(), "β-reduce lambda application");
     if args.len() < params.len() {
         return Err("partial application of a function is not yet supported".to_string());
     }

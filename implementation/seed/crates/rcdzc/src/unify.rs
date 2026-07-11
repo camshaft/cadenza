@@ -149,6 +149,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
 
 /// The conflicting-use type error for two irreconcilable types.
 fn mismatch(a: &Ty, b: &Ty) -> Reject {
+    tracing::trace!(target: "rcdzc::unify", lhs = %a.render_name(), rhs = %b.render_name(), "unify FAILED (conflicting use)");
     Reject::coded(
         Code::NumericMismatch,
         format!("cannot unify {} with {}", a.render_name(), b.render_name()),

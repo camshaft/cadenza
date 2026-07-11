@@ -52,11 +52,13 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // the first — `compiler-pipeline.md` §Phases Recover From Errors).
     let mut faults = collect_faults(&mut db, &layout);
     if !faults.is_empty() {
+        tracing::trace!(target: "rcdzc::compile", faults = faults.len(), "compilation FAILED (faults reported, no artifact)");
         for f in &mut faults {
             sanitize_origin(&db, f);
         }
         return fail(faults);
     }
+    tracing::trace!(target: "rcdzc::compile", targets = targets.len(), "program clean — emitting artifacts");
 
     // Clean: ask each requested target's backend to fill its artifact.
     let mut artifacts = Vec::new();

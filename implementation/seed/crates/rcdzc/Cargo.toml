@@ -31,15 +31,34 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-# The PURE COMPILER CORE (lib) has NO runtime dependencies — an integer literal is a plain
+# The PURE COMPILER CORE (lib) carries no VALUE dependencies — an integer literal is a plain
 # (sign, magnitude bytes) struct, so nothing is pulled in for arbitrary precision, and the core
 # ports cleanly to the Cadenza self-host.
+
+[dependencies.tracing]
+# TRACE-LEVEL DECISION LOGGING. The query producers (resolve/infer/lower/eval) emit a `trace!` event
+# at each decision — a name's resolution, a solved type, a fold outcome, a decline — so a debugging
+# run sees exactly what the compiler chose and why. `trace!` is ZERO-COST when no subscriber is
+# installed (the default), so the corpus gate and normal builds pay nothing; a subscriber is set up
+# only at the HOST boundary (the CLI bin, tests). In the eventual Cadenza port these call sites map
+# to a trace EFFECT — a structured event emitted to an ambient handler — so instrumenting with
+# events (not the crate's span/subscriber internals threaded through logic) keeps the port clean.
+version = "0.1"
+default-features = false
+features = ["std"]
 
 [dependencies.clap]
 # Used ONLY by the CLI bin (the host boundary — filesystem + args), never by the lib core. Same
 # clap 4 + derive the workspace's xtask uses.
 version = "4"
 features = ["derive"]
+
+[dependencies.tracing-subscriber]
+# Installs the trace SINK — used ONLY at the host boundary (the CLI bin, and the test harness), never
+# by the lib core. The bin turns on trace output from `RUST_LOG`/`--trace`; the core just emits
+# events. Env-filter lets a debugging run select `rcdzc=trace` without recompiling.
+version = "0.3"
+features = ["env-filter", "fmt"]
 
 [dev-dependencies]
 # The independent byte ORACLE (tests only): licenses the hand-emitted byte path by asserting it is

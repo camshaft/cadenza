@@ -59,6 +59,7 @@ pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
     if let Resolved::Poison(reject) = &mut r {
         reject.set_origin_if_absent(id);
     }
+    tracing::trace!(target: "rcdzc::resolve", node = id.0, resolved = ?r, "resolved");
     db.resolved.fill(id, r.clone());
     r
 }
@@ -155,6 +156,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 1. Lexical scope — nearest enclosing binder.
     if let Some(value) = lookup_scope(db, id, name) {
+        tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → lexical scope");
         return Resolved::Ref { value };
     }
     // 2. The module's own top-level definitions. A nullary def denotes its body; a def WITH parameters
@@ -163,6 +165,7 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // per reference, a forward/mutual reference resolves regardless of definition order.
     if let Some(d) = db.def_by_name(name) {
         let def = &db.defs[d];
+        tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, params = def.params.len(), "name → top-level def");
         return match def.body {
             Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
             Some(body) => Resolved::Lambda { params: def.params.clone(), body },
@@ -172,11 +175,13 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 3. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {
+        tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → prelude");
         return Resolved::Ref { value };
     }
     // 3. Off the end of the lookup — the name is unbound. This is a REJECTION (the program is
     // ill-formed), not a decline: the unbound-name rule is unconditional (`core-semantics.md`
     // §Binding Is Lexical).
+    tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
     Resolved::Poison(Reject::coded(Code::Unbound, format!("unbound name `{name}`")))
 }
 

@@ -28,6 +28,7 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
         return c.clone();
     }
     let c = compute(db, id);
+    tracing::trace!(target: "rcdzc::lower", node = id.0, core = ?c, "lowered");
     db.core.fill(id, c.clone());
     c
 }
@@ -212,14 +213,20 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         }
     };
     match checked {
-        Some(n) => Core::ConstInt(IntValue::from_i64(n)),
+        Some(n) => {
+            tracing::trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = n, "folded constant integer op");
+            Core::ConstInt(IntValue::from_i64(n))
+        }
         // A provable trap — the checked default traps, and the compiler can prove it, so the build
         // fails (CDZ0304) rather than emitting a component that traps (`numeric-model.md` §A Constant
         // Operation With No Value Is Rejected At Compile Time).
-        None => Core::Poison(Reject::coded(
-            Code::ConstTrap,
-            format!("constant {} has no defined value (overflow, divide-by-zero, or out-of-range shift)", intrinsic_name(op)),
-        )),
+        None => {
+            tracing::trace!(target: "rcdzc::fold", op = intrinsic_name(op), "constant op traps → CDZ0304 (fails build)");
+            Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                format!("constant {} has no defined value (overflow, divide-by-zero, or out-of-range shift)", intrinsic_name(op)),
+            ))
+        }
     }
 }
 
