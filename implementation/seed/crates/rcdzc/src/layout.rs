@@ -106,16 +106,99 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         });
     }
 
-    // Emission order: exported definitions first, in declaration order, deduplicated. Stage 0 has no
-    // calls, so nothing further is reachable.
+    // Emission order: exported definitions first (declaration order, deduplicated), then every
+    // definition REACHABLE from them through a runtime `Core::Call` — a recursive callee, or a callee
+    // that a recursive function reaches. A worklist closes the reachable set: for each def in `order`,
+    // lower its body and append any `Core::Call` callee not already present. (Non-recursive calls
+    // inline, so they add nothing here — only a `Core::Call` grows the set.)
     let mut order: Vec<usize> = Vec::new();
     for e in &exports {
         if !order.contains(&e.def) {
             order.push(e.def);
         }
     }
+    let mut i = 0;
+    while i < order.len() {
+        let def = order[i];
+        if let Some(body) = db.defs[def].body {
+            let mut callees = Vec::new();
+            collect_call_callees(db, body, &mut callees);
+            for c in callees {
+                if !order.contains(&c) {
+                    trace!(target: "rcdzc::layout", def = c, "reachable via a runtime call — added to emission order");
+                    order.push(c);
+                }
+            }
+        }
+        i += 1;
+    }
 
     Ok(Layout { exports, order })
+}
+
+/// Collect the `db.defs` indices a body CALLS at runtime — the `Core::Call` callees reached from the
+/// core form at `id`, descending through every sub-position (both `if` branches are reachable code, so
+/// a callee in either counts). Reads the core column on demand. A callee's OWN calls are found when it
+/// is itself expanded from the worklist, so this walk does not recurse into a callee's body.
+fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
+    match crate::lower::core_of(db, id) {
+        crate::core::Core::Call { callee, args } => {
+            if !out.contains(&callee) {
+                out.push(callee);
+            }
+            for a in args {
+                collect_call_callees(db, a, out);
+            }
+        }
+        crate::core::Core::If { cond, then_, else_ } => {
+            collect_call_callees(db, cond, out);
+            collect_call_callees(db, then_, out);
+            collect_call_callees(db, else_, out);
+        }
+        crate::core::Core::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_call_callees(db, value, out);
+            }
+            collect_call_callees(db, body, out);
+        }
+        crate::core::Core::Arith { lhs, rhs, .. } | crate::core::Core::Compare { lhs, rhs, .. } => {
+            collect_call_callees(db, lhs, out);
+            collect_call_callees(db, rhs, out);
+        }
+        crate::core::Core::Convert { operand, .. } => collect_call_callees(db, operand, out),
+        crate::core::Core::Record { fields } => {
+            for value in fields.values() {
+                collect_call_callees(db, *value, out);
+            }
+        }
+        // Leaves and references have no sub-calls.
+        crate::core::Core::ConstInt(_)
+        | crate::core::Core::ConstBool(_)
+        | crate::core::Core::Unit
+        | crate::core::Core::Param { .. }
+        | crate::core::Core::LocalRef { .. }
+        | crate::core::Core::Poison(_) => {}
+    }
+}
+
+/// The parameters of definition `def` for INTERNAL emission — each `(name-occurrence, solved-type)`,
+/// in signature order. Same as [`export_params`] but WITHOUT the boundary-representability decline: an
+/// internal (non-exported) callee's parameters need only a CORE machine valtype (i32/i64), not a
+/// component-boundary primitive, so a width that could not cross the boundary is still fine for a local
+/// call. The name occurrence is the slot-map key (seen through a `(: a T)` annotated binder). Used by
+/// the backend to select a reachable non-export function (a recursive callee) with its own local slots.
+pub fn def_params(db: &mut Db, def: usize) -> Vec<(StructId, Ty)> {
+    let sig_params = db.defs[def].params.clone();
+    let mut out = Vec::new();
+    for p in sig_params {
+        let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+            Some(name_occ) => name_occ,
+            None => p,
+        };
+        let ty = type_of(db, binder);
+        out.push((binder, ty));
+    }
+    out
 }
 
 /// The exported parameters of definition `def` — each `(name-occurrence, solved-type)`, in signature
@@ -166,6 +249,37 @@ mod tests {
         // The single exported definition is wasm func 0.
         assert_eq!(layout.order, vec![0]);
         assert_eq!(layout.abs(0), Some(0));
+    }
+
+    #[test]
+    fn a_recursive_callee_is_reachable_past_the_exports() {
+        // `main` (def 0, the export) calls `sum-to` (def 1) — a recursive callee reached by a runtime
+        // `Core::Call`. Reachability must ADD `sum-to` to the emission order after the export, and its
+        // absolute index (1) is what a `call` from `main` targets.
+        let ast = crate::testkit::parse(
+            "(module m (def (main) (sum-to 3)) (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = compute(&mut db).expect("layout");
+        let main = db.def_by_name("main").expect("main");
+        let sum_to = db.def_by_name("sum-to").expect("sum-to");
+        // Both emitted; the export is first (index 0), the reachable callee second.
+        assert_eq!(layout.order, vec![main, sum_to]);
+        assert_eq!(layout.abs(main), Some(0));
+        assert_eq!(layout.abs(sum_to), Some(1));
+    }
+
+    #[test]
+    fn an_uncalled_def_is_not_reachable() {
+        // A def neither exported nor called is dead — it does NOT enter the emission order.
+        let ast = crate::testkit::parse(
+            "(module m (def (main) 42) (def (unused (: n Int64)) (+ n 1)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = compute(&mut db).expect("layout");
+        let main = db.def_by_name("main").expect("main");
+        assert_eq!(layout.order, vec![main]);
+        assert_eq!(layout.abs(db.def_by_name("unused").unwrap()), None);
     }
 
     #[test]

@@ -162,6 +162,12 @@ pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     if let Some(cached) = db.def_schemes.get(&def) {
         return cached.clone();
     }
+    // RE-ENTRY GUARD. Computing a recursive def's scheme demands `type_of` of its body, whose self-call
+    // demands this def's scheme AGAIN before the memo is filled. Seed a `None` sentinel FIRST, so the
+    // re-entrant call reads `None` (a self-call types as `Any`, absorbed by the base case — the same
+    // behavior as the β-reduction recursion guard) rather than looping forever. The real scheme
+    // overwrites the sentinel once the body solve completes.
+    db.def_schemes.insert(def, None);
     let scheme = compute_def_scheme(db, def);
     db.def_schemes.insert(def, scheme.clone());
     scheme
@@ -219,16 +225,31 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // a scheme-based typing of a lambda head arrives with a def's inferred scheme.)
     if crate::eval::lambda_body(db, head).is_some() {
         trace!(target: "rcdzc::infer", head = head.0, args = args.len(), "apply: β-reduce lambda head for its type");
-        return match db.enter_reduction() {
+        let reduced_ty = match db.enter_reduction() {
             Some(mut guard) => {
                 let g = guard.db();
                 match crate::eval::apply_lambda(g, head, args) {
-                    Ok(Some(reduced)) => type_of(g, reduced),
-                    _ => Ty::Any,
+                    Ok(Some(reduced)) => Some(type_of(g, reduced)),
+                    _ => None, // recursive / partial — β-reduction can't type it; try the scheme below.
                 }
             }
-            None => Ty::Any, // recursive — the fault is reported by the lowering/poison path.
+            None => None, // depth limit (recursive) — try the scheme below.
         };
+        if let Some(t) = reduced_ty {
+            return t;
+        }
+        // β-reduction couldn't type it (a RECURSIVE callee). Type the call by the callee's DEF SCHEME
+        // instead — an annotated recursive def has a determined signature (`def_scheme`), so applying
+        // it to the args yields the real result type (Int64 for `(sum-to 3)`) rather than `Any`. This
+        // is what lets a recursive call's RESULT flow to a machine type (a wasm return valtype). A
+        // callee with no determined scheme (unannotated, needs the connected solve) stays `Any`.
+        if let Some(callee) = callee_def_index_for_infer(db, head)
+            && let Some(scheme) = def_scheme(db, callee)
+        {
+            trace!(target: "rcdzc::infer", head = head.0, callee, "apply: recursive call typed by def_scheme");
+            return apply_scheme_to_args(db, &scheme, args);
+        }
+        return Ty::Any; // recursive with an undetermined signature — fault reported elsewhere.
     }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
@@ -258,6 +279,40 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
     }
     subst.apply(&cur)
+}
+
+/// Apply a def SCHEME to `args`, returning the result type — instantiate it with fresh variables, then
+/// peel one curried parameter per argument (unifying the arg's type into the parameter). The result is
+/// the instantiated return type after substitution. Used to type a RECURSIVE call by its callee's
+/// signature (which β-reduction can't type). Mirrors the operator-scheme application in `apply_type`.
+fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
+    let mut fresh = Fresh::new();
+    let mut cur = crate::unify::instantiate(scheme, &mut fresh);
+    let mut subst = Subst::new();
+    for &arg in args {
+        let applied = subst.apply(&cur);
+        match applied {
+            Ty::Fn(param, result) => {
+                let at = type_of(db, arg);
+                let _ = crate::unify::unify(&mut subst, &param, &at);
+                cur = *result;
+            }
+            _ => return Ty::Any,
+        }
+    }
+    subst.apply(&cur)
+}
+
+/// The `db.defs` index of the top-level def an application head names, if any — for typing a recursive
+/// call by its scheme. Follows a `Ref` to a `Lambda` whose body matches a def's body occurrence. (The
+/// infer-side sibling of `lower::callee_def_index`; kept here so infer does not depend on lower.)
+fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
+    let body = match crate::resolve::resolved_of(db, head) {
+        crate::resolved::Resolved::Lambda { body, .. } => body,
+        crate::resolved::Resolved::Ref { value } => return callee_def_index_for_infer(db, value),
+        _ => return None,
+    };
+    db.defs.iter().position(|d| d.body == Some(body))
 }
 
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and

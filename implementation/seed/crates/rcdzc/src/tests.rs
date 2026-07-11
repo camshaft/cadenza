@@ -1248,7 +1248,8 @@ mod runtime_ops {
             let ty = type_of(&mut db, binder);
             params.push((binder, ty));
         }
-        let f = select_function(&mut db, body, &params).expect("select");
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
         // The inner `(+ a b)` is a checked add → exactly ONE `I64Add` (the outer `(+ s s)` is the
         // SECOND). If `s` were inlined at both uses, `(+ a b)` would appear TWICE → three `I64Add`s.
         let adds = f
@@ -1321,6 +1322,103 @@ mod runtime_ops {
                 &[Val::S64(9), Val::S64(1)]
             ),
             3
+        );
+    }
+}
+
+// ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
+//
+// A recursive function cannot β-reduce to a normal form at compile time, so it is emitted as its own
+// wasm function and its self-call is a `Core::Call`. These run whole annotated-recursive PROGRAMS under
+// wasmtime — the end-to-end proof that reachability emits the callee, the call ABI is right, and the
+// recursion terminates. (The corpus's UNANNOTATED recursive functions stay `todo` until the connected
+// parameter solve, A2; an annotated signature is determined by absorption — see `infer::def_scheme`.)
+mod recursion {
+    use super::run_returns;
+    use crate::compile::compile_component;
+    use crate::testkit::parse;
+
+    /// Compile a whole `(module …)` program and return its component bytes.
+    fn component(src: &str) -> Vec<u8> {
+        compile_component(&crate::codec::encode(&parse(src))).expect("compile")
+    }
+
+    #[test]
+    fn a_recursive_sum_runs() {
+        // sum-to(3) = 3+2+1+0 = 6. The self-call `(sum-to (+ n -1))` is a `Core::Call`; the base case
+        // `(= n 0) → 0` pins the return type to Int64 (absorption), so it emits as a real function.
+        let bytes = component(
+            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 6);
+    }
+
+    #[test]
+    fn a_recursive_factorial_runs() {
+        // fac(5) = 120 — recursion through multiplication (checked; in range here).
+        let bytes = component(
+            "(module m (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (+ n -1))))) (def (main) (fac 5)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 120);
+    }
+
+    #[test]
+    fn a_recursive_bool_predicate_runs_in_both_branch_orders() {
+        // all-lt: the self-call is the THEN branch, `false` the ELSE — must type as Bool regardless of
+        // order. all-lt(0,3,5) over 0,1,2 (<5) is true → 1.
+        let all_lt = component(
+            "(module m (def (all-lt (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) (all-lt (+ i 1) n bound) false) true)) (def (main) (if (all-lt 0 3 5) 1 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&all_lt, "main"), 1);
+        // all-ge: the self-call is the ELSE branch, `false` the THEN (the mirror). all-ge(0,3,0) → 1.
+        let all_ge = component(
+            "(module m (def (all-ge (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) false (all-ge (+ i 1) n bound)) true)) (def (main) (if (all-ge 0 3 0) 1 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&all_ge, "main"), 1);
+    }
+
+    #[test]
+    fn mutual_recursion_runs() {
+        // is-even/is-odd call each other; both are reachable (reachability adds is-odd via is-even's
+        // call) and emitted. is-even(10) → true → 1.
+        let bytes = component(
+            "(module m (def (is-even (: n Int64)) (if (= n 0) true (is-odd (+ n -1)))) (def (is-odd (: n Int64)) (if (= n 0) false (is-even (+ n -1)))) (def (main) (if (is-even 10) 1 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+    }
+
+    #[test]
+    fn a_recursive_overflow_traps_at_runtime() {
+        // fac(25) overflows i64 (25! > 2^63); the checked multiply TRAPS at run time (not a compile-time
+        // fold — the value only exists at run time through the call chain). Proves the call ABI carries
+        // a real trap across frames.
+        let bytes = component(
+            "(module m (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (+ n -1))))) (def (main) (fac 25)) (export main))",
+        );
+        assert!(
+            super::call_traps(&bytes, "main", &[]),
+            "fac(25) must trap on overflow"
+        );
+    }
+
+    #[test]
+    fn an_unannotated_recursive_def_still_declines() {
+        // The corpus shape `(def (sum-to n) …)` — an UNANNOTATED param needs the connected solve (A2),
+        // so it DECLINES cleanly (no component), never miscompiles. Pins the honest boundary of B1.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(
+                    "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        assert!(
+            out.artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_none(),
+            "an unannotated recursive def must decline, not compile"
         );
     }
 }

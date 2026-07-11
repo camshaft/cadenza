@@ -208,6 +208,14 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
             collect_reached_poisons(db, body, out);
         }
+        // A runtime call: its arguments are unconditionally evaluated, so descend into each. The
+        // CALLEE's own body faults surface when it is collected (a reachable def is checked on its own
+        // — `collect_faults` covers every def body), so we do not re-enter the callee here.
+        Core::Call { args, .. } => {
+            for arg in args {
+                collect_reached_poisons(db, arg, out);
+            }
+        }
         // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
         Core::LocalRef { .. }
         | Core::Param { .. }

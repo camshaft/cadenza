@@ -114,6 +114,7 @@ pub mod op {
     // local.set, unreachable.
     pub const LOCAL_SET: u8 = 0x21;
     pub const UNREACHABLE: u8 = 0x00;
+    pub const CALL: u8 = 0x10;
     // i64 division / remainder (signed and unsigned): 0x7F..0x82.
     pub const I64_DIV_S: u8 = 0x7F;
     pub const I64_DIV_U: u8 = 0x80;

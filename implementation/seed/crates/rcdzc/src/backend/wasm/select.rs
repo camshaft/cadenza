@@ -19,6 +19,7 @@ use crate::core::Core;
 use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::infer::type_of;
+use crate::layout::Layout;
 use crate::lower::core_of;
 use crate::resolved::Prim;
 use crate::ty::{IntTy, Ty};
@@ -37,8 +38,8 @@ pub struct SelectedFunc {
 
 /// Select one NULLARY definition body (rooted at AST occurrence `body`) into its flat instruction
 /// sequence. The return type is the body's solved type. Reads the core + type columns lazily.
-pub fn select_body(db: &mut Db, body: StructId) -> Result<SelectedFunc, Reject> {
-    select_function(db, body, &[])
+pub fn select_body(db: &mut Db, body: StructId, layout: &Layout) -> Result<SelectedFunc, Reject> {
+    select_function(db, body, &[], layout)
 }
 
 /// Select a function body with `params` — each a `(name-occurrence, solved-type)`, in signature order.
@@ -50,6 +51,7 @@ pub fn select_function(
     db: &mut Db,
     body: StructId,
     params: &[(StructId, Ty)],
+    layout: &Layout,
 ) -> Result<SelectedFunc, Reject> {
     // Assign each parameter a local slot in order, and its wasm value type (its machine rep).
     let mut slot_of: HashMap<StructId, u32> = HashMap::new();
@@ -79,6 +81,7 @@ pub fn select_function(
         base,
         &mut high,
         &mut scratch_ty,
+        layout,
         &mut code,
     )?;
     // Declare scratch slots `base..high` in slot order, each at its recorded type (default i64 for a slot
@@ -107,6 +110,7 @@ fn emit(
     base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     match core_of(db, id) {
@@ -150,7 +154,7 @@ fn emit(
         Core::If { cond, then_, else_ } => {
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.
-            emit(db, cond, slots, base, high, scratch_ty, out)?;
+            emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
@@ -163,9 +167,9 @@ fn emit(
                 },
             };
             out.push(Lir::If(block_ty));
-            emit(db, then_, slots, base, high, scratch_ty, out)?;
+            emit(db, then_, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::Else);
-            emit(db, else_, slots, base, high, scratch_ty, out)?;
+            emit(db, else_, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::End);
             Ok(())
         }
@@ -198,7 +202,16 @@ fn emit(
                 })?;
                 // Emit the value into scratch ABOVE this persistent slot (its own scratch floats), then
                 // store it once. The value sees the earlier bindings via `extended`.
-                emit(db, *value, &extended, slot + 1, high, scratch_ty, out)?;
+                emit(
+                    db,
+                    *value,
+                    &extended,
+                    slot + 1,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?;
                 out.push(Lir::LocalSet(slot));
                 scratch_ty.insert(slot, vt);
                 if slot + 1 > *high {
@@ -207,7 +220,7 @@ fn emit(
                 extended.insert(*binder, slot);
                 floor = slot + 1;
             }
-            emit(db, body, &extended, floor, high, scratch_ty, out)
+            emit(db, body, &extended, floor, high, scratch_ty, layout, out)
         }
         // A reference to a kept `let` binding — read its persistent slot, exactly like a parameter. The
         // slot was assigned when the enclosing `Core::Let` was emitted; a `LocalRef` with no slot is a
@@ -219,13 +232,32 @@ fn emit(
             }
             None => Err(Reject::decline("let-binding reference has no local slot")),
         },
+        // A runtime CALL — push each argument (in the CALLER's frame, so an arg's own scratch floats
+        // above `base`), then `call` the callee's absolute wasm-function index (its position in the
+        // layout's emission order). The callee is reachable (`layout` added it), so its index exists; a
+        // callee not in the emission order is a compiler bug (reachability missed it) → decline.
+        Core::Call { callee, args } => {
+            for &arg in &args {
+                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+            }
+            match layout.abs(callee) {
+                Some(idx) => {
+                    trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit runtime call");
+                    out.push(Lir::Call(idx));
+                    Ok(())
+                }
+                None => Err(Reject::decline(
+                    "a called function is not in the emission order (reachability gap)",
+                )),
+            }
+        }
         // A runtime comparison: emit both operands, then the machine comparison selected from the
         // operands' width AND signedness (`_s` for a signed type, `_u` for an unsigned one; `eq` is
         // sign-agnostic). The result is an i32 boolean. A comparison never overflows, so both operands
         // share the same scratch base (each is dead once pushed).
         Core::Compare { op, lhs, rhs } => {
-            emit(db, lhs, slots, base, high, scratch_ty, out)?;
-            emit(db, rhs, slots, base, high, scratch_ty, out)?;
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
+            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
             let it = operand_int_ty(db, lhs, rhs);
             out.push(compare_op(op, it));
             Ok(())
@@ -252,21 +284,21 @@ fn emit(
             let m = Machine::of(int_ty_of(db, id));
             trace!(target: "rcdzc::select", node = id.0, ?op, width = m.width, signed = m.signed, "emit runtime integer op");
             match op {
-                Prim::Add | Prim::Sub | Prim::Mul => {
-                    emit_checked_arith(db, op, m, lhs, rhs, slots, base, high, scratch_ty, out)
-                }
+                Prim::Add | Prim::Sub | Prim::Mul => emit_checked_arith(
+                    db, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
+                ),
                 Prim::BitAnd | Prim::BitOr | Prim::BitXor => {
-                    emit(db, lhs, slots, base, high, scratch_ty, out)?;
-                    emit(db, rhs, slots, base, high, scratch_ty, out)?;
+                    emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
+                    emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
                     out.push(m.bitwise(op));
                     Ok(())
                 }
-                Prim::Div | Prim::Rem => {
-                    emit_div_rem(db, op, m, lhs, rhs, slots, base, high, scratch_ty, out)
-                }
-                Prim::Shl | Prim::Shr => {
-                    emit_shift(db, op, m, lhs, rhs, slots, base, high, scratch_ty, out)
-                }
+                Prim::Div | Prim::Rem => emit_div_rem(
+                    db, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
+                ),
+                Prim::Shl | Prim::Shr => emit_shift(
+                    db, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
+                ),
                 // A comparison prim never reaches `Core::Arith` (it lowers to `Core::Compare`); a type
                 // constructor never lowers as a runtime op. Decline rather than emit a wrong op.
                 _ => Err(Reject::decline(
@@ -283,7 +315,9 @@ fn emit(
             let dst = Machine::of(int_ty_of(db, id));
             trace!(target: "rcdzc::select", node = id.0, ?op, from_width = src.width, to_width = dst.width, "emit runtime conversion");
             match op {
-                Prim::Wrap => emit_wrap(db, src, dst, operand, slots, base, high, scratch_ty, out),
+                Prim::Wrap => emit_wrap(
+                    db, src, dst, operand, slots, base, high, scratch_ty, layout, out,
+                ),
                 _ => Err(Reject::decline("not a runtime conversion")),
             }
         }
@@ -508,6 +542,7 @@ fn emit_checked_arith(
     base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     let (sa, sb, sr) = (base, base + 1, base + 2);
@@ -521,10 +556,10 @@ fn emit_checked_arith(
     }
     let operand_base = base + 3;
     // <A> local.set $a
-    emit(db, lhs, slots, operand_base, high, scratch_ty, out)?;
+    emit(db, lhs, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(Lir::LocalSet(sa));
     // <B> local.set $b  (B reuses A's dead scratch, from operand_base — minimal locals)
-    emit(db, rhs, slots, operand_base, high, scratch_ty, out)?;
+    emit(db, rhs, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(Lir::LocalSet(sb));
     // get$a get$b <machine-op> local.set $r
     out.push(Lir::LocalGet(sa));
@@ -664,6 +699,7 @@ fn emit_div_rem(
     base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     // A narrow signed division needs a range-check on the quotient (its `min_N / -1` overflows the type
@@ -672,8 +708,8 @@ fn emit_div_rem(
     // native trap, so no scratch is needed.
     let needs_range_check = matches!(op, Prim::Div) && m.signed && m.narrow();
     if !needs_range_check {
-        emit(db, lhs, slots, base, high, scratch_ty, out)?;
-        emit(db, rhs, slots, base, high, scratch_ty, out)?;
+        emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
+        emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
         out.push(if matches!(op, Prim::Div) {
             m.div()
         } else {
@@ -688,8 +724,8 @@ fn emit_div_rem(
     }
     scratch_ty.insert(sr, m.slot());
     let operand_base = base + 1;
-    emit(db, lhs, slots, operand_base, high, scratch_ty, out)?;
-    emit(db, rhs, slots, operand_base, high, scratch_ty, out)?;
+    emit(db, lhs, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit(db, rhs, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(m.div()); // traps on ÷0 natively; the machine op does not overflow at a narrow width
     out.push(Lir::LocalSet(sr));
     emit_range_check(m, sr, out);
@@ -725,6 +761,7 @@ fn emit_shift(
     base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     let (sa, sb, sr) = (base, base + 1, base + 2);
@@ -736,9 +773,9 @@ fn emit_shift(
     }
     let operand_base = base + 3;
     // <A> local.set $a ; <B> local.set $b
-    emit(db, lhs, slots, operand_base, high, scratch_ty, out)?;
+    emit(db, lhs, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(Lir::LocalSet(sa));
-    emit(db, rhs, slots, operand_base, high, scratch_ty, out)?;
+    emit(db, rhs, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(Lir::LocalSet(sb));
     // Count guard: `b >=ᵤ N` → trap. A negative count read unsigned is huge (≥ N), so this one test
     // catches both a negative and a too-large count. Bound is the LANGUAGE width N, not the slot width.
@@ -795,10 +832,11 @@ fn emit_wrap(
     base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     // 1. The operand, in the source slot.
-    emit(db, operand, slots, base, high, scratch_ty, out)?;
+    emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
     // 2. Move into the target slot (drop/extend the machine width). The extend is by the SOURCE sign so
     //    the source value's bits are preserved into the wider slot before the target mask.
     match (src.slot32, dst.slot32) {
@@ -901,11 +939,20 @@ mod tests {
     use super::*;
     use crate::testkit::{if_program, scalar_program};
 
+    /// Compute the boundary layout for a test program (all test fixtures have an export). `select_*`
+    /// needs it to resolve a `Core::Call` callee's function index; these Lir-level tests exercise no
+    /// call, so the layout's contents beyond the exported def are irrelevant — but a real one is passed
+    /// so the signature is honest.
+    fn layout_of(db: &mut Db) -> Layout {
+        crate::layout::compute(db).expect("layout")
+    }
+
     #[test]
     fn selects_a_literal_to_i64_const() {
         let (ast, body) = scalar_program();
         let mut db = Db::load(ast);
-        let f = select_body(&mut db, body).expect("select");
+        let layout = layout_of(&mut db);
+        let f = select_body(&mut db, body, &layout).expect("select");
         assert_eq!(f.code, vec![Lir::ConstI64(42)]);
         assert!(f.ret.agrees_with(&Ty::int64()));
     }
@@ -914,7 +961,8 @@ mod tests {
     fn selects_an_if_to_a_structured_block() {
         let (ast, if_node) = if_program();
         let mut db = Db::load(ast);
-        let f = select_body(&mut db, if_node).expect("select");
+        let layout = layout_of(&mut db);
+        let f = select_body(&mut db, if_node, &layout).expect("select");
         // (if false 1 2) → i32.const 0 ; if (result i64) ; i64.const 1 ; else ; i64.const 2 ; end
         assert_eq!(
             f.code,
@@ -964,8 +1012,9 @@ mod tests {
             "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) 0) (export main))",
         );
         let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
         let (params, body) = function_of(&mut db, "add");
-        let f = select_function(&mut db, body, &params).expect("select");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
         assert_eq!(f.params, vec![ValType::I64, ValType::I64]);
         assert_eq!(
             f.code,
@@ -1008,8 +1057,9 @@ mod tests {
             "(module m (def (lt (: a Int64) (: b Int64)) (< a b)) (def (main) 0) (export main))",
         );
         let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
         let (params, body) = function_of(&mut db, "lt");
-        let f = select_function(&mut db, body, &params).expect("select");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
         assert_eq!(
             f.code,
             vec![Lir::LocalGet(0), Lir::LocalGet(1), Lir::I64LtS]
@@ -1029,8 +1079,9 @@ mod tests {
             "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (def (main) 0) (export main))",
         );
         let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
         let (params, body) = function_of(&mut db, "f");
-        let f = select_function(&mut db, body, &params).expect("select");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
         // 3 params (slots 0,1,2); scratch base 3. Outer mul: $a3 $b4 $r5, operands at 6. Inner add:
         // $a6 $b7 $r8, operands (params) need no scratch. High-water 9 → 6 scratch locals.
         assert_eq!(f.declared, vec![ValType::I64; 6]);

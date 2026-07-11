@@ -35,6 +35,10 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
             out.push(op::LOCAL_SET);
             uleb128(*idx as u64, out);
         }
+        Lir::Call(func) => {
+            out.push(op::CALL);
+            uleb128(*func as u64, out);
+        }
         Lir::If(bt) => {
             out.push(op::IF);
             out.push(bt.byte()); // block-type byte lives here, not in the IR

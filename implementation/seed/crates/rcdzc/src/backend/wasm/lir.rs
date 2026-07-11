@@ -59,6 +59,9 @@ pub enum Lir {
     /// `local.set I` — pop the stack top into local `I`. Used by the checked-arithmetic guard to stash
     /// operands and the result in scratch locals.
     LocalSet(u32),
+    /// `call F` — call wasm function index `F` (its arguments already pushed in order). The index is a
+    /// definition's ABSOLUTE emission position (`layout.abs`), resolved at selection.
+    Call(u32),
     /// `if <blocktype>` — a two-way branch leaving a value of the block type.
     If(BlockType),
     /// `else`.

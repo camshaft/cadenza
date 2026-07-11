@@ -117,10 +117,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         return match crate::eval::apply_lambda(g, head, &args) {
                             Ok(Some(reduced)) => core_of(g, reduced),
                             Ok(None) => unreachable!("lambda_body implies a lambda head"),
-                            Err(msg) => {
-                                trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: lambda reduction declined");
-                                Core::Poison(Reject::decline(msg))
-                            }
+                            // The reduction declined. If it declined because the callee is RECURSIVE
+                            // (can't inline to a normal form), emit a real `Core::Call` to it instead —
+                            // provided the callee is a top-level def whose signature is DETERMINED
+                            // (`def_scheme` — an annotated recursive def types by absorption, no fixpoint
+                            // needed). An unannotated/undetermined callee still declines (its signature
+                            // needs the connected solve, a later step). Any other decline propagates.
+                            Err(msg) => lower_recursive_call_or_decline(g, head, &args, msg),
                         };
                     }
                     None => {
@@ -219,6 +222,60 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
         bindings: kept,
         body,
     }
+}
+
+/// A lambda application whose β-reduction DECLINED with `msg`: emit a runtime `Core::Call` if it
+/// declined because the callee is a RECURSIVE top-level def with a DETERMINED signature; otherwise
+/// propagate the decline. This is the ONE place a recursive call becomes a real wasm call instead of an
+/// unbounded inline. A non-recursive decline (a partial application, a bad head) is NOT a call — its
+/// message is passed through unchanged.
+fn lower_recursive_call_or_decline(
+    db: &mut Db,
+    head: StructId,
+    args: &[StructId],
+    msg: String,
+) -> Core {
+    // Only a RECURSION decline becomes a call; every other decline (partial application, over-arity)
+    // propagates as-is. The recursion decline is the one `apply_lambda` raises via `is_recursive`.
+    let is_recursion_decline = msg.contains("recursive function needs runtime specialization");
+    if !is_recursion_decline {
+        return Core::Poison(Reject::decline(msg));
+    }
+    // Resolve the head to the top-level def it names. Only a NAMED top-level def can be emitted as a
+    // standalone wasm function (its index is stable in the layout); a computed/anonymous recursive head
+    // has no such identity, so it still declines.
+    let callee = match callee_def_index(db, head) {
+        Some(d) => d,
+        None => return Core::Poison(Reject::decline(msg)),
+    };
+    // The callee must have a DETERMINED signature to be emitted (its params need machine valtypes). An
+    // annotated recursive def qualifies (types by absorption); an unannotated one does not yet — it
+    // declines until the connected parameter solve (A2) lands.
+    if crate::infer::def_scheme(db, callee).is_none() {
+        trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
+        return Core::Poison(Reject::decline(
+            "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
+        ));
+    }
+    trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
+    Core::Call {
+        callee,
+        args: args.to_vec(),
+    }
+}
+
+/// The `db.defs` index of the top-level def an application head names, if any — following a `Ref` to a
+/// `Lambda` whose body matches a def's body occurrence. Returns `None` for a head that is not a named
+/// top-level def (a `let`-bound lambda, a computed head).
+fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
+    // The head resolves to a `Lambda { body, .. }` for a top-level def (resolve maps a def name to its
+    // lambda). Match that body occurrence back to the def index.
+    let body = match resolved_of(db, head) {
+        Resolved::Lambda { body, .. } => body,
+        Resolved::Ref { value } => return callee_def_index(db, value),
+        _ => return None,
+    };
+    db.defs.iter().position(|d| d.body == Some(body))
 }
 
 /// Whether a `let` binding whose initializer is `init` should be KEPT as a named `Core::Let` binding

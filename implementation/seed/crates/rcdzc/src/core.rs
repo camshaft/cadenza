@@ -94,6 +94,13 @@ pub enum Core {
     /// the node's solved TARGET width/signedness (read off at selection); a constant operand folds to a
     /// `ConstInt` in `lower`. The target is the conversion node's OWN solved type, not the operand's.
     Convert { op: Prim, operand: StructId },
+    /// A runtime CALL to a top-level function — `callee` is the `db.defs` index of the function, `args`
+    /// the call-site argument occurrences (lowered in the CALLER's frame, pushed in order). Present only
+    /// when the application could NOT β-reduce to a normal form at compile time — i.e. a RECURSIVE
+    /// callee (a non-recursive call still inlines, so it never becomes a `Call`; this is the one path
+    /// that forces a real wasm call). The callee is emitted as its own wasm function (reachability adds
+    /// it to the layout's emission order); the backend emits each arg then `call <callee's abs index>`.
+    Call { callee: usize, args: Vec<StructId> },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
     /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of
     /// the parameter's slot. This is the runtime value a bare literal is not: a parameter's value is

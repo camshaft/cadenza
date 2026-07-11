@@ -27,19 +27,19 @@ use crate::layout::Layout;
 /// definition in the layout's emission order, serializes the core module, and assembles the envelope.
 pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
-    // parameterized exported function selects to a real wasm function (params → local slots, body →
-    // machine ops). `order[k]` is `exports[k]`'s def (exports first); a reachable non-export selects
-    // nullary (it has no export plan — a later stage's internal callee).
+    // parameterized function (exported OR an internal callee reached by a runtime `Core::Call`) selects
+    // to a real wasm function (params → local slots, body → machine ops). An EXPORT's params come from
+    // its plan (which already solved boundary valtypes); a reachable NON-export callee (a recursive
+    // function) reads its params via `layout::def_params` (core valtypes only — it never crosses the
+    // boundary).
     let mut funcs: Vec<SelectedFunc> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
-        let params = layout
-            .exports
-            .iter()
-            .find(|e| e.def == def)
-            .map(|e| e.params.clone())
-            .unwrap_or_default();
-        funcs.push(select_function(db, body, &params)?);
+        let params = match layout.exports.iter().find(|e| e.def == def) {
+            Some(e) => e.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        funcs.push(select_function(db, body, &params, layout)?);
     }
 
     // Serialize the embedded core module (multi-export core module, functions in emission order).
