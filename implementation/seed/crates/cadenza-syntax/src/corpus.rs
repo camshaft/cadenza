@@ -15,6 +15,8 @@
 //! is `<key>\t<value>` on one line (the normalized program prints on a single line, so this is safe):
 //!   case\t<description>
 //!   program\t<normalized program, s-expression on one line>
+//!   call\t<export>                 (present only when the case has a `(call …)` clause)
+//!   arg\t<value-form>              (zero or more, in order; the arguments to the call)
 //!   expect\t(output <value-form>) | (error <CODE>) | (trap <reason>)
 //!   needs\t<capability>            (zero or more; omitted when the case is core)
 //!   ---
@@ -27,10 +29,27 @@ pub struct Record {
     pub description: String,
     /// The `input` rewritten to the runnable export shape, as one-line s-expression text.
     pub program: String,
+    /// A `(call <export> <arg>…)` clause, if the case supplies runtime arguments to its entrypoint —
+    /// the export to invoke plus the argument values to pass. `None` for the common nullary case
+    /// (the driver invokes the sole export with no arguments).
+    pub call: Option<Call>,
     /// The recorded oracle result: `Output(value-form)`, `Error(code)`, or `Trap(reason)`.
     pub expect: Expect,
     /// Capabilities the case declares via `(needs …)` — a generation runs it only if it realizes them.
     pub needs: Vec<String>,
+}
+
+/// A `(call <export> <arg>…)` clause: run the named export with the given runtime arguments. This is
+/// how a case exercises a program's runtime machinery rather than a constant-folded nullary entry —
+/// the argument crosses the component boundary as a lifted value, so `(def (main (: x Int64)) (+ x 1))`
+/// runs a real `local.get` + add instead of folding to a constant (`component-abi.md` §The Entry Is A
+/// Plain Function — an entry is `input -> output`, its parameter type carrying a boundary representation).
+pub struct Call {
+    /// The export to invoke (e.g. `main`).
+    pub export: String,
+    /// The argument value-forms, in order — each the value's canonical text (e.g. `41`), stripped from
+    /// its `(: <value> <Type>)` annotation. The runner coerces each to the export's declared parameter type.
+    pub args: Vec<String>,
 }
 
 /// The recorded primary result of a case — exactly one per the corpus vocabulary.
@@ -75,6 +94,16 @@ pub fn render(records: &[Record]) -> String {
         out.push_str("program\t");
         out.push_str(&r.program);
         out.push('\n');
+        if let Some(call) = &r.call {
+            out.push_str("call\t");
+            out.push_str(&call.export);
+            out.push('\n');
+            for arg in &call.args {
+                out.push_str("arg\t");
+                out.push_str(arg);
+                out.push('\n');
+            }
+        }
         out.push_str("expect\t");
         match &r.expect {
             Expect::Output(v) => {
@@ -119,6 +148,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         .ok_or("case has no description string")?;
 
     let mut input: Option<StructId> = None;
+    let mut call: Option<Call> = None;
     let mut output: Option<String> = None;
     let mut error: Option<String> = None;
     let mut compiler_error: Option<String> = None;
@@ -129,6 +159,21 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         match a.head_name(clause) {
             Some("input") => {
                 input = a.as_form(clause, "input").and_then(|t| t.first().copied());
+            }
+            Some("call") => {
+                // `(call <export> <arg>…)` — the export to invoke plus its runtime arguments. The
+                // export is the first child (a name); each remaining child is an argument value-form,
+                // reduced to its bare value text (the runner coerces it to the declared param type).
+                if let Some(tail) = a.as_form(clause, "call")
+                    && let Some(&export_id) = tail.first()
+                    && let Some(export) = a.as_name(export_id)
+                {
+                    let args = tail[1..].iter().map(|&arg| value_of(a, arg)).collect();
+                    call = Some(Call {
+                        export: export.to_string(),
+                        args,
+                    });
+                }
             }
             Some("output") => {
                 // `(output (: <value> <Type>))` — record the value-form's canonical text. The value
@@ -197,6 +242,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     Ok(Record {
         description,
         program,
+        call,
         expect,
         needs,
     })
@@ -265,6 +311,19 @@ fn clone_into(a: &Arenas, id: StructId, b: &mut Builder) -> StructId {
 /// The canonical value-form text of an `(output …)` payload. For `(: <value> <Type>)` we keep the
 /// whole form's text; the driver's comparison logic decides how to match it against a rendered run.
 fn value_form_text(a: &Arenas, form: StructId) -> String {
+    sexpr::print_from(a, form)
+}
+
+/// The bare VALUE text of an argument form. A `(call …)` argument is written as a `(: <value> <Type>)`
+/// value-form (the same form `output` uses); the runner takes just the value and coerces it to the
+/// export's declared parameter type, so strip the annotation to `<value>`. An argument written as a
+/// bare value (no `(: …)` wrapper) is taken verbatim.
+fn value_of(a: &Arenas, form: StructId) -> String {
+    if let Some(tail) = a.as_form(form, ":")
+        && let Some(&value) = tail.first()
+    {
+        return sexpr::print_from(a, value);
+    }
     sexpr::print_from(a, form)
 }
 

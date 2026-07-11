@@ -52,6 +52,18 @@ one place a construct's meaning lives.
 - `(case "<description>" <clause>...)` — one case; the description is a short human/agent-readable label.
 - `(input <program>)` — the program to run, in the canonical representation.
 - `(doc "<text>")` — optional prose attached to the case; documentation, never affecting the check.
+- `(call <export> <arg>...)` — optional; run the program's `<export>` entry with the given **runtime
+  arguments** rather than as a nullary entry. Each `<arg>` is a `(: <value> <Type>)` value-form supplied
+  to the entry from outside the component; the entry's exported signature is then `input -> output`, its
+  parameter types read from its declared signature (contracts/component-abi.md §"The Entry Is A Plain
+  Function", §"The Exported Interface Is The Declared Signature"). This is the case's channel for a
+  value that arrives at run time — distinct from `host-responses`, which fixes the returns of host calls
+  the program *makes*. A value supplied here cannot be constant-folded, so a `(call …)` case exercises
+  the emitted component's runtime machinery (a parameter crossing the boundary, an operation over it
+  running as a real instruction) that a nullary entry, whose body folds to a value at compile time, never
+  reaches. Omitted for the common nullary case, where the sole export is run with no arguments. A
+  parameter that crosses the boundary MUST be annotated (`(: x Int64)`): its boundary representation
+  follows its declared type, so an unannotated parameter has no boundary form and the compiler declines.
 
 **Primary result clause — exactly one, the oracle.** This is the recorded result the corpus fixes for
 `input`; every generation that runs the case reproduces it, and the corpus's recorded value — not any
