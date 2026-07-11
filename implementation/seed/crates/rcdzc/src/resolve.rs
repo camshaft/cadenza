@@ -141,17 +141,29 @@ fn compute(db: &Db, id: StructId) -> Resolved {
     }
 }
 
-/// Resolve a bare name at occurrence `id` by the one ordered lookup: the lexical scope (walk parents
-/// to the nearest enclosing binder of `name`), then the prelude map. A hit is a `Ref` to the value the
-/// name denotes — a program binding OR a built-in — so a built-in is reached by the same mechanism as
-/// any binding, and the scope-first order means a program binding SHADOWS a built-in of the same name
-/// (`prelude-and-resolution.md` §Name Resolution Is One Ordered Lookup). A miss is a `Poison`.
+/// Resolve a bare name at occurrence `id` by the one ordered lookup: the lexical scope, then the
+/// module's own top-level definitions, then the prelude map (`prelude-and-resolution.md` §Name
+/// Resolution Is One Ordered Lookup Returning The Bound Value). A hit is the value the name denotes;
+/// scope-first order means a local binding SHADOWS a top-level def or built-in of the same name. A
+/// miss is a `Poison`.
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 1. Lexical scope — nearest enclosing binder.
     if let Some(value) = lookup_scope(db, id, name) {
         return Resolved::Ref { value };
     }
-    // 2. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
+    // 2. The module's own top-level definitions. A nullary def denotes its body; a def WITH parameters
+    // denotes a lambda `(params) body` (so a call `(f a)` applies it by the ordinary application
+    // path). This is what makes a top-level function callable by name — and, being resolved lazily
+    // per reference, a forward/mutual reference resolves regardless of definition order.
+    if let Some(d) = db.def_by_name(name) {
+        let def = &db.defs[d];
+        return match def.body {
+            Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
+            Some(body) => Resolved::Lambda { params: def.params.clone(), body },
+            None => Resolved::Poison(Reject::coded(Code::Malformed, format!("`{name}` has no body"))),
+        };
+    }
+    // 3. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {
         return Resolved::Ref { value };
@@ -220,6 +232,26 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
             if let Struct::List(params) = db.ast.get(params_occ) {
                 let mut found = None;
                 for &p in params {
+                    if db.ast.as_name(p) == Some(name) {
+                        found = Some(p);
+                    }
+                }
+                return found;
+            }
+        }
+        return None;
+    }
+    // Case 4: `form` is a `(def (NAME param…) body)`, ascended from the body → the signature's
+    // parameters (everything after NAME) bind. So a def-with-params body sees its parameters, exactly
+    // as a lambda body sees its own.
+    if let Some(tail) = db.ast.as_form(form, "def") {
+        let sig_occ = tail.first().copied()?;
+        let body_occ = tail.get(1).copied();
+        if Some(from) == body_occ {
+            if let Struct::List(sig) = db.ast.get(sig_occ) {
+                // sig = [NAME, param…]; a reference binds to the matching PARAM occurrence.
+                let mut found = None;
+                for &p in sig.iter().skip(1) {
                     if db.ast.as_name(p) == Some(name) {
                         found = Some(p);
                     }
@@ -372,12 +404,24 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
 /// an enclosing `(fn (params) body)` (i.e. that list is the `fn`'s first tail element). Such an
 /// occurrence is a formal, resolved to a `Param` rather than looked up.
 fn is_param_occurrence(db: &Db, id: StructId) -> bool {
-    let Some(params_list) = db.parent_of(id) else { return false };
-    let Some(fn_form) = db.parent_of(params_list) else { return false };
-    match db.ast.as_form(fn_form, "fn") {
-        Some(tail) => tail.first().copied() == Some(params_list),
-        None => false,
+    let Some(list) = db.parent_of(id) else { return false };
+    let Some(form) = db.parent_of(list) else { return false };
+    // A `(fn (params) body)` parameter: `list` is the fn's parameter list (its first tail element).
+    if let Some(tail) = db.ast.as_form(form, "fn") {
+        if tail.first().copied() == Some(list) {
+            return true;
+        }
     }
+    // A `(def (NAME param…) body)` parameter: `list` is the def's signature (its first tail element),
+    // and `id` is NOT the signature's first element (that is the def NAME, not a parameter).
+    if let Some(tail) = db.ast.as_form(form, "def") {
+        if tail.first().copied() == Some(list) {
+            if let Struct::List(sig) = db.ast.get(list) {
+                return sig.first().copied() != Some(id);
+            }
+        }
+    }
+    false
 }
 
 /// Resolve `(fn (param…) body)` into a compile-time lambda. The parameters bind in scope for `body`
