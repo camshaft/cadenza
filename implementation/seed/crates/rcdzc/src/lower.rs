@@ -330,13 +330,16 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
 }
 
-/// Classify a match PATTERN occurrence into a [`Probe`], or `None` if it is not a Stage-3a scalar
-/// pattern. An integer/boolean literal is a literal probe; the bare name `_` is the wildcard. (A binder
-/// name, a constructor, a tuple/record pattern are later increments — they return `None` here.)
+/// Classify a match PATTERN occurrence into a [`Probe`], or `None` if it is not a Stage-3 scalar
+/// pattern. An integer/boolean literal is a literal probe; a bare NAME (the wildcard `_`, or a BINDER
+/// like `k`) always matches — a `Wild` probe. A binder differs from `_` only in scope: a reference to
+/// it in the arm body resolves to the scrutinee (handled by `resolve`'s Case 5), so the PROBE is
+/// identical (always matches, exhaustive tail). (A constructor / tuple / record pattern is a later
+/// increment — it returns `None` here; with no sums yet, every bare name in a scalar match is a binder.)
 fn classify_probe(db: &mut Db, pat: StructId) -> Option<crate::core::Probe> {
-    // The wildcard `_` reads as a bare name. Detect it BEFORE resolving (resolve would treat `_` as an
-    // ordinary name lookup / poison); a `_` pattern is the always-match tail.
-    if db.ast.as_name(pat) == Some("_") {
+    // A bare name — the wildcard `_` OR a binder — always matches. Detected structurally (before
+    // resolving, which would look the name up / poison it); the binding is a scope concern, not a probe.
+    if db.ast.as_name(pat).is_some() {
         return Some(crate::core::Probe::Wild);
     }
     match resolved_of(db, pat) {

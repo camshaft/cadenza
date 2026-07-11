@@ -33,10 +33,12 @@ pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
+pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
 pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies to all its arguments at once
 pass	a negative hexadecimal literal negates its value
+pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a nested match on a runtime scrutinee
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a parameter carries a type annotation in the signature
@@ -56,6 +58,7 @@ pass	a runtime greater-than compares by signed order
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime remainder takes the dividend's sign
+pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation of a negative value uses two's complement and never traps
 pass	a runtime truncation to an unsigned byte keeps the low bits
@@ -65,10 +68,12 @@ pass	a signed-byte entrypoint returns its runtime argument
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a type annotation consistent with the value is transparent
+pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an inner binding shadows an outer one only within its scope
+pass	an integer literal pattern matches a runtime scrutinee
 pass	an integer literal with digit separators
 pass	an offered ordering is total and deterministic
 pass	an unannotated program with a valid typing type-checks and runs
@@ -326,12 +331,10 @@ todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a multi-way string-head dispatch resolves an operator name to its operation
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a name bound to a string keys a map by its value, not the literal name
-todo	a name pattern binds the runtime scrutinee when no literal arm matches
 todo	a named function is partially applied, bound, and used
 todo	a named multi-argument function applies in explicit curried form
 todo	a named width alias and its width-indexed expansion name the same type
 todo	a nearer handler on the call chain shadows an outer one
-todo	a negative integer literal pattern matches a runtime scrutinee
 todo	a negative right-shift count traps rather than masking
 todo	a negative shift count traps rather than masking
 todo	a negative string index yields None rather than wrapping to a large offset
@@ -432,7 +435,6 @@ todo	a runtime multiplication that overflows traps
 todo	a runtime overflowing left shift traps
 todo	a runtime right shift by the bit width or more traps
 todo	a runtime scrutinee matching no arm traps
-todo	a runtime scrutinee selects a non-first literal arm
 todo	a runtime string bound from a sum payload compares equal to a string parameter
 todo	a runtime string compared against a literal folds against the literal side
 todo	a runtime string equality selects a branch by comparing a parameter to a literal
@@ -551,7 +553,6 @@ todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an arithmetic operator with a single operand is rejected, not a crash
 todo	an association list is searched by key with a tuple-carrying Option match
-todo	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 todo	an effect discharged by a handler does not escape to the manifest
 todo	an effect operation reached with neither a handler nor a delegation is rejected
 todo	an effect performed in a callee is discharged by the caller's handler
@@ -581,7 +582,6 @@ todo	an in-bounds slice yields Some of the bytes at that range
 todo	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 todo	an integer if condition is a type error, not a running conditional
 todo	an integer literal pattern against a boolean scrutinee is a type error
-todo	an integer literal pattern matches a runtime scrutinee
 todo	an integer width above the 64-bit ceiling is rejected
 todo	an integer width from runtime data is rejected, keeping widths non-dependent
 todo	an internally ill-typed unselected match arm body is a type error

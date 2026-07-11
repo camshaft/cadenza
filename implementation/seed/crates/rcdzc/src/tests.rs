@@ -1521,6 +1521,33 @@ mod match_engine {
     }
 
     #[test]
+    fn a_binder_pattern_binds_the_scrutinee() {
+        // A bare-name arm `k` binds the whole scrutinee for its body — the exhaustive tail (like `_`,
+        // but named). `(match n (0 100) (k (+ k 1)))`: f(0)=100 (literal arm wins), f(41)=42 (k binds
+        // 41, body computes 42). Pins that the name arm and literal arm select consistently, and the
+        // binder carries the scrutinee's value into its body.
+        let m = "(module m (def (f n) (match n (0 100) (k (+ k 1)))) (def (main) (f {})) (export main))";
+        assert_eq!(
+            run_returns::<i64>(&component(&m.replace("{}", "41")), "main"),
+            42
+        );
+        assert_eq!(
+            run_returns::<i64>(&component(&m.replace("{}", "0")), "main"),
+            100
+        );
+    }
+
+    #[test]
+    fn a_binder_over_a_runtime_scrutinee_binds_correctly() {
+        // The binder over a RUNTIME scrutinee (an exported annotated param, not inlined) — `k` reads the
+        // parameter's slot in the arm body. f(7) → k=7 → 8.
+        let bytes = component(
+            "(module m (def (f (: n Int64)) (match n (0 100) (k (+ k 1)))) (def (main) (f 7)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
+    }
+
+    #[test]
     fn a_type_mismatched_pattern_is_rejected() {
         // A boolean pattern against an integer scrutinee is a type error (CDZ0201) — checked
         // STRUCTURALLY, not silently treated as a never-matching arm. (Even with a constant scrutinee.)

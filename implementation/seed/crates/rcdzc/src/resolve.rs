@@ -317,7 +317,47 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
         }
         return None;
     }
+    // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
+    // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
+    // this arm's body (`core-semantics.md` §Bindings Introduced By A Pattern Are Scoped To Its Branch).
+    // The bound value IS the scrutinee, so a reference resolves to the scrutinee occurrence — its type
+    // and (at lowering) its value flow straight through, no separate slot. Scoped to THIS arm only:
+    // an arm is reached from the enclosing `(match …)`, so a binder in one arm is invisible to another.
+    if let Some(scrutinee) = match_arm_binds(db, form, from, name) {
+        return Some(scrutinee);
+    }
     None
+}
+
+/// If `form` is a match ARM `(pattern body)` whose parent is a `(match scrutinee arm…)`, ascended from
+/// the arm's `body`, and `pattern` is a bare BINDER name equal to `name` (not a literal, not the
+/// wildcard `_`), the enclosing match's SCRUTINEE occurrence — the value the binder binds. `None`
+/// otherwise. A binder pattern binds the whole scrutinee for its arm's body; the value is the
+/// scrutinee, so a reference resolves straight to it.
+fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option<StructId> {
+    // `form` must be a 2-element `(pattern body)` list we ascended from its BODY (second element).
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[1] != from {
+        return None;
+    }
+    let pattern = pb[0];
+    // The pattern must be a bare binder name — matching `name`, and NOT a literal or the wildcard `_`
+    // (those bind nothing). A binder is a plain `Name` other than `_`.
+    let pat_name = db.ast.as_name(pattern)?;
+    if pat_name != name || pat_name == "_" {
+        return None;
+    }
+    // `form`'s parent must be a `(match scrutinee arm…)`, and `form` one of its arms (not the
+    // scrutinee, which is the first tail element).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None; // `form` is the scrutinee position, not an arm
+    }
+    Some(scrutinee)
 }
 
 /// The NAME a parameter occurrence binds, and the occurrence that name lives at — seeing through a
