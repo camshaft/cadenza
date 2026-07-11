@@ -53,7 +53,7 @@ impl Symbol {
 ///    build a concrete integer MODULE record, and the function-type constructor `->`.
 /// A prelude `(intrinsic NAME)` node names one of these; the name→prim table is the ONE place a prim
 /// spelling lives (the prelude authors it), so nothing downstream matches a source name.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Prim {
     Add,
     Sub,
@@ -64,6 +64,10 @@ pub enum Prim {
     UIntCtor,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
+    /// The ground type-values — nullary "constructors" that ARE a type-value directly (`Bool`/`Unit`
+    /// resolve to a record whose `(meta t)` holds one of these).
+    BoolTy,
+    UnitTy,
 }
 
 impl Prim {
@@ -78,13 +82,26 @@ impl Prim {
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),
             "->" => Some(Prim::FnCtor),
+            "Bool" => Some(Prim::BoolTy),
+            "Unit" => Some(Prim::UnitTy),
             _ => None,
         }
     }
 
-    /// Whether this primitive is an arithmetic operation (vs a type constructor).
+    /// Whether this primitive is an arithmetic operation (vs a type constructor or a ground type).
     pub fn is_arith(self) -> bool {
         matches!(self, Prim::Add | Prim::Sub | Prim::Mul)
+    }
+
+    /// The ground type-value this primitive denotes directly, if it is one (`BoolTy`→Bool, …). A
+    /// ground type is a type VALUE with no application; a constructor prim returns `None` here (it
+    /// yields a type only when applied).
+    pub fn ground_type(self) -> Option<crate::ty::Ty> {
+        match self {
+            Prim::BoolTy => Some(crate::ty::Ty::Bool),
+            Prim::UnitTy => Some(crate::ty::Ty::Unit),
+            _ => None,
+        }
     }
 }
 
@@ -138,6 +155,11 @@ pub enum Resolved {
     /// constructor applied (`(Int a)`, `(-> A B)`) reduces through the one evaluator to one of these.
     /// It is compile-time-only: the erasure fence forbids it reaching the runtime boundary.
     TypeVal(crate::ty::Ty),
+    /// A lambda PARAMETER occurrence used as a value — a formal not yet substituted. `infer` gives it
+    /// a fresh type variable (the parameter's type, to be solved); the evaluator substitutes the
+    /// argument here when the lambda is β-reduced at application. `binder` is this parameter's own
+    /// occurrence (its identity), so two references to the same parameter share one variable.
+    Param { binder: StructId },
     /// A compile-time lambda `(fn (param…) body)` — a value. Its parameters bind in scope for `body`
     /// (the ordinary parameter-scope mechanism); the evaluator β-reduces it when applied. An
     /// operator's `Meta.t` is such a lambda over the width (`(fn (a) (-> (Int a) …))`), so a "type

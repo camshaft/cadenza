@@ -19,6 +19,11 @@ pub mod ty;
 // machinery the one generic application rule uses; pure over `Ty`.
 pub mod unify;
 
+// The compile-time evaluator: the ONE application reduction through `Meta.apply` — projecting a head
+// value's meta channel, applying a native primitive (an arithmetic op or a type constructor), and
+// building a value (e.g. `(Int 64)` → a width-64 module) by appending arena nodes.
+pub mod eval;
+
 // The per-node rung forms (each an entry of a column keyed by AST `StructId`).
 pub mod core;
 pub mod resolved;

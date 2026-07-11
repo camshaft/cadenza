@@ -59,11 +59,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             }
             Ty::Record(field_tys)
         }
-        // Member access projects the field's type from the operand's record type. A non-record operand
-        // or an absent field has no field type — typed `Any` here so it does not cascade; the actual
-        // fault (CDZ0201) is reported by `type_errors`.
-        Resolved::Member { operand, key } => match type_of(db, operand) {
-            Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
+        // Member access — the field's type is the type of the field's VALUE, found by reducing the
+        // operand to a record and projecting (the one projection, via the evaluator, so it works off a
+        // literal record, a `let`-bound one, OR a module a type constructor built like `(Int 64)`). A
+        // non-record operand or an absent field has no field type — typed `Any` here so it does not
+        // cascade; the actual fault (CDZ0201) is reported by `type_errors`.
+        Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
+            crate::eval::Member::Field(value) => type_of(db, value),
             _ => Ty::Any,
         },
         Resolved::If { cond, then_, else_ } => {
@@ -79,31 +81,35 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // A bare built-in operation value standing alone has no scalar type yet (it is not a runtime
         // value until functions/closures exist). Typed `Any`; applying it is what has a type.
         Resolved::Prim(_) => Ty::Any,
-        // An arithmetic application: the operation is generic over the integer type, so its result is
-        // the integer type its operands share. Type = the JOIN of the operand types (a deferred/var
-        // width unifies with a fixed one; two fixed widths that differ are a mismatch reported by
-        // `type_errors`). A non-integer operand yields `Any` here (the fault is reported there).
-        Resolved::Apply { head, args } => match crate::resolve::intrinsic_of(db, head) {
-            Some(_) => {
+        // Application — dispatched by the head's `(meta apply)` primitive. An ARITHMETIC application
+        // is generic over the integer type: its result is the integer type its operands share — the
+        // JOIN of the operand types (a deferred/var width unifies with a fixed one; a real width
+        // conflict is reported by `type_errors`). A non-integer operand yields `Any` here (the fault
+        // is reported there). A TYPE-CONSTRUCTOR application yields a type value — typed `Any` at the
+        // value level (a type value carries no scalar runtime type). (Milestone B replaces the
+        // hard-wired integer join with reading the operator's `Meta.t` scheme + unification.)
+        Resolved::Apply { head, args } => match crate::eval::meta_apply_of(db, head) {
+            Some(p) if p.is_arith() => {
                 let mut result = Ty::int(); // signed, deferred width — the generic operand type.
                 for &arg in &args {
                     let at = type_of(db, arg);
                     result = if matches!(at, Ty::Int(_) | Ty::Var(_) | Ty::Any) {
                         result.join(&at)
                     } else {
-                        // A non-integer operand: the application is ill-typed; surface `Any` here so
-                        // the whole program does not cascade, `type_errors` reports the mismatch.
                         Ty::Any
                     };
                 }
                 result
             }
-            None => Ty::Any,
+            _ => Ty::Any,
         },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
-        // TODO: type constructors handled by the evaluator — a type value or compile-time lambda has no
-        // scalar type yet; typed `Any` so it never cascades into a spurious mismatch.
+        // A lambda parameter used as a value — a formal whose type is being solved. Milestone A types
+        // it `Any` (it never reaches a runtime slot yet — a lambda's runtime form is deferred); the
+        // full HM rule gives it a fresh variable per its binder in Milestone B.
+        Resolved::Param { .. } => Ty::Any,
+        // A type value / compile-time lambda has no scalar type — typed `Any` so it never cascades.
         Resolved::TypeVal(_) | Resolved::Lambda { .. } => Ty::Any,
     }
 }
@@ -148,24 +154,25 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // of a non-record, or an absent field, has no defined result). The user record is CLOSED (a
         // missing field rejects) — distinct from an open built-in module (a later stage).
         Resolved::Member { operand, key } => {
-            match type_of(db, operand) {
-                Ty::Record(fields) => {
-                    if !fields.contains_key(&key) {
-                        out.push(Reject::coded(
-                            Code::Malformed,
-                            format!("record has no field `{}`", key.name),
-                        ));
-                    }
-                }
-                // `Any` is a poison operand — its own fault is already reported; don't double-report.
-                Ty::Any => {}
-                other => out.push(Reject::coded(
+            // Project via the evaluator (reduces refs / a ctor-built module), so a missing field on a
+            // built module is caught too. A poison operand reports its OWN fault (via the descent
+            // below), so we don't add a redundant "not a record" for it.
+            let operand_is_poison =
+                matches!(resolved_of(db, operand), Resolved::Poison(_));
+            match crate::eval::member_value(db, operand, &key) {
+                crate::eval::Member::Field(_) => {}
+                crate::eval::Member::NoField => out.push(Reject::coded(
+                    Code::Malformed,
+                    format!("record has no field `{}`", key.name),
+                )),
+                crate::eval::Member::NotRecord if !operand_is_poison => out.push(Reject::coded(
                     Code::Malformed,
                     format!(
                         "member access requires a record, found {}",
-                        other.render_name()
+                        type_of(db, operand).render_name()
                     ),
                 )),
+                crate::eval::Member::NotRecord => {}
             }
             collect(db, operand, out);
         }
@@ -186,7 +193,7 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // error CDZ0301 (`numeric-model.md` — mixing two numeric types without an explicit conversion
         // does not silently promote). Descend into the operands for their own faults.
         Resolved::Apply { head, args } => {
-            if crate::resolve::intrinsic_of(db, head).is_some() {
+            if crate::eval::meta_apply_of(db, head).is_some_and(|p| p.is_arith()) {
                 let mut prev: Option<Ty> = None;
                 for &arg in &args {
                     let at = type_of(db, arg);
@@ -213,6 +220,9 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     prev = Some(at);
                 }
             }
+            // Descend into the HEAD (an unbound head like `frobnicate` is a scope error caught here)
+            // and each operand for their own faults.
+            collect(db, head, out);
             for &arg in &args {
                 collect(db, arg, out);
             }
@@ -232,6 +242,7 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // intrinsic value and the atomic leaves have no sub-faults.
         Resolved::Prim(_)
         | Resolved::Ref { .. }
+        | Resolved::Param { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Unit

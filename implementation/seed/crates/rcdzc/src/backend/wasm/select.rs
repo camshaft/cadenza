@@ -125,9 +125,11 @@ fn arith_op(op: crate::resolved::Prim, narrow: bool) -> Lir {
         (Add, true) => Lir::I32Add,
         (Sub, true) => Lir::I32Sub,
         (Mul, true) => Lir::I32Mul,
-        // TODO: type constructors handled by the evaluator — a `Core::Arith` only ever carries an
-        // arith prim (its op comes from `intrinsic_of`, which yields only arith), so this is unreachable.
-        (IntCtor | UIntCtor | FnCtor, _) => unreachable!("type constructor reached arith selection"),
+        // A `Core::Arith` only ever carries an arith prim (its op comes from an arith-gated lowering),
+        // so a non-arith prim reaching arith selection is unreachable.
+        (IntCtor | UIntCtor | FnCtor | BoolTy | UnitTy, _) => {
+            unreachable!("non-arith prim reached arith selection")
+        }
     }
 }
 

@@ -28,7 +28,7 @@
 //! determined".
 
 use crate::arena::Column;
-use crate::ast::{Arenas, Struct, StructId};
+use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
 use crate::core::Core;
 use crate::resolved::Resolved;
 use crate::ty::Ty;
@@ -55,6 +55,16 @@ pub struct Export {
     pub name: String,
     /// Index into [`Db::defs`] of the definition this export names, or `None` if no such def exists.
     pub def: Option<usize>,
+}
+
+/// The memo key for a built constructor value: the primitive applied plus its argument VALUES (not
+/// occurrences), so two `(Int 64)` written at different source occurrences — or the same occurrence
+/// demanded repeatedly — share one built module. `i64` args cover the width of `(Int W)`; the key
+/// widens as constructors take other argument kinds.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct BuildKey {
+    pub prim: crate::resolved::Prim,
+    pub args: Vec<i64>,
 }
 
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
@@ -84,6 +94,15 @@ pub struct Db {
     /// shadows a built-in by the ordinary lookup precedence.
     pub prelude: BTreeMap<String, StructId>,
 
+    /// Memo of built values the evaluator produced by applying a native constructor — keyed by the
+    /// reduction `(prim, arg-values)`, mapping to the built node's occurrence. Without it, a
+    /// type-constructor application like `(Int 64)` would append a FRESH module on every demand
+    /// (`type_of`, `core_of`, each projection re-runs the reduction) and again for every source
+    /// occurrence — bloating the arena and, worse, making the reduction non-idempotent (a node's fact
+    /// must be stable across demands). The first demand builds and caches; every later one returns the
+    /// same node, so `(Int 64)` denotes ONE module however many times it is written or demanded.
+    pub(crate) build_cache: std::collections::HashMap<BuildKey, StructId>,
+
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
     /// The solved-type column. Filled only by [`crate::infer`].
@@ -110,16 +129,68 @@ impl Db {
             exports,
             parent,
             prelude,
+            build_cache: std::collections::HashMap::new(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),
         }
     }
 
+    /// The occurrence a previously-built constructor value was cached at, if any — the evaluator
+    /// checks this before appending, so a reduction is idempotent and shared.
+    pub fn cached_build(&self, key: &BuildKey) -> Option<StructId> {
+        self.build_cache.get(key).copied()
+    }
+
+    /// Record that constructor `key` was built at occurrence `node`.
+    pub fn cache_build(&mut self, key: BuildKey, node: StructId) {
+        self.build_cache.insert(key, node);
+    }
+
     /// The `List` occurrence that holds `id` as a child, or `None` if `id` is the root — the one step
     /// of the lexical-scope walk.
     pub fn parent_of(&self, id: StructId) -> Option<StructId> {
         *self.parent.get(id.0 as usize).unwrap_or(&None)
+    }
+
+    // ── Append-during-query — the evaluator builds new nodes on demand ─────────────────────────────
+    //
+    // The one compile-time evaluator constructs new AST nodes as it reduces — e.g. `(Int 64)` builds a
+    // width-64 module record. Those nodes are APPENDED to the arena, taking `StructId`s past the
+    // load-time length; the columns are sparse and grow to reach them, so a built node is resolved /
+    // typed / lowered by the ordinary demand exactly like a source node. A built node's parent is set
+    // as it is created (so the lexical-scope walk works within it); built nodes are self-contained
+    // (they reference only each other and existing values), so they need no enclosing scope.
+
+    /// Append an interned leaf and an `Atom` occurrence of it, returning the occurrence's id. (Leaves
+    /// are not deduplicated against the program's — a built node is small and self-contained.)
+    pub fn push_atom(&mut self, leaf: Leaf) -> StructId {
+        let lid = LeafId(self.ast.leaves.len() as u32);
+        self.ast.leaves.push(leaf);
+        let sid = StructId(self.ast.structure.len() as u32);
+        self.ast.structure.push(Struct::Atom(lid));
+        self.parent.push(None);
+        sid
+    }
+
+    /// Append a `List` occurrence with the given children, recording it as each child's parent so the
+    /// scope walk works inside a built subtree. Returns the list's id.
+    pub fn push_list(&mut self, children: Vec<StructId>) -> StructId {
+        let sid = StructId(self.ast.structure.len() as u32);
+        for &c in &children {
+            let ix = c.0 as usize;
+            if ix < self.parent.len() {
+                self.parent[ix] = Some(sid);
+            }
+        }
+        self.ast.structure.push(Struct::List(children));
+        self.parent.push(None);
+        sid
+    }
+
+    /// Convenience: append an `Atom` of a `Name`.
+    pub fn push_name(&mut self, name: &str) -> StructId {
+        self.push_atom(Leaf::Name(name.to_string()))
     }
 
     /// The definition of the given name, if one exists — how an export resolves its target and how a

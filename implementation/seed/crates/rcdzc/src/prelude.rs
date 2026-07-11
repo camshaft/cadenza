@@ -33,25 +33,108 @@ use std::collections::BTreeMap;
 /// prelude is a fixed function of nothing.
 pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     let mut names = BTreeMap::new();
-    // `Int64` — a record of the type's bounds. Reached by `(. Int64 max)` = the ordinary projection.
-    names.insert("Int64".to_string(), int64_record(ast));
-    // The arithmetic operators — each a built-in OPERATION value, installed as an `(intrinsic name)`
-    // arena node. `(+ a b)` is the application of the value `+` resolves to (the same mechanism a
-    // user function application uses) — NOT an operator name the resolver special-cases. Each is
-    // generic over the integer type (one width variable shared by operands and result).
+
+    // Ground types — a record whose META channel `(meta t)` holds the type-value. Using `Bool` in
+    // type position projects `(meta t)`; it is not applyable (no `(meta apply)`).
+    names.insert("Bool".to_string(), ground_type_record(ast, "Bool"));
+    names.insert("Unit".to_string(), ground_type_record(ast, "Unit"));
+
+    // Type constructors — a record whose META channel `(meta apply)` holds the native builder. `(Int
+    // a)` / `(-> A B)` are ORDINARY applications: project `(meta apply)`, apply it. `Int`/`UInt` build
+    // a width-specialized integer MODULE; `->` builds a function type-value.
+    names.insert("Int".to_string(), ctor_record(ast, "Int"));
+    names.insert("UInt".to_string(), ctor_record(ast, "UInt"));
+    names.insert("->".to_string(), ctor_record(ast, "->"));
+
+    // The arithmetic operators — records whose META channel carries their type (`(meta t)`, a
+    // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
+    // application of the value `+` resolves to — the SAME mechanism every application uses, dispatched
+    // by the head's meta channel, never by an operator name the resolver special-cases.
     for op in ["+", "-", "*"] {
-        names.insert(op.to_string(), intrinsic_node(ast, op));
+        names.insert(op.to_string(), operator_record(ast, op));
     }
+
+    // `Int64` — the pre-installed width-64 integer module (the module `(Int 64)` reduces to). Its
+    // fields (`max`/`min`/…) are the width-64 specialization; reached by the ordinary projection.
+    names.insert("Int64".to_string(), int64_record(ast));
+
     names
 }
 
-/// Append an `(intrinsic NAME)` node and return it — the arena form a built-in operation value takes,
-/// mirroring the `(unrealized …)` and `(record …)` prelude nodes. `resolve` turns it into a
-/// `Resolved::Prim`; the name says which operation.
+/// An `(intrinsic NAME)` node — the arena form a native primitive value takes. `resolve` turns it
+/// into a `Resolved::Prim`; the name selects which primitive.
 fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
     let head = push_atom(ast, Leaf::Name("intrinsic".to_string()));
     let who = push_atom(ast, Leaf::Name(name.to_string()));
     push_list(ast, vec![head, who])
+}
+
+/// A meta field `((meta KEY) VALUE)` — a record field whose key is the `meta`-namespaced symbol
+/// `KEY`. This is how the reserved meta channel is written as ordinary record structure.
+fn meta_field(ast: &mut Arenas, key: &str, value: StructId) -> StructId {
+    let meta_head = push_atom(ast, Leaf::Name("meta".to_string()));
+    let key_name = push_atom(ast, Leaf::Name(key.to_string()));
+    let meta_key = push_list(ast, vec![meta_head, key_name]);
+    push_list(ast, vec![meta_key, value])
+}
+
+/// A ground-type record `(record ((meta t) (intrinsic PRIM)))` — `Bool`/`Unit`. Its `(meta t)` holds
+/// the ground type-value; it carries no `(meta apply)`, so it is not applyable.
+fn ground_type_record(ast: &mut Arenas, prim: &str) -> StructId {
+    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    let ty_val = intrinsic_node(ast, prim);
+    let t_field = meta_field(ast, "t", ty_val);
+    push_list(ast, vec![head, t_field])
+}
+
+/// A type-constructor record `(record ((meta apply) (intrinsic PRIM)))` — `Int`/`UInt`/`->`. Applying
+/// it (`(Int a)`) projects `(meta apply)` and applies the native builder.
+fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
+    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    let builder = intrinsic_node(ast, prim);
+    let apply_field = meta_field(ast, "apply", builder);
+    push_list(ast, vec![head, apply_field])
+}
+
+/// An operator record `(record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic PRIM)))`. `(meta t)`
+/// is the operator's type — a compile-time lambda over the width `(fn (a) (-> (Int a) (-> (Int a)
+/// (Int a))))`, read generically by `infer`. `(meta apply)` is the reduction, read by `lower`.
+fn operator_record(ast: &mut Arenas, op: &str) -> StructId {
+    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    let lambda = binop_type_lambda(ast);
+    let t_field = meta_field(ast, "t", lambda);
+    let prim = intrinsic_node(ast, op);
+    let apply_field = meta_field(ast, "apply", prim);
+    push_list(ast, vec![head, t_field, apply_field])
+}
+
+/// The type-lambda `(fn (a) (-> (Int a) (-> (Int a) (Int a))))` shared by the binary arithmetic
+/// operators — generic over the integer type: a lambda over the width `a`, whose body is the curried
+/// function type built from the `Int` constructor applied to that same `a` in each position. Written
+/// entirely as ordinary AST (lambda + applications) so `infer` reduces it through the one evaluator to
+/// a `Scheme`, with `a` an ordinary lambda parameter.
+fn binop_type_lambda(ast: &mut Arenas) -> StructId {
+    // `(Int a)` — reused shape; each occurrence references the same parameter name `a`.
+    let int_a = |ast: &mut Arenas| -> StructId {
+        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![int, a])
+    };
+    // `(-> (Int a) (-> (Int a) (Int a)))` — curried binary.
+    let arrow = |ast: &mut Arenas, l: StructId, r: StructId| -> StructId {
+        let arr = push_atom(ast, Leaf::Name("->".to_string()));
+        push_list(ast, vec![arr, l, r])
+    };
+    let ia1 = int_a(ast);
+    let ia2 = int_a(ast);
+    let ia3 = int_a(ast);
+    let inner = arrow(ast, ia2, ia3);
+    let body = arrow(ast, ia1, inner);
+    // `(fn (a) BODY)`.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// Append the `Int64` module as a genuine `(record …)` form and return its root occurrence, so
