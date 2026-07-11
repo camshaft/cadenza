@@ -21,6 +21,8 @@
 //!   needs\t<capability>            (zero or more; omitted when the case is core)
 //!   ---
 
+pub mod markdown;
+
 use cadenza_syntax::ast::{Arenas, Builder, StructId};
 use cadenza_syntax::sexpr;
 
