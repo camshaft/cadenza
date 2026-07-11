@@ -877,6 +877,84 @@
   (input  (& (>> 65535 8) 255))
   (output (: 255 Int64)))
 
+; --- Runtime operands to the full operator set: emitted instructions, not the constant fold ---------
+; Every arithmetic case above uses CONSTANT operands, so the compiler folds it at build time — a real
+; strength, but it means the EMITTED runtime instruction (the machine op plus its overflow / count /
+; sign guards) is never exercised. A value that arrives at RUN TIME (an argument to the exported entry)
+; cannot be folded, so the operator is emitted as real instructions. These `(call <export> <arg>…)`
+; cases run each operator over runtime Int64 operands and pin that the emitted path AGREES with the
+; folded constant cases above (`/ % & | ^ << >>`, and the ordering comparisons). A self-hosted compiler
+; runs exactly this — its LEB128/section arithmetic operates on section sizes and operands computed at
+; run time, not on literals. CORE cases (no `(needs …)`): the seed realizes runtime Int64 operators.
+
+(case "a runtime division truncates toward zero"
+  (doc    "`(def (main (: a Int64) (: b Int64)) (/ a b))` called with (-7, 2). The division cannot fold
+           (both operands are runtime), so it is emitted as `i64.div_s`, which truncates toward zero —
+           -7/2 = -3, matching the folded `(/ -7 2)` case. Pins the emitted signed-division path.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (/ a b))))
+  (call   main (: -7 Int64) (: 2 Int64))
+  (output (: -3 Int64)))
+
+(case "a runtime remainder takes the dividend's sign"
+  (doc    "`(% a b)` over runtime operands emits `i64.rem_s`; `(-7, 2)` = -1, the remainder taking the
+           dividend's sign, matching the folded `(% -7 2)`. Pins the emitted remainder path.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (% a b))))
+  (call   main (: -7 Int64) (: 2 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime bitwise AND masks bits"
+  (doc    "`(& a b)` over runtime operands emits `i64.and`; `(255, 127)` = 127 — the low-7-bit mask a
+           LEB128 encoder applies to a value computed at run time. Pins the emitted bitwise-AND path.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (& a b))))
+  (call   main (: 255 Int64) (: 127 Int64))
+  (output (: 127 Int64)))
+
+(case "a runtime bitwise OR combines bits"
+  (doc    "`(| a b)` emits `i64.or`; `(42, 128)` = 170 — setting the LEB128 continuation bit on a runtime
+           byte. Pins the emitted bitwise-OR path.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (| a b))))
+  (call   main (: 42 Int64) (: 128 Int64))
+  (output (: 170 Int64)))
+
+(case "a runtime bitwise XOR toggles bits"
+  (doc    "`(^ a b)` emits `i64.xor`; `(12, 10)` = 6. Pins the emitted bitwise-XOR path, the third
+           bitwise operator alongside `&`/`|`.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (^ a b))))
+  (call   main (: 12 Int64) (: 10 Int64))
+  (output (: 6 Int64)))
+
+(case "a runtime left shift multiplies by a power of two"
+  (doc    "`(<< a b)` over runtime operands emits the guarded `i64.shl` (count checked against the width,
+           result checked for overflow); `(1, 7)` = 128, matching the folded `(<< 1 7)`. Pins the emitted
+           left-shift path — the shift a LEB encoder runs on a runtime group index.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (<< a b))))
+  (call   main (: 1 Int64) (: 7 Int64))
+  (output (: 128 Int64)))
+
+(case "a runtime arithmetic right shift preserves the sign"
+  (doc    "`(>> a b)` on a signed runtime operand emits `i64.shr_s` (arithmetic, sign-extending);
+           `(-256, 7)` = -2, matching the folded `(>> -256 7)`. A logical shift would answer a large
+           positive value — pins that the emitted `>>` is the arithmetic shift signed LEB128 relies on.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (>> a b))))
+  (call   main (: -256 Int64) (: 7 Int64))
+  (output (: -2 Int64)))
+
+(case "a runtime greater-than compares by signed order"
+  (doc    "`(> a b)` over runtime operands emits `i64.gt_s`; `(5, 3)` = true. Pins the emitted signed
+           ordering comparison (a bounds check a compiler runs on a runtime length).")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (> a b))))
+  (call   main (: 5 Int64) (: 3 Int64))
+  (output (: true Bool)))
+
+(case "a runtime less-than at the integer extremes is signed"
+  (doc    "`(< a b)` over runtime operands is `i64.lt_s`, not `i64.lt_u`: `(Int64.min, Int64.max)` = true.
+           Int64.min's bit pattern is the largest UNSIGNED value, so an unsigned compare would wrongly
+           answer false — pins that the emitted comparison is SIGNED for a signed type, the runtime dual
+           of the folded `(< -9223372036854775808 9223372036854775807)` case.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (< a b))))
+  (call   main (: -9223372036854775808 Int64) (: 9223372036854775807 Int64))
+  (output (: true Bool)))
+
 ; ═══ Width-indexed integers: (Int N) / (UInt N) over a compile-time width N in 1..=64 ═════
 ; numeric-model.md #An Integer Type Is Indexed By A Compile-Time Width: an integer type is identified
 ; by a signedness and a bit width, resolved from a COMPILE-TIME value (never runtime data), with an

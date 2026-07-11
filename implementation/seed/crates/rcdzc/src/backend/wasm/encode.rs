@@ -73,26 +73,58 @@ pub mod op {
     pub const I32_ADD: u8 = 0x6A;
     pub const I32_SUB: u8 = 0x6B;
     pub const I32_MUL: u8 = 0x6C;
+    // i32 division / remainder (signed and unsigned): 0x6D..0x70.
+    pub const I32_DIV_S: u8 = 0x6D;
+    pub const I32_DIV_U: u8 = 0x6E;
+    pub const I32_REM_S: u8 = 0x6F;
+    pub const I32_REM_U: u8 = 0x70;
+    // i32 bitwise: and=0x71, or=0x72, xor=0x73.
+    pub const I32_AND: u8 = 0x71;
+    pub const I32_OR: u8 = 0x72;
+    pub const I32_XOR: u8 = 0x73;
+    // i32 shifts: shl=0x74, shr_s=0x75, shr_u=0x76.
+    pub const I32_SHL: u8 = 0x74;
+    pub const I32_SHR_S: u8 = 0x75;
+    pub const I32_SHR_U: u8 = 0x76;
     pub const I64_ADD: u8 = 0x7C;
     pub const I64_SUB: u8 = 0x7D;
     pub const I64_MUL: u8 = 0x7E;
-    // i32 comparisons (result i32 boolean): eq=0x46, then signed lt/gt/le/ge.
+    // i32 comparisons (result i32 boolean): eq=0x46, ne=0x47, then signed then unsigned lt/gt/le/ge.
     pub const I32_EQ: u8 = 0x46;
+    pub const I32_NE: u8 = 0x47;
     pub const I32_LT_S: u8 = 0x48;
+    pub const I32_LT_U: u8 = 0x49;
     pub const I32_GT_S: u8 = 0x4A;
+    pub const I32_GT_U: u8 = 0x4B;
     pub const I32_LE_S: u8 = 0x4C;
+    pub const I32_LE_U: u8 = 0x4D;
     pub const I32_GE_S: u8 = 0x4E;
-    // i64 comparisons (result i32 boolean): eq=0x51, ne=0x52, then signed lt/gt/le/ge.
+    pub const I32_GE_U: u8 = 0x4F;
+    // i64 comparisons (result i32 boolean): eq=0x51, ne=0x52, then signed then unsigned lt/gt/le/ge.
     pub const I64_EQ: u8 = 0x51;
     pub const I64_NE: u8 = 0x52;
     pub const I64_LT_S: u8 = 0x53;
+    pub const I64_LT_U: u8 = 0x54;
     pub const I64_GT_S: u8 = 0x55;
+    pub const I64_GT_U: u8 = 0x56;
     pub const I64_LE_S: u8 = 0x57;
+    pub const I64_LE_U: u8 = 0x58;
     pub const I64_GE_S: u8 = 0x59;
-    // local.set, unreachable, and the bitwise/div ops the signed-overflow guard uses.
+    pub const I64_GE_U: u8 = 0x5A;
+    // local.set, unreachable.
     pub const LOCAL_SET: u8 = 0x21;
     pub const UNREACHABLE: u8 = 0x00;
+    // i64 division / remainder (signed and unsigned): 0x7F..0x82.
     pub const I64_DIV_S: u8 = 0x7F;
+    pub const I64_DIV_U: u8 = 0x80;
+    pub const I64_REM_S: u8 = 0x81;
+    pub const I64_REM_U: u8 = 0x82;
+    // i64 bitwise: and=0x83, or=0x84, xor=0x85.
     pub const I64_AND: u8 = 0x83;
+    pub const I64_OR: u8 = 0x84;
     pub const I64_XOR: u8 = 0x85;
+    // i64 shifts: shl=0x86, shr_s=0x87, shr_u=0x88.
+    pub const I64_SHL: u8 = 0x86;
+    pub const I64_SHR_S: u8 = 0x87;
+    pub const I64_SHR_U: u8 = 0x88;
 }
