@@ -1121,6 +1121,64 @@ mod runtime_ops {
             &[Val::S32(i32::MAX), Val::S32(1)]
         ));
     }
+
+    // ── runtime `wrap` (R3): the emitted mask-and-reinterpret over a runtime operand ──────────────
+    //
+    // With a RUNTIME source (a parameter), `wrap` cannot fold — it emits `Core::Convert`, a slot move
+    // (extend/wrap) plus a mask (+ sign-extend for a signed target). Never traps. These pin the emitted
+    // path agrees with the constant fold, over the slot-crossing cases the fold never exercises.
+
+    #[test]
+    fn runtime_wrap_int64_to_uint8_truncates() {
+        // `(UInt8.wrap n)` over a runtime Int64: 300 → 44 (low 8 bits), 256 → 0, -1 → 255. The source is
+        // i64, the target u8 — a `i32.wrap_i64` then mask. Result crosses as u8.
+        let f = "(: n Int64)";
+        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(300)]), 44);
+        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(256)]), 0);
+        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(-1)]), 255);
+    }
+
+    #[test]
+    fn runtime_wrap_into_a_signed_narrow_sign_extends() {
+        // `(Int8.wrap n)` over a runtime Int64: 200 → -56 (bit 7 set, sign-extended), 127 → 127, -129 →
+        // 127 (low 8 bits of -129 = 0x7F). The signed target sign-extends from bit 7. Crosses as s8.
+        let f = "(: n Int64)";
+        assert_eq!(run::<i8>(f, "(Int8.wrap n)", &[Val::S64(200)]), -56);
+        assert_eq!(run::<i8>(f, "(Int8.wrap n)", &[Val::S64(127)]), 127);
+        assert_eq!(run::<i8>(f, "(Int8.wrap n)", &[Val::S64(-129)]), 127);
+    }
+
+    #[test]
+    fn runtime_wrap_never_traps_on_any_input() {
+        // `wrap` is TOTAL — it never traps, whatever the runtime input (contrast the checked arithmetic).
+        // Even the widest / most negative i64 wraps cleanly to a u8.
+        let f = "(: n Int64)";
+        assert!(!traps(f, "(UInt8.wrap n)", &[Val::S64(i64::MAX)]));
+        assert!(!traps(f, "(UInt8.wrap n)", &[Val::S64(i64::MIN)]));
+        // And the value is the low 8 bits: i64::MIN = ...0x00, so → 0; i64::MAX = ...0xFF → 255.
+        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(i64::MIN)]), 0);
+        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(i64::MAX)]), 255);
+    }
+
+    #[test]
+    fn runtime_wrap_narrow_to_wide_extends_by_source_sign() {
+        // `(UInt64.wrap n)` over a runtime Int8: the source (s8, in an i32 slot) is extended to i64 by
+        // its SOURCE sign before the (full-width, no-op) mask, so -1:Int8 → UInt64 2^64-1, and 5 → 5.
+        // Pins the i32→i64 slot move uses the source signedness. (Int8 param crosses as s8; result u64.)
+        let f = "(: n Int8)";
+        assert_eq!(run::<u64>(f, "(UInt64.wrap n)", &[Val::S8(-1)]), u64::MAX);
+        assert_eq!(run::<u64>(f, "(UInt64.wrap n)", &[Val::S8(5)]), 5);
+    }
+
+    #[test]
+    fn runtime_wrap_uint_source_zero_extends() {
+        // `(UInt64.wrap n)` over a runtime UInt8: an unsigned source zero-extends, so 255:UInt8 → 255
+        // (not sign-extended to a huge value). Pins the i32→i64 move honors an UNSIGNED source.
+        assert_eq!(
+            run::<u64>("(: n UInt8)", "(UInt64.wrap n)", &[Val::U8(255)]),
+            255
+        );
+    }
 }
 
 // ── decline-don't-miscompile ───────────────────────────────────────────────────────────────────
@@ -1732,6 +1790,91 @@ mod stage1 {
             .message;
         assert!(
             msg.contains("boundary") || msg.contains("aliased"),
+            "got: {msg}"
+        );
+    }
+
+    // ── truncating conversion `T.wrap` (R3): constant FOLD, no sums, never traps ──────────────────
+    //
+    // `(UInt8.wrap n)` = `((. UInt8 wrap) n)` — projecting the module's `wrap` operator and applying it.
+    // On a constant it FOLDS via `IntValue::wrap_to` to a `ConstInt` already at the target width. It is
+    // the honest, principled form of the old `to-byte`: the target width comes from the TYPE (`UInt8`),
+    // not a magic op name. The result crosses the boundary as the target's faithful primitive (u8/s8/…).
+
+    #[test]
+    fn wrap_truncates_an_out_of_range_constant() {
+        // `(UInt8.wrap 256)` = 0 — keep the low 8 bits (0x100 → 0x00). NEVER traps (contrast the checked
+        // `.of`, which will return None). Crosses as u8.
+        let src = "(module m (def (main) (UInt8.wrap 256)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<u8>(&bytes, "main"), 0);
+    }
+
+    #[test]
+    fn wrap_of_a_negative_uses_twos_complement() {
+        // `(UInt8.wrap -1)` = 255 — the low 8 bits of -1's two's-complement (all ones). This is exactly
+        // the old `(Int.to-byte -1)`, now typed as UInt8 with the width from the type.
+        let src = "(module m (def (main) (UInt8.wrap -1)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<u8>(&bytes, "main"), 255);
+    }
+
+    #[test]
+    fn wrap_into_a_signed_width_reinterprets_the_sign_bit() {
+        // `(Int8.wrap 200)` = -56 — 200 = 0xC8, bit 7 set, so as a signed Int8 it is -56. Crosses as s8.
+        let src = "(module m (def (main) (Int8.wrap 200)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i8>(&bytes, "main"), -56);
+    }
+
+    #[test]
+    fn wrap_in_range_is_the_value() {
+        // `(UInt8.wrap 200)` = 200 — an in-range value is unchanged. Pins that wrap is the identity when
+        // the value already fits.
+        let src = "(module m (def (main) (UInt8.wrap 200)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<u8>(&bytes, "main"), 200);
+    }
+
+    #[test]
+    fn wrap_via_the_constructor_denotes_the_same_op() {
+        // `((Int 8).wrap 200)` = `(Int8.wrap 200)` = -56 — the constructor-built module and the named
+        // width carry the SAME `wrap` (built by the twin `wrap_field`s), so both must produce -56 (not
+        // merely agree). `(Int 8).wrap` is the postfix-member sugar (reads to `(. (Int 8) wrap)`), the
+        // paren sibling of the `Int8.wrap` token form.
+        let run_i8 = |body: &str| {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+            run_returns::<i8>(&bytes, "main")
+        };
+        assert_eq!(run_i8("((Int 8).wrap 200)"), -56);
+        assert_eq!(run_i8("(Int8.wrap 200)"), -56);
+    }
+
+    #[test]
+    fn wrap_to_a_nonaliased_width_folds_but_cannot_cross() {
+        // `((UInt 48).wrap -1)` = 2^48-1 at the FOLD (the low 48 bits of -1) — a non-aliased target has
+        // no boundary form, so it can't be exported, but the truncation itself is correct. Asserted at
+        // the fold; exporting it declines (the non-aliased-boundary rule from R2). `(UInt 48).wrap` is
+        // the postfix-member sugar (reads to `(. (UInt 48) wrap)`).
+        assert_eq!(fold_const_u128("((UInt 48).wrap -1)"), (1u128 << 48) - 1);
+        assert!(
+            expect_decline("((UInt 48).wrap -1)").contains("boundary"),
+            "a non-aliased wrap result must decline at the boundary"
+        );
+    }
+
+    #[test]
+    fn wrap_of_a_non_integer_source_is_rejected() {
+        // `(UInt8.wrap true)` — `wrap`'s type is `∀(w,s). Int^s_w → UInt8`; unifying the source `true`
+        // (Bool) against `(Int a)` FAILS. The one generic application rule catches it (CDZ0203), no
+        // conversion-specific check.
+        let msg = expect_decline("(UInt8.wrap true)");
+        assert!(
+            msg.contains("unify")
+                || msg.contains("Bool")
+                || msg.contains("Int")
+                || msg.contains("match"),
             "got: {msg}"
         );
     }

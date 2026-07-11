@@ -241,7 +241,14 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
             fields.push(unrealized_field(ast, "min"));
         }
     }
-    // Operations not yet realized — present, but their value declines when projected.
+    // `wrap` — the TRUNCATING conversion INTO this width: `∀(w,s). Int^s_w → THIS`. An operator record
+    // whose `(meta t)` is `(fn (a) (-> (Int a) TARGET))` — the source `(Int a)` fully polymorphic in
+    // width AND sign (the paired sign-variable), the target `TARGET` this module's own concrete width —
+    // and whose `(meta apply)` is the `wrap` intrinsic. ONE such field per module (no per-source-type
+    // explosion): the target is fixed by the module, the source by unification at the call site.
+    fields.push(wrap_field(ast, signed, width));
+    // Operations not yet realized — present, but their value declines when projected. `of` (the CHECKED
+    // conversion) returns `Option<T>`, so it stays unrealized until sum types land.
     for op in [
         "of",
         "checked-add",
@@ -254,6 +261,49 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let mut children = vec![head];
     children.append(&mut fields);
     push_list(ast, children)
+}
+
+/// A `(wrap (record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic wrap))))` field — the module's
+/// truncating conversion. `TYPE-LAMBDA` is `(fn (a) (-> (Int a) TARGET))`: the source is the generic
+/// integer `(Int a)` (width `a` + its paired sign variable, so it accepts ANY integer), the result is
+/// `TARGET` = `(Int width)` / `(UInt width)`, this module's own concrete type. `(meta apply)` is the
+/// shared `wrap` intrinsic — one prim, the target read off the application's solved type at lowering.
+fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
+    // `(fn (a) (-> (Int a) TARGET))`.
+    let int_a = {
+        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![int, a])
+    };
+    let target = {
+        let ctor = push_atom(
+            ast,
+            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
+        );
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let arr = push_atom(ast, Leaf::Name("->".to_string()));
+    let body = push_list(ast, vec![arr, int_a, target]);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    let lambda = push_list(ast, vec![fn_head, params, body]);
+    // `(record ((meta t) lambda) ((meta apply) (intrinsic wrap)))`.
+    let rec_head = push_atom(ast, Leaf::Name("record".to_string()));
+    let t_field = meta_field(ast, "t", lambda);
+    let prim = intrinsic_node(ast, "wrap");
+    let apply_field = meta_field(ast, "apply", prim);
+    let record = push_list(ast, vec![rec_head, t_field, apply_field]);
+    // `(wrap record)`.
+    let k = push_atom(ast, Leaf::Name("wrap".to_string()));
+    push_list(ast, vec![k, record])
 }
 
 /// A `(name (: value (Int/UInt width)))` record field — an arbitrary-precision integer constant

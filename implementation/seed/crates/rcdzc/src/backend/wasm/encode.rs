@@ -127,4 +127,8 @@ pub mod op {
     pub const I64_SHL: u8 = 0x86;
     pub const I64_SHR_S: u8 = 0x87;
     pub const I64_SHR_U: u8 = 0x88;
+    // slot-crossing conversions: i32.wrap_i64=0xA7, i64.extend_i32_s=0xAC, i64.extend_i32_u=0xAD.
+    pub const I32_WRAP_I64: u8 = 0xA7;
+    pub const I64_EXTEND_I32_S: u8 = 0xAC;
+    pub const I64_EXTEND_I32_U: u8 = 0xAD;
 }

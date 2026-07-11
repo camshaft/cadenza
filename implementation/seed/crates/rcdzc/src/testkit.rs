@@ -1,82 +1,32 @@
-//! Shared test fixtures — builders for the tiny Stage-0 programs the query modules assert over.
+//! Shared test fixtures — the s-expr `parse` reader plus builders for the tiny Stage-0 programs the
+//! query modules assert over.
 //!
 //! Kept in one place so `db`, `resolve`, `infer`, and `lower` tests all build the SAME subject AST
-//! (a change to the slice's shape updates one builder, not four). Compiled only under `#[cfg(test)]`.
+//! (a change to the slice's shape updates one builder, not four). `parse` reads the s-expression
+//! surface through the REAL front-end (`cadenza-syntax::sexpr`, a dev-dep) via a byte round-trip, so
+//! tests share the corpus gate's reader instead of a hand-rolled one. Compiled only under `#[cfg(test)]`.
 
 #![cfg(test)]
 
 use crate::ast::{Arenas, Builder, IntValue, Leaf, Radix, StructId};
 
-/// A tiny s-expression reader for TESTS ONLY — turns a readable string like
-/// `(module m (def (main) (let ((p (record (x 1) (y 2)))) (. p x))) (export main))` into `Arenas`, so
-/// a test case is one line rather than a dozen builder calls. This is NOT the compiler's reader (the
-/// compiler takes binary AST); it just spares the tests the manual `Builder` plumbing. Classifies a
-/// token as int / bool / name via the same rules the real reader would (radix-free ints + `true`/
-/// `false`); anything with a leading digit that isn't a clean integer stays a name (harmless in tests).
+/// Read a test program from the s-expression surface into rcdzc's `Arenas`, using the REAL front-end
+/// reader (`cadenza-syntax::sexpr`, a dev-dependency) rather than a hand-rolled one — so a test case is
+/// one readable line AND it goes through the exact surface the corpus gate uses (dotted names like
+/// `UInt8.wrap` desugar to `(. UInt8 wrap)`, `-3` is an integer, etc.), never a divergent reimplementation.
+///
+/// The bridge between the two crates' distinct `Arenas` types is BYTES: `sexpr::read` → cadenza-syntax's
+/// `codec::encode` → rcdzc's `codec::decode`. This is exactly the round-trip the compiler relies on
+/// (`cadenza-syntax` emits the binary AST the gate feeds `rcdzc`), so every test that uses `parse` also
+/// EXERCISES that rcdzc's COPIED `codec.rs` stays byte-compatible with `cadenza-syntax` — the invariant
+/// the "copy, don't depend" directive rests on, checked rather than assumed. (Tests-only: like
+/// `wasm-encoder`/`wasmtime`, this dependency never enters the compile path.)
 pub fn parse(src: &str) -> Arenas {
-    let mut b = Builder::new();
-    let bytes: Vec<char> = src.chars().collect();
-    let mut pos = 0;
-    let root = read_node(&bytes, &mut pos, &mut b);
-    skip_ws(&bytes, &mut pos);
-    assert_eq!(
-        pos,
-        bytes.len(),
-        "trailing input in test s-expr at {pos}: {src}"
-    );
-    b.finish(root)
-}
-
-fn skip_ws(b: &[char], pos: &mut usize) {
-    while *pos < b.len() && b[*pos].is_whitespace() {
-        *pos += 1;
-    }
-}
-
-fn read_node(b: &[char], pos: &mut usize, out: &mut Builder) -> StructId {
-    skip_ws(b, pos);
-    if *pos < b.len() && b[*pos] == '(' {
-        *pos += 1; // '('
-        let mut children = Vec::new();
-        loop {
-            skip_ws(b, pos);
-            assert!(*pos < b.len(), "unterminated list");
-            if b[*pos] == ')' {
-                *pos += 1;
-                break;
-            }
-            children.push(read_node(b, pos, out));
-        }
-        out.list(children)
-    } else {
-        // A token up to whitespace or a paren.
-        let start = *pos;
-        while *pos < b.len() && !b[*pos].is_whitespace() && b[*pos] != '(' && b[*pos] != ')' {
-            *pos += 1;
-        }
-        let tok: String = b[start..*pos].iter().collect();
-        out.atom_leaf(classify(&tok))
-    }
-}
-
-fn classify(tok: &str) -> Leaf {
-    match tok {
-        "true" => Leaf::Bool(true),
-        "false" => Leaf::Bool(false),
-        _ => {
-            // A clean signed decimal integer → Int; else a Name.
-            let body = tok.strip_prefix('-').unwrap_or(tok);
-            if !body.is_empty() && body.chars().all(|c| c.is_ascii_digit()) {
-                let n: i64 = tok.parse().expect("test int fits i64");
-                Leaf::Int {
-                    value: IntValue::from_i64(n),
-                    radix: Radix::Dec,
-                }
-            } else {
-                Leaf::Name(tok.to_string())
-            }
-        }
-    }
+    let arenas = cadenza_syntax::sexpr::read(src)
+        .unwrap_or_else(|e| panic!("test s-expr failed to read: {e:?}\n  src: {src}"));
+    let bytes = cadenza_syntax::codec::encode(&arenas);
+    crate::codec::decode(&bytes)
+        .unwrap_or_else(|| panic!("cadenza-syntax bytes failed to decode with rcdzc codec: {src}"))
 }
 
 /// Build `(module m (def (main) 42) (export main))` and return `(arenas, the-42-literal-node-id)`.

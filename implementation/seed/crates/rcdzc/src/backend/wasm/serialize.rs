@@ -95,6 +95,9 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
         Lir::I64DivU => out.push(op::I64_DIV_U),
         Lir::I64RemS => out.push(op::I64_REM_S),
         Lir::I64RemU => out.push(op::I64_REM_U),
+        Lir::I32WrapI64 => out.push(op::I32_WRAP_I64),
+        Lir::I64ExtendI32S => out.push(op::I64_EXTEND_I32_S),
+        Lir::I64ExtendI32U => out.push(op::I64_EXTEND_I32_U),
     }
 }
 
