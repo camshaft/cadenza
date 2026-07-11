@@ -180,7 +180,11 @@ pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Op
     }
     let mut arg_of: HashMap<StructId, StructId> = HashMap::new();
     for (p, a) in params.iter().zip(args.iter()) {
-        arg_of.insert(*p, *a);
+        // A body reference to a parameter binds to the parameter's NAME occurrence (resolve's
+        // `binder_in` returns the name, seeing through a `(: name T)` annotated binder). So key the
+        // substitution on the name occurrence too, not the raw signature child (which is the `(:…)`
+        // node for an annotated param) — else the arg would never match the body's references.
+        arg_of.insert(param_name_occ(db, *p), *a);
     }
     let reduced = beta_reduce(db, body, &arg_of);
     let rest = &args[params.len()..];
@@ -192,6 +196,22 @@ pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Op
             None => Err("applied more arguments than the function accepts".to_string()),
         }
     }
+}
+
+/// The NAME occurrence a parameter binds — seeing through a `(: name T)` annotated binder to `name`,
+/// or the occurrence itself for a bare parameter. This is the identity a body reference to the
+/// parameter resolves to (via resolve's `binder_in`), so β-substitution keys on it. Mirrors resolve's
+/// `param_name` on the evaluator side (a param occurrence is either a name atom or a `(: name T)` list).
+fn param_name_occ(db: &Db, param: StructId) -> StructId {
+    if db.ast.as_name(param).is_some() {
+        return param;
+    }
+    if let Some(tail) = db.ast.as_form(param, ":") {
+        if let Some(&name_occ) = tail.first() {
+            return name_occ;
+        }
+    }
+    param
 }
 
 /// The body occurrence of the lambda `head` reduces to, if any — the stable per-function identity the

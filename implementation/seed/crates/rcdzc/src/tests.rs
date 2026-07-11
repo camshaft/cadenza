@@ -694,6 +694,33 @@ mod stage1 {
         assert_eq!(run_main("(+ (: 2 Int64) 3)"), 5);
     }
 
+    #[test]
+    fn an_annotated_def_parameter_binds_and_folds() {
+        // `(def (w (: a Int64) b) (+ a b))` — the annotated binder `(: a Int64)` binds `a` (the body's
+        // `a` resolves through the annotation, not UNBOUND), and the call folds. 09-functions witness.
+        let src = "(module m (def (w (: a Int64) b) (+ a b)) (def (main) (w 20 22)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+    }
+
+    #[test]
+    fn an_annotated_fn_parameter_binds() {
+        // The same through a `fn` lambda: `((fn ((: x Int64)) (+ x 1)) 5)` = 6.
+        assert_eq!(run_main("((fn ((: x Int64)) (+ x 1)) 5)"), 6);
+    }
+
+    #[test]
+    fn a_contradicting_parameter_annotation_rejects() {
+        // `(def (bad (: a Bool)) (+ a 1))` — `a` annotated Bool but used as an integer operand of `+`;
+        // the annotation contradicts the use → CDZ0203 (type-system.md Annotations Constrain, Never
+        // Contradict). 09-functions witness.
+        let src = "(module m (def (bad (: a Bool)) (+ a 1)) (def (main) (bad true)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("must reject")
+            .message;
+        assert!(msg.contains("match") || msg.contains("Bool") || msg.contains("Int") || msg.contains("unify"), "got: {msg}");
+    }
+
     // ── first-class types: `(Int W)` builds a width-specialized MODULE via the one Meta.apply path ──
 
     #[test]
@@ -848,3 +875,4 @@ mod stage1 {
         assert_ne!(a, c, "different widths are different modules");
     }
 }
+

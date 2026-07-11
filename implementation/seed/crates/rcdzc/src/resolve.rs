@@ -242,10 +242,13 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
         let body_occ = tail.get(1).copied();
         if Some(from) == body_occ {
             if let Struct::List(params) = db.ast.get(params_occ) {
+                // A parameter binds the name it declares — bare `a` or annotated `(: a T)` alike.
                 let mut found = None;
                 for &p in params {
-                    if db.ast.as_name(p) == Some(name) {
-                        found = Some(p);
+                    if let Some((n, name_occ)) = param_name(db, p) {
+                        if n == name {
+                            found = Some(name_occ);
+                        }
                     }
                 }
                 return found;
@@ -255,23 +258,44 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
     }
     // Case 4: `form` is a `(def (NAME param…) body)`, ascended from the body → the signature's
     // parameters (everything after NAME) bind. So a def-with-params body sees its parameters, exactly
-    // as a lambda body sees its own.
+    // as a lambda body sees its own. A parameter may be an annotated binder `(: a T)`.
     if let Some(tail) = db.ast.as_form(form, "def") {
         let sig_occ = tail.first().copied()?;
         let body_occ = tail.get(1).copied();
         if Some(from) == body_occ {
             if let Struct::List(sig) = db.ast.get(sig_occ) {
-                // sig = [NAME, param…]; a reference binds to the matching PARAM occurrence.
+                // sig = [NAME, param…]; a reference binds to the matching PARAM's name occurrence.
                 let mut found = None;
                 for &p in sig.iter().skip(1) {
-                    if db.ast.as_name(p) == Some(name) {
-                        found = Some(p);
+                    if let Some((n, name_occ)) = param_name(db, p) {
+                        if n == name {
+                            found = Some(name_occ);
+                        }
                     }
                 }
                 return found;
             }
         }
         return None;
+    }
+    None
+}
+
+/// The NAME a parameter occurrence binds, and the occurrence that name lives at — seeing through a
+/// `(: name T)` annotated binder. A parameter in a `fn`/`def` signature is EITHER a bare name (`a`) or
+/// an annotated binder `(: a T)`; both bind `a`. Returns `(name, name-occurrence)`, where the
+/// occurrence is the NAME's own node (so a reference binds to the name, and the annotation's type `T`
+/// is read as the name's sibling — see `param_annot_ty`). `None` if the occurrence is neither shape.
+fn param_name(db: &Db, param: StructId) -> Option<(&str, StructId)> {
+    // A bare name parameter.
+    if let Some(n) = db.ast.as_name(param) {
+        return Some((n, param));
+    }
+    // An annotated binder `(: name T)` — bind the inner name; its type is `T`.
+    if let Some(tail) = db.ast.as_form(param, ":") {
+        let name_occ = *tail.first()?;
+        let n = db.ast.as_name(name_occ)?;
+        return Some((n, name_occ));
     }
     None
 }
@@ -412,11 +436,28 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
     }
 }
 
-/// Whether `id` is a lambda-parameter occurrence — its parent is a list that is the parameter list of
-/// an enclosing `(fn (params) body)` (i.e. that list is the `fn`'s first tail element). Such an
-/// occurrence is a formal, resolved to a `Param` rather than looked up.
+/// Whether `id` is a lambda/def-parameter NAME occurrence — a formal, resolved to a `Param` rather
+/// than looked up. `id` is such an occurrence when it is the name a parameter binds, whether the
+/// parameter is a bare name (`id`'s parent is the param list) OR an annotated binder `(: id T)` (`id`
+/// is the name-position of a `(:…)` whose parent is the param list). The type occurrence `T` inside a
+/// binder is NOT a param occurrence — only the name is.
 fn is_param_occurrence(db: &Db, id: StructId) -> bool {
-    let Some(list) = db.parent_of(id) else { return false };
+    // `id` sits either directly in the param list (bare) or inside a `(: id T)` binder. Resolve the
+    // node that appears IN the param list — `id` for a bare param, the `(:…)` node for an annotated
+    // one — and remember whether `id` is that binder's name position.
+    let Some(parent) = db.parent_of(id) else { return false };
+    let (param_node, list) = if db.ast.as_form(parent, ":").is_some() {
+        // `id` is inside a `(: name T)`; it is a param NAME only if it is the name position (first),
+        // never the type position. The binder node itself is what sits in the param list.
+        let is_name_position = db.ast.as_form(parent, ":").and_then(|t| t.first().copied()) == Some(id);
+        if !is_name_position {
+            return false;
+        }
+        let Some(list) = db.parent_of(parent) else { return false };
+        (parent, list)
+    } else {
+        (id, parent)
+    };
     let Some(form) = db.parent_of(list) else { return false };
     // A `(fn (params) body)` parameter: `list` is the fn's parameter list (its first tail element).
     if let Some(tail) = db.ast.as_form(form, "fn") {
@@ -425,11 +466,11 @@ fn is_param_occurrence(db: &Db, id: StructId) -> bool {
         }
     }
     // A `(def (NAME param…) body)` parameter: `list` is the def's signature (its first tail element),
-    // and `id` is NOT the signature's first element (that is the def NAME, not a parameter).
+    // and `param_node` is NOT the signature's first element (that is the def NAME, not a parameter).
     if let Some(tail) = db.ast.as_form(form, "def") {
         if tail.first().copied() == Some(list) {
             if let Struct::List(sig) = db.ast.get(list) {
-                return sig.first().copied() != Some(id);
+                return sig.first().copied() != Some(param_node);
             }
         }
     }

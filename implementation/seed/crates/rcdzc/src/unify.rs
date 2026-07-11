@@ -147,11 +147,18 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
     }
 }
 
-/// The conflicting-use type error for two irreconcilable types.
+/// The conflicting-use type error for two irreconcilable types. The CODE distinguishes the KIND of
+/// conflict: two DIFFERENT NUMERIC types (a width or signedness mismatch — `Int32` vs `Int64`, signed
+/// vs unsigned) is the numeric-model's no-silent-promotion rule (CDZ0301); ANY OTHER conflict (a
+/// non-numeric type where another is required — `Bool` vs `Int64`) is the general type mismatch
+/// (CDZ0203). This matches the corpus: CDZ0301 is reserved for two-different-numeric, everything else
+/// is CDZ0203.
 fn mismatch(a: &Ty, b: &Ty) -> Reject {
     tracing::trace!(target: "rcdzc::unify", lhs = %a.render_name(), rhs = %b.render_name(), "unify FAILED (conflicting use)");
+    let both_numeric = matches!(a, Ty::Int(_)) && matches!(b, Ty::Int(_));
+    let code = if both_numeric { Code::NumericMismatch } else { Code::TypeMismatch };
     Reject::coded(
-        Code::NumericMismatch,
+        code,
         format!("cannot unify {} with {}", a.render_name(), b.render_name()),
     )
 }

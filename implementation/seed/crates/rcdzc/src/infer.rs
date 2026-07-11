@@ -112,10 +112,12 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
-        // A lambda parameter used as a value — a formal whose type is being solved. Milestone A types
-        // it `Any` (it never reaches a runtime slot yet — a lambda's runtime form is deferred); the
-        // full HM rule gives it a fresh variable per its binder in Milestone B.
-        Resolved::Param { .. } => Ty::Any,
+        // A lambda/def parameter used as a value — a formal. If its binder is ANNOTATED (`(: a T)`),
+        // its type is that annotation `T` — so the body type-checks against a definite parameter type
+        // (`(: a Bool)` used as an integer operand is caught). An UNANNOTATED parameter is `Any` (it
+        // never reaches a runtime slot until it is substituted at a call site, where the concrete
+        // argument's type flows in via the fold); the full HM rule gives it a fresh variable later.
+        Resolved::Param { binder } => param_annot_ty(db, binder).unwrap_or(Ty::Any),
         // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value
         // (a `(typeval …)` node, OR a value the evaluator reduces to a type) types as `Type`; this is
         // what makes a type first-class (it can be passed, returned, checked). A compile-time lambda
@@ -123,6 +125,21 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::TypeVal(_) => Ty::Type,
         Resolved::Lambda { .. } => Ty::Any,
     }
+}
+
+/// The declared type of an annotated parameter whose NAME occurrence is `binder`, if any. A parameter
+/// is annotated when its name sits in a `(: name T)` binder (the name's parent is that form); the type
+/// is `T` reduced to a `Ty` by the evaluator (`typeval_of`). `None` for a bare (unannotated) parameter
+/// or an unreducible annotation type — in which case the parameter's type is left open (`Any`).
+fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
+    let parent = db.parent_of(binder)?;
+    let tail = db.ast.as_form(parent, ":")?;
+    // The binder must be the NAME position (first) of the `(: name T)`, not the type position.
+    if tail.first().copied() != Some(binder) {
+        return None;
+    }
+    let ty_expr = *tail.get(1)?;
+    crate::eval::typeval_of(db, ty_expr)
 }
 
 /// The result type of applying `head` to `args` — the ONE generic application rule. Read the head's

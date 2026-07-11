@@ -34,6 +34,7 @@ pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies to all its arguments at once
 pass	a negative hexadecimal literal negates its value
 pass	a nested-let chain that reuses each binding folds to one value
+pass	a parameter carries a type annotation in the signature
 pass	a record is constructed and a field is read
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a runtime conditional selects its then-branch when the runtime condition holds
@@ -325,6 +326,7 @@ todo	a nullary Sign variant applied to a non-unit payload is a type error
 todo	a nullary constructor is a single-arity function taking unit
 todo	a nullary variant applied to a non-unit payload is a type error
 todo	a one-element tuple pattern against a two-tuple is a type error
+todo	a parameter annotation contradicting its use is rejected
 todo	a pattern binds a name scoped to its branch
 todo	a pattern that binds the same name across nested sub-patterns is rejected
 todo	a pattern that binds the same name twice is rejected
