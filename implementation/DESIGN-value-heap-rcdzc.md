@@ -282,27 +282,32 @@ from a different input than §2a:
      program module is instantiated AFTER, its exports aliased off the instance) is the whole
      difficulty; the two oracles (core + component) pin each half independently.
    - **H1a LANDED (`@85434d2`)** — core-module import section + index shift, byte-validated.
-   - **H1b implementation notes (the byte-exact envelope):** the ORACLE is built with `wasm-encoder`'s
-     high-level `ComponentBuilder` (the API the old `build_heap_envelope` used — it does the index
-     bookkeeping for aliases/lowers/instantiate), NOT the raw section API, because the import path's
-     index dependencies (an alias references the import instance, a lower references the alias, the core
-     instance references the lowered funcs, the program instance references the core instance) are
-     exactly what `ComponentBuilder` tracks. Our `assemble` still hand-emits sections; the test diffs
-     our bytes against the `ComponentBuilder` oracle. **Section-order caveat:** `ComponentBuilder` emits
-     in the order methods are called, so to keep the diff meaningful `assemble` must emit sections in
-     the SAME order the builder produces for the import path (which differs from the no-import path's
-     "type(7) before alias(6)" — with imports, the instance-TYPE (7) comes first, then the component
-     IMPORT (id 5? — verify: component-import section), then the alias(6)/canon(8)/core-instance(2)/
-     core-alias(6) sequence). The 0-op path keeps today's exact ordering (unchanged bytes). Determine
-     the exact section IDs + order by dumping the `ComponentBuilder` oracle bytes first, then mirror.
-   - **De-risking:** because the ordering is subtle, H1b is validated ONLY by the byte oracle (a diff
-     against `ComponentBuilder`), plus a `wasmtime` load test (the component parses + type-checks with
-     the runtime composed) — NOT hand-reasoned. If matching `ComponentBuilder`'s exact bytes proves too
-     fiddly, fall back to: keep the raw-section hand-emit but validate by `wasmparser`-parsing our
-     output (structural validity) + a `wasmtime` compose-and-instantiate (semantic validity), accepting
-     that our byte layout may differ from `ComponentBuilder`'s while remaining a valid, equivalent
-     component. Byte-identity to a SPECIFIC encoder is the ideal; structural+semantic validity is the
-     floor.
+   - **H1b-1 LANDED (`@c265a28`)** — the generated ABI keeps the LOGICAL WIT type (`AbiValType` =
+     U32/S64/Bool/F64), NOT a core-collapsed valtype, because the two envelope surfaces need different
+     projections that are not recoverable from each other (a core `i32` is the lowering of `u32`, `bool`
+     AND `s32` alike, so the component import instance-type can't be rebuilt from the core byte). One WIT
+     source; `AbiValType::core_byte()` / `comp_byte()` are the two read-offs (wasm-spec byte constants,
+     a target concern, in the backend). Restores the core+component distinction the old
+     `wit_envelope.rs::LogTy` carried but H0 dropped.
+   - **H1b LANDED (`@348e3c9`)** — the full import envelope, hand-emitted, byte-identical to
+     `ComponentBuilder`. Section order (the METHOD, that made this land byte-exact on the first run):
+     DUMP the `ComponentBuilder` 1-op oracle bytes first (an `#[ignore]` scratch test), then MIRROR the
+     exact section-by-section layout — never hand-reason the component-model encoding. The order is
+     7(import-instance-type) → 10(component-import) → 6(alias ops) → 8(lower ops) → 1(core module) →
+     2(TWO core-instances: lowered-ops-as-"heap" #0, program-instantiate #1) → 6(core-alias boundary off
+     instance 1) → 7(boundary functypes) → 8(lift) → 11(export). Index math: lowered ops = core funcs
+     `0..k`, boundary aliases = core funcs `k..k+m`; import instance-type = component type 0, boundary
+     functypes = types `1..=m`; op aliases = component funcs `0..k`, lifts = `k..k+m`; program is core
+     instance 1. Item grammar cross-checked against the `wasm-encoder` source (sort bytes CORE=0x00
+     FUNC=0x01 INSTANCE=0x05, CORE_INSTANCE_SORT=0x12; instance-type form `0x42` with 2k interleaved
+     ty/export decls; extern-name `0x00`-prefixed; canon-lower `01 00 <fn> 00`, canon-lift `00 00 <fn>
+     00 <ty>`; comp-alias `01 00 <inst> <name>`, core-alias `00 00 01 <inst> <name>`). Validated three
+     ways: byte-identity to the `ComponentBuilder` oracle; `Component::new` under wasmtime (structural +
+     component-type validity); the versioned hashed import name is present verbatim. The empty-import
+     path is unchanged (bare shape, byte-identical to a runtime-free program). The versioned name is
+     built in `mod.rs` from the generated `RUNTIME_IFACE`+`REQUIRED_RUNTIME_HASH` (envelope stays
+     ABI-agnostic). ⚠ Instantiation needs the runtime linked, so H1b checks validity/type only — the
+     end-to-end RUN lands in H2 (a real compound op + the composed runtime).
 3. **(H2) Runtime TUPLE: construct + project, end-to-end.** `Core::Tuple`/`Core::Proj` (or reuse
    `Record`/`Member` for the runtime path); `select` emits `arr-alloc`/`arr-set` (construct) and
    `arr-get` (project); the used-set drives the import. Run a program that builds and projects a
