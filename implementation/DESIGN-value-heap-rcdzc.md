@@ -70,6 +70,14 @@ portable to the Cadenza self-host (copy-don't-depend). The WIT→structured-data
 oracle, exactly as the old `RT_HEAD` comment claimed; only its output shape changes (structured, not
 opaque).
 
+**Operator refinement (2026-07-11):** GENERATE the ops list from the WIT — do not hand-write a big
+`RUNTIME_OPS` literal (that would be the "big hard-coded list" being replaced). `xtask codegen` reads
+`runtime.wit` with `wit-parser` and emits every declared op as a `RtOp` row (name + core signature
+mapped from the WIT types: `s64`/`u32`/`bool`/`f64`→core valtype; a `string`/`tuple` result is skipped
+or flagged unlowerable). `wasm-encoder` stays in xtask too, used WHERE IT MAKES SENSE — as the byte
+oracle the import-section/envelope tests diff against (H1), and to self-validate generated fragments —
+never in the shipped compiler. The generated `runtime_abi.rs` is plain data (no dep), so it ships.
+
 WHAT stays truly fixed: the `RUNTIME_IFACE` string, the component magic, the per-item byte grammars
 already in `envelope.rs`. These are genuinely invariant, so they stay as they are.
 
