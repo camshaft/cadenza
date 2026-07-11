@@ -46,13 +46,28 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Unit => Core::Unit,
-        // A name is its bound value's core — follow the ref (the `let` binding folds away).
-        Resolved::Ref { value } => core_of(db, value),
+        // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
+        // computation the enclosing `let` named once — see `lower_let`), this reference reads the
+        // shared slot: `Core::LocalRef`. Otherwise the binding was copy-propagated / erased, so the
+        // name IS its value's core — follow the ref (the ordinary case; a single-use or constant
+        // binding leaves no `Let`).
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                trace!(target: "rcdzc::lower", node = id.0, binder = value.0, "ref → local (kept multi-use binding)");
+                Core::LocalRef { binder: value }
+            } else {
+                core_of(db, value)
+            }
+        }
         // A type annotation ERASES to its expression's core — `(: e T)` runs exactly as `e` (the
         // annotation's force is entirely on inference; it has no runtime trace).
         Resolved::Annot { expr, .. } => core_of(db, expr),
-        // A `let`'s value is its body's value (the bindings are compile-time structure).
-        Resolved::Let { body, .. } => core_of(db, body),
+        // A `let` — A-NORMALIZE its bindings: a binding whose value is a runtime computation used more
+        // than once is NAMED (a `Core::Let` binding, computed once, read by `LocalRef`); a single-use
+        // or constant binding is copy-propagated / erased (its references follow through to its value).
+        // So naming adds no cost and the emitted bytes are unchanged for a program with no multi-use
+        // runtime binding (`reference-compiler.md` §The Core Representation Is In A-Normal Form).
+        Resolved::Let { bindings, body } => lower_let(db, &bindings, body),
         // A record value — kept as a compound; folds away only when a member reads a field of it.
         Resolved::Record { fields } => Core::Record { fields },
         // Member access FOLDS: reduce the operand to a record (following refs, reducing a ctor
@@ -161,6 +176,138 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::TypeVal(_) | Resolved::Lambda { .. } => Core::Poison(Reject::decline(
             "a type value or compile-time lambda has no runtime form",
         )),
+    }
+}
+
+/// A-normalize a `let`: decide, per binding, whether to NAME its value (keep it as a `Core::Let`
+/// binding computed once) or to COPY-PROPAGATE / erase it (let each reference follow through to the
+/// value's core). A binding is KEPT iff its value is a runtime computation (not a compile-time
+/// constant that folds away) AND its name is referenced MORE THAN ONCE in what follows — the case
+/// where following through would recompute the value at each use. Every other binding — used at most
+/// once, or constant — is propagated, the admin-redex elimination that keeps naming free
+/// (`reference-compiler.md` §The Core Representation Is In A-Normal Form ¶3), so a program with no
+/// multi-use runtime binding lowers exactly as before and its emitted bytes are unchanged.
+///
+/// The kept bindings are recorded in `db.kept_bindings` (keyed by the initializer occurrence a
+/// reference resolves to) BEFORE the body is lowered, so a `Resolved::Ref` to a kept binding lowers
+/// to a `Core::LocalRef` reading the shared slot. The result is a `Core::Let { bindings, body }` when
+/// any binding is kept, or just the body's core when none is (no residual `let`).
+fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> Core {
+    // The `(binder-name-occ, init-occ)` pairs; a reference resolves to the INIT occurrence, so that is
+    // what the body's `Ref`s point at and what a kept binding is keyed by.
+    let mut kept: Vec<(StructId, StructId)> = Vec::new();
+    for (k, &(_name_occ, init)) in bindings.iter().enumerate() {
+        // A binding's SCOPE (the positions its name is visible in) is the LATER sibling initializers
+        // plus the body — `let*` sequential scoping. Count uses across that whole continuation so a
+        // binding referenced only by a later initializer is still named.
+        let mut continuation: Vec<StructId> = bindings[k + 1..].iter().map(|&(_, v)| v).collect();
+        continuation.push(body);
+        if should_keep_binding(db, init, &continuation) {
+            // Record the keep BEFORE lowering the body/later inits — their references to this init read
+            // `db.kept_bindings` to decide `LocalRef` vs follow-through.
+            db.kept_bindings.insert(init);
+            kept.push((init, init));
+        }
+    }
+    // The body's core (its references to kept bindings now lower to `LocalRef`).
+    if kept.is_empty() {
+        // Nothing named — the ordinary erase: the `let`'s value is its body's value.
+        return core_of(db, body);
+    }
+    trace!(target: "rcdzc::lower", body = body.0, kept = kept.len(), "let: A-normalized (named multi-use runtime bindings)");
+    Core::Let {
+        bindings: kept,
+        body,
+    }
+}
+
+/// Whether a `let` binding whose initializer is `init` should be KEPT as a named `Core::Let` binding
+/// rather than copy-propagated. Kept iff (1) its value is a RUNTIME computation — its core is not a
+/// constant/atom that folds away, so following it through would re-emit the computation — AND (2) its
+/// name is used MORE THAN ONCE across `scope` (the later sibling initializers and the body — naming
+/// pays for itself only when it avoids a recompute). A constant, a single-use binding, or a poison is
+/// propagated (byte-neutral).
+fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool {
+    // A value that folds to a constant / atom leaves no computation to share — always propagate.
+    if !is_runtime_computation(db, init) {
+        return false;
+    }
+    // Count references to this binding across its scope. Naming is worth it only at >= 2 uses.
+    let mut n = 0;
+    for &region in scope {
+        n += uses_in(db, region, init);
+    }
+    n >= 2
+}
+
+/// Whether the node at `init` lowers to a RUNTIME COMPUTATION — a core form that emits instructions
+/// (arithmetic, comparison, conversion, a conditional, a runtime record), as opposed to a constant, a
+/// unit, a bare local/param read, or a poison, which are free to duplicate. Reads the value's core
+/// (the fold has already run, so a constant-folding binding reports `false` here).
+fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
+    matches!(
+        core_of(db, init),
+        Core::Arith { .. }
+            | Core::Compare { .. }
+            | Core::Convert { .. }
+            | Core::If { .. }
+            | Core::Record { .. }
+    )
+}
+
+/// The number of times the binding whose initializer is `init` is REFERENCED within the resolved
+/// subtree rooted at `node` — a use is a `Resolved::Ref { value: init }` (the identity a reference to
+/// the binding resolves to). Walks the resolved tree structurally without lowering; a nested `let`
+/// that SHADOWS the name rebinds references below it to a different init, so those do not count (they
+/// resolve to the inner binding's occurrence, not `init`). Bounded by the subtree size.
+fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
+    match resolved_of(db, node) {
+        Resolved::Ref { value } => {
+            if value == init {
+                1
+            } else {
+                // A ref to ANOTHER binding — but its value may itself reference `init` (e.g. a later
+                // `let` binding's initializer). Do not descend through the ref target here: the walk
+                // over the enclosing structure already visits every initializer/body position, so
+                // counting the ref itself (0 for a different binding) avoids double-counting.
+                0
+            }
+        }
+        Resolved::If { cond, then_, else_ } => {
+            uses_in(db, cond, init) + uses_in(db, then_, init) + uses_in(db, else_, init)
+        }
+        Resolved::Let { bindings, body } => {
+            let mut n = 0;
+            for (_, value) in &bindings {
+                n += uses_in(db, *value, init);
+            }
+            n + uses_in(db, body, init)
+        }
+        Resolved::Record { fields } => {
+            let mut n = 0;
+            for value in fields.values() {
+                n += uses_in(db, *value, init);
+            }
+            n
+        }
+        Resolved::Member { operand, .. } => uses_in(db, operand, init),
+        Resolved::Annot { expr, .. } => uses_in(db, expr, init),
+        Resolved::Apply { head, args } => {
+            let mut n = uses_in(db, head, init);
+            for a in &args {
+                n += uses_in(db, *a, init);
+            }
+            n
+        }
+        // Leaves and non-referencing forms contribute nothing.
+        Resolved::Int(_)
+        | Resolved::Bool(_)
+        | Resolved::Unit
+        | Resolved::Prim(_)
+        | Resolved::Param { .. }
+        | Resolved::TypeVal(_)
+        | Resolved::Lambda { .. }
+        | Resolved::Poison(_) => 0,
     }
 }
 
@@ -482,5 +629,68 @@ mod tests {
             }
             other => panic!("expected If, got {other:?}"),
         }
+    }
+
+    // ── A-normalization: the keep-or-propagate decision at the core column ────────────────────────
+    //
+    // A `let` whose value is a RUNTIME computation used more than once is kept as a `Core::Let`
+    // (named once); a single-use or constant binding is propagated (no residual `Let`). These inspect
+    // the core form directly — the module's own concern — separate from the wasm behavior tests.
+
+    /// Locate def `name`'s body occurrence (the root of the expression `core_of` is asked about).
+    fn body_of(db: &mut Db, name: &str) -> StructId {
+        let d = db.def_by_name(name).expect("def present");
+        db.defs[d].body.expect("body")
+    }
+
+    #[test]
+    fn a_multi_use_runtime_let_lowers_to_a_core_let() {
+        // `(let ((s (+ a b))) (+ s s))` in a function body — `s` is a runtime add used twice, so the
+        // body's core is a `Core::Let` naming `s`, with the binding keyed by `s`'s initializer.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (let ((s (+ a b))) (+ s s))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let body = body_of(&mut db, "f");
+        match core_of(&mut db, body) {
+            Core::Let { bindings, .. } => {
+                assert_eq!(bindings.len(), 1, "exactly one binding kept");
+                // The kept binding's value lowers to a runtime arithmetic op (the `(+ a b)`).
+                let (_, value) = bindings[0];
+                assert!(matches!(core_of(&mut db, value), Core::Arith { .. }));
+            }
+            other => panic!("expected Core::Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_single_use_runtime_let_leaves_no_core_let() {
+        // `(let ((s (+ a b))) (* s 2))` — `s` used ONCE, so it is copy-propagated: the body's core is
+        // the `(* (+ a b) 2)` multiplication directly, with NO enclosing `Core::Let`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (let ((s (+ a b))) (* s 2))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let body = body_of(&mut db, "f");
+        assert!(
+            matches!(core_of(&mut db, body), Core::Arith { op: Prim::Mul, .. }),
+            "a single-use binding must propagate, leaving no Core::Let"
+        );
+    }
+
+    #[test]
+    fn a_multi_use_constant_let_folds_and_is_not_named() {
+        // `(let ((k (+ 1 2))) (+ k k))` — `k` used twice but its value FOLDS to the constant 3, so
+        // there is no runtime computation to share: the whole body folds to `ConstInt(6)`, no `Let`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64)) (let ((k (+ 1 2))) (+ k k))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let body = body_of(&mut db, "f");
+        assert_eq!(
+            core_of(&mut db, body),
+            Core::ConstInt(IntValue::from_i64(6)),
+            "a constant binding folds; nothing is named"
+        );
     }
 }

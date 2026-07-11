@@ -158,6 +158,19 @@ pub struct Db {
     pub(crate) rec_visited: std::collections::HashSet<StructId>,
     pub(crate) rec_worklist: Vec<StructId>,
 
+    /// The set of `let`-binding INITIALIZER occurrences that `lower` decided to KEEP as an A-normal
+    /// `Core::Let` binding — a runtime value used more than once, named once so it is computed once
+    /// (`reference-compiler.md` §The Core Representation Is In A-Normal Form). Populated while lowering
+    /// the enclosing `let` (before its body's references are lowered), then read when lowering a
+    /// `Resolved::Ref`: a ref to an init in this set lowers to a `Core::LocalRef` (read the shared
+    /// slot) rather than following through to the value's core (which would recompute it). A binding
+    /// NOT in this set is copy-propagated / erased — the admin-redex elimination that keeps naming
+    /// free (`reference-compiler.md` ¶3), so a single-use or constant binding leaves no `Let` and the
+    /// emitted bytes are unchanged. It is a memo of a lowering decision (like `build_cache`), not a
+    /// column: the decision is a pure function of the fixed `let` structure, so recording it once and
+    /// reading it at each reference keeps the two ends of one binding in agreement.
+    pub(crate) kept_bindings: std::collections::HashSet<StructId>,
+
     /// The number of structure nodes in the DECODED PROGRAM — the count before the prelude and any
     /// evaluator-synthesized nodes were appended. A `StructId` below this is a genuine user-program
     /// node the front-end's span table is keyed by; a `StructId` at or above it is a PRELUDE node (a
@@ -203,6 +216,7 @@ impl Db {
             recursive: std::collections::HashMap::new(),
             rec_visited: std::collections::HashSet::new(),
             rec_worklist: Vec::new(),
+            kept_bindings: std::collections::HashSet::new(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),

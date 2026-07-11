@@ -199,8 +199,21 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Core::Convert { operand, .. } => {
             collect_reached_poisons(db, operand, out);
         }
-        // A parameter reference is a runtime local read — no sub-poison, no fault to collect.
-        Core::Param { .. } | Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => {}
+        // An A-normal `let`: every bound value is unconditionally computed (a kept binding names a
+        // value used more than once, always evaluated), and the body is unconditionally reached — so a
+        // provable trap in either is a build failure. Descend into each.
+        Core::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_reached_poisons(db, value, out);
+            }
+            collect_reached_poisons(db, body, out);
+        }
+        // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
+        Core::LocalRef { .. }
+        | Core::Param { .. }
+        | Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::Unit => {}
     }
 }
 

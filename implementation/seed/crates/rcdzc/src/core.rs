@@ -9,13 +9,23 @@
 //! (`intermediate-representations.md` §The Fully-Linearized Block Form Is A Linearizing Backend's
 //! Representation).
 //!
-//! **On administrative bindings.** A-normalization in general introduces FRESH bindings that name a
-//! non-atomic subexpression (`Let`/`LocalRef`). Those cannot be keyed by an AST `StructId`, because
-//! they have no source occurrence — so they will arrive together with the core's own fresh-id space
-//! in the stage that first needs them. The Stage-0 slice has nothing non-atomic to name (every
-//! operand is already an atom), so the core column keys cleanly by `StructId` now, and this rung
-//! carries only the variants that map 1:1 to a source node. Shipping a `Let` we could neither
-//! construct nor key would be dead shape.
+//! **On administrative bindings.** A-normalization names a non-trivial subexpression with a binding
+//! (`Let`/`LocalRef`) so its value flow is explicit rather than implicit in an expression's nesting
+//! (`reference-compiler.md` §The Core Representation Is In A-Normal Form). This rung realizes the
+//! FIRST case where naming earns its keep: a source `let` whose bound value is a RUNTIME computation
+//! (not a compile-time constant) used MORE THAN ONCE. Today such a binding would be followed through
+//! at each reference — recomputing the value per use — so [`Core::Let`] names it once and each use is
+//! a [`Core::LocalRef`] to that name. A binding used at most once, or one whose value folds to a
+//! constant, is still copy-propagated / erased at lowering (the ADMIN-REDEX ELIMINATION the one
+//! evaluator owes — `reference-compiler.md` ¶3), so naming every intermediate adds no runtime cost
+//! and the emitted bytes are unchanged for a program that has no multi-use runtime binding.
+//!
+//! A `Let` binding is keyed by its INITIALIZER's AST `StructId` — the stable identity a reference to
+//! the binding already resolves to (`Resolved::Ref { value }`), so no fresh id space is needed for
+//! this case: the slot a binding occupies and the `LocalRef`s that read it share that one occurrence.
+//! (Admin bindings with NO source occurrence — the ones a general A-normalization of every operand
+//! synthesizes — arrive with the core's own fresh-id space in a later stage; this rung names only the
+//! binding a source `let` already gives an occurrence to.)
 
 use crate::ast::{IntValue, StructId};
 use crate::diag::Reject;
@@ -44,6 +54,23 @@ pub enum Core {
         then_: StructId,
         else_: StructId,
     },
+    /// An A-normal binding sequence: name each `(binder, value)` — its VALUE computed once — then the
+    /// `body` uses each name by a [`Core::LocalRef`]. The `binder` is the initializer's AST `StructId`
+    /// (the identity a reference to the binding resolves to), so the slot a binding occupies and the
+    /// refs that read it agree without a fresh id space. Present ONLY for a source `let` binding whose
+    /// value is a runtime computation used more than once — the case where naming avoids recomputing;
+    /// a single-use or constant binding is copy-propagated / erased at lowering, leaving no `Let`.
+    /// Bindings are sequential (a later one may reference an earlier's name), matching `let*`.
+    Let {
+        bindings: Vec<(StructId, StructId)>,
+        body: StructId,
+    },
+    /// A reference to a [`Core::Let`] binding — read the value named by `binder` (the initializer
+    /// occurrence the binding was keyed by). The backend maps it to a `local.get` of the binding's
+    /// slot, exactly as a `Param` reads a parameter slot. Present only when the referenced binding was
+    /// KEPT as a `Core::Let` (a multi-use runtime value); a reference to a propagated binding lowers to
+    /// the value's own core instead.
+    LocalRef { binder: StructId },
     /// A runtime arithmetic operation on two operands (children by AST `StructId`). Present only when
     /// the fold could NOT reduce the operation to a constant (an operand is not compile-time-known — a
     /// FUNCTION PARAMETER). Constant arithmetic folds to `ConstInt`/`Poison` in `lower`. The machine op

@@ -179,6 +179,46 @@ fn emit(
             }
             None => Err(Reject::decline("parameter reference has no local slot")),
         },
+        // An A-normal binding sequence: give each binding a PERSISTENT local slot (unlike the reused
+        // scratch pool, a binding's value must survive across every `LocalRef` to it), emit its value
+        // ONCE into that slot, then emit the body reading the slots. This is where naming pays off:
+        // a value used N times is computed once here and read N times as `local.get`. Slots are
+        // allocated at the current scratch floor; the floor rises past them so the body's scratch does
+        // not clobber a live binding. A `let*` binding's value may reference an earlier binding, so the
+        // extended slot map carries the earlier bindings when a later value is emitted.
+        Core::Let { bindings, body } => {
+            let mut extended = slots.clone();
+            let mut floor = base;
+            for (binder, value) in &bindings {
+                let slot = floor;
+                // The binding's machine value type — read off its solved type (the value's type). A
+                // binding whose type has no machine rep (a compound/unresolved value) declines.
+                let vt = valtype_of(&type_of(db, *binder)).ok_or_else(|| {
+                    Reject::decline("a let binding's type has no machine representation")
+                })?;
+                // Emit the value into scratch ABOVE this persistent slot (its own scratch floats), then
+                // store it once. The value sees the earlier bindings via `extended`.
+                emit(db, *value, &extended, slot + 1, high, scratch_ty, out)?;
+                out.push(Lir::LocalSet(slot));
+                scratch_ty.insert(slot, vt);
+                if slot + 1 > *high {
+                    *high = slot + 1;
+                }
+                extended.insert(*binder, slot);
+                floor = slot + 1;
+            }
+            emit(db, body, &extended, floor, high, scratch_ty, out)
+        }
+        // A reference to a kept `let` binding — read its persistent slot, exactly like a parameter. The
+        // slot was assigned when the enclosing `Core::Let` was emitted; a `LocalRef` with no slot is a
+        // compiler bug (a ref lowered as `LocalRef` without its binding kept), so decline.
+        Core::LocalRef { binder } => match slots.get(&binder) {
+            Some(&slot) => {
+                out.push(Lir::LocalGet(slot));
+                Ok(())
+            }
+            None => Err(Reject::decline("let-binding reference has no local slot")),
+        },
         // A runtime comparison: emit both operands, then the machine comparison selected from the
         // operands' width AND signedness (`_s` for a signed type, `_u` for an unsigned one; `eq` is
         // sign-agnostic). The result is an i32 boolean. A comparison never overflows, so both operands
