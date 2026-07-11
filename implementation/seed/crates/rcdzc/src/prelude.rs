@@ -47,7 +47,7 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
 
 /// Append an `(intrinsic NAME)` node and return it — the arena form a built-in operation value takes,
 /// mirroring the `(unrealized …)` and `(record …)` prelude nodes. `resolve` turns it into a
-/// `Resolved::Intrinsic`; the name says which operation.
+/// `Resolved::Prim`; the name says which operation.
 fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
     let head = push_atom(ast, Leaf::Name("intrinsic".to_string()));
     let who = push_atom(ast, Leaf::Name(name.to_string()));

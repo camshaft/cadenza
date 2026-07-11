@@ -116,8 +116,8 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
 }
 
 /// The flat wasm op for an arithmetic operation at the given width (i32 if `narrow`, else i64).
-fn arith_op(op: crate::resolved::Intrinsic, narrow: bool) -> Lir {
-    use crate::resolved::Intrinsic::*;
+fn arith_op(op: crate::resolved::Prim, narrow: bool) -> Lir {
+    use crate::resolved::Prim::*;
     match (op, narrow) {
         (Add, false) => Lir::I64Add,
         (Sub, false) => Lir::I64Sub,
@@ -125,6 +125,9 @@ fn arith_op(op: crate::resolved::Intrinsic, narrow: bool) -> Lir {
         (Add, true) => Lir::I32Add,
         (Sub, true) => Lir::I32Sub,
         (Mul, true) => Lir::I32Mul,
+        // TODO: type constructors handled by the evaluator — a `Core::Arith` only ever carries an
+        // arith prim (its op comes from `intrinsic_of`, which yields only arith), so this is unreachable.
+        (IntCtor | UIntCtor | FnCtor, _) => unreachable!("type constructor reached arith selection"),
     }
 }
 

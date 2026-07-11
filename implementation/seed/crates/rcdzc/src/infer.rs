@@ -78,12 +78,12 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         }
         // A bare built-in operation value standing alone has no scalar type yet (it is not a runtime
         // value until functions/closures exist). Typed `Any`; applying it is what has a type.
-        Resolved::Intrinsic(_) => Ty::Any,
+        Resolved::Prim(_) => Ty::Any,
         // An arithmetic application: the operation is generic over the integer type, so its result is
         // the integer type its operands share. Type = the JOIN of the operand types (a deferred/var
         // width unifies with a fixed one; two fixed widths that differ are a mismatch reported by
         // `type_errors`). A non-integer operand yields `Any` here (the fault is reported there).
-        Resolved::Apply { op, args } => match crate::resolve::intrinsic_of(db, op) {
+        Resolved::Apply { head, args } => match crate::resolve::intrinsic_of(db, head) {
             Some(_) => {
                 let mut result = Ty::int(); // signed, deferred width — the generic operand type.
                 for &arg in &args {
@@ -102,6 +102,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
+        // TODO: type constructors handled by the evaluator — a type value or compile-time lambda has no
+        // scalar type yet; typed `Any` so it never cascades into a spurious mismatch.
+        Resolved::TypeVal(_) | Resolved::Lambda { .. } => Ty::Any,
     }
 }
 
@@ -182,8 +185,8 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // agree. A non-integer operand or a width/signedness mismatch is the conflicting-use type
         // error CDZ0301 (`numeric-model.md` — mixing two numeric types without an explicit conversion
         // does not silently promote). Descend into the operands for their own faults.
-        Resolved::Apply { op, args } => {
-            if crate::resolve::intrinsic_of(db, op).is_some() {
+        Resolved::Apply { head, args } => {
+            if crate::resolve::intrinsic_of(db, head).is_some() {
                 let mut prev: Option<Ty> = None;
                 for &arg in &args {
                     let at = type_of(db, arg);
@@ -227,11 +230,13 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // A ref's target-node fault is reported when that node is collected on its own. A bare
         // intrinsic value and the atomic leaves have no sub-faults.
-        Resolved::Intrinsic(_)
+        Resolved::Prim(_)
         | Resolved::Ref { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
-        | Resolved::Unit => {}
+        | Resolved::Unit
+        | Resolved::TypeVal(_)
+        | Resolved::Lambda { .. } => {}
     }
 }
 

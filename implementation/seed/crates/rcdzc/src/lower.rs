@@ -19,7 +19,7 @@ use crate::core::Core;
 use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::resolve::resolved_of;
-use crate::resolved::{Intrinsic, Resolved};
+use crate::resolved::{Prim, Resolved};
 
 /// The core (A-normal) form of the node at `id`, filling the column on demand (memoized). Reads the
 /// resolved form; children stay ids, lowered on their own demand.
@@ -70,7 +70,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::If { cond, then_, else_ } => Core::If { cond, then_, else_ },
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
-        Resolved::Intrinsic(_) => Core::Poison(Reject::decline(
+        Resolved::Prim(_) => Core::Poison(Reject::decline(
             "a built-in operation used as a value needs runtime closures (not yet built)",
         )),
         // An arithmetic application. FOLD it when its operands fold to constants: evaluate at compile
@@ -79,8 +79,8 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // The Build). An operand that is not a constant stays a runtime `Arith` (which, in this
         // increment, has no runtime integer source yet without functions — so `select` emits the op
         // for a genuine runtime operand once functions land; a poison operand propagates).
-        Resolved::Apply { op, args } => {
-            let op = match crate::resolve::intrinsic_of(db, op) {
+        Resolved::Apply { head, args } => {
+            let op = match crate::resolve::intrinsic_of(db, head) {
                 Some(op) => op,
                 None => return Core::Poison(Reject::decline("application of a non-operation not yet supported")),
             };
@@ -102,6 +102,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
         }
         Resolved::Poison(r) => Core::Poison(r),
+        // TODO: type constructors handled by the evaluator — a type value or a compile-time lambda has
+        // no runtime core form yet (they reduce at compile time), so lowering them declines for now.
+        Resolved::TypeVal(_) | Resolved::Lambda { .. } => Core::Poison(Reject::decline(
+            "a type value or compile-time lambda has no runtime form yet",
+        )),
     }
 }
 
@@ -111,7 +116,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
 /// carrying CDZ0304 — the build fails rather than shipping a runtime trap. On success the result is a
 /// `ConstInt`. The evaluation is over `i64` (the Stage default integer); a later width stage
 /// generalizes the range the check tests to the operands' solved width.
-fn fold_arith(op: Intrinsic, a: IntValue, b: IntValue) -> Core {
+fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
     let (x, y) = match (a.to_i64(), b.to_i64()) {
         (Some(x), Some(y)) => (x, y),
         // An operand beyond the machine range the fold evaluates over — a provable width trap.
@@ -123,9 +128,13 @@ fn fold_arith(op: Intrinsic, a: IntValue, b: IntValue) -> Core {
         }
     };
     let checked = match op {
-        Intrinsic::Add => x.checked_add(y),
-        Intrinsic::Sub => x.checked_sub(y),
-        Intrinsic::Mul => x.checked_mul(y),
+        Prim::Add => x.checked_add(y),
+        Prim::Sub => x.checked_sub(y),
+        Prim::Mul => x.checked_mul(y),
+        // TODO: type constructors handled by the evaluator — only arith prims reach the fold today.
+        Prim::IntCtor | Prim::UIntCtor | Prim::FnCtor => {
+            return Core::Poison(Reject::decline("type constructor is not an arithmetic operation"));
+        }
     };
     match checked {
         Some(n) => Core::ConstInt(IntValue::from_i64(n)),
@@ -140,11 +149,15 @@ fn fold_arith(op: Intrinsic, a: IntValue, b: IntValue) -> Core {
 }
 
 /// The source spelling of an intrinsic, for diagnostics.
-fn intrinsic_name(op: Intrinsic) -> &'static str {
+fn intrinsic_name(op: Prim) -> &'static str {
     match op {
-        Intrinsic::Add => "+",
-        Intrinsic::Sub => "-",
-        Intrinsic::Mul => "*",
+        Prim::Add => "+",
+        Prim::Sub => "-",
+        Prim::Mul => "*",
+        // TODO: type constructors handled by the evaluator — only arith prims reach here today.
+        Prim::IntCtor => "Int",
+        Prim::UIntCtor => "UInt",
+        Prim::FnCtor => "->",
     }
 }
 

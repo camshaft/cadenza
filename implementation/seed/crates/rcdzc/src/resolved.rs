@@ -44,25 +44,47 @@ impl Symbol {
     }
 }
 
-/// A built-in arithmetic operation. Each is generic over the integer type: its operands and result
-/// share one width. The `fold` of two constants and the wasm op it selects live in `lower`/`select`;
-/// here it is just which operation a prelude `(intrinsic …)` node denotes.
+/// A NATIVE primitive — the irreducible bottom a `Meta.apply` (or a leaf value) names. Everything
+/// user-facing is a record; a `Prim` is where the compiler's own machinery takes over ("bottom out on
+/// an intrinsic, don't bloat the general node types"). There are two families:
+///  - arithmetic operations (`+`/`-`/`*`) — `Meta.apply` of the operator records; folded/emitted in
+///    `lower`/`select` by the width read off the solved type;
+///  - type CONSTRUCTORS (`Int`/`UInt`) — `Meta.apply` builders the evaluator applies to a width to
+///    build a concrete integer MODULE record, and the function-type constructor `->`.
+/// A prelude `(intrinsic NAME)` node names one of these; the name→prim table is the ONE place a prim
+/// spelling lives (the prelude authors it), so nothing downstream matches a source name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Intrinsic {
+pub enum Prim {
     Add,
     Sub,
     Mul,
+    /// `Int : Nat → Module` — applied to a width, builds the signed integer module of that width.
+    IntCtor,
+    /// `UInt : Nat → Module` — the unsigned integer module builder.
+    UIntCtor,
+    /// `-> : (Type, Type) → Type` — the function-type constructor.
+    FnCtor,
 }
 
-impl Intrinsic {
-    /// The operation a prelude `(intrinsic NAME)` node names, or `None` if unrecognized.
-    pub fn from_name(name: &str) -> Option<Intrinsic> {
+impl Prim {
+    /// The primitive a prelude `(intrinsic NAME)` node names, or `None` if unrecognized. The one place
+    /// a prim's source spelling is matched — the prelude authors these nodes, so no other pass sees a
+    /// name.
+    pub fn from_name(name: &str) -> Option<Prim> {
         match name {
-            "+" => Some(Intrinsic::Add),
-            "-" => Some(Intrinsic::Sub),
-            "*" => Some(Intrinsic::Mul),
+            "+" => Some(Prim::Add),
+            "-" => Some(Prim::Sub),
+            "*" => Some(Prim::Mul),
+            "Int" => Some(Prim::IntCtor),
+            "UInt" => Some(Prim::UIntCtor),
+            "->" => Some(Prim::FnCtor),
             _ => None,
         }
+    }
+
+    /// Whether this primitive is an arithmetic operation (vs a type constructor).
+    pub fn is_arith(self) -> bool {
+        matches!(self, Prim::Add | Prim::Sub | Prim::Mul)
     }
 }
 
@@ -99,16 +121,29 @@ pub enum Resolved {
     /// Generic Projection That Does Not Inspect Its Key). The projection resolves the field against
     /// the operand's type/value downstream.
     Member { operand: StructId, key: Symbol },
-    /// A built-in operation value — what a prelude `(intrinsic …)` node resolves to. Carried through
-    /// the pipeline as a VALUE and translated to instructions only at selection
+    /// A NATIVE primitive value — what a prelude `(intrinsic …)` node resolves to (an arithmetic
+    /// operation or a type constructor). The irreducible bottom a `Meta.apply` names; carried as a
+    /// VALUE and reduced/lowered by the machinery that owns it, never special-cased by name
     /// (`reference-compiler.md` §A Built-In Operation Is A First-Class Value, Lowered At Selection).
-    Intrinsic(Intrinsic),
-    /// Application of an operation to its arguments — `(op arg…)` where `op` resolves to an intrinsic.
-    /// The same application mechanism a user function will use; arithmetic is binary. `op` and each
-    /// `arg` are AST occurrences resolved on demand; dispatch is by the KIND `op` resolves to (an
-    /// intrinsic), never by the head's spelling (`prelude-and-resolution.md` §A Form Whose Head Is
-    /// Not A Grammar Name Is Dispatched By The Kind Of Value Its Head Resolves To).
-    Apply { op: StructId, args: Vec<StructId> },
+    Prim(Prim),
+    /// Application `(head arg…)` — the ONE application form. `head` and each `arg` are AST occurrences
+    /// resolved on demand; to apply, project the head value's `(meta apply)` and use it if applyable
+    /// (else reject "not applyable"). One path serves an operator, a type constructor, and (later) a
+    /// user function — dispatch is by the head value's meta channel, never its spelling
+    /// (`prelude-and-resolution.md` §A Form Whose Head Is Not A Grammar Name Is Dispatched By The Kind
+    /// Of Value Its Head Resolves To).
+    Apply { head: StructId, args: Vec<StructId> },
+    /// A first-class TYPE value. A type is an ordinary value (mixable, returnable) — using `Bool` in
+    /// type position projects a record's `(meta t)` field, which holds one of these; a type
+    /// constructor applied (`(Int a)`, `(-> A B)`) reduces through the one evaluator to one of these.
+    /// It is compile-time-only: the erasure fence forbids it reaching the runtime boundary.
+    TypeVal(crate::ty::Ty),
+    /// A compile-time lambda `(fn (param…) body)` — a value. Its parameters bind in scope for `body`
+    /// (the ordinary parameter-scope mechanism); the evaluator β-reduces it when applied. An
+    /// operator's `Meta.t` is such a lambda over the width (`(fn (a) (-> (Int a) …))`), so a "type
+    /// scheme" is just a compile-time lambda from a type/width to a type — instantiation is applying
+    /// it to a fresh variable. Params are the binder-name occurrences; `body` is the body occurrence.
+    Lambda { params: Vec<StructId>, body: StructId },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled
     /// literal. Carries its reject/decline so the fault is reported at the node it was found.
     Poison(Reject),

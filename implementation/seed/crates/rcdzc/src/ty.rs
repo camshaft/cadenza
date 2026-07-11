@@ -90,6 +90,10 @@ pub enum Ty {
     /// fields were written (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields), and a
     /// field's type is looked up by name in O(log n).
     Record(std::collections::BTreeMap<crate::resolved::Symbol, Ty>),
+    /// A function type `param → result`, curried (a multi-parameter operation is nested `Fn`s). What
+    /// an operator's (and later a function's) `Meta.t` denotes; an application unifies the argument
+    /// against `param` and takes `result`.
+    Fn(Box<Ty>, Box<Ty>),
     /// A unification variable — an as-yet-unsolved type inference introduces (e.g. a fresh operand
     /// type before it is constrained). Resolved to a concrete type by unification; a variable that
     /// survives to the boundary is an undetermined type (a rejection, not a default). The full HM
@@ -133,6 +137,8 @@ impl Ty {
             }
             (Ty::Bool, Ty::Bool) => true,
             (Ty::Unit, Ty::Unit) => true,
+            // Two function types agree iff their parameters and results agree.
+            (Ty::Fn(pa, ra), Ty::Fn(pb, rb)) => pa.agrees_with(pb) && ra.agrees_with(rb),
             // Two records agree iff they have the same field-name set and each field's types agree.
             (Ty::Record(a), Ty::Record(b)) => {
                 a.len() == b.len()
@@ -201,8 +207,28 @@ impl Ty {
                 s.push(')');
                 s
             }
+            Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
             Ty::Var(n) => format!("?{n}"),
             Ty::Any => "Any".to_string(),
         }
+    }
+}
+
+/// A type SCHEME — a polymorphic type quantified over some type and width variables (`∀ vars. ty`).
+/// What an operator's (and later a function's) `Meta.t` denotes. Instantiating a scheme replaces its
+/// bound variables with FRESH ones, so each use is independent — the mechanism that makes `+` generic
+/// over the integer type and `(id x)` polymorphic. Bound variables are identified by the `Ty::Var` /
+/// `Width::Var` numbers appearing in `ty`; `ty_vars`/`width_vars` list which of those are quantified.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Scheme {
+    pub ty_vars: Vec<u32>,
+    pub width_vars: Vec<u32>,
+    pub ty: Ty,
+}
+
+impl Scheme {
+    /// A monomorphic scheme — a plain type with nothing quantified.
+    pub fn mono(ty: Ty) -> Scheme {
+        Scheme { ty_vars: Vec::new(), width_vars: Vec::new(), ty }
     }
 }

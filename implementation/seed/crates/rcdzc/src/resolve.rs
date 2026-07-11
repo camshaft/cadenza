@@ -34,24 +34,25 @@ use crate::arena::Slot;
 use crate::ast::{Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::diag::{Code, Reject};
-use crate::resolved::{Intrinsic, Resolved, Symbol};
+use crate::resolved::{Prim, Resolved, Symbol};
 use std::collections::BTreeMap;
 
 /// The fixed, closed set of GRAMMAR head names — the forms that bind names or control evaluation, plus
 /// member access. This set does NOT grow when a built-in value is added (that is a prelude entry).
 /// A form whose head is one of these is dispatched structurally; any other head is an application (or,
 /// for a bare atom, a name looked up).
-const GRAMMAR: &[&str] = &["let", "if", "record", ".", "module", "def", "export", "do", "unrealized"];
+const GRAMMAR: &[&str] =
+    &["let", "if", "record", ".", "module", "def", "export", "do", "unrealized", "intrinsic", "meta"];
 
 /// The intrinsic the node at `id` denotes, following a `Ref` — a name like `+` resolves to a `Ref` to
-/// its prelude `(intrinsic +)` node, which resolves to `Intrinsic(Add)`. Returns `None` if `id` is not
+/// its prelude `(intrinsic +)` node, which resolves to `Prim(Add)`. Returns `None` if `id` is not
 /// (a reference to) an intrinsic. Shared by `infer` and `lower` so the "follow the ref to the
 /// operation" step lives in one place, mirroring how member access follows a ref into a record.
-pub fn intrinsic_of(db: &mut Db, id: StructId) -> Option<Intrinsic> {
+pub fn intrinsic_of(db: &mut Db, id: StructId) -> Option<Prim> {
     match resolved_of(db, id) {
-        Resolved::Intrinsic(op) => Some(op),
+        Resolved::Prim(op) => Some(op).filter(|p| p.is_arith()),
         Resolved::Ref { value } => match resolved_of(db, value) {
-            Resolved::Intrinsic(op) => Some(op),
+            Resolved::Prim(op) => Some(op).filter(|p| p.is_arith()),
             _ => None,
         },
         _ => None,
@@ -112,8 +113,8 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         .as_form(id, "intrinsic")
                         .and_then(|t| t.first())
                         .and_then(|&s| db.ast.as_name(s));
-                    match name.and_then(Intrinsic::from_name) {
-                        Some(op) => Resolved::Intrinsic(op),
+                    match name.and_then(Prim::from_name) {
+                        Some(op) => Resolved::Prim(op),
                         None => Resolved::Poison(Reject::decline("unknown intrinsic")),
                     }
                 }
@@ -140,7 +141,7 @@ fn resolve_application(db: &Db, id: StructId, children: &[StructId]) -> Resolved
     let head = children[0];
     let args: Vec<StructId> = children[1..].to_vec();
     match resolve_head_value(db, head) {
-        Some(Resolved::Intrinsic(_)) => Resolved::Apply { op: head, args },
+        Some(Resolved::Prim(_)) => Resolved::Apply { head, args },
         _ => {
             let h = db.ast.head_name(id).unwrap_or("<expr>");
             Resolved::Poison(Reject::decline(format!("application of `{h}` not yet supported")))
@@ -161,7 +162,7 @@ fn resolve_head_value(db: &Db, head: StructId) -> Option<Resolved> {
     // Then the prelude: is it an `(intrinsic …)` node?
     let node = *db.prelude.get(name)?;
     if let Some(op_name) = db.ast.as_form(node, "intrinsic").and_then(|t| t.first()).and_then(|&s| db.ast.as_name(s)) {
-        return Intrinsic::from_name(op_name).map(Resolved::Intrinsic);
+        return Prim::from_name(op_name).map(Resolved::Prim);
     }
     None
 }
@@ -319,21 +320,41 @@ fn resolve_let(db: &Db, id: StructId) -> Resolved {
     Resolved::Let { bindings: pairs, body }
 }
 
-/// Resolve `(record (k1 v1) (k2 v2) …)`. Field names are labels (symbols), NOT resolved. A duplicate
-/// field name makes the field set ill-defined → CDZ0201 (`core-semantics.md` §A Record Has A Fixed Set
-/// Of Named Fields); the check is over the WHOLE field list, not adjacent pairs.
+/// Read a KEY occurrence into a label [`Symbol`] — the one key-mode rule, shared by record fields and
+/// member access. A key is EITHER a bare name → an unqualified `Symbol`, OR a `(meta NAME)` form → a
+/// symbol in the `meta` namespace. The `(meta …)` form is how the meta channel is written as ordinary
+/// structure (`((meta t) VALUE)` is a meta field; `(. r (meta t))` projects it), so a namespaced key
+/// needs no dotted-string parsing and no reserved section — it is one more key shape read structurally
+/// (`prelude-and-resolution.md` §A Member Key Is A Label). A key is NEVER resolved as a value.
+fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
+    if let Some(n) = db.ast.as_name(node) {
+        return Some(Symbol::plain(n));
+    }
+    // `(meta NAME)` → the symbol `NAME` in the `meta` namespace.
+    if let Some(tail) = db.ast.as_form(node, "meta") {
+        if let Some(name) = tail.first().and_then(|&s| db.ast.as_name(s)) {
+            return Some(Symbol { namespace: Some("meta".to_string()), name: name.to_string() });
+        }
+    }
+    None
+}
+
+/// Resolve `(record (k1 v1) (k2 v2) …)`. Field keys are labels (symbols, possibly `(meta …)`-
+/// namespaced), NOT resolved. A duplicate field name makes the field set ill-defined → CDZ0201
+/// (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields); the check is over the WHOLE field
+/// list, not adjacent pairs.
 fn resolve_record(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "record").unwrap_or(&[]);
     let mut fields: BTreeMap<Symbol, StructId> = BTreeMap::new();
     for &field in tail {
-        // Each field is `(name value)`.
+        // Each field is `(key value)`.
         let kv = match db.ast.get(field) {
             Struct::List(kv) if kv.len() == 2 => kv,
-            _ => return Resolved::Poison(Reject::coded(Code::Malformed, "record field must be (name value)")),
+            _ => return Resolved::Poison(Reject::coded(Code::Malformed, "record field must be (key value)")),
         };
-        let label = match db.ast.as_name(kv[0]) {
-            Some(n) => Symbol::plain(n),
-            None => return Resolved::Poison(Reject::coded(Code::Malformed, "record field name must be a name")),
+        let label = match read_key(db, kv[0]) {
+            Some(sym) => sym,
+            None => return Resolved::Poison(Reject::coded(Code::Malformed, "record field key must be a name or (meta name)")),
         };
         // A duplicate field name — anywhere in the list — is ill-formed.
         if fields.insert(label.clone(), kv[1]).is_some() {
@@ -346,16 +367,16 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
     Resolved::Record { fields }
 }
 
-/// Resolve `(. operand key)`. The key is a LABEL read from its spelling — never resolved as a value.
-/// A computed key (a non-name key occurrence) is not yet supported (declines).
+/// Resolve `(. operand key)`. The key is a LABEL (bare or `(meta …)`), never resolved as a value.
+/// A key that is neither is not yet supported (declines).
 fn resolve_member(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, ".").unwrap_or(&[]);
     if tail.len() != 2 {
         return Resolved::Poison(Reject::coded(Code::Malformed, "member access takes an operand and a key"));
     }
     let operand = tail[0];
-    let key = match db.ast.as_name(tail[1]) {
-        Some(n) => Symbol::plain(n),
+    let key = match read_key(db, tail[1]) {
+        Some(sym) => sym,
         None => return Resolved::Poison(Reject::decline("a computed member key is not yet supported")),
     };
     Resolved::Member { operand, key }

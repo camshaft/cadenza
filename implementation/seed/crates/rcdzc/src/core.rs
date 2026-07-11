@@ -19,7 +19,7 @@
 
 use crate::ast::{IntValue, StructId};
 use crate::diag::Reject;
-use crate::resolved::{Intrinsic, Symbol};
+use crate::resolved::{Prim, Symbol};
 use std::collections::BTreeMap;
 
 /// The core (A-normal) form of one node.
@@ -45,7 +45,7 @@ pub enum Core {
     /// which in this increment means it declines, since there are no runtime integer operands yet
     /// without functions). Constant arithmetic folds to `ConstInt`/`Poison` in `lower`. The machine op
     /// the backend emits is selected from the operands' solved width.
-    Arith { op: Intrinsic, lhs: StructId, rhs: StructId },
+    Arith { op: Prim, lhs: StructId, rhs: StructId },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }
