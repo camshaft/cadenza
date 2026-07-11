@@ -359,6 +359,29 @@ from a different input than §2a:
      §Constructors Consume And Accessors Borrow`); conservative dup/drop over the ANF named value flow
      (step 1's payoff). Run against the refcounting runtime — a tuple built, projected, and dropped with
      balanced refcounts (no leak, no use-after-free). This is what makes the tuple vertical COMPLETE.
+     Realized as: a kept HEAP-typed `Core::Let` binding (a runtime tuple — a constant one folds, H2c, so
+     it is never kept) is dead after a SCALAR body, so `select` closes the `let` with `local.get <slot>;
+     drop`; a scalar binding owns no heap cell → no drop. `drop` recursively releases the boxed children.
+     Static-elision (operator, 2026-07-11): a PROVEN-static value emits NO reclamation — but that path
+     never keeps (H2c), so the "kept ⇒ runtime ⇒ drop" rule is already the elision. Verified 3 ways:
+     emission (a runtime tuple `let` constructs-then-drops; a scalar `let` does not); composed
+     correctness (the round-trip still returns the right value WITH drops emitted — a drop that corrupted
+     a live child would break the projection); and the balance probe (a `debug-counters` runtime +
+     `live-objects == 0` after the run — the acceptance probe from the runtime's own suite).
+   - **FBIP / in-place update (the reuse story — operator Q 2026-07-11: "how do we update one field when
+     something else owns the value?").** The runtime already answers this with `reset` + `*-reuse`
+     (WIT 26–28, already generated `lowerable`), so our dup/drop API is exactly the right foundation and
+     reuse rides ON it — NO runtime/ABI work when we add it. A field update `{r with x=v}` compiles to
+     `token = reset(r); new = arr-alloc-reuse(n, token); <arr-set the fields>`. `reset` is drop-CONDITIONED-
+     on-uniqueness: if `rc(r)==1` (nobody else owns it) it hands back `r`'s emptied shell as a non-null
+     token → `arr-alloc-reuse` REFITS it in place (zero allocation — the Koka/Lean win); if `rc(r)>1`
+     (shared) it decrements and returns null → `arr-alloc-reuse` allocates FRESH (the COPY — the other
+     owner's value is untouched). So reuse-vs-copy is decided DYNAMICALLY by the refcount, there is NO
+     separate "clone" call, and a null token is always safe (token 0 makes the reuse-constructors behave
+     exactly as `arr-alloc`/`sum-new`). `dup` = retain (an unchanged field re-borrowed out of `r` and
+     kept past `r`'s drop is `dup`'d first — the "retained before releasing the parent" ordering rule).
+     H2d is the CONSERVATIVE Perceus (construct + drop, no reuse — our only tuple op is build+project, no
+     update); the reuse path lands as a codegen change with tuple/record UPDATE (an H4-era operation).
 4. **(H3 — folded into H2d)** Reclamation is no longer a separate increment; see H2d.
 5. **(H4) Records at runtime** (rides H2 — a record is a positional array), then **sums** (`sum-new`/
    `sum-disc`/`sum-payload`), then tuple/record/sum PATTERNS in match (the pattern engine grows a

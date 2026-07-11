@@ -838,6 +838,155 @@ fn a_runtime_element_tuple_still_uses_the_heap() {
     }
 }
 
+// ── value-heap H2d: the Perceus BALANCE probe (no leak) ──────────────────────────────────────────
+//
+// The composed round-trip already rules out use-after-free (a drop of a still-live child would corrupt
+// the projection and change the result / trap). The remaining risk is a LEAK — a drop that never fires.
+// The runtime's `live-objects` (WIT 54) reports the live heap-cell count, but ONLY in a build compiled
+// with `--features debug-counters` (the shipped build returns 0 unconditionally). So this ACCEPTANCE
+// probe builds that runtime, composes it in one store, runs the heap round-trip, then reads
+// `live-objects` and asserts it is 0 — the compiler's dup/drop discipline left nothing behind. It is
+// `#[ignore]` (needs the special build) — run with `cargo test -p rcdzc perceus_balance -- --ignored`.
+
+/// Build the `debug-counters` runtime component and return its bytes, or `None` if the build failed
+/// (so the probe skips rather than fails on a machine without the wasm toolchain). Runs `cargo
+/// component build --features debug-counters` in the runtime crate and reads the output wasm. NOTE:
+/// this build OVERWRITES the default runtime at the same path — the probe is `#[ignore]`d partly so it
+/// does not clobber the hash-matched runtime the ordinary composed tests use in the same run.
+fn build_debug_counters_runtime() -> Option<Vec<u8>> {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let seed = manifest.join("../..").canonicalize().ok()?;
+    let runtime_crate = seed.join("crates/cdz-runtime");
+    let status = std::process::Command::new("cargo")
+        .args([
+            "component",
+            "build",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--features",
+            "debug-counters",
+        ])
+        .current_dir(&runtime_crate)
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    let wasm = runtime_crate.join("target/wasm32-unknown-unknown/release/cdz_runtime.wasm");
+    std::fs::read(&wasm).ok()
+}
+
+/// H2d ACCEPTANCE: after a heap round-trip, the runtime's live-cell count is 0 — the dup/drop discipline
+/// balanced (no leak). Composes a `debug-counters` runtime in ONE store (so the program's heap ops and
+/// the `live-objects` read share the same allocator), runs `pair-sum(20,22)` (builds a 2-tuple, boxes 2
+/// elements, projects both, drops the tuple — which cascades to the 2 boxes), then reads `live-objects`.
+#[test]
+#[ignore]
+fn perceus_balance_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let Some(runtime_bytes) = build_debug_counters_runtime() else {
+        eprintln!("[H2d] could not build the debug-counters runtime; skipping balance probe");
+        return;
+    };
+
+    // The program: build a runtime 2-tuple, project both elements, sum. It imports the heap + `drop`.
+    let src = "(module m (def (pair-sum (: a Int64) (: b Int64)) \
+                 (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+
+    let engine = Engine::default();
+    let program_component = Component::new(&engine, &program).expect("program component");
+    let runtime_component = Component::new(&engine, &runtime_bytes).expect("runtime component");
+    let mut store = Store::new(&engine, ());
+
+    // Instantiate the runtime ONCE; keep the instance so we can read `live-objects` after the run.
+    let rt_linker: Linker<()> = Linker::new(&engine);
+    let rt_instance = rt_linker
+        .instantiate(&mut store, &runtime_component)
+        .expect("instantiate runtime");
+    let heap_idx = rt_instance
+        .get_export_index(&mut store, None, "cadenza:runtime/heap")
+        .expect("runtime exports heap");
+
+    // Forward every heap function into the program's import, under the program's exact (hashed) name.
+    let req = cdz_run::required_runtime(&program)
+        .expect("valid")
+        .expect("program imports the runtime");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let heap_func_names = runtime_heap_func_names(&engine, &runtime_component);
+    let mut iface = linker.instance(&req.import_name).expect("linker instance");
+    for fname in &heap_func_names {
+        let fidx = rt_instance
+            .get_export_index(&mut store, Some(&heap_idx), fname)
+            .expect("heap func");
+        let f = rt_instance.get_func(&mut store, fidx).expect("func");
+        let fname = fname.clone();
+        iface
+            .func_new(&fname, move |mut ctx, params, results| {
+                f.call(&mut ctx, params, results)?;
+                f.post_return(&mut ctx)?;
+                Ok(())
+            })
+            .expect("forward heap func");
+    }
+
+    // Run the program's export.
+    let instance = linker
+        .instantiate(&mut store, &program_component)
+        .expect("instantiate program");
+    let func = instance
+        .get_func(&mut store, "pair-sum")
+        .expect("pair-sum export");
+    let mut results = [Val::S64(0)];
+    func.call(&mut store, &[Val::S64(20), Val::S64(22)], &mut results)
+        .expect("call");
+    func.post_return(&mut store).expect("post_return");
+    assert_eq!(results[0], Val::S64(42), "the round-trip still computes 42");
+
+    // Read `live-objects` off the runtime instance — the dup/drop discipline must leave 0 live cells.
+    let live_idx = rt_instance
+        .get_export_index(&mut store, Some(&heap_idx), "live-objects")
+        .expect("runtime exports live-objects");
+    let live = rt_instance
+        .get_func(&mut store, live_idx)
+        .expect("live-objects func");
+    let mut live_out = [Val::U32(0)];
+    live.call(&mut store, &[], &mut live_out)
+        .expect("live-objects call");
+    assert_eq!(
+        live_out[0],
+        Val::U32(0),
+        "Perceus leak: {live_out:?} heap cells still live after the round-trip (expected 0)"
+    );
+}
+
+/// The heap interface's function names, read off the runtime component's type (the same discovery
+/// `cdz-run` does) — so the balance probe forwards exactly what the runtime exports, nothing hard-coded.
+fn runtime_heap_func_names(
+    engine: &wasmtime::Engine,
+    runtime: &wasmtime::component::Component,
+) -> Vec<String> {
+    use wasmtime::component::types::ComponentItem;
+    for (name, item) in runtime.component_type().exports(engine) {
+        if name != "cadenza:runtime/heap" {
+            continue;
+        }
+        if let ComponentItem::ComponentInstance(inst) = item {
+            return inst
+                .exports(engine)
+                .filter_map(|(fname, i)| {
+                    matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
+                })
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
 /// `(def (main) 42)` compiles to a component that runs to 42.
 #[test]
 fn scalar_runs_to_42() {

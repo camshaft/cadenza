@@ -36,6 +36,18 @@ const OP_BOX_INT: &str = "box-int";
 const OP_GET_INT: &str = "get-int";
 const OP_BOX_BOOL: &str = "box-bool";
 const OP_GET_BOOL: &str = "get-bool";
+/// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
+/// runtime frees the node and recursively releases its children (the boxed elements), so a single
+/// `drop` of a dead tuple reclaims the whole value.
+const OP_DROP: &str = "drop";
+
+/// Whether a solved type is a HEAP VALUE — one held as an owned runtime handle that the Perceus
+/// contract reclaims (a tuple; later a record/sum/collection). A scalar (integer/bool/unit) owns no
+/// heap cell, so it is never dup'd/drop'd. This is what decides which `let` bindings get a closing
+/// `drop`.
+fn is_heap_type(ty: &Ty) -> bool {
+    matches!(ty, Ty::Tuple(_) | Ty::Record(_))
+}
 
 /// The runtime op that BOXES the node at `id` (a tuple element) into a u32 heap handle, by its solved
 /// scalar type: an integer → `box-int` (an i64 payload), a boolean → `box-bool`. A non-scalar element
@@ -125,8 +137,13 @@ pub fn collect_used_ops(
             }
         }
         Core::Let { bindings, body } => {
-            for (_, value) in bindings {
-                collect_used_ops(db, value, out);
+            for (binder, value) in &bindings {
+                // A HEAP-typed binding is `drop`'d after the body (Perceus) — so the program imports
+                // `drop`. (A scalar binding owns no heap cell → no drop, matching `emit`.)
+                if is_heap_type(&type_of(db, *binder)) {
+                    out.insert(OP_DROP);
+                }
+                collect_used_ops(db, *value, out);
             }
             collect_used_ops(db, body, out);
         }
@@ -355,11 +372,17 @@ fn emit(
         Core::Let { bindings, body } => {
             let mut extended = slots.clone();
             let mut floor = base;
+            // Track the (slot) of each HEAP-typed binding, to `drop` after the body (Perceus). A kept
+            // binding is always a genuine runtime value — a constant tuple folds and is never kept (H2c)
+            // — so every heap binding here is an owned allocation the program must release once its scope
+            // ends. (A scalar binding owns no heap cell → no drop.)
+            let mut heap_bindings: Vec<u32> = Vec::new();
             for (binder, value) in &bindings {
                 let slot = floor;
+                let ty = type_of(db, *binder);
                 // The binding's machine value type — read off its solved type (the value's type). A
                 // binding whose type has no machine rep (a compound/unresolved value) declines.
-                let vt = valtype_of(&type_of(db, *binder)).ok_or_else(|| {
+                let vt = valtype_of(&ty).ok_or_else(|| {
                     Reject::decline("a let binding's type has no machine representation")
                 })?;
                 // Emit the value into scratch ABOVE this persistent slot (its own scratch floats), then
@@ -379,10 +402,25 @@ fn emit(
                 if slot + 1 > *high {
                     *high = slot + 1;
                 }
+                if is_heap_type(&ty) {
+                    heap_bindings.push(slot);
+                }
                 extended.insert(*binder, slot);
                 floor = slot + 1;
             }
-            emit(db, body, &extended, floor, high, scratch_ty, layout, out)
+            // The body computes its value (left on the stack). If it is a SCALAR — the H2b/H2d case, a
+            // projection summed to an integer — the tuple bindings are dead after it, so RECLAIM each:
+            // `local.get <slot> ; drop`. The body's result stays on top (drop consumes only its own
+            // operand). ⚠ A body that RETURNS a heap binding (escapes it) would need ownership transfer,
+            // not a drop — that path is the renderer's (a compound crossing out), not reached here (a
+            // returned compound declines at the boundary today), so dropping every heap binding is
+            // correct for every currently-emittable `let` body.
+            emit(db, body, &extended, floor, high, scratch_ty, layout, out)?;
+            for &slot in &heap_bindings {
+                out.push(Lir::LocalGet(slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            Ok(())
         }
         // A reference to a kept `let` binding — read its persistent slot, exactly like a parameter. The
         // slot was assigned when the enclosing `Core::Let` was emitted; a `LocalRef` with no slot is a
@@ -1307,5 +1345,65 @@ mod tests {
         // 3 params (slots 0,1,2); scratch base 3. Outer mul: $a3 $b4 $r5, operands at 6. Inner add:
         // $a6 $b7 $r8, operands (params) need no scratch. High-water 9 → 6 scratch locals.
         assert_eq!(f.declared, vec![ValType::I64; 6]);
+    }
+
+    // ── value-heap H2d: Perceus — a kept heap binding constructs then DROPS ───────────────────────
+
+    #[test]
+    fn a_runtime_tuple_let_constructs_then_drops() {
+        // (def (f (: a Int64) (: b Int64)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) — `t` is a
+        // multi-use RUNTIME tuple (a param element), so it is kept in a slot, BUILT on the heap
+        // (arr-alloc + box + arr-set), projected twice, and — being a dead heap value after the scalar
+        // body — RECLAIMED with `local.get <slot> ; drop` at the end. The construction leads and the
+        // drop trails; that framing is the Perceus contract (constructors consume, the owner drops).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) \
+               (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // The binding `t` occupies slot 2 (params a,b are 0,1). Construction is the FIRST run of ops:
+        // arr-alloc(2), then per element box-int + arr-set. Assert the shape brackets: it OPENS with
+        // arr-alloc and, after the body, CLOSES with `local.get 2 ; drop`.
+        assert_eq!(
+            f.code.first(),
+            Some(&Lir::ConstI32(2)),
+            "construction leads with the tuple arity"
+        );
+        assert!(
+            f.code.contains(&Lir::CallImport("arr-alloc")),
+            "a runtime tuple is built with arr-alloc"
+        );
+        assert!(
+            f.code.contains(&Lir::CallImport("box-int")),
+            "each element is boxed"
+        );
+        // The reclamation trails: the LAST two instructions release the binding's slot.
+        let n = f.code.len();
+        assert_eq!(
+            &f.code[n - 2..],
+            &[Lir::LocalGet(2), Lir::CallImport("drop")],
+            "a dead heap binding is dropped at the end (Perceus)"
+        );
+    }
+
+    #[test]
+    fn a_scalar_let_binding_is_not_dropped() {
+        // A scalar (`Int64`) `let` binding owns no heap cell, so NO drop is emitted for it — reclamation
+        // is only for heap values. `(let ((s (+ a b))) (+ s s))` — `s` is a kept i64, never dropped.
+        let ast = crate::testkit::parse(
+            "(module m (def (g (: a Int64) (: b Int64)) \
+               (let ((s (+ a b))) (+ s s))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "g");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            !f.code.contains(&Lir::CallImport("drop")),
+            "a scalar binding owns no heap cell and must not be dropped"
+        );
     }
 }
