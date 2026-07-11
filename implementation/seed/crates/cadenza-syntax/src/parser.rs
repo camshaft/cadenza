@@ -867,8 +867,10 @@ impl<'a> Parser<'a> {
         self.list(items, span)
     }
 
-    /// `#{ key: v, … }`  ->  `(map (key v) …)`. A dynamic key→value map (keys are arbitrary
-    /// expressions), distinct from a record's fixed fields.
+    /// `#{ key = v, … }`  ->  `(map (key v) …)`. A dynamic key→value map (keys are arbitrary
+    /// expressions), distinct from a record's fixed fields only by the `#` sigil; both use `=` to
+    /// separate key/field from value. (The `=` separator is not the equality operator — bare `=` is
+    /// never infix; equality is `==`.)
     fn map_literal(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.name("map", start);
@@ -879,7 +881,7 @@ impl<'a> Parser<'a> {
             loop {
                 let e_start = self.cur_span();
                 let key = self.expr(0);
-                self.expect(Kind::Colon, "`:`");
+                self.expect(Kind::Eq, "`=`");
                 let value = self.expr(0);
                 let e_span = e_start.merge(self.prev_span());
                 items.push(self.list(vec![key, value], e_span));

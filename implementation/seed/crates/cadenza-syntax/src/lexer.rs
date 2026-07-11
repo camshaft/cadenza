@@ -96,6 +96,14 @@ impl<'a> Lexer<'a> {
                         span: a.span.merge(b.span),
                     });
                 }
+                // `==` is equality (its arena head is `=`); a lone `=` is the binding separator.
+                Some('=') => {
+                    let b = self.bump().unwrap();
+                    return Some(Token {
+                        kind: Kind::EqEq,
+                        span: a.span.merge(b.span),
+                    });
+                }
                 _ => Kind::Eq,
             },
             '<' => return Some(self.two(a, Kind::Lt, &[('=', Kind::Le), ('<', Kind::Shl)])),

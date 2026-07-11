@@ -20,7 +20,7 @@ use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::doc::Doc;
 use crate::lexer::Lexer;
 use crate::literal;
-use crate::token::{self, Kind, PREC_MEMBER, infix_prec};
+use crate::token::{self, Kind, PREC_MEMBER, infix_glyph, infix_prec};
 
 /// Indentation per box level (spaces). A layout choice, not a contract.
 const INDENT: isize = 2;
@@ -268,9 +268,10 @@ impl<'a> Printer<'a> {
         self.expr(operands[0], prec);
         for (i, o) in ops.iter().enumerate() {
             self.doc.space(); // break BEFORE the operator
-            // In infix position the operator prints VERBATIM (`+`, `and`) — the backtick escape is
-            // only for an operator glyph used as an ordinary NAME.
-            self.doc.word(o.clone());
+            // In infix position the operator prints as its SURFACE GLYPH (the arena head `=` for
+            // equality prints as `==`; every other op is identity). The backtick escape is only for
+            // an operator glyph used as an ordinary NAME.
+            self.doc.word(infix_glyph(o).to_string());
             self.doc.word(" ");
             self.expr(operands[i + 1], prec + 1); // right operand binds one tighter
         }
@@ -567,13 +568,13 @@ impl<'a> Printer<'a> {
         });
     }
 
-    /// `#{ key: v, … }`.
+    /// `#{ key = v, … }`.
     fn print_map(&mut self, entries: &[StructId]) {
         self.bracketed("#{", "}", true, entries, |p, entry| {
             if let Struct::List(pair) = p.a.get(entry) {
                 let (key, value) = (pair[0], pair[1]);
                 p.expr(key, 0);
-                p.doc.word(": ");
+                p.doc.word(" = ");
                 p.expr(value, 0);
             }
         });
@@ -973,11 +974,40 @@ mod tests {
         assert_eq!(assert_roundtrip("[1, 2, 3]", 80), "[1, 2, 3]");
         assert_eq!(assert_roundtrip("(1, 2)", 80), "(1, 2)");
         assert_eq!(assert_roundtrip("(1, 2, 3)", 80), "(1, 2, 3)");
+        // maps use `=` (like records); the `#` sigil is what distinguishes them.
         assert_eq!(
-            assert_roundtrip("#{ \"a\": 1, \"b\": 2 }", 80),
-            "#{ \"a\": 1, \"b\": 2 }"
+            assert_roundtrip("#{ \"a\" = 1, \"b\" = 2 }", 80),
+            "#{ \"a\" = 1, \"b\" = 2 }"
         );
-        assert_eq!(assert_roundtrip("#{ 1: 10 }", 80), "#{ 1: 10 }");
+        assert_eq!(assert_roundtrip("#{ 1 = 10 }", 80), "#{ 1 = 10 }");
+    }
+
+    #[test]
+    fn type_ascription_round_trips() {
+        // `e : T` -> arena (: e T); ascription binds loosest, so it wraps the whole expression.
+        assert_eq!(assert_roundtrip("42 : Int64", 80), "42 : Int64");
+        assert_eq!(assert_roundtrip("2 + 2 : Int64", 80), "2 + 2 : Int64");
+        // the arena head is `:`, matching the s-expr surface.
+        let a = sexpr::read("(: 42 Int64)").unwrap();
+        assert_eq!(print(&a, 80), "42 : Int64");
+        // a compound value/type ascription (the corpus's common output shape).
+        assert_eq!(
+            assert_roundtrip("(1, 2) : (Int64, Int64)", 80),
+            "(1, 2) : (Int64, Int64)"
+        );
+    }
+
+    #[test]
+    fn equality_is_double_equals() {
+        // `==` on the surface builds arena head `=` (matching the s-expr corpus) and prints back `==`.
+        assert_eq!(assert_roundtrip("a == b", 80), "a == b");
+        let a = sexpr::read("(= a b)").unwrap();
+        assert_eq!(print(&a, 80), "a == b");
+        // a lone `=` is only the binding separator, never equality.
+        assert_eq!(
+            assert_roundtrip("let x = 1 in x == 1", 80),
+            "let x = 1 in\nx == 1"
+        );
     }
 
     #[test]

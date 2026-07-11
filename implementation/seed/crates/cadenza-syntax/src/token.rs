@@ -28,7 +28,8 @@ pub enum Kind {
     BacktickName, // `` `|` ``, `` `->` `` — the lossless escape for symbolic/keyword names
 
     // ---- operators (each has a binding power in `infix_prec`) ----
-    Eq,       // `=`
+    Eq,       // `=` — the BINDING separator (let/fn/record/map); NOT an infix operator
+    EqEq,     // `==` — equality; its arena head is `=` (see `op_str`), spelled `==` on the surface
     Lt,       // `<`
     Gt,       // `>`
     Le,       // `<=`
@@ -76,11 +77,16 @@ impl Kind {
         )
     }
 
-    /// The operator symbol a `Kind` denotes, for building the head `Name` of an infix form and for
-    /// the printer. `None` for non-operator kinds. (`and`/`or` are `Ident`; see [`word_op`].)
+    /// The operator NAME a `Kind` denotes — the head `Name` of the infix form it builds, shared by
+    /// the parser and printer. `None` for non-operator kinds. This is the ARENA head, which can
+    /// differ from the surface glyph: `==` (`EqEq`) and `:` (`Colon`) build heads `=` and `:`, and
+    /// the printer maps back to the glyph via [`infix_glyph`]. (`and`/`or` are `Ident`; see
+    /// [`word_op`].) A bare `=` (`Kind::Eq`) is the binding separator, NOT an operator, so it has
+    /// no op name.
     pub fn op_str(self) -> Option<&'static str> {
         Some(match self {
-            Kind::Eq => "=",
+            Kind::EqEq => "=",  // equality: surface `==`, arena head `=`
+            Kind::Colon => ":", // type ascription: `e : T` -> `(: e T)`
             Kind::Lt => "<",
             Kind::Gt => ">",
             Kind::Le => "<=",
@@ -100,6 +106,16 @@ impl Kind {
             Kind::StarPct => "*%",
             _ => return None,
         })
+    }
+}
+
+/// The surface GLYPH the printer emits for an infix operator arena head — the inverse of the head
+/// mapping in [`Kind::op_str`]. Identity for every operator except equality, whose arena head `=` is
+/// spelled `==` on the ML surface (a bare `=` is the binding separator). Used only by the printer.
+pub fn infix_glyph(op: &str) -> &str {
+    match op {
+        "=" => "==",
+        other => other,
     }
 }
 
@@ -152,22 +168,28 @@ pub fn is_reserved(text: &str) -> bool {
 /// Member access and application bind tightest.
 pub const PREC_MEMBER: u8 = 10;
 
-/// The precedence (binding power) of a binary operator NAME, or `None` if it is not infix. This is
-/// the single source of truth shared by the parser (Pratt `min_prec`) and printer (minimal-paren
-/// `prec`/`prec+1` split). All operators are left-associative.
+/// Type ascription `e : T` binds loosest of all — looser than every arithmetic/logical operator — so
+/// `2 + 2 : Int64` groups as `(: (+ 2 2) Int64)`: the ascription wraps the whole expression.
+pub const PREC_ASCRIPTION: u8 = 1;
+
+/// The precedence (binding power) of a binary operator NAME (the ARENA head — `=` is equality here,
+/// spelled `==` on the surface; `:` is ascription), or `None` if it is not infix. The single source
+/// of truth shared by the parser (Pratt `min_prec`) and printer (minimal-paren `prec`/`prec+1`
+/// split). All operators are left-associative.
 ///
-/// Ordering (low→high): `or < and < comparisons < (| ^) < & < (<< >>) < (+ -) < (* / %) < member/app`.
-/// Values match the ml-spike table that round-trips the whole corpus.
+/// Ordering (low→high): `: < or < and < (== < > <= >=) < (| ^) < & < (<< >>) < (+ -) < (* / %) <
+/// member/app`. Ascription is loosest; equality (`==`, arena head `=`) sits with the comparisons.
 pub fn infix_prec(op: &str) -> Option<u8> {
     Some(match op {
-        "or" => 1,
-        "and" => 2,
-        "=" | "<" | ">" | "<=" | ">=" => 3,
-        "|" | "^" => 4,
-        "&" => 5,
-        "<<" | ">>" => 6,
-        "+" | "-" | "+%" | "-%" => 7,
-        "*" | "/" | "%" | "*%" => 8,
+        ":" => PREC_ASCRIPTION, // 1 — loosest
+        "or" => 2,
+        "and" => 3,
+        "=" | "<" | ">" | "<=" | ">=" => 4, // `=` = equality (surface `==`)
+        "|" | "^" => 5,
+        "&" => 6,
+        "<<" | ">>" => 7,
+        "+" | "-" | "+%" | "-%" => 8,
+        "*" | "/" | "%" | "*%" => 9,
         _ => return None,
     })
 }
@@ -178,9 +200,11 @@ mod tests {
 
     #[test]
     fn op_str_and_infix_prec_agree() {
-        // Every operator Kind must have a name, and that name must be infix.
+        // Every operator Kind that names an infix op must map to a precedence. `EqEq` (`==`) and
+        // `Colon` (`:`) are included; a bare `Eq` (`=`) is the binding separator, NOT an operator.
         for k in [
-            Kind::Eq,
+            Kind::EqEq,
+            Kind::Colon,
             Kind::Lt,
             Kind::Gt,
             Kind::Le,
@@ -202,6 +226,8 @@ mod tests {
             let s = k.op_str().expect("operator kind has a name");
             assert!(infix_prec(s).is_some(), "operator {s} has a precedence");
         }
+        // A bare `=` is the binding separator, not an infix operator.
+        assert_eq!(Kind::Eq.op_str(), None);
         // The word-spelled operators live in `word_op`, not `Kind`.
         for w in ["and", "or"] {
             assert!(infix_prec(word_op(w).unwrap()).is_some());
@@ -210,13 +236,26 @@ mod tests {
 
     #[test]
     fn precedence_orders_as_documented() {
+        // Ascription is loosest of all.
+        assert!(infix_prec(":") < infix_prec("or"));
+        assert_eq!(infix_prec(":"), Some(PREC_ASCRIPTION));
         assert!(infix_prec("or") < infix_prec("and"));
-        assert!(infix_prec("and") < infix_prec("="));
+        assert!(infix_prec("and") < infix_prec("=")); // `=` here = equality (surface `==`)
         assert!(infix_prec("=") < infix_prec("|"));
         assert!(infix_prec("|") < infix_prec("&"));
         assert!(infix_prec("&") < infix_prec("<<"));
         assert!(infix_prec("<<") < infix_prec("+"));
         assert!(infix_prec("+") < infix_prec("*"));
         assert!(infix_prec("*").unwrap() < PREC_MEMBER);
+    }
+
+    #[test]
+    fn equality_glyph_and_head() {
+        // `==` on the surface builds arena head `=`; the printer maps it back to `==`.
+        assert_eq!(Kind::EqEq.op_str(), Some("="));
+        assert_eq!(infix_glyph("="), "==");
+        // every other operator glyph is identity.
+        assert_eq!(infix_glyph("+"), "+");
+        assert_eq!(infix_glyph(":"), ":");
     }
 }
