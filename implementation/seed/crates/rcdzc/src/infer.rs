@@ -26,15 +26,17 @@ use crate::resolve::resolved_of;
 use crate::resolved::Resolved;
 use crate::ty::Ty;
 use crate::unify::{Fresh, Subst};
+use tracing::trace;
 
 /// The solved type of the node at `id`, filling the column on demand (memoized). Works backward:
 /// reads the resolved form and, for a compound node, its children's types.
 pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     if let Slot::Filled(t) = db.types.get(id) {
+        trace!(target: "rcdzc::infer", node = id.0, "memo hit");
         return t.clone();
     }
     let t = compute(db, id);
-    tracing::trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "solved type");
+    trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "solved type");
     db.types.fill(id, t.clone());
     t
 }
@@ -155,6 +157,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // rather than diverging — matching lowering. (For C's corpus every function call folds this way;
     // a scheme-based typing of a lambda head arrives with a def's inferred scheme.)
     if crate::eval::lambda_body(db, head).is_some() {
+        trace!(target: "rcdzc::infer", head = head.0, args = args.len(), "apply: β-reduce lambda head for its type");
         return match db.enter_reduction() {
             Some(mut guard) => {
                 let g = guard.db();
@@ -170,8 +173,12 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
         // No `(meta t)` (e.g. a bare type constructor whose result is a type value) → `Any`.
-        None => return Ty::Any,
+        None => {
+            trace!(target: "rcdzc::infer", head = head.0, "apply: head has no (meta t) scheme → Any");
+            return Ty::Any;
+        }
     };
+    trace!(target: "rcdzc::infer", head = head.0, scheme = %scheme.ty.render_name(), args = args.len(), "apply: instantiate head scheme");
     let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
     let mut subst = Subst::new();
     for &arg in args {
@@ -215,12 +222,14 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
             Ty::Fn(param, result) => {
                 let at = type_of(db, arg);
                 if let Err(reject) = crate::unify::unify(&mut subst, &param, &at) {
+                    trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter (type fault)");
                     out.push(reject);
                 }
                 cur = *result;
             }
             // Applying a non-function (too many args) — a shape fault reported as a type mismatch.
             other => {
+                trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(), "apply: applied a non-function (type fault)");
                 out.push(Reject::coded(
                     Code::TypeMismatch,
                     format!("cannot apply a value of type {}", other.render_name()),
@@ -237,6 +246,7 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
 pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
     let mut out = Vec::new();
     collect(db, id, &mut out);
+    trace!(target: "rcdzc::infer", node = id.0, faults = out.len(), "type check complete");
     out
 }
 
@@ -257,6 +267,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::If { cond, then_, else_ } => {
             let cond_ty = type_of(db, cond);
             if !cond_ty.agrees_with(&Ty::Bool) {
+                trace!(target: "rcdzc::infer", node = id.0, cond_ty = %cond_ty.render_name(), "fault: if condition not Bool (CDZ0203)");
                 out.push(Reject::coded(
                     Code::TypeMismatch,
                     format!("if condition must be Bool, found {}", cond_ty.render_name()),
@@ -265,6 +276,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             let then_ty = type_of(db, then_);
             let else_ty = type_of(db, else_);
             if !then_ty.agrees_with(&else_ty) {
+                trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), "fault: if branches differ (CDZ0203)");
                 out.push(Reject::coded(
                     Code::TypeMismatch,
                     format!(
@@ -289,17 +301,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             let operand_is_poison = matches!(resolved_of(db, operand), Resolved::Poison(_));
             match crate::eval::member_value(db, operand, &key) {
                 crate::eval::Member::Field(_) => {}
-                crate::eval::Member::NoField => out.push(Reject::coded(
-                    Code::Malformed,
-                    format!("record has no field `{}`", key.name),
-                )),
-                crate::eval::Member::NotRecord if !operand_is_poison => out.push(Reject::coded(
-                    Code::Malformed,
-                    format!(
-                        "member access requires a record, found {}",
-                        type_of(db, operand).render_name()
-                    ),
-                )),
+                crate::eval::Member::NoField => {
+                    trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: record has no such field (CDZ0201)");
+                    out.push(Reject::coded(
+                        Code::Malformed,
+                        format!("record has no field `{}`", key.name),
+                    ))
+                }
+                crate::eval::Member::NotRecord if !operand_is_poison => {
+                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
+                    out.push(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "member access requires a record, found {}",
+                            type_of(db, operand).render_name()
+                        ),
+                    ))
+                }
                 crate::eval::Member::NotRecord => {}
             }
             collect(db, operand, out);
@@ -347,6 +365,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     if let crate::ty::Width::Fixed(w) = it.width
                         && !v.fits_width(it.ground_signed(), w)
                     {
+                        trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), "fault: literal does not fit annotated width (CDZ0302)");
                         out.push(Reject::coded(
                             Code::IntOutOfRange,
                             format!(
@@ -361,6 +380,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let expr_ty = type_of(db, expr);
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
+                        trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
                         out.push(Reject::coded(
                             Code::TypeMismatch,
                             format!(
@@ -382,6 +402,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // reachability-gated (the trap-poison walk in `compile` handles it, skipping untaken branches).
         Resolved::Poison(r) => {
             if r.code == Some(Code::Unbound) {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: unbound name reported (CDZ0101)");
                 out.push(r);
             }
         }

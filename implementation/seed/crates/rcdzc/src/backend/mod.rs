@@ -15,6 +15,7 @@ pub mod wasm;
 use crate::db::Db;
 use crate::diag::Reject;
 use crate::layout::Layout;
+use tracing::trace;
 
 /// The output target a compile is requested for — the value the query program names via
 /// `Compiler.Target`. `Ord` so it can key a stable per-target artifact map.
@@ -42,10 +43,10 @@ pub fn emit(target: Target, db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Rej
     };
     match &result {
         Ok(bytes) => {
-            tracing::trace!(target: "rcdzc::backend", ?target, bytes = bytes.len(), "emitted artifact")
+            trace!(target: "rcdzc::backend", ?target, bytes = bytes.len(), "emitted artifact")
         }
         Err(r) => {
-            tracing::trace!(target: "rcdzc::backend", ?target, reason = %r.message, "backend DECLINED")
+            trace!(target: "rcdzc::backend", ?target, reason = %r.message, "backend DECLINED")
         }
     }
     result

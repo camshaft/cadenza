@@ -36,6 +36,7 @@ use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::resolved::{Prim, Resolved, Symbol};
 use std::collections::BTreeMap;
+use tracing::trace;
 
 /// The fixed, closed set of GRAMMAR head names — the forms that bind names or control evaluation, plus
 /// member access. This set does NOT grow when a built-in value is added (that is a prelude entry).
@@ -62,6 +63,7 @@ const GRAMMAR: &[&str] = &[
 /// resolved-form request answers, and the upstream read `infer`/`lower` perform.
 pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
     if let Slot::Filled(r) = db.resolved.get(id) {
+        trace!(target: "rcdzc::resolve", node = id.0, "memo hit");
         return r.clone();
     }
     let mut r = compute(db, id);
@@ -71,7 +73,7 @@ pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
     if let Resolved::Poison(reject) = &mut r {
         reject.set_origin_if_absent(id);
     }
-    tracing::trace!(target: "rcdzc::resolve", node = id.0, resolved = ?r, "resolved");
+    trace!(target: "rcdzc::resolve", node = id.0, resolved = ?r, "resolved");
     db.resolved.fill(id, r.clone());
     r
 }
@@ -88,6 +90,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // list), it is a formal — a `Param`, not a lookup. Otherwise the one ordered lookup.
             Leaf::Name(n) => {
                 if is_param_occurrence(db, id) {
+                    trace!(target: "rcdzc::resolve", node = id.0, %n, "name → parameter (formal)");
                     Resolved::Param { binder: id }
                 } else {
                     resolve_name(db, id, &n)
@@ -140,13 +143,20 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         .and_then(|t| t.first())
                         .and_then(|&s| db.ast.as_name(s));
                     match name.and_then(Prim::from_name) {
-                        Some(op) => Resolved::Prim(op),
-                        None => Resolved::Poison(Reject::decline("unknown intrinsic")),
+                        Some(op) => {
+                            trace!(target: "rcdzc::resolve", node = id.0, ?op, "intrinsic → prim");
+                            Resolved::Prim(op)
+                        }
+                        None => {
+                            trace!(target: "rcdzc::resolve", node = id.0, ?name, "unknown intrinsic (decline)");
+                            Resolved::Poison(Reject::decline("unknown intrinsic"))
+                        }
                     }
                 }
                 // A grammar declaration form appearing in expression position is not an expression
                 // (Stage 0 handles module/def/export/do at the top level, not here).
                 Some(h) if GRAMMAR.contains(&h) => {
+                    trace!(target: "rcdzc::resolve", node = id.0, head = %h, "grammar form in expression position (decline)");
                     Resolved::Poison(Reject::decline(format!("`{h}` is not an expression here")))
                 }
                 // A non-grammar head is an APPLICATION — always `Resolved::Apply`. An application is
@@ -155,10 +165,13 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 // (`eval::meta_apply_of`), a non-applyable head becoming a poison there. Resolve does
                 // not pre-judge the head, so the one application path stays uniform and its dispatch
                 // lives in one place (the meta channel), never the head's spelling.
-                Some(_) | None => Resolved::Apply {
-                    head: children[0],
-                    args: children[1..].to_vec(),
-                },
+                Some(_) | None => {
+                    trace!(target: "rcdzc::resolve", node = id.0, head = children[0].0, args = children.len() - 1, "application");
+                    Resolved::Apply {
+                        head: children[0],
+                        args: children[1..].to_vec(),
+                    }
+                }
             }
         }
     }
@@ -172,7 +185,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 1. Lexical scope — nearest enclosing binder.
     if let Some(value) = lookup_scope(db, id, name) {
-        tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → lexical scope");
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → lexical scope");
         return Resolved::Ref { value };
     }
     // 2. The module's own top-level definitions. A nullary def denotes its body; a def WITH parameters
@@ -181,7 +194,7 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // per reference, a forward/mutual reference resolves regardless of definition order.
     if let Some(d) = db.def_by_name(name) {
         let def = &db.defs[d];
-        tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, params = def.params.len(), "name → top-level def");
+        trace!(target: "rcdzc::resolve", node = id.0, %name, params = def.params.len(), "name → top-level def");
         return match def.body {
             Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
             Some(body) => Resolved::Lambda {
@@ -197,13 +210,13 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 3. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {
-        tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → prelude");
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → prelude");
         return Resolved::Ref { value };
     }
     // 3. Off the end of the lookup — the name is unbound. This is a REJECTION (the program is
     // ill-formed), not a decline: the unbound-name rule is unconditional (`core-semantics.md`
     // §Binding Is Lexical).
-    tracing::trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
+    trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
     Resolved::Poison(Reject::coded(
         Code::Unbound,
         format!("unbound name `{name}`"),

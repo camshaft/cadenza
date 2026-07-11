@@ -12,6 +12,7 @@
 use crate::diag::{Code, Reject};
 use crate::ty::{IntTy, Scheme, Sign, Ty, Width};
 use std::collections::HashMap;
+use tracing::trace;
 
 /// A substitution: what each type, width, and SIGN variable has been solved to. Applied to a type,
 /// it replaces solved variables with their solutions (transitively).
@@ -87,11 +88,13 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         (Ty::Var(v), Ty::Var(w)) if v == w => Ok(()),
         (Ty::Var(v), t) | (t, Ty::Var(v)) => {
             if occurs(subst, *v, t) {
+                trace!(target: "rcdzc::unify", var = *v, ty = %t.render_name(), "occurs-check failed (infinite type)");
                 return Err(Reject::coded(
                     Code::TypeMismatch,
                     "a type would contain itself (infinite type)",
                 ));
             }
+            trace!(target: "rcdzc::unify", var = *v, solved = %t.render_name(), "bind type variable");
             subst.tys.insert(*v, t.clone());
             Ok(())
         }
@@ -133,13 +136,17 @@ fn unify_sign(subst: &mut Subst, sa: Sign, sb: Sign, a: &Ty, b: &Ty) -> Result<(
     match (sa, sb) {
         (Sign::Var(v), Sign::Var(w)) if v == w => Ok(()),
         (Sign::Var(v), other) | (other, Sign::Var(v)) => {
+            trace!(target: "rcdzc::unify", var = v, solved = ?other, "bind sign variable");
             subst.signs.insert(v, other);
             Ok(())
         }
         // A deferred (literal) sign takes whatever it meets.
         (Sign::Deferred, _) | (_, Sign::Deferred) => Ok(()),
         (Sign::Fixed(x), Sign::Fixed(y)) if x == y => Ok(()),
-        (Sign::Fixed(_), Sign::Fixed(_)) => Err(mismatch(a, b)),
+        (Sign::Fixed(x), Sign::Fixed(y)) => {
+            trace!(target: "rcdzc::unify", lhs = x, rhs = y, "sign conflict (CDZ0301, no silent promotion)");
+            Err(mismatch(a, b))
+        }
     }
 }
 
@@ -160,16 +167,20 @@ fn unify_width(subst: &mut Subst, a: Width, b: Width) -> Result<(), Reject> {
     match (a, b) {
         (Width::Var(v), Width::Var(w)) if v == w => Ok(()),
         (Width::Var(v), other) | (other, Width::Var(v)) => {
+            trace!(target: "rcdzc::unify", var = v, solved = ?other, "bind width variable");
             subst.widths.insert(v, other);
             Ok(())
         }
         // A deferred (literal) width takes whatever it is unified with.
         (Width::Deferred, _) | (_, Width::Deferred) => Ok(()),
         (Width::Fixed(x), Width::Fixed(y)) if x == y => Ok(()),
-        (Width::Fixed(x), Width::Fixed(y)) => Err(Reject::coded(
-            Code::NumericMismatch,
-            format!("integer widths differ: {x} vs {y}"),
-        )),
+        (Width::Fixed(x), Width::Fixed(y)) => {
+            trace!(target: "rcdzc::unify", lhs = x, rhs = y, "width conflict (CDZ0301, no silent promotion)");
+            Err(Reject::coded(
+                Code::NumericMismatch,
+                format!("integer widths differ: {x} vs {y}"),
+            ))
+        }
     }
 }
 
@@ -201,7 +212,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
 /// (CDZ0203). This matches the corpus: CDZ0301 is reserved for two-different-numeric, everything else
 /// is CDZ0203.
 fn mismatch(a: &Ty, b: &Ty) -> Reject {
-    tracing::trace!(target: "rcdzc::unify", lhs = %a.render_name(), rhs = %b.render_name(), "unify FAILED (conflicting use)");
+    trace!(target: "rcdzc::unify", lhs = %a.render_name(), rhs = %b.render_name(), "unify FAILED (conflicting use)");
     let both_numeric = matches!(a, Ty::Int(_)) && matches!(b, Ty::Int(_));
     let code = if both_numeric {
         Code::NumericMismatch

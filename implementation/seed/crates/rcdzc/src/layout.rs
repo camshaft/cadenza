@@ -21,6 +21,7 @@ use crate::db::Db;
 use crate::diag::Reject;
 use crate::infer::type_of;
 use crate::ty::Ty;
+use tracing::trace;
 
 /// One exported entry, resolved to a target-neutral boundary plan.
 #[derive(Clone, PartialEq, Debug)]
@@ -95,6 +96,7 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         let params = export_params(db, def, &name)?;
         // The result type is the entry body's solved type — a lazy read of the type column.
         let result = type_of(db, body);
+        trace!(target: "rcdzc::layout", %name, def, params = params.len(), result = %result.render_name(), "export plan");
         exports.push(ExportPlan {
             name,
             def,
@@ -136,6 +138,7 @@ fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructId, T
         // A parameter must have a machine representation to cross the boundary. `Any` (an unannotated
         // param whose type nothing fixed) has none — decline, pointing at the annotation it needs.
         if crate::backend::wasm::lir::valtype_of(&ty).is_none() {
+            trace!(target: "rcdzc::layout", %name, binder = binder.0, ty = %ty.render_name(), "decline: exported parameter type is ambiguous (needs annotation)");
             return Err(Reject::decline(format!(
                 "export `{name}`: parameter type is ambiguous — annotate it, e.g. `(: p Int64)`"
             ))

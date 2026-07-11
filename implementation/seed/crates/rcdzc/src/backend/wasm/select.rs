@@ -23,6 +23,7 @@ use crate::lower::core_of;
 use crate::resolved::Prim;
 use crate::ty::{IntTy, Ty};
 use std::collections::HashMap;
+use tracing::trace;
 
 /// A selected function body: its flat instruction sequence, the value types of its declared (non-
 /// parameter) locals in slot order, its parameter value types, and its solved return type (for the
@@ -98,14 +99,17 @@ fn emit(
             // For an UNSIGNED value at/above the signed max (`UInt64.max = 2^64-1`), the bit pattern is
             // a negative i64 (`-1`) — correct at the machine level; the boundary lifts it back as u64.
             let it = int_ty_of(db, id);
-            if !v.fits_width(it.ground_signed(), it.ground_width()) {
+            let width = it.ground_width();
+            trace!(target: "rcdzc::select", node = id.0, signed = it.ground_signed(), width, "ground integer literal to its machine width");
+            if !v.fits_width(it.ground_signed(), width) {
+                trace!(target: "rcdzc::select", node = id.0, width, "literal does not fit its width (CDZ0302)");
                 return Err(Reject::coded(
                     Code::IntOutOfRange,
                     "integer literal does not fit its width",
                 ));
             }
-            if it.ground_width() <= 32 {
-                out.push(Lir::ConstI32(v.to_i32_bits(it.ground_width())));
+            if width <= 32 {
+                out.push(Lir::ConstI32(v.to_i32_bits(width)));
             } else {
                 out.push(Lir::ConstI64(v.to_i64_bits()));
             }
@@ -178,18 +182,23 @@ fn emit(
             let narrow = matches!(type_of(db, id), Ty::Int(it) if it.ground_width() <= 32);
             if narrow {
                 // A ≤32-bit checked op needs the i32 guard variant — deferred to the widths stage.
+                trace!(target: "rcdzc::select", node = id.0, ?op, "decline: runtime narrow (≤32-bit) integer op not yet emitted");
                 return Err(Reject::decline(
                     "a runtime narrow (≤32-bit) integer operation is not yet emitted",
                 ));
             }
             match op {
                 Prim::Add | Prim::Sub | Prim::Mul => {
+                    trace!(target: "rcdzc::select", node = id.0, ?op, "emit checked runtime arithmetic (traps on overflow)");
                     emit_checked_arith(db, op, lhs, rhs, slots, base, high, out)
                 }
                 // Not yet emittable as a runtime op (needs signed/unsigned selection) — decline.
-                _ => Err(Reject::decline(
-                    "a runtime integer operation of this kind is not yet emitted",
-                )),
+                _ => {
+                    trace!(target: "rcdzc::select", node = id.0, ?op, "decline: runtime integer op has no wasm instruction yet");
+                    Err(Reject::decline(
+                        "a runtime integer operation of this kind is not yet emitted",
+                    ))
+                }
             }
         }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector

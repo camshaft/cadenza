@@ -20,15 +20,17 @@ use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved};
+use tracing::trace;
 
 /// The core (A-normal) form of the node at `id`, filling the column on demand (memoized). Reads the
 /// resolved form; children stay ids, lowered on their own demand.
 pub fn core_of(db: &mut Db, id: StructId) -> Core {
     if let Slot::Filled(c) = db.core.get(id) {
+        trace!(target: "rcdzc::lower", node = id.0, "memo hit");
         return c.clone();
     }
     let c = compute(db, id);
-    tracing::trace!(target: "rcdzc::lower", node = id.0, core = ?c, "lowered");
+    trace!(target: "rcdzc::lower", node = id.0, core = ?c, "lowered");
     db.core.fill(id, c.clone());
     c
 }
@@ -91,6 +93,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // by the lambda's body, so a recursive call (which re-enters the same body while lowering
             // the reduced result) is detected and DECLINES rather than inlining without end.
             if crate::eval::lambda_body(db, head).is_some() {
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: β-reduce lambda head and lower the result");
                 // Reduce and lower under a depth guard: a terminating fold bottoms out; a recursive
                 // function inlines past the bound and DECLINES rather than diverging.
                 match db.enter_reduction() {
@@ -99,10 +102,14 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         return match crate::eval::apply_lambda(g, head, &args) {
                             Ok(Some(reduced)) => core_of(g, reduced),
                             Ok(None) => unreachable!("lambda_body implies a lambda head"),
-                            Err(msg) => Core::Poison(Reject::decline(msg)),
+                            Err(msg) => {
+                                trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: lambda reduction declined");
+                                Core::Poison(Reject::decline(msg))
+                            }
                         };
                     }
                     None => {
+                        trace!(target: "rcdzc::lower", node = id.0, "apply: reduction depth limit hit → decline (recursive)");
                         return Core::Poison(Reject::decline(
                             "a recursive function needs runtime specialization (not yet built)",
                         ));
@@ -110,17 +117,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
             }
             match crate::eval::meta_apply_of(db, head) {
-                Some(prim) if prim.is_arith() => lower_arith(db, prim, &args),
-                Some(prim) if prim.is_comparison() => lower_comparison(db, prim, &args),
-                Some(prim) => match crate::eval::reduce_ctor(db, prim, &args) {
-                    Ok(built) => core_of(db, built),
-                    Err(msg) => Core::Poison(Reject::decline(msg)),
-                },
+                Some(prim) if prim.is_arith() => {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
+                    lower_arith(db, prim, &args)
+                }
+                Some(prim) if prim.is_comparison() => {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: comparison prim");
+                    lower_comparison(db, prim, &args)
+                }
+                Some(prim) => {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: type-constructor prim");
+                    match crate::eval::reduce_ctor(db, prim, &args) {
+                        Ok(built) => core_of(db, built),
+                        Err(msg) => {
+                            trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: constructor declined");
+                            Core::Poison(Reject::decline(msg))
+                        }
+                    }
+                }
                 // Not applyable. If the head itself is a poison (e.g. an unbound name), propagate THAT
                 // root cause — an unbound head is a scope error, not merely "not applyable".
                 None => match core_of(db, head) {
                     Core::Poison(r) => Core::Poison(r),
-                    _ => Core::Poison(Reject::decline("value is not applyable")),
+                    _ => {
+                        trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: head is not applyable (decline)");
+                        Core::Poison(Reject::decline("value is not applyable"))
+                    }
                 },
             }
         }
@@ -155,11 +177,14 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     match (lhs, rhs) {
         (Core::ConstInt(a), Core::ConstInt(b)) => fold_arith(op, a, b),
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
-        _ => Core::Arith {
-            op,
-            lhs: args[0],
-            rhs: args[1],
-        },
+        _ => {
+            trace!(target: "rcdzc::lower", op = intrinsic_name(op), "arithmetic stays runtime (operand not constant)");
+            Core::Arith {
+                op,
+                lhs: args[0],
+                rhs: args[1],
+            }
+        }
     }
 }
 
@@ -225,14 +250,14 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
     };
     match checked {
         Some(n) => {
-            tracing::trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = n, "folded constant integer op");
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = n, "folded constant integer op");
             Core::ConstInt(IntValue::from_i64(n))
         }
         // A provable trap — the checked default traps, and the compiler can prove it, so the build
         // fails (CDZ0304) rather than emitting a component that traps (`numeric-model.md` §A Constant
         // Operation With No Value Is Rejected At Compile Time).
         None => {
-            tracing::trace!(target: "rcdzc::fold", op = intrinsic_name(op), "constant op traps → CDZ0304 (fails build)");
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "constant op traps → CDZ0304 (fails build)");
             Core::Poison(Reject::coded(
                 Code::ConstTrap,
                 format!(
@@ -281,25 +306,35 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     let rhs = core_of(db, args[1]);
     match (lhs, rhs) {
         (Core::ConstInt(a), Core::ConstInt(b)) => match (a.to_i64(), b.to_i64()) {
-            (Some(x), Some(y)) => Core::ConstBool(compare_ord(op, x.cmp(&y))),
+            (Some(x), Some(y)) => {
+                let r = compare_ord(op, x.cmp(&y));
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant integer comparison");
+                Core::ConstBool(r)
+            }
             // An operand beyond the fold's machine range — decline (a wider fold arrives with widths).
             _ => Core::Poison(Reject::decline(
                 "comparison of an integer beyond the machine width is not yet folded",
             )),
         },
-        (Core::ConstBool(a), Core::ConstBool(b)) => Core::ConstBool(compare_ord(op, a.cmp(&b))),
+        (Core::ConstBool(a), Core::ConstBool(b)) => {
+            let r = compare_ord(op, a.cmp(&b));
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant boolean comparison");
+            Core::ConstBool(r)
+        }
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
         // A non-constant operand: a runtime comparison IF both operands are scalars (integers or
         // booleans, which have a machine representation the backend can compare); a compound operand
         // still declines (heap-walk equality is a later stage).
         _ => {
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "comparison stays runtime (scalar operands)");
                 Core::Compare {
                     op,
                     lhs: args[0],
                     rhs: args[1],
                 }
             } else {
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: comparison of a compound value needs a heap walk");
                 Core::Poison(Reject::decline(
                     "comparison of a compound value needs a heap walk (not yet built)",
                 ))

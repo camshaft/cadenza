@@ -24,11 +24,13 @@ use crate::diag::Reject;
 use crate::infer::type_errors;
 use crate::layout::{self, Layout};
 use crate::lower::core_of;
+use tracing::trace;
 
 /// Compile a set of kinded input artifacts to the requested targets. The `ast` input is decoded into
 /// a `Db`; each target's backend fills its artifact from the shared columns. Targets default to
 /// `[Wasm]` at the CLI, not here — this entry emits exactly what it is asked for.
 pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
+    trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), "compile requested");
     // Select the `ast` input artifact and decode it.
     let ast_art = inputs.iter().find(|a| a.kind == Artifact::KIND_AST);
     let ast_bytes = match ast_art {
@@ -41,24 +43,28 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     };
 
     let mut db = Db::load(arenas);
+    trace!(target: "rcdzc::compile", defs = db.defs.len(), exports = db.exports.len(), "loaded program");
 
     // Compute the boundary layout once (target-neutral). A program with no export declines.
     let layout = match layout::compute(&mut db) {
         Ok(l) => l,
-        Err(r) => return fail(vec![r]),
+        Err(r) => {
+            trace!(target: "rcdzc::compile", reason = %r.message, "layout declined");
+            return fail(vec![r]);
+        }
     };
 
     // Collect every reached fault across the reachable definitions, module-wide (report ALL, not just
     // the first — `compiler-pipeline.md` §Phases Recover From Errors).
     let mut faults = collect_faults(&mut db, &layout);
     if !faults.is_empty() {
-        tracing::trace!(target: "rcdzc::compile", faults = faults.len(), "compilation FAILED (faults reported, no artifact)");
+        trace!(target: "rcdzc::compile", faults = faults.len(), "compilation FAILED (faults reported, no artifact)");
         for f in &mut faults {
             sanitize_origin(&db, f);
         }
         return fail(faults);
     }
-    tracing::trace!(target: "rcdzc::compile", targets = targets.len(), "program clean — emitting artifacts");
+    trace!(target: "rcdzc::compile", targets = targets.len(), "program clean — emitting artifacts");
 
     // Clean: ask each requested target's backend to fill its artifact.
     let mut artifacts = Vec::new();
@@ -71,6 +77,7 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
                 bytes,
             )),
             Err(mut r) => {
+                trace!(target: "rcdzc::compile", ?target, reason = %r.message, "target emit declined");
                 sanitize_origin(&db, &mut r);
                 diagnostics.push(Diagnostic::from_reject(&r));
             }

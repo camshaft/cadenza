@@ -76,6 +76,17 @@ fn main() -> ExitCode {
         let _ = fmt()
             .with_env_filter(EnvFilter::from_default_env())
             .with_writer(std::io::stderr)
+            // Show each event's source file:line — the trace sites map decisions straight back to
+            // the code that made them, which is the whole point of a debugging trace. `tracing`
+            // captures the call-site location in the event metadata (no cost when no subscriber is
+            // installed), so this is a pure formatting choice here at the host boundary.
+            .with_file(true)
+            .with_line_number(true)
+            // Drop the timestamp and level: every event here is a `TRACE` and the wall-clock time is
+            // noise for reading a compile's decision flow — the file:line + target + message is what
+            // matters. (The target still prefixes each line, so the module is clear.)
+            .without_time()
+            .with_level(false)
             .try_init();
     }
 

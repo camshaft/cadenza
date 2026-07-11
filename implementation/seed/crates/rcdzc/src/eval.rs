@@ -20,6 +20,7 @@ use crate::resolved::{Prim, Resolved, Symbol};
 use crate::ty::{IntTy, Scheme, Ty, Width};
 use crate::unify::Fresh;
 use std::collections::HashMap;
+use tracing::trace;
 
 /// Read a value's `(meta t)` — its TYPE — as a [`Scheme`], reducing the type-lambda it holds. An
 /// operator's `Meta.t` is a compile-time lambda `(fn (a) (-> (Int a) (-> (Int a) (Int a))))`; this
@@ -49,6 +50,7 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
                 width_vars.push(n);
             }
             let ty = type_in_env(db, body, &env)?;
+            trace!(target: "rcdzc::eval", node = id.0, scheme = %ty.render_name(), quantified = params.len(), "read (meta t) as a polymorphic scheme");
             // Only the vars actually mentioned matter; keep the lists (unused ones are harmless). The
             // arithmetic operators are signed-only for now (no sign var), so `sign_vars` is empty until
             // an operator is made generic over signedness.
@@ -60,7 +62,13 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
             })
         }
         // A non-lambda `(meta t)` is a monomorphic type.
-        _ => typeval_of(db, t).map(Scheme::mono),
+        _ => {
+            let scheme = typeval_of(db, t).map(Scheme::mono);
+            if let Some(s) = &scheme {
+                trace!(target: "rcdzc::eval", node = id.0, ty = %s.ty.render_name(), "read (meta t) as a monomorphic type");
+            }
+            scheme
+        }
     }
 }
 
@@ -186,12 +194,12 @@ pub fn apply_lambda(
     // `infer` and `lower` reach a lambda head here, and currying recurses through here), so the one
     // check covers them all.
     if is_recursive(db, body) {
-        tracing::trace!(target: "rcdzc::eval", body = body.0, "decline: recursive function (needs runtime specialization)");
+        trace!(target: "rcdzc::eval", body = body.0, "decline: recursive function (needs runtime specialization)");
         return Err(
             "a recursive function needs runtime specialization (not yet built)".to_string(),
         );
     }
-    tracing::trace!(target: "rcdzc::eval", body = body.0, params = params.len(), args = args.len(), "β-reduce lambda application");
+    trace!(target: "rcdzc::eval", body = body.0, params = params.len(), args = args.len(), "β-reduce lambda application");
     if args.len() < params.len() {
         return Err("partial application of a function is not yet supported".to_string());
     }
@@ -281,6 +289,7 @@ pub fn is_recursive(db: &mut Db, body: StructId) -> bool {
     db.rec_visited = visited;
     db.rec_worklist = worklist;
     db.recursive.insert(body, result);
+    trace!(target: "rcdzc::eval", body = body.0, recursive = result, "recursion analysis");
     result
 }
 
@@ -450,12 +459,21 @@ pub fn member_value(db: &mut Db, operand: StructId, key: &Symbol) -> Member {
     match reduce_to_record_id(db, operand) {
         Some(rec) => match resolved_of(db, rec) {
             Resolved::Record { fields } => match fields.get(key) {
-                Some(&v) => Member::Field(v),
-                None => Member::NoField,
+                Some(&v) => {
+                    trace!(target: "rcdzc::eval", operand = operand.0, key = %key.name, value = v.0, "project: field found");
+                    Member::Field(v)
+                }
+                None => {
+                    trace!(target: "rcdzc::eval", operand = operand.0, key = %key.name, "project: no such field");
+                    Member::NoField
+                }
             },
             _ => Member::NotRecord,
         },
-        None => Member::NotRecord,
+        None => {
+            trace!(target: "rcdzc::eval", operand = operand.0, key = %key.name, "project: operand is not a record");
+            Member::NotRecord
+        }
     }
 }
 
@@ -497,10 +515,12 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
                 args: vec![width as i64],
             };
             if let Some(cached) = db.cached_build(&key) {
+                trace!(target: "rcdzc::eval", signed, width, node = cached.0, "ctor (Int/UInt): build-cache hit");
                 return Ok(cached);
             }
             let built = build_int_module(db, signed, width);
             db.cache_build(key, built);
+            trace!(target: "rcdzc::eval", signed, width, node = built.0, "ctor (Int/UInt): built integer module");
             Ok(built)
         }
         Prim::FnCtor => {
@@ -511,6 +531,7 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
                 typeval_of(db, args[0]).ok_or_else(|| "-> parameter is not a type".to_string())?;
             let r = typeval_of(db, args[1]).ok_or_else(|| "-> result is not a type".to_string())?;
             let fn_ty = crate::ty::Ty::Fn(Box::new(p), Box::new(r));
+            trace!(target: "rcdzc::eval", ty = %fn_ty.render_name(), "ctor (->): built function type-value");
             Ok(encode_typeval(db, &fn_ty))
         }
         _ => Err("not a type constructor".to_string()),
