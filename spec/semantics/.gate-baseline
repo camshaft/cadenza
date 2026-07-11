@@ -1,5 +1,4 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-fail	an unbound name in an uncalled sibling definition is still rejected
 pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a conditional selects the false branch when the condition is false
@@ -7,17 +6,25 @@ pass	a conditional's condition may itself be a conditional
 pass	a decimal integer literal
 pass	a hexadecimal integer literal
 pass	a hexadecimal literal with digit separators
+pass	a later let binding sees an earlier one in the same let
 pass	a let binding is in scope in its body
 pass	a name resolves to the nearest enclosing binding
 pass	a negative hexadecimal literal negates its value
+pass	a nested-let chain that reuses each binding folds to one value
 pass	a record is constructed and a field is read
+pass	a repeated let binding shadows the earlier one for what follows
 pass	an entrypoint that delegates no effect is pure and makes no host call
+pass	an inner binding shadows an outer one only within its scope
 pass	an integer literal with digit separators
+pass	an unannotated program with a valid typing type-checks and runs
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed token is an identifier, not an integer
+pass	arithmetic within one integer type
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
+pass	multiplication
 pass	projecting a field is independent of the order fields are written
+pass	subtraction
 pass	the boolean literals
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
@@ -179,7 +186,6 @@ todo	a hexadecimal literal is case-insensitive
 todo	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 todo	a large whole-valued float renders its full value, not an integer saturation
 todo	a later declaration in a do block sees an earlier one
-todo	a later let binding sees an earlier one in the same let
 todo	a le pattern segment reads a fixed-width integer little-endian
 todo	a left shift by a floating-point count does not silently promote
 todo	a left shift by the bit width or more traps rather than wrapping
@@ -271,7 +277,6 @@ todo	a nested sum match missing an inner variant is non-exhaustive
 todo	a nested tuple pattern of the wrong arity is a type error
 todo	a nested tuple-arity mismatch in equality is a type error
 todo	a nested unquote pattern matches a sub-AST by shape
-todo	a nested-let chain that reuses each binding folds to one value
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
@@ -345,7 +350,6 @@ todo	a recursively-built binary tree renders its full runtime structure
 todo	a recursively-built byte sequence assembles its bytes at run time
 todo	a recursively-built linked list renders its full runtime spine
 todo	a reference to an unbound name is rejected before running
-todo	a repeated let binding shadows the earlier one for what follows
 todo	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 todo	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 todo	a right shift by a floating-point count does not silently promote
@@ -512,7 +516,6 @@ todo	an explicit conversion makes the operation well-typed
 todo	an export and a like-named metadata key do not collide
 todo	an expression tree built at run time is evaluated by matching its node variants
 todo	an in-bounds slice yields Some of the bytes at that range
-todo	an inner binding shadows an outer one only within its scope
 todo	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 todo	an integer if condition is a type error, not a running conditional
 todo	an integer literal pattern against a boolean scrutinee is a type error
@@ -528,10 +531,10 @@ todo	an operation on mismatched types is rejected at compile time
 todo	an option value annotated with the wrong payload type is rejected
 todo	an ordering operator with a single operand is rejected, not a crash
 todo	an out-of-range integer literal is a malformed literal, not an unbound name
-todo	an unannotated program with a valid typing type-checks and runs
 todo	an unbound name in a map key is a scope error, not a coerced string
 todo	an unbound name in a resume's state position is rejected
 todo	an unbound name in a short-circuited boolean operand is still rejected
+todo	an unbound name in an uncalled sibling definition is still rejected
 todo	an unbound name in an unselected conditional branch is still rejected
 todo	an unbound name in an unselected match arm is still rejected
 todo	an underscore-prefixed function parameter binds its argument
@@ -552,7 +555,6 @@ todo	applying a non-function is a type error
 todo	arithmetic right shift
 todo	arithmetic right shift of negative one is negative one
 todo	arithmetic right shift preserves the sign bit for a negative operand
-todo	arithmetic within one integer type
 todo	bit-field segments pack sub-byte values into one byte
 todo	bitwise AND masks bits
 todo	bitwise AND of an integer and a float does not silently promote
@@ -732,7 +734,6 @@ todo	modulo by zero traps
 todo	modulo gives the remainder
 todo	modulo of an integer and a float does not silently promote
 todo	multi-argument application is curried application
-todo	multiplication
 todo	multiplication of an integer and a float does not silently promote
 todo	multiplication of the minimum integer by -1 overflows and traps
 todo	multiplication past the maximum integer overflows and traps
@@ -822,7 +823,6 @@ todo	strings differing only in Unicode normalization are equal
 todo	structural equality holds component-wise
 todo	subset record comparison is explicit projection, not an overloaded equality
 todo	subtracting quantities of incompatible dimension is a compile-time error
-todo	subtraction
 todo	subtraction below the minimum integer overflows and traps
 todo	subtraction of an integer and a float does not silently promote
 todo	sum type constructors are in scope after declaration
