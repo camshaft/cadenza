@@ -142,7 +142,7 @@ impl<'a> Printer<'a> {
                 "type" if self.is_type_shape(args) => return self.print_type(args),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
                 "list" => return self.print_list_literal(args),
-                "tuple" if args.len() >= 2 => return self.print_tuple(args),
+                "tuple" if !args.is_empty() => return self.print_tuple(args),
                 "record" if self.is_record_shape(args) => return self.print_record(args),
                 "map" if self.is_map_shape(args) => return self.print_map(args),
                 // A `(comment "text" node)` wraps a node in ANY position, so render it as `// text`
@@ -300,10 +300,9 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `let n = e, … ; body` — the binding, a `;`, then the body on the next line. `let` drops `in`:
-    /// the binding scopes over the rest of the enclosing sequence, so a `let` chain reads as flat
-    /// statements (each `let x = e;` on its own line, then the final expression). A `let` in a value
-    /// position (`parent_prec > 0`) parenthesizes.
+    /// `let n = e, … in body` — the binding(s), `in`, then the body on the next line. `in`
+    /// self-delimits the `let`, so a `let` chain reads as flat `let x = e in` lines then the body.
+    /// A `let` in a value position (`parent_prec > 0`) parenthesizes.
     fn print_let(&mut self, args: &[StructId], parent_prec: u8) {
         let paren = parent_prec > 0;
         self.doc.cbox(0);
@@ -329,11 +328,11 @@ impl<'a> Printer<'a> {
             }
         }
         self.doc.end();
-        self.doc.word(";");
-        // The body starts a new line at the `let`'s own column (offset 0), so a `let`/statement chain
-        // reads as a flat statement sequence — the ML idiom for a `;`-sequenced expression language.
+        self.doc.word(" in");
+        // The body starts a new line at the `let`'s own column (offset 0), so a `let … in` chain
+        // reads as a flat sequence — the ML idiom for a pervasive `let … in`.
         self.doc.hardbreak();
-        self.print_stmt(args[1]);
+        self.expr(args[1], 0);
         if paren {
             self.doc.word(")");
         }
@@ -692,15 +691,12 @@ impl<'a> Printer<'a> {
         self.doc.word("type ");
         self.expr(name, 0);
         self.doc.word(" =");
-        // A breakable space before the first variant, then ` | ` between; when broken, each `|`
-        // leads its own line (a `space` before `|`, a literal ` ` after).
-        for (i, &v) in variants.iter().enumerate() {
-            if i == 0 {
-                self.doc.space();
-            } else {
-                self.doc.space();
-                self.doc.word("| ");
-            }
+        // Each variant on its own line, led by `| ` (always, including the first) — symmetric with a
+        // `match`'s `|`-led arms. The `|` is the surface separator between the structural variant
+        // entries, never a node in the tree.
+        for &v in variants {
+            self.doc.hardbreak();
+            self.doc.word("| ");
             self.print_variant(v);
         }
         self.doc.end();
@@ -783,8 +779,15 @@ impl<'a> Printer<'a> {
         self.bracketed("[", "]", false, elems, |p, e| p.expr(e, 0));
     }
 
-    /// `(e, …)` — a tuple of 2+ elements.
+    /// `(e, …)` — a tuple. A 1-element tuple prints as `(e,)` (a trailing comma, Rust-style), which
+    /// distinguishes it from `(e)` transparent grouping; 2+ elements print `(e, f, …)`.
     fn print_tuple(&mut self, elems: &[StructId]) {
+        if elems.len() == 1 {
+            self.doc.word("(");
+            self.expr(elems[0], 0);
+            self.doc.word(",)");
+            return;
+        }
         self.bracketed("(", ")", false, elems, |p, e| p.expr(e, 0));
     }
 
@@ -821,23 +824,27 @@ impl<'a> Printer<'a> {
         }
         self.doc.word("match ");
         self.expr(args[0], 0);
-        self.doc.word(" {");
-        // Match arms ALWAYS go one per line (ML/Rust convention — arms are never packed onto a
-        // line, even when they'd fit), each with a trailing comma, and the closing `}` dedents to
-        // the `match` column.
-        for &arm in &args[1..] {
+        self.doc.word(" with");
+        // Arms go one per line, each led by `| ` at the `match` column (OCaml style — the leading `|`
+        // is always printed, including on the first arm). No braces, no trailing commas.
+        let arms = &args[1..];
+        for (i, &arm) in arms.iter().enumerate() {
             self.doc.hardbreak();
+            self.doc.word("| ");
             if let Struct::List(pair) = self.a.get(arm) {
                 let (pat, body) = (pair[0], pair[1]);
                 self.pattern(pat);
                 self.doc.word(" => ");
-                self.expr(body, 0);
-                self.doc.word(",");
+                // A body that is itself a block form (`match`/`let`/`if`/`do`) in a NON-LAST arm must
+                // parenthesize, else its own arms/layout would run into the next `| pat`. The last
+                // arm needs no guard (nothing follows at this level). PREC_KEYWORD forces the
+                // block-form parens without parenthesizing an infix body.
+                let last = i + 1 == arms.len();
+                self.expr(body, if last { 0 } else { PREC_KEYWORD });
             }
         }
-        self.doc.break_with(1, -INDENT);
-        self.doc.word("}");
         if paren {
+            self.doc.break_with(1, -INDENT);
             self.doc.word(")");
         }
         self.doc.end();
@@ -860,16 +867,20 @@ impl<'a> Printer<'a> {
         match self.a.get(id) {
             Struct::List(items) if !items.is_empty() => {
                 let items = items.clone();
-                // tuple pattern `(tuple p q …)` with 2+ elements -> `(p, q, …)`. A 1-element
-                // `(tuple p)` falls through to the generic `tuple(p)` form (a `(p)` would be
-                // transparent grouping, not a 1-tuple) — the same rule the value tuple uses.
-                if self.head_name(items[0]).as_deref() == Some("tuple") && items.len() >= 3 {
+                // tuple pattern `(tuple p …)` -> `(p, …)`, matching the value tuple. A 1-element
+                // `(tuple p)` prints `(p,)` (trailing comma) so it re-reads as a 1-tuple, not `(p)`
+                // grouping.
+                if self.head_name(items[0]).as_deref() == Some("tuple") && items.len() >= 2 {
+                    let subs = &items[1..];
                     self.doc.word("(");
-                    for (i, &sub) in items[1..].iter().enumerate() {
+                    for (i, &sub) in subs.iter().enumerate() {
                         if i > 0 {
                             self.doc.word(", ");
                         }
                         self.pattern(sub);
+                    }
+                    if subs.len() == 1 {
+                        self.doc.word(","); // 1-tuple: trailing comma
                     }
                     self.doc.word(")");
                     return;
@@ -970,7 +981,10 @@ impl<'a> Printer<'a> {
     }
 
     fn is_match_shape(&self, args: &[StructId]) -> bool {
-        if args.is_empty() {
+        // A scrutinee plus at LEAST ONE arm. A zero-arm match (`(match x)` — vacuously exhaustive on
+        // a Never-typed scrutinee) has no `| arm` to render and no closer after `with`, so it falls
+        // through to the generic call form `` `match`(x) `` instead (which round-trips as a call).
+        if args.len() < 2 {
             return false;
         }
         args[1..].iter().all(|&a| match self.a.get(a) {
@@ -1112,7 +1126,7 @@ mod tests {
             "if a then b else c"
         );
         // `let … in` always breaks the body to its own line at the let column (ML idiom).
-        assert_eq!(assert_roundtrip("let x = 1; x", 80), "let x = 1;\nx");
+        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
         assert_eq!(
             assert_roundtrip("fn(x, y) => x + y", 80),
             "fn(x, y) => x + y"
@@ -1145,34 +1159,29 @@ mod tests {
 
     #[test]
     fn sum_type_declaration() {
-        // Each variant is its own entry, `|`-separated on the surface; nullary is a bare ctor, a
-        // payload variant is `Ctor(T, …)`. The `|` is a surface separator, never a tree atom.
+        // Each variant on its own line, led by `| ` (including the first) — symmetric with a match's
+        // `|`-arms. Nullary = a bare ctor, a payload variant = `Ctor(T, …)`. The `|` is a surface
+        // separator, never a tree atom.
         assert_eq!(
-            assert_roundtrip("type N = I(Int64) | J(Int64)", 80),
-            "type N = I(Int64) | J(Int64)"
+            assert_roundtrip("type N = | I(Int64) | J(Int64)", 80),
+            "type N =\n  | I(Int64)\n  | J(Int64)"
         );
         assert_eq!(
-            assert_roundtrip("type Sign = Neg | Zero | Pos", 80),
-            "type Sign = Neg | Zero | Pos"
+            assert_roundtrip("type Sign = | Neg | Zero | Pos", 80),
+            "type Sign =\n  | Neg\n  | Zero\n  | Pos"
         );
         // nullary + payload mix.
         assert_eq!(
-            assert_roundtrip("type FL = FNil | FCons(Tuple(Int64, FL))", 80),
-            "type FL = FNil | FCons(Tuple(Int64, FL))"
+            assert_roundtrip("type FL = | FNil | FCons(Tuple(Int64, FL))", 80),
+            "type FL =\n  | FNil\n  | FCons(Tuple(Int64, FL))"
         );
         // the arena is `(type NAME variant…)` — nullary = a bare name, payload = a `(Ctor T…)` list.
         let a = sexpr::read("(type N (I Int64) (J Int64))").unwrap();
-        assert_eq!(print(&a, 80), "type N = I(Int64) | J(Int64)");
+        assert_eq!(print(&a, 80), "type N =\n  | I(Int64)\n  | J(Int64)");
         let a = sexpr::read("(type FL FNil (FCons (Tuple Int64 FL)))").unwrap();
-        assert_eq!(print(&a, 80), "type FL = FNil | FCons(Tuple(Int64, FL))");
-        // a wide decl breaks with a leading `|` per variant.
-        let out = assert_roundtrip(
-            "type Expr = Lit(Int64) | Add(Tuple(Expr, Expr)) | Mul(Tuple(Expr, Expr))",
-            40,
-        );
         assert_eq!(
-            out,
-            "type Expr =\n  Lit(Int64)\n  | Add(Tuple(Expr, Expr))\n  | Mul(Tuple(Expr, Expr))"
+            print(&a, 80),
+            "type FL =\n  | FNil\n  | FCons(Tuple(Int64, FL))"
         );
     }
 
@@ -1204,12 +1213,12 @@ mod tests {
 
     #[test]
     fn def_match_body_hugs_the_eq() {
-        // A brace-delimited body (match) stays on the `=` line and breaks internally; arms indent
-        // one level under the def, not two.
-        let out = assert_roundtrip("def describe(s) = match s { A(_) => 1, B(_) => 2 }", 80);
+        // A `match … with` body stays on the `=` line; its `|`-arms break one per line, indented one
+        // level under the def.
+        let out = assert_roundtrip("def describe(s) = match s with | A(_) => 1 | B(_) => 2", 80);
         assert_eq!(
             out,
-            "def describe(s) = match s {\n  A(_) => 1,\n  B(_) => 2,\n}"
+            "def describe(s) = match s with\n  | A(_) => 1\n  | B(_) => 2"
         );
     }
 
@@ -1217,8 +1226,8 @@ mod tests {
     fn def_let_body_drops_and_indents() {
         // A non-brace body (let) is not hugged: it drops to an indented continuation line and lays
         // out flat at that indent.
-        let out = assert_roundtrip("def f(x) = let y = x + 1; y * y", 80);
-        assert_eq!(out, "def f(x) =\n  let y = x + 1;\n  y * y");
+        let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
+        assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
     }
 
     #[test]
@@ -1237,12 +1246,12 @@ mod tests {
     fn last_arg_lambda_hugs() {
         // A trailing lambda stays on the call line, breaking only its own body — head args inline.
         let out = assert_roundtrip(
-            "fold(xs, zero, fn(acc, x) => match x { Some(v) => acc + v, None(_) => acc })",
+            "fold(xs, zero, fn(acc, x) => match x with | Some(v) => acc + v | None(_) => acc)",
             80,
         );
         assert_eq!(
             out,
-            "fold(xs, zero, fn(acc, x) => match x {\n  Some(v) => acc + v,\n  None(_) => acc,\n})"
+            "fold(xs, zero, fn(acc, x) => match x with\n  | Some(v) => acc + v\n  | None(_) => acc)"
         );
     }
 
@@ -1310,8 +1319,8 @@ mod tests {
         assert_eq!(print(&a, 80), "a == b");
         // a lone `=` is only the binding separator, never equality.
         assert_eq!(
-            assert_roundtrip("let x = 1; x == 1", 80),
-            "let x = 1;\nx == 1"
+            assert_roundtrip("let x = 1 in x == 1", 80),
+            "let x = 1 in\nx == 1"
         );
     }
 
@@ -1401,11 +1410,11 @@ mod tests {
 
     #[test]
     fn match_always_one_arm_per_line() {
-        // Arms go one per line even at a WIDE width where they would fit on one line — the ML/Rust
-        // convention, never packed.
-        let out = assert_roundtrip("match e { Some(n) => n, None => 0, _ => neg }", 200);
+        // Arms go one per line even at a WIDE width where they would fit on one line — the OCaml/Rust
+        // convention, never packed. Each is led by `| ` (including the first); `match … with` header.
+        let out = assert_roundtrip("match e with | Some(n) => n | None => 0 | _ => neg", 200);
         assert_eq!(
-            out, "match e {\n  Some(n) => n,\n  None => 0,\n  _ => neg,\n}",
+            out, "match e with\n  | Some(n) => n\n  | None => 0\n  | _ => neg",
             "got:\n{out}"
         );
     }
@@ -1441,7 +1450,7 @@ mod tests {
 
     #[test]
     fn guarded_arm_prints_if() {
-        let out = assert_roundtrip("match n { x if x < 0 => neg, _ => pos }", 80);
+        let out = assert_roundtrip("match n with | x if x < 0 => neg | _ => pos", 80);
         assert!(out.contains("x if x < 0 =>"), "got: {out}");
     }
 
@@ -1477,8 +1486,8 @@ mod tests {
     fn tuple_patterns_use_paren_sugar() {
         // A `(tuple …)` pattern with 2+ elements prints as `(p, …)`, matching the value tuple.
         assert_eq!(
-            assert_roundtrip("match p { (a, b) => a + b, _ => 0 }", 80),
-            "match p {\n  (a, b) => a + b,\n  _ => 0,\n}"
+            assert_roundtrip("match p with | (a, b) => a + b | _ => 0", 80),
+            "match p with\n  | (a, b) => a + b\n  | _ => 0"
         );
         // nested, and inside a constructor.
         let a = sexpr::read("(match p ((tuple a (tuple b c)) 9) (_ 0))").unwrap();
@@ -1493,13 +1502,9 @@ mod tests {
             "got: {}",
             print(&a, 80)
         );
-        // a 1-element tuple pattern stays `tuple(a)` (a `(a)` would be grouping, not a 1-tuple).
+        // a 1-element tuple pattern prints `(a,)` (trailing comma), re-reading as a 1-tuple not `(a)`.
         let a = sexpr::read("(match p ((tuple a) a) (_ 0))").unwrap();
-        assert!(
-            print(&a, 80).contains("tuple(a) =>"),
-            "got: {}",
-            print(&a, 80)
-        );
+        assert!(print(&a, 80).contains("(a,) =>"), "got: {}", print(&a, 80));
     }
 
     #[test]

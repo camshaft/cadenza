@@ -135,6 +135,7 @@ pub enum Keyword {
     Def,
     Type,
     Match,
+    With,
     Module,
 }
 
@@ -150,6 +151,7 @@ pub fn keyword(text: &str) -> Option<Keyword> {
         "def" => Keyword::Def,
         "type" => Keyword::Type,
         "match" => Keyword::Match,
+        "with" => Keyword::With,
         "module" => Keyword::Module,
         _ => return None,
     })

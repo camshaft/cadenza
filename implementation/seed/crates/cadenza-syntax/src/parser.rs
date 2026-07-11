@@ -89,6 +89,7 @@ pub fn parse(src: &str, file: FileId) -> Parsed {
         builder: Builder::new(),
         spans: SpanTable::new(file),
         errors: Vec::new(),
+        arm_bar_terminates: false,
     };
     let root = p.program();
     Parsed {
@@ -121,6 +122,11 @@ struct Parser<'a> {
     builder: Builder,
     spans: SpanTable,
     errors: Vec<ParseError>,
+    /// True while parsing a match-arm body at the arm's own bracket level: a top-level `|` there
+    /// TERMINATES the arm (starts the next `| pat => body`) rather than being the bitwise-or operator.
+    /// Any bracket (`(`/`[`/`{`) that starts a fresh sub-expression clears this, so `(a | b)` inside an
+    /// arm body is still bitwise-or. (Corpus has zero infix-`|`, so this only future-proofs.)
+    arm_bar_terminates: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -323,42 +329,6 @@ impl<'a> Parser<'a> {
 
     // ---- expression grammar (Pratt) ----
 
-    /// Parse a SEQUENCE: an expression, then while a `;` follows, more expressions — folded into a
-    /// `(do e0 e1 …)` sequencing form (a single expression stays bare, no `do`). `;` is looser than
-    /// every operator, so it separates whole expressions. A trailing `;` (before the closing
-    /// delimiter) is tolerated. A `let x = e` binding inside a sequence already scopes to the rest of
-    /// the sequence via `let_expr` (it greedily takes the remaining forms as its body), so a `let`
-    /// only appears as the LAST element here. Used at every body position (def/fn/let/if/match/paren).
-    fn seq(&mut self) -> StructId {
-        let start = self.cur_span();
-        let first = self.expr(0);
-        if !self.at(Kind::Semi) {
-            return first;
-        }
-        let do_head = self.name("do", start);
-        let mut items = vec![do_head, first];
-        while self.at(Kind::Semi) {
-            self.bump(); // `;`
-            // Tolerate a trailing `;` right before the enclosing delimiter or end.
-            if self.at_seq_end() {
-                break;
-            }
-            items.push(self.expr(0));
-        }
-        let span = start.merge(self.prev_span());
-        self.list(items, span)
-    }
-
-    /// True at a token that closes an enclosing sequence — a delimiter or end of input. A `;` right
-    /// before one of these is a tolerated trailing separator, not the start of another statement.
-    fn at_seq_end(&self) -> bool {
-        self.at_end()
-            || matches!(
-                self.kind(),
-                Kind::RParen | Kind::RBrace | Kind::RBracket | Kind::Comma
-            )
-    }
-
     /// Parse an expression whose infix operators bind at least `min_prec`.
     fn expr(&mut self, min_prec: u8) -> StructId {
         let start = self.cur_span();
@@ -379,8 +349,24 @@ impl<'a> Parser<'a> {
         left
     }
 
-    /// The infix operator name at the cursor (symbolic kind or word-op ident), or `None`.
+    /// Run a bracketed sub-expression parser with the match-arm `|`-terminates flag CLEARED, restoring
+    /// it after — so a `|` inside `( … )`/`[ … ]`/`{ … }` within a match arm body is bitwise-or, while
+    /// a `|` at the arm's own level still terminates the arm.
+    fn bracketed_bars(&mut self, f: fn(&mut Self) -> StructId) -> StructId {
+        let saved = self.arm_bar_terminates;
+        self.arm_bar_terminates = false;
+        let node = f(self);
+        self.arm_bar_terminates = saved;
+        node
+    }
+
+    /// The infix operator name at the cursor (symbolic kind or word-op ident), or `None`. A `|` at
+    /// the top level of a match-arm body is NOT infix — it terminates the arm (see
+    /// [`Self::arm_bar_terminates`]).
     fn infix_op(&self) -> Option<&'static str> {
+        if self.arm_bar_terminates && self.at(Kind::Pipe) {
+            return None;
+        }
         match self.kind() {
             Kind::Ident => word_op(self.cur_text()),
             k => k.op_str(),
@@ -427,15 +413,19 @@ impl<'a> Parser<'a> {
                     self.atom(literal::classify_word(self.text(t)), span)
                 }
             },
-            Kind::LParen => self.paren(),
-            Kind::LBracket => self.list_literal(),
-            Kind::LBrace => self.record_literal(),
+            // Bracketed sub-expressions parse their contents at a fresh level, where a `|` is bitwise-or
+            // again — clear the arm-bar flag across them so `(a | b)` inside a match arm body works.
+            Kind::LParen => self.bracketed_bars(Self::paren),
+            Kind::LBracket => self.bracketed_bars(Self::list_literal),
+            Kind::LBrace => self.bracketed_bars(Self::record_literal),
             Kind::Backtick => self.quasiquote(),
             Kind::Comma => self.unquote("unquote"),
             Kind::UnquoteSplice => self.unquote("unquote-splicing"),
             // `#{` is a map literal; `#[` is the raw-list escape.
-            Kind::Hash if self.nth_kind(1) == Kind::LBrace => self.map_literal(),
-            Kind::Hash => self.hash_list(),
+            Kind::Hash if self.nth_kind(1) == Kind::LBrace => {
+                self.bracketed_bars(Self::map_literal)
+            }
+            Kind::Hash => self.bracketed_bars(Self::hash_list),
             _ => {
                 self.error("expected an expression");
                 if !self.at_end() {
@@ -566,10 +556,10 @@ impl<'a> Parser<'a> {
 
     // ---- keyword forms ----
 
-    /// `let n = e, … ; body`  ->  `(let ((n e) …) body)`. The binding is separated from the body by
-    /// `;` (not `in`); the `let` scopes over the REST of the enclosing sequence, which is exactly the
-    /// body it takes here (`body = seq()` greedily consumes the remaining `;`-separated forms). So a
-    /// `let` in a sequence is always its LAST element, wrapping everything after it.
+    /// `let n = e, … in body`  ->  `(let ((n e) …) body)`. The binding is separated from the body by
+    /// `in`, which SELF-DELIMITS the `let` — its body is a full expression, so a `let` at the tail of
+    /// a def body cannot swallow following top-level forms (the dangling-let fix). The body is a plain
+    /// expression, not a `;`-sequence (a multi-statement body parenthesizes as `(a; b)`).
     fn let_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let let_head = self.keyword_head("let", start);
@@ -590,8 +580,8 @@ impl<'a> Parser<'a> {
         }
         let binds_span = start.merge(self.prev_span());
         let binds = self.list(bindings, binds_span);
-        self.expect(Kind::Semi, "`;`");
-        let body = self.seq();
+        self.expect_keyword(Keyword::In, "`in`");
+        let body = self.expr(0);
         let span = start.merge(self.prev_span());
         self.list(vec![let_head, binds, body], span)
     }
@@ -691,6 +681,11 @@ impl<'a> Parser<'a> {
         let mut items = vec![head, name];
         items.extend(self.doc_nodes(docs));
         self.expect(Kind::Eq, "`=`");
+        // Variants are `|`-led, with an (always-printed) leading `|` before the first — tolerate its
+        // absence for robustness. Each `|` introduces a variant.
+        if self.at(Kind::Pipe) {
+            self.bump(); // optional leading `|`
+        }
         loop {
             items.push(self.variant());
             if self.at(Kind::Pipe) {
@@ -771,29 +766,34 @@ impl<'a> Parser<'a> {
         self.list(params, params_span)
     }
 
-    /// `match scrut { pat [if g] => body, … }`  ->  `(match scrut (pat body) …)`, where a guarded
-    /// pattern is `(guard <pat> <expr>)`.
+    /// `match scrut with | pat [if g] => body | …`  ->  `(match scrut (pat body) …)`, where a guarded
+    /// pattern is `(guard <pat> <expr>)`. Arms are `|`-led (with an always-printed leading `|`;
+    /// tolerated if absent). An arm body runs until the next arm's `|` or the end of the enclosing
+    /// context (the `|` at arm level does not read as bitwise-or; see `arm_bar_terminates`).
     fn match_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("match", start);
         self.bump(); // `match`
         let scrut = self.expr(0);
         let mut items = vec![head, scrut];
-        self.expect(Kind::LBrace, "`{`");
-        while !self.at(Kind::RBrace) && !self.at_end() {
+        self.expect_keyword(Keyword::With, "`with`");
+        if self.at(Kind::Pipe) {
+            self.bump(); // optional leading `|`
+        }
+        loop {
             items.push(self.match_arm());
-            if self.at(Kind::Comma) {
-                self.bump();
+            if self.at(Kind::Pipe) {
+                self.bump(); // `|` before the next arm
             } else {
                 break;
             }
         }
-        self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
     }
 
-    /// One arm: `pattern [if guard] => body`  ->  `(pattern body)`.
+    /// One arm: `pattern [if guard] => body`  ->  `(pattern body)`. The body is parsed with `|` set to
+    /// terminate the arm (not read as bitwise-or), so the next `| pat => …` starts a fresh arm.
     fn match_arm(&mut self) -> StructId {
         let start = self.cur_span();
         let mut pat = self.pattern();
@@ -807,9 +807,10 @@ impl<'a> Parser<'a> {
             pat = self.list(vec![guard_head, pat, g], g_span);
         }
         self.expect(Kind::FatArrow, "`=>`");
-        // An arm body may be a `;`-sequence; it ends at the arm's `,` (or the closing `}`), which
-        // `seq()` treats as a sequence end.
+        let saved = self.arm_bar_terminates;
+        self.arm_bar_terminates = true;
         let body = self.expr(0);
+        self.arm_bar_terminates = saved;
         let span = start.merge(self.prev_span());
         self.list(vec![pat, body], span)
     }
@@ -1152,11 +1153,11 @@ mod tests {
             "1 + 2 * 3",
             "f(a, b)",
             "a.b.c",
-            "let x = 1, y = 2; x + y",
+            "let x = 1, y = 2 in x + y",
             "if a then b else c",
             "fn(x, y) => x + y",
-            "match e { Some(n) => n, None => 0, _ => neg }",
-            "match n { x if x < 0 => neg, _ => pos }",
+            "match e with | Some(n) => n | None => 0 | _ => neg",
+            "match n with | x if x < 0 => neg | _ => pos",
             "List.at(xs, 0)",
             "`{ x + 1 }",
             "#[a, b, c]",
@@ -1186,16 +1187,16 @@ mod tests {
         let a = parse_ok("if a then b else c");
         assert_eq!(a.as_form(a.root, "if").map(|t| t.len()), Some(3));
 
-        // `let x = 1; x` -> (let ((x 1)) x)
-        let a = parse_ok("let x = 1; x");
+        // `let x = 1 in x` -> (let ((x 1)) x)
+        let a = parse_ok("let x = 1 in x");
         let tail = a.as_form(a.root, "let").unwrap();
         assert_eq!(tail.len(), 2); // bindings + body
     }
 
     #[test]
     fn match_arm_is_pattern_body_pair() {
-        // `match e { Some(n) => n, _ => 0 }` -> (match e ((Some n) n) (_ 0))
-        let a = parse_ok("match e { Some(n) => n, _ => 0 }");
+        // `match e with | Some(n) => n | _ => 0` -> (match e ((Some n) n) (_ 0))
+        let a = parse_ok("match e with | Some(n) => n | _ => 0");
         let tail = a.as_form(a.root, "match").unwrap();
         assert_eq!(tail.len(), 3); // scrutinee + 2 arms
         // first arm is a 2-element list (pattern, body); pattern is (Some n)
@@ -1208,8 +1209,8 @@ mod tests {
 
     #[test]
     fn guarded_arm_wraps_pattern() {
-        // `match n { x if x < 0 => neg, _ => pos }`: first arm pattern is (guard x (< x 0))
-        let a = parse_ok("match n { x if x < 0 => neg, _ => pos }");
+        // `match n with | x if x < 0 => neg | _ => pos`: first arm pattern is (guard x (< x 0))
+        let a = parse_ok("match n with | x if x < 0 => neg | _ => pos");
         let tail = a.as_form(a.root, "match").unwrap();
         let crate::ast::Struct::List(arm0) = a.get(tail[1]) else {
             panic!()
