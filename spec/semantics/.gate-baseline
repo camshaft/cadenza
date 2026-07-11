@@ -242,6 +242,7 @@ todo	a dimensionless quantity carries the group identity Unit.one
 todo	a diverging expression unifies with an integer position
 todo	a division whose divisor folds to zero still traps
 todo	a factorial that overflows the integer type traps through the recursion
+todo	a failing guard falls through to a later arm
 todo	a field is projected from a record returned by a function
 todo	a field is projected from a record returned by a let-bound function
 todo	a field is projected from a record returned by a nullary function
@@ -263,6 +264,8 @@ todo	a function stored in a record field is called after extraction
 todo	a function stored in a tuple element is called after extraction
 todo	a function whose body always diverges has result type Never
 todo	a generic unwrap helper consumes a fallible Bytes.at result
+todo	a guard sees the names its pattern binds and arms are tried in order
+todo	a guarded arm is selected when its guard holds
 todo	a handler accumulates into a list and a read-out operation reads it back
 todo	a handler arm for an operation the effect does not declare is rejected
 todo	a handler folds a counter across the operations it discharges
@@ -320,6 +323,7 @@ todo	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 todo	a match over multiple nullary constructors with uniform patterns
 todo	a match takes another match's result as its scrutinee
 todo	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
+todo	a match whose only arm is guarded is non-exhaustive
 todo	a member access with no field operand is rejected, not a crash
 todo	a module declaration binds its name in the enclosing scope
 todo	a module function calls a sibling export by name

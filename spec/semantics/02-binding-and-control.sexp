@@ -802,6 +802,57 @@
             (_ "other")))
   (output (: "other" String)))
 
+; --- A match arm may carry a guard ---------------------------------------------------------
+; core-semantics.md #Matching Is Exhaustive Or Rejected: an arm's pattern may carry a boolean GUARD
+; `pattern if <guard>` — the arm is selected only when the pattern matches AND the guard, a pure
+; expression evaluated with the pattern's bindings in scope, is true. A failing guard falls through
+; to the following arms exactly as a non-matching pattern does. The guard is an ordinary expression
+; (it can read the names the pattern binds); it refines WHICH values an arm accepts without changing
+; the pattern's shape. A guard does NOT count toward exhaustiveness (a guarded arm might not fire), so
+; a match whose only arms are guarded is non-exhaustive and rejected — the cases below pin selection,
+; fall-through, binding-visibility, and the exhaustiveness rule.
+
+(case "a guarded arm is selected when its guard holds"
+  (doc    "The arm `x if x < 0` binds `x` to the scrutinee and is selected only if the guard `x < 0`
+           is true. For scrutinee -5 the guard holds, so the arm fires and the result is -1. Pins that
+           a guard `pattern if <expr>` gates its arm on a boolean condition evaluated with the
+           pattern's bindings in scope (core-semantics.md #Matching Is Exhaustive Or Rejected).")
+  (input  (match (- 0 5)
+            ((guard x (< x 0)) (- 0 1))
+            (_ 1)))
+  (output (: -1 Int64)))
+
+(case "a failing guard falls through to a later arm"
+  (doc    "The mirror: for scrutinee 5 the guard `x < 0` is false, so the guarded arm does NOT fire and
+           the match falls through to the wildcard, yielding 1 — exactly as a non-matching pattern
+           falls through. Pins that a false guard skips its arm rather than trapping or forcing it.")
+  (input  (match 5
+            ((guard x (< x 0)) (- 0 1))
+            (_ 1)))
+  (output (: 1 Int64)))
+
+(case "a guard sees the names its pattern binds and arms are tried in order"
+  (doc    "Two guarded arms binding `n`: for scrutinee 7 the first guard `n = 0` is false, the second
+           `n < 10` is true, so the second arm fires and returns `n` (7). Pins that a guard reads the
+           pattern's binding (`n` is in scope in the guard) and that guarded arms are tried top-to-bottom,
+           the first whose pattern-and-guard both hold winning.")
+  (input  (match 7
+            ((guard n (= n 0)) 100)
+            ((guard n (< n 10)) n)
+            (_ 999)))
+  (output (: 7 Int64)))
+
+(case "a match whose only arm is guarded is non-exhaustive"
+  (doc    "A guard does not count toward exhaustiveness: a guarded arm might not fire (its guard may be
+           false), so it cannot be the coverage for any value. A match on an Int64 whose sole arm is
+           `x if x < 0` — with no unconditional arm or wildcard — therefore covers no value unconditionally
+           and is non-exhaustive; the compiler MUST reject it (CDZ0210), the same rejection as a match
+           missing a case. Pins that guarded arms are excluded from the exhaustiveness check. A generation
+           that does not yet check runtime exhaustiveness declines rather than emitting a component.")
+  (input  (match 5
+            ((guard x (< x 0)) 1)))
+  (error  CDZ0210))
+
 ; --- A match must cover every value of the scrutinee's type ------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected: "A match whose patterns do not cover
 ; every value of the scrutinee's type MUST be a compile-time error." A Bool has exactly two
