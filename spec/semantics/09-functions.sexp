@@ -728,3 +728,39 @@
   (input  (module m (def (main (: x Int64)) (if (< x 0) 0 x))))
   (call   main (: -3 Int64))
   (output (: 0 Int64)))
+
+; --- Narrow-width runtime arguments cross as their FAITHFUL component primitive -------------------
+; The eight aliased widths (Int8/16/32, UInt8/16/32/64 and their `(Int N)` expansions) each have a
+; component boundary representation: they cross as `s8`/`u8`/`s16`/`u16`/`s32`/`u32`/`s64`/`u64`, NOT as
+; a wider machine slot. So a `(: n UInt8)` entry parameter takes a `u8` at the edge — the host cannot
+; pass 300 for it (wasmtime rejects an out-of-range u8), which is exactly the safety a narrow width buys.
+; These `(call …)` cases run a narrow-width entry over a runtime argument, exercising the faithful
+; boundary lift on the parameter side and the emitted narrow (i32-slot, range-checked) operation. CORE
+; cases (no `(needs …)`): the seed realizes the aliased widths' boundary forms.
+
+(case "an unsigned-byte entrypoint takes and returns a u8 at the boundary"
+  (doc    "`(def (main (: n UInt8)) n)` exported and called with 200. The parameter crosses as the
+           component `u8` (its faithful width, not a machine s32/u32), lifts to the i32 slot the body
+           reads, and lowers back to `u8` — 200. Pins that an aliased narrow width has a boundary form
+           and that a UInt8 argument round-trips through the component edge unchanged.")
+  (input  (module m (def (main (: n UInt8)) n)))
+  (call   main (: 200 UInt8))
+  (output (: 200 UInt8)))
+
+(case "a runtime unsigned-byte addition traps on overflow of its width"
+  (doc    "`(def (main (: a UInt8) (: b UInt8)) (+ a b))` called with (200, 55) = 255, which fits UInt8
+           (max 255). The `+` is emitted (both operands runtime) as the width-generic checked op: it
+           computes in the i32 slot and range-checks the result back to 0..=255. 200+55 fits, so it
+           returns 255 — the companion overflow (200+56=256) is the trap case pinned in 06-numeric-model.
+           Pins that a NARROW runtime arithmetic op runs over faithful-u8 boundary arguments.")
+  (input  (module m (def (main (: a UInt8) (: b UInt8)) (+ a b))))
+  (call   main (: 200 UInt8) (: 55 UInt8))
+  (output (: 255 UInt8)))
+
+(case "a signed-byte entrypoint returns its runtime argument"
+  (doc    "`(def (main (: n Int8)) n)` called with -128 (Int8.min). The parameter crosses as the
+           component `s8`, so the sign is preserved at the boundary (an s8 -128, not a widened s32). Pins
+           the signed narrow-width boundary form and that Int8.min round-trips.")
+  (input  (module m (def (main (: n Int8)) n)))
+  (call   main (: -128 Int8))
+  (output (: -128 Int8)))

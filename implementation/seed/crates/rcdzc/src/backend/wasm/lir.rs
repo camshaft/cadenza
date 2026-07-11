@@ -189,22 +189,37 @@ fn int_valtype(it: IntTy) -> ValType {
 }
 
 /// The component-model boundary valtype byte a value of solved type `ty` lowers to when it crosses the
-/// component edge, or `None` for unit (a no-result export). Fixed by the component ABI
-/// (`contracts/component-abi.md`): a signed integer → `s64`/`s32`, an unsigned → `u64`/`u32`, a bool →
-/// `bool`. This is the wasm/component backend's boundary mapping — a target concern, kept here.
+/// component edge, or `None` for a type with NO boundary representation (unit, a non-aliased integer
+/// width, a compound). Fixed by the component ABI (`contracts/component-abi.md`): each integer crosses
+/// as its FAITHFUL component primitive — `s8`/`u8`/`s16`/`u16`/`s32`/`u32`/`s64`/`u64` — and a bool as
+/// `bool`. This is the wasm/component backend's boundary mapping (a target concern, kept here); the
+/// CORE function signature is separate (`valtype_of` — a ≤32-bit value occupies an i32 slot regardless),
+/// and the canonical ABI lifts/lowers the primitive↔core representation.
+///
+/// ONLY THE EIGHT ALIASED WIDTHS (8/16/32/64, each signedness) have a boundary representation
+/// (`numeric-model.md` §The named widths are aliases; only they have a boundary form). A NON-ALIASED
+/// width — `(UInt 7)`, `(UInt 48)`, … — is internal-only: it returns `None` here, so exporting or taking
+/// it as a boundary parameter DECLINES rather than inventing a wider primitive that would misreport the
+/// value's type at the edge. (Its constant bounds still fold and its arithmetic is correct; it simply
+/// cannot cross the component boundary.)
 pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
     match ty {
         Ty::Int(it) => {
-            let w = it.ground_width();
-            // Component-model primitive valtype bytes (spec order): s32=0x7A, u32=0x79, s64=0x78,
-            // u64=0x77. Stage 0 only ever emits s64 (`Int64`); the others are pinned for the widths
-            // stage. (The `s64=0x78` byte matches the old compiler's oracle-checked frame.)
-            Some(match (it.ground_signed(), w <= 32) {
-                (true, false) => 0x78,  // s64
-                (true, true) => 0x7A,   // s32
-                (false, false) => 0x77, // u64
-                (false, true) => 0x79,  // u32
-            })
+            // Component-model primitive valtype bytes: s8=0x7E, u8=0x7D, s16=0x7C, u16=0x7B, s32=0x7A,
+            // u32=0x79, s64=0x78, u64=0x77 (verified against the `wasm-encoder` oracle). Only an aliased
+            // width maps; any other width has no boundary form (`None`).
+            match (it.ground_signed(), it.ground_width()) {
+                (true, 8) => Some(0x7E),
+                (false, 8) => Some(0x7D),
+                (true, 16) => Some(0x7C),
+                (false, 16) => Some(0x7B),
+                (true, 32) => Some(0x7A),
+                (false, 32) => Some(0x79),
+                (true, 64) => Some(0x78),
+                (false, 64) => Some(0x77),
+                // A non-aliased width (7, 24, 48, …) is internal-only — no boundary representation.
+                _ => None,
+            }
         }
         Ty::Bool => Some(0x7F), // bool
         Ty::Unit => None,
@@ -219,5 +234,39 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // An unresolved variable has no boundary representation (an undetermined type is rejected).
         Ty::Var(_) => None,
         Ty::Any => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ty::IntTy;
+
+    fn comp(signed: bool, width: u32) -> Option<u8> {
+        comp_valtype_of(&Ty::Int(IntTy::fixed(signed, width)))
+    }
+
+    #[test]
+    fn aliased_widths_map_to_their_faithful_primitive() {
+        // The eight aliased widths cross as their exact component primitive (bytes verified against the
+        // wasm-encoder oracle): s8/u8/s16/u16/s32/u32/s64/u64.
+        assert_eq!(comp(true, 8), Some(0x7E)); // s8
+        assert_eq!(comp(false, 8), Some(0x7D)); // u8
+        assert_eq!(comp(true, 16), Some(0x7C)); // s16
+        assert_eq!(comp(false, 16), Some(0x7B)); // u16
+        assert_eq!(comp(true, 32), Some(0x7A)); // s32
+        assert_eq!(comp(false, 32), Some(0x79)); // u32
+        assert_eq!(comp(true, 64), Some(0x78)); // s64
+        assert_eq!(comp(false, 64), Some(0x77)); // u64
+    }
+
+    #[test]
+    fn non_aliased_widths_have_no_boundary_representation() {
+        // A non-aliased width is internal-only — no component primitive, so it declines at the boundary
+        // (7, 24, 48, 62, and even 1 — only 8/16/32/64 are aliased).
+        for w in [1u32, 7, 24, 48, 62, 63] {
+            assert_eq!(comp(true, w), None, "signed width {w} must not cross");
+            assert_eq!(comp(false, w), None, "unsigned width {w} must not cross");
+        }
     }
 }
