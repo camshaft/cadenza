@@ -76,6 +76,30 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // CHECKS are `type_errors`' job; this fills the value column.
             then_ty.join(&else_ty)
         }
+        // A bare built-in operation value standing alone has no scalar type yet (it is not a runtime
+        // value until functions/closures exist). Typed `Any`; applying it is what has a type.
+        Resolved::Intrinsic(_) => Ty::Any,
+        // An arithmetic application: the operation is generic over the integer type, so its result is
+        // the integer type its operands share. Type = the JOIN of the operand types (a deferred/var
+        // width unifies with a fixed one; two fixed widths that differ are a mismatch reported by
+        // `type_errors`). A non-integer operand yields `Any` here (the fault is reported there).
+        Resolved::Apply { op, args } => match crate::resolve::intrinsic_of(db, op) {
+            Some(_) => {
+                let mut result = Ty::int(); // signed, deferred width — the generic operand type.
+                for &arg in &args {
+                    let at = type_of(db, arg);
+                    result = if matches!(at, Ty::Int(_) | Ty::Var(_) | Ty::Any) {
+                        result.join(&at)
+                    } else {
+                        // A non-integer operand: the application is ill-typed; surface `Any` here so
+                        // the whole program does not cascade, `type_errors` reports the mismatch.
+                        Ty::Any
+                    };
+                }
+                result
+            }
+            None => Ty::Any,
+        },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
     }
@@ -154,9 +178,47 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, value, out);
             }
         }
+        // An arithmetic application: each operand must be an integer, and their widths/signedness must
+        // agree. A non-integer operand or a width/signedness mismatch is the conflicting-use type
+        // error CDZ0301 (`numeric-model.md` — mixing two numeric types without an explicit conversion
+        // does not silently promote). Descend into the operands for their own faults.
+        Resolved::Apply { op, args } => {
+            if crate::resolve::intrinsic_of(db, op).is_some() {
+                let mut prev: Option<Ty> = None;
+                for &arg in &args {
+                    let at = type_of(db, arg);
+                    match &at {
+                        Ty::Int(_) | Ty::Var(_) | Ty::Any => {}
+                        other => out.push(Reject::coded(
+                            Code::TypeMismatch,
+                            format!("arithmetic requires an integer, found {}", other.render_name()),
+                        )),
+                    }
+                    // Operands must agree with each other (no silent promotion between numeric types).
+                    if let Some(p) = &prev {
+                        if !p.agrees_with(&at) {
+                            out.push(Reject::coded(
+                                Code::NumericMismatch,
+                                format!(
+                                    "operands of different numeric types: {} vs {}",
+                                    p.render_name(),
+                                    at.render_name()
+                                ),
+                            ));
+                        }
+                    }
+                    prev = Some(at);
+                }
+            }
+            for &arg in &args {
+                collect(db, arg, out);
+            }
+        }
         // A ref's fault (if any) lives at the value occurrence, reached when that node is collected on
-        // its own; following it here would re-report. Leaves have no sub-faults.
-        Resolved::Ref { .. }
+        // its own; following it here would re-report. A bare intrinsic value and the leaves have no
+        // sub-faults.
+        Resolved::Intrinsic(_)
+        | Resolved::Ref { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Unit

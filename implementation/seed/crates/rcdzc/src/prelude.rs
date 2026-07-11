@@ -35,7 +35,23 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     let mut names = BTreeMap::new();
     // `Int64` — a record of the type's bounds. Reached by `(. Int64 max)` = the ordinary projection.
     names.insert("Int64".to_string(), int64_record(ast));
+    // The arithmetic operators — each a built-in OPERATION value, installed as an `(intrinsic name)`
+    // arena node. `(+ a b)` is the application of the value `+` resolves to (the same mechanism a
+    // user function application uses) — NOT an operator name the resolver special-cases. Each is
+    // generic over the integer type (one width variable shared by operands and result).
+    for op in ["+", "-", "*"] {
+        names.insert(op.to_string(), intrinsic_node(ast, op));
+    }
     names
+}
+
+/// Append an `(intrinsic NAME)` node and return it — the arena form a built-in operation value takes,
+/// mirroring the `(unrealized …)` and `(record …)` prelude nodes. `resolve` turns it into a
+/// `Resolved::Intrinsic`; the name says which operation.
+fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
+    let head = push_atom(ast, Leaf::Name("intrinsic".to_string()));
+    let who = push_atom(ast, Leaf::Name(name.to_string()));
+    push_list(ast, vec![head, who])
 }
 
 /// Append the `Int64` module as a genuine `(record …)` form and return its root occurrence, so

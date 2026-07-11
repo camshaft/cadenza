@@ -37,6 +37,12 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
         }
         Lir::Else => out.push(op::ELSE),
         Lir::End => out.push(op::END),
+        Lir::I64Add => out.push(op::I64_ADD),
+        Lir::I64Sub => out.push(op::I64_SUB),
+        Lir::I64Mul => out.push(op::I64_MUL),
+        Lir::I32Add => out.push(op::I32_ADD),
+        Lir::I32Sub => out.push(op::I32_SUB),
+        Lir::I32Mul => out.push(op::I32_MUL),
     }
 }
 

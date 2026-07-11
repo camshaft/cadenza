@@ -34,7 +34,7 @@ use crate::arena::Slot;
 use crate::ast::{Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::diag::{Code, Reject};
-use crate::resolved::{Resolved, Symbol};
+use crate::resolved::{Intrinsic, Resolved, Symbol};
 use std::collections::BTreeMap;
 
 /// The fixed, closed set of GRAMMAR head names — the forms that bind names or control evaluation, plus
@@ -42,6 +42,21 @@ use std::collections::BTreeMap;
 /// A form whose head is one of these is dispatched structurally; any other head is an application (or,
 /// for a bare atom, a name looked up).
 const GRAMMAR: &[&str] = &["let", "if", "record", ".", "module", "def", "export", "do", "unrealized"];
+
+/// The intrinsic the node at `id` denotes, following a `Ref` — a name like `+` resolves to a `Ref` to
+/// its prelude `(intrinsic +)` node, which resolves to `Intrinsic(Add)`. Returns `None` if `id` is not
+/// (a reference to) an intrinsic. Shared by `infer` and `lower` so the "follow the ref to the
+/// operation" step lives in one place, mirroring how member access follows a ref into a record.
+pub fn intrinsic_of(db: &mut Db, id: StructId) -> Option<Intrinsic> {
+    match resolved_of(db, id) {
+        Resolved::Intrinsic(op) => Some(op),
+        Resolved::Ref { value } => match resolved_of(db, value) {
+            Resolved::Intrinsic(op) => Some(op),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 /// The resolved form of the node at `id`, filling the column on demand (memoized). The query the
 /// resolved-form request answers, and the upstream read `infer`/`lower` perform.
@@ -89,18 +104,66 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         .unwrap_or("operation");
                     Resolved::Poison(Reject::decline(format!("built-in `{op}` is not yet realized")))
                 }
+                // `(intrinsic NAME)` — a prelude built-in operation VALUE. Resolves to the operation
+                // it names (a value carried through the pipeline, lowered at selection).
+                Some("intrinsic") => {
+                    let name = db
+                        .ast
+                        .as_form(id, "intrinsic")
+                        .and_then(|t| t.first())
+                        .and_then(|&s| db.ast.as_name(s));
+                    match name.and_then(Intrinsic::from_name) {
+                        Some(op) => Resolved::Intrinsic(op),
+                        None => Resolved::Poison(Reject::decline("unknown intrinsic")),
+                    }
+                }
                 // A grammar declaration form appearing in expression position is not an expression
                 // (Stage 0 handles module/def/export/do at the top level, not here).
                 Some(h) if GRAMMAR.contains(&h) => {
                     Resolved::Poison(Reject::decline(format!("`{h}` is not an expression here")))
                 }
-                // A non-grammar head is an application — not yet realized (no user functions in
-                // expression position in Stage 1).
-                Some(h) => Resolved::Poison(Reject::decline(format!("application of `{h}` not yet supported"))),
-                None => Resolved::Poison(Reject::decline("a form whose head is not a name")),
+                // A non-grammar head is an APPLICATION. Dispatch by the KIND of value the head
+                // resolves to — an intrinsic → an intrinsic application — never by the head's
+                // spelling. (User-function application arrives with functions; a head that resolves
+                // to a non-applicable value declines.)
+                Some(_) | None => resolve_application(db, id, children),
             }
         }
     }
+}
+
+/// Resolve an application `(head arg…)` by the KIND of value the head resolves to. If the head is an
+/// intrinsic, this is an intrinsic application; otherwise it is not yet supported (user functions
+/// arrive later; applying a non-applicable value declines). Dispatch is on what the head IS, never on
+/// its spelling.
+fn resolve_application(db: &Db, id: StructId, children: &[StructId]) -> Resolved {
+    let head = children[0];
+    let args: Vec<StructId> = children[1..].to_vec();
+    match resolve_head_value(db, head) {
+        Some(Resolved::Intrinsic(_)) => Resolved::Apply { op: head, args },
+        _ => {
+            let h = db.ast.head_name(id).unwrap_or("<expr>");
+            Resolved::Poison(Reject::decline(format!("application of `{h}` not yet supported")))
+        }
+    }
+}
+
+/// Resolve the head of an application enough to know its KIND, WITHOUT recursing through the memoizing
+/// `resolved_of` (which needs `&mut Db`). For a bare-name head this repeats the one ordered lookup
+/// (scope, then prelude) and classifies what it lands on; that is the same lookup `resolve_name` does,
+/// just used here to dispatch the application. Only the intrinsic case matters for this increment.
+fn resolve_head_value(db: &Db, head: StructId) -> Option<Resolved> {
+    let name = db.ast.as_name(head)?;
+    // Scope first (a program binding could shadow — Stage 1 has no applicable program bindings yet).
+    if lookup_scope(db, head, name).is_some() {
+        return None; // a bound program value; not an intrinsic (function application comes later).
+    }
+    // Then the prelude: is it an `(intrinsic …)` node?
+    let node = *db.prelude.get(name)?;
+    if let Some(op_name) = db.ast.as_form(node, "intrinsic").and_then(|t| t.first()).and_then(|&s| db.ast.as_name(s)) {
+        return Intrinsic::from_name(op_name).map(Resolved::Intrinsic);
+    }
+    None
 }
 
 /// Resolve a bare name at occurrence `id` by the one ordered lookup: the lexical scope (walk parents

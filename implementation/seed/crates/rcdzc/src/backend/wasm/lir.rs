@@ -62,6 +62,14 @@ pub enum Lir {
     Else,
     /// `end`.
     End,
+    /// `i64.add` / `i64.sub` / `i64.mul` — 64-bit integer arithmetic (operands already on the stack).
+    I64Add,
+    I64Sub,
+    I64Mul,
+    /// `i32.add` / `i32.sub` / `i32.mul` — 32-bit integer arithmetic.
+    I32Add,
+    I32Sub,
+    I32Mul,
 }
 
 /// The wasm value type a value of solved type `ty` occupies inside a function body, or `None` for a
@@ -77,6 +85,9 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // compile time and does not construct one at runtime, so a record reaching a machine slot has
         // no scalar representation here and DECLINES (the value heap is a later stage).
         Ty::Record(_) => None,
+        // An unresolved variable has no machine representation — an undetermined type never reaches a
+        // real slot (it is a rejection at the boundary, not a defaulted representation).
+        Ty::Var(_) => None,
         // A poison's `Any` type never reaches a real machine slot (a poison fails the build before
         // emission); treat it as no representation rather than guess one.
         Ty::Any => None,
@@ -116,6 +127,8 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A record crosses the boundary as a compound value the runtime holds — deferred to the
         // value-heap stage; no scalar boundary valtype, so it declines here.
         Ty::Record(_) => None,
+        // An unresolved variable has no boundary representation (an undetermined type is rejected).
+        Ty::Var(_) => None,
         Ty::Any => None,
     }
 }

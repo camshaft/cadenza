@@ -385,4 +385,38 @@ mod stage1 {
         let msg = expect_decline("(. Int64 bogus)");
         assert!(msg.contains("no field"), "got: {msg}");
     }
+
+    // ── arithmetic intrinsics: application of a built-in operation, generic over the integer type ──
+
+    #[test]
+    fn addition_folds() {
+        // `(+ 2 3)` = 5 — application of the built-in `+`, folded at compile time (no runtime op).
+        assert_eq!(run_main("(+ 2 3)"), 5);
+    }
+
+    #[test]
+    fn nested_arithmetic_folds() {
+        // `(* 2 (+ 3 4))` = 14 — the fold composes through the tree.
+        assert_eq!(run_main("(* 2 (+ 3 4))"), 14);
+    }
+
+    #[test]
+    fn subtraction_folds() {
+        assert_eq!(run_main("(- 10 3)"), 7);
+    }
+
+    #[test]
+    fn arithmetic_is_generic_over_the_integer_type() {
+        // A built-in bound (`Int64.max`) and a literal share the operation without a hard-coded width:
+        // `(- Int64.max Int64.max)` = 0. Both operands are the signed-64 instance; the op unifies them.
+        assert_eq!(run_main("(- (. Int64 max) (. Int64 max))"), 0);
+    }
+
+    #[test]
+    fn provable_overflow_fails_the_build() {
+        // `(+ Int64.max 1)` overflows the checked Int64 — the compiler PROVES it via the fold and
+        // fails the build (CDZ0304) rather than shipping a component that traps (numeric-model.md).
+        let msg = expect_decline("(+ (. Int64 max) 1)");
+        assert!(msg.contains("overflow"), "got: {msg}");
+    }
 }
