@@ -1,21 +1,19 @@
-//! `cdz-syntax` — convert a Cadenza program between its surfaces, and read the corpus.
+//! `cdz-syntax` — convert a Cadenza program between its surfaces.
 //!
 //! Surfaces: `binary`, `sexpr`, `ml`, plus two output-only views of the binary AST — `debug` (an
 //! indented tree) and `flat` (the arenas dumped literally: leaf pool + structure vector + root).
 //!
 //! ```text
 //! cdz-syntax convert [--from FMT] [--to FMT] [--width N] [FILE]
-//! cdz-syntax corpus FILE…            # parse corpus cases → one normalized record per case
 //! ```
 //!
 //! `convert`'s `--from`/`--to` are inferred from the FILE extension when omitted (`.cdz`/`.ml` → ml,
 //! `.sexp`/`.sexpr` → sexpr, `.bin`/`.cdzb` → binary); `--to` defaults to `sexpr`. With no FILE (or
 //! `-`), input is read from stdin (then `--from` is required). Output goes to stdout. This bin is
 //! the only place in the crate that touches the filesystem/stdio; conversion is the pure
-//! `cadenza_syntax::convert` module and corpus reading the `cadenza_syntax::corpus` module.
+//! `cadenza_syntax::convert` module. (The corpus reader lives in the `cdz-corpus` crate.)
 
 use cadenza_syntax::convert::{self, Format, Options};
-use cadenza_syntax::corpus;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -34,12 +32,6 @@ struct Cli {
 enum Cmd {
     /// Convert a program between surfaces (reads FILE or stdin, writes stdout).
     Convert(ConvertArgs),
-    /// Parse corpus files and emit one normalized record per case to stdout.
-    Corpus {
-        /// Corpus `.sexp` files to read.
-        #[arg(required = true)]
-        files: Vec<String>,
-    },
 }
 
 #[derive(Args)]
@@ -87,7 +79,6 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Cmd::Convert(args) => run_convert(&args),
-        Cmd::Corpus { files } => run_corpus(&files),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -140,21 +131,6 @@ fn resolve_to(to: Option<Fmt>, file: Option<&str>) -> Format {
     file.filter(|p| *p != "-")
         .and_then(Format::from_extension)
         .unwrap_or(Format::Sexpr)
-}
-
-/// `corpus FILE…`: read each corpus file, normalize its cases, and emit the flat record stream to
-/// stdout (records from all files concatenated, in file then case order).
-fn run_corpus(files: &[String]) -> Result<(), String> {
-    let mut out = String::new();
-    for path in files {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
-        let records = corpus::read(&text).map_err(|e| format!("{path}: {e}"))?;
-        out.push_str(&corpus::render(&records));
-    }
-    std::io::stdout()
-        .write_all(out.as_bytes())
-        .map_err(|e| format!("writing stdout: {e}"))?;
-    Ok(())
 }
 
 /// Read the whole input from `file` (or stdin when `None` or `"-"`).

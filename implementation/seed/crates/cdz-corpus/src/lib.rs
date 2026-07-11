@@ -21,8 +21,8 @@
 //!   needs\t<capability>            (zero or more; omitted when the case is core)
 //!   ---
 
-use crate::ast::{Arenas, Builder, StructId};
-use crate::sexpr;
+use cadenza_syntax::ast::{Arenas, Builder, StructId};
+use cadenza_syntax::sexpr;
 
 /// A single parsed + normalized corpus case, ready to run.
 pub struct Record {
@@ -69,7 +69,7 @@ pub fn read(text: &str) -> Result<Vec<Record>, String> {
     let arenas = sexpr::read_all(text).map_err(|e| format!("corpus parse error: {}", e.0))?;
     // `read_all` wraps every top-level form under a synthetic `(do …)`; the cases are its children.
     let top = match arenas.get(arenas.root) {
-        crate::ast::Struct::List(items) => &items[1..], // skip the synthetic `do` head
+        cadenza_syntax::ast::Struct::List(items) => &items[1..], // skip the synthetic `do` head
         _ => return Ok(Vec::new()),
     };
     let mut records = Vec::new();
@@ -138,7 +138,7 @@ pub fn to_records(text: &str) -> Result<String, String> {
 /// Parse one `(case …)` occurrence into a [`Record`].
 fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let items = match a.get(case_id) {
-        crate::ast::Struct::List(items) => items,
+        cadenza_syntax::ast::Struct::List(items) => items,
         _ => return Err("case is not a list".into()),
     };
     // `(case "<desc>" <clause>…)` — the description is the first string child.
@@ -258,7 +258,7 @@ fn normalize_program(a: &Arenas, input: StructId) -> String {
         Some("module") => {
             // Rebuild `(do <module's forms after the name> (export main))` in a fresh arena.
             let forms = match a.get(input) {
-                crate::ast::Struct::List(items) => &items[2..], // skip `module` head + the name
+                cadenza_syntax::ast::Struct::List(items) => &items[2..], // skip `module` head + the name
                 _ => &[][..],
             };
             let mut b = Builder::new();
@@ -297,11 +297,11 @@ fn export_main(b: &mut Builder) -> StructId {
 /// Deep-clone occurrence `id` from `a` into builder `b`, returning the new occurrence id.
 fn clone_into(a: &Arenas, id: StructId, b: &mut Builder) -> StructId {
     match a.get(id) {
-        crate::ast::Struct::Atom(l) => {
+        cadenza_syntax::ast::Struct::Atom(l) => {
             let leaf = a.leaf(*l).clone();
             b.atom_leaf(leaf)
         }
-        crate::ast::Struct::List(items) => {
+        cadenza_syntax::ast::Struct::List(items) => {
             let children: Vec<StructId> = items.iter().map(|&c| clone_into(a, c, b)).collect();
             b.list(children)
         }
@@ -330,8 +330,8 @@ fn value_of(a: &Arenas, form: StructId) -> String {
 /// The string a `Str` leaf carries, if `id` is one.
 fn string_leaf(a: &Arenas, id: StructId) -> Option<String> {
     match a.get(id) {
-        crate::ast::Struct::Atom(l) => match a.leaf(*l) {
-            crate::ast::Leaf::Str(s) => Some(s.clone()),
+        cadenza_syntax::ast::Struct::Atom(l) => match a.leaf(*l) {
+            cadenza_syntax::ast::Leaf::Str(s) => Some(s.clone()),
             _ => None,
         },
         _ => None,

@@ -12,7 +12,6 @@ pub mod ast;
 pub mod canon;
 pub mod codec;
 pub mod convert;
-pub mod corpus;
 pub mod debug;
 pub mod doc;
 pub mod iter;

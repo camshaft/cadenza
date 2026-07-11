@@ -1,0 +1,18 @@
+# cdz-corpus — the executable-semantics corpus reader (and, later, its migration tooling).
+#
+# The corpus (`spec/semantics/*.sexp`) is a CONSUMER of the front-end, not part of it: it reads
+# program payloads into the arena AST and normalizes cases to the runnable export shape. That work
+# lived inside `cadenza-syntax` for convenience; it belongs here, so the front-end library stays a
+# pure surface↔AST↔bytes contract with no corpus vocabulary in it.
+#
+# Depends on `cadenza-syntax` for the AST + s-expression reader; takes NO compiler-crate dependency.
+# A member of the seed workspace (picked up by the `crates/*` glob).
+[package]
+name = "cdz-corpus"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cadenza-syntax = { path = "../cadenza-syntax" }
+# Used ONLY by the `cdz-corpus` bin for arg parsing; the library itself takes no CLI dependency.
+clap = { version = "4", features = ["derive"] }

@@ -352,6 +352,7 @@ fn launch_fail(stage: &str, e: std::io::Error) -> ! {
 /// Where the paths to the built pipeline binaries live, resolved once.
 struct Tools {
     syntax: PathBuf,
+    corpus: PathBuf,
     rcdzc: PathBuf,
     run: PathBuf,
 }
@@ -365,7 +366,7 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     sh.change_dir(&paths.repo);
     if let Err(e) = cmd!(
         sh,
-        "cargo build --quiet --profile {profile} -p cadenza-syntax -p rcdzc -p cdz-run"
+        "cargo build --quiet --profile {profile} -p cadenza-syntax -p cdz-corpus -p rcdzc -p cdz-run"
     )
     .quiet()
     .run()
@@ -379,6 +380,7 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     let bin = paths.repo.join("target").join(subdir);
     Tools {
         syntax: bin.join("cdz-syntax"),
+        corpus: bin.join("cdz-corpus"),
         rcdzc: bin.join("rcdzc"),
         run: bin.join("cdz-run"),
     }
@@ -620,14 +622,14 @@ struct Call {
     args: Vec<String>,
 }
 
-/// Run `cdz-syntax corpus <file>` and parse its record stream.
+/// Run `cdz-corpus records <file>` and parse its record stream.
 fn read_corpus(tools: &Tools, file: &Path) -> Vec<CorpusRecord> {
     use std::process::Command;
-    let out = Command::new(&tools.syntax)
-        .arg("corpus")
+    let out = Command::new(&tools.corpus)
+        .arg("records")
         .arg(file)
         .output()
-        .unwrap_or_else(|e| launch_fail("cdz-syntax corpus", e));
+        .unwrap_or_else(|e| launch_fail("cdz-corpus records", e));
     if !out.status.success() {
         eprintln!(
             "xtask gate: reading {}: {}",
