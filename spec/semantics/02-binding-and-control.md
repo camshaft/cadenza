@@ -167,7 +167,7 @@ module m {
   type(Env, ENil(`|`, ECons, Tuple(Int64, Env)))
   fn pos(xs, target, k) = match xs {
     Env.ENil(_) => 0 - 1,
-    Env.ECons(tuple(h, t)) => let deeper = pos(t, target, k + 1) in
+    Env.ECons((h, t)) => let deeper = pos(t, target, k + 1) in
     if deeper == 0 - 1 then if h == target then k else 0 - 1 else deeper,
   }
   fn main() = pos(Env.ECons((5, Env.ECons((7, Env.ECons((5, Env.ENil(#[]))))))), 5, 0)
@@ -456,7 +456,7 @@ if true then if true then 5 else 1 / 0 else 9
 `(if (if true false true) 1 2)`: the condition is an `if` that evaluates to `false`, so the outer conditional selects its else-branch, yielding 2. Pins that the condition position accepts an arbitrary Bool-valued expression — here a nested `if` — not only a literal or a direct comparison (core-semantics.md #Conditionals Evaluate One Branch: a conditional selects by its condition, whatever Bool expression computes it).
 
 ```cdz input
-if if true then false else true then 1 else 2
+if (if true then false else true) then 1 else 2
 ```
 
 ```cdz output
@@ -514,10 +514,11 @@ An INTEGRATION case: several control constructs composed in one function over a 
 ```cdz input
 module m {
   fn classify(x) =
-    if x > 0 and x < 10
-      then let y = x * x in
+    if x > 0 and x < 10 then
+      let y = x * x in
       y - 1
-      else 0
+    else
+      0
   fn main() = classify(4)
 }
 ```
@@ -533,10 +534,11 @@ The else companion of the integration case above: `classify 20` — `20 < 10` is
 ```cdz input
 module m {
   fn classify(x) =
-    if x > 0 and x < 10
-      then let y = x * x in
+    if x > 0 and x < 10 then
+      let y = x * x in
       y - 1
-      else 0
+    else
+      0
   fn main() = classify(20)
 }
 ```
@@ -1018,7 +1020,7 @@ Witnesses core-semantics.md #Pattern Matching: patterns can nest — a construct
 
 ```cdz input
 match Some((3, 7)) {
-  Some(tuple(a, b)) => a + b,
+  Some((a, b)) => a + b,
   None(_) => 0,
 }
 ```
@@ -1086,8 +1088,8 @@ core-semantics.md #Pattern Matching: the same refinement inside a tuple pattern.
 ```cdz input
 module m {
   fn f(n) = match (n, 9) {
-    tuple(0, y) => 100,
-    tuple(x, y) => x,
+    (0, y) => 100,
+    (x, y) => x,
   }
   fn main() = f(0)
 }
@@ -1107,7 +1109,7 @@ core-semantics.md #A Tuple Is Deconstructible By Pattern Matching (`(tuple a b)`
 
 ```cdz input
 match (1, 2) {
-  tuple(a, b, c) => a,
+  (a, b, c) => a,
   _ => 0,
 }
 ```
@@ -1139,7 +1141,7 @@ The tuple-pattern-arity rule applies RECURSIVELY, at every nesting depth, not on
 
 ```cdz input
 match (1, (2, 3)) {
-  tuple(a, tuple(b, c, d)) => 9,
+  (a, (b, c, d)) => 9,
   _ => 0,
 }
 ```
@@ -1156,7 +1158,7 @@ The recursion covers a nested LITERAL pattern's type too, not only a nested tupl
 
 ```cdz input
 match (1, 2) {
-  tuple(true, b) => 9,
+  (true, b) => 9,
   _ => 0,
 }
 ```
@@ -1173,7 +1175,7 @@ The recursion must also enter a tuple pattern nested UNDER A CONSTRUCTOR pattern
 
 ```cdz input
 match Some((1, 2)) {
-  Some(tuple(a, b, c)) => 9,
+  Some((a, b, c)) => 9,
   _ => 0,
 }
 ```
@@ -1190,7 +1192,7 @@ A pattern's KIND must also match the scrutinee's kind, not only a tuple's arity:
 
 ```cdz input
 match Some(5) {
-  tuple(a, b) => a,
+  (a, b) => a,
   _ => 0,
 }
 ```
@@ -1205,7 +1207,7 @@ The companion with a user-facing sum: `(Sign.Pos unit)` is a sum value, so a `(t
 
 ```cdz input
 match Sign.Pos(unit) {
-  tuple(a, b) => a,
+  (a, b) => a,
   _ => 0,
 }
 ```
@@ -1228,7 +1230,7 @@ do(
   let e = Expr.Add((Expr.Lit(1), Expr.Lit(2))) in
   match e {
     Expr.Lit(n) => n,
-    Expr.Add(tuple(Expr.Lit(a), Expr.Lit(b))) => a + b,
+    Expr.Add((Expr.Lit(a), Expr.Lit(b))) => a + b,
     Expr.Add(_) => 0,
   }
 )
@@ -1449,7 +1451,7 @@ core-semantics.md #Pattern Matching: a `_` wildcard may appear at a NESTED posit
 
 ```cdz input
 match Some((1, 2)) {
-  Some(tuple(_, b)) => b,
+  Some((_, b)) => b,
   None(_) => 0,
 }
 ```
@@ -1698,14 +1700,15 @@ A recursive function whose result is a TUPLE in every branch — a `(value, curs
 ```cdz input
 module m {
   fn go(n, acc) =
-    if n == 0
-      then (acc, 0)
-      else match pair(n) {
-        tuple(v, k) => go(n - 1, acc + v),
+    if n == 0 then
+      (acc, 0)
+    else
+      match pair(n) {
+        (v, k) => go(n - 1, acc + v),
       }
   fn pair(n) = (n, n)
   fn main() = match go(3, 0) {
-    tuple(a, b) => a,
+    (a, b) => a,
   }
 }
 ```
@@ -1722,7 +1725,7 @@ The MINIMAL isolation of the case above — no accumulator, no helper, no heap: 
 module m {
   fn go(n) = if n < 1 then (0, 0) else go(n - 1)
   fn main() = match go(3) {
-    tuple(a, b) => a + b,
+    (a, b) => a + b,
   }
 }
 ```
@@ -1743,17 +1746,19 @@ sum-type-declaration
 module m {
   type(Ast, AInt(Int64, `|`, ALeaf, `|`, AList, List(Ast)))
   fn dn(b, i) =
-    if i == 0
-      then (AInt(Option.expect(List.at(b, 0), "in range")), i + 1)
-      else (AList(dac(b, i, i - 1, [])), i + 1)
+    if i == 0 then
+      (AInt(Option.expect(List.at(b, 0), "in range")), i + 1)
+    else
+      (AList(dac(b, i, i - 1, [])), i + 1)
   fn dac(b, i, n, acc) =
-    if n < 1
-      then acc
-      else match dn(b, i) {
-        tuple(child, nx) => dac(b, nx, n - 1, List.push(acc, child)),
+    if n < 1 then
+      acc
+    else
+      match dn(b, i) {
+        (child, nx) => dac(b, nx, n - 1, List.push(acc, child)),
       }
   fn top(b) = match dn(b, 0) {
-    tuple(ast, pos) => ast,
+    (ast, pos) => ast,
   }
   fn main() = match top([42, 7]) {
     AInt(n) => n,

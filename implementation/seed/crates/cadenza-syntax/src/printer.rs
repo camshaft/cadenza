@@ -25,6 +25,13 @@ use crate::token::{self, Kind, PREC_MEMBER, infix_glyph, infix_prec};
 /// Indentation per box level (spaces). A layout choice, not a contract.
 const INDENT: isize = 2;
 
+/// The parent-precedence to print a subexpression at when a block-form there (`if`/`let`/`match`)
+/// must parenthesize but an infix operator must NOT. Block forms parenthesize when `parent_prec > 0`;
+/// the lowest infix precedence is 1 and infixes parenthesize only when `prec < parent_prec`, so a
+/// value of 1 forces `(if …)`/`(let …)`/`(match …)` while leaving every infix chain bare. Used for an
+/// `if` condition, so a nested conditional condition reads as `if (if …) then …`.
+const PREC_KEYWORD: u8 = 1;
+
 /// Pretty-print `arenas` to ML text targeting `width` columns.
 pub fn print(arenas: &Arenas, width: usize) -> String {
     let mut p = Printer {
@@ -319,7 +326,16 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `if c then t else e`.
+    /// `if c then t else e`. Inline when it fits; otherwise the condition stays on the `if` line and
+    /// the branches break to indented lines under their `then`/`else` keywords:
+    /// ```text
+    /// if c then
+    ///   t
+    /// else
+    ///   e
+    /// ```
+    /// The condition is printed at `PREC_KEYWORD` so a nested block-form condition (`if`/`let`/`match`)
+    /// parenthesizes — otherwise `if if a then b else c then …` is ambiguous to read.
     fn print_if(&mut self, args: &[StructId], parent_prec: u8) {
         let paren = parent_prec > 0;
         self.doc.cbox(INDENT);
@@ -327,12 +343,19 @@ impl<'a> Printer<'a> {
             self.doc.word("(");
         }
         self.doc.word("if ");
-        self.expr(args[0], 0);
+        // Condition at PREC_KEYWORD so a nested block-form condition (`if`/`let`/`match`)
+        // parenthesizes — `if (if a then b else c) then …` rather than the unreadable `if if a …`.
+        self.expr(args[0], PREC_KEYWORD);
+        self.doc.word(" then");
+        // Branches at 0: a nested `if` here does NOT parenthesize, so an `else if` chain stays the
+        // idiomatic `… else if c then …` (indentation, not parens, disambiguates). A breakable space
+        // keeps `then t` on the line when it fits, else drops `t` to an indented line; `else` dedents
+        // back to the `if` column.
         self.doc.space();
-        self.doc.word("then ");
         self.expr(args[1], 0);
+        self.doc.break_with(1, -INDENT);
+        self.doc.word("else");
         self.doc.space();
-        self.doc.word("else ");
         self.expr(args[2], 0);
         if paren {
             self.doc.word(")");
@@ -612,8 +635,9 @@ impl<'a> Printer<'a> {
     }
 
     /// Print a structural pattern. Shapes: a guarded pattern `(guard <pat> <expr>)` -> `pat if g`;
-    /// a constructor application `(Ctor p…)` -> `Ctor(p, …)`; a dotted ctor `(. A B)` -> `A.B`; a
-    /// bare name / literal prints as itself.
+    /// a tuple pattern `(tuple p q…)` (2+ elements) -> `(p, q, …)`; a constructor application
+    /// `(Ctor p…)` -> `Ctor(p, …)`; a dotted ctor `(. A B)` -> `A.B`; a bare name / literal prints
+    /// as itself.
     fn pattern(&mut self, id: StructId) {
         if let Some(tail) = self.a.as_form(id, "guard")
             && tail.len() == 2
@@ -627,6 +651,20 @@ impl<'a> Printer<'a> {
         match self.a.get(id) {
             Struct::List(items) if !items.is_empty() => {
                 let items = items.clone();
+                // tuple pattern `(tuple p q …)` with 2+ elements -> `(p, q, …)`. A 1-element
+                // `(tuple p)` falls through to the generic `tuple(p)` form (a `(p)` would be
+                // transparent grouping, not a 1-tuple) — the same rule the value tuple uses.
+                if self.head_name(items[0]).as_deref() == Some("tuple") && items.len() >= 3 {
+                    self.doc.word("(");
+                    for (i, &sub) in items[1..].iter().enumerate() {
+                        if i > 0 {
+                            self.doc.word(", ");
+                        }
+                        self.pattern(sub);
+                    }
+                    self.doc.word(")");
+                    return;
+                }
                 // dotted constructor `(. A B)` prints as A.B
                 if self.head_name(items[0]).as_deref() == Some(".")
                     && items.len() == 3
@@ -1137,6 +1175,63 @@ mod tests {
     fn guarded_arm_prints_if() {
         let out = assert_roundtrip("match n { x if x < 0 => neg, _ => pos }", 80);
         assert!(out.contains("x if x < 0 =>"), "got: {out}");
+    }
+
+    #[test]
+    fn nested_if_condition_parenthesizes() {
+        // A conditional as another's CONDITION parenthesizes so `if if … ` never appears.
+        assert_eq!(
+            assert_roundtrip("if (if a then b else c) then 1 else 2", 80),
+            "if (if a then b else c) then 1 else 2"
+        );
+        // but an `else if` chain (a conditional in BRANCH position) stays bare.
+        assert_eq!(
+            assert_roundtrip("if a then 1 else if b then 2 else 3", 80),
+            "if a then 1 else if b then 2 else 3"
+        );
+    }
+
+    #[test]
+    fn wide_if_breaks_condition_on_if_line() {
+        // Too wide for one line: the condition stays on the `if` line, branches drop to indented
+        // lines, `else` dedents to the `if` column.
+        let out = assert_roundtrip(
+            "if some-condition then some-then-value(1, 2, 3) else some-else-value(4, 5, 6)",
+            40,
+        );
+        assert_eq!(
+            out,
+            "if some-condition then\n  some-then-value(1, 2, 3)\nelse\n  some-else-value(4, 5, 6)"
+        );
+    }
+
+    #[test]
+    fn tuple_patterns_use_paren_sugar() {
+        // A `(tuple …)` pattern with 2+ elements prints as `(p, …)`, matching the value tuple.
+        assert_eq!(
+            assert_roundtrip("match p { (a, b) => a + b, _ => 0 }", 80),
+            "match p {\n  (a, b) => a + b,\n  _ => 0,\n}"
+        );
+        // nested, and inside a constructor.
+        let a = sexpr::read("(match p ((tuple a (tuple b c)) 9) (_ 0))").unwrap();
+        assert!(
+            print(&a, 80).contains("(a, (b, c)) =>"),
+            "got: {}",
+            print(&a, 80)
+        );
+        let a = sexpr::read("(match p ((Some (tuple a b)) 1) (_ 0))").unwrap();
+        assert!(
+            print(&a, 80).contains("Some((a, b)) =>"),
+            "got: {}",
+            print(&a, 80)
+        );
+        // a 1-element tuple pattern stays `tuple(a)` (a `(a)` would be grouping, not a 1-tuple).
+        let a = sexpr::read("(match p ((tuple a) a) (_ 0))").unwrap();
+        assert!(
+            print(&a, 80).contains("tuple(a) =>"),
+            "got: {}",
+            print(&a, 80)
+        );
     }
 
     #[test]

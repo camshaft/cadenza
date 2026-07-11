@@ -760,15 +760,32 @@ impl<'a> Parser<'a> {
                 }
             }
             Kind::LParen => {
+                // `()` -> unit; `(p)` -> transparent grouping; `(p, q, …)` -> a tuple pattern
+                // `(tuple p q …)`, mirroring the expression `paren()` split (and the value tuple, so
+                // `tuple(a, b)` and `(a, b)` are the same pattern).
                 self.bump();
-                let inner = if self.at(Kind::RParen) {
+                if self.at(Kind::RParen) {
                     let s = self.cur_span();
-                    self.name("unit", s)
-                } else {
-                    self.pattern()
-                };
+                    self.bump();
+                    return self.name("unit", s);
+                }
+                let first = self.pattern();
+                if self.at(Kind::Comma) {
+                    let head = self.name("tuple", span);
+                    let mut items = vec![head, first];
+                    while self.at(Kind::Comma) {
+                        self.bump();
+                        if self.at(Kind::RParen) {
+                            break; // trailing comma
+                        }
+                        items.push(self.pattern());
+                    }
+                    self.expect(Kind::RParen, "`)`");
+                    let tup_span = span.merge(self.prev_span());
+                    return self.list(items, tup_span);
+                }
                 self.expect(Kind::RParen, "`)`");
-                inner
+                first // grouping is transparent
             }
             _ => {
                 self.error("expected a pattern");
