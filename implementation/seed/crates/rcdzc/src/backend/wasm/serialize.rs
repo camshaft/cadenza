@@ -31,12 +31,24 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
             out.push(op::LOCAL_GET);
             uleb128(*idx as u64, out);
         }
+        Lir::LocalSet(idx) => {
+            out.push(op::LOCAL_SET);
+            uleb128(*idx as u64, out);
+        }
         Lir::If(bt) => {
             out.push(op::IF);
             out.push(bt.byte()); // block-type byte lives here, not in the IR
         }
         Lir::Else => out.push(op::ELSE),
         Lir::End => out.push(op::END),
+        Lir::Unreachable => out.push(op::UNREACHABLE),
+        // `if (empty) unreachable end` — trap when the i32 condition is nonzero, leaving nothing.
+        Lir::IfUnreachableEnd => {
+            out.push(op::IF);
+            out.push(0x40); // empty block type
+            out.push(op::UNREACHABLE);
+            out.push(op::END);
+        }
         Lir::I64Add => out.push(op::I64_ADD),
         Lir::I64Sub => out.push(op::I64_SUB),
         Lir::I64Mul => out.push(op::I64_MUL),
@@ -53,6 +65,10 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
         Lir::I32GtS => out.push(op::I32_GT_S),
         Lir::I32LeS => out.push(op::I32_LE_S),
         Lir::I32GeS => out.push(op::I32_GE_S),
+        Lir::I64Ne => out.push(op::I64_NE),
+        Lir::I64Xor => out.push(op::I64_XOR),
+        Lir::I64And => out.push(op::I64_AND),
+        Lir::I64DivS => out.push(op::I64_DIV_S),
     }
 }
 

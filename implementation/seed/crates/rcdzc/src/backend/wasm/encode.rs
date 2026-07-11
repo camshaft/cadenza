@@ -82,10 +82,17 @@ pub mod op {
     pub const I32_GT_S: u8 = 0x4A;
     pub const I32_LE_S: u8 = 0x4C;
     pub const I32_GE_S: u8 = 0x4E;
-    // i64 comparisons (result i32 boolean): eq=0x51, then signed lt/gt/le/ge.
+    // i64 comparisons (result i32 boolean): eq=0x51, ne=0x52, then signed lt/gt/le/ge.
     pub const I64_EQ: u8 = 0x51;
+    pub const I64_NE: u8 = 0x52;
     pub const I64_LT_S: u8 = 0x53;
     pub const I64_GT_S: u8 = 0x55;
     pub const I64_LE_S: u8 = 0x57;
     pub const I64_GE_S: u8 = 0x59;
+    // local.set, unreachable, and the bitwise/div ops the signed-overflow guard uses.
+    pub const LOCAL_SET: u8 = 0x21;
+    pub const UNREACHABLE: u8 = 0x00;
+    pub const I64_DIV_S: u8 = 0x7F;
+    pub const I64_AND: u8 = 0x83;
+    pub const I64_XOR: u8 = 0x85;
 }

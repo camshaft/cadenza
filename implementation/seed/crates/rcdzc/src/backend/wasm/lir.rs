@@ -54,14 +54,23 @@ pub enum Lir {
     ConstI64(i64),
     /// `i32.const N` — a signed 32-bit constant (emitted via SLEB128).
     ConstI32(i32),
-    /// `local.get I` — read local `I` (Stage 0 uses none, but the rung carries it).
+    /// `local.get I` — read local `I`.
     LocalGet(u32),
+    /// `local.set I` — pop the stack top into local `I`. Used by the checked-arithmetic guard to stash
+    /// operands and the result in scratch locals.
+    LocalSet(u32),
     /// `if <blocktype>` — a two-way branch leaving a value of the block type.
     If(BlockType),
     /// `else`.
     Else,
     /// `end`.
     End,
+    /// `unreachable` — an unconditional trap.
+    Unreachable,
+    /// `if (empty) unreachable end` — trap when the i32 condition on the stack is nonzero, leaving
+    /// nothing. The overflow guard's trip: it pushes a boolean "did overflow", then this traps if set.
+    /// (One fused instruction so the guard is a flat run with no dangling block.)
+    IfUnreachableEnd,
     /// `i64.add` / `i64.sub` / `i64.mul` — 64-bit integer arithmetic (operands already on the stack).
     I64Add,
     I64Sub,
@@ -85,6 +94,15 @@ pub enum Lir {
     I32GtS,
     I32LeS,
     I32GeS,
+    /// `i64.xor` / `i64.and` — bitwise ops the signed-overflow guard uses to test the sign bits of the
+    /// operands and result (`((r^a)&(r^b))<0` for add).
+    I64Xor,
+    I64And,
+    /// `i64.ne` — inequality leaving an i32 boolean, used by the mul guard (`r/a != b`).
+    I64Ne,
+    /// `i64.div_s` — signed division. Used by the mul overflow guard (`r/a`); it also traps natively on
+    /// division by zero and on `MIN/-1` (the sole mul-overflow case the `r/a≠b` test can't catch).
+    I64DivS,
 }
 
 /// The wasm value type a value of solved type `ty` occupies inside a function body, or `None` for a
