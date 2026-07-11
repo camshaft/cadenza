@@ -9,7 +9,7 @@
 
 use crate::backend::wasm::encode::{op, section, uleb_bytes, uleb128, wasm_vec};
 use crate::backend::wasm::lir::{Lir, ValType, comp_valtype_of, valtype_of};
-use crate::backend::wasm::runtime_abi::{CoreValType, RtOp};
+use crate::backend::wasm::runtime_abi::RtOp;
 use crate::backend::wasm::select::SelectedFunc;
 use crate::layout::Layout;
 use crate::ty::Ty;
@@ -17,25 +17,16 @@ use crate::ty::Ty;
 /// The `\0asm` version-1 core-module preamble.
 const CORE_MAGIC: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
 
-/// The wasm core valtype byte for a generated-ABI `CoreValType` (i32=0x7F, i64=0x7E, f64=0x7C). The
-/// runtime-import functypes use these; the backend's own `ValType` covers only i32/i64, so this is the
-/// one place f64 (a boxed float operand) gets a byte.
-fn core_valtype_byte(c: CoreValType) -> u8 {
-    match c {
-        CoreValType::I32 => 0x7F,
-        CoreValType::I64 => 0x7E,
-        CoreValType::F64 => 0x7C,
-    }
-}
-
 /// The core functype `0x60 <params-vec> <results-vec>` of a runtime import op (from its generated
-/// signature). A runtime op returns at most one core value; `dup`/`drop` return none.
+/// signature). Each ABI type projects to its CORE valtype byte (`AbiValType::core_byte` — a `u32`
+/// handle lowers to i32, an `s64` to i64, …); the component-boundary bytes are the envelope's concern.
+/// A runtime op returns at most one core value; `dup`/`drop` return none.
 fn import_functype(o: &RtOp) -> Vec<u8> {
     let mut out = vec![0x60];
-    let params: Vec<u8> = o.params.iter().map(|&c| core_valtype_byte(c)).collect();
+    let params: Vec<u8> = o.params.iter().map(|c| c.core_byte()).collect();
     out.extend_from_slice(&wasm_vec(params.len(), &params));
     match o.result {
-        Some(c) => out.extend_from_slice(&wasm_vec(1, &[core_valtype_byte(c)])),
+        Some(c) => out.extend_from_slice(&wasm_vec(1, &[c.core_byte()])),
         None => out.extend_from_slice(&wasm_vec(0, &[])),
     }
     out

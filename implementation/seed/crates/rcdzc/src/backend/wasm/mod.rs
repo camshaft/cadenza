@@ -90,24 +90,31 @@ fn def_body(db: &Db, def: usize) -> Result<crate::ast::StructId, Reject> {
 
 #[cfg(test)]
 mod runtime_abi_tests {
-    use super::runtime_abi::{CoreValType, OPS, RUNTIME_IFACE, RUNTIME_OPS};
+    use super::runtime_abi::{AbiValType, OPS, RUNTIME_IFACE, RUNTIME_OPS};
 
     /// The generated ABI carries the known product/sum op signatures from the WIT — a guard that
-    /// `xtask codegen` faithfully maps the WIT types to core valtypes (arr-get borrows an index → i32,
-    /// sum-new pairs two handles → i32). Pins the H0 done-criterion: the structured data is correct.
+    /// `xtask codegen` faithfully maps the WIT types to LOGICAL ABI types (arr-get borrows a u32 index
+    /// → u32, sum-new pairs two u32 handles → u32). Pins the H0 done-criterion: the structured data is
+    /// correct, keeping the logical (not core-collapsed) type the component import instance-type needs.
     #[test]
     fn generated_ops_match_the_known_signatures() {
-        // `arr-get(arr, index) -> elem` : two i32 params (handle + index) → an i32 handle.
+        // `arr-get(arr, index) -> elem` : two u32 params (handle + index) → a u32 handle.
         assert_eq!(OPS.arr_get.name, "arr-get");
-        assert_eq!(OPS.arr_get.params, &[CoreValType::I32, CoreValType::I32]);
-        assert_eq!(OPS.arr_get.result, Some(CoreValType::I32));
+        assert_eq!(OPS.arr_get.params, &[AbiValType::U32, AbiValType::U32]);
+        assert_eq!(OPS.arr_get.result, Some(AbiValType::U32));
         // `sum-new(disc, payload) -> handle`.
         assert_eq!(OPS.sum_new.name, "sum-new");
-        assert_eq!(OPS.sum_new.params, &[CoreValType::I32, CoreValType::I32]);
-        // `box-int(s64) -> handle` : the one i64 param op.
-        assert_eq!(OPS.box_int.params, &[CoreValType::I64]);
+        assert_eq!(OPS.sum_new.params, &[AbiValType::U32, AbiValType::U32]);
+        // `box-int(s64) -> handle` : the one s64 param op.
+        assert_eq!(OPS.box_int.params, &[AbiValType::S64]);
         // `dup(handle)` : a borrow op with NO result.
         assert_eq!(OPS.dup.result, None);
+        // The two byte projections: a u32 handle is core i32 (0x7F) but component u32 (0x79) — the
+        // distinction the logical type preserves (H1b's whole reason for keeping it logical).
+        assert_eq!(AbiValType::U32.core_byte(), 0x7F);
+        assert_eq!(AbiValType::U32.comp_byte(), 0x79);
+        assert_eq!(AbiValType::S64.core_byte(), 0x7E);
+        assert_eq!(AbiValType::S64.comp_byte(), 0x78);
         assert_eq!(RUNTIME_IFACE, "cadenza:runtime/heap");
     }
 

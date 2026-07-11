@@ -19,47 +19,55 @@ use quote::quote;
 use wit_parser::{Resolve, Type as WitType};
 use xshell::Shell;
 
-/// The core wasm value type a WIT primitive lowers to at the canonical-ABI core boundary. The runtime
-/// interface uses only these four; a richer WIT type (string, list, record) is NOT lowerable as a bare
-/// core scalar and is reported so the ABI cannot silently admit one.
+/// The LOGICAL (component-model) value type of a runtime op's param/result, as the WIT declares it.
+/// The runtime interface uses only these four; a richer WIT type (string, list, record) is NOT a bare
+/// scalar and is reported so the ABI cannot silently admit one. Kept LOGICAL (not collapsed to a core
+/// valtype) because the backend needs BOTH projections and they are not recoverable from each other: a
+/// core `i32` is the lowering of `u32`, `bool` AND `s32` alike, so the component import instance-type —
+/// which must structurally match the runtime's exported type — cannot be rebuilt from the core byte.
+/// One WIT source, two read-offs live in the backend (the byte encodings are wasm-spec constants, a
+/// TARGET concern, like the opcode table in `encode.rs`).
 #[derive(Clone, Copy)]
-enum CoreTy {
-    I32, // u32 / bool — a handle or a small scalar
-    I64, // s64
-    F64, // f64
+enum AbiTy {
+    U32,  // a heap handle or a small unsigned scalar
+    S64,  // a boxed signed 64-bit integer
+    Bool, // a boxed boolean
+    F64,  // a boxed float
 }
 
-impl CoreTy {
-    /// Map a WIT type to its core valtype, or `None` if it is not a bare core scalar (e.g. `string`,
+impl AbiTy {
+    /// Map a WIT type to its logical ABI type, or `None` if it is not a bare scalar (e.g. `string`,
     /// `tuple` — the runtime's `str-*` and `vec-split` results, which the envelope does not lower).
-    fn from_wit(t: WitType) -> Option<CoreTy> {
+    fn from_wit(t: WitType) -> Option<AbiTy> {
         match t {
-            WitType::U32 | WitType::Bool => Some(CoreTy::I32),
-            WitType::S64 => Some(CoreTy::I64),
-            WitType::F64 => Some(CoreTy::F64),
+            WitType::U32 => Some(AbiTy::U32),
+            WitType::Bool => Some(AbiTy::Bool),
+            WitType::S64 => Some(AbiTy::S64),
+            WitType::F64 => Some(AbiTy::F64),
             _ => None,
         }
     }
 
-    /// The generated `CoreValType::<variant>` path as tokens (the backend's own enum, defined alongside
+    /// The generated `AbiValType::<variant>` path as tokens (the backend's own enum, defined alongside
     /// the table), for splicing into a `quote!`.
     fn variant_tokens(self) -> TokenStream {
         match self {
-            CoreTy::I32 => quote!(CoreValType::I32),
-            CoreTy::I64 => quote!(CoreValType::I64),
-            CoreTy::F64 => quote!(CoreValType::F64),
+            AbiTy::U32 => quote!(AbiValType::U32),
+            AbiTy::S64 => quote!(AbiValType::S64),
+            AbiTy::Bool => quote!(AbiValType::Bool),
+            AbiTy::F64 => quote!(AbiValType::F64),
         }
     }
 }
 
-/// One runtime op resolved from the WIT: its name and core signature. A param or result the envelope
+/// One runtime op resolved from the WIT: its name and logical signature. A param or result the envelope
 /// cannot lower (a non-scalar WIT type) marks the op UNLOWERABLE — it is still listed (so the table
 /// mirrors the full interface) but flagged, and the backend never selects it.
 struct Op {
     name: String,
-    params: Vec<CoreTy>,
-    result: Option<CoreTy>,
-    /// `false` when a param or result is a non-core-scalar WIT type (`string`, `tuple`) — the op
+    params: Vec<AbiTy>,
+    result: Option<AbiTy>,
+    /// `false` when a param or result is a non-scalar WIT type (`string`, `tuple`) — the op
     /// exists in the interface but the bare-core-signature envelope cannot import it.
     lowerable: bool,
 }
@@ -187,13 +195,13 @@ fn resolve_ops(wit_path: &std::path::Path) -> Result<Vec<Op>, String> {
         let mut lowerable = true;
         let mut params = Vec::with_capacity(f.params.len());
         for (_pname, ty) in &f.params {
-            match CoreTy::from_wit(*ty) {
+            match AbiTy::from_wit(*ty) {
                 Some(c) => params.push(c),
                 None => lowerable = false,
             }
         }
         let result = match f.result {
-            Some(ty) => match CoreTy::from_wit(ty) {
+            Some(ty) => match AbiTy::from_wit(ty) {
                 Some(c) => Some(c),
                 None => {
                     lowerable = false;
@@ -248,18 +256,46 @@ fn render(ops: &[Op], iface: &str, runtime_hash: &str) -> TokenStream {
     });
 
     quote! {
-        #[doc = " A core wasm value type in a runtime op's signature (the canonical-ABI core boundary"]
-        #[doc = " uses only these three). Maps to the backend's `ValType`."]
+        #[doc = " The LOGICAL value type of a runtime op's param/result, as the WIT declares it (the"]
+        #[doc = " runtime interface uses only these four). Kept logical, NOT collapsed to a core valtype,"]
+        #[doc = " because the two envelope surfaces need different projections that are not recoverable from"]
+        #[doc = " each other: a core `i32` is the lowering of `u32`, `bool` AND `s32` alike, so the COMPONENT"]
+        #[doc = " import instance-type (which must structurally match the runtime's exported type) cannot be"]
+        #[doc = " rebuilt from the core byte. `core_byte` is the core-module import functype's valtype;"]
+        #[doc = " `comp_byte` is the component instance-type's primitive valtype. Both are wasm-spec"]
+        #[doc = " constants (a TARGET concern) so they live here in the backend, not in the generated data."]
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-        pub enum CoreValType { I32, I64, F64 }
+        pub enum AbiValType { U32, S64, Bool, F64 }
 
-        #[doc = " One value-heap runtime op the compiler may import: its WIT name and core signature. A"]
+        impl AbiValType {
+            #[doc = " The CORE wasm valtype byte a lowered handle/scalar occupies (i32=0x7F, i64=0x7E,"]
+            #[doc = " f64=0x7C) — a `u32` handle / `bool` both lower to i32."]
+            pub fn core_byte(self) -> u8 {
+                match self {
+                    AbiValType::U32 | AbiValType::Bool => 0x7F,
+                    AbiValType::S64 => 0x7E,
+                    AbiValType::F64 => 0x7C,
+                }
+            }
+            #[doc = " The COMPONENT-model primitive valtype byte (u32=0x79, s64=0x78, bool=0x7F, f64=0x75) —"]
+            #[doc = " the faithful boundary type the import instance-type declares."]
+            pub fn comp_byte(self) -> u8 {
+                match self {
+                    AbiValType::U32 => 0x79,
+                    AbiValType::S64 => 0x78,
+                    AbiValType::Bool => 0x7F,
+                    AbiValType::F64 => 0x75,
+                }
+            }
+        }
+
+        #[doc = " One value-heap runtime op the compiler may import: its WIT name and logical signature. A"]
         #[doc = " non-`lowerable` op carries a non-scalar WIT type (string/tuple) the bare-core envelope"]
         #[doc = " cannot import; it is listed for completeness but never selected."]
         pub struct RtOp {
             pub name: &'static str,
-            pub params: &'static [CoreValType],
-            pub result: Option<CoreValType>,
+            pub params: &'static [AbiValType],
+            pub result: Option<AbiValType>,
             pub lowerable: bool,
         }
 
