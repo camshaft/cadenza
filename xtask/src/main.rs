@@ -128,6 +128,18 @@ enum Cmd {
         #[arg(long, short)]
         out: Option<PathBuf>,
     },
+    /// Generate the structured value-heap runtime-ABI table the wasm backend consumes. Reads the
+    /// runtime's `wit/runtime.wit` (the ABI's source of truth) with `wit-parser` and writes
+    /// `crates/rcdzc/src/backend/wasm/runtime_abi.rs` — every declared op as `{ name, params, result }`
+    /// core-signature data. The compiler builds its per-program import section from this rather than
+    /// pasting opaque envelope blobs. Run after changing the runtime WIT; the output is committed.
+    Codegen {
+        /// Don't write; regenerate in memory and exit non-zero if the committed file is out of date.
+        /// This is the STALENESS GATE (wired into `xtask check`): it makes a forgotten regeneration a
+        /// hard failure rather than a silent drift, so the generated ABI can never fall behind the WIT.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() {
@@ -161,8 +173,11 @@ fn main() {
         Cmd::Roundtrip { files } => roundtrip(&paths, profile, files),
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
+        Cmd::Codegen { check } => codegen::run(&paths, check),
     }
 }
+
+mod codegen;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
 /// at `<repo>/xtask`, so the repo root is the manifest's parent and the seed workspace is the fixed
@@ -173,7 +188,7 @@ struct Paths {
     /// `<repo>` — the workspace root (parent of `<repo>/xtask`).
     repo: PathBuf,
     /// `<repo>/implementation/seed` — the seed toolchain root that holds `crates/`.
-    seed: PathBuf,
+    pub(crate) seed: PathBuf,
 }
 
 impl Paths {
@@ -935,6 +950,14 @@ fn check(paths: &Paths, profile: &str) {
     log.step("test", "cargo test --workspace", repo);
     log.step("clippy", "cargo clippy --workspace -- -D warnings", repo);
 
+    // The generated runtime-ABI table (`runtime_abi.rs`) MUST stay current with the runtime WIT — a
+    // forgotten `cargo xtask codegen` after a WIT change would silently drift the compiler's import
+    // ABI from the runtime. `codegen --check` regenerates in memory and fails if the committed file is
+    // stale, so this is a HARD GATE (like `fmt --check`) — nobody has to remember to regenerate.
+    let xtask = std::env::current_exe().expect("current exe");
+    let xtask = xtask.to_string_lossy().to_string();
+    log.step("codegen", &format!("{xtask} codegen --check"), repo);
+
     // The wasm runtime is EXCLUDED from the native workspace, so a plain `cargo build` skips it — a
     // silent gap the check closes by building it explicitly for its target.
     let rt = paths.seed.join("crates/cdz-runtime");
@@ -949,8 +972,6 @@ fn check(paths: &Paths, profile: &str) {
     // gaps?" — a green check means the library is healthy AND the compiler didn't backslide. With no
     // baseline, fall back to a plain `gate`. The gate's own summary is short, so let it print to the
     // console (it is the useful signal) while its verbose build noise still lands in the log.
-    let xtask = std::env::current_exe().expect("current exe");
-    let xtask = xtask.to_string_lossy();
     let gate_cmd = if baseline_path(paths).exists() {
         format!("{xtask} --profile {profile} gate --check")
     } else {
@@ -1235,7 +1256,7 @@ fn emit(paths: &Paths, profile: &str, file: &Path, from: &str, out: Option<PathB
 }
 
 /// SHA-256 of the bytes, lowercase hex (the recorded hashing choice).
-fn content_address(bytes: &[u8]) -> String {
+pub(crate) fn content_address(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     let digest = h.finalize();
@@ -1249,7 +1270,7 @@ fn content_address(bytes: &[u8]) -> String {
 /// `cargo component build --release --target wasm32-unknown-unknown` in <seed>/crates/<crate>,
 /// returning the produced .wasm path. `cmd!` runs the child in the pushed crate dir and returns an
 /// `Err` on a non-zero exit (already echoing the command), so a build failure surfaces cleanly.
-fn build_component(sh: &Shell, seed: &Path, crate_dir: &str, artifact: &str) -> PathBuf {
+pub(crate) fn build_component(sh: &Shell, seed: &Path, crate_dir: &str, artifact: &str) -> PathBuf {
     let dir = seed.join("crates").join(crate_dir);
     let _pushed = sh.push_dir(&dir);
     if let Err(e) = cmd!(

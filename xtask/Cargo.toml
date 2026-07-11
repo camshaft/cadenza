@@ -5,9 +5,11 @@
 # content-addressed store (<store>/<hash>.wasm). The runtime is derived first and keyed by its hash,
 # which is what the host resolves a program's required runtime against (reproducible-derivation.md).
 #
-# The source-generation choreography (WIT envelope + opcode/frame tables, built with
-# `wasm-encoder`/`wasmparser`/`wit-parser`) was stripped out — its outputs are now frozen sources in
-# the seed crates. Recover the generators from git history if we re-derive them.
+# `codegen` reads the value-heap runtime's WIT (`wit-parser`) and generates the STRUCTURED runtime-ABI
+# table the wasm backend consumes (`runtime_abi.rs`: op name → core signature) — the compiler builds
+# its per-program import section from that data rather than pasting opaque envelope blobs. `wit-parser`
+# (and `wasm-encoder`, where a byte oracle helps) are DEV-DESK deps here in xtask only — never in the
+# shipped compiler, whose generated table is plain dep-free data.
 [package]
 name = "xtask"
 version = "0.0.0"
@@ -23,3 +25,15 @@ clap = { version = "4", features = ["derive"] }
 # non-zero exit, replacing hand-rolled `std::process::Command` + status checks. The xtask
 # ecosystem's own shell crate (matklad).
 xshell = "0.2"
+# Reads the value-heap runtime's `wit/runtime.wit` — the ABI's source of truth — so `codegen` DERIVES
+# the runtime-op table (name + signature) rather than hand-listing it. Dev-desk only (never shipped).
+wit-parser = "0.239"
+# Formats generated Rust deterministically from a parsed syntax tree — `codegen` runs its output
+# through this so the committed file is fmt-clean (agreeing with `fmt --check` and `codegen --check`).
+# Preferred over shelling to `rustfmt`, which chokes on very long single lines. Dev-desk only.
+prettyplease = "0.2"
+syn = { version = "2", features = ["full", "parsing"] }
+# Build the generated source as a token tree (`quote!`) rather than by string concatenation — reads
+# like the Rust it emits, and needs no manual escaping. `prettyplease` pretty-prints the parsed result.
+quote = "1"
+proc-macro2 = "1"

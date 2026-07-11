@@ -51,19 +51,36 @@ content is STRUCTURED, not opaque:
 // @generated from cdz-runtime/wit/runtime.wit by `cargo xtask codegen` — do not hand-edit.
 pub struct RtOp { pub name: &'static str, pub params: &'static [CoreValType], pub result: Option<CoreValType> }
 pub const RUNTIME_OPS: &[RtOp] = &[
-    RtOp { name: "arr-alloc", params: &[I32], result: Some(I32) },
-    RtOp { name: "arr-set",   params: &[I32, I32, I32], result: Some(I32) },
-    RtOp { name: "arr-get",   params: &[I32, I32], result: Some(I32) },
-    // … every op the WIT declares, as DATA (name + core signature). NOT an index — see below.
+    RtOp { name: "arr-alloc", params: &[I32], result: Some(I32) },      // [0]
+    RtOp { name: "arr-get",   params: &[I32, I32], result: Some(I32) }, // [1]
+    // … every op the WIT declares, as DATA (name + core signature). NOT an ABI index — see below.
 ];
+
+// Operator refinement (2026-07-11): a NAMED-FIELD struct, one field per op, referencing into
+// RUNTIME_OPS by offset — so compiler code reads `OPS.arr_get` (typed; a typo is a compile error)
+// instead of a stringly-typed `RUNTIME_OPS.iter().find(|o| o.name == "arr-get")`.
+pub struct RuntimeOps {
+    pub arr_alloc: &'static RtOp,
+    pub arr_get:   &'static RtOp,
+    // … one field per op, kebab-case name → snake_case field.
+}
+pub const OPS: RuntimeOps = RuntimeOps {
+    arr_alloc: &RUNTIME_OPS[0],
+    arr_get:   &RUNTIME_OPS[1],
+    // …
+};
+
 pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
-pub const REQUIRED_RUNTIME_HASH: &str = "…"; // content address of the runtime component
+pub const REQUIRED_RUNTIME_HASH: &str = "…"; // content address of the runtime component (§2a′)
 ```
 
-The compiler holds NO hard-coded op index and NO opaque envelope blob. It looks an op up in
-`RUNTIME_OPS` by name (the runtime resolves imports by name, so the compiler's chosen order is free)
-and builds the import section from the signature. `wit-parser` is confined to xtask; `runtime_abi.rs`
-is plain data with no external dep, so it ships in the portable compiler.
+The compiler holds NO hard-coded op index and NO opaque envelope blob. It names an op through the
+typed `OPS` struct (`OPS.arr_get`) — the runtime resolves imports by name, so the compiler's chosen
+order is free — and builds the import section from that op's signature. The `&'static RtOp` fields
+point into the one `RUNTIME_OPS` list (no duplication; the list stays the iterable source, the struct
+is the typed accessor, so a rename in the WIT surfaces as a compile error at every use site).
+`wit-parser` is confined to xtask; `runtime_abi.rs` is plain data with no external dep, so it ships in
+the portable compiler.
 
 WHY generate at all (vs. reading the WIT at compile time): the compiler must stay dep-free and
 portable to the Cadenza self-host (copy-don't-depend). The WIT→structured-data step is the dev-desk
@@ -80,6 +97,44 @@ never in the shipped compiler. The generated `runtime_abi.rs` is plain data (no 
 
 WHAT stays truly fixed: the `RUNTIME_IFACE` string, the component magic, the per-item byte grammars
 already in `envelope.rs`. These are genuinely invariant, so they stay as they are.
+
+### 2a″. `RtOp` carries NAME + SIGNATURE, NOT a WIT function offset — imports resolve by name
+
+**Operator question (2026-07-11): "do we need the function offset in `RtOp` to emit the wasm
+contract?"** No — and including it would reintroduce the hard-coding we are removing. The component
+model resolves an import BY NAME: a program's core module declares `(import "<iface>@…" "arr-get"
+(func (param i32 i32) (result i32)))`, and the host binds it by matching that NAME against the runtime
+component's exports. The WIT's own declaration order (its `// 8` comments) never crosses into the
+emitted contract. What a program bakes in is a PER-PROGRAM import index — the compiler numbers the ops
+it actually uses `0..n` (deterministic, sorted by name) and a `Lir::Call` targets that local index in
+the core module's function index space (imports occupy `0..n`, defined functions `n..`). That index is
+computed at emit time per program, NOT read from the WIT. So `RtOp` needs only `name` (to declare the
+import) + `params`/`result` (its core functype); a WIT offset would be dead, misleading data implying
+a fixed numbering the resolve-by-name model deliberately does not use.
+
+### 2a′. The generated table records the runtime's CONTENT HASH — staleness is automatic, not remembered
+
+**Operator mandate (2026-07-11), three converging messages:** "The codegen must be up-to-date
+automatically — you shouldn't have to remember to compile the dependencies. Get the current hash of
+the current runtime and check if it changed automatically, otherwise it's a sharp edge no one
+remembers." And: "codegen the sha hash of the runtime we're coding against into the compiler."
+
+The ABI has TWO sources of truth with DIFFERENT dependencies:
+- the op SIGNATURES derive from the runtime **WIT** (`runtime.wit`);
+- the `REQUIRED_RUNTIME_HASH` a program pins derives from the runtime **BINARY** (its content address),
+  and the binary can change WITHOUT the WIT changing (a behaviour fix → new bytes → new hash).
+
+So `codegen` BUILDS the runtime component (`build_component`, `cargo component`), content-addresses it
+(`content_address`, SHA-256 — the same helper `xtask build` uses), and embeds that hash as
+`REQUIRED_RUNTIME_HASH` in `runtime_abi.rs`. The generated file therefore changes whenever EITHER the
+WIT or the runtime bytes change. `codegen --check` (regenerate-in-memory, diff, fail-if-different) is
+wired into `xtask check` as a HARD GATE next to `fmt --check` — so a forgotten regeneration, after a
+WIT change OR a runtime-code change, fails the omnibus check with the fix spelled out. No one has to
+remember; the check remembers. (`xtask check` already builds the runtime as its `wasm-runtime` step,
+so the extra build cost is shared, not new.)
+
+This is the single mechanism that satisfies all three operator messages: structured (not opaque) data
++ per-program-minimal imports + automatic staleness tracking keyed on the runtime content hash.
 
 ### 2b. Per-program import selection
 
@@ -106,6 +161,85 @@ now targeting an import index rather than a def index — distinguish an import 
 The consume/borrow contract (`§Constructors Consume And Accessors Borrow`) drives `dup`/`drop`
 insertion — the conservative Perceus the ANF core now supports (named value flow from step 1). This is
 the deepest part and should be its own sub-increment.
+
+### 2d. STATIC compound values — fixed at compile time, no per-run construction overhead
+
+**Operator mandate (2026-07-11):** "I really want the heap stuff to capture how to generate compound
+datastructures at compile time that are static and fixed — without a lot of runtime overhead. Design
+this up front, not tacked on at the end."
+
+The hazard if unplanned: a fully-constant compound — `(tuple 1 2 3)`, `(record (x 1) (y 2))`, a literal
+list, or any compound the fold proves constant — would naively lower to a *sequence of runtime calls*
+(`arr-alloc(3); arr-set(_,0,box-int(1)); arr-set(_,1,box-int(2)); …`) executed on EVERY call. For a
+value that never varies, that is pure waste (allocation + N stores + boxing, per invocation).
+
+**The design (planned up front, realized when the heap lands):**
+
+1. **The fold already proves constness.** The one evaluator (`lower`) folds a compound whose elements
+   are all constant to a *constant compound value* in the core — the same tier that folds `(+ 1 2)`→3
+   and a `match` on a constant. So a `Core::Tuple`/`Record`/list all of whose elements are `ConstInt`/
+   `ConstBool`/constant-compound is itself a CONSTANT node. This classification is free (it rides the
+   existing fold); the question is only how a constant compound is EMITTED.
+
+2. **Emit a constant compound ONCE, not per call — a module-level initialized value.** Two candidate
+   realizations, decided when the heap lands (both keep the observable value identical — the
+   representation is unobservable, `value-heap-runtime.md §A Collection's Representation Is Not
+   Observable`):
+   - **(A, preferred) Build-once in a start/init region, reference by handle.** The component builds
+     each distinct static compound ONCE at instantiation (a `start`-function / init sequence emits the
+     `arr-alloc`/`arr-set` chain a single time), stores the resulting handle in a module global, and
+     every use `local.get`/`global.get`s that handle. Cost moves from per-call to once-per-instance;
+     the runtime's refcount keeps it alive (a persistent value, never mutated — the consume/borrow
+     contract dups on use). This reuses the ordinary construction ops — no new runtime op — and a
+     shared static (the same literal written twice) is one global (CSE over constant compounds).
+   - **(B) A runtime "frozen constant" op, if the runtime grows one.** A future runtime op that
+     materializes a compound from an immediate descriptor (a data-section blob) in one call. Only
+     worth it if (A)'s init sequence proves too large; NOT built speculatively (the runtime ABI grows
+     only by appending, and we add an op only against a measured need).
+
+3. **The inline-small-value escape hatch is orthogonal and already in the contract.** `value-heap-
+   runtime.md §A Small Value Need Not Occupy The Heap`: a value small enough rides in a handle's own
+   bits with no heap cell. A static compound of small scalars may be fully inline — zero allocation,
+   zero init — and indistinguishable at every use site. The compiler does not decide this (the runtime
+   does), but a static compound benefits automatically where it applies.
+
+**Why design it now:** the emission path (§2c) must, from its first version, DISTINGUISH a constant
+compound (→ build-once global / inline) from a runtime one (→ per-evaluation construction). Bolting
+this on later would mean re-touching every construction site and the reclamation contract (a build-once
+global has different `dup`/`drop` liveness than a per-call temp). So the `Core` compound node carries
+(or the fold marks) constness, `select` routes a constant compound to the build-once path, and the
+reclamation pass treats a module-global static as a persistent root. This is a note-to-self for H2:
+the tuple-construct increment lands the runtime path AND the build-once-for-constant path together, so
+neither is retrofitted.
+
+Sub-increment placement: **H2 lands runtime tuple construct/project WITH the constant-compound
+build-once path** (a constant tuple emits the init-once global; a runtime tuple emits per-eval
+construction). H2's tests pin BOTH: a constant `(tuple 1 2 3)` projects to the right element with the
+construction hoisted out of the per-call path (assert the function body has no `arr-alloc` for the
+constant case — it only reads the global), and a runtime tuple builds per call.
+
+### 2e. Extend the codegen to the wasm OPCODE / valtype consts (a follow-up, separate source)
+
+**Operator (2026-07-11): "I see a bunch of hard-coded consts in the wasm module for types and ops —
+we should codegen all of those in a similar way; much nicer to maintain."** Agreed, as a SEPARATE
+increment (H0 owns the runtime-ABI table; this owns the core-wasm opcode table). The consts in
+`encode.rs` (`I32_ADD = 0x6A`, `LOCAL_GET = 0x20`, `CALL = 0x10`, …, ~58 of them) and the valtype
+bytes in `lir.rs` (`I64 = 0x7E`, `I32 = 0x7F`, the component-model primitive bytes) are the CORE-WASM
+instruction encoding — their source of truth is the **wasm spec**, NOT the runtime WIT. So they codegen
+from a different input than §2a:
+
+- **Source options:** (a) a small checked-in table (opcode name → byte) that xtask expands into the
+  typed const module — still hand-authored data, but centralized and structured; (b) derive from
+  `wasm-encoder`'s own `Instruction` encoding (emit each instruction we use, read back its opcode byte)
+  — a dev-desk oracle exactly like the ABI codegen, so the bytes are never hand-transcribed from the
+  spec. **(b) is preferred** — it makes `wasm-encoder` the single source and a wrong byte impossible,
+  matching the "generate, don't hard-code" spirit; the byte-oracle tests already trust `wasm-encoder`.
+- **Output:** a generated `backend/wasm/opcodes.rs` (name → `u8`), same `@generated` + `codegen --check`
+  staleness discipline as `runtime_abi.rs`, so it also cannot drift.
+- **Why separate / later:** it is orthogonal to the value heap (it improves maintainability of the
+  EXISTING scalar backend, which already works and is byte-gated), so it should not gate H1/H2. Fold it
+  in as **H-opcodes** once the ABI codegen has settled — reusing the same `codegen` subcommand,
+  prettyplease-then-rustfmt pipeline, and `--check` gate. Tracked as a follow-up, not built now.
 
 ## 3. Sub-increments (each its own commit + gate; the first is the probe)
 

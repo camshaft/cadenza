@@ -14,6 +14,13 @@
 pub mod encode;
 pub mod envelope;
 pub mod lir;
+// The GENERATED value-heap runtime-ABI table (`cargo xtask codegen`, from the runtime WIT + the built
+// runtime's content hash) — the structured op signatures + typed `OPS` accessor the per-program import
+// section is built from (value-heap H1+). Not yet consumed (no runtime import emitted until compound
+// values land), so its items are dead for now; `cargo xtask codegen --check` (a hard gate in
+// `xtask check`) keeps it current with the runtime.
+#[allow(dead_code)]
+pub mod runtime_abi;
 pub mod select;
 pub mod serialize;
 
@@ -74,4 +81,50 @@ fn def_body(db: &Db, def: usize) -> Result<crate::ast::StructId, Reject> {
     db.defs[def]
         .body
         .ok_or_else(|| Reject::decline(format!("definition `{}` has no body", db.defs[def].name)))
+}
+
+#[cfg(test)]
+mod runtime_abi_tests {
+    use super::runtime_abi::{CoreValType, OPS, RUNTIME_IFACE, RUNTIME_OPS};
+
+    /// The generated ABI carries the known product/sum op signatures from the WIT — a guard that
+    /// `xtask codegen` faithfully maps the WIT types to core valtypes (arr-get borrows an index → i32,
+    /// sum-new pairs two handles → i32). Pins the H0 done-criterion: the structured data is correct.
+    #[test]
+    fn generated_ops_match_the_known_signatures() {
+        // `arr-get(arr, index) -> elem` : two i32 params (handle + index) → an i32 handle.
+        assert_eq!(OPS.arr_get.name, "arr-get");
+        assert_eq!(OPS.arr_get.params, &[CoreValType::I32, CoreValType::I32]);
+        assert_eq!(OPS.arr_get.result, Some(CoreValType::I32));
+        // `sum-new(disc, payload) -> handle`.
+        assert_eq!(OPS.sum_new.name, "sum-new");
+        assert_eq!(OPS.sum_new.params, &[CoreValType::I32, CoreValType::I32]);
+        // `box-int(s64) -> handle` : the one i64 param op.
+        assert_eq!(OPS.box_int.params, &[CoreValType::I64]);
+        // `dup(handle)` : a borrow op with NO result.
+        assert_eq!(OPS.dup.result, None);
+        assert_eq!(RUNTIME_IFACE, "cadenza:runtime/heap");
+    }
+
+    /// Every `OPS` field points at the same-named entry in `RUNTIME_OPS` — the typed accessor and the
+    /// iterable list agree (no offset drift in the generated struct).
+    #[test]
+    fn ops_accessor_agrees_with_the_list() {
+        for op in [
+            OPS.arr_alloc,
+            OPS.arr_set,
+            OPS.arr_get,
+            OPS.arr_len,
+            OPS.sum_disc,
+        ] {
+            assert!(
+                RUNTIME_OPS.iter().any(|o| std::ptr::eq(o, op)),
+                "OPS.{} does not point into RUNTIME_OPS",
+                op.name
+            );
+        }
+        // A lowerable op has only core-scalar params; str-new (string) is flagged unlowerable.
+        assert!(OPS.arr_get.lowerable);
+        assert!(!OPS.str_new.lowerable);
+    }
 }
