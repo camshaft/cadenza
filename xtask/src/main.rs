@@ -10,9 +10,17 @@
 //! the generators from git history if we decide to re-derive them.
 //!
 //! Every command is parsed with clap — typed subcommands, generated `--help`, and an error on an
-//! unknown subcommand/flag.
+//! unknown subcommand/flag. xtask pulls in NO workspace crate as a library; it choreographs the
+//! built binaries (cdz-syntax / rcdzc / cdz-run) so every command exercises the real tools.
 //!
-//! Usage: `cargo xtask build [--store <dir>]`.
+//! Commands:
+//!   build       build the value-heap runtime component + content-address it into the store
+//!   run         compile-and-run one program end-to-end (surface → AST → component → result)
+//!   emit        the compile-only half of `run` — write the component, don't run it
+//!   gate        run the corpus and grade each case (--case, --save, --check baseline)
+//!   check       omnibus health check: build + test + clippy + wasm-runtime + gate
+//!   roundtrip   every corpus program round-trips through the syntax surfaces
+//!   fmt         format program file(s) through the printer (--check for CI)
 
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
@@ -57,6 +65,49 @@ enum Cmd {
         /// Content-addressed store the runtime is resolved from. [default: <repo>/target/cadenza-store]
         #[arg(long)]
         store: Option<PathBuf>,
+        /// Run only cases whose description contains this substring, printing each one's normalized
+        /// program, expected result, and actual outcome — the single-case debug loop.
+        #[arg(long)]
+        case: Option<String>,
+        /// Save the current per-case verdicts as the committed baseline, then exit.
+        #[arg(long, conflicts_with = "check")]
+        save: bool,
+        /// Compare the current verdicts to the baseline; fail on any case that REGRESSED
+        /// (pass→not-pass), even while totals shift. Reports regressions and newly-passing cases.
+        #[arg(long)]
+        check: bool,
+    },
+    /// The omnibus health check: workspace build, tests, clippy, the wasm runtime build, and the
+    /// behavior gate — one pass/fail line per step, non-zero exit if any step fails.
+    Check,
+    /// Round-trip every corpus program through the syntax surfaces (sexpr→binary→sexpr and
+    /// sexpr→ml→sexpr) and confirm each reproduces a structurally-equal AST — guards `cadenza-syntax`
+    /// independently of whether the compiler can compile anything.
+    Roundtrip {
+        /// The corpus `.sexp` files to check. [default: all of spec/semantics/*.sexp]
+        files: Vec<PathBuf>,
+    },
+    /// Format Cadenza program file(s) through the printer, rewriting them in place.
+    Fmt {
+        /// The `.cdz`/`.sexp` files to format.
+        files: Vec<PathBuf>,
+        /// The surface to format to. [default: sexpr]
+        #[arg(long, default_value = "sexpr")]
+        to: String,
+        /// Don't write; exit non-zero if any file is not already formatted (for CI).
+        #[arg(long)]
+        check: bool,
+    },
+    /// Compile a Cadenza program to a component and write it out (the compile-only half of `run`).
+    Emit {
+        /// The Cadenza program file to compile.
+        file: PathBuf,
+        /// The input surface. [default: sexpr]
+        #[arg(long, default_value = "sexpr")]
+        from: String,
+        /// Where to write the component. [default: <file>.wasm]
+        #[arg(long, short)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -65,7 +116,13 @@ fn main() {
     match Cli::parse().command {
         Cmd::Build { store } => build(&paths, store),
         Cmd::Run { file, from, store } => run(&paths, &file, &from, store),
-        Cmd::Gate { files, store } => gate(&paths, files, store),
+        Cmd::Gate { files, store, case, save, check } => {
+            gate(&paths, GateOpts { files, store, case, save, check })
+        }
+        Cmd::Check => check(&paths),
+        Cmd::Roundtrip { files } => roundtrip(&paths, files),
+        Cmd::Fmt { files, to, check } => fmt(&paths, files, &to, check),
+        Cmd::Emit { file, from, out } => emit(&paths, &file, &from, out),
     }
 }
 
@@ -275,32 +332,51 @@ fn first_line(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).lines().next().unwrap_or("").to_string()
 }
 
+/// Options for `gate` (grows without re-threading a widening arg list).
+struct GateOpts {
+    files: Vec<PathBuf>,
+    store: Option<PathBuf>,
+    case: Option<String>,
+    save: bool,
+    check: bool,
+}
+
 /// Run one or more corpus files through the pipeline and grade each case against its recorded
 /// outcome. Delegates case parsing + normalization to `cdz-syntax corpus`, then drives each program.
-fn gate(paths: &Paths, files: Vec<PathBuf>, store: Option<PathBuf>) {
+fn gate(paths: &Paths, opts: GateOpts) {
     let tools = build_tools(paths);
+    let files = if opts.files.is_empty() { default_corpus_files(paths) } else { opts.files.clone() };
 
-    // Default to the whole corpus when no files are named.
-    let files = if files.is_empty() {
-        default_corpus_files(paths)
-    } else {
-        files
-    };
+    // `--case`: run only matching cases and print each one's program / expected / actual — the
+    // single-case debug loop, not a pass/fail tally.
+    if let Some(needle) = &opts.case {
+        gate_one_case(&tools, &opts.store, &files, needle);
+        return;
+    }
 
+    // Grade every case, collecting a verdict per description (for the baseline) plus the tally.
     let (mut pass, mut todo, mut fail) = (0u32, 0u32, 0u32);
     let mut failures: Vec<String> = Vec::new();
+    let mut verdicts: Vec<(String, Verdict)> = Vec::new();
 
     for file in &files {
-        let records = read_corpus(&tools, file);
-        for rec in records {
-            match grade(&tools, &store, &rec) {
-                Grade::Pass => pass += 1,
-                Grade::Todo => todo += 1,
+        for rec in read_corpus(&tools, file) {
+            let v = match grade(&tools, &opts.store, &rec) {
+                Grade::Pass => {
+                    pass += 1;
+                    Verdict::Pass
+                }
+                Grade::Todo => {
+                    todo += 1;
+                    Verdict::Todo
+                }
                 Grade::Fail(why) => {
                     fail += 1;
                     failures.push(format!("{}: {why}", rec.description));
+                    Verdict::Fail
                 }
-            }
+            };
+            verdicts.push((rec.description, v));
         }
     }
 
@@ -310,6 +386,53 @@ fn gate(paths: &Paths, files: Vec<PathBuf>, store: Option<PathBuf>) {
         for f in &failures {
             println!("  FAIL  {f}");
         }
+    }
+
+    if opts.save {
+        save_baseline(paths, &verdicts);
+        println!("\nbaseline saved: {} cases → {}", verdicts.len(), baseline_path(paths).display());
+        return;
+    }
+    if opts.check {
+        // A regression (a case that used to pass and now doesn't) fails the check even if the
+        // totals look fine — the trap the raw counts hide. Newly-passing cases are reported, not failed.
+        std::process::exit(check_baseline(paths, &verdicts));
+    }
+    if fail > 0 {
+        std::process::exit(1);
+    }
+}
+
+/// Run only the case(s) whose description contains `needle`, printing each one's normalized program,
+/// expected result, and actual outcome. A focused debug view, not a tally.
+fn gate_one_case(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], needle: &str) {
+    let mut found = 0;
+    for file in files {
+        for rec in read_corpus(tools, file) {
+            if !rec.description.contains(needle) {
+                continue;
+            }
+            found += 1;
+            let ran = run_program(tools, store, &rec.program);
+            let actual = match &ran {
+                Ran::Value(v) => format!("value {v}"),
+                Ran::Declined => "declined (compiler can't compile it yet)".to_string(),
+                Ran::Trap(t) => format!("trap: {t}"),
+            };
+            let verdict = match grade_ran(&rec, &ran) {
+                Grade::Pass => "PASS",
+                Grade::Todo => "todo",
+                Grade::Fail(_) => "FAIL",
+            };
+            println!("case:     {}", rec.description);
+            println!("program:  {}", rec.program);
+            println!("expect:   {}", rec.expect);
+            println!("actual:   {actual}");
+            println!("verdict:  {verdict}\n");
+        }
+    }
+    if found == 0 {
+        eprintln!("xtask gate --case: no case matched {needle:?}");
         std::process::exit(1);
     }
 }
@@ -376,21 +499,27 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     records
 }
 
-/// Grade one case: drive its program and compare against the recorded expectation.
+/// Grade one case: drive its program, then compare against the recorded expectation.
 fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord) -> Grade {
+    let ran = run_program(tools, store, &rec.program);
+    grade_ran(rec, &ran)
+}
+
+/// Compare an already-run outcome against a case's recorded expectation — the pure grading logic,
+/// shared by the tally path and the single-case debug view.
+fn grade_ran(rec: &CorpusRecord, ran: &Ran) -> Grade {
     // A case that needs an unrealized capability is out of scope for this generation — treat as todo.
     if !rec.needs.is_empty() {
         return Grade::Todo;
     }
     let (kind, payload) = rec.expect.split_once(' ').unwrap_or((rec.expect.as_str(), ""));
-    let ran = run_program(tools, store, &rec.program);
     match kind {
         // `output (: <value> <Type>)`: the run must produce that value. cdz-run renders the value
         // alone, so compare against the value-form's value (the first element after `:`).
         "output" => {
             let expected = expected_value(payload);
             match ran {
-                Ran::Value(v) if v == expected => Grade::Pass,
+                Ran::Value(v) if *v == expected => Grade::Pass,
                 Ran::Value(v) => Grade::Fail(format!("expected {expected}, ran → {v}")),
                 Ran::Declined => Grade::Todo, // compiler can't compile it yet
                 Ran::Trap(t) => Grade::Fail(format!("expected {expected}, trapped: {t}")),
@@ -440,6 +569,360 @@ fn default_corpus_files(paths: &Paths) -> Vec<PathBuf> {
         .collect();
     files.sort();
     files
+}
+
+// ============================================================================================
+// gate baseline — a committed per-case verdict snapshot, so a REGRESSION (a case that used to pass
+// and now doesn't) fails `gate --check` even while the pass/todo/fail totals drift.
+// ============================================================================================
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Pass,
+    Todo,
+    Fail,
+}
+
+impl Verdict {
+    fn tag(self) -> &'static str {
+        match self {
+            Verdict::Pass => "pass",
+            Verdict::Todo => "todo",
+            Verdict::Fail => "fail",
+        }
+    }
+    fn parse(s: &str) -> Option<Verdict> {
+        match s {
+            "pass" => Some(Verdict::Pass),
+            "todo" => Some(Verdict::Todo),
+            "fail" => Some(Verdict::Fail),
+            _ => None,
+        }
+    }
+}
+
+/// The committed baseline file: `<repo>/spec/semantics/.gate-baseline`.
+fn baseline_path(paths: &Paths) -> PathBuf {
+    paths.repo.join("spec/semantics/.gate-baseline")
+}
+
+/// Write the current verdicts as the baseline: one `verdict\tdescription` line per case, sorted by
+/// description so the file is stable and a diff is meaningful.
+fn save_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) {
+    let mut lines: Vec<String> =
+        verdicts.iter().map(|(d, v)| format!("{}\t{d}", v.tag())).collect();
+    lines.sort();
+    let body = format!(
+        "# gate baseline — per-case verdicts (verdict\\tdescription). Regenerate with `cargo xtask gate --save`.\n{}\n",
+        lines.join("\n")
+    );
+    std::fs::write(baseline_path(paths), body).expect("write baseline");
+}
+
+/// Compare current verdicts to the baseline. Returns the process exit code: non-zero if any case
+/// REGRESSED (baseline pass → now not pass) or a baseline case vanished. Newly-passing cases and
+/// new cases are reported but do not fail the check.
+fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) -> i32 {
+    let path = baseline_path(paths);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => {
+            eprintln!("xtask gate --check: no baseline at {} (create it with `gate --save`)", path.display());
+            return 2;
+        }
+    };
+    let mut base: std::collections::HashMap<String, Verdict> = std::collections::HashMap::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((v, d)) = line.split_once('\t')
+            && let Some(verdict) = Verdict::parse(v)
+        {
+            base.insert(d.to_string(), verdict);
+        }
+    }
+
+    let now: std::collections::HashMap<&str, Verdict> =
+        verdicts.iter().map(|(d, v)| (d.as_str(), *v)).collect();
+
+    let mut regressed: Vec<String> = Vec::new();
+    let mut gained: Vec<String> = Vec::new();
+    let mut vanished: Vec<String> = Vec::new();
+
+    for (desc, &was) in &base {
+        match now.get(desc.as_str()) {
+            None => vanished.push(desc.clone()),
+            Some(&is) => {
+                if was == Verdict::Pass && is != Verdict::Pass {
+                    regressed.push(format!("{desc} ({} → {})", was.tag(), is.tag()));
+                } else if was != Verdict::Pass && is == Verdict::Pass {
+                    gained.push(desc.clone());
+                }
+            }
+        }
+    }
+
+    if !gained.is_empty() {
+        println!("\nnewly passing ({}):", gained.len());
+        for g in &gained {
+            println!("  +  {g}");
+        }
+    }
+    if !regressed.is_empty() {
+        println!("\nREGRESSED ({}):", regressed.len());
+        for r in &regressed {
+            println!("  -  {r}");
+        }
+    }
+    if !vanished.is_empty() {
+        println!("\nvanished from the corpus ({}):", vanished.len());
+        for v in &vanished {
+            println!("  ?  {v}");
+        }
+    }
+
+    if regressed.is_empty() && vanished.is_empty() {
+        println!("\ngate --check: OK (no regressions vs baseline; {} newly passing)", gained.len());
+        0
+    } else {
+        println!("\ngate --check: FAIL ({} regressed, {} vanished)", regressed.len(), vanished.len());
+        1
+    }
+}
+
+// ============================================================================================
+// check — the omnibus health check.
+// ============================================================================================
+
+/// Run the whole health check: workspace build, tests, clippy, the wasm runtime build, and the
+/// behavior gate. Each step prints one pass/fail line; the first failing step exits non-zero.
+fn check(paths: &Paths) {
+    let sh = Shell::new().expect("open a shell");
+    sh.change_dir(&paths.repo);
+
+    // Native workspace: build, test, then clippy. Clippy runs WITHOUT `-D warnings` — it surfaces
+    // lints (they print) but does not fail the check, because the sibling crates are under active
+    // rewrite and carry stylistic lints that are not a health signal. `build`/`test`/`gate` are the
+    // real bar; tighten clippy to deny-warnings once the crates are lint-clean.
+    step("build", cmd!(sh, "cargo build --workspace --quiet").quiet().run().is_ok());
+    step("test", cmd!(sh, "cargo test --workspace --quiet").quiet().run().is_ok());
+    step("clippy", cmd!(sh, "cargo clippy --workspace --quiet").quiet().run().is_ok());
+
+    // The wasm runtime is EXCLUDED from the native workspace, so a plain `cargo build` skips it — a
+    // silent gap the check closes by building it explicitly for its target.
+    let rt = paths.seed.join("crates/cdz-runtime");
+    let rt_ok = {
+        let _p = sh.push_dir(&rt);
+        cmd!(sh, "cargo build --release --quiet --target wasm32-unknown-unknown").quiet().run().is_ok()
+    };
+    step("wasm-runtime", rt_ok);
+
+    // The behavior gate — invoke this same xtask binary. Use `gate --check` (vs the baseline) when a
+    // baseline exists, so `check` asks "did anything REGRESS?" rather than "are there any known
+    // gaps?" — a green check means the library is healthy AND the compiler didn't backslide. With no
+    // baseline, fall back to a plain `gate` (any fail is a failure).
+    let gate_arg = if baseline_path(paths).exists() { "--check" } else { "" };
+    let mut gate_cmd = std::process::Command::new(std::env::current_exe().expect("current exe"));
+    gate_cmd.arg("gate").current_dir(&paths.repo);
+    if !gate_arg.is_empty() {
+        gate_cmd.arg(gate_arg);
+    }
+    let gate_ok = gate_cmd.status().map(|s| s.success()).unwrap_or(false);
+    step("gate", gate_ok);
+
+    println!("\ncheck: all green ✓");
+}
+
+/// Report one check step; abort the whole check on the first failure.
+fn step(name: &str, ok: bool) {
+    if ok {
+        println!("  ✓ {name}");
+    } else {
+        eprintln!("  ✗ {name} — FAILED");
+        eprintln!("\ncheck: FAILED at `{name}`");
+        std::process::exit(1);
+    }
+}
+
+// ============================================================================================
+// roundtrip — the syntax surfaces round-trip on every corpus program.
+// ============================================================================================
+
+/// For every corpus program, confirm sexpr→binary→sexpr and sexpr→ml→sexpr reproduce a
+/// structurally-equal AST — i.e. re-encoding the round-tripped text to binary yields the SAME bytes
+/// as the original. Guards `cadenza-syntax` (reader/printer/codec) independently of the compiler.
+fn roundtrip(paths: &Paths, files: Vec<PathBuf>) {
+    let tools = build_tools(paths);
+    let files = if files.is_empty() { default_corpus_files(paths) } else { files };
+
+    let (mut ok, mut fail) = (0u32, 0u32);
+    let mut failures: Vec<String> = Vec::new();
+
+    for file in &files {
+        for rec in read_corpus(&tools, file) {
+            // The reference: the program's canonical binary AST.
+            let bin0 = match to_binary(&tools, &rec.program) {
+                Some(b) => b,
+                None => {
+                    fail += 1;
+                    failures.push(format!("{}: sexpr→binary failed", rec.description));
+                    continue;
+                }
+            };
+            // Round-trip through each intermediate surface, back to binary, and compare bytes.
+            for surface in ["sexpr", "ml"] {
+                match roundtrip_via(&tools, &bin0, surface) {
+                    Some(bin1) if bin1 == bin0 => {}
+                    Some(_) => {
+                        fail += 1;
+                        failures.push(format!("{}: binary≠binary via {surface}", rec.description));
+                    }
+                    None => {
+                        fail += 1;
+                        failures.push(format!("{}: round-trip via {surface} errored", rec.description));
+                    }
+                }
+            }
+            ok += 1;
+        }
+    }
+
+    println!("\nroundtrip: {ok} programs ok, {fail} failures");
+    if !failures.is_empty() {
+        println!();
+        for f in failures.iter().take(40) {
+            println!("  FAIL  {f}");
+        }
+        if failures.len() > 40 {
+            println!("  … and {} more", failures.len() - 40);
+        }
+        std::process::exit(1);
+    }
+}
+
+/// A program's sexpr text → its canonical binary AST bytes (via `cdz-syntax`).
+fn to_binary(tools: &Tools, program: &str) -> Option<Vec<u8>> {
+    convert_bytes(tools, program.as_bytes(), "sexpr", "binary")
+}
+
+/// binary → <surface> text → binary, returning the re-encoded bytes (to compare to the original).
+fn roundtrip_via(tools: &Tools, bin0: &[u8], surface: &str) -> Option<Vec<u8>> {
+    let text = convert_bytes(tools, bin0, "binary", surface)?;
+    convert_bytes(tools, &text, surface, "binary")
+}
+
+/// Run `cdz-syntax --from <from> --to <to>` over `input` bytes (stdin) and return its stdout.
+fn convert_bytes(tools: &Tools, input: &[u8], from: &str, to: &str) -> Option<Vec<u8>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(&tools.syntax)
+        .args(["--from", from, "--to", to, "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+    child.stdin.take().unwrap().write_all(input).ok();
+    let out = child.wait_with_output().expect("wait cdz-syntax");
+    out.status.success().then_some(out.stdout)
+}
+
+// ============================================================================================
+// fmt — format program files through the printer.
+// ============================================================================================
+
+/// Format each file through the printer (round-trip its own surface to canonical form). `--check`
+/// writes nothing and exits non-zero if any file is not already canonical.
+fn fmt(paths: &Paths, files: Vec<PathBuf>, to: &str, check: bool) {
+    if files.is_empty() {
+        eprintln!("xtask fmt: name at least one file");
+        std::process::exit(1);
+    }
+    let tools = build_tools(paths);
+    let mut unformatted: Vec<String> = Vec::new();
+
+    for file in &files {
+        let original = match std::fs::read(file) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("xtask fmt: {}: {e}", file.display());
+                std::process::exit(1);
+            }
+        };
+        // Format = parse the surface and re-print it canonically (same surface in and out).
+        let formatted = match convert_bytes(&tools, &original, to, to) {
+            Some(b) => b,
+            None => {
+                eprintln!("xtask fmt: {}: does not parse as {to}", file.display());
+                std::process::exit(1);
+            }
+        };
+        // The printer emits no trailing newline; keep files newline-terminated.
+        let mut formatted = formatted;
+        if !formatted.ends_with(b"\n") {
+            formatted.push(b'\n');
+        }
+        if formatted == original {
+            continue;
+        }
+        if check {
+            unformatted.push(file.display().to_string());
+        } else if let Err(e) = std::fs::write(file, &formatted) {
+            eprintln!("xtask fmt: writing {}: {e}", file.display());
+            std::process::exit(1);
+        } else {
+            println!("formatted {}", file.display());
+        }
+    }
+
+    if check && !unformatted.is_empty() {
+        println!("not formatted ({}):", unformatted.len());
+        for f in &unformatted {
+            println!("  {f}");
+        }
+        std::process::exit(1);
+    }
+}
+
+// ============================================================================================
+// emit — compile a program to a component and write it out (the compile-only half of `run`).
+// ============================================================================================
+
+fn emit(paths: &Paths, file: &Path, from: &str, out: Option<PathBuf>) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    if !file.exists() {
+        eprintln!("xtask emit: no such file: {}", file.display());
+        std::process::exit(1);
+    }
+    let tools = build_tools(paths);
+    let out = out.unwrap_or_else(|| file.with_extension("wasm"));
+
+    // cdz-syntax <file> | rcdzc - -o <out>.
+    let syntax = Command::new(&tools.syntax)
+        .args(["--from", from, "--to", "binary"])
+        .arg(file)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+    let ast = syntax.wait_with_output().expect("wait cdz-syntax");
+    if !ast.status.success() {
+        std::process::exit(ast.status.code().unwrap_or(1));
+    }
+    let mut rcdzc = Command::new(&tools.rcdzc)
+        .args(["-", "-o"])
+        .arg(&out)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("rcdzc", e));
+    rcdzc.stdin.take().unwrap().write_all(&ast.stdout).ok();
+    let status = rcdzc.wait().expect("wait rcdzc");
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    println!("wrote {}", out.display());
 }
 
 /// SHA-256 of the bytes, lowercase hex (the recorded hashing choice).
