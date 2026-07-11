@@ -57,12 +57,13 @@ pub struct Export {
     pub def: Option<usize>,
 }
 
-/// The bound on β-reduction nesting depth — a terminating fold bottoms out under it, a recursive
-/// function hits it and declines. Kept LOW for now (a recursive case reaches the decline after this
-/// many frames, and each frame appends arena nodes, so a high bound makes declining slow); no
-/// legitimate compile-time fold in the corpus nests remotely this deep. Raise it only if a real
-/// terminating fold is found to exceed it.
-pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 64;
+/// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
+/// (a call whose callee transitively references itself declines before any inlining — see
+/// `eval::is_recursive`), so this only guards a non-recursive fold that nests unexpectedly deep. Kept
+/// low: a recursive function that branches (several self-calls per body) would explode EXPONENTIALLY
+/// in node appends well before a high depth, so the static check is the real guard and this is a
+/// cheap safety net. No legitimate compile-time fold nests this deep.
+pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 32;
 
 /// An RAII guard for one active β-reduction: holds the reduction depth bumped for its lifetime and
 /// decrements it on drop, so the depth exactly reflects the reductions currently on the stack. Held by
@@ -139,6 +140,24 @@ pub struct Db {
     /// same node, so `(Int 64)` denotes ONE module however many times it is written or demanded.
     pub(crate) build_cache: std::collections::HashMap<BuildKey, StructId>,
 
+    /// Memo of the static recursion analysis (`eval::is_recursive`): for a function BODY occurrence,
+    /// whether that function is (transitively) recursive — a call whose callee reaches the same body.
+    /// A pure function of the fixed def/`let` structure, so it caches by body `StructId` like
+    /// `build_cache`. The evaluator reads it BEFORE β-reducing a call and DECLINES a recursive one (a
+    /// recursive function cannot be inlined to a normal form at compile time — it needs runtime
+    /// specialization), which is what keeps a self-calling function from inlining without end / from
+    /// exploding exponentially in appended nodes when its body branches.
+    pub(crate) recursive: std::collections::HashMap<StructId, bool>,
+
+    /// Reusable SCRATCH buffers for the recursion walk (`eval::is_recursive`) — the visited set and the
+    /// worklist of its iterative call-graph DFS. Held here (not allocated per call) so the walk churns
+    /// no ephemeral collections: `is_recursive` takes them out (`mem::take`), CLEARS them, uses them,
+    /// and returns them. Their contents are meaningless between calls — this is workspace, not state,
+    /// the one exception to the "columns are the state" rule, justified by the allocation it saves in a
+    /// walk that runs once per function body.
+    pub(crate) rec_visited: std::collections::HashSet<StructId>,
+    pub(crate) rec_worklist: Vec<StructId>,
+
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
     /// The solved-type column. Filled only by [`crate::infer`].
@@ -167,6 +186,9 @@ impl Db {
             prelude,
             reduce_depth: 0,
             build_cache: std::collections::HashMap::new(),
+            recursive: std::collections::HashMap::new(),
+            rec_visited: std::collections::HashSet::new(),
+            rec_worklist: Vec::new(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),
