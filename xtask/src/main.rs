@@ -19,7 +19,7 @@
 //!   run         compile-and-run one program end-to-end (surface → AST → component → result)
 //!   emit        the compile-only half of `run` — write the component, don't run it
 //!   gate        run the corpus and grade each case (--case, --save, --check baseline)
-//!   check       omnibus health check: build + test + clippy + wasm-runtime + gate
+//!   check       omnibus health check: fmt + build + test + clippy(-D warnings) + wasm-runtime + gate
 //!   roundtrip   every corpus program round-trips through the syntax surfaces
 //!   fmt         format program file(s) through the printer (--check for CI)
 //!
@@ -94,9 +94,10 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
-    /// The omnibus health check: workspace build, tests, clippy, the wasm runtime build, and the
-    /// behavior gate. Each step's output is captured to a log file (`target/xtask-logs/`); the
-    /// console shows one ✓ per step, and the first failing step prints the whole log + its path.
+    /// The omnibus health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
+    /// the wasm runtime build, and the behavior gate. Each step's output is captured to a log file
+    /// (`target/xtask-logs/`); the console shows one ✓ per step, and the first failing step prints
+    /// the whole log + its path.
     Check,
     /// Round-trip every corpus program through the syntax surfaces (sexpr→binary→sexpr and
     /// sexpr→ml→sexpr) and confirm each reproduces a structurally-equal AST — guards `cadenza-syntax`
@@ -851,21 +852,24 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) -> i32 {
 // check — the omnibus health check.
 // ============================================================================================
 
-/// Run the whole health check: workspace build, tests, clippy, the wasm runtime build, and the
-/// behavior gate. Each step's full output is CAPTURED to a log file rather than flooding the console;
-/// the console shows one ✓ per passing step. The first failing step prints the whole captured log
+/// Run the whole health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
+/// the wasm runtime build, and the behavior gate. Each step's full output is CAPTURED to a log file
+/// rather than flooding the console; the console shows one ✓ per passing step. The first failing step
+/// prints the whole captured log
 /// (so an agent reads it in place instead of re-running with `| tail`) and its path, then exits.
 fn check(paths: &Paths, profile: &str) {
     let mut log = Log::create(paths, "check");
     println!("check: logging to {}", log.path.display());
 
     // Each step runs its command with stdout+stderr appended to the log. Native workspace first:
-    // build, test, then clippy (WITHOUT `-D warnings` — sibling crates under rewrite carry stylistic
-    // lints that aren't a health signal; build/test/gate are the real bar).
+    // formatting, build, test, then clippy. `fmt --check` and clippy `-D warnings` are HARD gates —
+    // the workspace is cargo-fmt-clean and clippy-clean, and this keeps it that way (a lint or a
+    // stray format is a failing step, with the offending diff/lint captured in the log to read).
     let repo = &paths.repo;
+    log.step("fmt", "cargo fmt --all --check", repo);
     log.step("build", "cargo build --workspace", repo);
     log.step("test", "cargo test --workspace", repo);
-    log.step("clippy", "cargo clippy --workspace", repo);
+    log.step("clippy", "cargo clippy --workspace -- -D warnings", repo);
 
     // The wasm runtime is EXCLUDED from the native workspace, so a plain `cargo build` skips it — a
     // silent gap the check closes by building it explicitly for its target.
