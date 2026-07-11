@@ -9,6 +9,7 @@
 //! code.
 
 pub mod ast;
+pub mod canon;
 pub mod codec;
 pub mod convert;
 pub mod corpus;

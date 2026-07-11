@@ -74,7 +74,13 @@ fn int_kind(sign: Sign, radix: Radix) -> u8 {
 }
 
 /// Serialize `arenas` to bytes (with the schema header).
+///
+/// The arena is CANONICALIZED first (`canon::canonicalize`), so equal programs encode to identical
+/// bytes regardless of the order their occurrences were built — the two surfaces build the same tree
+/// in different orders (see `canon.rs`). Encoding is thus the point at which the canonical normal
+/// form is imposed; `decode` returns that canonical (structurally-equal, re-indexed) arena.
 pub fn encode(arenas: &Arenas) -> Vec<u8> {
+    let arenas = &crate::canon::canonicalize(arenas);
     let mut out = Vec::new();
     out.extend_from_slice(&SCHEMA_HEADER);
 
