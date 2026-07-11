@@ -40,7 +40,7 @@ impl Subst {
             Ty::Record(fields) => Ty::Record(
                 fields.iter().map(|(k, t)| (k.clone(), self.apply(t))).collect(),
             ),
-            Ty::Bool | Ty::Unit | Ty::Any => ty.clone(),
+            Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
         }
     }
 
@@ -77,7 +77,7 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             subst.tys.insert(*v, t.clone());
             Ok(())
         }
-        (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) => Ok(()),
+        (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Type, Ty::Type) => Ok(()),
         // Integers unify only at equal signedness; their widths unify (a variable/deferred width
         // resolves to a fixed one; two different fixed widths conflict — no implicit promotion).
         (Ty::Int(ia), Ty::Int(ib)) => {
@@ -143,7 +143,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::Var(w) => v == w,
         Ty::Fn(p, r) => occurs(subst, v, &p) || occurs(subst, v, &r),
         Ty::Record(fields) => fields.values().any(|ft| occurs(subst, v, ft)),
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Any => false,
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
     }
 }
 
@@ -203,7 +203,7 @@ fn rename(ty: &Ty, ty_map: &HashMap<u32, u32>, width_map: &HashMap<u32, u32>) ->
         Ty::Record(fields) => Ty::Record(
             fields.iter().map(|(k, t)| (k.clone(), rename(t, ty_map, width_map))).collect(),
         ),
-        Ty::Bool | Ty::Unit | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 
