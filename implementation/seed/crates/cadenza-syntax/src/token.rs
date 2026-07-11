@@ -131,6 +131,7 @@ pub enum Keyword {
     Then,
     Else,
     Fn,
+    Def,
     Match,
     Module,
 }
@@ -144,6 +145,7 @@ pub fn keyword(text: &str) -> Option<Keyword> {
         "then" => Keyword::Then,
         "else" => Keyword::Else,
         "fn" => Keyword::Fn,
+        "def" => Keyword::Def,
         "match" => Keyword::Match,
         "module" => Keyword::Module,
         _ => return None,

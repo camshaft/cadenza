@@ -356,7 +356,8 @@ impl<'a> Parser<'a> {
             Kind::Ident => match keyword(self.cur_text()) {
                 Some(Keyword::Let) => self.let_expr(),
                 Some(Keyword::If) => self.if_expr(),
-                Some(Keyword::Fn) => self.fn_or_def(),
+                Some(Keyword::Fn) => self.fn_expr(),
+                Some(Keyword::Def) => self.def_expr(),
                 Some(Keyword::Match) => self.match_expr(),
                 Some(Keyword::Module) => self.module_expr(),
                 Some(_) => {
@@ -535,19 +536,8 @@ impl<'a> Parser<'a> {
         self.list(vec![head, c, t, e], span)
     }
 
-    /// `fn` begins either an anonymous lambda `fn(p, …) => body` or a named definition
-    /// `fn name(p, …) = body`. The disambiguator is whether a NAME follows `fn` (a lambda's `fn` is
-    /// immediately followed by `(`).
-    fn fn_or_def(&mut self) -> StructId {
-        // `fn` then a name then `(` => a def; `fn` then `(` => a lambda.
-        if matches!(self.nth_kind(1), Kind::Ident | Kind::BacktickName) {
-            self.def_expr()
-        } else {
-            self.fn_expr()
-        }
-    }
-
-    /// `fn(p, …) => body`  ->  `(fn (p …) body)`
+    /// `fn(p, …) => body`  ->  `(fn (p …) body)`. `fn` is ALWAYS an anonymous lambda now; a named
+    /// definition uses `def` (see [`Self::def_expr`]).
     fn fn_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("fn", start);
@@ -559,19 +549,34 @@ impl<'a> Parser<'a> {
         self.list(vec![head, param_list, body], span)
     }
 
-    /// `fn name(p, …) = body`  ->  `(def (name p …) body)`. The signature `(name p …)` mirrors the
-    /// s-expr surface: the def's first child is the name-and-params list, then the single body.
+    /// A named definition (a hoisting declaration), in two shapes:
+    ///   `def name(p, …) = body`  ->  `(def (name p …) body)`   — a function
+    ///   `def name = value`       ->  `(def name value)`         — a value
+    /// The disambiguator is whether a `(` follows the name (a parameter list) or a `=` (a value). Both
+    /// share the `def` keyword because both hoist — unlike a sequential `let`.
     fn def_expr(&mut self) -> StructId {
         let start = self.cur_span();
         // Leading `///` docs attach INSIDE the def, as `(doc "text")` body forms before the body.
         let docs = self.take_docs_here();
         let def_head = self.keyword_head("def", start);
-        self.bump(); // `fn`
-        // signature: name then params -> (name p …)
+        self.bump(); // `def`
         let sig_start = self.cur_span();
         let name = self.binder();
+
+        // ---- value definition: `def name = value` -> (def name value) ----
+        if self.at(Kind::Eq) {
+            self.bump(); // `=`
+            let value = self.expr(0);
+            let span = start.merge(self.prev_span());
+            // (def name doc… value) — docs precede the value, mirroring the function form.
+            let mut items = vec![def_head, name];
+            items.extend(self.doc_nodes(docs));
+            items.push(value);
+            return self.list(items, span);
+        }
+
+        // ---- function definition: `def name(p, …) = body` -> (def (name p …) body) ----
         let mut sig = vec![name];
-        // parameters (the `(...)` after the name)
         self.expect(Kind::LParen, "`(`");
         if !self.at(Kind::RParen) {
             loop {
