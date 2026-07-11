@@ -14,12 +14,12 @@
 //! core's own fresh-id space, arrive with the stage that first needs them.
 
 use crate::arena::Slot;
-use crate::ast::StructId;
+use crate::ast::{IntValue, StructId};
 use crate::core::Core;
 use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::resolve::resolved_of;
-use crate::resolved::Resolved;
+use crate::resolved::{Intrinsic, Resolved};
 
 /// The core (A-normal) form of the node at `id`, filling the column on demand (memoized). Reads the
 /// resolved form; children stay ids, lowered on their own demand.
@@ -68,7 +68,83 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             )),
         },
         Resolved::If { cond, then_, else_ } => Core::If { cond, then_, else_ },
+        // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
+        // it declines. Applying it is what lowers.
+        Resolved::Intrinsic(_) => Core::Poison(Reject::decline(
+            "a built-in operation used as a value needs runtime closures (not yet built)",
+        )),
+        // An arithmetic application. FOLD it when its operands fold to constants: evaluate at compile
+        // time with a CHECKED operation, so a provable overflow is a build error (CDZ0304 poison)
+        // rather than a shipped runtime trap (`reference-compiler.md` §A Compile-Provable Trap Fails
+        // The Build). An operand that is not a constant stays a runtime `Arith` (which, in this
+        // increment, has no runtime integer source yet without functions — so `select` emits the op
+        // for a genuine runtime operand once functions land; a poison operand propagates).
+        Resolved::Apply { op, args } => {
+            let op = match crate::resolve::intrinsic_of(db, op) {
+                Some(op) => op,
+                None => return Core::Poison(Reject::decline("application of a non-operation not yet supported")),
+            };
+            if args.len() != 2 {
+                return Core::Poison(Reject::coded(
+                    Code::Malformed,
+                    format!("{} takes exactly 2 operands", intrinsic_name(op)),
+                ));
+            }
+            let lhs = core_of(db, args[0]);
+            let rhs = core_of(db, args[1]);
+            match (lhs, rhs) {
+                // Both constant → fold with a checked operation.
+                (Core::ConstInt(a), Core::ConstInt(b)) => fold_arith(op, a, b),
+                // A poison operand propagates (its own fault is already recorded).
+                (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                // A non-constant operand: a runtime arithmetic op over the two argument occurrences.
+                _ => Core::Arith { op, lhs: args[0], rhs: args[1] },
+            }
+        }
         Resolved::Poison(r) => Core::Poison(r),
+    }
+}
+
+/// Fold a constant arithmetic operation with a CHECKED evaluation. Both operands are compile-time
+/// constants; if the operation's defined outcome on them is a trap (an overflow the checked default
+/// forbids, or an operand outside the machine range the fold evaluates over), the result is a poison
+/// carrying CDZ0304 — the build fails rather than shipping a runtime trap. On success the result is a
+/// `ConstInt`. The evaluation is over `i64` (the Stage default integer); a later width stage
+/// generalizes the range the check tests to the operands' solved width.
+fn fold_arith(op: Intrinsic, a: IntValue, b: IntValue) -> Core {
+    let (x, y) = match (a.to_i64(), b.to_i64()) {
+        (Some(x), Some(y)) => (x, y),
+        // An operand beyond the machine range the fold evaluates over — a provable width trap.
+        _ => {
+            return Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                "constant operand does not fit the integer width",
+            ));
+        }
+    };
+    let checked = match op {
+        Intrinsic::Add => x.checked_add(y),
+        Intrinsic::Sub => x.checked_sub(y),
+        Intrinsic::Mul => x.checked_mul(y),
+    };
+    match checked {
+        Some(n) => Core::ConstInt(IntValue::from_i64(n)),
+        // A provable overflow — the checked default traps, and the compiler can prove it, so the build
+        // fails (CDZ0304) rather than emitting a component that traps (`numeric-model.md` §A Constant
+        // Operation With No Value Is Rejected At Compile Time).
+        None => Core::Poison(Reject::coded(
+            Code::ConstTrap,
+            format!("integer overflow in constant {}", intrinsic_name(op)),
+        )),
+    }
+}
+
+/// The source spelling of an intrinsic, for diagnostics.
+fn intrinsic_name(op: Intrinsic) -> &'static str {
+    match op {
+        Intrinsic::Add => "+",
+        Intrinsic::Sub => "-",
+        Intrinsic::Mul => "*",
     }
 }
 

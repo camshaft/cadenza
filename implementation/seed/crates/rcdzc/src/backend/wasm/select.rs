@@ -97,9 +97,34 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
             out.push(Lir::End);
             Ok(())
         }
+        // A runtime arithmetic op: emit both operands, then the machine op selected from the solved
+        // width (i32 for a ≤32-bit integer, else i64). The width is a READ-OFF of the node's solved
+        // type — the same read-off that boxes a scalar (`reference-compiler.md` §A Value's Machine
+        // Representation Follows Its Solved Type At Selection). (Const arithmetic folds in `lower`;
+        // this path is for a genuine runtime operand, which arrives with functions.)
+        Core::Arith { op, lhs, rhs } => {
+            emit(db, lhs, out)?;
+            emit(db, rhs, out)?;
+            let narrow = matches!(type_of(db, id), Ty::Int(it) if it.ground_width() <= 32);
+            out.push(arith_op(op, narrow));
+            Ok(())
+        }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),
+    }
+}
+
+/// The flat wasm op for an arithmetic operation at the given width (i32 if `narrow`, else i64).
+fn arith_op(op: crate::resolved::Intrinsic, narrow: bool) -> Lir {
+    use crate::resolved::Intrinsic::*;
+    match (op, narrow) {
+        (Add, false) => Lir::I64Add,
+        (Sub, false) => Lir::I64Sub,
+        (Mul, false) => Lir::I64Mul,
+        (Add, true) => Lir::I32Add,
+        (Sub, true) => Lir::I32Sub,
+        (Mul, true) => Lir::I32Mul,
     }
 }
 

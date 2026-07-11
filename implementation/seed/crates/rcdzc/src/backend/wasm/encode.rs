@@ -70,4 +70,10 @@ pub mod op {
     pub const ELSE: u8 = 0x05;
     pub const END: u8 = 0x0B;
     pub const LOCAL_GET: u8 = 0x20;
+    pub const I32_ADD: u8 = 0x6A;
+    pub const I32_SUB: u8 = 0x6B;
+    pub const I32_MUL: u8 = 0x6C;
+    pub const I64_ADD: u8 = 0x7C;
+    pub const I64_SUB: u8 = 0x7D;
+    pub const I64_MUL: u8 = 0x7E;
 }

@@ -19,7 +19,7 @@
 
 use crate::ast::{IntValue, StructId};
 use crate::diag::Reject;
-use crate::resolved::Symbol;
+use crate::resolved::{Intrinsic, Symbol};
 use std::collections::BTreeMap;
 
 /// The core (A-normal) form of one node.
@@ -40,6 +40,12 @@ pub enum Core {
     Record { fields: BTreeMap<Symbol, StructId> },
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
     If { cond: StructId, then_: StructId, else_: StructId },
+    /// A runtime arithmetic operation on two operands (children by AST `StructId`). Present only when
+    /// the fold could NOT reduce the operation to a constant (an operand is not compile-time-known —
+    /// which in this increment means it declines, since there are no runtime integer operands yet
+    /// without functions). Constant arithmetic folds to `ConstInt`/`Poison` in `lower`. The machine op
+    /// the backend emits is selected from the operands' solved width.
+    Arith { op: Intrinsic, lhs: StructId, rhs: StructId },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }

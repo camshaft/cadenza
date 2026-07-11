@@ -29,38 +29,50 @@
 /// picks for an unresolved literal (`Int64`).
 pub const DEFAULT_INT_WIDTH: u32 = 64;
 
-/// An integer type: a signedness and a bit width that MAY be deferred. A bare integer literal starts
-/// with `width: None` — it is polymorphic in its width until a constraint fixes it (numeric-literal
-/// defaulting); inference resolves it to a `Some`, or, if it is still `None` when the program is
-/// lowered, the backend grounds it to [`DEFAULT_INT_WIDTH`]. `IntTy { signed: true, width: Some(64) }`
+/// The width of an integer type — the parameter that makes an intrinsic generic over the integer
+/// type. Three states: a `Fixed` concrete width (`64` = `Int64`), a `Deferred` width a bare literal
+/// carries until a constraint fixes it (numeric-literal polymorphism, grounds to the default), or a
+/// `Var` unification variable an intrinsic's signature introduces so `+ : (Int w) → (Int w) → (Int
+/// w)` unifies its operands' widths rather than hard-coding one (`build-order.md` §Stage 2 — generic
+/// over the integer type). Inference resolves a `Var`/`Deferred` to a `Fixed`; the backend grounds a
+/// still-unresolved width to the default.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Width {
+    Fixed(u32),
+    Deferred,
+    Var(u32),
+}
+
+/// An integer type: a signedness and a [`Width`]. `IntTy { signed: true, width: Width::Fixed(64) }`
 /// is `Int64`. The full width semantics — unify only at equal width and signedness, no implicit
-/// promotion, per-width overflow — arrive in a later stage; Stage 0 carries the parameter (and the
-/// deferral) without exercising the constraints.
+/// promotion, per-width overflow — grow on this; the parameter is present from the start so a width is
+/// data the compiler unifies rather than a hard-coded case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct IntTy {
     pub signed: bool,
-    /// The bit width, or `None` if not yet determined — deferred until inference or the backend fixes
-    /// it.
-    pub width: Option<u32>,
+    pub width: Width,
 }
 
 impl IntTy {
     /// A deferred signed integer — the type a bare integer literal takes before any constraint or
     /// defaulting fixes its width.
     pub fn deferred() -> IntTy {
-        IntTy { signed: true, width: None }
+        IntTy { signed: true, width: Width::Deferred }
     }
 
     /// The signed 64-bit integer (`Int64`) — the concrete type an unresolved width grounds to.
     pub fn i64() -> IntTy {
-        IntTy { signed: true, width: Some(DEFAULT_INT_WIDTH) }
+        IntTy { signed: true, width: Width::Fixed(DEFAULT_INT_WIDTH) }
     }
 
-    /// The concrete width this integer takes at the machine boundary: its resolved width, or the
-    /// default if still deferred. The backend reads THIS to pick a representation, so a literal whose
-    /// width inference never constrained still lowers to a definite width.
+    /// The concrete width this integer takes at the machine boundary: its fixed width, or the default
+    /// if still deferred or an unresolved variable. The backend reads THIS to pick a representation,
+    /// so a literal whose width inference never constrained still lowers to a definite width.
     pub fn ground_width(self) -> u32 {
-        self.width.unwrap_or(DEFAULT_INT_WIDTH)
+        match self.width {
+            Width::Fixed(w) => w,
+            Width::Deferred | Width::Var(_) => DEFAULT_INT_WIDTH,
+        }
     }
 }
 
@@ -78,6 +90,12 @@ pub enum Ty {
     /// fields were written (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields), and a
     /// field's type is looked up by name in O(log n).
     Record(std::collections::BTreeMap<crate::resolved::Symbol, Ty>),
+    /// A unification variable — an as-yet-unsolved type inference introduces (e.g. a fresh operand
+    /// type before it is constrained). Resolved to a concrete type by unification; a variable that
+    /// survives to the boundary is an undetermined type (a rejection, not a default). The full HM
+    /// engine that solves these lands with functions; the arithmetic-intrinsic increment uses a
+    /// single variable per operation to be generic over the integer type.
+    Var(u32),
     /// The type of a node the compiler could not type — a poison's type. It is COMPATIBLE with every
     /// type, so a "no" never induces a spurious mismatch upward (the poison itself is the reported
     /// fault, not a type error it would otherwise cascade). A top type for Stage 0's purposes.
@@ -102,11 +120,15 @@ impl Ty {
     pub fn agrees_with(&self, other: &Ty) -> bool {
         match (self, other) {
             (Ty::Any, _) | (_, Ty::Any) => true,
+            // A variable is not yet solved, so it is compatible with anything (unification, not this
+            // relation, is what actually resolves it).
+            (Ty::Var(_), _) | (_, Ty::Var(_)) => true,
             (Ty::Int(a), Ty::Int(b)) => {
                 a.signed == b.signed
                     && match (a.width, b.width) {
-                        (Some(wa), Some(wb)) => wa == wb,
-                        _ => true, // a deferred width has not been fixed, so it is compatible.
+                        (Width::Fixed(wa), Width::Fixed(wb)) => wa == wb,
+                        // a deferred or variable width has not been fixed, so it is compatible.
+                        _ => true,
                     }
             }
             (Ty::Bool, Ty::Bool) => true,
@@ -129,8 +151,15 @@ impl Ty {
     pub fn join(&self, other: &Ty) -> Ty {
         match (self, other) {
             (Ty::Any, t) | (t, Ty::Any) => t.clone(),
+            // A variable yields the other side (the more-defined type).
+            (Ty::Var(_), t) | (t, Ty::Var(_)) => t.clone(),
             (Ty::Int(a), Ty::Int(b)) => {
-                let width = a.width.or(b.width); // prefer whichever branch fixed the width.
+                // Prefer whichever side fixed the width (Fixed > Deferred/Var).
+                let width = match (a.width, b.width) {
+                    (Width::Fixed(w), _) | (_, Width::Fixed(w)) => Width::Fixed(w),
+                    (Width::Deferred, _) | (_, Width::Deferred) => Width::Deferred,
+                    _ => a.width,
+                };
                 Ty::Int(IntTy { signed: a.signed, width })
             }
             // Two agreeing records join field-wise (a deferred width in one branch's field is fixed by
@@ -172,6 +201,7 @@ impl Ty {
                 s.push(')');
                 s
             }
+            Ty::Var(n) => format!("?{n}"),
             Ty::Any => "Any".to_string(),
         }
     }

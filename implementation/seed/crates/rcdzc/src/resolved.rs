@@ -44,6 +44,28 @@ impl Symbol {
     }
 }
 
+/// A built-in arithmetic operation. Each is generic over the integer type: its operands and result
+/// share one width. The `fold` of two constants and the wasm op it selects live in `lower`/`select`;
+/// here it is just which operation a prelude `(intrinsic …)` node denotes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Intrinsic {
+    Add,
+    Sub,
+    Mul,
+}
+
+impl Intrinsic {
+    /// The operation a prelude `(intrinsic NAME)` node names, or `None` if unrecognized.
+    pub fn from_name(name: &str) -> Option<Intrinsic> {
+        match name {
+            "+" => Some(Intrinsic::Add),
+            "-" => Some(Intrinsic::Sub),
+            "*" => Some(Intrinsic::Mul),
+            _ => None,
+        }
+    }
+}
+
 /// The resolved meaning of one AST node. Children are referenced by AST `StructId`; a query descends
 /// by reading their slots on demand.
 #[derive(Clone, PartialEq, Debug)]
@@ -77,6 +99,16 @@ pub enum Resolved {
     /// Generic Projection That Does Not Inspect Its Key). The projection resolves the field against
     /// the operand's type/value downstream.
     Member { operand: StructId, key: Symbol },
+    /// A built-in operation value — what a prelude `(intrinsic …)` node resolves to. Carried through
+    /// the pipeline as a VALUE and translated to instructions only at selection
+    /// (`reference-compiler.md` §A Built-In Operation Is A First-Class Value, Lowered At Selection).
+    Intrinsic(Intrinsic),
+    /// Application of an operation to its arguments — `(op arg…)` where `op` resolves to an intrinsic.
+    /// The same application mechanism a user function will use; arithmetic is binary. `op` and each
+    /// `arg` are AST occurrences resolved on demand; dispatch is by the KIND `op` resolves to (an
+    /// intrinsic), never by the head's spelling (`prelude-and-resolution.md` §A Form Whose Head Is
+    /// Not A Grammar Name Is Dispatched By The Kind Of Value Its Head Resolves To).
+    Apply { op: StructId, args: Vec<StructId> },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled
     /// literal. Carries its reject/decline so the fault is reported at the node it was found.
     Poison(Reject),

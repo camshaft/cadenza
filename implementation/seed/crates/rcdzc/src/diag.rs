@@ -20,8 +20,15 @@ pub enum Code {
     Malformed,
     /// A type mismatch (e.g. an `if` condition that is not a boolean; branches of differing type).
     TypeMismatch,
+    /// Two operands of different numeric types with no explicit conversion (no silent promotion).
+    NumericMismatch,
     /// An integer literal that does not fit the width its use requires.
     IntOutOfRange,
+    /// A constant operation whose defined outcome on its (compile-time-known) operands is a trap —
+    /// e.g. a provable overflow. A compile-provable trap fails the build rather than shipping a
+    /// component that traps at run time (`reference-compiler.md` §A Compile-Provable Trap Fails The
+    /// Build).
+    ConstTrap,
 }
 
 impl Code {
@@ -31,7 +38,9 @@ impl Code {
         match self {
             Code::Malformed => "CDZ0201",
             Code::TypeMismatch => "CDZ0203",
+            Code::NumericMismatch => "CDZ0301",
             Code::IntOutOfRange => "CDZ0302",
+            Code::ConstTrap => "CDZ0304",
         }
     }
 }

@@ -119,6 +119,11 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, value, out);
             }
         }
+        // Both operands of a runtime arithmetic op are unconditionally evaluated — descend into each.
+        Core::Arith { lhs, rhs, .. } => {
+            collect_reached_poisons(db, lhs, out);
+            collect_reached_poisons(db, rhs, out);
+        }
         Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => {}
     }
 }

@@ -166,6 +166,24 @@ is not inference and fails the same way at every lattice point
 build real unification from the start. Re-deriving a type in any later pass — the whole point of solve-once is
 that the type column is read, never recomputed.
 
+**Approach within this stage — intrinsics before functions, and generic over the integer type.** The
+implementation reaches full Hindley-Milner through a smaller first increment that is worth calling out because
+it fixes the shape everything after it reuses: the *application* mechanism arrives first through **arithmetic
+intrinsics**, not through user functions. `(+ a b)` is the application of a built-in operation value — the
+identical mechanism `(f a b)` uses — so realizing it introduces application at its simplest, purely
+compile-time-foldable case (no runtime closure, no capture), before the harder function cases (higher-order,
+returned closures) that need β-reduction through the evaluator. Crucially, an arithmetic intrinsic is **generic
+over the integer type**: `+` types at `(Int w) → (Int w) → (Int w)` for a single width variable `w`, so it
+unifies its operands' widths and signedness rather than hard-coding `Int64` — the first real exercise of a type
+variable and the same width-parametric machinery Stage 7 generalizes to every width. Getting a generic-over-width
+`+` working end-to-end (fold `(+ 2 3)` to `5`, reject a width mismatch as a conflicting use) is the recommended
+first foothold: it is the intersection of the prelude discipline (Stage 1 — the operation is a prelude value,
+lowered at selection), real unification (this stage — one width variable), and the one evaluator (Stage 3 — the
+constant folds). A built-in operation flows through the pipeline as a value and is translated to instructions
+only at selection ([reference-compiler.md §A Built-In Operation Is A First-Class Value, Lowered At Selection](./reference-compiler.md));
+resist the temptation to special-case an operator name in the resolver — it is a prelude entry reached by the
+one lookup, exactly as a collection constructor or a type is.
+
 ### Stage 3 — The A-Normal Core And The One Compile-Time Evaluator
 
 **Establishes.** Lowering of the typed representation to the A-normal core — every non-trivial subexpression
