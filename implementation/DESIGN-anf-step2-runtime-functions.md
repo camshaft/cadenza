@@ -1,9 +1,16 @@
 # ANF step 2 — runtime functions + recursion (`Core::Call`, reachability, recursion typing)
 
-**Status:** design/scoping only — nothing landed. Written 2026-07-11 on branch `rcdzc-rewrite`
-(after ANF step 1 landed `@073efda`). Companion to `scope-next/implementation/DESIGN-anf-rewrite.md`
-(that doc's §7 recommends introducing ANF *with* runtime functions; step 1 did the byte-neutral core
-change, this is the "with runtime functions" half). Line numbers are landmarks at `073efda`.
+**Status (updated 2026-07-11):** A1 landed `@376acc3` (def_scheme), B1 landed `@6fbe023` (Core::Call +
+reachability — ANNOTATED recursive functions run end-to-end). **A2 remains** (unannotated-parameter
+inference — the connected def-body solve) as the deferred miscompile-prone piece; it is what ungates
+the corpus's unannotated recursive cases. Written 2026-07-11 on branch `rcdzc-rewrite`. Companion to
+`scope-next/implementation/DESIGN-anf-rewrite.md` (§7 recommends introducing ANF *with* runtime
+functions). Line numbers were landmarks at `073efda`.
+
+> **B1 outcome:** annotated `sum-to`/`fac`/`all-lt`/`all-ge`/mutual `is-even`/`is-odd` all compile and
+> run under wasmtime; overflow traps across call frames; an unannotated recursive def declines cleanly.
+> The "recursion fixpoint" (A) turned out UNNEEDED for annotated defs (they type by absorption — §2.5),
+> so B1 shipped on the safe path. A2 is purely the unannotated-param solve.
 
 > **The one-line finding.** In the columns-rewrite `rcdzc`, a `Core::Call` is *inseparable from
 > recursion*: every non-recursive user call already FOLDS (β-reduces to a normal form at compile time
