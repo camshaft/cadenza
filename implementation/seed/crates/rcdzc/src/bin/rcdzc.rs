@@ -67,14 +67,19 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     // Install the trace sink at the HOST boundary (the lib core only EMITS events). Output goes to
-    // stderr, filtered by `RUST_LOG` (e.g. `RUST_LOG=rcdzc::infer=trace` to watch only inference, or
-    // `RUST_LOG=rcdzc=trace` for every decision). With no `RUST_LOG` set, nothing is installed and the
+    // stderr, filtered by `CDZ_LOG` (e.g. `CDZ_LOG=rcdzc::infer=trace` to watch only inference, or
+    // `CDZ_LOG=rcdzc=trace` for every decision). With no `CDZ_LOG` set, nothing is installed and the
     // `trace!` sites compile to no-ops at runtime — a normal run pays nothing. The subscriber living
     // only in the binary is the right split: the lib is instrumentation-only, the bin decides the sink.
-    if std::env::var("RUST_LOG").is_ok() {
+    //
+    // A TOOL-PRIVATE env var (not the shared `RUST_LOG`): the pipeline runs as `cargo xtask` driving
+    // `cdz-syntax | rcdzc | cdz-run`, and `RUST_LOG` would fan out to cargo, wasmtime, and every other
+    // `tracing`/`env_logger` consumer in those processes. `CDZ_LOG` is read only by this subscriber, so
+    // `CDZ_LOG=rcdzc=trace` shows the compiler's decisions and nothing else's noise.
+    if std::env::var("CDZ_LOG").is_ok() {
         use tracing_subscriber::{EnvFilter, fmt};
         let _ = fmt()
-            .with_env_filter(EnvFilter::from_default_env())
+            .with_env_filter(EnvFilter::from_env("CDZ_LOG"))
             .with_writer(std::io::stderr)
             // Show each event's source file:line — the trace sites map decisions straight back to
             // the code that made them, which is the whole point of a debugging trace. `tracing`

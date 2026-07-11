@@ -55,8 +55,9 @@ features = ["derive"]
 
 [dependencies.tracing-subscriber]
 # Installs the trace SINK — used ONLY at the host boundary (the CLI bin, and the test harness), never
-# by the lib core. The bin turns on trace output from `RUST_LOG`/`--trace`; the core just emits
-# events. Env-filter lets a debugging run select `rcdzc=trace` without recompiling.
+# by the lib core. The bin turns on trace output from `CDZ_LOG` (a tool-private env var, NOT the shared
+# `RUST_LOG` — so it doesn't fan out to cargo/wasmtime in the pipeline); the core just emits events.
+# Env-filter lets a debugging run select `rcdzc=trace` without recompiling.
 version = "0.3"
 features = ["env-filter", "fmt"]
 
