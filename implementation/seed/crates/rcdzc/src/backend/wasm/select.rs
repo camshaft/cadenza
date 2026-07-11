@@ -173,6 +173,28 @@ fn emit(
             out.push(Lir::End);
             Ok(())
         }
+        // A scalar MATCH → a chain of `if`s. The match's solved type is each arm's block-result type.
+        // Each non-wildcard arm probes `scrutinee == literal` (push scrutinee, push the literal, compare)
+        // and takes its body on a match, else falls through to the next arm; the wildcard arm is the
+        // unconditional tail (`else`). The scrutinee is a scalar, so re-pushing it per probe is a cheap
+        // local reload — no naming needed.
+        Core::Match { scrutinee, arms } => {
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "match result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            let it = int_ty_of(db, scrutinee);
+            emit_match_arms(
+                db, scrutinee, &arms, it, block_ty, slots, base, high, scratch_ty, layout, out,
+            )
+        }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
         // reference to a binder with no slot is a compiler bug (a param not in the signature), so
         // decline rather than emit a wrong `local.get`.
@@ -324,6 +346,66 @@ fn emit(
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),
+    }
+}
+
+/// Emit a scalar match as a chain of `if`s. `arms` is `[(probe, body)…]` in order; `it` is the
+/// scrutinee's integer type (for the comparison op — a boolean scrutinee is compared as an i32). Each
+/// LITERAL arm probes `scrutinee == literal` and takes its body on a match, else recurses on the
+/// remaining arms in the `else`; a WILDCARD arm is the unconditional tail (emit its body, stop). The
+/// scrutinee is re-emitted per probe (a scalar local reload — cheap and correct). `lower` guaranteed a
+/// wildcard tail for a runtime match (exhaustiveness), so the chain always terminates in a body.
+#[allow(clippy::too_many_arguments)]
+fn emit_match_arms(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(crate::core::Probe, StructId)],
+    it: IntTy,
+    block_ty: BlockType,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    match arms.split_first() {
+        None => {
+            // No arm matched and no wildcard — `lower` forbids this for a runtime match, so it is a
+            // compiler bug if reached. Decline rather than emit an undefined fallthrough.
+            Err(Reject::decline(
+                "match ran off the end with no wildcard arm",
+            ))
+        }
+        Some(((crate::core::Probe::Wild, body), _rest)) => {
+            // The wildcard is the unconditional tail — its body is the value, no probe. (Any arms after
+            // a wildcard are unreachable; `lower` keeps them but they never emit.)
+            emit(db, *body, slots, base, high, scratch_ty, layout, out)
+        }
+        Some(((probe, body), rest)) => {
+            // A literal probe: `scrutinee == literal`, then `if (block_ty) body else <rest>`.
+            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
+            match probe {
+                crate::core::Probe::Int(v) => {
+                    let m = Machine::of(it);
+                    out.push(m.konst(v.to_i64_bits()));
+                    out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+                }
+                crate::core::Probe::Bool(b) => {
+                    out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
+                    out.push(Lir::I32Eq);
+                }
+                crate::core::Probe::Wild => unreachable!("wildcard handled above"),
+            }
+            out.push(Lir::If(block_ty));
+            emit(db, *body, slots, base, high, scratch_ty, layout, out)?;
+            out.push(Lir::Else);
+            emit_match_arms(
+                db, scrutinee, rest, it, block_ty, slots, base, high, scratch_ty, layout, out,
+            )?;
+            out.push(Lir::End);
+            Ok(())
+        }
     }
 }
 

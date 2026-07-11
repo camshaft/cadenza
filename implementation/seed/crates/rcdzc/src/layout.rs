@@ -166,6 +166,12 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, rhs, out);
         }
         crate::core::Core::Convert { operand, .. } => collect_call_callees(db, operand, out),
+        crate::core::Core::Match { scrutinee, arms } => {
+            collect_call_callees(db, scrutinee, out);
+            for (_, body) in arms {
+                collect_call_callees(db, body, out);
+            }
+        }
         crate::core::Core::Record { fields } => {
             for value in fields.values() {
                 collect_call_callees(db, *value, out);

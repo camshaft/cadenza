@@ -95,6 +95,18 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // CHECKS are `type_errors`' job; this fills the value column.
             then_ty.join(&else_ty)
         }
+        // A match's type is the JOIN of its arm bodies (like an `if` over N branches) — every arm must
+        // produce the same type, and a branch that fixed a deferred width contributes it. The
+        // arms-agree and exhaustiveness CHECKS are `type_errors`' job; this fills the value column.
+        Resolved::Match { scrutinee, arms } => {
+            let _scrut = type_of(db, scrutinee);
+            let mut ty = Ty::Any;
+            for (_, body) in &arms {
+                let bt = type_of(db, *body);
+                ty = ty.join(&bt);
+            }
+            ty
+        }
         // A bare built-in operation value standing alone has no scalar type yet (it is not a runtime
         // value until functions/closures exist). Typed `Any`; applying it is what has a type.
         Resolved::Prim(_) => Ty::Any,
@@ -329,6 +341,22 @@ fn collect_param_constraints(
             collect_param_constraints(db, then_, env, def, subst, fresh);
             collect_param_constraints(db, else_, env, def, subst, fresh);
         }
+        Resolved::Match { scrutinee, arms } => {
+            // Each LITERAL pattern constrains the scrutinee's type: matching `n` against the integer
+            // literal `0` (or `true`) means `n` has that literal's type. So unify the scrutinee's type
+            // with each non-wildcard pattern's type — this is what pins a `match`-based recursive
+            // parameter (`(match n (0 …) (_ …))` → `n : Int64`). Then descend into scrutinee + bodies.
+            let st = arg_ty_in_env(db, scrutinee, env, subst);
+            for (pat, _) in &arms {
+                if let Some(pt) = literal_pattern_ty(db, *pat) {
+                    let _ = crate::unify::unify(subst, &st, &pt);
+                }
+            }
+            collect_param_constraints(db, scrutinee, env, def, subst, fresh);
+            for (_, body) in &arms {
+                collect_param_constraints(db, *body, env, def, subst, fresh);
+            }
+        }
         Resolved::Let { bindings, body } => {
             for (_, value) in bindings {
                 collect_param_constraints(db, value, env, def, subst, fresh);
@@ -347,6 +375,18 @@ fn collect_param_constraints(
         // Leaves and references contribute no sub-constraints (a bare param ref's constraint comes from
         // the operation that consumes it, handled at the enclosing Apply).
         _ => {}
+    }
+}
+
+/// The type a LITERAL match pattern implies for the scrutinee, or `None` for a non-literal pattern (the
+/// wildcard `_`, or a binder — which constrains nothing). An integer-literal pattern implies a deferred
+/// integer (grounds like a bare literal); a boolean-literal pattern implies `Bool`. Used to constrain a
+/// scrutinee from its arms (both in the parameter solve and — later — exhaustiveness).
+fn literal_pattern_ty(db: &mut Db, pat: StructId) -> Option<Ty> {
+    match resolved_of(db, pat) {
+        Resolved::Int(_) => Some(Ty::int()),
+        Resolved::Bool(_) => Some(Ty::Bool),
+        _ => None,
     }
 }
 
@@ -694,6 +734,31 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, value, out);
             }
             collect(db, body, out);
+        }
+        // A match: every arm body must AGREE in type with the first (like an `if`'s branches), and the
+        // scrutinee + bodies are checked for their own faults. (Exhaustiveness — a scalar match with no
+        // covering arm — is a lowering decision for now; the arms-agree check is the type fault here.)
+        Resolved::Match { scrutinee, arms } => {
+            if let Some((_, first_body)) = arms.first() {
+                let first_ty = type_of(db, *first_body);
+                for (_, body) in arms.iter().skip(1) {
+                    let bt = type_of(db, *body);
+                    if !first_ty.agrees_with(&bt) {
+                        out.push(Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "match arms differ: {} vs {}",
+                                first_ty.render_name(),
+                                bt.render_name()
+                            ),
+                        ));
+                    }
+                }
+            }
+            collect(db, scrutinee, out);
+            for (_, body) in &arms {
+                collect(db, *body, out);
+            }
         }
         Resolved::Record { fields } => {
             for (_, value) in fields {

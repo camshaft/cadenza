@@ -32,6 +32,10 @@ pub enum Code {
     /// component that traps at run time (`reference-compiler.md` §A Compile-Provable Trap Fails The
     /// Build).
     ConstTrap,
+    /// A `match` that does not cover its scrutinee — a coverage defect (the pattern engine's
+    /// non-exhaustiveness rejection, distinct from a shape defect). For a scalar scrutinee this is a
+    /// match with no wildcard tail; for a sum it is a missing variant (a later increment).
+    NonExhaustive,
 }
 
 impl Code {
@@ -45,6 +49,7 @@ impl Code {
             Code::NumericMismatch => "CDZ0301",
             Code::IntOutOfRange => "CDZ0302",
             Code::ConstTrap => "CDZ0304",
+            Code::NonExhaustive => "CDZ0210",
         }
     }
 }

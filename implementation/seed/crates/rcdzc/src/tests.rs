@@ -1423,6 +1423,137 @@ mod recursion {
     }
 }
 
+// ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────
+//
+// A `(match scrutinee (pattern body)…)` over a SCALAR scrutinee — the build-order Stage 4 "const-fold
+// matching + scalar runtime first, before the value heap." A constant scrutinee folds to the selected
+// arm; a runtime scalar emits a chain of `if` probes. Well-formedness (a type-mismatched pattern, a
+// non-exhaustive match) is checked STRUCTURALLY, before the fold. These run whole programs under
+// wasmtime + assert the rejections.
+mod match_engine {
+    use super::run_returns;
+    use crate::backend::Target;
+    use crate::compile::{compile, compile_component};
+    use crate::testkit::parse;
+
+    fn component(src: &str) -> Vec<u8> {
+        compile_component(&crate::codec::encode(&parse(src))).expect("compile")
+    }
+
+    /// The coded rejection a program produces, or `None` if it compiled. Used to pin a well-formedness
+    /// rejection (CDZ code) rather than a silent miscompile.
+    fn reject_code(src: &str) -> Option<String> {
+        let out = compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[Target::Wasm],
+        );
+        if out.artifact(Target::Wasm.artifact_kind()).is_some() {
+            return None; // compiled — no rejection
+        }
+        out.diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .and_then(|d| d.code.clone())
+    }
+
+    #[test]
+    fn a_constant_scrutinee_folds_to_the_selected_arm() {
+        // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module m (def (main) (match 0 (0 42) (_ 99))) (export main))"),
+                "main"
+            ),
+            42
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module m (def (main) (match 5 (0 42) (_ 99))) (export main))"),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
+    fn a_computed_constant_scrutinee_folds_by_value() {
+        // The scrutinee `(% 4 2)` folds to 0 (empty-magnitude IntValue) — it must match the literal `0`
+        // pattern (`[0]` magnitude) BY VALUE, selecting arm 0. Pins the `IntValue::eq_value` fix (a
+        // struct `==` would miss and fall to the wildcard → the parity-dispatch miscompile).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (parity n) (match (% n 2) (0 0) (_ 1))) (def (main) (parity 4)) (export main))"
+                ),
+                "main"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn a_runtime_scalar_match_emits_a_probe_chain() {
+        // fib with literal match base cases — a runtime scrutinee (the param `n`) matched against 0/1/_,
+        // emitting the probe chain. fib(10) = 55.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (fib n) (match n (0 0) (1 1) (_ (+ (fib (- n 1)) (fib (- n 2)))))) (def (main) (fib 10)) (export main))"
+                ),
+                "main"
+            ),
+            55
+        );
+        // fact with a match base case: fact(5) = 120.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (fact n) (match n (0 1) (_ (* n (fact (- n 1)))))) (def (main) (fact 5)) (export main))"
+                ),
+                "main"
+            ),
+            120
+        );
+    }
+
+    #[test]
+    fn a_type_mismatched_pattern_is_rejected() {
+        // A boolean pattern against an integer scrutinee is a type error (CDZ0201) — checked
+        // STRUCTURALLY, not silently treated as a never-matching arm. (Even with a constant scrutinee.)
+        assert_eq!(
+            reject_code("(module m (def (main) (match 5 (true 1) (_ 0))) (export main))")
+                .as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
+    fn a_non_exhaustive_scalar_match_is_rejected_even_when_a_constant_hits_an_arm() {
+        // A scalar match with no wildcard tail is non-exhaustive (CDZ0210) — a program is ill-formed if
+        // it would not cover some value, EVEN when the constant scrutinee happens to hit an arm. The
+        // check is structural, before the fold.
+        assert_eq!(
+            reject_code("(module m (def (main) (match 5 (5 1))) (export main))").as_deref(),
+            Some("CDZ0210")
+        );
+    }
+
+    #[test]
+    fn a_non_wildcard_pattern_after_a_literal_still_needs_a_wildcard() {
+        // Two literal arms with no wildcard — non-exhaustive over the integers (CDZ0210), regardless of
+        // whether the runtime scrutinee would hit one.
+        assert_eq!(
+            reject_code("(module m (def (f (: n Int64)) (match n (0 1) (1 2))) (export f))")
+                .as_deref(),
+            Some("CDZ0210")
+        );
+    }
+}
+
 // ── decline-don't-miscompile ───────────────────────────────────────────────────────────────────
 
 /// An unsupported construct reached unconditionally yields NO component and an error diagnostic —

@@ -29,14 +29,20 @@ pass	a later let binding sees an earlier one in the same let
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
+pass	a match on a computed runtime value dispatches on the result
+pass	a match on a record field selects a later literal arm
+pass	a match on a record-field-access scrutinee dispatches on the field value
+pass	a match on a runtime integer scrutinee producing a boolean
 pass	a name resolves to the nearest enclosing binding
 pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies to all its arguments at once
 pass	a negative hexadecimal literal negates its value
+pass	a nested match on a runtime scrutinee
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a parameter carries a type annotation in the signature
 pass	a record is constructed and a field is read
 pass	a recursive def computes over its argument
+pass	a recursive def with a match base case computes over its argument
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a repeated let binding shadows the earlier one for what follows
@@ -98,6 +104,8 @@ pass	modulo gives the remainder
 pass	multi-argument application is curried application
 pass	multiplication
 pass	projecting a field is independent of the order fields are written
+pass	recursive factorial with a match base case
+pass	recursive fibonacci with literal match base cases
 pass	structural equality holds component-wise
 pass	subtraction
 pass	the boolean literals
@@ -110,6 +118,7 @@ pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
+pass	the largest factorial that fits the integer type computes exactly
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the minimum Int64 literal reads as an integer
@@ -298,10 +307,6 @@ todo	a map with values of two different types is a type error
 todo	a match arm binds a nested tuple inside a sum payload
 todo	a match arm building a fresh runtime compound infers its shape
 todo	a match not covering the scrutinee is a compile-time rejection
-todo	a match on a computed runtime value dispatches on the result
-todo	a match on a record field selects a later literal arm
-todo	a match on a record-field-access scrutinee dispatches on the field value
-todo	a match on a runtime integer scrutinee producing a boolean
 todo	a match on a tuple-element-access scrutinee dispatches on the element value
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
@@ -338,7 +343,6 @@ todo	a nested constructor payload that misses the inner variant falls through to
 todo	a nested constructor value dispatches on both tags in a match
 todo	a nested element kind mismatch in equality is a type error
 todo	a nested literal pattern of the wrong type is a type error
-todo	a nested match on a runtime scrutinee
 todo	a nested option value annotated with the wrong inner payload type is rejected
 todo	a nested runtime tuple is returned as a result
 todo	a nested sum match missing an inner variant is non-exhaustive
@@ -394,7 +398,6 @@ todo	a record with a duplicate field name is a type error
 todo	a record with a non-adjacent duplicate field name is a type error
 todo	a record with a runtime field is returned as a program result
 todo	a recursive byte walk sums a runtime sequence via Bytes.at and match
-todo	a recursive def with a match base case computes over its argument
 todo	a recursive emitter dispatches on a sum's variants to build bytes per node
 todo	a recursive fold of a cons-list to bytes is the whole program result
 todo	a recursive function counts down through a stateful effect and bails at zero
@@ -814,8 +817,6 @@ todo	reading the text a printer produced round-trips to an equal value
 todo	record equality is independent of the order fields are written
 todo	record fields render in canonical (key-sorted) order regardless of source order
 todo	record reshaping is subset comparison as explicit projection
-todo	recursive factorial with a match base case
-todo	recursive fibonacci with literal match base cases
 todo	removing a key drops its association and the size
 todo	removing an absent key leaves the map unchanged
 todo	removing an element yields a set without it
@@ -877,7 +878,6 @@ todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
 todo	the guarded-let conditional takes its else-branch when the conjunction is false
 todo	the intersection contains the elements in both sets
-todo	the largest factorial that fits the integer type computes exactly
 todo	the le modifier encodes a u16 little-endian
 todo	the length of a byte sequence is its byte count
 todo	the length of a concatenation is the sum of the two lengths

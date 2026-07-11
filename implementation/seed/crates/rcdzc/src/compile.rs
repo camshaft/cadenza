@@ -216,6 +216,12 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, arg, out);
             }
         }
+        // A match: the scrutinee is unconditionally evaluated (descend), but each arm BODY is guarded
+        // (only the matching arm runs) — so a provable trap inside an arm is NOT a build failure, the
+        // same reachability rule as an `if`'s branches. Do not descend into the arm bodies.
+        Core::Match { scrutinee, .. } => {
+            collect_reached_poisons(db, scrutinee, out);
+        }
         // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
         Core::LocalRef { .. }
         | Core::Param { .. }

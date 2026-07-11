@@ -92,6 +92,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             },
         },
         Resolved::If { cond, then_, else_ } => Core::If { cond, then_, else_ },
+        // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
+        // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
+        Resolved::Match { scrutinee, arms } => lower_match(db, scrutinee, &arms),
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
         Resolved::Prim(_) => Core::Poison(Reject::decline(
@@ -224,6 +227,145 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
     }
 }
 
+/// Lower a `(match scrutinee (pattern body)…)` over a SCALAR scrutinee. Each pattern classifies to a
+/// [`Probe`] (an integer/boolean literal, or the wildcard `_`); a pattern that is neither declines
+/// (binder/sum/tuple patterns are a later increment). If the scrutinee FOLDS to a constant, select the
+/// first arm whose probe it satisfies and lower THAT arm's body (no runtime match — like the const
+/// `if` fold). Otherwise the scrutinee is a runtime scalar: emit a `Core::Match` the backend lowers to
+/// a probe chain. A match with no arm that can match a runtime scrutinee (no wildcard and the literals
+/// are not exhaustive) is non-exhaustive — for a scalar that is almost always non-exhaustive, so Stage
+/// 3a REQUIRES a wildcard tail for a runtime match (else declines, CDZ0210 territory) rather than
+/// emitting a fallthrough with no defined value.
+fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // Classify each arm's pattern into a probe + keep its body. A non-scalar pattern declines the whole
+    // match (a later increment handles binder/sum/tuple patterns).
+    let mut probes: Vec<(crate::core::Probe, StructId)> = Vec::new();
+    for &(pat, body) in arms {
+        match classify_probe(db, pat) {
+            Some(p) => probes.push((p, body)),
+            None => {
+                return Core::Poison(Reject::decline(
+                    "a match pattern that is not a scalar literal or `_` is not yet supported",
+                ));
+            }
+        }
+    }
+    // WELL-FORMEDNESS (checked STRUCTURALLY, before any fold — a constant scrutinee does not excuse a
+    // type-mismatched pattern or a non-exhaustive match; a match is well-formed or not regardless of
+    // what the scrutinee happens to be):
+    let scrut_ty = crate::infer::type_of(db, scrutinee);
+    //  (1) each LITERAL pattern's type must agree with the scrutinee's — a bool pattern against an
+    //      integer scrutinee (or vice-versa) is a shape/type error (CDZ0201), not a never-matching arm.
+    for (probe, _) in &probes {
+        let pat_ty = match probe {
+            crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
+            crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
+            crate::core::Probe::Wild => None,
+        };
+        if let Some(pt) = pat_ty
+            && !pt.agrees_with(&scrut_ty)
+        {
+            return Core::Poison(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "match pattern type {} does not match scrutinee type {}",
+                    pt.render_name(),
+                    scrut_ty.render_name()
+                ),
+            ));
+        }
+    }
+    //  (2) exhaustiveness: a scalar match needs a wildcard tail (no finite literal set covers every
+    //      integer/bool value in Stage 3a). This holds EVEN when the scrutinee is a constant that hits
+    //      an arm — a program is ill-formed if it would not cover some value. Without a wildcard, reject.
+    let has_wild = probes
+        .iter()
+        .any(|(p, _)| matches!(p, crate::core::Probe::Wild));
+    if !has_wild {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a scalar match must end in a wildcard `_` arm (non-exhaustive)",
+        ));
+    }
+
+    // Well-formed. FOLD if the scrutinee is a compile-time constant: select the first arm whose probe
+    // it satisfies and lower THAT body (no runtime match, like the const `if` fold).
+    match core_of(db, scrutinee) {
+        Core::ConstInt(v) => {
+            for (probe, body) in &probes {
+                if probe_matches_int(probe, &v) {
+                    trace!(target: "rcdzc::fold", "match folds to a selected arm (constant Int scrutinee)");
+                    return core_of(db, *body);
+                }
+            }
+            // Unreachable: a wildcard is present (checked above), so some arm always matches.
+            return Core::Poison(Reject::decline(
+                "match: no arm matched a constant (unreachable)",
+            ));
+        }
+        Core::ConstBool(b) => {
+            for (probe, body) in &probes {
+                if probe_matches_bool(probe, b) {
+                    trace!(target: "rcdzc::fold", "match folds to a selected arm (constant Bool scrutinee)");
+                    return core_of(db, *body);
+                }
+            }
+            return Core::Poison(Reject::decline(
+                "match: no arm matched a constant (unreachable)",
+            ));
+        }
+        Core::Poison(r) => return Core::Poison(r),
+        _ => {}
+    }
+    // Runtime scalar scrutinee — it must BE a scalar (a compound needs a heap walk, later).
+    if !is_scalar(db, scrutinee) {
+        return Core::Poison(Reject::decline(
+            "matching a compound value needs a heap walk (not yet built)",
+        ));
+    }
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = probes.len(), "match stays runtime (scalar scrutinee → probe chain)");
+    Core::Match {
+        scrutinee,
+        arms: probes,
+    }
+}
+
+/// Classify a match PATTERN occurrence into a [`Probe`], or `None` if it is not a Stage-3a scalar
+/// pattern. An integer/boolean literal is a literal probe; the bare name `_` is the wildcard. (A binder
+/// name, a constructor, a tuple/record pattern are later increments — they return `None` here.)
+fn classify_probe(db: &mut Db, pat: StructId) -> Option<crate::core::Probe> {
+    // The wildcard `_` reads as a bare name. Detect it BEFORE resolving (resolve would treat `_` as an
+    // ordinary name lookup / poison); a `_` pattern is the always-match tail.
+    if db.ast.as_name(pat) == Some("_") {
+        return Some(crate::core::Probe::Wild);
+    }
+    match resolved_of(db, pat) {
+        Resolved::Int(v) => Some(crate::core::Probe::Int(v)),
+        Resolved::Bool(b) => Some(crate::core::Probe::Bool(b)),
+        _ => None,
+    }
+}
+
+/// Whether a probe matches a constant integer scrutinee (for the fold). A `Wild` matches anything. The
+/// literal comparison is BY VALUE (`eq_value`) — a folded `0` (empty magnitude) and a literal `0`
+/// (`[0]`) denote the same integer, so struct `==` would wrongly miss (the parity-dispatch bug).
+fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
+    match probe {
+        crate::core::Probe::Int(p) => p.eq_value(v),
+        crate::core::Probe::Wild => true,
+        crate::core::Probe::Bool(_) => false,
+    }
+}
+
+/// Whether a probe matches a constant boolean scrutinee (for the fold). A `Wild` matches anything.
+fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
+    match probe {
+        crate::core::Probe::Bool(p) => *p == b,
+        crate::core::Probe::Wild => true,
+        crate::core::Probe::Int(_) => false,
+    }
+}
+
 /// A lambda application whose β-reduction DECLINED with `msg`: emit a runtime `Core::Call` if it
 /// declined because the callee is a RECURSIVE top-level def with a DETERMINED signature; otherwise
 /// propagate the decline. This is the ONE place a recursive call becomes a real wasm call instead of an
@@ -353,6 +495,15 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             let mut n = uses_in(db, head, init);
             for a in &args {
                 n += uses_in(db, *a, init);
+            }
+            n
+        }
+        // A match: the scrutinee and every arm body may reference the binding. (A literal pattern is a
+        // constant, not a reference.) The scrutinee runs once; each arm body is a distinct use position.
+        Resolved::Match { scrutinee, arms } => {
+            let mut n = uses_in(db, scrutinee, init);
+            for (_, body) in &arms {
+                n += uses_in(db, *body, init);
             }
             n
         }

@@ -32,6 +32,20 @@ use crate::diag::Reject;
 use crate::resolved::{Prim, Symbol};
 use std::collections::BTreeMap;
 
+/// A match-arm PROBE — the test that decides whether an arm is taken (Stage 3a: scalar patterns). A
+/// literal probe compares the scrutinee against a constant; the wildcard always matches (the arm is
+/// the unconditional tail). Carried as DATA (not a synthesized comparison node), so lowering a `match`
+/// builds no AST. Binder/sum/tuple probes extend this enum in later increments.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Probe {
+    /// `scrutinee == this integer` — an integer-literal pattern.
+    Int(IntValue),
+    /// `scrutinee == this boolean` — a boolean-literal pattern.
+    Bool(bool),
+    /// The wildcard `_` (or a bare binder in a later increment) — always matches.
+    Wild,
+}
+
 /// The core (A-normal) form of one node.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Core {
@@ -53,6 +67,18 @@ pub enum Core {
         cond: StructId,
         then_: StructId,
         else_: StructId,
+    },
+    /// A scalar MATCH over `scrutinee` — arms tried top-to-bottom, each a `(probe, body)`. A `Probe`
+    /// is either a literal to compare the scrutinee against (`== literal`) or the wildcard (always
+    /// matches). Present only when the scrutinee is a RUNTIME scalar (a constant scrutinee folds to the
+    /// selected arm's core in `lower`). The backend emits a chain of `if`s: probe the scrutinee against
+    /// each literal, take that arm's body on a match, else fall through to the next; a wildcard arm is
+    /// the unconditional tail. `scrutinee` and each body are AST `StructId`s (lowered on demand); the
+    /// probe carries the literal as data so no comparison node is synthesized. Binder/sum/tuple probes
+    /// join this in later increments.
+    Match {
+        scrutinee: StructId,
+        arms: Vec<(Probe, StructId)>,
     },
     /// An A-normal binding sequence: name each `(binder, value)` — its VALUE computed once — then the
     /// `body` uses each name by a [`Core::LocalRef`]. The `binder` is the initializer's AST `StructId`

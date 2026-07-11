@@ -45,6 +45,7 @@ use tracing::trace;
 const GRAMMAR: &[&str] = &[
     "let",
     "if",
+    "match",
     "record",
     ".",
     "module",
@@ -106,6 +107,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             }
             match db.ast.head_name(id) {
                 Some("if") => resolve_if(db, id),
+                Some("match") => resolve_match(db, id),
                 Some("let") => resolve_let(db, id),
                 Some("record") => resolve_record(db, id),
                 Some(".") => resolve_member(db, id),
@@ -405,6 +407,35 @@ fn resolve_if(db: &Db, id: StructId) -> Resolved {
         then_: tail[1],
         else_: tail[2],
     }
+}
+
+/// Resolve `(match SCRUTINEE (PATTERN BODY)…)` into its resolved form. The scrutinee and each arm's
+/// pattern/body stay AST occurrences (resolved on their own demand); this records only the shape. Each
+/// arm must be a two-element `(pattern body)` list. A `match` with no arms is malformed.
+fn resolve_match(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "match").unwrap_or(&[]);
+    let scrutinee = match tail.first() {
+        Some(&s) => s,
+        None => {
+            return Resolved::Poison(Reject::coded(Code::Malformed, "match has no scrutinee"));
+        }
+    };
+    let mut arms: Vec<(StructId, StructId)> = Vec::new();
+    for &arm in &tail[1..] {
+        match db.ast.get(arm) {
+            Struct::List(pb) if pb.len() == 2 => arms.push((pb[0], pb[1])),
+            _ => {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a match arm must be (pattern body)",
+                ));
+            }
+        }
+    }
+    if arms.is_empty() {
+        return Resolved::Poison(Reject::coded(Code::Malformed, "match has no arms"));
+    }
+    Resolved::Match { scrutinee, arms }
 }
 
 /// Resolve `(let (BINDINGS) BODY)` into its resolved form. The bindings are `(name init)` pairs; scope

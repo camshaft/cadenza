@@ -349,6 +349,15 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             collect_callees(db, then_, out);
             collect_callees(db, else_, out);
         }
+        // A match's scrutinee and every arm BODY run when this body runs — a self-call inside an arm
+        // (e.g. `sum-to`'s match base case) is a real edge, so descend into each. (A pattern is not
+        // executed code — it is a probe — so it contributes no callee.)
+        Resolved::Match { scrutinee, arms } => {
+            collect_callees(db, scrutinee, out);
+            for (_, body) in arms {
+                collect_callees(db, body, out);
+            }
+        }
         Resolved::Let { bindings, body } => {
             for (_, value) in bindings {
                 collect_callees(db, value, out);
