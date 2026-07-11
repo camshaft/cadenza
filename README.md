@@ -1,83 +1,71 @@
 # Cadenza
 
-A programming language built **for AI agents** — easy for an agent to write and read,
-easy for a human to read, easy to verify properties of, and compiled to sandboxed
-WebAssembly components.
+A programming language **for AI agents** — easy for an agent to write and read, easy for a human to
+read, easy to verify, and compiled to sandboxed WebAssembly components.
 
-This repository is **spec-driven**: the specifications are the only durable artifact, and
-the compiler is a disposable, regenerable projection of them. When a design turns out
-wrong, we rework the spec and regenerate rather than patch a live compiler. This is safe by
-construction — a program's meaning lives in its source, the runnable form is a
-content-addressed component re-derivable from that source, and the compiler that derives it
-can be rebuilt from these specs at any time.
+Cadenza is **spec-driven**: the specifications are the only durable artifact, and the compiler is a
+disposable, regenerable projection of them. A defect is fixed in the source or the spec and
+recompiled — never by patching a live compiler.
 
-## The idea, in four turns
+## The idea
 
-1. **The source is the truth; the component is derived.** A program's meaning lives in its
-   source. Its runnable form is a content-addressed WebAssembly component that is a
-   reproducible function of that source — a rebuildable artifact, never the authority. A
-   defect is fixed in the source or the spec and recompiled, never by editing a component.
-2. **Determinism and capability-safety are not features; they are the floor.** The same
-   source and toolchain produce byte-identical output; the same input produces byte-identical
-   results on every runtime; a component reaches nothing its manifest did not declare;
-   execution is bounded by a deterministic fuel measure, never by wall-clock time. These hold
-   by construction, not by convention.
-3. **Verification is progressive.** A program compiles when only the core guarantees — types,
-   determinism, capability-safety — hold. Contracts, refinement types, effect tracking, and
-   machine-checked proofs are opt-in layers a program adds as it matures, and adding a layer
-   never changes what a program already means.
-4. **The language can build itself.** The executable-semantics corpus is the single source of
-   truth for behavior and the behavioral oracle; independence comes from two implementations of
-   the compiler — a foreign-language seed and the Cadenza-authored compiler — that must agree. The
-   seed compiler derives the first Cadenza toolchain to a component; from there each generation of
-   the language is authored in Cadenza and derived by the one before it — the flywheel.
+- **The source is the truth; the component is derived.** A program's meaning lives in its source; its
+  runnable form is a content-addressed WebAssembly component, a reproducible function of that source.
+- **Determinism and capability-safety are the floor, not features.** Same source + toolchain → byte-identical
+  output; same input → identical results on every runtime; a component reaches only what its manifest
+  declares; execution is bounded by a deterministic fuel measure. By construction, not convention.
+- **Verification is progressive.** A program compiles when the core guarantees hold (types, determinism,
+  capability-safety). Contracts, refinement types, effect tracking, and proofs are opt-in layers added
+  as a program matures — and adding one never changes what the program already means.
+- **The language builds itself.** The executable-semantics corpus is the behavioral oracle;
+  independence comes from two compilers — a foreign-language seed and the Cadenza-authored one — that
+  must agree. The seed derives the first Cadenza toolchain; each later generation is authored in
+  Cadenza and derived by the one before it.
 
-## Why Cadenza exists
+The target is a pool of agents over a durable event log: behavior is published as source + a capability
+manifest, and its runnable form is a sandboxed, content-addressed component. The system's frozen root
+only loads, verifies, and runs components — it has no compiler. Cadenza is the replaceable,
+capability-gated build tool that turns source into those components, and is itself one.
 
-Cadenza is a source language and derivation tool for a target system — a pool of agents over
-one durable event log, where behavior itself is data published on the log as source plus a
-capability manifest, and the runnable form of that behavior is a sandboxed, content-addressed
-component derived from the source. That system's frozen root only loads, verifies, and runs
-components; it contains no compiler. Cadenza is the replaceable, capability-gated build tool
-that turns source into components the target can run — and is itself such a
-component. The constraints the target places on the behavior it runs — determinism,
-capability-safety, bounded termination, reproducible derivation, content-addressing — are the
-constraints this language is designed around.
+## Working in the repo
+
+The seed toolchain is a Rust workspace under `implementation/seed/`, driven entirely by **`cargo xtask`**
+(the one interface — see the `seed-workspace` skill for the full tour).
+
+```sh
+cargo xtask setup                 # FIRST, in a fresh clone/worktree: links .claude/{skills,commands}
+cargo xtask run prog.cdz          # compile-and-run a program, print the result
+cargo xtask gate                  # run the executable-semantics corpus, grade every case
+cargo xtask check                 # omnibus health: build + test + clippy + wasm runtime + gate
+```
+
+`.claude/` is gitignored, so `setup` wires this checkout up to the tracked `skills/` and `commands/`.
 
 ## Layout
 
 - `constitution.md` — the non-negotiable invariants, as normative requirements.
 - `spec/overview.md` — the architecture and intent; the north star every requirement traces to.
-- `spec/glossary.md` — the controlled vocabulary.
-- `spec/contracts/` — **frozen** byte- and ABI-level forms, honored across every regeneration
-  of the compiler.
+- `spec/contracts/` — **frozen** byte- and ABI-level forms, honored across every regeneration.
 - `spec/capabilities/` — the behavior of the language and its compiler, implementation-free.
-- `spec/semantics/` — the one executable semantics corpus: the single source of truth for what
-  every construct *does*, gated by execution.
-- `spec/bootstrap.md` — the seed toolchain and the line of sight to self-hosting.
+- `spec/semantics/` — the one executable-semantics corpus: the source of truth for what every construct *does*.
+- `spec/bootstrap.md` — the seed toolchain and the line to self-hosting.
 - `spec/learnings/` — dated post-mortems that drove this design.
-- `options/` — the open **decisions** (component format, engine, hashing, numeric model, code shape,
-  …), each a directory of candidate **choices** with a **declared default** — accept the default,
-  pick another choice, or author your own for that one decision.
-- `templates/` — authoring templates for contracts, capability specs, learnings, and semantics
-  cases.
-- `.duvet/` — the conformance gate: every normative sentence extracted and mapped to the code
-  and tests that satisfy it.
+- `options/` — open **decisions**, each a directory of candidate **choices** with a declared default.
+- `implementation/seed/` — the Rust seed workspace (front end, compiler, runtime, host); `xtask/` drives it.
+- `.duvet/` — the conformance gate: every normative sentence mapped to the code and tests that satisfy it.
 
 ## The conformance gate
 
 Every normative statement is a single RFC-2119 sentence under a stable heading, so
-[duvet](https://github.com/awslabs/duvet) can extract it. A requirement's identity is
-`(spec file, section, quoted sentence)` — there are no invented identifiers, and changing a
-sentence's wording flags every citation that no longer matches it. A regenerated compiler
-cites the requirements it satisfies; a generation in which any load-bearing requirement lacks
-both an implementation citation and a test citation is not promoted. Behavior carries a second
-gate: every case in `spec/semantics/` must execute to its recorded output.
+[duvet](https://github.com/awslabs/duvet) can extract it — a requirement's identity is `(spec file,
+section, quoted sentence)`, so changing wording flags every citation that no longer matches. A
+regenerated compiler cites the requirements it satisfies; a generation in which any load-bearing
+requirement lacks both an implementation and a test citation is not promoted. Behavior carries a second
+gate: every case in `spec/semantics/` must execute to its recorded output (`cargo xtask gate`).
 
 ## Status
 
-Clean-room specification, in authoring. The compiler is a regenerable projection and is not
-committed to this branch. Prior generations of Cadenza — a tree-walking interpreter, a Salsa
-incremental core, a declarative meta-compiler, and a K-framework reference — are historical
-prior art; the specs here are standalone and derive the language from first principles for the
-agent-first, verifiable, WebAssembly-component north star.
+Clean-room specification, in authoring, with the seed toolchain climbing the corpus. The compiler is a
+regenerable projection. Prior generations — a tree-walking interpreter, a Salsa incremental core, a
+declarative meta-compiler, a K-framework reference — are historical prior art; these specs are
+standalone and derive the language from first principles.
