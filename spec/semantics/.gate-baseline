@@ -1,34 +1,52 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	a binary integer literal
 pass	a binary literal with digit separators
+pass	a boolean parameter forwarded to a conditional result
+pass	a boolean-parameter function applied to false
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional's condition may itself be a conditional
 pass	a decimal integer literal
+pass	a function applied to an argument
+pass	a function bound to a name and then applied
+pass	a function is passed as an argument (higher-order)
+pass	a function is returned as a result
+pass	a function takes a boolean parameter and branches on it
+pass	a function whose name is capitalized is called, not treated as a constructor
 pass	a hexadecimal integer literal
 pass	a hexadecimal literal with digit separators
 pass	a later let binding sees an earlier one in the same let
 pass	a let binding is in scope in its body
+pass	a let binding shadows a built-in constructor name in application-head position
+pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a name resolves to the nearest enclosing binding
+pass	a named higher-order function receives a lambda argument
+pass	a named multi-argument function applies to all its arguments at once
 pass	a negative hexadecimal literal negates its value
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a record is constructed and a field is read
 pass	a repeated let binding shadows the earlier one for what follows
+pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an inner binding shadows an outer one only within its scope
 pass	an integer literal with digit separators
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an underscore-letter identifier binds and resolves
+pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	arithmetic within one integer type
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
+pass	multi-argument application is curried application
 pass	multiplication
 pass	projecting a field is independent of the order fields are written
 pass	subtraction
 pass	the boolean literals
+pass	the identity function applied to a boolean returns the boolean
+pass	the identity function applied to an integer returns the integer
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the minimum Int64 literal reads as an integer
+pass	the module entrypoint is the def named main regardless of its position
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
@@ -78,12 +96,10 @@ todo	a boolean is greater-than-or-equal to itself
 todo	a boolean is less-than-or-equal to itself
 todo	a boolean literal pattern against an integer scrutinee is a type error
 todo	a boolean literal pattern matches a runtime scrutinee
-todo	a boolean parameter forwarded to a conditional result
 todo	a boolean record field is projected as the program result
 todo	a boolean result propagates through a three-deep chain of forwarding functions
 todo	a boolean result threaded through a second function
 todo	a boolean tuple element is projected as the program result
-todo	a boolean-parameter function applied to false
 todo	a boolean-returning function called with a false result
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a bound name in a map key is used by its value, not the literal name
@@ -159,22 +175,16 @@ todo	a final unquote-splice binds the remaining elements as a list
 todo	a fixpoint loop that threads a growing list accumulator returns that list
 todo	a fixpoint that re-seeds a fresh list each round via a helper returns a list
 todo	a floating-point literal
-todo	a function applied to an argument
-todo	a function bound to a name and then applied
 todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
-todo	a function is passed as an argument (higher-order)
-todo	a function is returned as a result
 todo	a function open over a record's extra fields accepts any record with the used field
 todo	a function returning None or a nested Some infers its compound result shape
 todo	a function returning a boolean predicate result
 todo	a function returns a heap sub-node selected by a match arm
 todo	a function stored in a record field is called after extraction
 todo	a function stored in a tuple element is called after extraction
-todo	a function takes a boolean parameter and branches on it
 todo	a function whose body always diverges has result type Never
-todo	a function whose name is capitalized is called, not treated as a constructor
 todo	a generic unwrap helper consumes a fallible Bytes.at result
 todo	a handler accumulates into a list and a read-out operation reads it back
 todo	a handler arm for an operation the effect does not declare is rejected
@@ -191,10 +201,8 @@ todo	a left shift by a floating-point count does not silently promote
 todo	a left shift by the bit width or more traps rather than wrapping
 todo	a left shift that overflows Int64 traps like multiplication
 todo	a length-prefixed frame is built from a size segment and a bytes segment
-todo	a let binding shadows a built-in constructor name in application-head position
 todo	a let binding with no value expression is rejected, not a crash
 todo	a let body of unit yields unit
-todo	a let shadowing a parameter with a differently-typed value is not an invalid component
 todo	a let-bound variable is in scope inside a boolean connective operand
 todo	a list annotated with the wrong element type is rejected
 todo	a list built by a recursive push-loop is then iterated by index
@@ -253,9 +261,7 @@ todo	a mutually-recursive decoder returns a heap value and cursor and its heap s
 todo	a name bound to a string keys a map by its value, not the literal name
 todo	a name pattern binds the runtime scrutinee when no literal arm matches
 todo	a named function is partially applied, bound, and used
-todo	a named higher-order function receives a lambda argument
 todo	a named multi-argument function applies in explicit curried form
-todo	a named multi-argument function applies to all its arguments at once
 todo	a named width alias and its width-indexed expansion name the same type
 todo	a nearer handler on the call chain shadows an outer one
 todo	a negative integer literal pattern matches a runtime scrutinee
@@ -509,7 +515,6 @@ todo	an empty-range slice of a non-empty string is Some of the empty string
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an entrypoint returning a comparison presents a Bool result at the boundary
-todo	an entrypoint returning arithmetic presents an Int64 result at the boundary
 todo	an expect of a list index result is an integer usable in arithmetic
 todo	an explicit annotation overrides the default-integer pragma
 todo	an explicit conversion makes the operation well-typed
@@ -537,7 +542,6 @@ todo	an unbound name in a short-circuited boolean operand is still rejected
 todo	an unbound name in an uncalled sibling definition is still rejected
 todo	an unbound name in an unselected conditional branch is still rejected
 todo	an unbound name in an unselected match arm is still rejected
-todo	an underscore-prefixed function parameter binds its argument
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unquote of an expression with an unbound name is rejected, not quoted
 todo	an unrecognized pragma key is rejected rather than ignored
@@ -733,7 +737,6 @@ todo	modulo by -1 is zero even at the minimum integer
 todo	modulo by zero traps
 todo	modulo gives the remainder
 todo	modulo of an integer and a float does not silently promote
-todo	multi-argument application is curried application
 todo	multiplication of an integer and a float does not silently promote
 todo	multiplication of the minimum integer by -1 overflows and traps
 todo	multiplication past the maximum integer overflows and traps
@@ -843,8 +846,6 @@ todo	the empty string has length zero
 todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
 todo	the guarded-let conditional takes its else-branch when the conjunction is false
-todo	the identity function applied to a boolean returns the boolean
-todo	the identity function applied to an integer returns the integer
 todo	the intersection contains the elements in both sets
 todo	the largest factorial that fits the integer type computes exactly
 todo	the le modifier encodes a u16 little-endian
@@ -856,7 +857,6 @@ todo	the length of a runtime byte sequence is its byte count
 todo	the length of a slice is the slice's byte count
 todo	the maximum unsigned 8-bit value is its per-width bound
 todo	the minimum signed 8-bit value is its per-width bound
-todo	the module entrypoint is the def named main regardless of its position
 todo	the number of elements counts distinct elements
 todo	the other parity of a mutually-recursive pair
 todo	the prelude binds Constructor values not pre-applied Sums
