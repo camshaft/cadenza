@@ -62,21 +62,32 @@ pub fn select_function(
     }
     let ret = type_of(db, body);
     let mut code = Vec::new();
-    emit(db, body, &slot_of, &mut code)?;
+    // Scratch locals start PAST the parameters (slots `0..n` are the params); the checked-arithmetic
+    // guard claims scratch slots from `base` up. `high` tracks the highest scratch slot used, so we
+    // declare exactly that many i64 scratch locals (`code_entry` run-length-encodes them).
+    let base = param_vts.len() as u32;
+    let mut high = base;
+    emit(db, body, &slot_of, base, &mut high, &mut code)?;
+    let scratch = (high - base) as usize;
+    let declared = vec![ValType::I64; scratch];
     Ok(SelectedFunc {
         params: param_vts,
         ret,
         code,
-        declared: Vec::new(),
+        declared,
     })
 }
 
 /// Emit the flat instructions for the node at `id`, appending to `out`. `slots` maps a parameter's
-/// name occurrence to its wasm local slot. Exhaustive over `Core`.
+/// name occurrence to its wasm local slot; `base` is the next free SCRATCH slot (the checked guard
+/// claims `[base, base+1, base+2]` and recurses operands at `base+3`); `high` is the running high-water
+/// mark of scratch slots used (so `select_function` declares exactly that many). Exhaustive over `Core`.
 fn emit(
     db: &mut Db,
     id: StructId,
     slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     match core_of(db, id) {
@@ -122,7 +133,7 @@ fn emit(
         Core::If { cond, then_, else_ } => {
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.
-            emit(db, cond, slots, out)?;
+            emit(db, cond, slots, base, high, out)?;
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
@@ -135,9 +146,9 @@ fn emit(
                 },
             };
             out.push(Lir::If(block_ty));
-            emit(db, then_, slots, out)?;
+            emit(db, then_, slots, base, high, out)?;
             out.push(Lir::Else);
-            emit(db, else_, slots, out)?;
+            emit(db, else_, slots, base, high, out)?;
             out.push(Lir::End);
             Ok(())
         }
@@ -152,33 +163,36 @@ fn emit(
             None => Err(Reject::decline("parameter reference has no local slot")),
         },
         // A runtime comparison: emit both operands, then the machine comparison selected from the
-        // operands' width/signedness. The result is an i32 boolean.
+        // operands' width/signedness. The result is an i32 boolean. A comparison never overflows, so
+        // both operands share the same scratch base (each is dead once pushed).
         Core::Compare { op, lhs, rhs } => {
-            emit(db, lhs, slots, out)?;
-            emit(db, rhs, slots, out)?;
+            emit(db, lhs, slots, base, high, out)?;
+            emit(db, rhs, slots, base, high, out)?;
             let it = operand_int_ty(db, lhs, rhs);
             out.push(compare_op(op, it));
             Ok(())
         }
-        // A runtime arithmetic op: emit both operands, then the machine op selected from the solved
-        // width (i32 for a ≤32-bit integer, else i64). The width is a READ-OFF of the node's solved
-        // type — the same read-off that boxes a scalar (`reference-compiler.md` §A Value's Machine
-        // Representation Follows Its Solved Type At Selection). (Const arithmetic folds in `lower`;
-        // this path is for a genuine runtime operand, which arrives with functions.)
+        // A runtime arithmetic op. `+`/`-`/`*` are CHECKED — the numeric model requires the unqualified
+        // operator to TRAP on overflow, not wrap (`numeric-model.md` §Overflow Is Defined; the trapping
+        // default). A bare `i64.add` WRAPS (wasm two's-complement), which is a miscompile — so the op is
+        // emitted as a guarded sequence over scratch locals (`emit_checked_arith`) that computes the
+        // result, tests for signed overflow, and `unreachable`s if it overflowed. `/ % << >>` still
+        // decline at runtime (they need signed/unsigned selection — the widths stage). Const arithmetic
+        // folds in `lower` (with the SAME trap → CDZ0304); this is the genuine runtime-operand path.
         Core::Arith { op, lhs, rhs } => {
             let narrow = matches!(type_of(db, id), Ty::Int(it) if it.ground_width() <= 32);
-            // An op the flat rung can emit today: push both operands, then the machine op. An op with
-            // no Lir instruction yet (div/shift/bitwise) DECLINES rather than emit a wrong sequence —
-            // the decline boundary the runtime-operands increment widens. (In this increment every
-            // integer op FOLDS, so no runtime `Arith` reaches here at all; this keeps the path honest.)
-            match arith_op(op, narrow) {
-                Some(instr) => {
-                    emit(db, lhs, slots, out)?;
-                    emit(db, rhs, slots, out)?;
-                    out.push(instr);
-                    Ok(())
+            if narrow {
+                // A ≤32-bit checked op needs the i32 guard variant — deferred to the widths stage.
+                return Err(Reject::decline(
+                    "a runtime narrow (≤32-bit) integer operation is not yet emitted",
+                ));
+            }
+            match op {
+                Prim::Add | Prim::Sub | Prim::Mul => {
+                    emit_checked_arith(db, op, lhs, rhs, slots, base, high, out)
                 }
-                None => Err(Reject::decline(
+                // Not yet emittable as a runtime op (needs signed/unsigned selection) — decline.
+                _ => Err(Reject::decline(
                     "a runtime integer operation of this kind is not yet emitted",
                 )),
             }
@@ -189,27 +203,111 @@ fn emit(
     }
 }
 
-/// The flat wasm op for a runtime integer operation at the given width (i32 if `narrow`, else i64), or
-/// `None` if this backend has no instruction for it yet (the caller declines). Only `+`/`-`/`*` are
-/// emittable in this increment; division, shift, and bitwise ops need their Lir instructions + the
-/// signedness read-off (a signed vs unsigned shift/divide), which the runtime-operands increment adds.
-/// (Const folding handles all of them at compile time already; this is only the RUNTIME path.)
-fn arith_op(op: crate::resolved::Prim, narrow: bool) -> Option<Lir> {
-    use crate::resolved::Prim::*;
-    Some(match (op, narrow) {
-        (Add, false) => Lir::I64Add,
-        (Sub, false) => Lir::I64Sub,
-        (Mul, false) => Lir::I64Mul,
-        (Add, true) => Lir::I32Add,
-        (Sub, true) => Lir::I32Sub,
-        (Mul, true) => Lir::I32Mul,
-        // Not yet emittable as a runtime op — decline (the caller turns `None` into a clean decline).
-        (Div | Rem | Shl | Shr | BitAnd | BitOr | BitXor, _) => return None,
-        // A comparison is never carried by `Core::Arith` (it lowers via `lower_comparison` to a
-        // `ConstBool` or declines); a type-constructor / ground-type prim is not an operation. Neither
-        // reaches runtime arith selection.
-        (Lt | Gt | Le | Ge | Eq | IntCtor | UIntCtor | FnCtor | BoolTy | UnitTy, _) => return None,
-    })
+/// Emit a CHECKED 64-bit `+`/`-`/`*` that TRAPS on signed overflow (the numeric-model default), over
+/// three scratch locals `$a=base`, `$b=base+1`, `$r=base+2`. The sequence:
+///
+///   <A> local.set $a ; <B> local.set $b ; get$a get$b <op> local.set $r ; <overflow guard> ; get$r
+///
+/// The overflow guard leaves nothing on the stack unless it TRAPS (`if (empty) unreachable end`) — the
+/// signed-overflow test differs by op (all VALIDATED against exact arithmetic in the seed compiler, mul
+/// over 172k random cases):
+///   - add `r=a+b`: overflow iff `((r^a) & (r^b)) < 0`
+///   - sub `r=a-b`: overflow iff `((a^b) & (a^r)) < 0`
+///   - mul `r=a*b`: overflow iff `a≠0 && r/a≠b` (the one case `r/a` can't detect — `MIN/-1` — is where
+///     `i64.div_s` itself traps, which IS the overflow, so no extra check is needed)
+///
+/// LIVENESS / minimal locals: both operands recurse at `base+3` (NOT disjoint ranges) — operand A is
+/// stored into `$a` before B's code runs, so A's scratch `[base+3..]` is DEAD during B and B safely
+/// reuses it. The declared-locals count is therefore `max(A-scratch, B-scratch)+3`, not the sum — the
+/// high-water mark in `high` captures exactly that. A's OWN result must not sit in `$a`/`$b`/`$r`
+/// (those are this op's), so A/B start at `base+3`, above this op's three slots.
+#[allow(clippy::too_many_arguments)]
+fn emit_checked_arith(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    let (sa, sb, sr) = (base, base + 1, base + 2);
+    // This op claims slots up to `sr` — record the high-water mark (declared locals reach at least here).
+    if sr + 1 > *high {
+        *high = sr + 1;
+    }
+    let operand_base = base + 3;
+    // <A> local.set $a
+    emit(db, lhs, slots, operand_base, high, out)?;
+    out.push(Lir::LocalSet(sa));
+    // <B> local.set $b  (B reuses A's dead scratch, from operand_base — minimal locals)
+    emit(db, rhs, slots, operand_base, high, out)?;
+    out.push(Lir::LocalSet(sb));
+    // get$a get$b <op> local.set $r
+    out.push(Lir::LocalGet(sa));
+    out.push(Lir::LocalGet(sb));
+    out.push(match op {
+        Prim::Add => Lir::I64Add,
+        Prim::Sub => Lir::I64Sub,
+        Prim::Mul => Lir::I64Mul,
+        _ => return Err(Reject::decline("not a checked arithmetic op")),
+    });
+    out.push(Lir::LocalSet(sr));
+    // The signed-overflow guard — traps via `if (empty) unreachable end` when it detects overflow.
+    emit_overflow_guard(op, sa, sb, sr, out);
+    // The result.
+    out.push(Lir::LocalGet(sr));
+    Ok(())
+}
+
+/// The signed-overflow guard instruction run for `(op a b)` with result in `$r` — leaves nothing on
+/// the stack except via a trap. See `emit_checked_arith` for the per-op test derivations.
+fn emit_overflow_guard(op: Prim, sa: u32, sb: u32, sr: u32, out: &mut Vec<Lir>) {
+    match op {
+        // add: `((r^a) & (r^b)) < 0` → trap.
+        Prim::Add => {
+            out.push(Lir::LocalGet(sr));
+            out.push(Lir::LocalGet(sa));
+            out.push(Lir::I64Xor);
+            out.push(Lir::LocalGet(sr));
+            out.push(Lir::LocalGet(sb));
+            out.push(Lir::I64Xor);
+            out.push(Lir::I64And);
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64LtS);
+            out.push(Lir::IfUnreachableEnd);
+        }
+        // sub: `((a^b) & (a^r)) < 0` → trap.
+        Prim::Sub => {
+            out.push(Lir::LocalGet(sa));
+            out.push(Lir::LocalGet(sb));
+            out.push(Lir::I64Xor);
+            out.push(Lir::LocalGet(sa));
+            out.push(Lir::LocalGet(sr));
+            out.push(Lir::I64Xor);
+            out.push(Lir::I64And);
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64LtS);
+            out.push(Lir::IfUnreachableEnd);
+        }
+        // mul: `if a≠0 { if r/a ≠ b { unreachable } }` — nested if guards div against a=0 (a=0 can't
+        // overflow); the inner `i64.div_s` traps on MIN/-1 itself, the sole case `r/a` can't detect.
+        Prim::Mul => {
+            out.push(Lir::LocalGet(sa));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64Ne);
+            out.push(Lir::If(BlockType::Empty)); // if a != 0 {
+            out.push(Lir::LocalGet(sr));
+            out.push(Lir::LocalGet(sa));
+            out.push(Lir::I64DivS);
+            out.push(Lir::LocalGet(sb));
+            out.push(Lir::I64Ne);
+            out.push(Lir::IfUnreachableEnd); //   if (r/a) != b { unreachable }
+            out.push(Lir::End); // }
+        }
+        _ => {}
+    }
 }
 
 /// The flat wasm comparison op for a relational prim over an operand integer type — the width chooses
@@ -326,9 +424,11 @@ mod tests {
     }
 
     #[test]
-    fn a_parameterized_addition_selects_to_locals_and_i64_add() {
-        // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, so
-        // it selects to `local.get 0 ; local.get 1 ; i64.add` (no fold — the params are unknown).
+    fn a_parameterized_addition_selects_to_a_checked_sequence() {
+        // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
+        // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence:
+        // params in slots 0,1; scratch $a=2 $b=3 $r=4. A→set$a; B→set$b; get$a get$b add set$r;
+        // signed-overflow guard `((r^a)&(r^b))<0 → if unreachable`; get$r.
         let ast = crate::testkit::parse(
             "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) 0) (export main))",
         );
@@ -338,14 +438,41 @@ mod tests {
         assert_eq!(f.params, vec![ValType::I64, ValType::I64]);
         assert_eq!(
             f.code,
-            vec![Lir::LocalGet(0), Lir::LocalGet(1), Lir::I64Add]
+            vec![
+                // A → $a, B → $b
+                Lir::LocalGet(0),
+                Lir::LocalSet(2),
+                Lir::LocalGet(1),
+                Lir::LocalSet(3),
+                // r = a + b
+                Lir::LocalGet(2),
+                Lir::LocalGet(3),
+                Lir::I64Add,
+                Lir::LocalSet(4),
+                // overflow guard: ((r^a) & (r^b)) < 0 → trap
+                Lir::LocalGet(4),
+                Lir::LocalGet(2),
+                Lir::I64Xor,
+                Lir::LocalGet(4),
+                Lir::LocalGet(3),
+                Lir::I64Xor,
+                Lir::I64And,
+                Lir::ConstI64(0),
+                Lir::I64LtS,
+                Lir::IfUnreachableEnd,
+                // result
+                Lir::LocalGet(4),
+            ]
         );
+        // Three i64 scratch locals declared ($a $b $r).
+        assert_eq!(f.declared, vec![ValType::I64; 3]);
         assert!(f.ret.agrees_with(&Ty::int64()));
     }
 
     #[test]
     fn a_parameterized_comparison_selects_to_a_signed_compare() {
         // (def (lt (: a Int64) (: b Int64)) (< a b)) — a runtime signed comparison, result Bool (i32).
+        // A comparison never overflows, so no scratch/guard — just push both and compare.
         let ast = crate::testkit::parse(
             "(module m (def (lt (: a Int64) (: b Int64)) (< a b)) (def (main) 0) (export main))",
         );
@@ -356,22 +483,25 @@ mod tests {
             f.code,
             vec![Lir::LocalGet(0), Lir::LocalGet(1), Lir::I64LtS]
         );
+        assert!(f.declared.is_empty());
         assert_eq!(f.ret, Ty::Bool);
     }
 
     #[test]
-    fn a_parameterized_body_mixing_a_param_and_a_constant() {
-        // (def (inc (: a Int64)) (+ a 1)) — `a` is a runtime local, `1` a constant: the add stays
-        // runtime (one operand is not constant), so `local.get 0 ; i64.const 1 ; i64.add`.
+    fn a_nested_checked_op_shares_scratch_minimally() {
+        // (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) — a nested checked op. The inner
+        // `(+ a b)` fully drains its scratch (leaves only its result on the stack → stored to the
+        // outer's $a) before the outer `*` uses its slots, so the two share the scratch pool: the
+        // declared-locals count is the MAX depth, not the sum. Inner add at operand_base=6 uses 6,7,8;
+        // outer mul uses 3,4,5 — high-water 9, so 6 scratch locals (base 3 → 9), NOT 3+3+3.
         let ast = crate::testkit::parse(
-            "(module m (def (inc (: a Int64)) (+ a 1)) (def (main) 0) (export main))",
+            "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (def (main) 0) (export main))",
         );
         let mut db = Db::load(ast);
-        let (params, body) = function_of(&mut db, "inc");
+        let (params, body) = function_of(&mut db, "f");
         let f = select_function(&mut db, body, &params).expect("select");
-        assert_eq!(
-            f.code,
-            vec![Lir::LocalGet(0), Lir::ConstI64(1), Lir::I64Add]
-        );
+        // 3 params (slots 0,1,2); scratch base 3. Outer mul: $a3 $b4 $r5, operands at 6. Inner add:
+        // $a6 $b7 $r8, operands (params) need no scratch. High-water 9 → 6 scratch locals.
+        assert_eq!(f.declared, vec![ValType::I64; 6]);
     }
 }

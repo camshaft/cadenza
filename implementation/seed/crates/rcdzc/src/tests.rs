@@ -328,6 +328,24 @@ fn run_returns_with<T: FromVal>(
     T::from_val(&results[0])
 }
 
+/// Whether calling export `name` with `args` TRAPS (an `unreachable` from an overflow guard). Returns
+/// `true` if the call errored (a wasm trap), `false` if it returned normally.
+fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::Val]) -> bool {
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let engine = Engine::default();
+    let component = Component::from_binary(&engine, component_bytes).expect("valid component");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let func = instance.get_func(&mut store, name).expect("export present");
+    let mut results = [Val::S64(0)];
+    func.call(&mut store, args, &mut results).is_err()
+}
+
 /// `(def (main) 42)` compiles to a component that runs to 42.
 #[test]
 fn scalar_runs_to_42() {
@@ -400,6 +418,105 @@ fn an_unannotated_exported_parameter_declines() {
         msg.contains("ambiguous") || msg.contains("annotate"),
         "got: {msg}"
     );
+}
+
+// ── runtime overflow TRAPS, never wraps (numeric-model §Overflow Is Defined) ─────────────────────
+
+/// The unqualified `+` on runtime operands TRAPS on overflow (the numeric-model default) rather than
+/// silently wrapping — the checked-arith guard. In range it computes; `Int64.max + 1` traps.
+#[test]
+fn runtime_addition_traps_on_overflow() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // In range: computes.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "add", &[Val::S64(20), Val::S64(22)]),
+        42
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "add", &[Val::S64(-5), Val::S64(-3)]),
+        -8
+    );
+    // Overflow: TRAPS (does not wrap to Int64.min).
+    assert!(call_traps(
+        &bytes,
+        "add",
+        &[Val::S64(i64::MAX), Val::S64(1)]
+    ));
+}
+
+/// Runtime `-` traps on overflow (e.g. `Int64.min - 1`), computes in range.
+#[test]
+fn runtime_subtraction_traps_on_overflow() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (sub (: a Int64) (: b Int64)) (- a b)) (export sub))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "sub", &[Val::S64(10), Val::S64(3)]),
+        7
+    );
+    assert!(call_traps(
+        &bytes,
+        "sub",
+        &[Val::S64(i64::MIN), Val::S64(1)]
+    ));
+    assert!(call_traps(
+        &bytes,
+        "sub",
+        &[Val::S64(i64::MAX), Val::S64(-1)]
+    ));
+}
+
+/// Runtime `*` traps on overflow (`Int64.max * 2`, `Int64.min * -1`), computes in range. The mul guard
+/// (a≠0 && r/a≠b, with div_s catching MIN/-1) is the subtlest — pin it directly.
+#[test]
+fn runtime_multiplication_traps_on_overflow() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (mul (: a Int64) (: b Int64)) (* a b)) (export mul))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "mul", &[Val::S64(6), Val::S64(7)]),
+        42
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "mul", &[Val::S64(0), Val::S64(999)]),
+        0
+    );
+    assert!(call_traps(
+        &bytes,
+        "mul",
+        &[Val::S64(i64::MAX), Val::S64(2)]
+    ));
+    assert!(call_traps(
+        &bytes,
+        "mul",
+        &[Val::S64(i64::MIN), Val::S64(-1)]
+    ));
+}
+
+/// A NESTED runtime checked op composes and traps correctly — `(* (+ a b) c)` computes in range and
+/// the shared scratch pool does not corrupt across the nesting.
+#[test]
+fn nested_runtime_checked_ops_compose() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // (2+3)*6 = 30 — the nested-ops correctness check (shared scratch, no aliasing).
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(2), Val::S64(3), Val::S64(6)]),
+        30
+    );
+    // The inner add overflows → traps before the mul.
+    assert!(call_traps(
+        &bytes,
+        "f",
+        &[Val::S64(i64::MAX), Val::S64(1), Val::S64(1)]
+    ));
 }
 
 // ── decline-don't-miscompile ───────────────────────────────────────────────────────────────────
