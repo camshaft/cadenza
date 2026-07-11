@@ -158,6 +158,15 @@ pub struct Db {
     pub(crate) rec_visited: std::collections::HashSet<StructId>,
     pub(crate) rec_worklist: Vec<StructId>,
 
+    /// Memo of a top-level definition's generalized SIGNATURE as a [`crate::ty::Scheme`] — its type as
+    /// a value, so a CALL can be typed by instantiating the scheme rather than β-reducing the body
+    /// (`infer::def_scheme`). Keyed by the `db.defs` index. `None` for a def whose signature needs the
+    /// CONNECTED def-body solve that is not built yet (an unannotated parameter needing let-generalized
+    /// inference, or a recursive def needing a fixpoint) — the caller falls back to β-reduction (the
+    /// current typing path) for those. A pure function of the fixed def structure, so it caches like
+    /// `build_cache`. (Foundation for ANF step 2 — see `implementation/DESIGN-anf-step2-runtime-functions.md`.)
+    pub(crate) def_schemes: std::collections::HashMap<usize, Option<crate::ty::Scheme>>,
+
     /// The set of `let`-binding INITIALIZER occurrences that `lower` decided to KEEP as an A-normal
     /// `Core::Let` binding — a runtime value used more than once, named once so it is computed once
     /// (`reference-compiler.md` §The Core Representation Is In A-Normal Form). Populated while lowering
@@ -217,6 +226,7 @@ impl Db {
             rec_visited: std::collections::HashSet::new(),
             rec_worklist: Vec::new(),
             kept_bindings: std::collections::HashSet::new(),
+            def_schemes: std::collections::HashMap::new(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),

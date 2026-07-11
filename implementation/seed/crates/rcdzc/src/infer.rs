@@ -24,7 +24,7 @@ use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::resolve::resolved_of;
 use crate::resolved::Resolved;
-use crate::ty::Ty;
+use crate::ty::{Scheme, Ty};
 use crate::unify::{Fresh, Subst};
 use tracing::trace;
 
@@ -142,6 +142,67 @@ fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     }
     let ty_expr = *tail.get(1)?;
     crate::eval::typeval_of(db, ty_expr)
+}
+
+/// The generalized SIGNATURE of top-level definition `def` as a [`Scheme`] — its type as a value, so a
+/// CALL can be typed by instantiating this scheme rather than by β-reducing the body. Curried: a def
+/// `(f a b)` whose params solve to `A`,`B` and whose body solves to `R` has scheme `A -> B -> R` (a
+/// nullary def is just `R`). Memoized on `db.def_schemes` keyed by the def index (a pure function of
+/// the fixed def structure).
+///
+/// **A1 scope (see `implementation/DESIGN-anf-step2-runtime-functions.md`).** This computes the scheme
+/// ONLY for a def whose signature is already fully DETERMINED without a connected def-body solve —
+/// every parameter has a definite machine type (from its annotation) and the body types to a definite
+/// type reading those params. That covers an exported/annotated function, whose scheme here AGREES
+/// with what β-reduction produces at a call (cross-checked in tests). It returns `None` — deferring to
+/// the existing β-reduction typing — when a parameter is undetermined (`Any`, an unannotated param
+/// needing inference) OR the body's type is `Any` (a recursive self-call, which needs the fixpoint A2
+/// adds). So this is purely additive: no call yet reads it, and the fallback path is unchanged.
+pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
+    if let Some(cached) = db.def_schemes.get(&def) {
+        return cached.clone();
+    }
+    let scheme = compute_def_scheme(db, def);
+    db.def_schemes.insert(def, scheme.clone());
+    scheme
+}
+
+fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
+    let body = db.defs[def].body?;
+    let sig_params = db.defs[def].params.clone();
+    // Each parameter's type — read `type_of` on its NAME occurrence (the annotation type for an
+    // annotated param, `Any` for an unannotated one). An `Any` parameter is UNDETERMINED here: it
+    // needs the connected def-body solve A2 adds, so decline the scheme and let the caller β-reduce.
+    let mut param_tys: Vec<Ty> = Vec::new();
+    for p in &sig_params {
+        let binder = match db.ast.as_form(*p, ":").and_then(|t| t.first().copied()) {
+            Some(name_occ) => name_occ,
+            None => *p,
+        };
+        let ty = type_of(db, binder);
+        if matches!(ty, Ty::Any) {
+            trace!(target: "rcdzc::infer", def, "def_scheme: an undetermined param → defer to β-reduction (A2)");
+            return None;
+        }
+        param_tys.push(ty);
+    }
+    // The result type is the body's solved type. `Any` here means the body could not be typed without
+    // reducing a self-call (recursion) — defer to the fixpoint A2 adds.
+    let result = type_of(db, body);
+    if matches!(result, Ty::Any) {
+        trace!(target: "rcdzc::infer", def, "def_scheme: undetermined result (recursive?) → defer (A2)");
+        return None;
+    }
+    // Curry: `p_0 -> p_1 -> … -> result`. A nullary def is just `result`.
+    let mut ty = result;
+    for pt in param_tys.into_iter().rev() {
+        ty = Ty::Fn(Box::new(pt), Box::new(ty));
+    }
+    // A1 schemes are MONOMORPHIC (every param has a concrete annotated type; nothing is quantified).
+    // Real let-generalization — quantifying a free variable a parameter's type still carries — arrives
+    // with the connected solve (A2), which is where a polymorphic def signature becomes meaningful.
+    trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), "def_scheme: determined monomorphic signature");
+    Some(Scheme::mono(ty))
 }
 
 /// The result type of applying `head` to `args` — the ONE generic application rule. Read the head's
@@ -456,6 +517,131 @@ mod tests {
         assert!(
             matches!(db.core.get(body), Slot::Absent),
             "core filled without demand"
+        );
+    }
+
+    // ── def_scheme (ANF step 2, sub-increment A1): a def's signature as a value ────────────────────
+    //
+    // These pin the FOUNDATION only: a fully-determined (annotated) def's scheme is its curried
+    // signature and it AGREES with what β-reduction produces at a call; an undetermined (unannotated /
+    // recursive) def declines the scheme (defers to β-reduction). No caller reads it yet.
+
+    use crate::testkit::parse;
+
+    /// The def index of `name` in a parsed program.
+    fn def_of(db: &Db, name: &str) -> usize {
+        db.def_by_name(name).expect("def present")
+    }
+
+    #[test]
+    fn def_scheme_of_an_annotated_function_is_its_curried_signature() {
+        // (def (add (: a Int64) (: b Int64)) (+ a b)) → Int64 -> Int64 -> Int64.
+        let ast = parse(
+            "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "add");
+        let scheme = def_scheme(&mut db, d).expect("determined scheme");
+        let expected = Ty::Fn(
+            Box::new(Ty::int64()),
+            Box::new(Ty::Fn(Box::new(Ty::int64()), Box::new(Ty::int64()))),
+        );
+        assert!(
+            scheme.ty.agrees_with(&expected),
+            "add scheme {} != Int64->Int64->Int64",
+            scheme.ty.render_name()
+        );
+    }
+
+    #[test]
+    fn def_scheme_agrees_with_beta_reduction_at_a_call() {
+        // The scheme's RESULT (after applying both args) must equal the type β-reduction gives the
+        // call `(add 20 22)` — the cross-check that the scheme is a faithful stand-in for inlining.
+        let ast = parse(
+            "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) (add 20 22)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        // β-reduction path: type of the call node in main's body.
+        let main_body = db.defs[def_of(&db, "main")].body.expect("main body");
+        let call_ty = type_of(&mut db, main_body);
+        // scheme path: peel the two Fn arrows.
+        let d = def_of(&db, "add");
+        let scheme = def_scheme(&mut db, d).expect("determined scheme");
+        let result = match scheme.ty {
+            Ty::Fn(_, r) => match *r {
+                Ty::Fn(_, r2) => *r2,
+                other => other,
+            },
+            other => other,
+        };
+        assert!(
+            call_ty.agrees_with(&result),
+            "β-reduced call type {} disagrees with scheme result {}",
+            call_ty.render_name(),
+            result.render_name()
+        );
+    }
+
+    #[test]
+    fn def_scheme_of_a_nullary_def_is_its_body_type() {
+        let ast = parse("(module m (def (main) 42) (export main))");
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "main");
+        let scheme = def_scheme(&mut db, d).expect("nullary scheme");
+        assert!(scheme.ty.agrees_with(&Ty::int64()));
+    }
+
+    #[test]
+    fn def_scheme_declines_an_unannotated_parameter() {
+        // `(def (id x) x)` — `x` is unannotated (`Any`), so its signature needs the connected solve
+        // (A2). A1 declines the scheme and defers to β-reduction.
+        let ast = parse("(module m (def (id x) x) (def (main) (id 5)) (export main))");
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "id");
+        assert!(
+            def_scheme(&mut db, d).is_none(),
+            "an unannotated param must defer to β-reduction (A2 territory)"
+        );
+    }
+
+    #[test]
+    fn def_scheme_of_an_annotated_recursive_def_is_determined_by_absorption() {
+        // KEY FINDING (shrinks A2): an ANNOTATED recursive def types WITHOUT an explicit fixpoint. The
+        // self-call `(sum-to …)` returns `Any` (the recursion guard in `apply_type`), and `Any` is
+        // ABSORBED by unification/join with the concrete parts — the base case `0` and `(+ n …)` pin
+        // the result to Int64. So `def_scheme(sum-to)` = Int64 -> Int64 already, and this is
+        // order-independent (the self-call is always `Any` regardless of visit order; the concrete
+        // branch determines the type). An explicit recursion fixpoint (A2) is only needed when NO
+        // concrete part pins the result — which, for terminating monomorphic recursion, cannot happen
+        // (there must be a base case, and it pins the type).
+        let ast = parse(
+            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "sum-to");
+        let scheme = def_scheme(&mut db, d).expect("annotated recursive def types via absorption");
+        let expected = Ty::Fn(Box::new(Ty::int64()), Box::new(Ty::int64()));
+        assert!(
+            scheme.ty.agrees_with(&expected),
+            "sum-to scheme {} != Int64->Int64",
+            scheme.ty.render_name()
+        );
+    }
+
+    #[test]
+    fn def_scheme_declines_an_unannotated_recursive_def() {
+        // The ACTUAL corpus `sum-to` has an UNANNOTATED param `(def (sum-to n) …)`. `n` is `Any`, so
+        // the scheme declines — determining `n`'s type from its uses (`(= n 0)`, `(+ n …)`) and the
+        // call site `(sum-to 3)` is the connected parameter inference A2 adds. (This is the case that
+        // still needs real inference; the annotated one above does not.)
+        let ast = parse(
+            "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "sum-to");
+        assert!(
+            def_scheme(&mut db, d).is_none(),
+            "an unannotated recursive param must defer to the connected solve (A2)"
         );
     }
 }
