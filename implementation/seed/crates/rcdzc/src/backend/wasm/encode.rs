@@ -76,4 +76,16 @@ pub mod op {
     pub const I64_ADD: u8 = 0x7C;
     pub const I64_SUB: u8 = 0x7D;
     pub const I64_MUL: u8 = 0x7E;
+    // i32 comparisons (result i32 boolean): eq=0x46, then signed lt/gt/le/ge.
+    pub const I32_EQ: u8 = 0x46;
+    pub const I32_LT_S: u8 = 0x48;
+    pub const I32_GT_S: u8 = 0x4A;
+    pub const I32_LE_S: u8 = 0x4C;
+    pub const I32_GE_S: u8 = 0x4E;
+    // i64 comparisons (result i32 boolean): eq=0x51, then signed lt/gt/le/ge.
+    pub const I64_EQ: u8 = 0x51;
+    pub const I64_LT_S: u8 = 0x53;
+    pub const I64_GT_S: u8 = 0x55;
+    pub const I64_LE_S: u8 = 0x57;
+    pub const I64_GE_S: u8 = 0x59;
 }

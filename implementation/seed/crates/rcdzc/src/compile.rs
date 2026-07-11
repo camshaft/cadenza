@@ -183,12 +183,13 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, value, out);
             }
         }
-        // Both operands of a runtime arithmetic op are unconditionally evaluated — descend into each.
-        Core::Arith { lhs, rhs, .. } => {
+        // Both operands of a runtime arithmetic or comparison op are unconditionally evaluated.
+        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }
-        Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => {}
+        // A parameter reference is a runtime local read — no sub-poison, no fault to collect.
+        Core::Param { .. } | Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => {}
     }
 }
 

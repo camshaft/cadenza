@@ -43,6 +43,16 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
         Lir::I32Add => out.push(op::I32_ADD),
         Lir::I32Sub => out.push(op::I32_SUB),
         Lir::I32Mul => out.push(op::I32_MUL),
+        Lir::I64Eq => out.push(op::I64_EQ),
+        Lir::I64LtS => out.push(op::I64_LT_S),
+        Lir::I64GtS => out.push(op::I64_GT_S),
+        Lir::I64LeS => out.push(op::I64_LE_S),
+        Lir::I64GeS => out.push(op::I64_GE_S),
+        Lir::I32Eq => out.push(op::I32_EQ),
+        Lir::I32LtS => out.push(op::I32_LT_S),
+        Lir::I32GtS => out.push(op::I32_GT_S),
+        Lir::I32LeS => out.push(op::I32_LE_S),
+        Lir::I32GeS => out.push(op::I32_GE_S),
     }
 }
 
