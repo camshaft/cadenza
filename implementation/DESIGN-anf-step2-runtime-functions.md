@@ -132,6 +132,27 @@ Once a recursive def has a scheme:
   is a runtime trap). Keep that; just ensure the recursive def is TYPE-checked (it is — `type_errors`
   runs on every body).
 
+## 2.5 KEY FINDING from A1 (2026-07-11) — annotated recursion needs NO fixpoint
+
+Sub-increment A1 landed `def_scheme` and pinned a fact that materially shrinks the risk: **an
+ANNOTATED recursive def types correctly WITHOUT an explicit recursion fixpoint.** A self-call returns
+`Any` (the recursion guard in `apply_type`/`apply_lambda`), and `Any` is ABSORBED by unification/join
+with the concrete parts of the body — the base case (`0`) and the non-recursive arm (`(+ n …)`) pin
+the result to `Int64`. Verified: `def_scheme((def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n
+-1)))))) = Int64 -> Int64`, and it's order-independent (the self-call is `Any` regardless of visit
+order; a concrete branch always determines the type). An explicit fixpoint is only needed when NO
+concrete part pins the result — which terminating monomorphic recursion cannot do (a base case must
+exist and pins it).
+
+**Consequence for scope:** (A2) "recursion fixpoint" is NOT needed for annotated recursive functions.
+The residual A2 work is purely UNANNOTATED-PARAMETER inference (`(def (sum-to n) …)` — determine `n`
+from its uses `(= n 0)`/`(+ n …)` + the call-site argument), which is the connected def-body solve —
+still the miscompile-prone part, still deferred. **B1 can target ANNOTATED recursive functions right
+now** (verified: an annotated `sum-to`'s ONLY blocker is the lower-time recursion decline at
+`lower.rs:106`; its type is already correct). So the near-term path is: B1 over annotated recursive
+defs (low risk — types are determined), then A2 (unannotated inference) as a separate supervised step
+to ungate the corpus's unannotated `sum-to`/`all-lt`/`all-ge`.
+
 ## 3. Recommended sub-increments (each its own commit + gate)
 
 1. **(A1) `def_scheme` for a NON-recursive def, behind the existing β-reduce path.** Compute a def's
