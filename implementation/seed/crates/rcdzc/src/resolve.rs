@@ -442,7 +442,7 @@ fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
 /// is an INTERNAL wire form the evaluator produces (like the binary codec), not user source, so
 /// matching its tags is decoding a compiler-authored format, not source-name dispatch.
 fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
-    use crate::ty::{IntTy, Ty, Width};
+    use crate::ty::{IntTy, Ty};
     if let Some(name) = db.ast.as_name(node) {
         return match name {
             "Bool" => Some(Ty::Bool),
@@ -461,10 +461,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 },
                 _ => None,
             })?;
-            Some(Ty::Int(IntTy {
-                signed: head == "Int",
-                width: Width::Fixed(w),
-            }))
+            Some(Ty::Int(IntTy::fixed(head == "Int", w)))
         }
         "->" => {
             let tail = db.ast.as_form(node, "->")?;

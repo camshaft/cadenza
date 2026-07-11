@@ -92,27 +92,22 @@ fn emit(
 ) -> Result<(), Reject> {
     match core_of(db, id) {
         Core::ConstInt(v) => {
-            // Ground the literal to the machine width its solved type fixes, and decline if it does
-            // not fit that width (a compile-provable width violation — never a truncated value).
+            // Ground the literal to the machine width its solved type fixes. The constant must FIT the
+            // width (checked at annotation time; a value that does not fit never reaches here for an
+            // annotated literal), then it is emitted as the two's-complement BIT PATTERN of that width.
+            // For an UNSIGNED value at/above the signed max (`UInt64.max = 2^64-1`), the bit pattern is
+            // a negative i64 (`-1`) — correct at the machine level; the boundary lifts it back as u64.
             let it = int_ty_of(db, id);
-            let n = v.to_i64().ok_or_else(|| {
-                Reject::coded(
+            if !v.fits_width(it.ground_signed(), it.ground_width()) {
+                return Err(Reject::coded(
                     Code::IntOutOfRange,
                     "integer literal does not fit its width",
-                )
-            })?;
+                ));
+            }
             if it.ground_width() <= 32 {
-                // A ≤32-bit integer occupies an i32 slot. Range-check against the width later; Stage 0
-                // only produces i64, so this arm is structural until the widths stage exercises it.
-                let narrowed = i32::try_from(n).map_err(|_| {
-                    Reject::coded(
-                        Code::IntOutOfRange,
-                        "integer literal does not fit its 32-bit width",
-                    )
-                })?;
-                out.push(Lir::ConstI32(narrowed));
+                out.push(Lir::ConstI32(v.to_i32_bits(it.ground_width())));
             } else {
-                out.push(Lir::ConstI64(n));
+                out.push(Lir::ConstI64(v.to_i64_bits()));
             }
             Ok(())
         }
@@ -337,19 +332,14 @@ fn compare_op(op: Prim, it: IntTy) -> Lir {
 /// the ≤32-bit path via the default `i64`… (a bool is compared as an i32 — see `Compare` selection,
 /// which reads the operand's own `valtype`). Falls back to signed-64.
 fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
+    // A boolean operand is an i32; represent that as a signed ≤32-bit width so `compare_op` picks i32.
+    let bool_as_i32 = IntTy::fixed(true, 32);
     match type_of(db, lhs) {
         Ty::Int(it) => it,
-        // A boolean operand is an i32; represent that as a ≤32-bit width so `compare_op` picks i32.
-        Ty::Bool => IntTy {
-            signed: true,
-            width: crate::ty::Width::Fixed(32),
-        },
+        Ty::Bool => bool_as_i32,
         _ => match type_of(db, rhs) {
             Ty::Int(it) => it,
-            Ty::Bool => IntTy {
-                signed: true,
-                width: crate::ty::Width::Fixed(32),
-            },
+            Ty::Bool => bool_as_i32,
             _ => IntTy::i64(),
         },
     }

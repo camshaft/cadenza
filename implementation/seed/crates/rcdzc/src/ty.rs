@@ -43,31 +43,64 @@ pub enum Width {
     Var(u32),
 }
 
-/// An integer type: a signedness and a [`Width`]. `IntTy { signed: true, width: Width::Fixed(64) }`
-/// is `Int64`. The full width semantics — unify only at equal width and signedness, no implicit
-/// promotion, per-width overflow — grow on this; the parameter is present from the start so a width is
-/// data the compiler unifies rather than a hard-coded case.
+/// The signedness of an integer type — the SAME three-state shape as [`Width`], because a bare integer
+/// literal is polymorphic in its sign exactly as it is in its width. `Fixed(true)` = signed,
+/// `Fixed(false)` = unsigned; `Deferred` = a bare literal's sign before anything constrains it (grounds
+/// to signed); `Var` = a unification variable an intrinsic/annotation introduces. Making sign a
+/// variable (not a baked `bool`) is what lets `(: 200 UInt8)` GROUND a literal to unsigned through
+/// ordinary unification — "Annotations Constrain, Never Contradict" — rather than clashing with a
+/// signed default. Inference resolves a `Var`/`Deferred` to a `Fixed`; the backend grounds a
+/// still-unresolved sign to signed (the default literal type).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sign {
+    Fixed(bool),
+    Deferred,
+    Var(u32),
+}
+
+/// An integer type: a [`Sign`] and a [`Width`]. `IntTy { sign: Fixed(true), width: Fixed(64) }` is
+/// `Int64`. Both axes unify (unify only at equal sign and width, no implicit promotion) and both can be
+/// deferred (a bare literal) or a variable (an operator generic over the integer type) — so a width
+/// AND a signedness are data the compiler unifies, never a hard-coded case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct IntTy {
-    pub signed: bool,
+    pub sign: Sign,
     pub width: Width,
 }
 
 impl IntTy {
-    /// A deferred signed integer — the type a bare integer literal takes before any constraint or
-    /// defaulting fixes its width.
+    /// A deferred integer — the type a bare integer literal takes before any constraint or defaulting
+    /// fixes its sign and width. BOTH axes are deferred, so an annotation (or an operator's signature)
+    /// can ground either.
     pub fn deferred() -> IntTy {
         IntTy {
-            signed: true,
+            sign: Sign::Deferred,
             width: Width::Deferred,
         }
     }
 
-    /// The signed 64-bit integer (`Int64`) — the concrete type an unresolved width grounds to.
+    /// The signed 64-bit integer (`Int64`) — the concrete type an unresolved sign+width grounds to.
     pub fn i64() -> IntTy {
         IntTy {
-            signed: true,
+            sign: Sign::Fixed(true),
             width: Width::Fixed(DEFAULT_INT_WIDTH),
+        }
+    }
+
+    /// A concrete `(signed, width)` integer — the ordinary constructor for a fixed integer type.
+    pub fn fixed(signed: bool, width: u32) -> IntTy {
+        IntTy {
+            sign: Sign::Fixed(signed),
+            width: Width::Fixed(width),
+        }
+    }
+
+    /// The concrete SIGNEDNESS this integer takes at the machine boundary — its fixed sign, or signed
+    /// (the default) if still deferred or an unresolved variable. The backend/renderer reads THIS.
+    pub fn ground_signed(self) -> bool {
+        match self.sign {
+            Sign::Fixed(s) => s,
+            Sign::Deferred | Sign::Var(_) => true,
         }
     }
 
@@ -139,12 +172,17 @@ impl Ty {
             // relation, is what actually resolves it).
             (Ty::Var(_), _) | (_, Ty::Var(_)) => true,
             (Ty::Int(a), Ty::Int(b)) => {
-                a.signed == b.signed
-                    && match (a.width, b.width) {
-                        (Width::Fixed(wa), Width::Fixed(wb)) => wa == wb,
-                        // a deferred or variable width has not been fixed, so it is compatible.
-                        _ => true,
-                    }
+                // A fixed sign must match; a deferred/variable sign is compatible (not yet fixed).
+                let sign_ok = match (a.sign, b.sign) {
+                    (Sign::Fixed(sa), Sign::Fixed(sb)) => sa == sb,
+                    _ => true,
+                };
+                let width_ok = match (a.width, b.width) {
+                    (Width::Fixed(wa), Width::Fixed(wb)) => wa == wb,
+                    // a deferred or variable width has not been fixed, so it is compatible.
+                    _ => true,
+                };
+                sign_ok && width_ok
             }
             (Ty::Bool, Ty::Bool) => true,
             (Ty::Unit, Ty::Unit) => true,
@@ -171,16 +209,18 @@ impl Ty {
             // A variable yields the other side (the more-defined type).
             (Ty::Var(_), t) | (t, Ty::Var(_)) => t.clone(),
             (Ty::Int(a), Ty::Int(b)) => {
-                // Prefer whichever side fixed the width (Fixed > Deferred/Var).
+                // Prefer whichever side fixed each axis (Fixed > Deferred/Var).
                 let width = match (a.width, b.width) {
                     (Width::Fixed(w), _) | (_, Width::Fixed(w)) => Width::Fixed(w),
                     (Width::Deferred, _) | (_, Width::Deferred) => Width::Deferred,
                     _ => a.width,
                 };
-                Ty::Int(IntTy {
-                    signed: a.signed,
-                    width,
-                })
+                let sign = match (a.sign, b.sign) {
+                    (Sign::Fixed(s), _) | (_, Sign::Fixed(s)) => Sign::Fixed(s),
+                    (Sign::Deferred, _) | (_, Sign::Deferred) => Sign::Deferred,
+                    _ => a.sign,
+                };
+                Ty::Int(IntTy { sign, width })
             }
             // Two agreeing records join field-wise (a deferred width in one branch's field is fixed by
             // the other). If they disagree, keep `self` — the branches-agree check reports the fault.
@@ -206,7 +246,7 @@ impl Ty {
     pub fn render_name(&self) -> String {
         match self {
             Ty::Int(it) => {
-                let stem = if it.signed { "Int" } else { "UInt" };
+                let stem = if it.ground_signed() { "Int" } else { "UInt" };
                 format!("{stem}{}", it.ground_width())
             }
             Ty::Bool => "Bool".to_string(),
@@ -238,6 +278,7 @@ impl Ty {
 pub struct Scheme {
     pub ty_vars: Vec<u32>,
     pub width_vars: Vec<u32>,
+    pub sign_vars: Vec<u32>,
     pub ty: Ty,
 }
 
@@ -247,6 +288,7 @@ impl Scheme {
         Scheme {
             ty_vars: Vec::new(),
             width_vars: Vec::new(),
+            sign_vars: Vec::new(),
             ty,
         }
     }

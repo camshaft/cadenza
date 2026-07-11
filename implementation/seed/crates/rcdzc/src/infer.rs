@@ -337,18 +337,39 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // the CHECK (no false reject) — the expr still type-checks on its own via the descent below.
         Resolved::Annot { expr, ty_expr } => {
             if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
-                let expr_ty = type_of(db, expr);
-                let mut subst = Subst::new();
-                if let Err(reject) = crate::unify::unify(&mut subst, &annot_ty, &expr_ty) {
-                    out.push(Reject::coded(
-                        Code::TypeMismatch,
-                        format!(
-                            "annotation type {} does not match value type {}",
-                            annot_ty.render_name(),
-                            expr_ty.render_name()
-                        ),
-                    ));
-                    let _ = reject; // the annotation's own message supersedes the raw unify message.
+                // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a
+                // unification: the literal has no intrinsic signedness/width to conflict, so the
+                // annotation fixes its type (`(: 200 UInt8)` : UInt8) subject only to a RANGE CHECK —
+                // a literal outside the width is rejected (CDZ0302), never truncated. (This is
+                // "Annotations Constrain": the annotation determines the literal's type rather than
+                // clashing with the signed-64 default a bare literal would otherwise take.)
+                if let (Resolved::Int(v), Ty::Int(it)) = (resolved_of(db, expr), &annot_ty) {
+                    if let crate::ty::Width::Fixed(w) = it.width
+                        && !v.fits_width(it.ground_signed(), w)
+                    {
+                        out.push(Reject::coded(
+                            Code::IntOutOfRange,
+                            format!(
+                                "integer literal does not fit the annotated type {}",
+                                annot_ty.render_name()
+                            ),
+                        ));
+                    }
+                } else {
+                    // A non-literal value has a real type that must AGREE with the annotation — unify,
+                    // and report a genuine conflict (`(: true Int64)`) as CDZ0203.
+                    let expr_ty = type_of(db, expr);
+                    let mut subst = Subst::new();
+                    if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
+                        out.push(Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "annotation type {} does not match value type {}",
+                                annot_ty.render_name(),
+                                expr_ty.render_name()
+                            ),
+                        ));
+                    }
                 }
             }
             collect(db, expr, out);

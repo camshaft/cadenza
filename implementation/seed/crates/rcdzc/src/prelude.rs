@@ -65,9 +65,25 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         );
     }
 
-    // `Int64` — the pre-installed width-64 integer module (the module `(Int 64)` reduces to). Its
-    // fields (`max`/`min`/…) are the width-64 specialization; reached by the ordinary projection.
-    names.insert("Int64".to_string(), int64_record(ast));
+    // The named fixed-width integer modules — `Int8`/`Int16`/`Int32`/`Int64` and
+    // `UInt8`/`UInt16`/`UInt32`/`UInt64`. Each is an ALIAS for the module `(Int N)` / `(UInt N)`
+    // reduces to: a record whose `(meta t)` is that width's concrete type-value and whose `max`/`min`
+    // fields are that width's bounds (`UInt64.max = 2^64-1`, exact). Built by the SAME width-generic
+    // builder the constructor uses, so a named width and `(Int N)` denote the same module — nothing is
+    // special-cased per name. `(Int N)` for any other width (odd ones like `(UInt 7)`) is built on
+    // demand by the constructor; these are just the commonly-written names pre-installed.
+    for (name, signed, width) in [
+        ("Int8", true, 8u32),
+        ("Int16", true, 16),
+        ("Int32", true, 32),
+        ("Int64", true, 64),
+        ("UInt8", false, 8),
+        ("UInt16", false, 16),
+        ("UInt32", false, 32),
+        ("UInt64", false, 64),
+    ] {
+        names.insert(name.to_string(), int_module_record(ast, signed, width));
+    }
 
     names
 }
@@ -186,34 +202,45 @@ fn comparison_type_lambda(ast: &mut Arenas) -> StructId {
     push_list(ast, vec![fn_head, params, body])
 }
 
-/// Append the `Int64` module as a genuine `(record …)` form and return its root occurrence, so
-/// `resolve` classifies it via the same `resolve_record` path a program record takes. It carries
-/// a `(meta t)` — its TYPE-VALUE, the signed-64 integer — so `Int64` used IN TYPE POSITION (`(: e
-/// Int64)`) reduces to `Ty::Int` by the same `typeval_of` projection a ground type takes; plus EVERY
-/// witnessed field: `max`/`min` as realized constants, and the arithmetic/conversion operations as
-/// `unrealized` fields (each declines when projected). No field is absent, so there is no open-module
-/// case. `Int64` is thus the SAME module `(Int 64)` reduces to — a type value AND a bounds module.
-fn int64_record(ast: &mut Arenas) -> StructId {
+/// Append a fixed-width integer MODULE record for `(signed, width)` and return its occurrence — the
+/// value a named width (`Int64`, `UInt8`, …) binds to. Built the same way the `(Int N)`/`(UInt N)`
+/// constructor builds its module (see `eval::build_int_module`), so a named width and the constructor
+/// application denote the same thing. It carries a `(meta t)` — its TYPE-VALUE — so the name works IN
+/// TYPE POSITION (`(: e UInt8)` reduces to `Ty::Int` via the ordinary `(meta t)` projection); its
+/// `max`/`min` are that width's bounds (from the shared `eval::int_bounds`, arbitrary precision so
+/// `UInt64.max = 2^64-1` is exact); its arithmetic/conversion ops are `unrealized` (decline when
+/// projected). Nothing is special-cased per name — only the `(signed, width)` differs.
+fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let head = push_atom(ast, Leaf::Name("record".to_string()));
-    // `(meta t)` = the type expression `(Int 64)`, reduced to the signed-64 type-value by the
-    // evaluator's `typeval_of` (it resolves `Int` to the ctor and applies it). This is what makes
-    // `Int64` usable as a TYPE, not only as a field-bearing module.
-    let int64_ty_expr = {
-        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+    // `(meta t)` = the type expression `(Int width)` / `(UInt width)`, reduced to the concrete
+    // type-value by `typeval_of`. This is what makes the name usable as a TYPE.
+    let ty_expr = {
+        let ctor = push_atom(
+            ast,
+            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
+        );
         let w = push_atom(
             ast,
             Leaf::Int {
-                value: IntValue::from_i64(64),
+                value: IntValue::from_i64(width as i64),
                 radix: Radix::Dec,
             },
         );
-        push_list(ast, vec![int, w])
+        push_list(ast, vec![ctor, w])
     };
-    let mut fields = vec![
-        meta_field(ast, "t", int64_ty_expr),
-        int_field(ast, "max", i64::MAX),
-        int_field(ast, "min", i64::MIN),
-    ];
+    let mut fields = vec![meta_field(ast, "t", ty_expr)];
+    // `max`/`min` — that width's bounds, at arbitrary precision (shared with the constructor's builder),
+    // each ANNOTATED with the module's own width so projecting the field carries its type.
+    match crate::eval::int_bounds(signed, width) {
+        Some((max, min)) => {
+            fields.push(int_field(ast, "max", max, signed, width));
+            fields.push(int_field(ast, "min", min, signed, width));
+        }
+        None => {
+            fields.push(unrealized_field(ast, "max"));
+            fields.push(unrealized_field(ast, "min"));
+        }
+    }
     // Operations not yet realized — present, but their value declines when projected.
     for op in [
         "of",
@@ -229,17 +256,34 @@ fn int64_record(ast: &mut Arenas) -> StructId {
     push_list(ast, children)
 }
 
-/// A `(name value)` record field whose value is an integer constant.
-fn int_field(ast: &mut Arenas, name: &str, value: i64) -> StructId {
+/// A `(name (: value (Int/UInt width)))` record field — an arbitrary-precision integer constant
+/// ANNOTATED with the module's own width, so projecting the field yields a value typed at that width
+/// (mirrors `eval::named_int_field`; the two builders must annotate identically so a named width and
+/// `(Int N)` project the same typed bound).
+fn int_field(ast: &mut Arenas, name: &str, value: IntValue, signed: bool, width: u32) -> StructId {
     let k = push_atom(ast, Leaf::Name(name.to_string()));
-    let v = push_atom(
+    let lit = push_atom(
         ast,
         Leaf::Int {
-            value: IntValue::from_i64(value),
+            value,
             radix: Radix::Dec,
         },
     );
-    push_list(ast, vec![k, v])
+    let ctor = push_atom(
+        ast,
+        Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
+    );
+    let w = push_atom(
+        ast,
+        Leaf::Int {
+            value: IntValue::from_i64(width as i64),
+            radix: Radix::Dec,
+        },
+    );
+    let ty_expr = push_list(ast, vec![ctor, w]);
+    let colon = push_atom(ast, Leaf::Name(":".to_string()));
+    let annot = push_list(ast, vec![colon, lit, ty_expr]);
+    push_list(ast, vec![k, annot])
 }
 
 /// A `(name (unrealized name))` record field: the field exists, but its value is an `unrealized`

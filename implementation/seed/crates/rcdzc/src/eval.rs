@@ -49,10 +49,13 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
                 width_vars.push(n);
             }
             let ty = type_in_env(db, body, &env)?;
-            // Only the vars actually mentioned matter; keep both lists (unused ones are harmless).
+            // Only the vars actually mentioned matter; keep the lists (unused ones are harmless). The
+            // arithmetic operators are signed-only for now (no sign var), so `sign_vars` is empty until
+            // an operator is made generic over signedness.
             Some(Scheme {
                 ty_vars,
                 width_vars,
+                sign_vars: Vec::new(),
                 ty,
             })
         }
@@ -91,7 +94,10 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                 Prim::IntCtor | Prim::UIntCtor if args.len() == 1 => {
                     let signed = matches!(prim, Prim::IntCtor);
                     let width = width_in_env(db, args[0], env)?;
-                    Some(Ty::Int(IntTy { signed, width }))
+                    Some(Ty::Int(IntTy {
+                        sign: crate::ty::Sign::Fixed(signed),
+                        width,
+                    }))
                 }
                 Prim::FnCtor if args.len() == 2 => {
                     let p = type_in_env(db, args[0], env)?;
@@ -567,7 +573,7 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         Ty::Bool => db.push_name("Bool"),
         Ty::Unit => db.push_name("Unit"),
         Ty::Int(it) => {
-            let ctor = db.push_name(if it.signed { "Int" } else { "UInt" });
+            let ctor = db.push_name(if it.ground_signed() { "Int" } else { "UInt" });
             let w = match it.width {
                 Width::Fixed(w) => w as i64,
                 // A deferred/var width in a built type grounds to the default for encoding.
@@ -596,10 +602,7 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
 /// join it width-specialized in Milestone B; Milestone A pins the type + bounds so `(. (Int 64) max)`
 /// folds through the ordinary projection.)
 pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
-    let it = IntTy {
-        signed,
-        width: Width::Fixed(width),
-    };
+    let it = IntTy::fixed(signed, width);
     let ty = crate::ty::Ty::Int(it);
 
     let mut fields: Vec<StructId> = Vec::new();
@@ -608,14 +611,19 @@ pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
     let ty_node = encode_typeval(db, &ty);
     fields.push(meta_field(db, "t", ty_node));
 
-    // `max`/`min` — the width's bounds (for the widths we can represent as an i64 constant). A width
-    // beyond i64 leaves the bound unrealized (declines when projected) rather than emit a wrong value.
-    if let Some((max, min)) = int_bounds(signed, width) {
-        fields.push(named_int_field(db, "max", max));
-        fields.push(named_int_field(db, "min", min));
-    } else {
-        fields.push(unrealized_field(db, "max"));
-        fields.push(unrealized_field(db, "min"));
+    // `max`/`min` — the width's bounds, computed from the WIDTH PARAMETER (not a per-type table), at
+    // arbitrary precision so `UInt64.max = 2^64 - 1` (which exceeds `i64`) is exact. Any width the
+    // constructor admits (1..=64, including odd widths like `(UInt 7)`/`(UInt 24)`) yields that width's
+    // bounds. A width the fold can't represent leaves the bound unrealized (declines when projected).
+    match int_bounds(signed, width) {
+        Some((max, min)) => {
+            fields.push(named_int_field(db, "max", max, signed, width));
+            fields.push(named_int_field(db, "min", min, signed, width));
+        }
+        None => {
+            fields.push(unrealized_field(db, "max"));
+            fields.push(unrealized_field(db, "min"));
+        }
     }
 
     let head = db.push_name("record");
@@ -624,27 +632,23 @@ pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
     db.push_list(children)
 }
 
-/// The (max, min) bounds of a `(signed, width)` integer as `i64`s, or `None` if a bound does not fit
-/// `i64` (width ≥ 64 unsigned, or width > 64). Milestone A represents bounds as `i64` constants.
-fn int_bounds(signed: bool, width: u32) -> Option<(i64, i64)> {
+/// The (max, min) bounds of a `(signed, width)` integer as arbitrary-precision [`IntValue`]s, computed
+/// FROM THE WIDTH — a signed N-bit is `-(2^(N-1)) ..= 2^(N-1)-1`, an unsigned N-bit is `0 ..= 2^N-1`.
+/// `None` only for a width the fold does not model (0, or > 64). Odd widths (`7`, `24`, `48`) are
+/// ordinary — the bounds are a function of `width`, so nothing is hard-coded per named type. Shared
+/// with the prelude's named-width modules so a named width and `(Int N)` share one bounds computation.
+pub fn int_bounds(signed: bool, width: u32) -> Option<(IntValue, IntValue)> {
     if width == 0 || width > 64 {
         return None;
     }
     if signed {
-        if width == 64 {
-            Some((i64::MAX, i64::MIN))
-        } else {
-            let max = (1i64 << (width - 1)) - 1;
-            let min = -(1i64 << (width - 1));
-            Some((max, min))
-        }
+        // max = 2^(width-1) - 1, min = -(2^(width-1)).
+        let half = 1u128 << (width - 1);
+        Some((IntValue::from_u128(half - 1), IntValue::from_neg_u128(half)))
     } else {
-        // Unsigned max is 2^width - 1, which does not fit i64 for width ≥ 64.
-        if width >= 64 {
-            None
-        } else {
-            Some(((1i64 << width) - 1, 0))
-        }
+        // max = 2^width - 1, min = 0. (width==64 → 2^64-1, exact via u128.)
+        let max = (1u128 << width) - 1;
+        Some((IntValue::from_u128(max), IntValue::zero()))
     }
 }
 
@@ -656,14 +660,28 @@ fn meta_field(db: &mut Db, key: &str, value: StructId) -> StructId {
     db.push_list(vec![meta_key, value])
 }
 
-/// A `(name INT)` record field holding an integer constant (appended).
-fn named_int_field(db: &mut Db, name: &str, value: i64) -> StructId {
+/// A `(name (: INT (Int/UInt WIDTH)))` record field — an arbitrary-precision integer constant ANNOTATED
+/// with the module's own width, so projecting the field (`UInt8.max`) yields a value that types at that
+/// width (not the signed-64 a bare literal would default to). The annotation is the ordinary `(: e T)`
+/// node; the literal grounds to `(signed, width)` through it. This is what carries `UInt8.max`'s type as
+/// `UInt8` and `UInt64.max`'s value (2^64-1, > i64) at its true width.
+fn named_int_field(db: &mut Db, name: &str, value: IntValue, signed: bool, width: u32) -> StructId {
     let k = db.push_name(name);
-    let v = db.push_atom(Leaf::Int {
-        value: IntValue::from_i64(value),
+    let lit = db.push_atom(Leaf::Int {
+        value,
         radix: crate::ast::Radix::Dec,
     });
-    db.push_list(vec![k, v])
+    // The type expression `(Int width)` / `(UInt width)`.
+    let ctor = db.push_name(if signed { "Int" } else { "UInt" });
+    let w = db.push_atom(Leaf::Int {
+        value: IntValue::from_i64(width as i64),
+        radix: crate::ast::Radix::Dec,
+    });
+    let ty_expr = db.push_list(vec![ctor, w]);
+    // `(: lit ty_expr)`.
+    let colon = db.push_name(":");
+    let annot = db.push_list(vec![colon, lit, ty_expr]);
+    db.push_list(vec![k, annot])
 }
 
 /// A `(name (unrealized name))` field — the field exists but declines when projected.

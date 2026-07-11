@@ -88,6 +88,97 @@ impl IntValue {
         }
     }
 
+    /// Build from an unsigned `u128`, producing the canonical minimal big-endian magnitude. Covers
+    /// every unsigned bound up to 128 bits — in particular `UInt64.max = 2^64 - 1`, which does not fit
+    /// an `i64`.
+    pub fn from_u128(v: u128) -> IntValue {
+        if v == 0 {
+            return IntValue::zero();
+        }
+        let bytes = v.to_be_bytes();
+        let mut start = 0;
+        while start < bytes.len() && bytes[start] == 0 {
+            start += 1;
+        }
+        IntValue {
+            negative: false,
+            magnitude: bytes[start..].to_vec(),
+        }
+    }
+
+    /// Build the signed value `-v` for an unsigned magnitude `v` (v ≤ 2^127) — the negative integer
+    /// bounds (`Int64.min = -(2^63)`) whose magnitude fits `u128` but whose value is negative.
+    pub fn from_neg_u128(v: u128) -> IntValue {
+        let mut iv = IntValue::from_u128(v);
+        iv.negative = v != 0;
+        iv
+    }
+
+    /// Whether this value fits a `(signed, width)` integer type — the range check an annotation
+    /// `(: v IntN)` / `(: v UIntN)` performs: a signed N-bit holds `-(2^(N-1)) ..= 2^(N-1) - 1`, an
+    /// unsigned N-bit holds `0 ..= 2^N - 1`. A value outside the range is rejected (never truncated).
+    /// Widths `1..=128` are supported here (the fold's arbitrary-precision range).
+    pub fn fits_width(&self, signed: bool, width: u32) -> bool {
+        if width == 0 || width > 128 {
+            return false;
+        }
+        // The magnitude as a u128 (values wider than 128 bits never fit a ≤128 width).
+        if self.magnitude.len() > 16 {
+            return false;
+        }
+        let mut mag: u128 = 0;
+        for &b in &self.magnitude {
+            mag = (mag << 8) | (b as u128);
+        }
+        if signed {
+            if self.negative {
+                // -mag fits iff mag <= 2^(width-1).
+                mag <= (1u128 << (width - 1))
+            } else {
+                // +mag fits iff mag < 2^(width-1)  (i.e. <= 2^(width-1) - 1).
+                mag < (1u128 << (width - 1))
+            }
+        } else {
+            // Unsigned: no negatives; mag < 2^width  (i.e. <= 2^width - 1). (width==128 max = u128::MAX.)
+            if self.negative && mag != 0 {
+                return false;
+            }
+            if width == 128 {
+                true
+            } else {
+                mag < (1u128 << width)
+            }
+        }
+    }
+
+    /// The 64-bit two's-complement BIT PATTERN of this value, as the `i64` an `i64.const` carries. For
+    /// a value in signed range this is the value itself; for an UNSIGNED value at/above `2^63` (e.g.
+    /// `UInt64.max = 2^64-1`) it is the negative `i64` with the same 64 bits (`-1`), which the unsigned
+    /// boundary lift reinterprets correctly. Assumes the value FITS 64 bits (checked before selection).
+    pub fn to_i64_bits(&self) -> i64 {
+        let mut acc: u64 = 0;
+        for &b in &self.magnitude {
+            acc = (acc << 8) | (b as u64);
+        }
+        let bits = if self.negative {
+            acc.wrapping_neg()
+        } else {
+            acc
+        };
+        bits as i64
+    }
+
+    /// The 32-bit two's-complement bit pattern for a ≤32-bit value, as the `i32` an `i32.const`
+    /// carries — the low 32 bits of the value's two's-complement representation. A SIGNED negative
+    /// (`-128 : Int8`) keeps its sign (`-128` as i32, sign-extended — NOT the truncated `0x80`); an
+    /// UNSIGNED value at/above `2^31` (`UInt32.max = 2^32-1`) is the negative i32 with the same bits
+    /// (`-1`), which the unsigned boundary lift reinterprets. Assumes the value FITS the width (checked
+    /// before selection), so the low 32 bits are exactly the value — no width-masking that would strip
+    /// a sign bit.
+    pub fn to_i32_bits(&self, _width: u32) -> i32 {
+        self.to_i64_bits() as i32
+    }
+
     /// Narrow to a machine `i64`, or `None` if the value does not fit. Used where a downstream pass
     /// requires a fixed-width integer and must decline (not truncate) an out-of-range literal.
     pub fn to_i64(&self) -> Option<i64> {
