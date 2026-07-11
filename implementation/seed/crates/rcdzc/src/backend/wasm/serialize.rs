@@ -10,11 +10,13 @@
 use crate::backend::wasm::encode::{op, section, uleb_bytes, uleb128, wasm_vec};
 use crate::backend::wasm::lir::{Lir, ValType, comp_valtype_of, valtype_of};
 use crate::backend::wasm::select::SelectedFunc;
+use crate::backend::wasm::wasm_abi;
 use crate::layout::Layout;
 use crate::ty::Ty;
 
-/// The `\0asm` version-1 core-module preamble.
-const CORE_MAGIC: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+/// The `\0asm` version-1 core-module preamble — from the generated `wasm_abi` table (`Module::HEADER`
+/// as `wasm-encoder` writes it), not a hand-typed byte string.
+const CORE_MAGIC: &[u8] = wasm_abi::CORE_MAGIC;
 
 /// Serialize one flat instruction, appending its bytes to `out`. Exhaustive over `Lir`.
 fn instr(i: &Lir, out: &mut Vec<u8>) {
@@ -49,7 +51,7 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
         // `if (empty) unreachable end` — trap when the i32 condition is nonzero, leaving nothing.
         Lir::IfUnreachableEnd => {
             out.push(op::IF);
-            out.push(0x40); // empty block type
+            out.push(wasm_abi::BLOCK_EMPTY); // empty block type
             out.push(op::UNREACHABLE);
             out.push(op::END);
         }
@@ -125,9 +127,10 @@ fn code_entry(f: &SelectedFunc) -> Vec<u8> {
 }
 
 /// One function's core functype: `0x60 <params-vec> <results-vec>`. A unit return is a zero-result
-/// function; any other return is one result of its value type.
+/// function; any other return is one result of its value type. The form tag is the generated
+/// `wasm_abi::CORE_FUNCTYPE_FORM` (from `wasm-encoder`), not a hand-typed `0x60`.
 fn functype(f: &SelectedFunc) -> Result<Vec<u8>, String> {
-    let mut out = vec![0x60];
+    let mut out = vec![wasm_abi::CORE_FUNCTYPE_FORM];
     let param_bytes: Vec<u8> = f.params.iter().map(|vt| vt.byte()).collect();
     out.extend_from_slice(&wasm_vec(param_bytes.len(), &param_bytes));
     match valtype_of(&f.ret) {
@@ -149,14 +152,14 @@ pub fn core_module(funcs: &[SelectedFunc], layout: &Layout) -> Result<Vec<u8>, S
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
-    let type_sec = section(1, &wasm_vec(n, &type_items));
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(n, &type_items));
 
     // Function section: func i uses type i (1:1).
     let mut func_items = Vec::new();
     for i in 0..n {
         uleb128(i as u64, &mut func_items);
     }
-    let func_sec = section(3, &wasm_vec(n, &func_items));
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n, &func_items));
 
     // Export section: export every boundary function under its verbatim name, by its absolute core
     // index (its position in the layout's emission order).
@@ -170,18 +173,21 @@ pub fn core_module(funcs: &[SelectedFunc], layout: &Layout) -> Result<Vec<u8>, S
         })?;
         let mut item = uleb_bytes(e.name.len() as u64);
         item.extend_from_slice(e.name.as_bytes());
-        item.push(0x00); // export kind: func
+        item.push(wasm_abi::EXPORT_KIND_FUNC); // export kind: func
         uleb128(abs as u64, &mut item);
         export_items.extend_from_slice(&item);
     }
-    let export_sec = section(7, &wasm_vec(layout.exports.len(), &export_items));
+    let export_sec = section(
+        wasm_abi::CORE_SEC_EXPORT,
+        &wasm_vec(layout.exports.len(), &export_items),
+    );
 
     // Code section: bodies in emission order.
     let mut code_items = Vec::new();
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f));
     }
-    let code_sec = section(10, &wasm_vec(n, &code_items));
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n, &code_items));
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);

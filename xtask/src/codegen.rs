@@ -1,21 +1,31 @@
-//! `codegen` — generate the value-heap runtime-ABI table the wasm backend consumes.
+//! `codegen` — generate the wasm backend's two ABI tables from their authoritative oracles.
 //!
-//! The value-heap runtime interface is declared, once, in the runtime crate's `wit/runtime.wit` — the
-//! ABI's source of truth. The compiler emits programs that IMPORT that interface, so it needs each
-//! op's name and core signature to build the import section. Rather than hand-transcribe that (a big
-//! hard-coded list that could drift from the WIT), this reads the WIT with `wit-parser` and GENERATES
-//! a structured Rust table: `crates/rcdzc/src/backend/wasm/runtime_abi.rs`, one `RtOp { name, params,
-//! result }` per declared op.
+//! The wasm backend emits bytes against two frozen ABIs. Rather than hand-transcribing either (a
+//! hard-coded list that could silently drift from its source), each is DERIVED from its oracle and
+//! written as a plain-data Rust file the backend consumes. Both generated files are PLAIN DATA — no
+//! external dependency — so they ship in the portable compiler; the oracle crates (`wit-parser`,
+//! `wasm-encoder`) live ONLY here in xtask (a dev desk). Re-run `cargo xtask codegen` after changing
+//! either source; `cargo xtask codegen --check` (a hard gate in `xtask check`) fails if a committed
+//! file has drifted from its oracle.
 //!
-//! The generated file is PLAIN DATA (no external dep), so it ships in the portable compiler; the
-//! `wit-parser` dependency lives ONLY here in xtask (a dev-desk oracle). The backend builds a
-//! program's per-program import section from this table (importing only the ops the program uses),
-//! rather than pasting opaque envelope blobs — the operator's "structured info the compiler builds up
-//! the wasm from, not massive opaque binaries." Re-run (`cargo xtask codegen`) after changing the WIT.
+//!  - `runtime_abi.rs` — the VALUE-HEAP RUNTIME interface, declared once in the runtime crate's
+//!    `wit/runtime.wit` (the ABI's source of truth). Read with `wit-parser` into one `RtOp { name,
+//!    params, result }` per declared op, so the compiler builds a program's per-program import
+//!    section from structured signature data (importing only the ops it uses) rather than pasting
+//!    opaque envelope blobs. Also carries the runtime's content hash, so a runtime-code change (not
+//!    only a WIT change) is caught by the staleness gate.
+//!
+//!  - `wasm_abi.rs` — every WASM / COMPONENT-MODEL byte the backend lays down: opcodes, core and
+//!    component valtypes, section ids, the two magic headers, and the functype form bytes. Each is
+//!    EXTRACTED FROM `wasm-encoder` (the spec byte encoder) by encoding a one-off value and reading
+//!    the byte back — so no opcode or magic number is hand-written. `wasm-encoder` is already the
+//!    byte ORACLE the rcdzc tests diff the hand-emitted bytes against; this makes it the SOURCE of
+//!    those bytes too, not just the after-the-fact check.
 
 use crate::{Paths, build_component, content_address};
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
+use std::path::PathBuf;
 use wit_parser::{Resolve, Type as WitType};
 use xshell::Shell;
 
@@ -64,10 +74,17 @@ struct Op {
     lowerable: bool,
 }
 
-/// Generate `runtime_abi.rs` from the runtime WIT. In `check` mode, regenerate in memory and compare
-/// to the committed file WITHOUT writing — the STALENESS GATE: exit non-zero if the file is out of
-/// date, so a forgotten regeneration fails `xtask check` rather than silently drifting from the WIT.
+/// Generate BOTH backend ABI tables — `runtime_abi.rs` (from the runtime WIT) and `wasm_abi.rs` (from
+/// `wasm-encoder`). In `check` mode, regenerate each in memory and compare to the committed file
+/// WITHOUT writing — the STALENESS GATE: exit non-zero if either is out of date, so a forgotten
+/// regeneration fails `xtask check` rather than silently drifting from its oracle.
 pub fn run(paths: &Paths, check: bool) {
+    generate_runtime_abi(paths, check);
+    generate_wasm_abi(paths, check);
+}
+
+/// Generate `runtime_abi.rs` from the runtime WIT (see the `runtime_abi` bullet in the module doc).
+fn generate_runtime_abi(paths: &Paths, check: bool) {
     let wit = paths.seed.join("crates/cdz-runtime/wit/runtime.wit");
     let out = paths
         .seed
@@ -91,16 +108,54 @@ pub fn run(paths: &Paths, check: bool) {
     // `//!` module banner as text (a module doc is awkward as a token attribute). prettyplease-then-
     // rustfmt makes the committed file agree with BOTH `fmt --check` and `codegen --check`.
     let body = format_tokens(render(&ops, iface, &runtime_hash));
-    let source = format!("{}{body}", module_banner());
+    let source = format!("{}{body}", runtime_abi_banner());
 
+    let summary = format!(
+        "{} ops, {} lowerable, from {}",
+        ops.len(),
+        ops.iter().filter(|o| o.lowerable).count(),
+        wit.display()
+    );
+    emit_or_check(&out, &source, check, "the runtime WIT", &summary);
+}
+
+/// Generate `wasm_abi.rs` from `wasm-encoder` (see the `wasm_abi` bullet in the module doc). The
+/// byte values are extracted, not typed in: `wasm_abi::collect` encodes a one-off value with
+/// `wasm-encoder` for each entry and reads the emitted byte back.
+fn generate_wasm_abi(paths: &Paths, check: bool) {
+    let out = paths.seed.join("crates/rcdzc/src/backend/wasm/wasm_abi.rs");
+    let tables = wasm_abi::collect();
+    let source = format!(
+        "{}{}",
+        wasm_abi_banner(),
+        format_tokens(wasm_abi::render(&tables))
+    );
+    let summary = format!(
+        "{} opcodes + {} valtype/section/form bytes, from wasm-encoder",
+        tables.opcodes.len(),
+        tables.singles.len()
+    );
+    emit_or_check(
+        &out,
+        &source,
+        check,
+        "the wasm-encoder byte encoder",
+        &summary,
+    );
+}
+
+/// Emit `source` to `out`, or (in `check` mode) compare without writing and fail on drift. Shared by
+/// both generators — one place for the "write vs. staleness-gate" behavior and its guidance message.
+/// `oracle` names the source of truth for the failure text; `summary` is the wrote-what line.
+fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary: &str) {
     if check {
-        // Compare, don't write. A mismatch (or a missing file) means the committed table is behind the
-        // WIT — a hard failure with the fix spelled out, so no one has to REMEMBER to regenerate.
-        let current = std::fs::read_to_string(&out).unwrap_or_default();
+        // Compare, don't write. A mismatch (or a missing file) means the committed table is behind
+        // its oracle — a hard failure with the fix spelled out, so no one has to REMEMBER to regen.
+        let current = std::fs::read_to_string(out).unwrap_or_default();
         if current != source {
             eprintln!(
-                "xtask codegen --check: {} is OUT OF DATE with the runtime WIT.\n  \
-                 The runtime interface changed but the generated ABI table was not regenerated.\n  \
+                "xtask codegen --check: {} is OUT OF DATE with {oracle}.\n  \
+                 The source changed but the generated table was not regenerated.\n  \
                  Fix: run `cargo xtask codegen` and commit {}.",
                 out.display(),
                 out.display()
@@ -110,18 +165,11 @@ pub fn run(paths: &Paths, check: bool) {
         println!("xtask codegen --check: {} is up to date.", out.display());
         return;
     }
-
-    if let Err(e) = std::fs::write(&out, &source) {
+    if let Err(e) = std::fs::write(out, source) {
         eprintln!("xtask codegen: writing {}: {e}", out.display());
         std::process::exit(1);
     }
-    println!(
-        "xtask codegen: wrote {} ({} ops, {} lowerable) from {}",
-        out.display(),
-        ops.len(),
-        ops.iter().filter(|o| o.lowerable).count(),
-        wit.display()
-    );
+    println!("xtask codegen: wrote {} ({summary})", out.display());
 }
 
 /// Build the value-heap runtime component and return its content address (SHA-256 hex) — the SAME
@@ -163,7 +211,9 @@ fn rustfmt_stdin(src: &str) -> Option<String> {
         .ok()?;
     child.stdin.take()?.write_all(src.as_bytes()).ok()?;
     let out = child.wait_with_output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Resolve every function of the runtime's `heap` interface from the WIT, IN DECLARATION ORDER — the
@@ -292,10 +342,433 @@ fn field_ident(op_name: &str) -> syn::Ident {
     syn::Ident::new(&op_name.replace('-', "_"), proc_macro2::Span::call_site())
 }
 
-/// The `//!` module banner prepended to the generated file — the "do-not-edit / regenerate" notice.
-/// A module doc is awkward to carry as a token attribute, so it is plain leading text (rustfmt leaves
-/// a `//!` block alone).
-fn module_banner() -> String {
+// ================================================================================================
+// wasm_abi — extract the backend's wasm / component-model bytes from `wasm-encoder`.
+//
+// The backend hand-emits bytes (no encoder in the compile path, so the byte path ports 1:1 to the
+// Cadenza self-host), but the byte VALUES are the spec's, not ours to invent. This module recovers
+// each one from `wasm-encoder`: encode a single value (an `Instruction`, a `ValType`, a one-func
+// section, a whole `Module`/`Component`) and read the byte(s) back. The result is a plain table the
+// backend consumes — the same "structured data the compiler builds the wasm up from" shape as
+// `runtime_abi.rs`, and byte-identical to what the oracle test already pins.
+// ================================================================================================
+mod wasm_abi {
+    use super::{Span, TokenStream, quote};
+    use wasm_encoder::{
+        Component, ComponentSectionId, ComponentTypeSection, Encode, ExportKind, Instruction,
+        Module, PrimitiveValType, SectionId, TypeSection, ValType,
+    };
+
+    /// One generated `op::<IDENT> = 0x..` opcode: the backend's Lir-instruction name and the single
+    /// byte `wasm-encoder` emits for the matching `Instruction`.
+    pub struct Opcode {
+        /// The `SCREAMING_SNAKE` constant name the backend uses (`I32_ADD`, `LOCAL_GET`, …).
+        pub ident: &'static str,
+        /// The opcode byte, read back from encoding the `Instruction`.
+        pub byte: u8,
+    }
+
+    /// One generated named single-byte constant — a valtype, section id, export-kind, or functype
+    /// form byte. `doc` is the `///` line explaining what the byte is.
+    pub struct Single {
+        pub ident: &'static str,
+        pub byte: u8,
+        pub doc: &'static str,
+    }
+
+    /// One generated magic-header constant (`&[u8]`) — the 8-byte core-module / component preamble.
+    pub struct Magic {
+        pub ident: &'static str,
+        pub bytes: [u8; 8],
+        pub doc: &'static str,
+    }
+
+    /// The whole extracted table: the opcode list, the named single bytes, and the magic headers.
+    pub struct Tables {
+        pub opcodes: Vec<Opcode>,
+        pub singles: Vec<Single>,
+        pub magics: Vec<Magic>,
+    }
+
+    /// The single byte `wasm-encoder` emits for an `Instruction` — the opcode of an instruction whose
+    /// operands (if any) follow. Every opcode the backend emits is a one-byte opcode, so byte 0 of the
+    /// encoding IS the opcode; a longer encoding here would mean the instruction is multi-byte and the
+    /// extraction is unsound, so that is asserted rather than silently truncated.
+    fn opcode_of(name: &str, insn: Instruction) -> u8 {
+        let mut buf = Vec::new();
+        insn.encode(&mut buf);
+        assert!(
+            !buf.is_empty(),
+            "wasm-encoder emitted no bytes for the {name} opcode"
+        );
+        // The operands follow the opcode byte; the backend emits them itself (LEB128), so only byte 0
+        // is the opcode. (For operand-less instructions the encoding is exactly one byte.)
+        buf[0]
+    }
+
+    /// The single byte `wasm-encoder` emits for a value that encodes to exactly one byte (a valtype,
+    /// an export-kind). Asserts the one-byte shape so a spec change that widened it can't slip through.
+    fn one_byte<T: Encode>(name: &str, v: T) -> u8 {
+        let mut buf = Vec::new();
+        v.encode(&mut buf);
+        assert_eq!(
+            buf.len(),
+            1,
+            "expected {name} to encode to a single byte, got {buf:?}"
+        );
+        buf[0]
+    }
+
+    /// The core FUNCTYPE FORM byte (`0x60`) — the tag that opens a core function type. It is only
+    /// emitted inside a type section, so encode a one-function `TypeSection` and read the tag off the
+    /// first (only) type entry — the byte `wasm-encoder` pushes before the param/result vectors.
+    fn core_functype_form() -> u8 {
+        let mut ts = TypeSection::new();
+        ts.ty().function([], []);
+        first_type_entry_tag("core functype", &ts)
+    }
+
+    /// The COMPONENT functype form byte (`0x40`) — the tag opening a component function type, likewise
+    /// only emitted inside a component type section. Encode a one-function `ComponentTypeSection` and
+    /// read the tag off its first entry.
+    fn component_functype_form() -> u8 {
+        let mut ts = ComponentTypeSection::new();
+        // `params` must be encoded before `result` (the encoder asserts it); a nullary `() -> ()` is
+        // enough — only the leading form tag is read.
+        ts.function()
+            .params(std::iter::empty::<(&str, wasm_encoder::ComponentValType)>())
+            .result(None);
+        first_type_entry_tag("component functype", &ts)
+    }
+
+    /// The leading tag byte of the FIRST entry in a one-entry type section. `wasm-encoder` frames a
+    /// section as `<id:1> <byte-length:leb> <count:leb> <entries…>`; a section holding a single small
+    /// function type has both the length and the count in one LEB byte each, so the entry — whose
+    /// first byte is the functype form tag — starts at offset 3. (Asserted, so a framing change or a
+    /// non-trivial length can't silently shift the read.)
+    fn first_type_entry_tag<S: SectionBytes>(name: &str, sec: &S) -> u8 {
+        let bytes = sec.section_bytes();
+        // [0]=section id, [1]=section byte-length (1 LEB byte, the type is tiny), [2]=entry count.
+        assert!(
+            bytes.len() > 3,
+            "{name} section unexpectedly short: {bytes:?}"
+        );
+        assert_eq!(
+            bytes[2], 1,
+            "{name} section should hold exactly one type entry, got count {}",
+            bytes[2]
+        );
+        bytes[3]
+    }
+
+    /// A minimal shim over the two section flavors: emit the full `<id> <len> <contents>` bytes of a
+    /// section. `wasm-encoder`'s `Section`/`ComponentSection` traits both expose exactly this via
+    /// `append_to`, but they are distinct traits; this unifies them for `section_contents_first_byte`.
+    trait SectionBytes {
+        fn section_bytes(&self) -> Vec<u8>;
+    }
+    impl SectionBytes for TypeSection {
+        fn section_bytes(&self) -> Vec<u8> {
+            let mut m = Module::new();
+            m.section(self);
+            // A fresh `Module` is `[8-byte header][section…]`; the section is everything after it.
+            m.finish()[Module::HEADER.len()..].to_vec()
+        }
+    }
+    impl SectionBytes for ComponentTypeSection {
+        fn section_bytes(&self) -> Vec<u8> {
+            let mut c = Component::new();
+            c.section(self);
+            c.finish()[Component::HEADER.len()..].to_vec()
+        }
+    }
+
+    /// Extract every backend byte from `wasm-encoder`. The opcode list is in the backend's own
+    /// declaration order (matching the frozen `op` module for a readable, stable diff); the singles
+    /// and magics follow.
+    pub fn collect() -> Tables {
+        // The opcode table: each backend `op::` constant paired with the `Instruction` whose encoding
+        // yields its byte. One row per instruction the serializer emits (Lir → bytes).
+        let opcodes = vec![
+            op("I32_CONST", Instruction::I32Const(0)),
+            op("I64_CONST", Instruction::I64Const(0)),
+            op("IF", Instruction::If(wasm_encoder::BlockType::Empty)),
+            op("ELSE", Instruction::Else),
+            op("END", Instruction::End),
+            op("LOCAL_GET", Instruction::LocalGet(0)),
+            op("LOCAL_SET", Instruction::LocalSet(0)),
+            op("CALL", Instruction::Call(0)),
+            op("UNREACHABLE", Instruction::Unreachable),
+            op("I32_ADD", Instruction::I32Add),
+            op("I32_SUB", Instruction::I32Sub),
+            op("I32_MUL", Instruction::I32Mul),
+            op("I32_DIV_S", Instruction::I32DivS),
+            op("I32_DIV_U", Instruction::I32DivU),
+            op("I32_REM_S", Instruction::I32RemS),
+            op("I32_REM_U", Instruction::I32RemU),
+            op("I32_AND", Instruction::I32And),
+            op("I32_OR", Instruction::I32Or),
+            op("I32_XOR", Instruction::I32Xor),
+            op("I32_SHL", Instruction::I32Shl),
+            op("I32_SHR_S", Instruction::I32ShrS),
+            op("I32_SHR_U", Instruction::I32ShrU),
+            op("I32_EQ", Instruction::I32Eq),
+            op("I32_NE", Instruction::I32Ne),
+            op("I32_LT_S", Instruction::I32LtS),
+            op("I32_LT_U", Instruction::I32LtU),
+            op("I32_GT_S", Instruction::I32GtS),
+            op("I32_GT_U", Instruction::I32GtU),
+            op("I32_LE_S", Instruction::I32LeS),
+            op("I32_LE_U", Instruction::I32LeU),
+            op("I32_GE_S", Instruction::I32GeS),
+            op("I32_GE_U", Instruction::I32GeU),
+            op("I64_ADD", Instruction::I64Add),
+            op("I64_SUB", Instruction::I64Sub),
+            op("I64_MUL", Instruction::I64Mul),
+            op("I64_DIV_S", Instruction::I64DivS),
+            op("I64_DIV_U", Instruction::I64DivU),
+            op("I64_REM_S", Instruction::I64RemS),
+            op("I64_REM_U", Instruction::I64RemU),
+            op("I64_AND", Instruction::I64And),
+            op("I64_OR", Instruction::I64Or),
+            op("I64_XOR", Instruction::I64Xor),
+            op("I64_SHL", Instruction::I64Shl),
+            op("I64_SHR_S", Instruction::I64ShrS),
+            op("I64_SHR_U", Instruction::I64ShrU),
+            op("I64_EQ", Instruction::I64Eq),
+            op("I64_NE", Instruction::I64Ne),
+            op("I64_LT_S", Instruction::I64LtS),
+            op("I64_LT_U", Instruction::I64LtU),
+            op("I64_GT_S", Instruction::I64GtS),
+            op("I64_GT_U", Instruction::I64GtU),
+            op("I64_LE_S", Instruction::I64LeS),
+            op("I64_LE_U", Instruction::I64LeU),
+            op("I64_GE_S", Instruction::I64GeS),
+            op("I64_GE_U", Instruction::I64GeU),
+            op("I32_WRAP_I64", Instruction::I32WrapI64),
+            op("I64_EXTEND_I32_S", Instruction::I64ExtendI32S),
+            op("I64_EXTEND_I32_U", Instruction::I64ExtendI32U),
+        ];
+
+        // The named single bytes: core valtypes, the empty block type, the component primitive
+        // valtypes, the core + component section ids the envelope uses, the func export kind, and the
+        // two functype form bytes.
+        let singles = vec![
+            valtype(
+                "CORE_I32",
+                "core valtype `i32` — a ≤32-bit scalar's machine slot.",
+                ValType::I32,
+            ),
+            valtype(
+                "CORE_I64",
+                "core valtype `i64` — a 64-bit scalar's machine slot.",
+                ValType::I64,
+            ),
+            valtype("CORE_F32", "core valtype `f32`.", ValType::F32),
+            valtype("CORE_F64", "core valtype `f64`.", ValType::F64),
+            Single {
+                ident: "BLOCK_EMPTY",
+                byte: one_byte("empty block type", wasm_encoder::BlockType::Empty),
+                doc: "empty block type — a structured block (`if`/`block`) that leaves no value.",
+            },
+            prim("COMP_BOOL", "component `bool`.", PrimitiveValType::Bool),
+            prim("COMP_S8", "component `s8`.", PrimitiveValType::S8),
+            prim("COMP_U8", "component `u8`.", PrimitiveValType::U8),
+            prim("COMP_S16", "component `s16`.", PrimitiveValType::S16),
+            prim("COMP_U16", "component `u16`.", PrimitiveValType::U16),
+            prim("COMP_S32", "component `s32`.", PrimitiveValType::S32),
+            prim("COMP_U32", "component `u32`.", PrimitiveValType::U32),
+            prim("COMP_S64", "component `s64`.", PrimitiveValType::S64),
+            prim("COMP_U64", "component `u64`.", PrimitiveValType::U64),
+            prim("COMP_F32", "component `f32`.", PrimitiveValType::F32),
+            prim("COMP_F64", "component `f64`.", PrimitiveValType::F64),
+            core_sec("CORE_SEC_TYPE", "core TYPE section id.", SectionId::Type),
+            core_sec(
+                "CORE_SEC_FUNCTION",
+                "core FUNCTION section id.",
+                SectionId::Function,
+            ),
+            core_sec(
+                "CORE_SEC_EXPORT",
+                "core EXPORT section id.",
+                SectionId::Export,
+            ),
+            core_sec("CORE_SEC_CODE", "core CODE section id.", SectionId::Code),
+            comp_sec(
+                "COMP_SEC_CORE_MODULE",
+                "component CORE-MODULE section id.",
+                ComponentSectionId::CoreModule,
+            ),
+            comp_sec(
+                "COMP_SEC_CORE_INSTANCE",
+                "component CORE-INSTANCE section id.",
+                ComponentSectionId::CoreInstance,
+            ),
+            comp_sec(
+                "COMP_SEC_ALIAS",
+                "component ALIAS section id.",
+                ComponentSectionId::Alias,
+            ),
+            comp_sec(
+                "COMP_SEC_TYPE",
+                "component TYPE section id.",
+                ComponentSectionId::Type,
+            ),
+            comp_sec(
+                "COMP_SEC_CANONICAL",
+                "component CANONICAL-FUNCTION section id.",
+                ComponentSectionId::CanonicalFunction,
+            ),
+            comp_sec(
+                "COMP_SEC_EXPORT",
+                "component EXPORT section id.",
+                ComponentSectionId::Export,
+            ),
+            Single {
+                ident: "EXPORT_KIND_FUNC",
+                byte: one_byte("export kind func", ExportKind::Func),
+                doc: "core export kind `func` — the export-descriptor byte for a function export.",
+            },
+            Single {
+                ident: "CORE_FUNCTYPE_FORM",
+                byte: core_functype_form(),
+                doc: "core functype form tag — opens a core `func` type before its param/result vecs.",
+            },
+            Single {
+                ident: "COMP_FUNCTYPE_FORM",
+                byte: component_functype_form(),
+                doc: "component functype form tag — opens a component function type.",
+            },
+        ];
+
+        let magics = vec![
+            Magic {
+                ident: "CORE_MAGIC",
+                bytes: Module::HEADER,
+                doc: "the `\\0asm` version-1 core-module preamble.",
+            },
+            Magic {
+                ident: "COMPONENT_MAGIC",
+                bytes: Component::HEADER,
+                doc: "the `\\0asm` component-layer preamble (component-model version).",
+            },
+        ];
+
+        Tables {
+            opcodes,
+            singles,
+            magics,
+        }
+    }
+
+    /// An opcode row: extract the byte from encoding `insn`.
+    fn op(ident: &'static str, insn: Instruction) -> Opcode {
+        Opcode {
+            ident,
+            byte: opcode_of(ident, insn),
+        }
+    }
+
+    /// A core-valtype single: extract the byte from encoding the `ValType`.
+    fn valtype(ident: &'static str, doc: &'static str, vt: ValType) -> Single {
+        Single {
+            ident,
+            byte: one_byte(ident, vt),
+            doc,
+        }
+    }
+
+    /// A component-primitive single: extract the byte from encoding the `PrimitiveValType`.
+    fn prim(ident: &'static str, doc: &'static str, p: PrimitiveValType) -> Single {
+        Single {
+            ident,
+            byte: one_byte(ident, p),
+            doc,
+        }
+    }
+
+    /// A core-section-id single (the id is the enum's `u8` repr).
+    fn core_sec(ident: &'static str, doc: &'static str, id: SectionId) -> Single {
+        Single {
+            ident,
+            byte: u8::from(id),
+            doc,
+        }
+    }
+
+    /// A component-section-id single.
+    fn comp_sec(ident: &'static str, doc: &'static str, id: ComponentSectionId) -> Single {
+        Single {
+            ident,
+            byte: u8::from(id),
+            doc,
+        }
+    }
+
+    /// Render the extracted tables as the generated `wasm_abi.rs` body: the `op` opcode module, then
+    /// the named single-byte constants, then the magic-header slices. Hex literals so the file reads
+    /// like the spec (`pub const I32_ADD: u8 = 0x6a;`).
+    pub fn render(t: &Tables) -> TokenStream {
+        let op_consts = t.opcodes.iter().map(|o| {
+            let ident = ident(o.ident);
+            let byte = hex(o.byte);
+            quote!(pub const #ident: u8 = #byte;)
+        });
+
+        let single_consts = t.singles.iter().map(|s| {
+            let ident = ident(s.ident);
+            let byte = hex(s.byte);
+            let doc = format!(" {}", s.doc);
+            quote! {
+                #[doc = #doc]
+                pub const #ident: u8 = #byte;
+            }
+        });
+
+        let magic_consts = t.magics.iter().map(|m| {
+            let ident = ident(m.ident);
+            let bytes = m.bytes.iter().map(|b| hex(*b));
+            let doc = format!(" {}", m.doc);
+            quote! {
+                #[doc = #doc]
+                pub const #ident: &[u8] = &[#(#bytes),*];
+            }
+        });
+
+        quote! {
+            #[doc = " The core-wasm opcode bytes the serializer emits — one `pub const` per Lir"]
+            #[doc = " instruction, the byte `wasm-encoder` encodes that instruction to. A one-byte opcode"]
+            #[doc = " each (its operands follow, emitted by the serializer); the extraction asserts that."]
+            pub mod op {
+                #(#op_consts)*
+            }
+
+            #(#single_consts)*
+
+            #(#magic_consts)*
+        }
+    }
+
+    /// A hex `u8` literal token (`0x6a`) — matches the spec/wasm convention the frozen source used, so
+    /// the generated file reads like an opcode table rather than decimal noise. The const's own `: u8`
+    /// / `&[u8]` annotation types it, so the literal is unsuffixed; a raw token keeps the `0x` form
+    /// through prettyplease/rustfmt (which would rewrite a `Literal`'s decimal print).
+    fn hex(b: u8) -> TokenStream {
+        format!("0x{b:02x}")
+            .parse()
+            .expect("a `0x..` hex literal parses as a token")
+    }
+
+    /// A `SCREAMING_SNAKE` const identifier token.
+    fn ident(name: &str) -> proc_macro2::Ident {
+        proc_macro2::Ident::new(name, Span::call_site())
+    }
+}
+
+/// The `//!` banner prepended to `runtime_abi.rs` — the "do-not-edit / regenerate" notice. A module
+/// doc is awkward to carry as a token attribute, so it is plain leading text (rustfmt leaves a `//!`
+/// block alone).
+fn runtime_abi_banner() -> String {
     "//! @generated by `cargo xtask codegen` from cdz-runtime/wit/runtime.wit — DO NOT hand-edit.\n\
      //!\n\
      //! The value-heap runtime's ABI as STRUCTURED data: each op's name + core signature, a typed\n\
@@ -304,5 +777,21 @@ fn module_banner() -> String {
      //! envelope blob, no baked-in op index (imports resolve by name). Regenerate with `cargo xtask\n\
      //! codegen`; `cargo xtask codegen --check` (a hard gate in `xtask check`) fails if it drifts from\n\
      //! the runtime WIT or the built runtime's bytes. Plain data — no dependency, so it ships.\n\n"
+        .to_string()
+}
+
+/// The `//!` banner prepended to `wasm_abi.rs` — the "do-not-edit / regenerate" notice, plus what the
+/// file is and where its bytes come from.
+fn wasm_abi_banner() -> String {
+    "//! @generated by `cargo xtask codegen` from the `wasm-encoder` crate — DO NOT hand-edit.\n\
+     //!\n\
+     //! Every wasm / component-model byte the backend emits, EXTRACTED from `wasm-encoder` (the spec\n\
+     //! byte encoder): the core opcode table, core + component valtype bytes, core + component section\n\
+     //! ids, the two magic headers, and the functype form bytes. `codegen` encodes a one-off value\n\
+     //! with `wasm-encoder` and reads the byte back, so nothing here is hand-transcribed. Regenerate\n\
+     //! with `cargo xtask codegen`; `cargo xtask codegen --check` (a hard gate in `xtask check`) fails\n\
+     //! if it drifts from the encoder. Plain data — no dependency, so it ships in the portable\n\
+     //! compiler (the `wasm-encoder` oracle stays in xtask). The backend's serializer reads these\n\
+     //! rather than baking a raw byte into the emit path.\n\n"
         .to_string()
 }

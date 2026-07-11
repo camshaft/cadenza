@@ -12,20 +12,34 @@
 //! ALIAS section (6). These index spaces are independent, so type-before-alias is well-formed, and
 //! matching this order is what keeps a single nullary-scalar entry byte-identical to the oracle (and
 //! to the old compiler's frame).
+//!
+//! What comes from where: the single-byte ABI values here — the component MAGIC header, the section
+//! ids, the component functype form tag — are read from the GENERATED `wasm_abi` table (extracted
+//! from `wasm-encoder`), so none is hand-typed. The per-item GRAMMARS below (`INSTANCE_BODY`, the
+//! alias / canon-lift / export items, the result-list form) still lay their bytes by hand: they
+//! encode the component-model "sort" tags (`0x00` core, `0x01` func, …) which `wasm-encoder` does
+//! NOT expose as public constants. Those are pinned instead by the byte-identity oracle test
+//! (`envelope_matches_wasm_encoder_oracle`) — a whole-item diff against the authoritative encoder,
+//! which is the stronger check for a multi-byte structural encoding.
 
 use crate::backend::wasm::encode::{section, uleb_bytes, uleb128, wasm_vec};
+use crate::backend::wasm::wasm_abi;
 
-/// The component-model preamble (`\0asm` + component-layer version).
-const COMPONENT_MAGIC: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00];
+/// The component-model preamble (`\0asm` + component-layer version) — from the generated `wasm_abi`
+/// table (`Component::HEADER` as `wasm-encoder` writes it), not a hand-typed byte string.
+const COMPONENT_MAGIC: &[u8] = wasm_abi::COMPONENT_MAGIC;
 
-/// Component section ids used by the envelope (component-model numbering, distinct from core wasm).
+/// Component section ids used by the envelope (component-model numbering, distinct from core wasm) —
+/// each re-named from the generated `wasm_abi` table (extracted from `wasm-encoder`'s
+/// `ComponentSectionId`), so no section id is hand-typed here.
 mod sec {
-    pub const CORE_MODULE: u8 = 1;
-    pub const CORE_INSTANCE: u8 = 2;
-    pub const ALIAS: u8 = 6;
-    pub const COMPONENT_TYPE: u8 = 7;
-    pub const CANON: u8 = 8;
-    pub const COMPONENT_EXPORT: u8 = 11;
+    use crate::backend::wasm::wasm_abi;
+    pub const CORE_MODULE: u8 = wasm_abi::COMP_SEC_CORE_MODULE;
+    pub const CORE_INSTANCE: u8 = wasm_abi::COMP_SEC_CORE_INSTANCE;
+    pub const ALIAS: u8 = wasm_abi::COMP_SEC_ALIAS;
+    pub const COMPONENT_TYPE: u8 = wasm_abi::COMP_SEC_TYPE;
+    pub const CANON: u8 = wasm_abi::COMP_SEC_CANONICAL;
+    pub const COMPONENT_EXPORT: u8 = wasm_abi::COMP_SEC_EXPORT;
 }
 
 /// The fixed core-instance body: `instantiate module 0`, no args → `<count=1> <kind=0x00> <mod=0>
@@ -96,7 +110,7 @@ pub fn assemble(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
 /// for one result, `01 00` for none. (Matches the oracle: `() -> s64` = `40 00 00 78`; a `(p0: s64,
 /// p1: s64) -> s64` prefixes the two named params.)
 fn comp_functype(e: &BoundaryExport) -> Vec<u8> {
-    let mut item = vec![0x40]; // function type form
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM]; // function type form
     let mut param_items = Vec::new();
     for (i, &vt) in e.params.iter().enumerate() {
         let pname = format!("p{i}");

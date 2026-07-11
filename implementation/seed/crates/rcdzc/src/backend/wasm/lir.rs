@@ -10,6 +10,7 @@
 //! language type to a wasm value type is a wasm concern, so it lives here (via [`valtype_of`]), not on
 //! `Ty` (`backends-and-targets.md` §a target-specific concern lives in the target that has it).
 
+use crate::backend::wasm::wasm_abi;
 use crate::ty::{IntTy, Ty};
 
 /// A core-wasm value type — the machine representation a scalar takes inside a function body.
@@ -20,11 +21,13 @@ pub enum ValType {
 }
 
 impl ValType {
-    /// The core-wasm valtype byte (`0x7E` i64, `0x7F` i32). The raw encoding lives here (serializer).
+    /// The core-wasm valtype byte (`0x7E` i64, `0x7F` i32) — from the generated `wasm_abi` table
+    /// (extracted from `wasm-encoder`'s `ValType`), not a hand-typed byte. The raw encoding lives here
+    /// (the serializer's concern), but its VALUE is the spec's.
     pub fn byte(self) -> u8 {
         match self {
-            ValType::I64 => 0x7E,
-            ValType::I32 => 0x7F,
+            ValType::I64 => wasm_abi::CORE_I64,
+            ValType::I32 => wasm_abi::CORE_I32,
         }
     }
 }
@@ -38,10 +41,11 @@ pub enum BlockType {
 }
 
 impl BlockType {
-    /// The block-type byte: `0x40` for empty, else the value type's byte.
+    /// The block-type byte: `0x40` for empty (the generated `wasm_abi::BLOCK_EMPTY`), else the value
+    /// type's byte.
     pub fn byte(self) -> u8 {
         match self {
-            BlockType::Empty => 0x40,
+            BlockType::Empty => wasm_abi::BLOCK_EMPTY,
             BlockType::Val(vt) => vt.byte(),
         }
     }
@@ -216,23 +220,23 @@ fn int_valtype(it: IntTy) -> ValType {
 pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
     match ty {
         Ty::Int(it) => {
-            // Component-model primitive valtype bytes: s8=0x7E, u8=0x7D, s16=0x7C, u16=0x7B, s32=0x7A,
-            // u32=0x79, s64=0x78, u64=0x77 (verified against the `wasm-encoder` oracle). Only an aliased
+            // Component-model primitive valtype bytes, from the generated `wasm_abi` table (extracted
+            // from `wasm-encoder`'s `PrimitiveValType`): s8/u8/s16/u16/s32/u32/s64/u64. Only an aliased
             // width maps; any other width has no boundary form (`None`).
             match (it.ground_signed(), it.ground_width()) {
-                (true, 8) => Some(0x7E),
-                (false, 8) => Some(0x7D),
-                (true, 16) => Some(0x7C),
-                (false, 16) => Some(0x7B),
-                (true, 32) => Some(0x7A),
-                (false, 32) => Some(0x79),
-                (true, 64) => Some(0x78),
-                (false, 64) => Some(0x77),
+                (true, 8) => Some(wasm_abi::COMP_S8),
+                (false, 8) => Some(wasm_abi::COMP_U8),
+                (true, 16) => Some(wasm_abi::COMP_S16),
+                (false, 16) => Some(wasm_abi::COMP_U16),
+                (true, 32) => Some(wasm_abi::COMP_S32),
+                (false, 32) => Some(wasm_abi::COMP_U32),
+                (true, 64) => Some(wasm_abi::COMP_S64),
+                (false, 64) => Some(wasm_abi::COMP_U64),
                 // A non-aliased width (7, 24, 48, …) is internal-only — no boundary representation.
                 _ => None,
             }
         }
-        Ty::Bool => Some(0x7F), // bool
+        Ty::Bool => Some(wasm_abi::COMP_BOOL), // bool
         Ty::Unit => None,
         // A record crosses the boundary as a compound value the runtime holds — deferred to the
         // value-heap stage; no scalar boundary valtype, so it declines here.
@@ -259,8 +263,9 @@ mod tests {
 
     #[test]
     fn aliased_widths_map_to_their_faithful_primitive() {
-        // The eight aliased widths cross as their exact component primitive (bytes verified against the
-        // wasm-encoder oracle): s8/u8/s16/u16/s32/u32/s64/u64.
+        // The eight aliased widths cross as their exact component primitive: s8/u8/s16/u16/s32/u32/
+        // s64/u64. These are the LITERAL spec bytes, pinned independently of the generated `wasm_abi`
+        // constants `comp_valtype_of` now reads — a wrong byte from codegen would fail here.
         assert_eq!(comp(true, 8), Some(0x7E)); // s8
         assert_eq!(comp(false, 8), Some(0x7D)); // u8
         assert_eq!(comp(true, 16), Some(0x7C)); // s16

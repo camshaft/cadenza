@@ -3,9 +3,12 @@
 //! These are the low-level bytes the core-module and component serializers lay. They live in the wasm
 //! backend, not in a shared layer, because a raw encoding byte is a TARGET concern: another backend
 //! has its own (`backends-and-targets.md` §The Flat Instruction Rung Is A Property Of A Linearizing
-//! Backend; `reference-compiler.md` §The Encoding Belongs To The Serializer Alone). Hand-written in
-//! plain byte pushes so the byte path ports 1:1 to the Cadenza self-host — no external encoder in the
-//! compile path (the `wasm-encoder` oracle is tests-only).
+//! Backend; `reference-compiler.md` §The Encoding Belongs To The Serializer Alone). The variable-length
+//! ENCODING logic (LEB128, section/vector framing) is hand-written here in plain byte pushes so the
+//! byte path ports 1:1 to the Cadenza self-host — no external encoder in the compile path (the
+//! `wasm-encoder` oracle is tests-only). The opcode BYTE VALUES, by contrast, are not ours to invent:
+//! they are re-exported from the GENERATED `wasm_abi` table (extracted from `wasm-encoder` by
+//! `cargo xtask codegen`), so `op::I32_ADD` resolves to the spec's byte with no hand-transcribed hex.
 
 /// Append the unsigned LEB128 encoding of `n` to `out`.
 pub fn uleb128(mut n: u64, out: &mut Vec<u8>) {
@@ -61,75 +64,9 @@ pub fn wasm_vec(count: usize, items: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The core-wasm opcode bytes this backend emits. The authoritative source is the wasm spec; the
-/// tests pin these against the `wasm-encoder` oracle. Stage 0's slice needs only these.
-pub mod op {
-    pub const I32_CONST: u8 = 0x41;
-    pub const I64_CONST: u8 = 0x42;
-    pub const IF: u8 = 0x04;
-    pub const ELSE: u8 = 0x05;
-    pub const END: u8 = 0x0B;
-    pub const LOCAL_GET: u8 = 0x20;
-    pub const I32_ADD: u8 = 0x6A;
-    pub const I32_SUB: u8 = 0x6B;
-    pub const I32_MUL: u8 = 0x6C;
-    // i32 division / remainder (signed and unsigned): 0x6D..0x70.
-    pub const I32_DIV_S: u8 = 0x6D;
-    pub const I32_DIV_U: u8 = 0x6E;
-    pub const I32_REM_S: u8 = 0x6F;
-    pub const I32_REM_U: u8 = 0x70;
-    // i32 bitwise: and=0x71, or=0x72, xor=0x73.
-    pub const I32_AND: u8 = 0x71;
-    pub const I32_OR: u8 = 0x72;
-    pub const I32_XOR: u8 = 0x73;
-    // i32 shifts: shl=0x74, shr_s=0x75, shr_u=0x76.
-    pub const I32_SHL: u8 = 0x74;
-    pub const I32_SHR_S: u8 = 0x75;
-    pub const I32_SHR_U: u8 = 0x76;
-    pub const I64_ADD: u8 = 0x7C;
-    pub const I64_SUB: u8 = 0x7D;
-    pub const I64_MUL: u8 = 0x7E;
-    // i32 comparisons (result i32 boolean): eq=0x46, ne=0x47, then signed then unsigned lt/gt/le/ge.
-    pub const I32_EQ: u8 = 0x46;
-    pub const I32_NE: u8 = 0x47;
-    pub const I32_LT_S: u8 = 0x48;
-    pub const I32_LT_U: u8 = 0x49;
-    pub const I32_GT_S: u8 = 0x4A;
-    pub const I32_GT_U: u8 = 0x4B;
-    pub const I32_LE_S: u8 = 0x4C;
-    pub const I32_LE_U: u8 = 0x4D;
-    pub const I32_GE_S: u8 = 0x4E;
-    pub const I32_GE_U: u8 = 0x4F;
-    // i64 comparisons (result i32 boolean): eq=0x51, ne=0x52, then signed then unsigned lt/gt/le/ge.
-    pub const I64_EQ: u8 = 0x51;
-    pub const I64_NE: u8 = 0x52;
-    pub const I64_LT_S: u8 = 0x53;
-    pub const I64_LT_U: u8 = 0x54;
-    pub const I64_GT_S: u8 = 0x55;
-    pub const I64_GT_U: u8 = 0x56;
-    pub const I64_LE_S: u8 = 0x57;
-    pub const I64_LE_U: u8 = 0x58;
-    pub const I64_GE_S: u8 = 0x59;
-    pub const I64_GE_U: u8 = 0x5A;
-    // local.set, unreachable.
-    pub const LOCAL_SET: u8 = 0x21;
-    pub const UNREACHABLE: u8 = 0x00;
-    pub const CALL: u8 = 0x10;
-    // i64 division / remainder (signed and unsigned): 0x7F..0x82.
-    pub const I64_DIV_S: u8 = 0x7F;
-    pub const I64_DIV_U: u8 = 0x80;
-    pub const I64_REM_S: u8 = 0x81;
-    pub const I64_REM_U: u8 = 0x82;
-    // i64 bitwise: and=0x83, or=0x84, xor=0x85.
-    pub const I64_AND: u8 = 0x83;
-    pub const I64_OR: u8 = 0x84;
-    pub const I64_XOR: u8 = 0x85;
-    // i64 shifts: shl=0x86, shr_s=0x87, shr_u=0x88.
-    pub const I64_SHL: u8 = 0x86;
-    pub const I64_SHR_S: u8 = 0x87;
-    pub const I64_SHR_U: u8 = 0x88;
-    // slot-crossing conversions: i32.wrap_i64=0xA7, i64.extend_i32_s=0xAC, i64.extend_i32_u=0xAD.
-    pub const I32_WRAP_I64: u8 = 0xA7;
-    pub const I64_EXTEND_I32_S: u8 = 0xAC;
-    pub const I64_EXTEND_I32_U: u8 = 0xAD;
-}
+/// The core-wasm opcode bytes this backend emits — re-exported from the GENERATED `wasm_abi::op`
+/// table (extracted from the `wasm-encoder` spec encoder by `cargo xtask codegen`), so `op::I32_ADD`
+/// is the spec's byte and nothing here is hand-transcribed. Re-exported under this path so every
+/// existing `encode::op::…` use site is unchanged (the serializer imports `encode::op`). A drift
+/// between the generated table and the encoder fails `cargo xtask codegen --check`.
+pub use crate::backend::wasm::wasm_abi::op;
