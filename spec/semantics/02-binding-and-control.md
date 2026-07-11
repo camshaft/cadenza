@@ -52,10 +52,10 @@ A `let` may shadow a FUNCTION PARAMETER with a value of a DIFFERENT TYPE, and th
 
 ```cdz input
 module m {
-  fn f(x) =
+  def f(x) =
     let x = true in
     x
-  fn main() = f(99)
+  def main() = f(99)
 }
 ```
 
@@ -165,12 +165,12 @@ The compiler-internal SCOPE-RESOLUTION idiom behind lexical shadowing (the value
 ```cdz input
 module m {
   type(Env, ENil(`|`, ECons, Tuple(Int64, Env)))
-  fn pos(xs, target, k) = match xs {
+  def pos(xs, target, k) = match xs {
     Env.ENil(_) => 0 - 1,
-    Env.ECons(tuple(h, t)) => let deeper = pos(t, target, k + 1) in
+    Env.ECons((h, t)) => let deeper = pos(t, target, k + 1) in
     if deeper == 0 - 1 then if h == target then k else 0 - 1 else deeper,
   }
-  fn main() = pos(Env.ECons((5, Env.ECons((7, Env.ECons((5, Env.ENil(#[]))))))), 5, 0)
+  def main() = pos(Env.ECons((5, Env.ECons((7, Env.ECons((5, Env.ENil(#[]))))))), 5, 0)
 }
 ```
 
@@ -198,8 +198,8 @@ The unbound-name check (and well-formedness generally) applies to EVERY definiti
 
 ```cdz input
 module m {
-  fn bad() = nonexistent
-  fn main() = 42
+  def bad() = nonexistent
+  def main() = 42
 }
 ```
 
@@ -241,10 +241,10 @@ The complement of the short-circuited-unbound case above, and the boundary its s
 
 ```cdz input
 module m {
-  fn f(k) =
+  def f(k) =
     let x = k in
     x > 0 and x < 9
-  fn main() = if f(3) then 1 else 0
+  def main() = if f(3) then 1 else 0
 }
 ```
 
@@ -305,7 +305,7 @@ core-semantics.md #A Declaration In A Sequencing Block Is Scoped To The Forms Th
 Witnesses core-semantics.md #A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It: `(def x 5)` as a form of a `do` binds `x` for the following form, so `(+ x 1)` sees it without a `let`. The block yields the last form's value, 6. This is the same declaration-binds-its-name rule a module declaration uses; a `def` declaration in a sequencing block is in scope exactly like one.
 
 ```cdz input
-do(def(x, 5), x + 1)
+do(def x = 5, x + 1)
 ```
 
 ```cdz output
@@ -317,7 +317,7 @@ do(def(x, 5), x + 1)
 The function-declaration companion: `(def (f n) (+ n 1))` in a `do` binds `f` for the following forms, so `(f 9)` calls it and the block yields 10. A declaration introduces its name into the rest of the block without a separate binding form, whether it declares a value or a function.
 
 ```cdz input
-do(fn f(n) = n + 1, f(9))
+do(def f(n) = n + 1, f(9))
 ```
 
 ```cdz output
@@ -331,7 +331,7 @@ The two cases above declare ONE name and use it in a later form. The scoping rul
 `(do (def x 5) (def y (+ x 1)) y)`: the second declaration's value `(+ x 1)` references `x` from the first declaration, so `y` = 6 and the block yields 6. Pins that a declaration is in scope for a LATER DECLARATION, not only for a plain expression form — the chaining that makes a sequence of `def`s (a prelude) resolve.
 
 ```cdz input
-do(def(x, 5), def(y, x + 1), y)
+do(def x = 5, def y = x + 1, y)
 ```
 
 ```cdz output
@@ -343,7 +343,7 @@ do(def(x, 5), def(y, x + 1), y)
 `(do (def base 10) (def (add-base n) (+ n base)) (add-base 5))`: the function `add-base` closes over the earlier declaration `base`, so `(add-base 5)` = 15. Pins that a `def`-fn's body sees the declarations that precede it in the block, exactly as a module function sees its siblings.
 
 ```cdz input
-do(def(base, 10), fn add-base(n) = n + base, add-base(5))
+do(def base = 10, def add-base(n) = n + base, add-base(5))
 ```
 
 ```cdz output
@@ -356,7 +356,7 @@ do(def(base, 10), fn add-base(n) = n + base, add-base(5))
 
 ```cdz input
 let x = 1 in
-do(def(x, 99), x)
+do(def x = 99, x)
 ```
 
 ```cdz output
@@ -456,7 +456,7 @@ if true then if true then 5 else 1 / 0 else 9
 `(if (if true false true) 1 2)`: the condition is an `if` that evaluates to `false`, so the outer conditional selects its else-branch, yielding 2. Pins that the condition position accepts an arbitrary Bool-valued expression — here a nested `if` — not only a literal or a direct comparison (core-semantics.md #Conditionals Evaluate One Branch: a conditional selects by its condition, whatever Bool expression computes it).
 
 ```cdz input
-if if true then false else true then 1 else 2
+if (if true then false else true) then 1 else 2
 ```
 
 ```cdz output
@@ -469,7 +469,7 @@ if if true then false else true then 1 else 2
 
 ```cdz input
 module m {
-  fn main() = if 1 < 2 then 7 else 5 % 0
+  def main() = if 1 < 2 then 7 else 5 % 0
 }
 ```
 
@@ -483,8 +483,8 @@ module m {
 
 ```cdz input
 module m {
-  fn f(x) = if x < 10 then x else x * 2
-  fn main() = f(21)
+  def f(x) = if x < 10 then x else x * 2
+  def main() = f(21)
 }
 ```
 
@@ -498,8 +498,8 @@ The then-branch companion to the runtime-conditional case above: with `x` = 3, `
 
 ```cdz input
 module m {
-  fn f(x) = if x < 10 then x else x * 2
-  fn main() = f(3)
+  def f(x) = if x < 10 then x else x * 2
+  def main() = f(3)
 }
 ```
 
@@ -513,12 +513,13 @@ An INTEGRATION case: several control constructs composed in one function over a 
 
 ```cdz input
 module m {
-  fn classify(x) =
-    if x > 0 and x < 10
-      then let y = x * x in
+  def classify(x) =
+    if x > 0 and x < 10 then
+      let y = x * x in
       y - 1
-      else 0
-  fn main() = classify(4)
+    else
+      0
+  def main() = classify(4)
 }
 ```
 
@@ -532,12 +533,13 @@ The else companion of the integration case above: `classify 20` — `20 < 10` is
 
 ```cdz input
 module m {
-  fn classify(x) =
-    if x > 0 and x < 10
-      then let y = x * x in
+  def classify(x) =
+    if x > 0 and x < 10 then
+      let y = x * x in
       y - 1
-      else 0
-  fn main() = classify(20)
+    else
+      0
+  def main() = classify(20)
 }
 ```
 
@@ -593,8 +595,8 @@ The branch-type-agreement check must fire when the conditional is INSIDE A FUNCT
 
 ```cdz input
 module m {
-  fn f() = if true then 1 else false
-  fn main() = f()
+  def f() = if true then 1 else false
+  def main() = f()
 }
 ```
 
@@ -812,8 +814,8 @@ core-semantics.md #Requiring The Value Of An Optional Traps On Absence: `Option.
 
 ```cdz input
 module m {
-  fn g(o) = Option.expect(o, "m")
-  fn main() = g(Some(7))
+  def g(o) = Option.expect(o, "m")
+  def main() = g(Some(7))
 }
 ```
 
@@ -827,8 +829,8 @@ The absent companion: `(g (None unit))` on the same `(Option.expect o "m")` sees
 
 ```cdz input
 module m {
-  fn g(o) = Option.expect(o, "m")
-  fn main() = g(None(unit))
+  def g(o) = Option.expect(o, "m")
+  def main() = g(None(unit))
 }
 ```
 
@@ -842,8 +844,8 @@ The compiler idiom expect exists for: turn a non-trapping `Int64.checked-add` in
 
 ```cdz input
 module m {
-  fn add-ck(a, b) = Option.expect(Int64.checked-add(a, b), "overflow")
-  fn main() = add-ck(20, 22) + add-ck(1, 1)
+  def add-ck(a, b) = Option.expect(Int64.checked-add(a, b), "overflow")
+  def main() = add-ck(20, 22) + add-ck(1, 1)
 }
 ```
 
@@ -857,8 +859,8 @@ The overflow companion: `(add-ck Int64.max 1)` computes a checked add that overf
 
 ```cdz input
 module m {
-  fn add-ck(a, b) = Option.expect(Int64.checked-add(a, b), "overflow")
-  fn main() = add-ck(Int64.max, 1)
+  def add-ck(a, b) = Option.expect(Int64.checked-add(a, b), "overflow")
+  def main() = add-ck(Int64.max, 1)
 }
 ```
 
@@ -872,8 +874,8 @@ module m {
 
 ```cdz input
 module m {
-  fn g(r) = Result.expect(r, "m")
-  fn main() = g(Ok(99))
+  def g(r) = Result.expect(r, "m")
+  def main() = g(Ok(99))
 }
 ```
 
@@ -907,10 +909,10 @@ The scrutinee `b` is a Bool — its type has exactly two values. A match arming 
 
 ```cdz input
 module m {
-  fn f(b) = match b {
+  def f(b) = match b {
     true => 1,
   }
-  fn main() = f(false)
+  def main() = f(false)
 }
 ```
 
@@ -924,10 +926,10 @@ The mirror of the case above: a match on a Bool arming only `false` leaves `true
 
 ```cdz input
 module m {
-  fn f(b) = match b {
+  def f(b) = match b {
     false => 0,
   }
-  fn main() = f(true)
+  def main() = f(true)
 }
 ```
 
@@ -1018,7 +1020,7 @@ Witnesses core-semantics.md #Pattern Matching: patterns can nest — a construct
 
 ```cdz input
 match Some((3, 7)) {
-  Some(tuple(a, b)) => a + b,
+  Some((a, b)) => a + b,
   None(_) => 0,
 }
 ```
@@ -1049,11 +1051,11 @@ core-semantics.md #Pattern Matching + #Matching Is Exhaustive Or Rejected: a lit
 
 ```cdz input
 module m {
-  fn f(n) = match Some(n) {
+  def f(n) = match Some(n) {
     Some(0) => 100,
     Some(k) => k,
   }
-  fn main() = f(0)
+  def main() = f(0)
 }
 ```
 
@@ -1067,11 +1069,11 @@ The companion of the case above: with n=7 the literal arm `(Some 0)` does not ma
 
 ```cdz input
 module m {
-  fn f(n) = match Some(n) {
+  def f(n) = match Some(n) {
     Some(0) => 100,
     Some(k) => k,
   }
-  fn main() = f(7)
+  def main() = f(7)
 }
 ```
 
@@ -1085,11 +1087,11 @@ core-semantics.md #Pattern Matching: the same refinement inside a tuple pattern.
 
 ```cdz input
 module m {
-  fn f(n) = match (n, 9) {
-    tuple(0, y) => 100,
-    tuple(x, y) => x,
+  def f(n) = match (n, 9) {
+    (0, y) => 100,
+    (x, y) => x,
   }
-  fn main() = f(0)
+  def main() = f(0)
 }
 ```
 
@@ -1107,7 +1109,7 @@ core-semantics.md #A Tuple Is Deconstructible By Pattern Matching (`(tuple a b)`
 
 ```cdz input
 match (1, 2) {
-  tuple(a, b, c) => a,
+  (a, b, c) => a,
   _ => 0,
 }
 ```
@@ -1139,7 +1141,7 @@ The tuple-pattern-arity rule applies RECURSIVELY, at every nesting depth, not on
 
 ```cdz input
 match (1, (2, 3)) {
-  tuple(a, tuple(b, c, d)) => 9,
+  (a, (b, c, d)) => 9,
   _ => 0,
 }
 ```
@@ -1156,7 +1158,7 @@ The recursion covers a nested LITERAL pattern's type too, not only a nested tupl
 
 ```cdz input
 match (1, 2) {
-  tuple(true, b) => 9,
+  (true, b) => 9,
   _ => 0,
 }
 ```
@@ -1173,7 +1175,7 @@ The recursion must also enter a tuple pattern nested UNDER A CONSTRUCTOR pattern
 
 ```cdz input
 match Some((1, 2)) {
-  Some(tuple(a, b, c)) => 9,
+  Some((a, b, c)) => 9,
   _ => 0,
 }
 ```
@@ -1190,7 +1192,7 @@ A pattern's KIND must also match the scrutinee's kind, not only a tuple's arity:
 
 ```cdz input
 match Some(5) {
-  tuple(a, b) => a,
+  (a, b) => a,
   _ => 0,
 }
 ```
@@ -1205,7 +1207,7 @@ The companion with a user-facing sum: `(Sign.Pos unit)` is a sum value, so a `(t
 
 ```cdz input
 match Sign.Pos(unit) {
-  tuple(a, b) => a,
+  (a, b) => a,
   _ => 0,
 }
 ```
@@ -1228,7 +1230,7 @@ do(
   let e = Expr.Add((Expr.Lit(1), Expr.Lit(2))) in
   match e {
     Expr.Lit(n) => n,
-    Expr.Add(tuple(Expr.Lit(a), Expr.Lit(b))) => a + b,
+    Expr.Add((Expr.Lit(a), Expr.Lit(b))) => a + b,
     Expr.Add(_) => 0,
   }
 )
@@ -1248,12 +1250,12 @@ The scrutinee `n` is a function parameter — its value (0) is not known until r
 
 ```cdz input
 module m {
-  fn classify(n) = match n {
+  def classify(n) = match n {
     0 => 100,
     1 => 200,
     `else` => 900,
   }
-  fn main() = classify(0)
+  def main() = classify(0)
 }
 ```
 
@@ -1267,13 +1269,13 @@ core-semantics.md #Matching Is Exhaustive Or Rejected: arms are tried top-to-bot
 
 ```cdz input
 module m {
-  fn classify(n) = match n {
+  def classify(n) = match n {
     0 => 10,
     1 => 20,
     2 => 30,
     `else` => 99,
   }
-  fn main() = classify(2)
+  def main() = classify(2)
 }
 ```
 
@@ -1287,11 +1289,11 @@ A negative literal pattern matches by equality against the runtime value, like a
 
 ```cdz input
 module m {
-  fn classify(n) = match n {
+  def classify(n) = match n {
     -1 => 100,
     `else` => 200,
   }
-  fn main() = classify(-1)
+  def main() = classify(-1)
 }
 ```
 
@@ -1305,11 +1307,11 @@ core-semantics.md #Matching Is Exhaustive Or Rejected + #Bindings Introduced By 
 
 ```cdz input
 module m {
-  fn f(n) = match n {
+  def f(n) = match n {
     0 => 100,
     k => k + 1,
   }
-  fn main() = f(0)
+  def main() = f(0)
 }
 ```
 
@@ -1323,11 +1325,11 @@ The companion to the case above: with the runtime value 41 no literal arm matche
 
 ```cdz input
 module m {
-  fn f(n) = match n {
+  def f(n) = match n {
     0 => 100,
     k => k + 1,
   }
-  fn main() = f(41)
+  def main() = f(41)
 }
 ```
 
@@ -1341,11 +1343,11 @@ The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 fo
 
 ```cdz input
 module m {
-  fn parity(n) = match n % 2 {
+  def parity(n) = match n % 2 {
     0 => 0,
     _ => 1,
   }
-  fn main() = parity(4)
+  def main() = parity(4)
 }
 ```
 
@@ -1408,14 +1410,14 @@ core-semantics.md #Matching Is Exhaustive Or Rejected: a match body may itself b
 
 ```cdz input
 module m {
-  fn f(n) = match n {
+  def f(n) = match n {
     0 => match n {
       0 => 7,
       _ => 8,
     },
     _ => 9,
   }
-  fn main() = f(0)
+  def main() = f(0)
 }
 ```
 
@@ -1449,7 +1451,7 @@ core-semantics.md #Pattern Matching: a `_` wildcard may appear at a NESTED posit
 
 ```cdz input
 match Some((1, 2)) {
-  Some(tuple(_, b)) => b,
+  Some((_, b)) => b,
   None(_) => 0,
 }
 ```
@@ -1464,11 +1466,11 @@ core-semantics.md #Matching Is Exhaustive Or Rejected: a match on an Int64 armin
 
 ```cdz input
 module m {
-  fn f(n) = match n {
+  def f(n) = match n {
     1 => 10,
     2 => 20,
   }
-  fn main() = f(3)
+  def main() = f(3)
 }
 ```
 
@@ -1482,11 +1484,11 @@ core-semantics.md #Matching Is Exhaustive Or Rejected over the two Bool values, 
 
 ```cdz input
 module m {
-  fn negate(b) = match b {
+  def negate(b) = match b {
     true => false,
     false => true,
   }
-  fn main() = negate(true)
+  def main() = negate(true)
 }
 ```
 
@@ -1500,11 +1502,11 @@ core-semantics.md #Matching Is Exhaustive Or Rejected: the scrutinee is a runtim
 
 ```cdz input
 module m {
-  fn is-zero(n) = match n {
+  def is-zero(n) = match n {
     0 => true,
     _ => false,
   }
-  fn main() = is-zero(0)
+  def main() = is-zero(0)
 }
 ```
 
@@ -1571,11 +1573,11 @@ The arm-type-agreement check must fire when a RUNTIME scrutinee's first arm body
 
 ```cdz input
 module m {
-  fn f(o) = match o {
+  def f(o) = match o {
     Some(x) => x,
     None(_) => true,
   }
-  fn main() = f(Some(5))
+  def main() = f(Some(5))
 }
 ```
 
@@ -1597,8 +1599,8 @@ boolean-connectives
 
 ```cdz input
 module m {
-  fn row(a, b) = if a and b then 1 else 0
-  fn main() = row(true, true) + row(true, false) + (row(false, true) + row(false, false))
+  def row(a, b) = if a and b then 1 else 0
+  def main() = row(true, true) + row(true, false) + (row(false, true) + row(false, false))
 }
 ```
 
@@ -1616,8 +1618,8 @@ boolean-connectives
 
 ```cdz input
 module m {
-  fn row(a, b) = if a or b then 1 else 0
-  fn main() = row(true, true) + row(true, false) + (row(false, true) + row(false, false))
+  def row(a, b) = if a or b then 1 else 0
+  def main() = row(true, true) + row(true, false) + (row(false, true) + row(false, false))
 }
 ```
 
@@ -1635,7 +1637,7 @@ boolean-connectives
 
 ```cdz input
 module m {
-  fn main() = if not(false) then not(true) else true
+  def main() = if not(false) then not(true) else true
 }
 ```
 
@@ -1697,15 +1699,16 @@ A recursive function whose result is a TUPLE in every branch — a `(value, curs
 
 ```cdz input
 module m {
-  fn go(n, acc) =
-    if n == 0
-      then (acc, 0)
-      else match pair(n) {
-        tuple(v, k) => go(n - 1, acc + v),
+  def go(n, acc) =
+    if n == 0 then
+      (acc, 0)
+    else
+      match pair(n) {
+        (v, k) => go(n - 1, acc + v),
       }
-  fn pair(n) = (n, n)
-  fn main() = match go(3, 0) {
-    tuple(a, b) => a,
+  def pair(n) = (n, n)
+  def main() = match go(3, 0) {
+    (a, b) => a,
   }
 }
 ```
@@ -1720,9 +1723,9 @@ The MINIMAL isolation of the case above — no accumulator, no helper, no heap: 
 
 ```cdz input
 module m {
-  fn go(n) = if n < 1 then (0, 0) else go(n - 1)
-  fn main() = match go(3) {
-    tuple(a, b) => a + b,
+  def go(n) = if n < 1 then (0, 0) else go(n - 1)
+  def main() = match go(3) {
+    (a, b) => a + b,
   }
 }
 ```
@@ -1742,20 +1745,22 @@ sum-type-declaration
 ```cdz input
 module m {
   type(Ast, AInt(Int64, `|`, ALeaf, `|`, AList, List(Ast)))
-  fn dn(b, i) =
-    if i == 0
-      then (AInt(Option.expect(List.at(b, 0), "in range")), i + 1)
-      else (AList(dac(b, i, i - 1, [])), i + 1)
-  fn dac(b, i, n, acc) =
-    if n < 1
-      then acc
-      else match dn(b, i) {
-        tuple(child, nx) => dac(b, nx, n - 1, List.push(acc, child)),
+  def dn(b, i) =
+    if i == 0 then
+      (AInt(Option.expect(List.at(b, 0), "in range")), i + 1)
+    else
+      (AList(dac(b, i, i - 1, [])), i + 1)
+  def dac(b, i, n, acc) =
+    if n < 1 then
+      acc
+    else
+      match dn(b, i) {
+        (child, nx) => dac(b, nx, n - 1, List.push(acc, child)),
       }
-  fn top(b) = match dn(b, 0) {
-    tuple(ast, pos) => ast,
+  def top(b) = match dn(b, 0) {
+    (ast, pos) => ast,
   }
-  fn main() = match top([42, 7]) {
+  def main() = match top([42, 7]) {
     AInt(n) => n,
     _ => -1,
   }

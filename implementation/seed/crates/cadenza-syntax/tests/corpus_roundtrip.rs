@@ -109,14 +109,21 @@ fn ml_surface_round_trips_the_corpus() {
         }
     }
 
-    eprintln!("corpus round-trip: {passed}/{total} inputs across {files} files");
+    eprintln!("corpus round-trip: {passed}/{total} inputs across {files} .sexp files");
     if passed != total {
         eprintln!("\nfailure buckets (head symbol -> count):");
         for (head, (count, sample)) in &fail_buckets {
             eprintln!("  {head}: {count}\n    {sample}");
         }
     }
-    assert!(files >= 20, "expected >=20 corpus files, found {files}");
+    // This test's oracle is the s-expression reader, so it covers the `.sexp` corpus only. As files
+    // migrate to markdown (their inputs are already ML), the `.sexp` count shrinks; the migrated
+    // `.md` files' ML round-trip is covered by `cdz-corpus`'s own `markdown::check`. So we only
+    // require that SOME `.sexp` corpus remains to exercise this path — not a fixed count.
+    assert!(
+        files > 0,
+        "expected at least one .sexp corpus file, found none"
+    );
     assert_eq!(
         passed, total,
         "not all corpus inputs round-trip through the ML surface"

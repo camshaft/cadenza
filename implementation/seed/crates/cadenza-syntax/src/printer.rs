@@ -25,6 +25,13 @@ use crate::token::{self, Kind, PREC_MEMBER, infix_glyph, infix_prec};
 /// Indentation per box level (spaces). A layout choice, not a contract.
 const INDENT: isize = 2;
 
+/// The parent-precedence to print a subexpression at when a block-form there (`if`/`let`/`match`)
+/// must parenthesize but an infix operator must NOT. Block forms parenthesize when `parent_prec > 0`;
+/// the lowest infix precedence is 1 and infixes parenthesize only when `prec < parent_prec`, so a
+/// value of 1 forces `(if …)`/`(let …)`/`(match …)` while leaving every infix chain bare. Used for an
+/// `if` condition, so a nested conditional condition reads as `if (if …) then …`.
+const PREC_KEYWORD: u8 = 1;
+
 /// Pretty-print `arenas` to ML text targeting `width` columns.
 pub fn print(arenas: &Arenas, width: usize) -> String {
     let mut p = Printer {
@@ -121,6 +128,7 @@ impl<'a> Printer<'a> {
                 "fn" if args.len() == 2 => return self.print_fn(args, parent_prec),
                 "match" if self.is_match_shape(args) => return self.print_match(args, parent_prec),
                 "def" if self.is_def_shape(args) => return self.print_def(args),
+                "def" if self.is_value_def_shape(args) => return self.print_value_def(args),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
                 "list" => return self.print_list_literal(args),
                 "tuple" if args.len() >= 2 => return self.print_tuple(args),
@@ -319,7 +327,16 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `if c then t else e`.
+    /// `if c then t else e`. Inline when it fits; otherwise the condition stays on the `if` line and
+    /// the branches break to indented lines under their `then`/`else` keywords:
+    /// ```text
+    /// if c then
+    ///   t
+    /// else
+    ///   e
+    /// ```
+    /// The condition is printed at `PREC_KEYWORD` so a nested block-form condition (`if`/`let`/`match`)
+    /// parenthesizes — otherwise `if if a then b else c then …` is ambiguous to read.
     fn print_if(&mut self, args: &[StructId], parent_prec: u8) {
         let paren = parent_prec > 0;
         self.doc.cbox(INDENT);
@@ -327,12 +344,19 @@ impl<'a> Printer<'a> {
             self.doc.word("(");
         }
         self.doc.word("if ");
-        self.expr(args[0], 0);
+        // Condition at PREC_KEYWORD so a nested block-form condition (`if`/`let`/`match`)
+        // parenthesizes — `if (if a then b else c) then …` rather than the unreadable `if if a …`.
+        self.expr(args[0], PREC_KEYWORD);
+        self.doc.word(" then");
+        // Branches at 0: a nested `if` here does NOT parenthesize, so an `else if` chain stays the
+        // idiomatic `… else if c then …` (indentation, not parens, disambiguates). A breakable space
+        // keeps `then t` on the line when it fits, else drops `t` to an indented line; `else` dedents
+        // back to the `if` column.
         self.doc.space();
-        self.doc.word("then ");
         self.expr(args[1], 0);
+        self.doc.break_with(1, -INDENT);
+        self.doc.word("else");
         self.doc.space();
-        self.doc.word("else ");
         self.expr(args[2], 0);
         if paren {
             self.doc.word(")");
@@ -367,9 +391,9 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `fn name(p, …) = body` — a named function definition. `args` is `signature doc… body`: the
-    /// signature list `(name p …)`, zero or more `(doc "…")` forms (printed as `/// …` lines above
-    /// the `fn`), and the single body. Never parenthesized (a def is a declaration).
+    /// `def name(p, …) = body` — a named function definition (a hoisting declaration). `args` is
+    /// `signature doc… body`: the signature list `(name p …)`, zero or more `(doc "…")` forms
+    /// (printed as `/// …` lines above the `def`), and the single body. Never parenthesized.
     fn print_def(&mut self, args: &[StructId]) {
         let signature = args[0];
         let docs = &args[1..args.len() - 1];
@@ -378,14 +402,8 @@ impl<'a> Printer<'a> {
         // own start column, so the def box must not add another level on top. A plain-expression
         // body that overflows is indented explicitly by `body_after_eq`.
         self.doc.cbox(0);
-        for &d in docs {
-            // each doc member is a `(doc "text")` (guaranteed by is_def_shape) -> `/// text`
-            if let Some(a) = self.a.as_form(d, "doc") {
-                self.print_doc(a[0]);
-            }
-            self.doc.hardbreak();
-        }
-        self.doc.word("fn ");
+        self.print_def_docs(docs);
+        self.doc.word("def ");
         if let Struct::List(sig) = self.a.get(signature) {
             let sig = sig.clone();
             // name
@@ -401,6 +419,32 @@ impl<'a> Printer<'a> {
         }
         self.body_after_eq(body);
         self.doc.end();
+    }
+
+    /// `def name = value` — a value definition (a hoisting declaration, like the function form).
+    /// `args` is `name doc… value`. Uses `def` (not `let`) because it hoists — `let` is sequential.
+    fn print_value_def(&mut self, args: &[StructId]) {
+        let name = args[0];
+        let docs = &args[1..args.len() - 1];
+        let value = args[args.len() - 1];
+        self.doc.cbox(0);
+        self.print_def_docs(docs);
+        self.doc.word("def ");
+        self.expr(name, 0);
+        self.doc.word(" =");
+        self.body_after_eq(value);
+        self.doc.end();
+    }
+
+    /// Emit a def's leading `(doc "…")` forms as `/// …` lines, each followed by a hardbreak. Shared
+    /// by the function and value def printers.
+    fn print_def_docs(&mut self, docs: &[StructId]) {
+        for &d in docs {
+            if let Some(a) = self.a.as_form(d, "doc") {
+                self.print_doc(a[0]);
+            }
+            self.doc.hardbreak();
+        }
     }
 
     /// Print a parameter binder. A type-annotated binder `(: name Type)` prints as `name: Type`;
@@ -612,8 +656,9 @@ impl<'a> Printer<'a> {
     }
 
     /// Print a structural pattern. Shapes: a guarded pattern `(guard <pat> <expr>)` -> `pat if g`;
-    /// a constructor application `(Ctor p…)` -> `Ctor(p, …)`; a dotted ctor `(. A B)` -> `A.B`; a
-    /// bare name / literal prints as itself.
+    /// a tuple pattern `(tuple p q…)` (2+ elements) -> `(p, q, …)`; a constructor application
+    /// `(Ctor p…)` -> `Ctor(p, …)`; a dotted ctor `(. A B)` -> `A.B`; a bare name / literal prints
+    /// as itself.
     fn pattern(&mut self, id: StructId) {
         if let Some(tail) = self.a.as_form(id, "guard")
             && tail.len() == 2
@@ -627,6 +672,20 @@ impl<'a> Printer<'a> {
         match self.a.get(id) {
             Struct::List(items) if !items.is_empty() => {
                 let items = items.clone();
+                // tuple pattern `(tuple p q …)` with 2+ elements -> `(p, q, …)`. A 1-element
+                // `(tuple p)` falls through to the generic `tuple(p)` form (a `(p)` would be
+                // transparent grouping, not a 1-tuple) — the same rule the value tuple uses.
+                if self.head_name(items[0]).as_deref() == Some("tuple") && items.len() >= 3 {
+                    self.doc.word("(");
+                    for (i, &sub) in items[1..].iter().enumerate() {
+                        if i > 0 {
+                            self.doc.word(", ");
+                        }
+                        self.pattern(sub);
+                    }
+                    self.doc.word(")");
+                    return;
+                }
                 // dotted constructor `(. A B)` prints as A.B
                 if self.head_name(items[0]).as_deref() == Some(".")
                     && items.len() == 3
@@ -756,10 +815,10 @@ impl<'a> Printer<'a> {
         self.is_pairs(args)
     }
 
-    /// A def the `fn name(…) = body` surface handles: a signature list `(name p…)` (head is a
-    /// name, so params lower as binders), then zero or more `(doc "…")` forms, then a single body.
-    /// Any OTHER interleaved body form (e.g. a `(: type)` annotation) falls back to the generic call
-    /// form so it still round-trips.
+    /// A def the `def name(…) = body` (function) surface handles: a signature LIST `(name p…)` (head
+    /// is a name, so params lower as binders), then zero or more `(doc "…")` forms, then a single
+    /// body. Any OTHER interleaved body form (e.g. a `(: type)` annotation) falls back to the generic
+    /// call form so it still round-trips.
     fn is_def_shape(&self, args: &[StructId]) -> bool {
         if args.len() < 2 {
             return false;
@@ -769,6 +828,18 @@ impl<'a> Printer<'a> {
         // args[1..last] must all be `(doc "…")`.
         let docs_ok = args[1..args.len() - 1].iter().all(|&a| self.is_doc(a));
         sig_ok && docs_ok
+    }
+
+    /// A def the `def name = value` (value) surface handles: `args[0]` is an atom NAME (not a
+    /// signature list — that is what distinguishes it from the function form), then zero or more
+    /// `(doc "…")` forms, then a single value expression.
+    fn is_value_def_shape(&self, args: &[StructId]) -> bool {
+        if args.len() < 2 {
+            return false;
+        }
+        let name_ok = self.head_name(args[0]).is_some();
+        let docs_ok = args[1..args.len() - 1].iter().all(|&a| self.is_doc(a));
+        name_ok && docs_ok
     }
 
     /// A module the `module name { … }` surface handles: a name, then any members (docs included).
@@ -862,38 +933,51 @@ mod tests {
 
     #[test]
     fn function_definition() {
-        // named def vs anonymous lambda are distinct surfaces.
+        // a named def uses `def`; an anonymous lambda uses `fn` — distinct surfaces.
         assert_eq!(
-            assert_roundtrip("fn add(a, b) = a + b", 80),
-            "fn add(a, b) = a + b"
+            assert_roundtrip("def add(a, b) = a + b", 80),
+            "def add(a, b) = a + b"
         );
-        assert_eq!(assert_roundtrip("fn main() = 42", 80), "fn main() = 42");
+        assert_eq!(assert_roundtrip("def main() = 42", 80), "def main() = 42");
         assert_eq!(assert_roundtrip("fn(x) => x * 2", 80), "fn(x) => x * 2");
+    }
+
+    #[test]
+    fn value_definition() {
+        // `def name = value` is a value definition (hoisting, so `def` not `let`).
+        assert_eq!(assert_roundtrip("def x = 5", 80), "def x = 5");
+        assert_eq!(
+            assert_roundtrip("def pt = { x = 1, y = 2 }", 80),
+            "def pt = { x = 1, y = 2 }"
+        );
+        // the underlying AST is `(def name value)` — a name atom, not a signature list.
+        let a = sexpr::read("(def x 5)").unwrap();
+        assert_eq!(print(&a, 80), "def x = 5");
     }
 
     #[test]
     fn type_annotated_parameter() {
         // A `(: name Type)` binder in a signature prints as `name: Type` and round-trips.
         assert_eq!(
-            assert_roundtrip("fn annotated(a: Int64, b) = a + b", 80),
-            "fn annotated(a: Int64, b) = a + b"
+            assert_roundtrip("def annotated(a: Int64, b) = a + b", 80),
+            "def annotated(a: Int64, b) = a + b"
         );
         // and in a lambda parameter list
         assert_eq!(assert_roundtrip("fn(x: Bool) => x", 80), "fn(x: Bool) => x");
         // the underlying AST is the binder-position annotation `(: a Int64)`
         let a = sexpr::read("(def (f (: a Int64)) a)").unwrap();
-        assert_eq!(print(&a, 80), "fn f(a: Int64) = a");
+        assert_eq!(print(&a, 80), "def f(a: Int64) = a");
     }
 
     #[test]
     fn module_block() {
         let out = assert_roundtrip(
-            "module math { fn add(a, b) = a + b fn main() = add(2, 3) }",
+            "module math { def add(a, b) = a + b def main() = add(2, 3) }",
             80,
         );
         assert_eq!(
             out,
-            "module math {\n  fn add(a, b) = a + b\n  fn main() = add(2, 3)\n}"
+            "module math {\n  def add(a, b) = a + b\n  def main() = add(2, 3)\n}"
         );
     }
 
@@ -901,10 +985,10 @@ mod tests {
     fn def_match_body_hugs_the_eq() {
         // A brace-delimited body (match) stays on the `=` line and breaks internally; arms indent
         // one level under the def, not two.
-        let out = assert_roundtrip("fn describe(s) = match s { A(_) => 1, B(_) => 2 }", 80);
+        let out = assert_roundtrip("def describe(s) = match s { A(_) => 1, B(_) => 2 }", 80);
         assert_eq!(
             out,
-            "fn describe(s) = match s {\n  A(_) => 1,\n  B(_) => 2,\n}"
+            "def describe(s) = match s {\n  A(_) => 1,\n  B(_) => 2,\n}"
         );
     }
 
@@ -912,19 +996,19 @@ mod tests {
     fn def_let_body_drops_and_indents() {
         // A non-brace body (let) is not hugged: it drops to an indented continuation line and lays
         // out flat at that indent.
-        let out = assert_roundtrip("fn f(x) = let y = x + 1 in y * y", 80);
-        assert_eq!(out, "fn f(x) =\n  let y = x + 1 in\n  y * y");
+        let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
+        assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
     }
 
     #[test]
     fn def_record_body_hugs_the_eq() {
         // A literal body (record) hugs the `=` too: `{` stays on the line, fields indent one level.
-        let out = assert_roundtrip("fn point() = { x = 1, y = 2, z = 3 }", 20);
-        assert_eq!(out, "fn point() = {\n  x = 1,\n  y = 2,\n  z = 3\n}");
+        let out = assert_roundtrip("def point() = { x = 1, y = 2, z = 3 }", 20);
+        assert_eq!(out, "def point() = {\n  x = 1,\n  y = 2,\n  z = 3\n}");
         // and inline when it fits
         assert_eq!(
-            assert_roundtrip("fn point() = { x = 1 }", 80),
-            "fn point() = { x = 1 }"
+            assert_roundtrip("def point() = { x = 1 }", 80),
+            "def point() = { x = 1 }"
         );
     }
 
@@ -1048,10 +1132,10 @@ mod tests {
 
     #[test]
     fn documented_def_prints_doc_line() {
-        // A def carrying `(doc …)` forms renders them as `/// …` lines above the `fn`.
+        // A def carrying `(doc …)` forms renders them as `/// …` lines above the `def`.
         let a = sexpr::read("(def (f x) (doc \"hi\") (+ x 1))").unwrap();
         let printed = print(&a, 80);
-        assert_eq!(printed, "/// hi\nfn f(x) = x + 1");
+        assert_eq!(printed, "/// hi\ndef f(x) = x + 1");
         let b = parser::read_ml(&printed);
         assert!(
             b.ok() && b.arenas.structurally_eq(&a),
@@ -1062,10 +1146,11 @@ mod tests {
     #[test]
     fn non_doc_multi_form_def_falls_back() {
         // A def whose extra body form is NOT a doc (here a `(: type)` annotation) has no dedicated
-        // surface; it falls back to the generic call form and still round-trips.
+        // surface; it falls back to the generic call form and still round-trips. `def` is now a
+        // reserved keyword, so as a bare call head it is backtick-escaped (`` `def` ``).
         let a = sexpr::read("(def (f x) (: Int64) (+ x 1))").unwrap();
         let printed = print(&a, 80);
-        assert_eq!(printed, "def(f(x), `:`(Int64), x + 1)");
+        assert_eq!(printed, "`def`(f(x), `:`(Int64), x + 1)");
         let b = parser::read_ml(&printed);
         assert!(
             b.ok() && b.arenas.structurally_eq(&a),
@@ -1077,12 +1162,12 @@ mod tests {
     fn doc_and_comment_round_trip() {
         // `///` doc attaches inside the def; `//` comment wraps it.
         assert_eq!(
-            assert_roundtrip("/// Adds.\nfn add(a, b) = a + b", 80),
-            "/// Adds.\nfn add(a, b) = a + b"
+            assert_roundtrip("/// Adds.\ndef add(a, b) = a + b", 80),
+            "/// Adds.\ndef add(a, b) = a + b"
         );
         assert_eq!(
-            assert_roundtrip("// note\nfn main() = 42", 80),
-            "// note\nfn main() = 42"
+            assert_roundtrip("// note\ndef main() = 42", 80),
+            "// note\ndef main() = 42"
         );
     }
 
@@ -1137,6 +1222,63 @@ mod tests {
     fn guarded_arm_prints_if() {
         let out = assert_roundtrip("match n { x if x < 0 => neg, _ => pos }", 80);
         assert!(out.contains("x if x < 0 =>"), "got: {out}");
+    }
+
+    #[test]
+    fn nested_if_condition_parenthesizes() {
+        // A conditional as another's CONDITION parenthesizes so `if if … ` never appears.
+        assert_eq!(
+            assert_roundtrip("if (if a then b else c) then 1 else 2", 80),
+            "if (if a then b else c) then 1 else 2"
+        );
+        // but an `else if` chain (a conditional in BRANCH position) stays bare.
+        assert_eq!(
+            assert_roundtrip("if a then 1 else if b then 2 else 3", 80),
+            "if a then 1 else if b then 2 else 3"
+        );
+    }
+
+    #[test]
+    fn wide_if_breaks_condition_on_if_line() {
+        // Too wide for one line: the condition stays on the `if` line, branches drop to indented
+        // lines, `else` dedents to the `if` column.
+        let out = assert_roundtrip(
+            "if some-condition then some-then-value(1, 2, 3) else some-else-value(4, 5, 6)",
+            40,
+        );
+        assert_eq!(
+            out,
+            "if some-condition then\n  some-then-value(1, 2, 3)\nelse\n  some-else-value(4, 5, 6)"
+        );
+    }
+
+    #[test]
+    fn tuple_patterns_use_paren_sugar() {
+        // A `(tuple …)` pattern with 2+ elements prints as `(p, …)`, matching the value tuple.
+        assert_eq!(
+            assert_roundtrip("match p { (a, b) => a + b, _ => 0 }", 80),
+            "match p {\n  (a, b) => a + b,\n  _ => 0,\n}"
+        );
+        // nested, and inside a constructor.
+        let a = sexpr::read("(match p ((tuple a (tuple b c)) 9) (_ 0))").unwrap();
+        assert!(
+            print(&a, 80).contains("(a, (b, c)) =>"),
+            "got: {}",
+            print(&a, 80)
+        );
+        let a = sexpr::read("(match p ((Some (tuple a b)) 1) (_ 0))").unwrap();
+        assert!(
+            print(&a, 80).contains("Some((a, b)) =>"),
+            "got: {}",
+            print(&a, 80)
+        );
+        // a 1-element tuple pattern stays `tuple(a)` (a `(a)` would be grouping, not a 1-tuple).
+        let a = sexpr::read("(match p ((tuple a) a) (_ 0))").unwrap();
+        assert!(
+            print(&a, 80).contains("tuple(a) =>"),
+            "got: {}",
+            print(&a, 80)
+        );
     }
 
     #[test]

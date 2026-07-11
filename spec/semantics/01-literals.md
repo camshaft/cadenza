@@ -124,8 +124,8 @@ A parameter named `_1` is an identifier, so `(def (f _1) (+ _1 1))` binds the ar
 
 ```cdz input
 module m {
-  fn f(_1) = _1 + 1
-  fn main() = f(41)
+  def f(_1) = _1 + 1
+  def main() = f(41)
 }
 ```
 
