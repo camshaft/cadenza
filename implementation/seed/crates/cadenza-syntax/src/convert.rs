@@ -15,19 +15,23 @@ pub enum Format {
     Sexpr,
     /// The keyword-based ML text surface.
     Ml,
-    /// A readable debug view of the arena structure — OUTPUT ONLY (not a re-readable surface). Shows
-    /// the raw shape the compiler sees, for inspecting a binary AST at a glance.
+    /// A readable debug view of the arena structure as an indented TREE — OUTPUT ONLY (not a
+    /// re-readable surface). Shows the raw shape the compiler sees, for inspecting a binary AST.
     Debug,
+    /// A FLAT dump of the two arenas (leaf pool + structure vector + root) — OUTPUT ONLY. Shows the
+    /// storage layout directly: leaf interning and the post-order structure order the codec writes.
+    Flat,
 }
 
 impl Format {
-    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `debug`). Case-insensitive.
+    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `debug`, `flat`). Case-insensitive.
     pub fn parse(name: &str) -> Option<Format> {
         match name.to_ascii_lowercase().as_str() {
             "binary" | "bin" => Some(Format::Binary),
             "sexpr" | "sexp" | "s" => Some(Format::Sexpr),
             "ml" => Some(Format::Ml),
             "debug" => Some(Format::Debug),
+            "flat" => Some(Format::Flat),
             _ => None,
         }
     }
@@ -38,6 +42,7 @@ impl Format {
             Format::Sexpr => "sexpr",
             Format::Ml => "ml",
             Format::Debug => "debug",
+            Format::Flat => "flat",
         }
     }
 }
@@ -79,7 +84,9 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
             Ok(parsed.arenas)
         }
         // `debug` is an output-only view — there is no reader from it back to arenas.
+        // `debug`/`flat` are output-only views — there is no reader from them back to arenas.
         Format::Debug => Err(ConvertError("`debug` is an output-only format, not an input".into())),
+        Format::Flat => Err(ConvertError("`flat` is an output-only format, not an input".into())),
     }
 }
 
@@ -108,6 +115,7 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         Format::Sexpr => Ok(sexpr::print(arenas).into_bytes()),
         Format::Ml => Ok(crate::printer::print(arenas, opts.width).into_bytes()),
         Format::Debug => Ok(crate::debug::print(arenas).into_bytes()),
+        Format::Flat => Ok(crate::debug::print_flat(arenas).into_bytes()),
     }
 }
 
