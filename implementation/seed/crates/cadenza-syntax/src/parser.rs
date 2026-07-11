@@ -411,6 +411,7 @@ impl<'a> Parser<'a> {
                 Some(Keyword::If) => self.if_expr(),
                 Some(Keyword::Fn) => self.fn_expr(),
                 Some(Keyword::Def) => self.def_expr(),
+                Some(Keyword::Type) => self.type_expr(),
                 Some(Keyword::Match) => self.match_expr(),
                 Some(Keyword::Module) => self.module_expr(),
                 Some(_) => {
@@ -672,6 +673,61 @@ impl<'a> Parser<'a> {
         let mut items = vec![def_head, signature];
         items.extend(self.doc_nodes(docs));
         items.push(body);
+        self.list(items, span)
+    }
+
+    /// `type Name = A(T, …) | B | …`  ->  `(type Name (A T …) B …)`. A sum-type declaration: each
+    /// variant is either a nullary constructor (a bare `Ctor` -> a `Name` atom) or a constructor with
+    /// a payload (`Ctor(T, …)` -> a list `(Ctor T …)`), separated by `|`. This mirrors the value
+    /// side, where a nullary variant is a bare name and an applied one is `Ctor(args)`; the `|` is a
+    /// surface separator between the structural variant entries, never a node in the tree.
+    fn type_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        // Leading `///` docs attach INSIDE the type decl, as `(doc "text")` forms before the variants.
+        let docs = self.take_docs_here();
+        let head = self.keyword_head("type", start);
+        self.bump(); // `type`
+        let name = self.binder();
+        let mut items = vec![head, name];
+        items.extend(self.doc_nodes(docs));
+        self.expect(Kind::Eq, "`=`");
+        loop {
+            items.push(self.variant());
+            if self.at(Kind::Pipe) {
+                self.bump(); // `|`
+            } else {
+                break;
+            }
+        }
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// One sum-type variant: `Ctor` (nullary -> a `Name` atom) or `Ctor(T, …)` (a payload -> the list
+    /// `(Ctor T …)`). The constructor name is a binder; each payload type is parsed as a postfix
+    /// expression (a name, dotted/qualified name, or application like `Tuple(A, B)` / `Option(Int64)`).
+    fn variant(&mut self) -> StructId {
+        let start = self.cur_span();
+        let ctor = self.binder();
+        if !self.at(Kind::LParen) {
+            return ctor; // nullary variant: bare constructor name
+        }
+        self.bump(); // `(`
+        let mut items = vec![ctor];
+        if !self.at(Kind::RParen) {
+            loop {
+                let ty_start = self.cur_span();
+                let ty = self.prefix();
+                items.push(self.postfix(ty, ty_start));
+                if self.at(Kind::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(Kind::RParen, "`)`");
+        let span = start.merge(self.prev_span());
         self.list(items, span)
     }
 

@@ -197,7 +197,7 @@
            not-yet-emitted runtime comparison. A generation emitting the heap walk reproduces true.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type N (I Int64 | J Int64))
+            (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
             (def (main) (if (= (mk 1) (mk 1)) 1 0))))
   (output (: 1 Int64)))
@@ -209,7 +209,7 @@
            declines the same way as the equal case.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type N (I Int64 | J Int64))
+            (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
             (def (main) (if (= (mk 1) (mk 2)) 1 0))))
   (output (: 0 Int64)))
@@ -225,7 +225,7 @@
            terms, a compiler comparing AST nodes) is not blocked, only more verbose.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type N (I Int64 | J Int64))
+            (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
             (def (same a b)
               (match a

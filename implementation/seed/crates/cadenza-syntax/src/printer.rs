@@ -139,6 +139,7 @@ impl<'a> Printer<'a> {
                 "def" if self.is_def_shape(args) => return self.print_def(args),
                 "def" if self.is_value_def_shape(args) => return self.print_value_def(args),
                 "do" if !args.is_empty() => return self.print_do(args),
+                "type" if self.is_type_shape(args) => return self.print_type(args),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
                 "list" => return self.print_list_literal(args),
                 "tuple" if args.len() >= 2 => return self.print_tuple(args),
@@ -671,6 +672,79 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
+    /// `type Name = A(T, …) | B | …` — a sum-type declaration. `args` is `name doc… variant…`; each
+    /// variant is a nullary constructor (a `Name` atom -> `Ctor`) or a payload constructor (a list
+    /// `(Ctor T …)` -> `Ctor(T, …)`), joined by ` | `. Inline when it fits; else each variant on its
+    /// own line with a leading `| ` at the `type` column. Never parenthesized (a declaration).
+    fn print_type(&mut self, args: &[StructId]) {
+        // args = name, then optional `(doc …)` forms, then the variants.
+        let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
+        let name = args[0];
+        let docs = &args[1..docs_end];
+        let variants = &args[docs_end..];
+        self.doc.cbox(INDENT);
+        for &d in docs {
+            if let Some(a) = self.a.as_form(d, "doc") {
+                self.print_doc(a[0]);
+            }
+            self.doc.hardbreak();
+        }
+        self.doc.word("type ");
+        self.expr(name, 0);
+        self.doc.word(" =");
+        // A breakable space before the first variant, then ` | ` between; when broken, each `|`
+        // leads its own line (a `space` before `|`, a literal ` ` after).
+        for (i, &v) in variants.iter().enumerate() {
+            if i == 0 {
+                self.doc.space();
+            } else {
+                self.doc.space();
+                self.doc.word("| ");
+            }
+            self.print_variant(v);
+        }
+        self.doc.end();
+    }
+
+    /// One sum-type variant: a nullary `Ctor` (a `Name` atom) prints as itself; a payload variant
+    /// `(Ctor T …)` prints as `Ctor(T, …)` — the same shape as a constructor application.
+    fn print_variant(&mut self, id: StructId) {
+        match self.a.get(id) {
+            Struct::List(items) if items.len() >= 2 => {
+                let items = items.clone();
+                self.expr(items[0], 0); // constructor name
+                self.doc.word("(");
+                for (i, &t) in items[1..].iter().enumerate() {
+                    if i > 0 {
+                        self.doc.word(", ");
+                    }
+                    self.expr(t, 0);
+                }
+                self.doc.word(")");
+            }
+            // a nullary variant (bare name atom), or a defensive fallback for an odd shape
+            _ => self.expr(id, 0),
+        }
+    }
+
+    /// A `(type …)` the `type Name = …` surface handles: a name, zero or more `(doc "…")` forms, then
+    /// at least one variant (a `Name` atom, or a `(Ctor T…)` list whose head is a name). Anything else
+    /// falls back to the generic call form so it still round-trips.
+    fn is_type_shape(&self, args: &[StructId]) -> bool {
+        if args.len() < 2 || self.head_name(args[0]).is_none() {
+            return false;
+        }
+        let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
+        let variants = &args[docs_end..];
+        !variants.is_empty()
+            && variants.iter().all(|&v| match self.a.get(v) {
+                // nullary: a bare constructor name
+                Struct::Atom(_) => self.head_name(v).is_some(),
+                // payload: (Ctor T …) with a name head and at least one payload type
+                Struct::List(items) => items.len() >= 2 && self.head_name(items[0]).is_some(),
+            })
+    }
+
     /// A bracketed, comma-separated sequence with all-or-nothing breaking: `open a, b, c close`
     /// inline if it fits, else one item per line block-indented with the close on its own dedented
     /// line. `emit` renders one item. Braces get inner padding (`{ … }`); brackets/parens do not.
@@ -1067,6 +1141,39 @@ mod tests {
         // the underlying AST is `(def name value)` — a name atom, not a signature list.
         let a = sexpr::read("(def x 5)").unwrap();
         assert_eq!(print(&a, 80), "def x = 5");
+    }
+
+    #[test]
+    fn sum_type_declaration() {
+        // Each variant is its own entry, `|`-separated on the surface; nullary is a bare ctor, a
+        // payload variant is `Ctor(T, …)`. The `|` is a surface separator, never a tree atom.
+        assert_eq!(
+            assert_roundtrip("type N = I(Int64) | J(Int64)", 80),
+            "type N = I(Int64) | J(Int64)"
+        );
+        assert_eq!(
+            assert_roundtrip("type Sign = Neg | Zero | Pos", 80),
+            "type Sign = Neg | Zero | Pos"
+        );
+        // nullary + payload mix.
+        assert_eq!(
+            assert_roundtrip("type FL = FNil | FCons(Tuple(Int64, FL))", 80),
+            "type FL = FNil | FCons(Tuple(Int64, FL))"
+        );
+        // the arena is `(type NAME variant…)` — nullary = a bare name, payload = a `(Ctor T…)` list.
+        let a = sexpr::read("(type N (I Int64) (J Int64))").unwrap();
+        assert_eq!(print(&a, 80), "type N = I(Int64) | J(Int64)");
+        let a = sexpr::read("(type FL FNil (FCons (Tuple Int64 FL)))").unwrap();
+        assert_eq!(print(&a, 80), "type FL = FNil | FCons(Tuple(Int64, FL))");
+        // a wide decl breaks with a leading `|` per variant.
+        let out = assert_roundtrip(
+            "type Expr = Lit(Int64) | Add(Tuple(Expr, Expr)) | Mul(Tuple(Expr, Expr))",
+            40,
+        );
+        assert_eq!(
+            out,
+            "type Expr =\n  Lit(Int64)\n  | Add(Tuple(Expr, Expr))\n  | Mul(Tuple(Expr, Expr))"
+        );
     }
 
     #[test]

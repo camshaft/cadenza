@@ -64,7 +64,7 @@
            not yet detect a duplicate variant name declines rather than binding one.")
   (needs      sum-type-declaration)
   (input      (module m
-                (type T (A Int64 | A Bool))
+                (type T (A Int64) (A Bool))
                 (def (main) 1)))
   (error      CDZ0201))
 
@@ -320,7 +320,7 @@
            element (`arr-get` + `get-int`), the index half of a decoder threading `(node, index)`.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Node (NLit Int64 | NAdd (Tuple Node Node)))
+            (type Node (NLit Int64) (NAdd (Tuple Node Node)))
             (def (mk) (tuple (NLit 5) 9))
             (def (main) (let ((l (mk))) (tuple.1 l)))))
   (output (: 9 Int64)))
@@ -333,7 +333,7 @@
            threads through `let`).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Node (NLit Int64 | NAdd (Tuple Node Node)))
+            (type Node (NLit Int64) (NAdd (Tuple Node Node)))
             (def (mk) (tuple (NLit 5) 9))
             (def (ev e) (match e ((Node.NLit v) v) ((Node.NAdd (tuple a b)) (+ (ev a) (ev b)))))
             (def (main) (let ((l (mk))) (ev (tuple.0 l))))))
@@ -385,8 +385,8 @@
            an actually-unknown head traps at run time (the front-end rejection point).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Node (NInt Int64 | NPrim (Tuple String Node Node)))
-            (type Core (KConst Int64 | KAdd (Tuple Core Core)))
+            (type Node (NInt Int64) (NPrim (Tuple String Node Node)))
+            (type Core (KConst Int64) (KAdd (Tuple Core Core)))
             (def (bad) (Bytes.len (Bytes.of (list 256))))
             (def (resolve node)
               (match node
@@ -892,7 +892,7 @@
            idiom the compiler leans on, distinct from a program whose result IS the heap value.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (sm xs) (match xs
                            ((IntList.Cons (tuple h t)) (+ h (sm t)))
                            ((IntList.Nil _)            0)))
@@ -913,7 +913,7 @@
            call is a real runtime `call` rather than an unbounded compile-time inline.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (count n) (if (< n 1)
                                (IntList.Nil ())
                                (IntList.Cons (tuple n (count (- n 1))))))
@@ -937,7 +937,7 @@
            function list building a return-kind table is exactly this shape).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type FL (FNil | FCons (Tuple Int64 FL)))
+            (type FL FNil (FCons (Tuple Int64 FL)))
             (def (recompute funcs out)
               (match funcs
                 ((FL.FNil _)            out)
@@ -983,7 +983,7 @@
            frontier — now representable.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type FL (FNil | FCons (Tuple Int64 FL)))
+            (type FL FNil (FCons (Tuple Int64 FL)))
             (def (recompute funcs out)
               (match funcs
                 ((FL.FNil _)            out)
@@ -1050,7 +1050,7 @@
            self-hosted evaluator/compiler is written in.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Expr (Lit Int64 | Add (Tuple Expr Expr) | Mul (Tuple Expr Expr)))
+            (type Expr (Lit Int64) (Add (Tuple Expr Expr)) (Mul (Tuple Expr Expr)))
             (def (ev e) (match e
                           ((Expr.Lit n)           n)
                           ((Expr.Add (tuple a b)) (+ (ev a) (ev b)))
@@ -1073,7 +1073,7 @@
            Leaf 9)` is `Leaf 7`, whose leaf value is 7.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type T (Leaf Int64 | Pair (Tuple T T)))
+            (type T (Leaf Int64) (Pair (Tuple T T)))
             (def (left x) (match x ((T.Leaf n) (T.Leaf n)) ((T.Pair (tuple a b)) a)))
             (def (main) (match (left (T.Pair (tuple (T.Leaf 7) (T.Leaf 9))))
                           ((T.Leaf n) n)
@@ -1093,7 +1093,7 @@
            `20 + (22 - 8) = 34`.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Expr (Lit Int64 | Bin (Tuple Int64 (Tuple Expr Expr))))
+            (type Expr (Lit Int64) (Bin (Tuple Int64 (Tuple Expr Expr))))
             (def (ev e) (match e
                           ((Expr.Lit n)                    n)
                           ((Expr.Bin (tuple op (tuple a b)))
@@ -1116,7 +1116,7 @@
            and the shape a self-hosted compiler uses to read one element of a node list.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type E (Lit Int64 | Neg Int64))
+            (type E (Lit Int64) (Neg Int64))
             (def (first-lit xs) (match (List.at xs 0)
                                   ((Some (E.Lit n)) n)
                                   ((None _)         0)))
@@ -1139,8 +1139,8 @@
            runtime value the producer materializes and the consumer walks).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Node (NInt Int64 | NPrim (Tuple String Node Node)))
-            (type Core (KConst Int64 | KAdd (Tuple Core Core) | KSub (Tuple Core Core) | KMul (Tuple Core Core)))
+            (type Node (NInt Int64) (NPrim (Tuple String Node Node)))
+            (type Core (KConst Int64) (KAdd (Tuple Core Core)) (KSub (Tuple Core Core)) (KMul (Tuple Core Core)))
             (def (resolve n) (match n
                                ((Node.NInt v) (Core.KConst v))
                                ((Node.NPrim (tuple h a b))
@@ -1170,7 +1170,7 @@
            is a genuine runtime value so it lives on the value heap.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (f n) (IntList.Cons (tuple n (IntList.Nil ()))))
             (def (main) (f 5))))
   (output (: (IntList.Cons (tuple 5 (IntList.Nil unit))) IntList)))
@@ -1190,7 +1190,7 @@
            payload's tuple handle as a boxed integer — is a FAIL, never an accepted output.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (count n) (if (< n 1)
                                (IntList.Nil ())
                                (IntList.Cons (tuple n (count (- n 1))))))
@@ -1208,7 +1208,7 @@
            structure (decline-don't-miscompile: the wrong shape is a FAIL, never an accepted output).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Tree (Leaf Int64 | Node (Tuple Tree Tree)))
+            (type Tree (Leaf Int64) (Node (Tuple Tree Tree)))
             (def (build n) (if (< n 1)
                                (Tree.Leaf n)
                                (Tree.Node (tuple (build (- n 1)) (build (- n 1))))))
@@ -1282,8 +1282,8 @@
            (it bound a `(tuple …)` or a bare name, not a nested constructor).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type N (L Int64 | P Int64))
-            (type W (Wrap N | Empty))
+            (type N (L Int64) (P Int64))
+            (type W (Wrap N) Empty)
             (def (f w) (match w
                          ((W.Wrap (N.L v)) v)
                          ((W.Wrap (N.P v)) (+ v 100))
@@ -1299,8 +1299,8 @@
            `N.L`, inner `N.P`, and the outer `Empty` fall-through.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type N (L Int64 | P Int64))
-            (type W (Wrap N | Empty))
+            (type N (L Int64) (P Int64))
+            (type W (Wrap N) Empty)
             (def (f w) (match w
                          ((W.Wrap (N.L v)) v)
                          ((W.Wrap (N.P v)) (+ v 100))
@@ -1317,7 +1317,7 @@
            result a compiler threads when it decodes a node list.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type N (L Int64 | P Int64))
+            (type N (L Int64) (P Int64))
             (def (main) (match (List.at (List.push (list) (N.L 7)) 0)
                           ((Some (N.L v)) v)
                           ((Some (N.P v)) (+ v 100))
@@ -1348,7 +1348,7 @@
            slot. A generation composing the two reproduces 42.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Inner (A Int64 | B Int64))
+            (type Inner (A Int64) (B Int64))
             (type Outer (Wrap (Tuple Inner Int64)))
             (def (f o)
               (match o
@@ -1367,7 +1367,7 @@
            the one-level-at-a-time peel a HOL `dest_eq` uses to route around the gap above).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Inner (A Int64 | B Int64))
+            (type Inner (A Int64) (B Int64))
             (type Outer (Wrap (Tuple Inner Int64)))
             (def (f o)
               (match o
@@ -1407,7 +1407,7 @@
            payload's shape through the return reproduces the projected element 1.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Term (Var Int64 | Neg Int64))
+            (type Term (Var Int64) (Neg Int64))
             (type Box (B (Tuple (List Int64) Term)))
             (def (is-var tm) (match tm ((Term.Var _) 1) ((Term.Neg _) 0)))
             (def (unbox bx) (match bx ((Box.B t) t)))
@@ -1427,7 +1427,7 @@
            spike used to verify a minted theorem).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Term (Var Int64 | Neg Int64))
+            (type Term (Var Int64) (Neg Int64))
             (type Box (B (Tuple (List Int64) Term)))
             (def (is-var tm) (match tm ((Term.Var _) 1) ((Term.Neg _) 0)))
             (def (main)
@@ -1747,7 +1747,7 @@
            node with a variable argument count takes).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Core (KConst Int64 | KCall (Tuple Int64 (List Core))))
+            (type Core (KConst Int64) (KCall (Tuple Int64 (List Core))))
             (def (sum-args xs i n) (if (< i n)
                                        (+ (ev (match (List.at xs i) ((Some c) c) ((None _) (Core.KConst 0))))
                                           (sum-args xs (+ i 1) n))
@@ -2249,7 +2249,7 @@
            CDZ0201 on the program's `(Expr.Neg …)`.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Expr (Lit Int64 | Neg Expr))
+            (type Expr (Lit Int64) (Neg Expr))
             (def (depth e) (match e ((Expr.Lit n) 0) ((Expr.Neg x) (+ 1 (depth x)))))
             (def (main)    (depth (Expr.Neg (Expr.Lit 5))))))
   (output (: 1 Int64)))
@@ -2264,7 +2264,7 @@
            a reader takes writing `NNil` for an empty node rather than the verbose `(Node.NNil unit)`.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Node (NLit Int64 | NNil))
+            (type Node (NLit Int64) NNil)
             (def (classify n) (if (= n 0) NNil (Node.NLit n)))
             (def (val x) (match x ((Node.NLit v) v) ((Node.NNil _) 1)))
             (def (main) (+ (val (classify 0)) (val (classify 7))))))
@@ -2280,7 +2280,7 @@
            build its output bytes).")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Expr (Lit Int64 | Neg Int64))
+            (type Expr (Lit Int64) (Neg Int64))
             (def (emit e) (match e ((Expr.Lit n) (Bytes.of (list 66))) ((Expr.Neg n) (Bytes.of (list 124)))))
             (def (main)   (emit (Expr.Lit 5)))))
   (output (: b"B" Bytes)))
@@ -2294,7 +2294,7 @@
            exact shape a self-hosted backend's `lower`/`serialize` takes.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Expr (Lit Int64 | Neg Expr))
+            (type Expr (Lit Int64) (Neg Expr))
             (def (lower e) (match e
                              ((Expr.Lit n) (Bytes.of (list 66)))
                              ((Expr.Neg x) (Bytes.concat (lower x) (Bytes.of (list 124))))))
@@ -2373,7 +2373,7 @@
            tag (deterministic-value-form.md #A Value Has One Canonical Byte Form).")
   (needs  sum-type-declaration)
   (input  (do
-            (type Color (Red | Green | Blue))
+            (type Color Red Green Blue)
             (Color.Red unit)))
   (output (: (Color.Red unit) Color)))
 
@@ -2384,7 +2384,7 @@
            single-arity: Ok takes Int64, Err takes Unit. Constructors: Result.Ok, Result.Err.")
   (needs  sum-type-declaration)
   (input  (do
-            (type Result (Ok Int64 | Err))
+            (type Result (Ok Int64) Err)
             (Result.Ok 42)))
   (output (: (Result.Ok 42) Result)))
 
@@ -2395,7 +2395,7 @@
            Constructor values accessible via member access.")
   (needs  sum-type-declaration)
   (input  (do
-            (type Status (Ready | Waiting))
+            (type Status Ready Waiting)
             (match (Status.Ready unit)
               ((Status.Ready _)   1)
               ((Status.Waiting _) 0))))
@@ -2408,7 +2408,7 @@
            Int64 and Nothing takes Unit — both single-arity, uniformly handled.")
   (needs  sum-type-declaration)
   (input  (do
-            (type Maybe (Just Int64 | Nothing))
+            (type Maybe (Just Int64) Nothing)
             (match (Maybe.Just 7)
               ((Maybe.Just n)    n)
               ((Maybe.Nothing _) 0))))
@@ -2597,7 +2597,7 @@
            Pattern matching deconstructs recursively. This is critical: the AST is a recursive sum type.")
   (needs  sum-type-declaration)
   (input  (do
-            (type IntList (Cons (Tuple Int64 IntList) | Nil))
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (let ((xs (IntList.Cons (tuple 1 (IntList.Cons (tuple 2 (IntList.Nil ())))))))
               (match xs
                 ((IntList.Cons (tuple head _)) head)
@@ -2803,9 +2803,9 @@
            `(20 + 22)` yields three instructions, whose count is 3.")
   (needs  sum-type-declaration)
   (input  (module m
-            (type Instr (IConst Int64 | IAdd))
-            (type Code  (CNil | CCons (Tuple Instr Code)))
-            (type Core  (KConst Int64 | KAdd (Tuple Core Core)))
+            (type Instr (IConst Int64) IAdd)
+            (type Code CNil (CCons (Tuple Instr Code)))
+            (type Core (KConst Int64) (KAdd (Tuple Core Core)))
             (def (one i)        (Code.CCons (tuple i (Code.CNil ()))))
             (def (code-cat xs ys)
               (match xs

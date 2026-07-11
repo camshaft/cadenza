@@ -408,7 +408,7 @@
            `(weigh (Node.NInt 3))` is 3, summing to 8. Pins a string as a runtime sum payload — the
            shape of a symbol-carrying AST node the compiler walks — bound by a match arm and consumed.")
   (input   (module m
-             (type Node (NInt Int64 | NSym String))
+             (type Node (NInt Int64) (NSym String))
              (def (weigh n) (match n ((Node.NInt i) i) ((Node.NSym s) (String.byte-len s))))
              (def (main)    (+ (weigh (Node.NSym "hello")) (weigh (Node.NInt 3))))))
   (output  (: 8 Int64)))

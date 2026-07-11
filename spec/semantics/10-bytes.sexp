@@ -392,7 +392,7 @@
            node into its instruction bytes.")
   (needs  bytes)
   (input  (module m
-            (type Expr (Lit Int64 | Neg Expr | Add (Tuple Expr Expr)))
+            (type Expr (Lit Int64) (Neg Expr) (Add (Tuple Expr Expr)))
             (def (emit e)
               (match e
                 ((Expr.Lit n)           (Bytes.of (list 0x42)))
@@ -416,7 +416,7 @@
            the list-fold companion of the per-node tree-walk emitter above.")
   (needs  bytes)
   (input  (module m
-            (type BL (BNil | BCons (Tuple Bytes BL)))
+            (type BL BNil (BCons (Tuple Bytes BL)))
             (def (build n) (if (< n 1)
                                (BL.BNil ())
                                (BL.BCons (tuple (Bytes.of (list (Int.to-byte (+ 64 n)))) (build (- n 1))))))

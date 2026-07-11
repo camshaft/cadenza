@@ -47,7 +47,7 @@
            `(3*4)+5` evaluates to 17. This is the substrate every structural pass (resolve, fold,
            lower — and a refactoring) is built on.")
   (input  (module case
-            (type Exp (Lit Int64 | Add (Tuple Exp Exp) | Mul (Tuple Exp Exp)))
+            (type Exp (Lit Int64) (Add (Tuple Exp Exp)) (Mul (Tuple Exp Exp)))
             (def (main) (eval (Add (tuple (Mul (tuple (Lit 3) (Lit 4))) (Lit 5)))))
             (def (eval e)
               (match e
@@ -67,7 +67,7 @@
            refactor. (Payload literals are compared by binding then `=` via `is-lit`, since a
            constructor pattern binds its payload rather than matching a nested literal directly.)")
   (input  (module case
-            (type Exp (Lit Int64 | Add (Tuple Exp Exp) | Mul (Tuple Exp Exp)))
+            (type Exp (Lit Int64) (Add (Tuple Exp Exp)) (Mul (Tuple Exp Exp)))
             (def (main)
               (let ((e (Add (tuple (Mul (tuple (Lit 6) (Lit 1))) (Lit 0)))))
                 (= (eval e) (eval (simp e)))))
@@ -123,7 +123,7 @@
            scrutinee\" rather than miscompiling; the sibling case below pins the same shape where the tuple
            elements are calls to a DIFFERENT function taking a recursive-sum argument).")
   (input  (module case
-            (type E (Lit Int64 | Add (Tuple E E)))
+            (type E (Lit Int64) (Add (Tuple E E)))
             (def (fold e)
               (match e
                 ((E.Lit n) (E.Lit n))
@@ -171,7 +171,7 @@
            the self-call case needed. A generation that does not yet resolve such a call's result shape at
            the pattern site declines rather than miscompiling.")
   (input  (module case
-            (type E (Lit Int64 | Add (Tuple E E)))
+            (type E (Lit Int64) (Add (Tuple E E)))
             (def (classify e)
               (match e
                 ((E.Lit n)  (Some n))
@@ -195,7 +195,7 @@
            full statement of a sound refactor: the tree changed, the meaning did not. An agent scripts
            exactly this — a function over the syntax tree whose result it can measure and re-check.")
   (input  (module case
-            (type Exp (Lit Int64 | Add (Tuple Exp Exp) | Mul (Tuple Exp Exp)))
+            (type Exp (Lit Int64) (Add (Tuple Exp Exp)) (Mul (Tuple Exp Exp)))
             (def (main)
               (let ((e (Add (tuple (Mul (tuple (Lit 6) (Lit 1))) (Lit 0)))))
                 (- (size e) (size (simp e)))))

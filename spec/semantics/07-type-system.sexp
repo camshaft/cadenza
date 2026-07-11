@@ -150,7 +150,7 @@
            only the constructor written directly in scrutinee position slips. A generation that type-checks
            the scrutinee constructor's payload declines rather than running the mistyped program.")
   (input  (module m
-            (type N (I Int64 | J Int64))
+            (type N (I Int64) (J Int64))
             (def (main) (match (I true) ((I x) x) ((J y) y)))))
   (error  CDZ0201))
 

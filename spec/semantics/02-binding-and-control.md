@@ -164,7 +164,7 @@ The compiler-internal SCOPE-RESOLUTION idiom behind lexical shadowing (the value
 
 ```cdz input
 module m {
-  type(Env, ENil(`|`, ECons, Tuple(Int64, Env)))
+  type Env = ENil | ECons(Tuple(Int64, Env))
   def pos(xs, target, k) = match xs {
     Env.ENil(_) => 0 - 1,
     Env.ECons((h, t)) => let deeper = pos(t, target, k + 1);
@@ -1238,7 +1238,7 @@ sum-type-declaration
 ```
 
 ```cdz input
-type(Expr, Lit(Int64, `|`, Add, Tuple(Expr, Expr)));
+type Expr = Lit(Int64) | Add(Tuple(Expr, Expr));
 let e = Expr.Add((Expr.Lit(1), Expr.Lit(2)));
 match e {
   Expr.Lit(n) => n,
@@ -1755,7 +1755,7 @@ sum-type-declaration
 
 ```cdz input
 module m {
-  type(Ast, AInt(Int64, `|`, ALeaf, `|`, AList, List(Ast)))
+  type Ast = AInt(Int64) | ALeaf | AList(List(Ast))
   def dn(b, i) =
     if i == 0 then
       (AInt(Option.expect(List.at(b, 0), "in range")), i + 1)
