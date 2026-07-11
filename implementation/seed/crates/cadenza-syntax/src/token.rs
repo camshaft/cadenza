@@ -58,6 +58,7 @@ pub enum Kind {
     Comma,         // arg/binding/arm separator, and the `,` unquote prefix
     Dot,           // `.`
     Colon,         // `:`
+    Semi,          // `;` — the sequence separator (`a; b; c` -> `(do a b c)`)
     FatArrow,      // `=>`
     Arrow,         // `->`
     Hash,          // `#`

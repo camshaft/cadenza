@@ -38,7 +38,16 @@ pub fn print(arenas: &Arenas, width: usize) -> String {
         a: arenas,
         doc: Doc::new(),
     };
-    p.expr(arenas.root, 0);
+    // A `do` at the ROOT is the program's top-level form sequence — print its forms BARE (blank-line
+    // separated), not wrapped in `do { … }`. A nested `do` (reached via `expr`) keeps the block form.
+    if let Some(forms) = p.a.as_form(arenas.root, "do")
+        && !forms.is_empty()
+    {
+        let forms = forms.to_vec();
+        p.print_root_forms(&forms);
+    } else {
+        p.expr(arenas.root, 0);
+    }
     p.doc.render(width)
 }
 
@@ -129,6 +138,7 @@ impl<'a> Printer<'a> {
                 "match" if self.is_match_shape(args) => return self.print_match(args, parent_prec),
                 "def" if self.is_def_shape(args) => return self.print_def(args),
                 "def" if self.is_value_def_shape(args) => return self.print_value_def(args),
+                "do" if !args.is_empty() => return self.print_do(args),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
                 "list" => return self.print_list_literal(args),
                 "tuple" if args.len() >= 2 => return self.print_tuple(args),
@@ -289,7 +299,10 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `let n = e, … in body`.
+    /// `let n = e, … ; body` — the binding, a `;`, then the body on the next line. `let` drops `in`:
+    /// the binding scopes over the rest of the enclosing sequence, so a `let` chain reads as flat
+    /// statements (each `let x = e;` on its own line, then the final expression). A `let` in a value
+    /// position (`parent_prec > 0`) parenthesizes.
     fn print_let(&mut self, args: &[StructId], parent_prec: u8) {
         let paren = parent_prec > 0;
         self.doc.cbox(0);
@@ -310,21 +323,39 @@ impl<'a> Printer<'a> {
                     let (n, e) = (pair[0], pair[1]);
                     self.expr(n, 0);
                     self.doc.word(" = ");
-                    self.expr(e, 0);
+                    self.value(e);
                 }
             }
         }
         self.doc.end();
-        self.doc.word(" in");
-        // The body always starts a new line at the `let`'s own column (offset 0, not indented), so
-        // a chain of `let … in` reads as a flat sequence. This is the ML idiom for an
-        // expression-only language where `let … in` is pervasive.
+        self.doc.word(";");
+        // The body starts a new line at the `let`'s own column (offset 0), so a `let`/statement chain
+        // reads as a flat statement sequence — the ML idiom for a `;`-sequenced expression language.
         self.doc.hardbreak();
-        self.expr(args[1], 0);
+        self.print_stmt(args[1]);
         if paren {
             self.doc.word(")");
         }
         self.doc.end();
+    }
+
+    /// Print an expression in STATEMENT position — the trailing body of a `let` (or the root). Here a
+    /// `(do …)` sequence prints BARE (`a;⏎b;⏎c`, no parens), because the enclosing construct's
+    /// delimiter (or end-of-program) scopes it. This is the ONLY place a `do` is unparenthesized;
+    /// everywhere a `do` is reached through `expr` (a value, a call arg, an `if` branch) it
+    /// parenthesizes. A non-`do` statement is a plain expression.
+    fn print_stmt(&mut self, id: StructId) {
+        let seq = matches!(self.a.get(id), Struct::List(items)
+            if items.len() > 1 && self.head_name(items[0]).as_deref() == Some("do"));
+        if seq {
+            let items: Vec<StructId> = match self.a.get(id) {
+                Struct::List(items) => items[1..].to_vec(),
+                _ => unreachable!(),
+            };
+            self.print_do_stmts(&items);
+        } else {
+            self.expr(id, 0);
+        }
     }
 
     /// `if c then t else e`. Inline when it fits; otherwise the condition stays on the `if` line and
@@ -531,6 +562,89 @@ impl<'a> Printer<'a> {
             Some("map") => self.is_map_shape(args),
             _ => false,
         }
+    }
+
+    /// A `(do a b c)` reached through `expr` — i.e. a sequence used as a VALUE, a call argument, or an
+    /// `if` branch. Such a sequence can't sit bare (a bare `a; b` would escape into the enclosing
+    /// context), so it PARENTHESIZES: `(a; b; c)`, like OCaml's `let x = (f (); 42)`. The only bare
+    /// (unparenthesized) sequences are a `let` body and the program root — printed via
+    /// `print_do_stmts` from `print_stmt`/`print_root_forms`.
+    fn print_do(&mut self, stmts: &[StructId]) {
+        self.doc.cbox(INDENT);
+        self.doc.word("(");
+        self.doc.zerobreak();
+        self.print_do_stmts(stmts);
+        self.doc.break_with(0, -INDENT);
+        self.doc.word(")");
+        self.doc.end();
+    }
+
+    /// The statements of a sequence, bare: `a;⏎b;⏎c` — each on its own line, `;` after every statement
+    /// except the last, at the current column. Shared by the parenthesized `print_do`, the bare `let`
+    /// body (`print_stmt`), and the program root.
+    fn print_do_stmts(&mut self, stmts: &[StructId]) {
+        for (i, &s) in stmts.iter().enumerate() {
+            if i > 0 {
+                self.doc.hardbreak();
+            }
+            self.print_stmt(s);
+            if i + 1 < stmts.len() {
+                self.doc.word(";");
+            }
+        }
+    }
+
+    /// Print an expression in a VALUE position (a let-binding value). A construct that "eats forward"
+    /// to the end of the enclosing sequence — a `let` (its body scopes to end) or a `(do …)` sequence
+    /// — must PARENTHESIZE here, or it would swallow the statements that follow the binding:
+    /// `let x = (let y = 3; …)`, `let x = (a; b)`. A `match`/`if`/`fn`/infix is self-delimited and
+    /// prints bare.
+    fn value(&mut self, id: StructId) {
+        let head = match self.a.get(id) {
+            Struct::List(items) if items.len() > 1 => self.head_name(items[0]),
+            _ => None,
+        };
+        match head.as_deref() {
+            Some("let") if self.is_let_shape_form(id) => {
+                self.doc.word("(");
+                self.expr(id, 0);
+                self.doc.word(")");
+            }
+            // a `(do …)` reached via `expr` already parenthesizes itself (see `print_do`).
+            _ => self.expr(id, 0),
+        }
+    }
+
+    /// True if `id` is a well-formed `(let (binds…) body)` the `let` surface prints.
+    fn is_let_shape_form(&self, id: StructId) -> bool {
+        matches!(self.a.get(id), Struct::List(items) if items.len() == 3
+            && self.head_name(items[0]).as_deref() == Some("let")
+            && self.is_let_shape(&items[1..]))
+    }
+
+    /// The program root's top-level form sequence, printed bare (no wrapper) — the root counterpart of
+    /// a nested `do`, using the same `;` sequencing so the construct reads identically everywhere:
+    /// each form on its own line, `;` after every form except the last. A `(doc …)` form renders as
+    /// its `///` line (no `;`).
+    fn print_root_forms(&mut self, forms: &[StructId]) {
+        self.doc.cbox(0);
+        for (i, &form) in forms.iter().enumerate() {
+            if i > 0 {
+                self.doc.hardbreak();
+            }
+            if let Some(a) = self.a.as_form(form, "doc")
+                && a.len() == 1
+                && self.is_string(a[0])
+            {
+                self.print_doc(a[0]);
+                continue;
+            }
+            self.expr(form, 0);
+            if i + 1 < forms.len() {
+                self.doc.word(";");
+            }
+        }
+        self.doc.end();
     }
 
     /// `module name { form… }` — one form per line (consistent box) when broken.
@@ -924,7 +1038,7 @@ mod tests {
             "if a then b else c"
         );
         // `let … in` always breaks the body to its own line at the let column (ML idiom).
-        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
+        assert_eq!(assert_roundtrip("let x = 1; x", 80), "let x = 1;\nx");
         assert_eq!(
             assert_roundtrip("fn(x, y) => x + y", 80),
             "fn(x, y) => x + y"
@@ -996,8 +1110,8 @@ mod tests {
     fn def_let_body_drops_and_indents() {
         // A non-brace body (let) is not hugged: it drops to an indented continuation line and lays
         // out flat at that indent.
-        let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
-        assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
+        let out = assert_roundtrip("def f(x) = let y = x + 1; y * y", 80);
+        assert_eq!(out, "def f(x) =\n  let y = x + 1;\n  y * y");
     }
 
     #[test]
@@ -1089,8 +1203,8 @@ mod tests {
         assert_eq!(print(&a, 80), "a == b");
         // a lone `=` is only the binding separator, never equality.
         assert_eq!(
-            assert_roundtrip("let x = 1 in x == 1", 80),
-            "let x = 1 in\nx == 1"
+            assert_roundtrip("let x = 1; x == 1", 80),
+            "let x = 1;\nx == 1"
         );
     }
 

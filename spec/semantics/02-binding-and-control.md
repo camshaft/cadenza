@@ -7,7 +7,7 @@ Binding, scope, and control flow — witnesses core-semantics.md. Cases are s-ex
 Witnesses core-semantics.md #Binding Is Lexical — a name resolves to its enclosing binding.
 
 ```cdz input
-let x = 10 in
+let x = 10;
 x
 ```
 
@@ -20,8 +20,8 @@ x
 Witnesses core-semantics.md #Binding Is Lexical.
 
 ```cdz input
-let x = 1 in
-let x = 2 in
+let x = 1;
+let x = 2;
 x
 ```
 
@@ -34,9 +34,9 @@ x
 Witnesses core-semantics.md #Shadowing Is Well-Defined (which defers to the corpus): the inner x is 2 inside its let; the outer x is still 1 outside it, so the sum is 3.
 
 ```cdz input
-(let x = 2 in
+(let x = 2;
   x)
-  + (let x = 1 in
+  + (let x = 1;
   x)
 ```
 
@@ -53,7 +53,7 @@ A `let` may shadow a FUNCTION PARAMETER with a value of a DIFFERENT TYPE, and th
 ```cdz input
 module m {
   def f(x) =
-    let x = true in
+    let x = true;
     x
   def main() = f(99)
 }
@@ -70,7 +70,7 @@ A lexical binding wins in APPLICATION-HEAD position too, not only value position
 `(let ((list (fn (a b) (+ a b)))) (list 3 4))` binds `list` to a function, then applies it in head position: `list` MUST resolve to the nearest enclosing binding (core-semantics.md #Binding Is Lexical), so `(list 3 4)` = 7, NOT the built-in list value `(list 3 4)`. Pins that application-head resolution consults the lexical environment before the built-in constructor forms — a compiler matching the head name `list` against its built-ins first ignores the shadowing binding and builds a two-element list, resolving `list` to the binding in value position but to the built-in in head position (the same name, two ways). A generation that does not realize a shadowing built-in name declines rather than choosing the built-in.
 
 ```cdz input
-let list = fn(a, b) => a + b in
+let list = fn(a, b) => a + b;
 [3, 4]
 ```
 
@@ -87,7 +87,7 @@ core-semantics.md #The Bindings Of One `let` Take Effect In Order: each binding'
 `(let ((x 1) (y (+ x 1))) y)` = 2: the second binding's initializer `(+ x 1)` observes the first binding `x`, so the bindings of one `let` take effect in order (core-semantics.md #The Bindings Of One `let` Take Effect In Order), not in parallel where `x` would be unbound in `y`'s initializer.
 
 ```cdz input
-let x = 1, y = x + 1 in
+let x = 1, y = x + 1;
 y
 ```
 
@@ -100,7 +100,7 @@ y
 `(let ((x 1) (x (+ x 10))) x)` = 11: the second binding of `x` shadows the first for the initializers and body that follow, and its initializer `(+ x 10)` sees the first `x` = 1 (core-semantics.md #The Bindings Of One `let` Take Effect In Order + #Shadowing Is Well-Defined). The sequential companion of the case above at a repeated name.
 
 ```cdz input
-let x = 1, x = x + 10 in
+let x = 1, x = x + 10;
 x
 ```
 
@@ -113,16 +113,16 @@ x
 Each `let` binding is referenced TWICE by the next, ten deep: `a = 1+1`, `b = a+a`, …, result `j+j`. Every binding is used more than once, so a compiler that re-evaluates a binding's initializer on each reference does exponential (2^depth) work; folding each binding ONCE and reusing its value is linear. `(+ j j)` = 2·2^10 = 2048. Pins that a `let` binding denotes a single value shared by all its references (core-semantics.md #The Bindings Of One `let` Take Effect In Order) — the same value whether read once or ten times — so the answer is independent of how the compiler memoizes the fold. (The observable is the value; the doubling structure is what makes a non-memoizing fold blow up, so this doubles as a compile-time-cost regression guard.)
 
 ```cdz input
-let a = 1 + 1 in
-let b = a + a in
-let c = b + b in
-let d = c + c in
-let e = d + d in
-let f = e + e in
-let g = f + f in
-let h = g + g in
-let i = h + h in
-let j = i + i in
+let a = 1 + 1;
+let b = a + a;
+let c = b + b;
+let d = c + c;
+let e = d + d;
+let f = e + e;
+let g = f + f;
+let h = g + g;
+let i = h + h;
+let j = i + i;
 j + j
 ```
 
@@ -139,18 +139,18 @@ collections
 ```
 
 ```cdz input
-let l1 = List.push([], 1) in
-let l2 = List.push(l1, 2) in
-let l3 = List.push(l2, 3) in
-let l4 = List.push(l3, 4) in
-let l5 = List.push(l4, 5) in
-let l6 = List.push(l5, 6) in
-let l7 = List.push(l6, 7) in
-let l8 = List.push(l7, 8) in
-let l9 = List.push(l8, 9) in
-let l10 = List.push(l9, 10) in
-let l11 = List.push(l10, 11) in
-let l12 = List.push(l11, 12) in
+let l1 = List.push([], 1);
+let l2 = List.push(l1, 2);
+let l3 = List.push(l2, 3);
+let l4 = List.push(l3, 4);
+let l5 = List.push(l4, 5);
+let l6 = List.push(l5, 6);
+let l7 = List.push(l6, 7);
+let l8 = List.push(l7, 8);
+let l9 = List.push(l8, 9);
+let l10 = List.push(l9, 10);
+let l11 = List.push(l10, 11);
+let l12 = List.push(l11, 12);
 List.len(l12)
 ```
 
@@ -167,7 +167,7 @@ module m {
   type(Env, ENil(`|`, ECons, Tuple(Int64, Env)))
   def pos(xs, target, k) = match xs {
     Env.ENil(_) => 0 - 1,
-    Env.ECons((h, t)) => let deeper = pos(t, target, k + 1) in
+    Env.ECons((h, t)) => let deeper = pos(t, target, k + 1);
     if deeper == 0 - 1 then if h == target then k else 0 - 1 else deeper,
   }
   def main() = pos(Env.ECons((5, Env.ECons((7, Env.ECons((5, Env.ENil(#[]))))))), 5, 0)
@@ -242,7 +242,7 @@ The complement of the short-circuited-unbound case above, and the boundary its s
 ```cdz input
 module m {
   def f(k) =
-    let x = k in
+    let x = k;
     x > 0 and x < 9
   def main() = if f(3) then 1 else 0
 }
@@ -257,7 +257,9 @@ module m {
 Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (2nd sentence: a block evaluates to its last form's value). The earlier forms are pure here, so the block's only observable result is the last form; ordering of effects is witnessed in 03-equality-and-observation.sexp.
 
 ```cdz input
-do(1, 2, 3)
+1;
+2;
+3
 ```
 
 ```cdz output
@@ -273,7 +275,8 @@ collections
 ```
 
 ```cdz input
-do({ a = 1 }, 42)
+{ a = 1 };
+42
 ```
 
 ```cdz output
@@ -289,7 +292,8 @@ collections
 ```
 
 ```cdz input
-do([1, 2, 3], 7)
+[1, 2, 3];
+7
 ```
 
 ```cdz output
@@ -305,7 +309,8 @@ core-semantics.md #A Declaration In A Sequencing Block Is Scoped To The Forms Th
 Witnesses core-semantics.md #A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It: `(def x 5)` as a form of a `do` binds `x` for the following form, so `(+ x 1)` sees it without a `let`. The block yields the last form's value, 6. This is the same declaration-binds-its-name rule a module declaration uses; a `def` declaration in a sequencing block is in scope exactly like one.
 
 ```cdz input
-do(def x = 5, x + 1)
+def x = 5;
+x + 1
 ```
 
 ```cdz output
@@ -317,7 +322,8 @@ do(def x = 5, x + 1)
 The function-declaration companion: `(def (f n) (+ n 1))` in a `do` binds `f` for the following forms, so `(f 9)` calls it and the block yields 10. A declaration introduces its name into the rest of the block without a separate binding form, whether it declares a value or a function.
 
 ```cdz input
-do(def f(n) = n + 1, f(9))
+def f(n) = n + 1;
+f(9)
 ```
 
 ```cdz output
@@ -331,7 +337,9 @@ The two cases above declare ONE name and use it in a later form. The scoping rul
 `(do (def x 5) (def y (+ x 1)) y)`: the second declaration's value `(+ x 1)` references `x` from the first declaration, so `y` = 6 and the block yields 6. Pins that a declaration is in scope for a LATER DECLARATION, not only for a plain expression form — the chaining that makes a sequence of `def`s (a prelude) resolve.
 
 ```cdz input
-do(def x = 5, def y = x + 1, y)
+def x = 5;
+def y = x + 1;
+y
 ```
 
 ```cdz output
@@ -343,7 +351,9 @@ do(def x = 5, def y = x + 1, y)
 `(do (def base 10) (def (add-base n) (+ n base)) (add-base 5))`: the function `add-base` closes over the earlier declaration `base`, so `(add-base 5)` = 15. Pins that a `def`-fn's body sees the declarations that precede it in the block, exactly as a module function sees its siblings.
 
 ```cdz input
-do(def base = 10, def add-base(n) = n + base, add-base(5))
+def base = 10;
+def add-base(n) = n + base;
+add-base(5)
 ```
 
 ```cdz output
@@ -355,8 +365,9 @@ do(def base = 10, def add-base(n) = n + base, add-base(5))
 `(let ((x 1)) (do (def x 99) x))`: the `def x 99` inside the `do` shadows the outer `let` binding of `x` for the forms that follow it, so the block yields 99. Pins that a do-block declaration follows the same lexical shadowing rules as any other binding (core-semantics.md #Shadowing Is Well-Defined), taking effect for references in its scope.
 
 ```cdz input
-let x = 1 in
-do(def x = 99, x)
+let x = 1;
+def x = 99;
+x
 ```
 
 ```cdz output
@@ -368,8 +379,9 @@ do(def x = 99, x)
 Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order in a single-form body position: a `let` body is one form, so a sequence of forms is written as a `(do …)` there. The prefix form is pure, so the block yields the value of its last form (the binding x), showing the do is the sequencing point and let scope is unchanged.
 
 ```cdz input
-let x = 4 in
-do(x + 1, x)
+let x = 4;
+x + 1;
+x
 ```
 
 ```cdz output
@@ -381,7 +393,8 @@ do(x + 1, x)
 Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order together with #An Effect-Only Expression Yields The Unit Value: a `do` yields its last form's value, and when that is `unit` the block — and the program — yields the unit value. The earlier form is pure and dropped. This is the shape of every effect-only body: a sequence of effects ending in unit; it must run and yield unit as the normal-termination value.
 
 ```cdz input
-do(1, unit)
+1;
+unit
 ```
 
 ```cdz output
@@ -393,7 +406,7 @@ unit : Unit
 Witnesses core-semantics.md #An Effect-Only Expression Yields The Unit Value: binding a value and then yielding `unit` produces the unit value as the program result. Unit is an ordinary value that a binding form can carry to the run boundary.
 
 ```cdz input
-let x = 1 in
+let x = 1;
 unit
 ```
 
@@ -515,7 +528,7 @@ An INTEGRATION case: several control constructs composed in one function over a 
 module m {
   def classify(x) =
     if x > 0 and x < 10 then
-      let y = x * x in
+      let y = x * x;
       y - 1
     else
       0
@@ -535,7 +548,7 @@ The else companion of the integration case above: `classify 20` — `20 < 10` is
 module m {
   def classify(x) =
     if x > 0 and x < 10 then
-      let y = x * x in
+      let y = x * x;
       y - 1
     else
       0
@@ -1225,15 +1238,13 @@ sum-type-declaration
 ```
 
 ```cdz input
-do(
-  type(Expr, Lit(Int64, `|`, Add, Tuple(Expr, Expr))),
-  let e = Expr.Add((Expr.Lit(1), Expr.Lit(2))) in
-  match e {
-    Expr.Lit(n) => n,
-    Expr.Add((Expr.Lit(a), Expr.Lit(b))) => a + b,
-    Expr.Add(_) => 0,
-  }
-)
+type(Expr, Lit(Int64, `|`, Add, Tuple(Expr, Expr)));
+let e = Expr.Add((Expr.Lit(1), Expr.Lit(2)));
+match e {
+  Expr.Lit(n) => n,
+  Expr.Add((Expr.Lit(a), Expr.Lit(b))) => a + b,
+  Expr.Add(_) => 0,
+}
 ```
 
 ```cdz output
@@ -1360,7 +1371,7 @@ module m {
 core-semantics.md #Matching Is Exhaustive Or Rejected + #Member Access Projects A Record Field: the match scrutinee is `(. r n)`, a member access whose value is 5. The literal arm 5 must match that value and yield 100 — the scrutinee's value is what is matched, whether it is written as a literal, a variable, an arithmetic expression, or a field projection. (Binding the field to a name first and matching that already works; matching the projection directly must behave identically.)
 
 ```cdz input
-let r = { n = 5 } in
+let r = { n = 5 };
 match r.n {
   5 => 100,
   _ => 200,
@@ -1376,7 +1387,7 @@ match r.n {
 The tuple companion of the case above: the scrutinee `(tuple.0 t)` projects element 0 (value 5), which the literal arm 5 must match, yielding 100. A positional access is a scrutinee value like any other.
 
 ```cdz input
-let t = (5, 9) in
+let t = (5, 9);
 match `tuple.0`(t) {
   5 => 100,
   _ => 200,
@@ -1392,7 +1403,7 @@ match `tuple.0`(t) {
 Confirms the field-access scrutinee is matched against EACH literal arm, not just skipped to the wildcard: with r.n = 6, the 5 arm is passed over and the 6 arm selected, yielding 300.
 
 ```cdz input
-let r = { n = 6 } in
+let r = { n = 6 };
 match r.n {
   5 => 100,
   6 => 300,

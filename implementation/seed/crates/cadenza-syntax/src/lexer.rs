@@ -73,6 +73,7 @@ impl<'a> Lexer<'a> {
             '#' => Kind::Hash,
             '.' => Kind::Dot,
             ':' => Kind::Colon,
+            ';' => Kind::Semi,
             ',' => match self.peek() {
                 Some('@') => {
                     let b = self.bump().unwrap();

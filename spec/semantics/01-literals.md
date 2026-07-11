@@ -59,7 +59,7 @@ A token's classification as a numeric literal vs. an identifier is a lexical rul
 `_1` begins with `_`, so it is an identifier — bindable like any name — not the integer 1 with a stray leading separator. Bound to 99 and referenced, it yields 99. Contrast the digit-separator case above, where `_` sits BETWEEN digits; a leading `_` has no digit to its left, so it is not a separator and the token is a name. (Companion control below: `_x`, an unambiguous name, already works — `_1` must behave the same.)
 
 ```cdz input
-let _1 = 99 in
+let _1 = 99;
 _1
 ```
 
@@ -72,7 +72,7 @@ _1
 The control for the case above: `_x` is unambiguously an identifier (no digits), binds to 99, and resolves to 99. `_1` must classify the same way — as a name.
 
 ```cdz input
-let _x = 99 in
+let _x = 99;
 _x
 ```
 

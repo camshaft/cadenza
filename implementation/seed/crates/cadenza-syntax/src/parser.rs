@@ -287,14 +287,31 @@ impl<'a> Parser<'a> {
             self.error("empty program");
             return self.error_node(span);
         }
-        let mut root = self.stmt();
-        if !self.at_end() {
-            self.error("unexpected trailing input");
-            // Consume the rest so we don't loop; the already-built root is returned.
-            while !self.at_end() {
-                self.bump();
+        // A program is a `;`-separated SEQUENCE of top-level forms. One form stays bare; two or more
+        // wrap into a `(do …)` sequencing form — the root counterpart of a nested `;` sequence, so a
+        // corpus file authors its several top-level forms at the root (no wrapper keyword). The `;`
+        // between forms is consumed here (a trailing/absent `;` is tolerated for robustness).
+        let start = self.cur_span();
+        let mut forms = vec![self.stmt()];
+        while !self.at_end() {
+            if self.at(Kind::Semi) {
+                self.bump(); // separator between top-level forms
+                if self.at_end() {
+                    break; // trailing `;`
+                }
             }
+            forms.push(self.stmt());
         }
+        let mut root = if forms.len() == 1 {
+            forms.pop().unwrap()
+        } else {
+            let do_head = self.name("do", start);
+            let mut items = Vec::with_capacity(forms.len() + 1);
+            items.push(do_head);
+            items.extend(forms);
+            let span = start.merge(self.prev_span());
+            self.list(items, span)
+        };
         // Comments after the last grammar token (e.g. a trailing `// note` on the final line) have
         // no following form to precede; attach them as outer `(comment …)` wrappers so nothing is
         // dropped. (v1 scope: their printed position moves above the program — a known limitation
@@ -305,6 +322,42 @@ impl<'a> Parser<'a> {
     }
 
     // ---- expression grammar (Pratt) ----
+
+    /// Parse a SEQUENCE: an expression, then while a `;` follows, more expressions — folded into a
+    /// `(do e0 e1 …)` sequencing form (a single expression stays bare, no `do`). `;` is looser than
+    /// every operator, so it separates whole expressions. A trailing `;` (before the closing
+    /// delimiter) is tolerated. A `let x = e` binding inside a sequence already scopes to the rest of
+    /// the sequence via `let_expr` (it greedily takes the remaining forms as its body), so a `let`
+    /// only appears as the LAST element here. Used at every body position (def/fn/let/if/match/paren).
+    fn seq(&mut self) -> StructId {
+        let start = self.cur_span();
+        let first = self.expr(0);
+        if !self.at(Kind::Semi) {
+            return first;
+        }
+        let do_head = self.name("do", start);
+        let mut items = vec![do_head, first];
+        while self.at(Kind::Semi) {
+            self.bump(); // `;`
+            // Tolerate a trailing `;` right before the enclosing delimiter or end.
+            if self.at_seq_end() {
+                break;
+            }
+            items.push(self.expr(0));
+        }
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// True at a token that closes an enclosing sequence — a delimiter or end of input. A `;` right
+    /// before one of these is a tolerated trailing separator, not the start of another statement.
+    fn at_seq_end(&self) -> bool {
+        self.at_end()
+            || matches!(
+                self.kind(),
+                Kind::RParen | Kind::RBrace | Kind::RBracket | Kind::Comma
+            )
+    }
 
     /// Parse an expression whose infix operators bind at least `min_prec`.
     fn expr(&mut self, min_prec: u8) -> StructId {
@@ -461,9 +514,10 @@ impl<'a> Parser<'a> {
         args
     }
 
-    /// `()` the unit form, `( expr )` grouping, or `( e, e, … )` a tuple literal `(tuple e …)`.
-    /// A single `(e)` is transparent grouping (NOT a 1-tuple); a 1-tuple is uncommon and, if ever
-    /// needed, is written as the explicit `tuple(e)` call form.
+    /// `()` the unit form, `( expr )` grouping, `( e, e, … )` a tuple literal `(tuple e …)`, or
+    /// `( e; e; … )` a parenthesized SEQUENCE `(do e …)` — the way a sequence is used as a VALUE (a
+    /// let-binding value, a call argument): `def x = (setup(); compute())`, like OCaml's
+    /// `let x = (f (); 42)`. A single `(e)` is transparent grouping (NOT a 1-tuple).
     fn paren(&mut self) -> StructId {
         let start = self.cur_span();
         self.expect(Kind::LParen, "`(`");
@@ -489,13 +543,32 @@ impl<'a> Parser<'a> {
             let span = start.merge(self.prev_span());
             return self.list(items, span);
         }
+        if self.at(Kind::Semi) {
+            // a parenthesized sequence -> (do first …). `let`-in-sequence scoping works here too: a
+            // `let` element greedily takes the rest via `seq`/`let_expr`, so it lands last.
+            let head = self.name("do", start);
+            let mut items = vec![head, first];
+            while self.at(Kind::Semi) {
+                self.bump(); // `;`
+                if self.at(Kind::RParen) {
+                    break; // trailing `;`
+                }
+                items.push(self.expr(0));
+            }
+            self.expect(Kind::RParen, "`)`");
+            let span = start.merge(self.prev_span());
+            return self.list(items, span);
+        }
         self.expect(Kind::RParen, "`)`");
         first // grouping is transparent in the arena
     }
 
     // ---- keyword forms ----
 
-    /// `let n = e, … in body`  ->  `(let ((n e) …) body)`
+    /// `let n = e, … ; body`  ->  `(let ((n e) …) body)`. The binding is separated from the body by
+    /// `;` (not `in`); the `let` scopes over the REST of the enclosing sequence, which is exactly the
+    /// body it takes here (`body = seq()` greedily consumes the remaining `;`-separated forms). So a
+    /// `let` in a sequence is always its LAST element, wrapping everything after it.
     fn let_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let let_head = self.keyword_head("let", start);
@@ -516,8 +589,8 @@ impl<'a> Parser<'a> {
         }
         let binds_span = start.merge(self.prev_span());
         let binds = self.list(bindings, binds_span);
-        self.expect_keyword(Keyword::In, "`in`");
-        let body = self.expr(0);
+        self.expect(Kind::Semi, "`;`");
+        let body = self.seq();
         let span = start.merge(self.prev_span());
         self.list(vec![let_head, binds, body], span)
     }
@@ -678,6 +751,8 @@ impl<'a> Parser<'a> {
             pat = self.list(vec![guard_head, pat, g], g_span);
         }
         self.expect(Kind::FatArrow, "`=>`");
+        // An arm body may be a `;`-sequence; it ends at the arm's `,` (or the closing `}`), which
+        // `seq()` treats as a sequence end.
         let body = self.expr(0);
         let span = start.merge(self.prev_span());
         self.list(vec![pat, body], span)
@@ -1021,7 +1096,7 @@ mod tests {
             "1 + 2 * 3",
             "f(a, b)",
             "a.b.c",
-            "let x = 1, y = 2 in x + y",
+            "let x = 1, y = 2; x + y",
             "if a then b else c",
             "fn(x, y) => x + y",
             "match e { Some(n) => n, None => 0, _ => neg }",
@@ -1055,8 +1130,8 @@ mod tests {
         let a = parse_ok("if a then b else c");
         assert_eq!(a.as_form(a.root, "if").map(|t| t.len()), Some(3));
 
-        // `let x = 1 in x` -> (let ((x 1)) x)
-        let a = parse_ok("let x = 1 in x");
+        // `let x = 1; x` -> (let ((x 1)) x)
+        let a = parse_ok("let x = 1; x");
         let tail = a.as_form(a.root, "let").unwrap();
         assert_eq!(tail.len(), 2); // bindings + body
     }
