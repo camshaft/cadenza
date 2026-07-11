@@ -34,29 +34,17 @@ use crate::arena::Slot;
 use crate::ast::{Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::diag::{Code, Reject};
-use crate::resolved::{Intrinsic, Resolved, Symbol};
+use crate::resolved::{Prim, Resolved, Symbol};
 use std::collections::BTreeMap;
 
 /// The fixed, closed set of GRAMMAR head names — the forms that bind names or control evaluation, plus
 /// member access. This set does NOT grow when a built-in value is added (that is a prelude entry).
 /// A form whose head is one of these is dispatched structurally; any other head is an application (or,
 /// for a bare atom, a name looked up).
-const GRAMMAR: &[&str] = &["let", "if", "record", ".", "module", "def", "export", "do", "unrealized"];
-
-/// The intrinsic the node at `id` denotes, following a `Ref` — a name like `+` resolves to a `Ref` to
-/// its prelude `(intrinsic +)` node, which resolves to `Intrinsic(Add)`. Returns `None` if `id` is not
-/// (a reference to) an intrinsic. Shared by `infer` and `lower` so the "follow the ref to the
-/// operation" step lives in one place, mirroring how member access follows a ref into a record.
-pub fn intrinsic_of(db: &mut Db, id: StructId) -> Option<Intrinsic> {
-    match resolved_of(db, id) {
-        Resolved::Intrinsic(op) => Some(op),
-        Resolved::Ref { value } => match resolved_of(db, value) {
-            Resolved::Intrinsic(op) => Some(op),
-            _ => None,
-        },
-        _ => None,
-    }
-}
+const GRAMMAR: &[&str] = &[
+    "let", "if", "record", ".", "module", "def", "export", "do", "unrealized", "intrinsic", "meta",
+    "fn", "typeval",
+];
 
 /// The resolved form of the node at `id`, filling the column on demand (memoized). The query the
 /// resolved-form request answers, and the upstream read `infer`/`lower` perform.
@@ -77,8 +65,15 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // The literal's EXACT value flows through; its machine width is decided at select.
             Leaf::Int { value, .. } => Resolved::Int(value),
             Leaf::Bool(b) => Resolved::Bool(b),
-            // A bare name: the one ordered lookup — lexical scope, then the prelude map.
-            Leaf::Name(n) => resolve_name(db, id, &n),
+            // A bare name. If this occurrence IS a lambda parameter (its parent is a `fn` param
+            // list), it is a formal — a `Param`, not a lookup. Otherwise the one ordered lookup.
+            Leaf::Name(n) => {
+                if is_param_occurrence(db, id) {
+                    Resolved::Param { binder: id }
+                } else {
+                    resolve_name(db, id, &n)
+                }
+            }
             Leaf::Str(_) => Resolved::Poison(Reject::decline("string literals not yet supported")),
             Leaf::Float(_) => Resolved::Poison(Reject::decline("float literals not yet supported")),
         },
@@ -92,6 +87,16 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("let") => resolve_let(db, id),
                 Some("record") => resolve_record(db, id),
                 Some(".") => resolve_member(db, id),
+                Some("fn") => resolve_lambda(db, id),
+                // `(typeval PAYLOAD)` — a built type-value node the evaluator produced; decode the
+                // payload back to the `Ty` it carries. This is the dual of `eval::encode_typeval`.
+                Some("typeval") => match db.ast.as_form(id, "typeval").and_then(|t| t.first()) {
+                    Some(&payload) => match decode_ty(db, payload) {
+                        Some(ty) => Resolved::TypeVal(ty),
+                        None => Resolved::Poison(Reject::decline("malformed built type-value")),
+                    },
+                    None => Resolved::Poison(Reject::decline("malformed built type-value")),
+                },
                 // `(unrealized OP)` — a prelude field for an operation the compiler does not yet
                 // realize. It resolves to a decline, so projecting it declines by the ordinary path
                 // (no open-module rule). The op name rides along for the message.
@@ -112,8 +117,8 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         .as_form(id, "intrinsic")
                         .and_then(|t| t.first())
                         .and_then(|&s| db.ast.as_name(s));
-                    match name.and_then(Intrinsic::from_name) {
-                        Some(op) => Resolved::Intrinsic(op),
+                    match name.and_then(Prim::from_name) {
+                        Some(op) => Resolved::Prim(op),
                         None => Resolved::Poison(Reject::decline("unknown intrinsic")),
                     }
                 }
@@ -122,48 +127,18 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(h) if GRAMMAR.contains(&h) => {
                     Resolved::Poison(Reject::decline(format!("`{h}` is not an expression here")))
                 }
-                // A non-grammar head is an APPLICATION. Dispatch by the KIND of value the head
-                // resolves to — an intrinsic → an intrinsic application — never by the head's
-                // spelling. (User-function application arrives with functions; a head that resolves
-                // to a non-applicable value declines.)
-                Some(_) | None => resolve_application(db, id, children),
+                // A non-grammar head is an APPLICATION — always `Resolved::Apply`. An application is
+                // structurally an application regardless of what the head turns out to be; WHETHER the
+                // head is applyable is decided downstream by projecting its `(meta apply)`
+                // (`eval::meta_apply_of`), a non-applyable head becoming a poison there. Resolve does
+                // not pre-judge the head, so the one application path stays uniform and its dispatch
+                // lives in one place (the meta channel), never the head's spelling.
+                Some(_) | None => {
+                    Resolved::Apply { head: children[0], args: children[1..].to_vec() }
+                }
             }
         }
     }
-}
-
-/// Resolve an application `(head arg…)` by the KIND of value the head resolves to. If the head is an
-/// intrinsic, this is an intrinsic application; otherwise it is not yet supported (user functions
-/// arrive later; applying a non-applicable value declines). Dispatch is on what the head IS, never on
-/// its spelling.
-fn resolve_application(db: &Db, id: StructId, children: &[StructId]) -> Resolved {
-    let head = children[0];
-    let args: Vec<StructId> = children[1..].to_vec();
-    match resolve_head_value(db, head) {
-        Some(Resolved::Intrinsic(_)) => Resolved::Apply { op: head, args },
-        _ => {
-            let h = db.ast.head_name(id).unwrap_or("<expr>");
-            Resolved::Poison(Reject::decline(format!("application of `{h}` not yet supported")))
-        }
-    }
-}
-
-/// Resolve the head of an application enough to know its KIND, WITHOUT recursing through the memoizing
-/// `resolved_of` (which needs `&mut Db`). For a bare-name head this repeats the one ordered lookup
-/// (scope, then prelude) and classifies what it lands on; that is the same lookup `resolve_name` does,
-/// just used here to dispatch the application. Only the intrinsic case matters for this increment.
-fn resolve_head_value(db: &Db, head: StructId) -> Option<Resolved> {
-    let name = db.ast.as_name(head)?;
-    // Scope first (a program binding could shadow — Stage 1 has no applicable program bindings yet).
-    if lookup_scope(db, head, name).is_some() {
-        return None; // a bound program value; not an intrinsic (function application comes later).
-    }
-    // Then the prelude: is it an `(intrinsic …)` node?
-    let node = *db.prelude.get(name)?;
-    if let Some(op_name) = db.ast.as_form(node, "intrinsic").and_then(|t| t.first()).and_then(|&s| db.ast.as_name(s)) {
-        return Intrinsic::from_name(op_name).map(Resolved::Intrinsic);
-    }
-    None
 }
 
 /// Resolve a bare name at occurrence `id` by the one ordered lookup: the lexical scope (walk parents
@@ -233,6 +208,26 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
         if let Some(k) = pair_index(db, form, from) {
             return last_binding_of(db, &pairs, name, k);
         }
+    }
+    // Case 3: `form` is a `(fn (params) body)`, ascended from the body → its parameters bind. A
+    // parameter reference resolves to the PARAMETER occurrence itself (a formal); the evaluator
+    // substitutes the argument there at application, and `infer` gives an unsubstituted parameter a
+    // fresh variable. The last param of `name` wins (shadowing among params, harmless).
+    if let Some(tail) = db.ast.as_form(form, "fn") {
+        let params_occ = tail.first().copied()?;
+        let body_occ = tail.get(1).copied();
+        if Some(from) == body_occ {
+            if let Struct::List(params) = db.ast.get(params_occ) {
+                let mut found = None;
+                for &p in params {
+                    if db.ast.as_name(p) == Some(name) {
+                        found = Some(p);
+                    }
+                }
+                return found;
+            }
+        }
+        return None;
     }
     None
 }
@@ -319,21 +314,109 @@ fn resolve_let(db: &Db, id: StructId) -> Resolved {
     Resolved::Let { bindings: pairs, body }
 }
 
-/// Resolve `(record (k1 v1) (k2 v2) …)`. Field names are labels (symbols), NOT resolved. A duplicate
-/// field name makes the field set ill-defined → CDZ0201 (`core-semantics.md` §A Record Has A Fixed Set
-/// Of Named Fields); the check is over the WHOLE field list, not adjacent pairs.
+/// Read a KEY occurrence into a label [`Symbol`] — the one key-mode rule, shared by record fields and
+/// member access. A key is EITHER a bare name → an unqualified `Symbol`, OR a `(meta NAME)` form → a
+/// symbol in the `meta` namespace. The `(meta …)` form is how the meta channel is written as ordinary
+/// structure (`((meta t) VALUE)` is a meta field; `(. r (meta t))` projects it), so a namespaced key
+/// needs no dotted-string parsing and no reserved section — it is one more key shape read structurally
+/// (`prelude-and-resolution.md` §A Member Key Is A Label). A key is NEVER resolved as a value.
+fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
+    if let Some(n) = db.ast.as_name(node) {
+        return Some(Symbol::plain(n));
+    }
+    // `(meta NAME)` → the symbol `NAME` in the `meta` namespace.
+    if let Some(tail) = db.ast.as_form(node, "meta") {
+        if let Some(name) = tail.first().and_then(|&s| db.ast.as_name(s)) {
+            return Some(Symbol { namespace: Some("meta".to_string()), name: name.to_string() });
+        }
+    }
+    None
+}
+
+/// Decode a `(typeval …)` payload node into the `Ty` it carries — the dual of `eval::encode_ty`. This
+/// is an INTERNAL wire form the evaluator produces (like the binary codec), not user source, so
+/// matching its tags is decoding a compiler-authored format, not source-name dispatch.
+fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
+    use crate::ty::{IntTy, Ty, Width};
+    if let Some(name) = db.ast.as_name(node) {
+        return match name {
+            "Bool" => Some(Ty::Bool),
+            "Unit" => Some(Ty::Unit),
+            _ => None,
+        };
+    }
+    let head = db.ast.head_name(node)?;
+    match head {
+        "Int" | "UInt" => {
+            let tail = db.ast.as_form(node, head)?;
+            let w = tail.first().and_then(|&s| match db.ast.get(s) {
+                Struct::Atom(l) => match db.ast.leaf(*l) {
+                    Leaf::Int { value, .. } => value.to_i64().and_then(|n| u32::try_from(n).ok()),
+                    _ => None,
+                },
+                _ => None,
+            })?;
+            Some(Ty::Int(IntTy { signed: head == "Int", width: Width::Fixed(w) }))
+        }
+        "->" => {
+            let tail = db.ast.as_form(node, "->")?;
+            let p = decode_ty(db, *tail.first()?)?;
+            let r = decode_ty(db, *tail.get(1)?)?;
+            Some(Ty::Fn(Box::new(p), Box::new(r)))
+        }
+        _ => None,
+    }
+}
+
+/// Whether `id` is a lambda-parameter occurrence — its parent is a list that is the parameter list of
+/// an enclosing `(fn (params) body)` (i.e. that list is the `fn`'s first tail element). Such an
+/// occurrence is a formal, resolved to a `Param` rather than looked up.
+fn is_param_occurrence(db: &Db, id: StructId) -> bool {
+    let Some(params_list) = db.parent_of(id) else { return false };
+    let Some(fn_form) = db.parent_of(params_list) else { return false };
+    match db.ast.as_form(fn_form, "fn") {
+        Some(tail) => tail.first().copied() == Some(params_list),
+        None => false,
+    }
+}
+
+/// Resolve `(fn (param…) body)` into a compile-time lambda. The parameters bind in scope for `body`
+/// (the ordinary parameter-scope mechanism, via `binder_in`). A type-lambda like `(fn (a) (-> (Int a)
+/// …))` is just this — `a` is an ordinary parameter, not a special "type variable".
+fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "fn").unwrap_or(&[]);
+    let params_occ = match tail.first() {
+        Some(&p) => p,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no parameter list")),
+    };
+    let body = match tail.get(1) {
+        Some(&b) => b,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no body")),
+    };
+    // The parameter occurrences (each a bare name).
+    let params: Vec<StructId> = match db.ast.get(params_occ) {
+        Struct::List(ps) => ps.clone(),
+        _ => return Resolved::Poison(Reject::coded(Code::Malformed, "fn parameters must be a list")),
+    };
+    Resolved::Lambda { params, body }
+}
+
+/// Resolve `(record (k1 v1) (k2 v2) …)`. Field keys are labels (symbols, possibly `(meta …)`-
+/// namespaced), NOT resolved. A duplicate field name makes the field set ill-defined → CDZ0201
+/// (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields); the check is over the WHOLE field
+/// list, not adjacent pairs.
 fn resolve_record(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "record").unwrap_or(&[]);
     let mut fields: BTreeMap<Symbol, StructId> = BTreeMap::new();
     for &field in tail {
-        // Each field is `(name value)`.
+        // Each field is `(key value)`.
         let kv = match db.ast.get(field) {
             Struct::List(kv) if kv.len() == 2 => kv,
-            _ => return Resolved::Poison(Reject::coded(Code::Malformed, "record field must be (name value)")),
+            _ => return Resolved::Poison(Reject::coded(Code::Malformed, "record field must be (key value)")),
         };
-        let label = match db.ast.as_name(kv[0]) {
-            Some(n) => Symbol::plain(n),
-            None => return Resolved::Poison(Reject::coded(Code::Malformed, "record field name must be a name")),
+        let label = match read_key(db, kv[0]) {
+            Some(sym) => sym,
+            None => return Resolved::Poison(Reject::coded(Code::Malformed, "record field key must be a name or (meta name)")),
         };
         // A duplicate field name — anywhere in the list — is ill-formed.
         if fields.insert(label.clone(), kv[1]).is_some() {
@@ -346,16 +429,16 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
     Resolved::Record { fields }
 }
 
-/// Resolve `(. operand key)`. The key is a LABEL read from its spelling — never resolved as a value.
-/// A computed key (a non-name key occurrence) is not yet supported (declines).
+/// Resolve `(. operand key)`. The key is a LABEL (bare or `(meta …)`), never resolved as a value.
+/// A key that is neither is not yet supported (declines).
 fn resolve_member(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, ".").unwrap_or(&[]);
     if tail.len() != 2 {
         return Resolved::Poison(Reject::coded(Code::Malformed, "member access takes an operand and a key"));
     }
     let operand = tail[0];
-    let key = match db.ast.as_name(tail[1]) {
-        Some(n) => Symbol::plain(n),
+    let key = match read_key(db, tail[1]) {
+        Some(sym) => sym,
         None => return Resolved::Poison(Reject::decline("a computed member key is not yet supported")),
     };
     Resolved::Member { operand, key }

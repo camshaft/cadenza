@@ -116,8 +116,8 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
 }
 
 /// The flat wasm op for an arithmetic operation at the given width (i32 if `narrow`, else i64).
-fn arith_op(op: crate::resolved::Intrinsic, narrow: bool) -> Lir {
-    use crate::resolved::Intrinsic::*;
+fn arith_op(op: crate::resolved::Prim, narrow: bool) -> Lir {
+    use crate::resolved::Prim::*;
     match (op, narrow) {
         (Add, false) => Lir::I64Add,
         (Sub, false) => Lir::I64Sub,
@@ -125,6 +125,11 @@ fn arith_op(op: crate::resolved::Intrinsic, narrow: bool) -> Lir {
         (Add, true) => Lir::I32Add,
         (Sub, true) => Lir::I32Sub,
         (Mul, true) => Lir::I32Mul,
+        // A `Core::Arith` only ever carries an arith prim (its op comes from an arith-gated lowering),
+        // so a non-arith prim reaching arith selection is unreachable.
+        (IntCtor | UIntCtor | FnCtor | BoolTy | UnitTy, _) => {
+            unreachable!("non-arith prim reached arith selection")
+        }
     }
 }
 
