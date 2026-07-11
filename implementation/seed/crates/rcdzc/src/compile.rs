@@ -50,8 +50,11 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
 
     // Collect every reached fault across the reachable definitions, module-wide (report ALL, not just
     // the first — `compiler-pipeline.md` §Phases Recover From Errors).
-    let faults = collect_faults(&mut db, &layout);
+    let mut faults = collect_faults(&mut db, &layout);
     if !faults.is_empty() {
+        for f in &mut faults {
+            sanitize_origin(&db, f);
+        }
         return fail(faults);
     }
 
@@ -61,10 +64,27 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     for &target in targets {
         match backend::emit(target, &mut db, &layout) {
             Ok(bytes) => artifacts.push(Artifact::new(target.artifact_kind(), program_name(&db), bytes)),
-            Err(r) => diagnostics.push(Diagnostic::from_reject(&r)),
+            Err(mut r) => {
+                sanitize_origin(&db, &mut r);
+                diagnostics.push(Diagnostic::from_reject(&r));
+            }
         }
     }
     CompileOutput { artifacts, diagnostics }
+}
+
+/// Drop a fault's origin node if it is NOT a user-program node — the diagnostic boundary. A fault may
+/// be anchored (during the query) to a PRELUDE node or an evaluator-SYNTHESIZED node (a β-reduced
+/// body, a built `(Int W)` module); such an id has no source position, so reporting it would map to
+/// garbage in the consumer's span table. Here, at the edge where a `Reject` becomes a consumer-facing
+/// diagnostic, a non-user origin is cleared to `None` (reported as unanchored) rather than leaked
+/// (`query-engine.md` §Provenance Is Recovered By Back-Reference — only a real source node maps back).
+fn sanitize_origin(db: &Db, reject: &mut Reject) {
+    if let Some(id) = reject.at {
+        if !db.is_user_node(id) {
+            reject.at = None;
+        }
+    }
 }
 
 /// A convenience over [`compile`]: a lone canonical-AST byte string → the WebAssembly component bytes,
@@ -84,6 +104,7 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
                 severity: Severity::Error,
                 code: None,
                 message: "compilation produced no component".into(),
+                node: None,
             })),
     }
 }
@@ -130,7 +151,13 @@ fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
 /// by an untaken branch is not a build failure. Reads the core column on demand.
 fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     match core_of(db, id) {
-        Core::Poison(r) => out.push(r),
+        // Stamp the poison's origin with this node if it carries none — a poison produced without a
+        // precise anchor is at least attributed to the node it was reached at. (`sanitize_origin` at
+        // the ABI edge later drops it if this node turns out to be prelude/synthesized.)
+        Core::Poison(mut r) => {
+            r.set_origin_if_absent(id);
+            out.push(r);
+        }
         Core::If { cond, .. } => {
             // The condition is unconditionally evaluated; the branches are not (they are guarded).
             collect_reached_poisons(db, cond, out);

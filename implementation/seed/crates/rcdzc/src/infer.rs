@@ -208,7 +208,19 @@ pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
     out
 }
 
+/// Collect faults at and under `id`, stamping each with its origin node. The recursive `collect_node`
+/// pushes this node's own faults and recurses into children (each child stamped by its OWN frame
+/// first); afterwards we stamp every fault THIS frame added that is still unanchored with `id` — so a
+/// fault ends up anchored to the innermost node whose frame produced it, with no per-`push` threading.
 fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    let before = out.len();
+    collect_node(db, id, out);
+    for reject in &mut out[before..] {
+        reject.set_origin_if_absent(id);
+    }
+}
+
+fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     match resolved_of(db, id) {
         Resolved::If { cond, then_, else_ } => {
             let cond_ty = type_of(db, cond);

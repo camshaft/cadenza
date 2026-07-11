@@ -37,22 +37,30 @@ pub enum Severity {
 }
 
 /// A machine-readable diagnostic: severity + a stable code (or `None` for an uncoded decline) + a
-/// human message.
+/// human message + the AST NODE INDEX it is about (for source mapping).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Diagnostic {
     pub severity: Severity,
     /// The stable `CDZ####` code, or `None` for an uncoded decline (a not-yet-supported construct).
     pub code: Option<String>,
     pub message: String,
+    /// The AST node index (`StructId.0`) this diagnostic is about, or `None` if unanchored. The
+    /// compiler emits only the node IDENTITY, never a source position — the consumer (which parsed the
+    /// text and holds the span table keyed by this same index) maps it to a text region
+    /// (`query-engine.md` §Provenance Is Recovered By Back-Reference). This keeps the compiler
+    /// span-free and its Cadenza port unburdened by source-position plumbing.
+    pub node: Option<u32>,
 }
 
 impl Diagnostic {
-    /// Build an error diagnostic from a produced "no" (a reject carries a code; a decline does not).
+    /// Build an error diagnostic from a produced "no" (a reject carries a code; a decline does not),
+    /// carrying its origin node index for the consumer to resolve to a span.
     pub fn from_reject(reject: &crate::diag::Reject) -> Diagnostic {
         Diagnostic {
             severity: Severity::Error,
             code: reject.code.map(|c| c.code().to_string()),
             message: reject.message.clone(),
+            node: reject.at.map(|id| id.0),
         }
     }
 }

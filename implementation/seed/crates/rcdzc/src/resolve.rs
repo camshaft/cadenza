@@ -52,7 +52,13 @@ pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
     if let Slot::Filled(r) = db.resolved.get(id) {
         return r.clone();
     }
-    let r = compute(db, id);
+    let mut r = compute(db, id);
+    // Anchor a resolver "no" to THIS node if it carries none — an unbound name or a malformed form is
+    // about the node being resolved, so its diagnostic points there. (The ABI edge later drops the
+    // anchor if this is a prelude/synthesized node rather than a user one.)
+    if let Resolved::Poison(reject) = &mut r {
+        reject.set_origin_if_absent(id);
+    }
     db.resolved.fill(id, r.clone());
     r
 }

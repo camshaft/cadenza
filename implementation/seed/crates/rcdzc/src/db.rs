@@ -158,6 +158,15 @@ pub struct Db {
     pub(crate) rec_visited: std::collections::HashSet<StructId>,
     pub(crate) rec_worklist: Vec<StructId>,
 
+    /// The number of structure nodes in the DECODED PROGRAM — the count before the prelude and any
+    /// evaluator-synthesized nodes were appended. A `StructId` below this is a genuine user-program
+    /// node the front-end's span table is keyed by; a `StructId` at or above it is a PRELUDE node (a
+    /// built-in binding) or an evaluator-SYNTHESIZED node (a β-reduced body, a built `(Int W)` module)
+    /// — neither has a source position. A diagnostic must only ever report an origin below this bound
+    /// (see [`Db::is_user_node`]); reporting a prelude/synthesized id would map to garbage (or nothing)
+    /// in the consumer's span table.
+    user_node_count: u32,
+
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
     /// The solved-type column. Filled only by [`crate::infer`].
@@ -172,6 +181,10 @@ impl Db {
     /// it.
     pub fn load(ast: Arenas) -> Db {
         let mut ast = ast;
+        // The program's node count, captured BEFORE the prelude appends — the boundary between user
+        // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
+        // are the user program; ids at/above are prelude or evaluator-synthesized.
+        let user_node_count = ast.structure.len() as u32;
         // Install the prelude as ordinary AST nodes FIRST, so its records get `StructId`s (after the
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
@@ -184,6 +197,7 @@ impl Db {
             exports,
             parent,
             prelude,
+            user_node_count,
             reduce_depth: 0,
             build_cache: std::collections::HashMap::new(),
             recursive: std::collections::HashMap::new(),
@@ -221,6 +235,15 @@ impl Db {
     /// of the lexical-scope walk.
     pub fn parent_of(&self, id: StructId) -> Option<StructId> {
         *self.parent.get(id.0 as usize).unwrap_or(&None)
+    }
+
+    /// Whether `id` is a genuine USER-PROGRAM node — one the decoded program contained, which the
+    /// front-end's span table can map to a text region. A prelude binding or an evaluator-synthesized
+    /// node (β-reduced body, built `(Int W)` module) is NOT one: it has no source position, so its id
+    /// must never reach a diagnostic the consumer maps. The diagnostic edge filters an origin through
+    /// this so a synthesized/prelude id is dropped (reported as unanchored) rather than mis-mapped.
+    pub fn is_user_node(&self, id: StructId) -> bool {
+        id.0 < self.user_node_count
     }
 
     // ── Append-during-query — the evaluator builds new nodes on demand ─────────────────────────────

@@ -245,6 +245,73 @@ fn export_name_is_verbatim() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
 }
 
+// ── span-free diagnostics: a fault names a user NODE, never a prelude/synthesized id ─────────────
+//
+// The compiler holds no source positions; a diagnostic carries the `StructId` (as `node`) the fault
+// is about, and the front-end (which holds the span table keyed by that identity) maps it to a text
+// region. These pin (a) that a fault anchors to a real user node, and (b) the boundary invariant: a
+// prelude/synthesized node id NEVER reaches a diagnostic.
+mod diagnostics {
+    use crate::ast::StructId;
+    use crate::abi::Artifact;
+    use crate::backend::Target;
+    use crate::compile::compile;
+    use crate::db::Db;
+    use crate::testkit::parse;
+
+    /// Compile a program and return its first error diagnostic.
+    fn first_error(src: &str) -> crate::abi::Diagnostic {
+        let ast = parse(src);
+        let bytes = crate::codec::encode(&ast);
+        let out = compile(&[Artifact::new(Artifact::KIND_AST, "m", bytes)], &[Target::Wasm]);
+        out.diagnostics.into_iter().find(|d| d.severity == crate::abi::Severity::Error).expect("an error")
+    }
+
+    #[test]
+    fn an_unbound_name_anchors_to_a_user_node() {
+        // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
+        // the program's node count) — the front-end can map it to the `nope` occurrence.
+        let d = first_error("(module m (def (main) nope) (export main))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"));
+        let node = d.node.expect("unbound-name diagnostic must carry a node");
+        // It resolves to a real user node — the same identity the span table is keyed by.
+        let ast = parse("(module m (def (main) nope) (export main))");
+        let db = Db::load(ast);
+        assert!(db.is_user_node(StructId(node)), "node {node} must be a user node");
+    }
+
+    #[test]
+    fn a_provable_overflow_does_not_leak_a_synthesized_node() {
+        // `(+ Int64.max 1)` proves an overflow (CDZ0304). The fold runs over evaluator-SYNTHESIZED
+        // nodes (the built `Int64` module / reduced operands), but the reported origin must be either a
+        // real user node or unanchored — NEVER a synthesized/prelude id that would mis-map. This is the
+        // boundary invariant the operator flagged.
+        let d = first_error("(module m (def (main) (+ (. Int64 max) 1)) (export main))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0304"));
+        if let Some(node) = d.node {
+            let ast = parse("(module m (def (main) (+ (. Int64 max) 1)) (export main))");
+            let db = Db::load(ast);
+            assert!(
+                db.is_user_node(StructId(node)),
+                "reported node {node} must be a user node, not a prelude/synthesized id"
+            );
+        }
+        // (An unanchored `None` is acceptable — the fault came from synthesized nodes with no source.)
+    }
+
+    #[test]
+    fn a_type_mismatch_anchors_within_the_program() {
+        // An `if` with a non-Bool condition (CDZ0203) anchors to a user node in the program.
+        let d = first_error("(module m (def (main) (if 5 1 2)) (export main))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"));
+        if let Some(node) = d.node {
+            let ast = parse("(module m (def (main) (if 5 1 2)) (export main))");
+            let db = Db::load(ast);
+            assert!(db.is_user_node(StructId(node)), "node {node} must be a user node");
+        }
+    }
+}
+
 // ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────
 //
 // Each case mirrors a `05-compound-types.sexp` / `02-binding-and-control.sexp` witness. A record

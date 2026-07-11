@@ -102,9 +102,15 @@ fn main() -> ExitCode {
             Severity::Error => "error",
             Severity::Warning => "warning",
         };
+        // The node index (if any) rides along so a caller holding the source's span table can map the
+        // diagnostic to a text region — the compiler reports node IDENTITY, never a source position.
+        let at = match d.node {
+            Some(n) => format!(" (node {n})"),
+            None => String::new(),
+        };
         match &d.code {
-            Some(code) => eprintln!("rcdzc: {sev} [{code}]: {}", d.message),
-            None => eprintln!("rcdzc: {sev}: {}", d.message),
+            Some(code) => eprintln!("rcdzc: {sev} [{code}]{at}: {}", d.message),
+            None => eprintln!("rcdzc: {sev}{at}: {}", d.message),
         }
     }
 

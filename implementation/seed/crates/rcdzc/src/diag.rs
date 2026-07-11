@@ -49,28 +49,59 @@ impl Code {
     }
 }
 
-/// A produced "no": either a coded rejection or an uncoded decline, each carrying a human message.
-/// The `code` is `Some` for a rejection/poison (an ill-formed program) and `None` for a decline (a
-/// construct the compiler does not yet realize) — the branch a downstream sink must preserve rather
-/// than collapse (`reference-compiler.md` §The Kind Of A "No" Is Fixed Where It Is Produced).
+/// A produced "no": either a coded rejection or an uncoded decline, each carrying a human message and
+/// the AST node it is about. The `code` is `Some` for a rejection/poison (an ill-formed program) and
+/// `None` for a decline (a construct the compiler does not yet realize) — the branch a downstream sink
+/// must preserve rather than collapse (`reference-compiler.md` §The Kind Of A "No" Is Fixed Where It
+/// Is Produced).
+///
+/// **The origin is a node identity, not a span.** `at` is the `StructId` the fault is about. The
+/// compiler holds NO source positions — a `StructId` is a stable node identity, and the FRONT-END
+/// (which parsed the text into the binary AST and holds the span table keyed by that same identity)
+/// maps the id back to a text region (`query-engine.md` §Provenance Is Recovered By Back-Reference).
+/// So the whole compiler — and its eventual Cadenza port — stays span-free: a diagnostic names a node,
+/// the application layer resolves it to a region. Program node ids are preserved through decode (the
+/// prelude appends its nodes AFTER the program's), so an `at` on a program node IS the id the
+/// front-end's span table is keyed by. `None` = an un-anchored "no" (a synthesized node, or a
+/// producer that did not stamp one).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Reject {
     /// `Some(code)` = a rejection (ill-formed); `None` = a decline (not yet built).
     pub code: Option<Code>,
     pub message: String,
+    /// The AST node this "no" is about — the front-end maps it to a text region. `None` if unstamped.
+    pub at: Option<crate::ast::StructId>,
 }
 
 impl Reject {
-    /// A coded rejection: the program is ill-formed, and this is why.
+    /// A coded rejection: the program is ill-formed, and this is why. Unanchored — a caller with the
+    /// faulting node in hand attaches it via [`Reject::at`] (or a collector stamps it with
+    /// [`Reject::set_origin_if_absent`]).
     pub fn coded(code: Code, message: impl Into<String>) -> Reject {
-        Reject { code: Some(code), message: message.into() }
+        Reject { code: Some(code), message: message.into(), at: None }
     }
 
     /// An uncoded decline: a construct the compiler does not yet realize. NOT a statement that the
     /// program is wrong — it is the compiler declining to compile it, the safe outcome
     /// (`reference-compiler.md` §Outcomes Are Ordered By Safety).
     pub fn decline(message: impl Into<String>) -> Reject {
-        Reject { code: None, message: message.into() }
+        Reject { code: None, message: message.into(), at: None }
+    }
+
+    /// Attach (or replace) the node this "no" is about — the fluent form a producer uses when it holds
+    /// the precise faulting node: `Reject::coded(..).at(id)`.
+    pub fn at(mut self, id: crate::ast::StructId) -> Reject {
+        self.at = Some(id);
+        self
+    }
+
+    /// Stamp the origin node ONLY if none is set yet — so a precise producer's anchor is never
+    /// overwritten, while a collector walking node `id` can supply a default origin for a "no" that
+    /// was produced without one. The innermost frame that has the faulting node wins.
+    pub fn set_origin_if_absent(&mut self, id: crate::ast::StructId) {
+        if self.at.is_none() {
+            self.at = Some(id);
+        }
     }
 
     /// Whether this "no" is a decline (uncoded) rather than a coded rejection.
