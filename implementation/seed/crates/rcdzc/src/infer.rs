@@ -25,6 +25,7 @@ use crate::diag::{Code, Reject};
 use crate::resolve::resolved_of;
 use crate::resolved::Resolved;
 use crate::ty::Ty;
+use crate::unify::{Fresh, Subst};
 
 /// The solved type of the node at `id`, filling the column on demand (memoized). Works backward:
 /// reads the resolved form and, for a compound node, its children's types.
@@ -50,14 +51,20 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Ref { value } => type_of(db, value),
         // A `let`'s type is its body's type (the bindings are compile-time structure that folds away).
         Resolved::Let { body, .. } => type_of(db, body),
-        // A record's type is the record of its fields' types — each a lazy `type_of` on the value occ.
+        // A record that IS a type — a ground-type record (`Bool`), a built integer module, or any
+        // record carrying a `(meta t)` — is a type VALUE, so its type is `Type`. Otherwise a plain
+        // data record's type is the record of its fields' types (each a lazy `type_of`).
         Resolved::Record { fields } => {
-            let mut field_tys = std::collections::BTreeMap::new();
-            for (label, value) in fields {
-                let t = type_of(db, value);
-                field_tys.insert(label, t);
+            if crate::eval::typeval_of(db, id).is_some() {
+                Ty::Type
+            } else {
+                let mut field_tys = std::collections::BTreeMap::new();
+                for (label, value) in fields {
+                    let t = type_of(db, value);
+                    field_tys.insert(label, t);
+                }
+                Ty::Record(field_tys)
             }
-            Ty::Record(field_tys)
         }
         // Member access — the field's type is the type of the field's VALUE, found by reducing the
         // operand to a record and projecting (the one projection, via the evaluator, so it works off a
@@ -81,36 +88,92 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // A bare built-in operation value standing alone has no scalar type yet (it is not a runtime
         // value until functions/closures exist). Typed `Any`; applying it is what has a type.
         Resolved::Prim(_) => Ty::Any,
-        // Application — dispatched by the head's `(meta apply)` primitive. An ARITHMETIC application
-        // is generic over the integer type: its result is the integer type its operands share — the
-        // JOIN of the operand types (a deferred/var width unifies with a fixed one; a real width
-        // conflict is reported by `type_errors`). A non-integer operand yields `Any` here (the fault
-        // is reported there). A TYPE-CONSTRUCTOR application yields a type value — typed `Any` at the
-        // value level (a type value carries no scalar runtime type). (Milestone B replaces the
-        // hard-wired integer join with reading the operator's `Meta.t` scheme + unification.)
-        Resolved::Apply { head, args } => match crate::eval::meta_apply_of(db, head) {
-            Some(p) if p.is_arith() => {
-                let mut result = Ty::int(); // signed, deferred width — the generic operand type.
-                for &arg in &args {
-                    let at = type_of(db, arg);
-                    result = if matches!(at, Ty::Int(_) | Ty::Var(_) | Ty::Any) {
-                        result.join(&at)
-                    } else {
-                        Ty::Any
-                    };
-                }
-                result
-            }
-            _ => Ty::Any,
-        },
+        // Application — the ONE generic rule: read the head's TYPE (its `(meta t)` scheme), instantiate
+        // it with fresh variables, and unify each argument's type into the curried parameter
+        // positions; the result is the instantiated return type. This is HM application — the SAME
+        // rule for every operator (and every function later), with NO per-operator arm. A type
+        // constructor's application yields a type value, typed `Any` at the value level. `apply_type`
+        // returns the result type (unification FAULTS are surfaced separately by `type_errors`).
+        Resolved::Apply { head, args } => apply_type(db, head, &args),
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
         // A lambda parameter used as a value — a formal whose type is being solved. Milestone A types
         // it `Any` (it never reaches a runtime slot yet — a lambda's runtime form is deferred); the
         // full HM rule gives it a fresh variable per its binder in Milestone B.
         Resolved::Param { .. } => Ty::Any,
-        // A type value / compile-time lambda has no scalar type — typed `Any` so it never cascades.
-        Resolved::TypeVal(_) | Resolved::Lambda { .. } => Ty::Any,
+        // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value
+        // (a `(typeval …)` node, OR a value the evaluator reduces to a type) types as `Type`; this is
+        // what makes a type first-class (it can be passed, returned, checked). A compile-time lambda
+        // is not a scalar value → `Any`.
+        Resolved::TypeVal(_) => Ty::Type,
+        Resolved::Lambda { .. } => Ty::Any,
+    }
+}
+
+/// The result type of applying `head` to `args` — the ONE generic application rule. Read the head's
+/// type as a [`Scheme`] (its `(meta t)`, a type-lambda reduced by the evaluator), instantiate it with
+/// fresh variables, and unify each argument's type into the curried parameter positions; the result
+/// is the instantiated return type after substitution. This types an operator (`+ : ∀a. (Int a) →
+/// (Int a) → (Int a)`) and a user function alike, with no per-operator logic. On any failure — a
+/// head with no type, a non-function head, an arity/unify mismatch — return `Any` so the value column
+/// stays total; the actual FAULT is reported by `type_errors`.
+fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
+    let mut fresh = Fresh::new();
+    let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
+        Some(s) => s,
+        // No `(meta t)` (e.g. a bare type constructor whose result is a type value) → `Any`.
+        None => return Ty::Any,
+    };
+    let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut subst = Subst::new();
+    for &arg in args {
+        // Peel one curried parameter: `cur` must be a function type; unify the arg into its parameter.
+        let applied = subst.apply(&cur);
+        match applied {
+            Ty::Fn(param, result) => {
+                let at = type_of(db, arg);
+                // A unify failure here is a real type fault; ignore it for the VALUE (reported by
+                // `type_errors`) and continue with the declared result so the shape stays sane.
+                let _ = crate::unify::unify(&mut subst, &param, &at);
+                cur = *result;
+            }
+            // Applied to more args than it takes — not a function; the fault is reported elsewhere.
+            _ => return Ty::Any,
+        }
+    }
+    subst.apply(&cur)
+}
+
+/// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and
+/// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
+/// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
+fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
+    let mut fresh = Fresh::new();
+    let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
+        Some(s) => s,
+        None => return,
+    };
+    let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut subst = Subst::new();
+    for &arg in args {
+        let applied = subst.apply(&cur);
+        match applied {
+            Ty::Fn(param, result) => {
+                let at = type_of(db, arg);
+                if let Err(reject) = crate::unify::unify(&mut subst, &param, &at) {
+                    out.push(reject);
+                }
+                cur = *result;
+            }
+            // Applying a non-function (too many args) — a shape fault reported as a type mismatch.
+            other => {
+                out.push(Reject::coded(
+                    Code::TypeMismatch,
+                    format!("cannot apply a value of type {}", other.render_name()),
+                ));
+                return;
+            }
+        }
     }
 }
 
@@ -188,38 +251,14 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, value, out);
             }
         }
-        // An arithmetic application: each operand must be an integer, and their widths/signedness must
-        // agree. A non-integer operand or a width/signedness mismatch is the conflicting-use type
-        // error CDZ0301 (`numeric-model.md` — mixing two numeric types without an explicit conversion
-        // does not silently promote). Descend into the operands for their own faults.
+        // Application faults, by the ONE rule: instantiate the head's `(meta t)` scheme and unify each
+        // argument's type into the curried parameter positions. A unify FAILURE is the conflicting-use
+        // type error (a non-integer where an integer is required, two operands of different widths —
+        // `numeric-model.md` no silent promotion). One check for every operator; no arith-specific
+        // logic. A head with no `(meta t)` (a type constructor / not-yet-typed value) is not checked
+        // here — its own fault, if any, surfaces via the head descent.
         Resolved::Apply { head, args } => {
-            if crate::eval::meta_apply_of(db, head).is_some_and(|p| p.is_arith()) {
-                let mut prev: Option<Ty> = None;
-                for &arg in &args {
-                    let at = type_of(db, arg);
-                    match &at {
-                        Ty::Int(_) | Ty::Var(_) | Ty::Any => {}
-                        other => out.push(Reject::coded(
-                            Code::TypeMismatch,
-                            format!("arithmetic requires an integer, found {}", other.render_name()),
-                        )),
-                    }
-                    // Operands must agree with each other (no silent promotion between numeric types).
-                    if let Some(p) = &prev {
-                        if !p.agrees_with(&at) {
-                            out.push(Reject::coded(
-                                Code::NumericMismatch,
-                                format!(
-                                    "operands of different numeric types: {} vs {}",
-                                    p.render_name(),
-                                    at.render_name()
-                                ),
-                            ));
-                        }
-                    }
-                    prev = Some(at);
-                }
-            }
+            check_application(db, head, &args, out);
             // Descend into the HEAD (an unbound head like `frobnicate` is a scope error caught here)
             // and each operand for their own faults.
             collect(db, head, out);

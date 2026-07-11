@@ -88,6 +88,8 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // A function value has no scalar machine representation (runtime closures are a later stage);
         // one reaching a slot declines.
         Ty::Fn(_, _) => None,
+        // A type value is compile-time-only (erased before runtime) — no machine representation.
+        Ty::Type => None,
         // An unresolved variable has no machine representation — an undetermined type never reaches a
         // real slot (it is a rejection at the boundary, not a defaulted representation).
         Ty::Var(_) => None,
@@ -133,6 +135,8 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,
+        // A type value is compile-time-only — it never crosses the boundary.
+        Ty::Type => None,
         // An unresolved variable has no boundary representation (an undetermined type is rejected).
         Ty::Var(_) => None,
         Ty::Any => None,

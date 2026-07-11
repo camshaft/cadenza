@@ -17,7 +17,93 @@ use crate::ast::{IntValue, Leaf, StructId};
 use crate::db::Db;
 use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved, Symbol};
-use crate::ty::{IntTy, Width};
+use crate::ty::{IntTy, Scheme, Ty, Width};
+use crate::unify::Fresh;
+use std::collections::HashMap;
+
+/// Read a value's `(meta t)` — its TYPE — as a [`Scheme`], reducing the type-lambda it holds. An
+/// operator's `Meta.t` is a compile-time lambda `(fn (a) (-> (Int a) (-> (Int a) (Int a))))`; this
+/// binds each lambda parameter to a FRESH variable, reduces the body's type expression symbolically
+/// (so `(Int a)` becomes an integer of that fresh WIDTH variable, shared across every `a`), and closes
+/// the mentioned variables into the scheme. This is how `infer` reads an operator's type generically
+/// as DATA — one rule for every operator, no per-operator Rust. `None` if the value has no `(meta t)`
+/// or its type expression is malformed.
+pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme> {
+    let t = project_meta(db, id, "t")?;
+    // The `(meta t)` value is either a bare type (a scheme with no quantified vars) or a type-lambda
+    // whose parameters are the quantified variables.
+    match resolved_of(db, t) {
+        Resolved::Lambda { params, body } => {
+            // Bind each parameter occurrence to a fresh variable; the same parameter used twice in the
+            // body shares its variable (so both operands of `+` unify to one width).
+            let mut env: HashMap<StructId, TyOrWidth> = HashMap::new();
+            let mut ty_vars = Vec::new();
+            let mut width_vars = Vec::new();
+            for &p in &params {
+                let n = fresh.var();
+                // A parameter's kind (type var vs width var) is decided by HOW it is used; we record a
+                // single fresh number and let the use site pick. Track it as both — the body reduction
+                // uses it as a width inside `(Int _)` and as a type elsewhere.
+                env.insert(p, TyOrWidth { num: n });
+                ty_vars.push(n);
+                width_vars.push(n);
+            }
+            let ty = type_in_env(db, body, &env)?;
+            // Only the vars actually mentioned matter; keep both lists (unused ones are harmless).
+            Some(Scheme { ty_vars, width_vars, ty })
+        }
+        // A non-lambda `(meta t)` is a monomorphic type.
+        _ => typeval_of(db, t).map(Scheme::mono),
+    }
+}
+
+/// A lambda parameter's fresh variable number — used as a type variable OR a width variable depending
+/// on the position it appears in (`(Int a)` → width; a bare `a` → type). One number serves both.
+#[derive(Clone, Copy)]
+struct TyOrWidth {
+    num: u32,
+}
+
+/// Reduce a type expression to a `Ty` under an environment binding lambda parameters to fresh
+/// variables — the symbolic sibling of `typeval_of`. A parameter reference becomes its variable
+/// (`Ty::Var`); `(Int a)` becomes an integer whose WIDTH is the parameter's variable; a ground type or
+/// a fully-constant constructor reduces as usual.
+fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) -> Option<Ty> {
+    match resolved_of(db, id) {
+        // A lambda parameter used as a bare type → its type variable.
+        Resolved::Param { binder } => env.get(&binder).map(|v| Ty::Var(v.num)),
+        // `(Int W)` / `(UInt W)` where W may be a parameter (a width variable) or a constant.
+        Resolved::Apply { head, args } => {
+            let prim = meta_apply_of(db, head)?;
+            match prim {
+                Prim::IntCtor | Prim::UIntCtor if args.len() == 1 => {
+                    let signed = matches!(prim, Prim::IntCtor);
+                    let width = width_in_env(db, args[0], env)?;
+                    Some(Ty::Int(IntTy { signed, width }))
+                }
+                Prim::FnCtor if args.len() == 2 => {
+                    let p = type_in_env(db, args[0], env)?;
+                    let r = type_in_env(db, args[1], env)?;
+                    Some(Ty::Fn(Box::new(p), Box::new(r)))
+                }
+                _ => None,
+            }
+        }
+        // A ref / ground record / built typeval with no free parameters — reduce concretely.
+        _ => typeval_of(db, id),
+    }
+}
+
+/// Reduce a width expression under the environment: a parameter → its width variable, a constant → a
+/// fixed width.
+fn width_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) -> Option<Width> {
+    match resolved_of(db, id) {
+        Resolved::Param { binder } => env.get(&binder).map(|v| Width::Var(v.num)),
+        Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok()).map(Width::Fixed),
+        Resolved::Ref { value } => width_in_env(db, value, env),
+        _ => None,
+    }
+}
 
 /// The `(meta apply)` primitive of the head value at `id`, if the head is applyable — project the
 /// `apply` field (in the `meta` namespace) and, following a ref, read the `Prim` it holds. `None`

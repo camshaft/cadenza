@@ -420,6 +420,19 @@ mod stage1 {
         assert!(msg.contains("overflow"), "got: {msg}");
     }
 
+    #[test]
+    fn a_non_integer_operand_rejects_via_unification() {
+        // `(+ true 1)` — `+` types at `∀a. (Int a) → (Int a) → (Int a)`; unifying the operand `true`
+        // (Bool) against `(Int a)` FAILS, so the application is rejected. This is the one generic rule
+        // (instantiate the operator's Meta.t scheme, unify each arg) catching the fault — no
+        // arithmetic-specific check.
+        let msg = expect_decline("(+ true 1)");
+        assert!(
+            msg.contains("unify") || msg.contains("Bool") || msg.contains("Int"),
+            "expected a unification mismatch naming the types, got: {msg}"
+        );
+    }
+
     // ── first-class types: `(Int W)` builds a width-specialized MODULE via the one Meta.apply path ──
 
     #[test]
@@ -441,6 +454,22 @@ mod stage1 {
     fn int_ctor_max_of_a_smaller_width() {
         // `(. (Int 8) max)` = 127.
         assert_eq!(run_main("(. (Int 8) max)"), 127);
+    }
+
+    #[test]
+    fn a_type_value_has_type_type() {
+        // A type is a first-class VALUE, so it has a type — `Type`. `Bool` (a ground-type record) and
+        // `(Int 64)` (a built module) both type as `Type`; a type used as a value doesn't fall to Any.
+        use crate::db::Db;
+        use crate::infer::type_of;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        // The `Bool` reference in `(def (t) Bool)` — find it and check its type.
+        let ast = parse("(module m (def (t) Bool) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        // Locate the `Bool` occurrence: the body of def `t`.
+        let bool_occ = db.defs.iter().find(|d| d.name == "t").and_then(|d| d.body).expect("def t");
+        assert_eq!(type_of(&mut db, bool_occ), Ty::Type);
     }
 
     #[test]

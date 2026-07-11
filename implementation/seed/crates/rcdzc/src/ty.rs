@@ -94,6 +94,11 @@ pub enum Ty {
     /// an operator's (and later a function's) `Meta.t` denotes; an application unifies the argument
     /// against `param` and takes `result`.
     Fn(Box<Ty>, Box<Ty>),
+    /// The type of a type VALUE — the type of `Bool`, of `(Int 64)`, of the result of `(-> A B)`.
+    /// Because a type is a first-class value, it has a type, and that type is `Type`. It is
+    /// compile-time-only (a value of type `Type` is erased before the runtime boundary, like any
+    /// type-value).
+    Type,
     /// A unification variable — an as-yet-unsolved type inference introduces (e.g. a fresh operand
     /// type before it is constrained). Resolved to a concrete type by unification; a variable that
     /// survives to the boundary is an undetermined type (a rejection, not a default). The full HM
@@ -208,6 +213,7 @@ impl Ty {
                 s
             }
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
+            Ty::Type => "Type".to_string(),
             Ty::Var(n) => format!("?{n}"),
             Ty::Any => "Any".to_string(),
         }
