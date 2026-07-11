@@ -844,37 +844,24 @@ fn a_runtime_element_tuple_still_uses_the_heap() {
 // the projection and change the result / trap). The remaining risk is a LEAK — a drop that never fires.
 // The runtime's `live-objects` (WIT 54) reports the live heap-cell count, but ONLY in a build compiled
 // with `--features debug-counters` (the shipped build returns 0 unconditionally). So this ACCEPTANCE
-// probe builds that runtime, composes it in one store, runs the heap round-trip, then reads
-// `live-objects` and asserts it is 0 — the compiler's dup/drop discipline left nothing behind. It is
-// `#[ignore]` (needs the special build) — run with `cargo test -p rcdzc perceus_balance -- --ignored`.
+// probe LOCATES that runtime by its generated `DEBUG_RUNTIME_HASH` (from the content-addressed store —
+// `xtask build` puts it there; NEVER built by the test — shelling out to cargo would be slow and couple
+// the test to the toolchain), composes it in one store, runs the heap round-trip, and asserts
+// `live-objects == 0`. `#[ignore]` because it needs `xtask build` to have populated the store — run
+// with `cargo test -p rcdzc perceus_balance -- --ignored` after a build.
 
-/// Build the `debug-counters` runtime component and return its bytes, or `None` if the build failed
-/// (so the probe skips rather than fails on a machine without the wasm toolchain). Runs `cargo
-/// component build --features debug-counters` in the runtime crate and reads the output wasm. NOTE:
-/// this build OVERWRITES the default runtime at the same path — the probe is `#[ignore]`d partly so it
-/// does not clobber the hash-matched runtime the ordinary composed tests use in the same run.
-fn build_debug_counters_runtime() -> Option<Vec<u8>> {
+/// The `debug-counters` runtime bytes, located by the generated `DEBUG_RUNTIME_HASH` in the content-
+/// addressed store, or `None` if absent (so the probe skips rather than fails when `xtask build` has
+/// not populated the store). A plain file read keyed by content address — NO build, NO cargo call.
+fn find_debug_runtime_wasm() -> Option<Vec<u8>> {
+    use crate::backend::wasm::runtime_abi::DEBUG_RUNTIME_HASH;
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let seed = manifest.join("../..").canonicalize().ok()?;
-    let runtime_crate = seed.join("crates/cdz-runtime");
-    let status = std::process::Command::new("cargo")
-        .args([
-            "component",
-            "build",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--features",
-            "debug-counters",
-        ])
-        .current_dir(&runtime_crate)
-        .status()
-        .ok()?;
-    if !status.success() {
-        return None;
-    }
-    let wasm = runtime_crate.join("target/wasm32-unknown-unknown/release/cdz_runtime.wasm");
-    std::fs::read(&wasm).ok()
+    let repo = seed.join("../..").canonicalize().ok()?;
+    let path = repo.join(format!("target/cadenza-store/{DEBUG_RUNTIME_HASH}.wasm"));
+    let bytes = std::fs::read(&path).ok()?;
+    // Guard against a stale store entry: only accept bytes whose hash matches the pinned debug hash.
+    (sha256_hex(&bytes) == DEBUG_RUNTIME_HASH).then_some(bytes)
 }
 
 /// H2d ACCEPTANCE: after a heap round-trip, the runtime's live-cell count is 0 — the dup/drop discipline
@@ -888,8 +875,10 @@ fn perceus_balance_leaves_no_live_objects() {
     use wasmtime::component::{Component, Linker, Val};
     use wasmtime::{Engine, Store};
 
-    let Some(runtime_bytes) = build_debug_counters_runtime() else {
-        eprintln!("[H2d] could not build the debug-counters runtime; skipping balance probe");
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[H2d] debug-counters runtime not in the store (run `cargo xtask build`); skipping balance probe"
+        );
         return;
     };
 

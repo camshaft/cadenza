@@ -13,7 +13,7 @@
 //! rather than pasting opaque envelope blobs — the operator's "structured info the compiler builds up
 //! the wasm from, not massive opaque binaries." Re-run (`cargo xtask codegen`) after changing the WIT.
 
-use crate::{Paths, build_component, content_address};
+use crate::{Paths, build_component_with_features, content_address};
 use proc_macro2::TokenStream;
 use quote::quote;
 use wit_parser::{Resolve, Type as WitType};
@@ -89,16 +89,20 @@ pub fn run(paths: &Paths, check: bool) {
         }
     };
     let iface = "cadenza:runtime/heap";
-    // The runtime's CONTENT HASH — built + content-addressed the same way `xtask build` does, so the
+    // The runtime's CONTENT HASHES — built + content-addressed the same way `xtask build` does, so the
     // generated table changes whenever the runtime BINARY changes (not only its WIT). This is what
     // makes staleness automatic across a runtime-code change: rebuild → new hash → `runtime_abi.rs`
-    // differs → `codegen --check` fails until regenerated. (`build_component` runs `cargo component`;
-    // `xtask check` already builds the runtime, so the cost is shared.)
-    let runtime_hash = build_runtime_hash(paths);
+    // differs → `codegen --check` fails until regenerated. TWO builds are hashed: the RELEASE runtime
+    // (what a shipped program pins + composes) and the DEBUG-COUNTERS runtime (the same code with the
+    // `live-objects` leak counter compiled in — the Perceus balance probe composes THIS one). Both are
+    // recorded so a program can require the release runtime by hash AND a leak-check harness can locate
+    // the debug runtime by hash, neither hard-coded. (`xtask check` already builds the runtime, so the
+    // release build's cost is shared; the debug build is one extra `cargo component` invocation.)
+    let (runtime_hash, debug_runtime_hash) = build_runtime_hashes(paths);
     // Build the body as tokens (`render`), pretty-print + rustfmt it (`format_tokens`), then prepend the
     // `//!` module banner as text (a module doc is awkward as a token attribute). prettyplease-then-
     // rustfmt makes the committed file agree with BOTH `fmt --check` and `codegen --check`.
-    let body = format_tokens(render(&ops, iface, &runtime_hash));
+    let body = format_tokens(render(&ops, iface, &runtime_hash, &debug_runtime_hash));
     let source = format!("{}{body}", module_banner());
 
     if check {
@@ -132,18 +136,38 @@ pub fn run(paths: &Paths, check: bool) {
     );
 }
 
-/// Build the value-heap runtime component and return its content address (SHA-256 hex) — the SAME
-/// derivation `xtask build` uses to key the runtime in the content-addressed store. Embedding this in
-/// the generated table is what ties the compiler's recorded `REQUIRED_RUNTIME_HASH` to the ACTUAL
-/// runtime bytes: a runtime-code change (even with an unchanged WIT) changes the hash, hence the
-/// generated file, hence `codegen --check` fails until regenerated. Exits on a build failure (the
-/// hash cannot be honestly recorded without the built artifact).
-fn build_runtime_hash(paths: &Paths) -> String {
+/// Build BOTH runtime components and return their content addresses `(release, debug_counters)` —
+/// the SAME SHA-256 derivation `xtask build` uses to key the store. Embedding these ties the compiler's
+/// recorded hashes to the ACTUAL runtime bytes: a runtime-code change (even with an unchanged WIT)
+/// changes a hash, hence the generated file, hence `codegen --check` fails until regenerated. Both
+/// builds write the SAME `target/.../cdz_runtime.wasm` path, so each build's bytes are read IMMEDIATELY,
+/// before the next overwrites. Exits on a build failure (a hash cannot be honestly recorded without the
+/// built artifact).
+fn build_runtime_hashes(paths: &Paths) -> (String, String) {
     let sh = Shell::new().expect("open a shell");
-    let wasm = build_component(&sh, &paths.seed, "cdz-runtime", "cdz_runtime");
-    let bytes = std::fs::read(&wasm)
-        .unwrap_or_else(|e| panic!("read built runtime {}: {e}", wasm.display()));
-    content_address(&bytes)
+    // Release runtime — what a shipped program pins and composes.
+    let release_wasm =
+        build_component_with_features(&sh, &paths.seed, "cdz-runtime", "cdz_runtime", &[]);
+    let release_bytes = std::fs::read(&release_wasm)
+        .unwrap_or_else(|e| panic!("read built runtime {}: {e}", release_wasm.display()));
+    let release_hash = content_address(&release_bytes);
+    // Debug-counters runtime — the same code with the `live-objects` leak counter compiled in. Read its
+    // bytes before it is (potentially) overwritten by a later build.
+    let debug_wasm = build_component_with_features(
+        &sh,
+        &paths.seed,
+        "cdz-runtime",
+        "cdz_runtime",
+        &["debug-counters"],
+    );
+    let debug_bytes = std::fs::read(&debug_wasm)
+        .unwrap_or_else(|e| panic!("read built runtime {}: {e}", debug_wasm.display()));
+    let debug_hash = content_address(&debug_bytes);
+    // Leave the RELEASE runtime as the artifact at the shared path (rebuild it last), so a plain
+    // `cargo component build` output on disk after codegen is the release one — the default a naive
+    // reader expects and the composed tests hash-match against.
+    let _ = build_component_with_features(&sh, &paths.seed, "cdz-runtime", "cdz_runtime", &[]);
+    (release_hash, debug_hash)
 }
 
 /// Format a generated `TokenStream` to the committed file's text: `prettyplease` FIRST (deterministic
@@ -171,7 +195,9 @@ fn rustfmt_stdin(src: &str) -> Option<String> {
         .ok()?;
     child.stdin.take()?.write_all(src.as_bytes()).ok()?;
     let out = child.wait_with_output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Resolve every function of the runtime's `heap` interface from the WIT, IN DECLARATION ORDER — the
@@ -229,7 +255,7 @@ fn resolve_ops(wit_path: &std::path::Path) -> Result<Vec<Op>, String> {
 /// reads like the emitted Rust and needs no manual escaping; `format_tokens` pretty-prints it. Doc
 /// comments are `#[doc = …]` attributes (which render as `///`). A leading `//!`-style module banner
 /// can't be a token attribute cleanly, so it is prepended as text by the caller.
-fn render(ops: &[Op], iface: &str, runtime_hash: &str) -> TokenStream {
+fn render(ops: &[Op], iface: &str, runtime_hash: &str, debug_runtime_hash: &str) -> TokenStream {
     // The RUNTIME_OPS rows.
     let rows = ops.iter().map(|op| {
         let name = &op.name;
@@ -308,6 +334,13 @@ fn render(ops: &[Op], iface: &str, runtime_hash: &str) -> TokenStream {
         #[doc = " against — the runtime a program built with this compiler requires. Regenerated from the"]
         #[doc = " built runtime bytes, so it tracks a runtime-code change automatically."]
         pub const REQUIRED_RUNTIME_HASH: &str = #runtime_hash;
+
+        #[doc = " The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code"]
+        #[doc = " with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped"]
+        #[doc = " program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness"]
+        #[doc = " composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness"]
+        #[doc = " locates the debug runtime by content address (from the store), never by rebuilding it."]
+        pub const DEBUG_RUNTIME_HASH: &str = #debug_runtime_hash;
 
         #[doc = " Every op the runtime `heap` interface declares, as structured signature data (sorted)."]
         pub const RUNTIME_OPS: &[RtOp] = &[ #(#rows)* ];
