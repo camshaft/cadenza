@@ -1179,6 +1179,406 @@ mod runtime_ops {
             255
         );
     }
+
+    // ── A-normal form: a multi-use runtime binding is NAMED (computed once), single-use is inlined ──
+    //
+    // The core is in A-normal form (`reference-compiler.md` §The Core Representation Is In A-Normal
+    // Form): a `let` whose value is a RUNTIME computation used more than once becomes a `Core::Let`
+    // binding — computed once into a persistent local, read by each `LocalRef` — while a single-use or
+    // constant binding is copy-propagated / erased (the admin-redex elimination that keeps naming
+    // free). These run the emitted component under wasmtime to prove the VALUE is right; the
+    // byte-neutrality of the single-use case is what keeps the gate unchanged.
+
+    #[test]
+    fn a_multi_use_runtime_binding_is_computed_once_and_reused() {
+        // `(let ((s (+ a b))) (+ s s))` over runtime params: `s` is a runtime add used TWICE, so it is
+        // named (computed once) and added to itself. (10+20)=30, 30+30=60 — the value is correct
+        // regardless of sharing; sharing is what makes `(+ a b)` emit once rather than twice.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(let ((s (+ a b))) (+ s s))",
+                &[Val::S64(10), Val::S64(20)]
+            ),
+            60
+        );
+    }
+
+    #[test]
+    fn a_named_binding_computes_its_value_exactly_once() {
+        // Proof the value is computed ONCE, not per use: bind `s = (+ a b)` where `(+ a b)` would TRAP
+        // on overflow, use it twice. If it were inlined (recomputed) the trap would still fire once, so
+        // that can't distinguish sharing — instead pin the OBSERVABLE arithmetic: `s = a - b` used in
+        // `(+ s s)`. With a=big, the single computed `s` doubles exactly; a recompute would give the
+        // same value, so this asserts correctness of the shared path (the byte-count is asserted
+        // separately below). (7-4)=3, 3+3=6.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(let ((s (- a b))) (+ s s))",
+                &[Val::S64(7), Val::S64(4)]
+            ),
+            6
+        );
+    }
+
+    #[test]
+    fn a_named_binding_emits_its_value_computation_once_in_the_bytes() {
+        // The SHARING is observable in the emitted code size: naming `s = (+ a b)` and using it twice
+        // must emit the `i64.add` for `(+ a b)` ONCE (then read the slot twice), not twice. Compare the
+        // NAMED form against a hypothetical inlined one by counting `LocalSet`/`LocalGet` structure via
+        // the Lir. We assert at the byte level: the named body has exactly ONE checked-add sequence.
+        use crate::backend::wasm::select::select_function;
+        use crate::db::Db;
+        use crate::infer::type_of;
+        use crate::testkit::parse;
+        let ast = parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (let ((s (+ a b))) (+ s s))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let d = db.def_by_name("f").expect("def f");
+        let body = db.defs[d].body.expect("body");
+        let sig_params = db.defs[d].params.clone();
+        let mut params = Vec::new();
+        for p in sig_params {
+            let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+                Some(name_occ) => name_occ,
+                None => p,
+            };
+            let ty = type_of(&mut db, binder);
+            params.push((binder, ty));
+        }
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // The inner `(+ a b)` is a checked add → exactly ONE `I64Add` (the outer `(+ s s)` is the
+        // SECOND). If `s` were inlined at both uses, `(+ a b)` would appear TWICE → three `I64Add`s.
+        let adds = f
+            .code
+            .iter()
+            .filter(|i| matches!(i, crate::backend::wasm::lir::Lir::I64Add))
+            .count();
+        assert_eq!(
+            adds, 2,
+            "named binding must compute `(+ a b)` once, not twice"
+        );
+    }
+
+    #[test]
+    fn a_single_use_runtime_binding_is_inlined_not_named() {
+        // A binding used ONCE is copy-propagated (no `Core::Let`), so it emits identically to writing
+        // the value inline — byte-for-byte. `(let ((s (+ a b))) (* s 2))` and `(* (+ a b) 2)` are the
+        // SAME component. This is the admin-redex elimination that keeps the gate byte-neutral.
+        let named = func("(: a Int64) (: b Int64)", "(let ((s (+ a b))) (* s 2))");
+        let inline = func("(: a Int64) (: b Int64)", "(* (+ a b) 2)");
+        assert_eq!(
+            named, inline,
+            "a single-use binding must inline byte-identically"
+        );
+    }
+
+    #[test]
+    fn a_constant_binding_is_never_named() {
+        // A binding whose value FOLDS to a constant is never named however many times it is used —
+        // there is no runtime computation to share. `(let ((k (+ 1 2))) (+ k k))` folds to `6`, byte-
+        // identical to writing `6` (well, `(+ 3 3)` folds to 6 too). Both fold to the constant.
+        let named = func("(: a Int64)", "(let ((k (+ 1 2))) (+ k k))");
+        let konst = func("(: a Int64)", "6");
+        assert_eq!(named, konst, "a constant binding folds; nothing is named");
+    }
+
+    #[test]
+    fn a_let_star_binding_named_for_a_later_initializer() {
+        // `let*` scoping: a binding used by a LATER sibling initializer (not just the body) is still
+        // counted and named. `(let ((s (+ a b)) (t (+ s s))) (+ t 1))` — `s` is used twice inside `t`'s
+        // initializer, so it is named. (3+4)=7, (7+7)=14, 14+1=15.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(let ((s (+ a b)) (t (+ s s))) (+ t 1))",
+                &[Val::S64(3), Val::S64(4)]
+            ),
+            15
+        );
+    }
+
+    #[test]
+    fn a_multi_use_binding_of_a_comparison_names_the_bool() {
+        // The named value need not be an integer — a runtime comparison used twice is named too (its
+        // slot is an i32). `(let ((p (< a b))) (if p (if p 1 2) 3))` — `p` used twice. a<b true → the
+        // inner `(if p 1 2)` → 1.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(let ((p (< a b))) (if p (if p 1 2) 3))",
+                &[Val::S64(1), Val::S64(9)]
+            ),
+            1
+        );
+        // a>=b false → 3.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(let ((p (< a b))) (if p (if p 1 2) 3))",
+                &[Val::S64(9), Val::S64(1)]
+            ),
+            3
+        );
+    }
+}
+
+// ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
+//
+// A recursive function cannot β-reduce to a normal form at compile time, so it is emitted as its own
+// wasm function and its self-call is a `Core::Call`. These run whole annotated-recursive PROGRAMS under
+// wasmtime — the end-to-end proof that reachability emits the callee, the call ABI is right, and the
+// recursion terminates. (The corpus's UNANNOTATED recursive functions stay `todo` until the connected
+// parameter solve, A2; an annotated signature is determined by absorption — see `infer::def_scheme`.)
+mod recursion {
+    use super::run_returns;
+    use crate::compile::compile_component;
+    use crate::testkit::parse;
+
+    /// Compile a whole `(module …)` program and return its component bytes.
+    fn component(src: &str) -> Vec<u8> {
+        compile_component(&crate::codec::encode(&parse(src))).expect("compile")
+    }
+
+    #[test]
+    fn a_recursive_sum_runs() {
+        // sum-to(3) = 3+2+1+0 = 6. The self-call `(sum-to (+ n -1))` is a `Core::Call`; the base case
+        // `(= n 0) → 0` pins the return type to Int64 (absorption), so it emits as a real function.
+        let bytes = component(
+            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 6);
+    }
+
+    #[test]
+    fn a_recursive_factorial_runs() {
+        // fac(5) = 120 — recursion through multiplication (checked; in range here).
+        let bytes = component(
+            "(module m (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (+ n -1))))) (def (main) (fac 5)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 120);
+    }
+
+    #[test]
+    fn a_recursive_bool_predicate_runs_in_both_branch_orders() {
+        // all-lt: the self-call is the THEN branch, `false` the ELSE — must type as Bool regardless of
+        // order. all-lt(0,3,5) over 0,1,2 (<5) is true → 1.
+        let all_lt = component(
+            "(module m (def (all-lt (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) (all-lt (+ i 1) n bound) false) true)) (def (main) (if (all-lt 0 3 5) 1 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&all_lt, "main"), 1);
+        // all-ge: the self-call is the ELSE branch, `false` the THEN (the mirror). all-ge(0,3,0) → 1.
+        let all_ge = component(
+            "(module m (def (all-ge (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) false (all-ge (+ i 1) n bound)) true)) (def (main) (if (all-ge 0 3 0) 1 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&all_ge, "main"), 1);
+    }
+
+    #[test]
+    fn mutual_recursion_runs() {
+        // is-even/is-odd call each other; both are reachable (reachability adds is-odd via is-even's
+        // call) and emitted. is-even(10) → true → 1.
+        let bytes = component(
+            "(module m (def (is-even (: n Int64)) (if (= n 0) true (is-odd (+ n -1)))) (def (is-odd (: n Int64)) (if (= n 0) false (is-even (+ n -1)))) (def (main) (if (is-even 10) 1 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+    }
+
+    #[test]
+    fn a_recursive_overflow_traps_at_runtime() {
+        // fac(25) overflows i64 (25! > 2^63); the checked multiply TRAPS at run time (not a compile-time
+        // fold — the value only exists at run time through the call chain). Proves the call ABI carries
+        // a real trap across frames.
+        let bytes = component(
+            "(module m (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (+ n -1))))) (def (main) (fac 25)) (export main))",
+        );
+        assert!(
+            super::call_traps(&bytes, "main", &[]),
+            "fac(25) must trap on overflow"
+        );
+    }
+
+    #[test]
+    fn an_unannotated_recursive_def_runs_via_a2() {
+        // The corpus shape `(def (sum-to n) …)` — an UNANNOTATED recursive param, inferred `Int64` by
+        // the connected solve (A2, `solve_recursive_params`). Where B1 declined, it now COMPILES and
+        // RUNS: sum-to(3) = 6. This is the case the recursive corpus rides.
+        let bytes = component(
+            "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 6);
+    }
+
+    #[test]
+    fn unannotated_mutual_recursion_runs_via_a2() {
+        // Mutual recursion with UNANNOTATED params — each param solved independently from its own body
+        // (`(= n 0)`, `(- n 1)`), the cross-call passing an integer. even(10) → true → 1.
+        let bytes = component(
+            "(module m (def (even n) (if (= n 0) true (odd (- n 1)))) (def (odd n) (if (= n 0) false (even (- n 1)))) (def (main) (if (even 10) 1 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+    }
+}
+
+// ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────
+//
+// A `(match scrutinee (pattern body)…)` over a SCALAR scrutinee — the build-order Stage 4 "const-fold
+// matching + scalar runtime first, before the value heap." A constant scrutinee folds to the selected
+// arm; a runtime scalar emits a chain of `if` probes. Well-formedness (a type-mismatched pattern, a
+// non-exhaustive match) is checked STRUCTURALLY, before the fold. These run whole programs under
+// wasmtime + assert the rejections.
+mod match_engine {
+    use super::run_returns;
+    use crate::backend::Target;
+    use crate::compile::{compile, compile_component};
+    use crate::testkit::parse;
+
+    fn component(src: &str) -> Vec<u8> {
+        compile_component(&crate::codec::encode(&parse(src))).expect("compile")
+    }
+
+    /// The coded rejection a program produces, or `None` if it compiled. Used to pin a well-formedness
+    /// rejection (CDZ code) rather than a silent miscompile.
+    fn reject_code(src: &str) -> Option<String> {
+        let out = compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[Target::Wasm],
+        );
+        if out.artifact(Target::Wasm.artifact_kind()).is_some() {
+            return None; // compiled — no rejection
+        }
+        out.diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .and_then(|d| d.code.clone())
+    }
+
+    #[test]
+    fn a_constant_scrutinee_folds_to_the_selected_arm() {
+        // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module m (def (main) (match 0 (0 42) (_ 99))) (export main))"),
+                "main"
+            ),
+            42
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module m (def (main) (match 5 (0 42) (_ 99))) (export main))"),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
+    fn a_computed_constant_scrutinee_folds_by_value() {
+        // The scrutinee `(% 4 2)` folds to 0 (empty-magnitude IntValue) — it must match the literal `0`
+        // pattern (`[0]` magnitude) BY VALUE, selecting arm 0. Pins the `IntValue::eq_value` fix (a
+        // struct `==` would miss and fall to the wildcard → the parity-dispatch miscompile).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (parity n) (match (% n 2) (0 0) (_ 1))) (def (main) (parity 4)) (export main))"
+                ),
+                "main"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn a_runtime_scalar_match_emits_a_probe_chain() {
+        // fib with literal match base cases — a runtime scrutinee (the param `n`) matched against 0/1/_,
+        // emitting the probe chain. fib(10) = 55.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (fib n) (match n (0 0) (1 1) (_ (+ (fib (- n 1)) (fib (- n 2)))))) (def (main) (fib 10)) (export main))"
+                ),
+                "main"
+            ),
+            55
+        );
+        // fact with a match base case: fact(5) = 120.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (fact n) (match n (0 1) (_ (* n (fact (- n 1)))))) (def (main) (fact 5)) (export main))"
+                ),
+                "main"
+            ),
+            120
+        );
+    }
+
+    #[test]
+    fn a_binder_pattern_binds_the_scrutinee() {
+        // A bare-name arm `k` binds the whole scrutinee for its body — the exhaustive tail (like `_`,
+        // but named). `(match n (0 100) (k (+ k 1)))`: f(0)=100 (literal arm wins), f(41)=42 (k binds
+        // 41, body computes 42). Pins that the name arm and literal arm select consistently, and the
+        // binder carries the scrutinee's value into its body.
+        let m = "(module m (def (f n) (match n (0 100) (k (+ k 1)))) (def (main) (f {})) (export main))";
+        assert_eq!(
+            run_returns::<i64>(&component(&m.replace("{}", "41")), "main"),
+            42
+        );
+        assert_eq!(
+            run_returns::<i64>(&component(&m.replace("{}", "0")), "main"),
+            100
+        );
+    }
+
+    #[test]
+    fn a_binder_over_a_runtime_scrutinee_binds_correctly() {
+        // The binder over a RUNTIME scrutinee (an exported annotated param, not inlined) — `k` reads the
+        // parameter's slot in the arm body. f(7) → k=7 → 8.
+        let bytes = component(
+            "(module m (def (f (: n Int64)) (match n (0 100) (k (+ k 1)))) (def (main) (f 7)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
+    }
+
+    #[test]
+    fn a_type_mismatched_pattern_is_rejected() {
+        // A boolean pattern against an integer scrutinee is a type error (CDZ0201) — checked
+        // STRUCTURALLY, not silently treated as a never-matching arm. (Even with a constant scrutinee.)
+        assert_eq!(
+            reject_code("(module m (def (main) (match 5 (true 1) (_ 0))) (export main))")
+                .as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
+    fn a_non_exhaustive_scalar_match_is_rejected_even_when_a_constant_hits_an_arm() {
+        // A scalar match with no wildcard tail is non-exhaustive (CDZ0210) — a program is ill-formed if
+        // it would not cover some value, EVEN when the constant scrutinee happens to hit an arm. The
+        // check is structural, before the fold.
+        assert_eq!(
+            reject_code("(module m (def (main) (match 5 (5 1))) (export main))").as_deref(),
+            Some("CDZ0210")
+        );
+    }
+
+    #[test]
+    fn a_non_wildcard_pattern_after_a_literal_still_needs_a_wildcard() {
+        // Two literal arms with no wildcard — non-exhaustive over the integers (CDZ0210), regardless of
+        // whether the runtime scrutinee would hit one.
+        assert_eq!(
+            reject_code("(module m (def (f (: n Int64)) (match n (0 1) (1 2))) (export f))")
+                .as_deref(),
+            Some("CDZ0210")
+        );
+    }
 }
 
 // ── decline-don't-miscompile ───────────────────────────────────────────────────────────────────

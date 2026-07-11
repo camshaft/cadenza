@@ -46,13 +46,28 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Unit => Core::Unit,
-        // A name is its bound value's core — follow the ref (the `let` binding folds away).
-        Resolved::Ref { value } => core_of(db, value),
+        // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
+        // computation the enclosing `let` named once — see `lower_let`), this reference reads the
+        // shared slot: `Core::LocalRef`. Otherwise the binding was copy-propagated / erased, so the
+        // name IS its value's core — follow the ref (the ordinary case; a single-use or constant
+        // binding leaves no `Let`).
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                trace!(target: "rcdzc::lower", node = id.0, binder = value.0, "ref → local (kept multi-use binding)");
+                Core::LocalRef { binder: value }
+            } else {
+                core_of(db, value)
+            }
+        }
         // A type annotation ERASES to its expression's core — `(: e T)` runs exactly as `e` (the
         // annotation's force is entirely on inference; it has no runtime trace).
         Resolved::Annot { expr, .. } => core_of(db, expr),
-        // A `let`'s value is its body's value (the bindings are compile-time structure).
-        Resolved::Let { body, .. } => core_of(db, body),
+        // A `let` — A-NORMALIZE its bindings: a binding whose value is a runtime computation used more
+        // than once is NAMED (a `Core::Let` binding, computed once, read by `LocalRef`); a single-use
+        // or constant binding is copy-propagated / erased (its references follow through to its value).
+        // So naming adds no cost and the emitted bytes are unchanged for a program with no multi-use
+        // runtime binding (`reference-compiler.md` §The Core Representation Is In A-Normal Form).
+        Resolved::Let { bindings, body } => lower_let(db, &bindings, body),
         // A record value — kept as a compound; folds away only when a member reads a field of it.
         Resolved::Record { fields } => Core::Record { fields },
         // Member access FOLDS: reduce the operand to a record (following refs, reducing a ctor
@@ -77,6 +92,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             },
         },
         Resolved::If { cond, then_, else_ } => Core::If { cond, then_, else_ },
+        // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
+        // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
+        Resolved::Match { scrutinee, arms } => lower_match(db, scrutinee, &arms),
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
         Resolved::Prim(_) => Core::Poison(Reject::decline(
@@ -102,10 +120,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         return match crate::eval::apply_lambda(g, head, &args) {
                             Ok(Some(reduced)) => core_of(g, reduced),
                             Ok(None) => unreachable!("lambda_body implies a lambda head"),
-                            Err(msg) => {
-                                trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: lambda reduction declined");
-                                Core::Poison(Reject::decline(msg))
-                            }
+                            // The reduction declined. If it declined because the callee is RECURSIVE
+                            // (can't inline to a normal form), emit a real `Core::Call` to it instead —
+                            // provided the callee is a top-level def whose signature is DETERMINED
+                            // (`def_scheme` — an annotated recursive def types by absorption, no fixpoint
+                            // needed). An unannotated/undetermined callee still declines (its signature
+                            // needs the connected solve, a later step). Any other decline propagates.
+                            Err(msg) => lower_recursive_call_or_decline(g, head, &args, msg),
                         };
                     }
                     None => {
@@ -161,6 +182,343 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::TypeVal(_) | Resolved::Lambda { .. } => Core::Poison(Reject::decline(
             "a type value or compile-time lambda has no runtime form",
         )),
+    }
+}
+
+/// A-normalize a `let`: decide, per binding, whether to NAME its value (keep it as a `Core::Let`
+/// binding computed once) or to COPY-PROPAGATE / erase it (let each reference follow through to the
+/// value's core). A binding is KEPT iff its value is a runtime computation (not a compile-time
+/// constant that folds away) AND its name is referenced MORE THAN ONCE in what follows — the case
+/// where following through would recompute the value at each use. Every other binding — used at most
+/// once, or constant — is propagated, the admin-redex elimination that keeps naming free
+/// (`reference-compiler.md` §The Core Representation Is In A-Normal Form ¶3), so a program with no
+/// multi-use runtime binding lowers exactly as before and its emitted bytes are unchanged.
+///
+/// The kept bindings are recorded in `db.kept_bindings` (keyed by the initializer occurrence a
+/// reference resolves to) BEFORE the body is lowered, so a `Resolved::Ref` to a kept binding lowers
+/// to a `Core::LocalRef` reading the shared slot. The result is a `Core::Let { bindings, body }` when
+/// any binding is kept, or just the body's core when none is (no residual `let`).
+fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> Core {
+    // The `(binder-name-occ, init-occ)` pairs; a reference resolves to the INIT occurrence, so that is
+    // what the body's `Ref`s point at and what a kept binding is keyed by.
+    let mut kept: Vec<(StructId, StructId)> = Vec::new();
+    for (k, &(_name_occ, init)) in bindings.iter().enumerate() {
+        // A binding's SCOPE (the positions its name is visible in) is the LATER sibling initializers
+        // plus the body — `let*` sequential scoping. Count uses across that whole continuation so a
+        // binding referenced only by a later initializer is still named.
+        let mut continuation: Vec<StructId> = bindings[k + 1..].iter().map(|&(_, v)| v).collect();
+        continuation.push(body);
+        if should_keep_binding(db, init, &continuation) {
+            // Record the keep BEFORE lowering the body/later inits — their references to this init read
+            // `db.kept_bindings` to decide `LocalRef` vs follow-through.
+            db.kept_bindings.insert(init);
+            kept.push((init, init));
+        }
+    }
+    // The body's core (its references to kept bindings now lower to `LocalRef`).
+    if kept.is_empty() {
+        // Nothing named — the ordinary erase: the `let`'s value is its body's value.
+        return core_of(db, body);
+    }
+    trace!(target: "rcdzc::lower", body = body.0, kept = kept.len(), "let: A-normalized (named multi-use runtime bindings)");
+    Core::Let {
+        bindings: kept,
+        body,
+    }
+}
+
+/// Lower a `(match scrutinee (pattern body)…)` over a SCALAR scrutinee. Each pattern classifies to a
+/// [`Probe`] (an integer/boolean literal, or the wildcard `_`); a pattern that is neither declines
+/// (binder/sum/tuple patterns are a later increment). If the scrutinee FOLDS to a constant, select the
+/// first arm whose probe it satisfies and lower THAT arm's body (no runtime match — like the const
+/// `if` fold). Otherwise the scrutinee is a runtime scalar: emit a `Core::Match` the backend lowers to
+/// a probe chain. A match with no arm that can match a runtime scrutinee (no wildcard and the literals
+/// are not exhaustive) is non-exhaustive — for a scalar that is almost always non-exhaustive, so Stage
+/// 3a REQUIRES a wildcard tail for a runtime match (else declines, CDZ0210 territory) rather than
+/// emitting a fallthrough with no defined value.
+fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // Classify each arm's pattern into a probe + keep its body. A non-scalar pattern declines the whole
+    // match (a later increment handles binder/sum/tuple patterns).
+    let mut probes: Vec<(crate::core::Probe, StructId)> = Vec::new();
+    for &(pat, body) in arms {
+        match classify_probe(db, pat) {
+            Some(p) => probes.push((p, body)),
+            None => {
+                return Core::Poison(Reject::decline(
+                    "a match pattern that is not a scalar literal or `_` is not yet supported",
+                ));
+            }
+        }
+    }
+    // WELL-FORMEDNESS (checked STRUCTURALLY, before any fold — a constant scrutinee does not excuse a
+    // type-mismatched pattern or a non-exhaustive match; a match is well-formed or not regardless of
+    // what the scrutinee happens to be):
+    let scrut_ty = crate::infer::type_of(db, scrutinee);
+    //  (1) each LITERAL pattern's type must agree with the scrutinee's — a bool pattern against an
+    //      integer scrutinee (or vice-versa) is a shape/type error (CDZ0201), not a never-matching arm.
+    for (probe, _) in &probes {
+        let pat_ty = match probe {
+            crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
+            crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
+            crate::core::Probe::Wild => None,
+        };
+        if let Some(pt) = pat_ty
+            && !pt.agrees_with(&scrut_ty)
+        {
+            return Core::Poison(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "match pattern type {} does not match scrutinee type {}",
+                    pt.render_name(),
+                    scrut_ty.render_name()
+                ),
+            ));
+        }
+    }
+    //  (2) exhaustiveness: a scalar match needs a wildcard tail (no finite literal set covers every
+    //      integer/bool value in Stage 3a). This holds EVEN when the scrutinee is a constant that hits
+    //      an arm — a program is ill-formed if it would not cover some value. Without a wildcard, reject.
+    let has_wild = probes
+        .iter()
+        .any(|(p, _)| matches!(p, crate::core::Probe::Wild));
+    if !has_wild {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a scalar match must end in a wildcard `_` arm (non-exhaustive)",
+        ));
+    }
+
+    // Well-formed. FOLD if the scrutinee is a compile-time constant: select the first arm whose probe
+    // it satisfies and lower THAT body (no runtime match, like the const `if` fold).
+    match core_of(db, scrutinee) {
+        Core::ConstInt(v) => {
+            for (probe, body) in &probes {
+                if probe_matches_int(probe, &v) {
+                    trace!(target: "rcdzc::fold", "match folds to a selected arm (constant Int scrutinee)");
+                    return core_of(db, *body);
+                }
+            }
+            // Unreachable: a wildcard is present (checked above), so some arm always matches.
+            return Core::Poison(Reject::decline(
+                "match: no arm matched a constant (unreachable)",
+            ));
+        }
+        Core::ConstBool(b) => {
+            for (probe, body) in &probes {
+                if probe_matches_bool(probe, b) {
+                    trace!(target: "rcdzc::fold", "match folds to a selected arm (constant Bool scrutinee)");
+                    return core_of(db, *body);
+                }
+            }
+            return Core::Poison(Reject::decline(
+                "match: no arm matched a constant (unreachable)",
+            ));
+        }
+        Core::Poison(r) => return Core::Poison(r),
+        _ => {}
+    }
+    // Runtime scalar scrutinee — it must BE a scalar (a compound needs a heap walk, later).
+    if !is_scalar(db, scrutinee) {
+        return Core::Poison(Reject::decline(
+            "matching a compound value needs a heap walk (not yet built)",
+        ));
+    }
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = probes.len(), "match stays runtime (scalar scrutinee → probe chain)");
+    Core::Match {
+        scrutinee,
+        arms: probes,
+    }
+}
+
+/// Classify a match PATTERN occurrence into a [`Probe`], or `None` if it is not a Stage-3 scalar
+/// pattern. An integer/boolean literal is a literal probe; a bare NAME (the wildcard `_`, or a BINDER
+/// like `k`) always matches — a `Wild` probe. A binder differs from `_` only in scope: a reference to
+/// it in the arm body resolves to the scrutinee (handled by `resolve`'s Case 5), so the PROBE is
+/// identical (always matches, exhaustive tail). (A constructor / tuple / record pattern is a later
+/// increment — it returns `None` here; with no sums yet, every bare name in a scalar match is a binder.)
+fn classify_probe(db: &mut Db, pat: StructId) -> Option<crate::core::Probe> {
+    // A bare name — the wildcard `_` OR a binder — always matches. Detected structurally (before
+    // resolving, which would look the name up / poison it); the binding is a scope concern, not a probe.
+    if db.ast.as_name(pat).is_some() {
+        return Some(crate::core::Probe::Wild);
+    }
+    match resolved_of(db, pat) {
+        Resolved::Int(v) => Some(crate::core::Probe::Int(v)),
+        Resolved::Bool(b) => Some(crate::core::Probe::Bool(b)),
+        _ => None,
+    }
+}
+
+/// Whether a probe matches a constant integer scrutinee (for the fold). A `Wild` matches anything. The
+/// literal comparison is BY VALUE (`eq_value`) — a folded `0` (empty magnitude) and a literal `0`
+/// (`[0]`) denote the same integer, so struct `==` would wrongly miss (the parity-dispatch bug).
+fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
+    match probe {
+        crate::core::Probe::Int(p) => p.eq_value(v),
+        crate::core::Probe::Wild => true,
+        crate::core::Probe::Bool(_) => false,
+    }
+}
+
+/// Whether a probe matches a constant boolean scrutinee (for the fold). A `Wild` matches anything.
+fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
+    match probe {
+        crate::core::Probe::Bool(p) => *p == b,
+        crate::core::Probe::Wild => true,
+        crate::core::Probe::Int(_) => false,
+    }
+}
+
+/// A lambda application whose β-reduction DECLINED with `msg`: emit a runtime `Core::Call` if it
+/// declined because the callee is a RECURSIVE top-level def with a DETERMINED signature; otherwise
+/// propagate the decline. This is the ONE place a recursive call becomes a real wasm call instead of an
+/// unbounded inline. A non-recursive decline (a partial application, a bad head) is NOT a call — its
+/// message is passed through unchanged.
+fn lower_recursive_call_or_decline(
+    db: &mut Db,
+    head: StructId,
+    args: &[StructId],
+    msg: String,
+) -> Core {
+    // Only a RECURSION decline becomes a call; every other decline (partial application, over-arity)
+    // propagates as-is. The recursion decline is the one `apply_lambda` raises via `is_recursive`.
+    let is_recursion_decline = msg.contains("recursive function needs runtime specialization");
+    if !is_recursion_decline {
+        return Core::Poison(Reject::decline(msg));
+    }
+    // Resolve the head to the top-level def it names. Only a NAMED top-level def can be emitted as a
+    // standalone wasm function (its index is stable in the layout); a computed/anonymous recursive head
+    // has no such identity, so it still declines.
+    let callee = match callee_def_index(db, head) {
+        Some(d) => d,
+        None => return Core::Poison(Reject::decline(msg)),
+    };
+    // The callee must have a DETERMINED signature to be emitted (its params need machine valtypes). An
+    // annotated recursive def qualifies (types by absorption); an unannotated one does not yet — it
+    // declines until the connected parameter solve (A2) lands.
+    if crate::infer::def_scheme(db, callee).is_none() {
+        trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
+        return Core::Poison(Reject::decline(
+            "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
+        ));
+    }
+    trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
+    Core::Call {
+        callee,
+        args: args.to_vec(),
+    }
+}
+
+/// The `db.defs` index of the top-level def an application head names, if any — following a `Ref` to a
+/// `Lambda` whose body matches a def's body occurrence. Returns `None` for a head that is not a named
+/// top-level def (a `let`-bound lambda, a computed head).
+fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
+    // The head resolves to a `Lambda { body, .. }` for a top-level def (resolve maps a def name to its
+    // lambda). Match that body occurrence back to the def index.
+    let body = match resolved_of(db, head) {
+        Resolved::Lambda { body, .. } => body,
+        Resolved::Ref { value } => return callee_def_index(db, value),
+        _ => return None,
+    };
+    db.defs.iter().position(|d| d.body == Some(body))
+}
+
+/// Whether a `let` binding whose initializer is `init` should be KEPT as a named `Core::Let` binding
+/// rather than copy-propagated. Kept iff (1) its value is a RUNTIME computation — its core is not a
+/// constant/atom that folds away, so following it through would re-emit the computation — AND (2) its
+/// name is used MORE THAN ONCE across `scope` (the later sibling initializers and the body — naming
+/// pays for itself only when it avoids a recompute). A constant, a single-use binding, or a poison is
+/// propagated (byte-neutral).
+fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool {
+    // A value that folds to a constant / atom leaves no computation to share — always propagate.
+    if !is_runtime_computation(db, init) {
+        return false;
+    }
+    // Count references to this binding across its scope. Naming is worth it only at >= 2 uses.
+    let mut n = 0;
+    for &region in scope {
+        n += uses_in(db, region, init);
+    }
+    n >= 2
+}
+
+/// Whether the node at `init` lowers to a RUNTIME COMPUTATION — a core form that emits instructions
+/// (arithmetic, comparison, conversion, a conditional, a runtime record), as opposed to a constant, a
+/// unit, a bare local/param read, or a poison, which are free to duplicate. Reads the value's core
+/// (the fold has already run, so a constant-folding binding reports `false` here).
+fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
+    matches!(
+        core_of(db, init),
+        Core::Arith { .. }
+            | Core::Compare { .. }
+            | Core::Convert { .. }
+            | Core::If { .. }
+            | Core::Record { .. }
+    )
+}
+
+/// The number of times the binding whose initializer is `init` is REFERENCED within the resolved
+/// subtree rooted at `node` — a use is a `Resolved::Ref { value: init }` (the identity a reference to
+/// the binding resolves to). Walks the resolved tree structurally without lowering; a nested `let`
+/// that SHADOWS the name rebinds references below it to a different init, so those do not count (they
+/// resolve to the inner binding's occurrence, not `init`). Bounded by the subtree size.
+fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
+    match resolved_of(db, node) {
+        Resolved::Ref { value } => {
+            if value == init {
+                1
+            } else {
+                // A ref to ANOTHER binding — but its value may itself reference `init` (e.g. a later
+                // `let` binding's initializer). Do not descend through the ref target here: the walk
+                // over the enclosing structure already visits every initializer/body position, so
+                // counting the ref itself (0 for a different binding) avoids double-counting.
+                0
+            }
+        }
+        Resolved::If { cond, then_, else_ } => {
+            uses_in(db, cond, init) + uses_in(db, then_, init) + uses_in(db, else_, init)
+        }
+        Resolved::Let { bindings, body } => {
+            let mut n = 0;
+            for (_, value) in &bindings {
+                n += uses_in(db, *value, init);
+            }
+            n + uses_in(db, body, init)
+        }
+        Resolved::Record { fields } => {
+            let mut n = 0;
+            for value in fields.values() {
+                n += uses_in(db, *value, init);
+            }
+            n
+        }
+        Resolved::Member { operand, .. } => uses_in(db, operand, init),
+        Resolved::Annot { expr, .. } => uses_in(db, expr, init),
+        Resolved::Apply { head, args } => {
+            let mut n = uses_in(db, head, init);
+            for a in &args {
+                n += uses_in(db, *a, init);
+            }
+            n
+        }
+        // A match: the scrutinee and every arm body may reference the binding. (A literal pattern is a
+        // constant, not a reference.) The scrutinee runs once; each arm body is a distinct use position.
+        Resolved::Match { scrutinee, arms } => {
+            let mut n = uses_in(db, scrutinee, init);
+            for (_, body) in &arms {
+                n += uses_in(db, *body, init);
+            }
+            n
+        }
+        // Leaves and non-referencing forms contribute nothing.
+        Resolved::Int(_)
+        | Resolved::Bool(_)
+        | Resolved::Unit
+        | Resolved::Prim(_)
+        | Resolved::Param { .. }
+        | Resolved::TypeVal(_)
+        | Resolved::Lambda { .. }
+        | Resolved::Poison(_) => 0,
     }
 }
 
@@ -482,5 +840,68 @@ mod tests {
             }
             other => panic!("expected If, got {other:?}"),
         }
+    }
+
+    // ── A-normalization: the keep-or-propagate decision at the core column ────────────────────────
+    //
+    // A `let` whose value is a RUNTIME computation used more than once is kept as a `Core::Let`
+    // (named once); a single-use or constant binding is propagated (no residual `Let`). These inspect
+    // the core form directly — the module's own concern — separate from the wasm behavior tests.
+
+    /// Locate def `name`'s body occurrence (the root of the expression `core_of` is asked about).
+    fn body_of(db: &mut Db, name: &str) -> StructId {
+        let d = db.def_by_name(name).expect("def present");
+        db.defs[d].body.expect("body")
+    }
+
+    #[test]
+    fn a_multi_use_runtime_let_lowers_to_a_core_let() {
+        // `(let ((s (+ a b))) (+ s s))` in a function body — `s` is a runtime add used twice, so the
+        // body's core is a `Core::Let` naming `s`, with the binding keyed by `s`'s initializer.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (let ((s (+ a b))) (+ s s))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let body = body_of(&mut db, "f");
+        match core_of(&mut db, body) {
+            Core::Let { bindings, .. } => {
+                assert_eq!(bindings.len(), 1, "exactly one binding kept");
+                // The kept binding's value lowers to a runtime arithmetic op (the `(+ a b)`).
+                let (_, value) = bindings[0];
+                assert!(matches!(core_of(&mut db, value), Core::Arith { .. }));
+            }
+            other => panic!("expected Core::Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_single_use_runtime_let_leaves_no_core_let() {
+        // `(let ((s (+ a b))) (* s 2))` — `s` used ONCE, so it is copy-propagated: the body's core is
+        // the `(* (+ a b) 2)` multiplication directly, with NO enclosing `Core::Let`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (let ((s (+ a b))) (* s 2))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let body = body_of(&mut db, "f");
+        assert!(
+            matches!(core_of(&mut db, body), Core::Arith { op: Prim::Mul, .. }),
+            "a single-use binding must propagate, leaving no Core::Let"
+        );
+    }
+
+    #[test]
+    fn a_multi_use_constant_let_folds_and_is_not_named() {
+        // `(let ((k (+ 1 2))) (+ k k))` — `k` used twice but its value FOLDS to the constant 3, so
+        // there is no runtime computation to share: the whole body folds to `ConstInt(6)`, no `Let`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64)) (let ((k (+ 1 2))) (+ k k))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let body = body_of(&mut db, "f");
+        assert_eq!(
+            core_of(&mut db, body),
+            Core::ConstInt(IntValue::from_i64(6)),
+            "a constant binding folds; nothing is named"
+        );
     }
 }

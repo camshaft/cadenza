@@ -9,18 +9,42 @@
 //! (`intermediate-representations.md` §The Fully-Linearized Block Form Is A Linearizing Backend's
 //! Representation).
 //!
-//! **On administrative bindings.** A-normalization in general introduces FRESH bindings that name a
-//! non-atomic subexpression (`Let`/`LocalRef`). Those cannot be keyed by an AST `StructId`, because
-//! they have no source occurrence — so they will arrive together with the core's own fresh-id space
-//! in the stage that first needs them. The Stage-0 slice has nothing non-atomic to name (every
-//! operand is already an atom), so the core column keys cleanly by `StructId` now, and this rung
-//! carries only the variants that map 1:1 to a source node. Shipping a `Let` we could neither
-//! construct nor key would be dead shape.
+//! **On administrative bindings.** A-normalization names a non-trivial subexpression with a binding
+//! (`Let`/`LocalRef`) so its value flow is explicit rather than implicit in an expression's nesting
+//! (`reference-compiler.md` §The Core Representation Is In A-Normal Form). This rung realizes the
+//! FIRST case where naming earns its keep: a source `let` whose bound value is a RUNTIME computation
+//! (not a compile-time constant) used MORE THAN ONCE. Today such a binding would be followed through
+//! at each reference — recomputing the value per use — so [`Core::Let`] names it once and each use is
+//! a [`Core::LocalRef`] to that name. A binding used at most once, or one whose value folds to a
+//! constant, is still copy-propagated / erased at lowering (the ADMIN-REDEX ELIMINATION the one
+//! evaluator owes — `reference-compiler.md` ¶3), so naming every intermediate adds no runtime cost
+//! and the emitted bytes are unchanged for a program that has no multi-use runtime binding.
+//!
+//! A `Let` binding is keyed by its INITIALIZER's AST `StructId` — the stable identity a reference to
+//! the binding already resolves to (`Resolved::Ref { value }`), so no fresh id space is needed for
+//! this case: the slot a binding occupies and the `LocalRef`s that read it share that one occurrence.
+//! (Admin bindings with NO source occurrence — the ones a general A-normalization of every operand
+//! synthesizes — arrive with the core's own fresh-id space in a later stage; this rung names only the
+//! binding a source `let` already gives an occurrence to.)
 
 use crate::ast::{IntValue, StructId};
 use crate::diag::Reject;
 use crate::resolved::{Prim, Symbol};
 use std::collections::BTreeMap;
+
+/// A match-arm PROBE — the test that decides whether an arm is taken (Stage 3a: scalar patterns). A
+/// literal probe compares the scrutinee against a constant; the wildcard always matches (the arm is
+/// the unconditional tail). Carried as DATA (not a synthesized comparison node), so lowering a `match`
+/// builds no AST. Binder/sum/tuple probes extend this enum in later increments.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Probe {
+    /// `scrutinee == this integer` — an integer-literal pattern.
+    Int(IntValue),
+    /// `scrutinee == this boolean` — a boolean-literal pattern.
+    Bool(bool),
+    /// The wildcard `_` (or a bare binder in a later increment) — always matches.
+    Wild,
+}
 
 /// The core (A-normal) form of one node.
 #[derive(Clone, PartialEq, Debug)]
@@ -44,6 +68,35 @@ pub enum Core {
         then_: StructId,
         else_: StructId,
     },
+    /// A scalar MATCH over `scrutinee` — arms tried top-to-bottom, each a `(probe, body)`. A `Probe`
+    /// is either a literal to compare the scrutinee against (`== literal`) or the wildcard (always
+    /// matches). Present only when the scrutinee is a RUNTIME scalar (a constant scrutinee folds to the
+    /// selected arm's core in `lower`). The backend emits a chain of `if`s: probe the scrutinee against
+    /// each literal, take that arm's body on a match, else fall through to the next; a wildcard arm is
+    /// the unconditional tail. `scrutinee` and each body are AST `StructId`s (lowered on demand); the
+    /// probe carries the literal as data so no comparison node is synthesized. Binder/sum/tuple probes
+    /// join this in later increments.
+    Match {
+        scrutinee: StructId,
+        arms: Vec<(Probe, StructId)>,
+    },
+    /// An A-normal binding sequence: name each `(binder, value)` — its VALUE computed once — then the
+    /// `body` uses each name by a [`Core::LocalRef`]. The `binder` is the initializer's AST `StructId`
+    /// (the identity a reference to the binding resolves to), so the slot a binding occupies and the
+    /// refs that read it agree without a fresh id space. Present ONLY for a source `let` binding whose
+    /// value is a runtime computation used more than once — the case where naming avoids recomputing;
+    /// a single-use or constant binding is copy-propagated / erased at lowering, leaving no `Let`.
+    /// Bindings are sequential (a later one may reference an earlier's name), matching `let*`.
+    Let {
+        bindings: Vec<(StructId, StructId)>,
+        body: StructId,
+    },
+    /// A reference to a [`Core::Let`] binding — read the value named by `binder` (the initializer
+    /// occurrence the binding was keyed by). The backend maps it to a `local.get` of the binding's
+    /// slot, exactly as a `Param` reads a parameter slot. Present only when the referenced binding was
+    /// KEPT as a `Core::Let` (a multi-use runtime value); a reference to a propagated binding lowers to
+    /// the value's own core instead.
+    LocalRef { binder: StructId },
     /// A runtime arithmetic operation on two operands (children by AST `StructId`). Present only when
     /// the fold could NOT reduce the operation to a constant (an operand is not compile-time-known — a
     /// FUNCTION PARAMETER). Constant arithmetic folds to `ConstInt`/`Poison` in `lower`. The machine op
@@ -67,6 +120,13 @@ pub enum Core {
     /// the node's solved TARGET width/signedness (read off at selection); a constant operand folds to a
     /// `ConstInt` in `lower`. The target is the conversion node's OWN solved type, not the operand's.
     Convert { op: Prim, operand: StructId },
+    /// A runtime CALL to a top-level function — `callee` is the `db.defs` index of the function, `args`
+    /// the call-site argument occurrences (lowered in the CALLER's frame, pushed in order). Present only
+    /// when the application could NOT β-reduce to a normal form at compile time — i.e. a RECURSIVE
+    /// callee (a non-recursive call still inlines, so it never becomes a `Call`; this is the one path
+    /// that forces a real wasm call). The callee is emitted as its own wasm function (reachability adds
+    /// it to the layout's emission order); the backend emits each arg then `call <callee's abs index>`.
+    Call { callee: usize, args: Vec<StructId> },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
     /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of
     /// the parameter's slot. This is the runtime value a bare literal is not: a parameter's value is

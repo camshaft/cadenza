@@ -246,6 +246,27 @@ impl IntValue {
             Some(acc as i64)
         }
     }
+
+    /// Whether two integers are EQUAL BY VALUE, independent of magnitude representation. The struct
+    /// derives `PartialEq` over the raw fields, but the magnitude is NOT canonicalized on every path —
+    /// a literal `0` may carry `[0]` while a folded `0` carries `[]` (empty), and both denote zero. So
+    /// value comparisons (e.g. a match probe testing a folded scrutinee against a literal pattern) MUST
+    /// use this, not `==`: strip leading zero bytes, and treat a zero magnitude as sign-agnostic.
+    pub fn eq_value(&self, other: &IntValue) -> bool {
+        fn trimmed(m: &[u8]) -> &[u8] {
+            let mut i = 0;
+            while i < m.len() && m[i] == 0 {
+                i += 1;
+            }
+            &m[i..]
+        }
+        let (a, b) = (trimmed(&self.magnitude), trimmed(&other.magnitude));
+        if a != b {
+            return false;
+        }
+        // Equal magnitudes: sign matters only for a non-zero value (zero is never "negative").
+        a.is_empty() || self.negative == other.negative
+    }
 }
 
 /// The base an integer literal's text used. Display-only — it does not change the value.
@@ -426,6 +447,38 @@ mod tests {
         assert_eq!(l1, l2);
         assert_eq!(a.head_name(root), Some("+"));
         assert_eq!(a.as_form(root, "+").map(|t| t.len()), Some(2));
+    }
+
+    #[test]
+    fn eq_value_ignores_magnitude_representation() {
+        // The load-bearing correctness property for match probes: zero has two representations —
+        // `zero()` (empty magnitude) and a literal `0` (`[0]`) — and they must compare EQUAL by value
+        // (struct `==` does NOT). A folded `(% 4 2)` = empty-magnitude zero must match a literal `0`.
+        let empty_zero = IntValue::zero();
+        let byte_zero = IntValue {
+            negative: false,
+            magnitude: vec![0],
+        };
+        assert_ne!(
+            empty_zero, byte_zero,
+            "struct == distinguishes the representations"
+        );
+        assert!(
+            empty_zero.eq_value(&byte_zero),
+            "eq_value compares by value"
+        );
+        // Leading zeros are ignored; genuine values still compare correctly.
+        assert!(IntValue::from_i64(5).eq_value(&IntValue {
+            negative: false,
+            magnitude: vec![0, 0, 5],
+        }));
+        assert!(!IntValue::from_i64(5).eq_value(&IntValue::from_i64(6)));
+        // Sign matters for non-zero, not for zero.
+        assert!(!IntValue::from_i64(-5).eq_value(&IntValue::from_i64(5)));
+        assert!(empty_zero.eq_value(&IntValue {
+            negative: true,
+            magnitude: vec![],
+        }));
     }
 
     #[test]

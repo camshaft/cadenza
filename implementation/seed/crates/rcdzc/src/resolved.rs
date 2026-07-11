@@ -223,6 +223,18 @@ pub enum Resolved {
         then_: StructId,
         else_: StructId,
     },
+    /// A `(match scrutinee (pattern body)…)` — the pattern engine's surface. `scrutinee` is the value
+    /// examined; each arm is a `(pattern-occ, body-occ)` pair, tried top-to-bottom. A pattern is carried
+    /// as its AST occurrence (NOT a `Pattern` enum — `intermediate-representations.md`: patterns are
+    /// ordinary nodes classified where consumed), so a literal pattern is an `Int`/`Bool` node and the
+    /// wildcard is the name `_`. Stage 3a handles a SCALAR scrutinee with literal + wildcard arms: an arm
+    /// is a probe `scrutinee == literal` (or always, for `_`) and its body; the match lowers to a chain
+    /// of `if`s (folded when the scrutinee is constant). Binder patterns / sum / tuple patterns join the
+    /// same engine in later increments.
+    Match {
+        scrutinee: StructId,
+        arms: Vec<(StructId, StructId)>,
+    },
     /// A record literal: a fixed SET of named fields, each label mapping to its value occurrence. Held
     /// as a `BTreeMap` so the fields are canonically ordered (order-independent equality/projection)
     /// and a field lookup is O(log n), not a linear scan. The labels are symbols (never resolved); the

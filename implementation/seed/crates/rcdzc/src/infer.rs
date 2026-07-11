@@ -24,7 +24,7 @@ use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::resolve::resolved_of;
 use crate::resolved::Resolved;
-use crate::ty::Ty;
+use crate::ty::{Scheme, Ty};
 use crate::unify::{Fresh, Subst};
 use tracing::trace;
 
@@ -37,7 +37,14 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     }
     let t = compute(db, id);
     trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "solved type");
-    db.types.fill(id, t.clone());
+    // Do NOT memoize a provisional `Any`: a node typed `Any` here may be a recursive-def parameter (or
+    // a reference to one) whose CONNECTED solve (A2) has not run yet — caching `Any` would freeze that
+    // stale answer even after the solve fills the real type. `Any` is compatible with everything and
+    // costs only a recompute, so leaving it unmemoized is safe and lets the solved type win on a later
+    // demand. Every DEFINITE type is memoized as before (the solve-once discipline holds for real types).
+    if !matches!(t, Ty::Any) {
+        db.types.fill(id, t.clone());
+    }
     t
 }
 
@@ -88,6 +95,18 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // CHECKS are `type_errors`' job; this fills the value column.
             then_ty.join(&else_ty)
         }
+        // A match's type is the JOIN of its arm bodies (like an `if` over N branches) — every arm must
+        // produce the same type, and a branch that fixed a deferred width contributes it. The
+        // arms-agree and exhaustiveness CHECKS are `type_errors`' job; this fills the value column.
+        Resolved::Match { scrutinee, arms } => {
+            let _scrut = type_of(db, scrutinee);
+            let mut ty = Ty::Any;
+            for (_, body) in &arms {
+                let bt = type_of(db, *body);
+                ty = ty.join(&bt);
+            }
+            ty
+        }
         // A bare built-in operation value standing alone has no scalar type yet (it is not a runtime
         // value until functions/closures exist). Typed `Any`; applying it is what has a type.
         Resolved::Prim(_) => Ty::Any,
@@ -116,10 +135,14 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Poison(_) => Ty::Any,
         // A lambda/def parameter used as a value — a formal. If its binder is ANNOTATED (`(: a T)`),
         // its type is that annotation `T` — so the body type-checks against a definite parameter type
-        // (`(: a Bool)` used as an integer operand is caught). An UNANNOTATED parameter is `Any` (it
-        // never reaches a runtime slot until it is substituted at a call site, where the concrete
-        // argument's type flows in via the fold); the full HM rule gives it a fresh variable later.
-        Resolved::Param { binder } => param_annot_ty(db, binder).unwrap_or(Ty::Any),
+        // (`(: a Bool)` used as an integer operand is caught). Otherwise, for the parameter of a
+        // RECURSIVE def (which cannot inline, so its type must be inferred rather than flowing from a
+        // call site), the CONNECTED def-body solve (`solve_recursive_params`, A2) infers it from its
+        // uses; a still-`None` result means either a non-recursive param (typed `Any` — it inlines at
+        // its call site, where the argument's type flows in via the fold) or an unconstrained one.
+        Resolved::Param { binder } => param_annot_ty(db, binder)
+            .or_else(|| solved_param_ty(db, binder))
+            .unwrap_or(Ty::Any),
         // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value
         // (a `(typeval …)` node, OR a value the evaluator reduces to a type) types as `Type`; this is
         // what makes a type first-class (it can be passed, returned, checked). A compile-time lambda
@@ -144,6 +167,340 @@ fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     crate::eval::typeval_of(db, ty_expr)
 }
 
+/// The inferred type of an unannotated RECURSIVE-def parameter whose name occurrence is `binder`, or
+/// `None` if `binder` is not such a parameter (a non-recursive def's param inlines at its call site and
+/// stays `Any`; an annotated param is handled by `param_annot_ty`). Locates `binder`'s def, and — if
+/// that def is recursive — runs the connected parameter solve (memoized), returning `binder`'s solved
+/// type. This is the ONE place a parameter's type is INFERRED from its uses rather than read off an
+/// annotation or a call-site argument (ANF step 2 / A2).
+fn solved_param_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
+    if let Some(t) = db.param_types.get(&binder) {
+        return Some(t.clone());
+    }
+    let def = def_of_param(db, binder)?;
+    // Only a RECURSIVE def needs this: a non-recursive def's call always inlines (β-reduces), so its
+    // param's type flows from the concrete argument and never reaches here as `Any`. Solving a
+    // non-recursive param would be redundant work and could mask the inlining path — so gate on it.
+    let body = db.defs[def].body?;
+    if !crate::eval::is_recursive(db, body) {
+        return None;
+    }
+    solve_recursive_params(db, def);
+    db.param_types.get(&binder).cloned()
+}
+
+/// The `db.defs` index whose signature declares the parameter name-occurrence `binder`, or `None` if
+/// `binder` is not a top-level def parameter (e.g. a `fn` lambda parameter). Walks up from the binder to
+/// the `(def (NAME param…) body)` it sits in.
+fn def_of_param(db: &mut Db, binder: StructId) -> Option<usize> {
+    // A param occurrence is either bare (`binder`'s parent is the signature list) or the name of a
+    // `(: name T)` binder (parent is the `:` form, whose parent is the signature). Find the signature
+    // list, then the def whose `sig_occ` is it.
+    let parent = db.parent_of(binder)?;
+    let sig = if db.ast.as_form(parent, ":").is_some() {
+        db.parent_of(parent)?
+    } else {
+        parent
+    };
+    db.defs.iter().position(|d| d.sig_occ == sig)
+}
+
+/// Solve the parameter types of a RECURSIVE def by a single connected, threaded-`Subst` unification
+/// over its body — the one place inference is a connected solve rather than a per-node column read
+/// (ANF step 2 / A2). Fills `db.param_types` for EVERY parameter of the def at once.
+///
+/// The method: give each parameter a fresh type variable and bind it in a local env; walk the body
+/// collecting constraints on those variables — where a parameter (or an expression over it) is used as
+/// an operand of a built-in operation, unify its variable with the operand type the operation's SCHEME
+/// requires; where a self-call passes an argument in a parameter position, unify the argument's type
+/// with that parameter's variable (the fixpoint — a recursive call constrains the very signature being
+/// solved). Then ground each variable: a solved variable becomes its concrete type; an UNCONSTRAINED
+/// variable (no use pinned it) grounds to the default integer only if a use marked it numeric, else it
+/// is left `Any` (the parameter is genuinely unconstrained — the export/select layer then declines,
+/// asking for an annotation, rather than the compiler inventing a type). Order-independent because
+/// unification is: the constraints commute, so demand order cannot change the solution.
+fn solve_recursive_params(db: &mut Db, def: usize) {
+    // Re-entry backstop: if this def's solve is already on the stack, do not recompute (a demand landing
+    // mid-solve reads the provisional/absent entry). The local-env walk below does not call `type_of`
+    // on a param, so this is defensive.
+    if db.solving_params.contains(&def) {
+        return;
+    }
+    db.solving_params.insert(def);
+
+    let sig_params = db.defs[def].params.clone();
+    let mut fresh = Fresh::new();
+    // Each parameter's name occurrence → its fresh type variable. An ANNOTATED param uses its
+    // annotation type as a fixed constraint (not a fresh var), so a mixed signature still solves.
+    let mut env: std::collections::HashMap<StructId, Ty> = std::collections::HashMap::new();
+    let mut param_binders: Vec<(StructId, Ty)> = Vec::new();
+    for p in &sig_params {
+        let binder = match db.ast.as_form(*p, ":").and_then(|t| t.first().copied()) {
+            Some(name_occ) => name_occ,
+            None => *p,
+        };
+        let var = param_annot_ty(db, binder).unwrap_or_else(|| Ty::Var(fresh.var()));
+        env.insert(binder, var.clone());
+        param_binders.push((binder, var));
+    }
+
+    let mut subst = Subst::new();
+    if let Some(body) = db.defs[def].body {
+        collect_param_constraints(db, body, &env, def, &mut subst, &mut fresh);
+    }
+
+    // Ground each parameter: apply the substitution, then default a still-unsolved NUMERIC variable to
+    // the signed-64 integer (a bare literal's default) and leave anything else `Any` (unconstrained).
+    for (binder, var) in param_binders {
+        let solved = subst.apply(&var);
+        let grounded = ground_param(solved);
+        trace!(target: "rcdzc::infer", def, binder = binder.0, ty = %grounded.render_name(), "A2: solved recursive param");
+        db.param_types.insert(binder, grounded);
+    }
+
+    db.solving_params.remove(&def);
+}
+
+/// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the
+/// default integer (`Int64`), matching a bare literal's defaulting; a fully-unconstrained variable stays
+/// `Any` (the parameter is genuinely undetermined — the boundary layer declines rather than guess).
+fn ground_param(ty: Ty) -> Ty {
+    match ty {
+        // A variable no constraint pinned: leave it `Any` — the caller (layout/select) declines an
+        // ambiguous parameter rather than inventing a width.
+        Ty::Var(_) => Ty::Any,
+        // A deferred-width integer (a numeric use pinned it integer but not the width) grounds to the
+        // default width, exactly as a bare literal does.
+        Ty::Int(_) => Ty::int64(),
+        other => other,
+    }
+}
+
+/// Walk the resolved body collecting constraints on the parameter variables in `env`, extending
+/// `subst`. For each application of a built-in operation, the operation's SCHEME fixes what type each
+/// argument must have; unifying the argument's type into the scheme's parameter positions constrains
+/// any parameter variable that argument mentions. A self/mutual call to a def in the same recursive
+/// group unifies each argument against the CALLEE's parameter variable (read from `env` when the callee
+/// is THIS def; a cross-def callee's params are solved by its own pass — its scheme is read there). The
+/// walk descends every sub-expression that runs.
+fn collect_param_constraints(
+    db: &mut Db,
+    node: StructId,
+    env: &std::collections::HashMap<StructId, Ty>,
+    def: usize,
+    subst: &mut Subst,
+    fresh: &mut Fresh,
+) {
+    match resolved_of(db, node) {
+        Resolved::Apply { head, args } => {
+            // An operator (a prim with a `(meta t)` scheme): instantiate it and unify each argument's
+            // type into the curried parameter positions. This is what pins `n` to an integer in `(= n
+            // 0)` / `(+ n …)` and to a Bool in a boolean op.
+            if let Some(scheme) = crate::eval::scheme_of(db, head, fresh) {
+                let mut cur = crate::unify::instantiate(&scheme, fresh);
+                for &arg in &args {
+                    let applied = subst.apply(&cur);
+                    if let Ty::Fn(param, result) = applied {
+                        let at = arg_ty_in_env(db, arg, env, subst);
+                        let _ = crate::unify::unify(subst, &param, &at);
+                        cur = *result;
+                    } else {
+                        break;
+                    }
+                }
+            } else if let Some(callee) = callee_def_index_for_infer(db, head) {
+                // A call to a user def. If it is THIS def (self-recursion), unify each argument against
+                // this def's own parameter variable — the fixpoint. (A cross-def callee in a mutual
+                // group is handled by its own solve; here we still constrain the argument sub-terms.)
+                if callee == def {
+                    // The parameters in signature order (env is unordered) — arguments match positionally.
+                    let ordered = ordered_param_binders(db, def);
+                    for (i, &arg) in args.iter().enumerate() {
+                        if let Some(&binder) = ordered.get(i)
+                            && let Some(pvar) = env.get(&binder)
+                        {
+                            let at = arg_ty_in_env(db, arg, env, subst);
+                            let _ = crate::unify::unify(subst, pvar, &at);
+                        }
+                    }
+                }
+            }
+            // Descend into the head (a computed head) and every argument for THEIR own constraints.
+            if matches!(resolved_of(db, head), Resolved::Apply { .. }) {
+                collect_param_constraints(db, head, env, def, subst, fresh);
+            }
+            for arg in args {
+                collect_param_constraints(db, arg, env, def, subst, fresh);
+            }
+        }
+        Resolved::If { cond, then_, else_ } => {
+            // The condition must be Bool — constrain it (a bare-param condition `(if n …)` pins n Bool).
+            let ct = arg_ty_in_env(db, cond, env, subst);
+            let _ = crate::unify::unify(subst, &ct, &Ty::Bool);
+            collect_param_constraints(db, cond, env, def, subst, fresh);
+            collect_param_constraints(db, then_, env, def, subst, fresh);
+            collect_param_constraints(db, else_, env, def, subst, fresh);
+        }
+        Resolved::Match { scrutinee, arms } => {
+            // Each LITERAL pattern constrains the scrutinee's type: matching `n` against the integer
+            // literal `0` (or `true`) means `n` has that literal's type. So unify the scrutinee's type
+            // with each non-wildcard pattern's type — this is what pins a `match`-based recursive
+            // parameter (`(match n (0 …) (_ …))` → `n : Int64`). Then descend into scrutinee + bodies.
+            let st = arg_ty_in_env(db, scrutinee, env, subst);
+            for (pat, _) in &arms {
+                if let Some(pt) = literal_pattern_ty(db, *pat) {
+                    let _ = crate::unify::unify(subst, &st, &pt);
+                }
+            }
+            collect_param_constraints(db, scrutinee, env, def, subst, fresh);
+            for (_, body) in &arms {
+                collect_param_constraints(db, *body, env, def, subst, fresh);
+            }
+        }
+        Resolved::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_param_constraints(db, value, env, def, subst, fresh);
+            }
+            collect_param_constraints(db, body, env, def, subst, fresh);
+        }
+        Resolved::Annot { expr, .. } => collect_param_constraints(db, expr, env, def, subst, fresh),
+        Resolved::Member { operand, .. } => {
+            collect_param_constraints(db, operand, env, def, subst, fresh)
+        }
+        Resolved::Record { fields } => {
+            for value in fields.values() {
+                collect_param_constraints(db, *value, env, def, subst, fresh);
+            }
+        }
+        // Leaves and references contribute no sub-constraints (a bare param ref's constraint comes from
+        // the operation that consumes it, handled at the enclosing Apply).
+        _ => {}
+    }
+}
+
+/// The type a LITERAL match pattern implies for the scrutinee, or `None` for a non-literal pattern (the
+/// wildcard `_`, or a binder — which constrains nothing). An integer-literal pattern implies a deferred
+/// integer (grounds like a bare literal); a boolean-literal pattern implies `Bool`. Used to constrain a
+/// scrutinee from its arms (both in the parameter solve and — later — exhaustiveness).
+fn literal_pattern_ty(db: &mut Db, pat: StructId) -> Option<Ty> {
+    match resolved_of(db, pat) {
+        Resolved::Int(_) => Some(Ty::int()),
+        Resolved::Bool(_) => Some(Ty::Bool),
+        _ => None,
+    }
+}
+
+/// The type of an argument occurrence within the parameter-solve env: a reference to a parameter being
+/// solved is its variable (applied through `subst`); anything else is its ordinary solved `type_of`
+/// (a literal is a deferred int, a nested op is its result type, a cross-def call its scheme result).
+fn arg_ty_in_env(
+    db: &mut Db,
+    arg: StructId,
+    env: &std::collections::HashMap<StructId, Ty>,
+    subst: &Subst,
+) -> Ty {
+    // A reference to a parameter being solved → its variable. A body param reference resolves to
+    // `Ref { value: <param binder> }` (or a bare `Param { binder }`).
+    match resolved_of(db, arg) {
+        Resolved::Ref { value } => {
+            if let Some(var) = env.get(&value) {
+                return subst.apply(var);
+            }
+        }
+        Resolved::Param { binder } => {
+            if let Some(var) = env.get(&binder) {
+                return subst.apply(var);
+            }
+        }
+        _ => {}
+    }
+    // Not a parameter reference — its ordinary type. (Reads the type column; a nested op over a param
+    // returns the op's result type, which the enclosing unify relates to the param var separately.)
+    type_of(db, arg)
+}
+
+/// The parameter NAME occurrences of def `def` in signature order (the order arguments match). Mirrors
+/// the peeling `solve_recursive_params` does, but returns them ordered for positional self-call unify.
+fn ordered_param_binders(db: &Db, def: usize) -> Vec<StructId> {
+    db.defs[def]
+        .params
+        .iter()
+        .map(
+            |p| match db.ast.as_form(*p, ":").and_then(|t| t.first().copied()) {
+                Some(name_occ) => name_occ,
+                None => *p,
+            },
+        )
+        .collect()
+}
+
+/// The generalized SIGNATURE of top-level definition `def` as a [`Scheme`] — its type as a value, so a
+/// CALL can be typed by instantiating this scheme rather than by β-reducing the body. Curried: a def
+/// `(f a b)` whose params solve to `A`,`B` and whose body solves to `R` has scheme `A -> B -> R` (a
+/// nullary def is just `R`). Memoized on `db.def_schemes` keyed by the def index (a pure function of
+/// the fixed def structure).
+///
+/// **A1 scope (see `implementation/DESIGN-anf-step2-runtime-functions.md`).** This computes the scheme
+/// ONLY for a def whose signature is already fully DETERMINED without a connected def-body solve —
+/// every parameter has a definite machine type (from its annotation) and the body types to a definite
+/// type reading those params. That covers an exported/annotated function, whose scheme here AGREES
+/// with what β-reduction produces at a call (cross-checked in tests). It returns `None` — deferring to
+/// the existing β-reduction typing — when a parameter is undetermined (`Any`, an unannotated param
+/// needing inference) OR the body's type is `Any` (a recursive self-call, which needs the fixpoint A2
+/// adds). So this is purely additive: no call yet reads it, and the fallback path is unchanged.
+pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
+    if let Some(cached) = db.def_schemes.get(&def) {
+        return cached.clone();
+    }
+    // RE-ENTRY GUARD. Computing a recursive def's scheme demands `type_of` of its body, whose self-call
+    // demands this def's scheme AGAIN before the memo is filled. Seed a `None` sentinel FIRST, so the
+    // re-entrant call reads `None` (a self-call types as `Any`, absorbed by the base case — the same
+    // behavior as the β-reduction recursion guard) rather than looping forever. The real scheme
+    // overwrites the sentinel once the body solve completes.
+    db.def_schemes.insert(def, None);
+    let scheme = compute_def_scheme(db, def);
+    db.def_schemes.insert(def, scheme.clone());
+    scheme
+}
+
+fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
+    let body = db.defs[def].body?;
+    let sig_params = db.defs[def].params.clone();
+    // Each parameter's type — read `type_of` on its NAME occurrence (the annotation type for an
+    // annotated param, `Any` for an unannotated one). An `Any` parameter is UNDETERMINED here: it
+    // needs the connected def-body solve A2 adds, so decline the scheme and let the caller β-reduce.
+    let mut param_tys: Vec<Ty> = Vec::new();
+    for p in &sig_params {
+        let binder = match db.ast.as_form(*p, ":").and_then(|t| t.first().copied()) {
+            Some(name_occ) => name_occ,
+            None => *p,
+        };
+        let ty = type_of(db, binder);
+        if matches!(ty, Ty::Any) {
+            trace!(target: "rcdzc::infer", def, "def_scheme: an undetermined param → defer to β-reduction (A2)");
+            return None;
+        }
+        param_tys.push(ty);
+    }
+    // The result type is the body's solved type. `Any` here means the body could not be typed without
+    // reducing a self-call (recursion) — defer to the fixpoint A2 adds.
+    let result = type_of(db, body);
+    if matches!(result, Ty::Any) {
+        trace!(target: "rcdzc::infer", def, "def_scheme: undetermined result (recursive?) → defer (A2)");
+        return None;
+    }
+    // Curry: `p_0 -> p_1 -> … -> result`. A nullary def is just `result`.
+    let mut ty = result;
+    for pt in param_tys.into_iter().rev() {
+        ty = Ty::Fn(Box::new(pt), Box::new(ty));
+    }
+    // A1 schemes are MONOMORPHIC (every param has a concrete annotated type; nothing is quantified).
+    // Real let-generalization — quantifying a free variable a parameter's type still carries — arrives
+    // with the connected solve (A2), which is where a polymorphic def signature becomes meaningful.
+    trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), "def_scheme: determined monomorphic signature");
+    Some(Scheme::mono(ty))
+}
+
 /// The result type of applying `head` to `args` — the ONE generic application rule. Read the head's
 /// type as a [`Scheme`] (its `(meta t)`, a type-lambda reduced by the evaluator), instantiate it with
 /// fresh variables, and unify each argument's type into the curried parameter positions; the result
@@ -158,16 +515,31 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // a scheme-based typing of a lambda head arrives with a def's inferred scheme.)
     if crate::eval::lambda_body(db, head).is_some() {
         trace!(target: "rcdzc::infer", head = head.0, args = args.len(), "apply: β-reduce lambda head for its type");
-        return match db.enter_reduction() {
+        let reduced_ty = match db.enter_reduction() {
             Some(mut guard) => {
                 let g = guard.db();
                 match crate::eval::apply_lambda(g, head, args) {
-                    Ok(Some(reduced)) => type_of(g, reduced),
-                    _ => Ty::Any,
+                    Ok(Some(reduced)) => Some(type_of(g, reduced)),
+                    _ => None, // recursive / partial — β-reduction can't type it; try the scheme below.
                 }
             }
-            None => Ty::Any, // recursive — the fault is reported by the lowering/poison path.
+            None => None, // depth limit (recursive) — try the scheme below.
         };
+        if let Some(t) = reduced_ty {
+            return t;
+        }
+        // β-reduction couldn't type it (a RECURSIVE callee). Type the call by the callee's DEF SCHEME
+        // instead — an annotated recursive def has a determined signature (`def_scheme`), so applying
+        // it to the args yields the real result type (Int64 for `(sum-to 3)`) rather than `Any`. This
+        // is what lets a recursive call's RESULT flow to a machine type (a wasm return valtype). A
+        // callee with no determined scheme (unannotated, needs the connected solve) stays `Any`.
+        if let Some(callee) = callee_def_index_for_infer(db, head)
+            && let Some(scheme) = def_scheme(db, callee)
+        {
+            trace!(target: "rcdzc::infer", head = head.0, callee, "apply: recursive call typed by def_scheme");
+            return apply_scheme_to_args(db, &scheme, args);
+        }
+        return Ty::Any; // recursive with an undetermined signature — fault reported elsewhere.
     }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
@@ -197,6 +569,40 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
     }
     subst.apply(&cur)
+}
+
+/// Apply a def SCHEME to `args`, returning the result type — instantiate it with fresh variables, then
+/// peel one curried parameter per argument (unifying the arg's type into the parameter). The result is
+/// the instantiated return type after substitution. Used to type a RECURSIVE call by its callee's
+/// signature (which β-reduction can't type). Mirrors the operator-scheme application in `apply_type`.
+fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
+    let mut fresh = Fresh::new();
+    let mut cur = crate::unify::instantiate(scheme, &mut fresh);
+    let mut subst = Subst::new();
+    for &arg in args {
+        let applied = subst.apply(&cur);
+        match applied {
+            Ty::Fn(param, result) => {
+                let at = type_of(db, arg);
+                let _ = crate::unify::unify(&mut subst, &param, &at);
+                cur = *result;
+            }
+            _ => return Ty::Any,
+        }
+    }
+    subst.apply(&cur)
+}
+
+/// The `db.defs` index of the top-level def an application head names, if any — for typing a recursive
+/// call by its scheme. Follows a `Ref` to a `Lambda` whose body matches a def's body occurrence. (The
+/// infer-side sibling of `lower::callee_def_index`; kept here so infer does not depend on lower.)
+fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
+    let body = match crate::resolve::resolved_of(db, head) {
+        crate::resolved::Resolved::Lambda { body, .. } => body,
+        crate::resolved::Resolved::Ref { value } => return callee_def_index_for_infer(db, value),
+        _ => return None,
+    };
+    db.defs.iter().position(|d| d.body == Some(body))
 }
 
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and
@@ -329,6 +735,31 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
             collect(db, body, out);
         }
+        // A match: every arm body must AGREE in type with the first (like an `if`'s branches), and the
+        // scrutinee + bodies are checked for their own faults. (Exhaustiveness — a scalar match with no
+        // covering arm — is a lowering decision for now; the arms-agree check is the type fault here.)
+        Resolved::Match { scrutinee, arms } => {
+            if let Some((_, first_body)) = arms.first() {
+                let first_ty = type_of(db, *first_body);
+                for (_, body) in arms.iter().skip(1) {
+                    let bt = type_of(db, *body);
+                    if !first_ty.agrees_with(&bt) {
+                        out.push(Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "match arms differ: {} vs {}",
+                                first_ty.render_name(),
+                                bt.render_name()
+                            ),
+                        ));
+                    }
+                }
+            }
+            collect(db, scrutinee, out);
+            for (_, body) in &arms {
+                collect(db, *body, out);
+            }
+        }
         Resolved::Record { fields } => {
             for (_, value) in fields {
                 collect(db, value, out);
@@ -456,6 +887,160 @@ mod tests {
         assert!(
             matches!(db.core.get(body), Slot::Absent),
             "core filled without demand"
+        );
+    }
+
+    // ── def_scheme (ANF step 2, sub-increment A1): a def's signature as a value ────────────────────
+    //
+    // These pin the FOUNDATION only: a fully-determined (annotated) def's scheme is its curried
+    // signature and it AGREES with what β-reduction produces at a call; an undetermined (unannotated /
+    // recursive) def declines the scheme (defers to β-reduction). No caller reads it yet.
+
+    use crate::testkit::parse;
+
+    /// The def index of `name` in a parsed program.
+    fn def_of(db: &Db, name: &str) -> usize {
+        db.def_by_name(name).expect("def present")
+    }
+
+    #[test]
+    fn def_scheme_of_an_annotated_function_is_its_curried_signature() {
+        // (def (add (: a Int64) (: b Int64)) (+ a b)) → Int64 -> Int64 -> Int64.
+        let ast = parse(
+            "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "add");
+        let scheme = def_scheme(&mut db, d).expect("determined scheme");
+        let expected = Ty::Fn(
+            Box::new(Ty::int64()),
+            Box::new(Ty::Fn(Box::new(Ty::int64()), Box::new(Ty::int64()))),
+        );
+        assert!(
+            scheme.ty.agrees_with(&expected),
+            "add scheme {} != Int64->Int64->Int64",
+            scheme.ty.render_name()
+        );
+    }
+
+    #[test]
+    fn def_scheme_agrees_with_beta_reduction_at_a_call() {
+        // The scheme's RESULT (after applying both args) must equal the type β-reduction gives the
+        // call `(add 20 22)` — the cross-check that the scheme is a faithful stand-in for inlining.
+        let ast = parse(
+            "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) (add 20 22)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        // β-reduction path: type of the call node in main's body.
+        let main_body = db.defs[def_of(&db, "main")].body.expect("main body");
+        let call_ty = type_of(&mut db, main_body);
+        // scheme path: peel the two Fn arrows.
+        let d = def_of(&db, "add");
+        let scheme = def_scheme(&mut db, d).expect("determined scheme");
+        let result = match scheme.ty {
+            Ty::Fn(_, r) => match *r {
+                Ty::Fn(_, r2) => *r2,
+                other => other,
+            },
+            other => other,
+        };
+        assert!(
+            call_ty.agrees_with(&result),
+            "β-reduced call type {} disagrees with scheme result {}",
+            call_ty.render_name(),
+            result.render_name()
+        );
+    }
+
+    #[test]
+    fn def_scheme_of_a_nullary_def_is_its_body_type() {
+        let ast = parse("(module m (def (main) 42) (export main))");
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "main");
+        let scheme = def_scheme(&mut db, d).expect("nullary scheme");
+        assert!(scheme.ty.agrees_with(&Ty::int64()));
+    }
+
+    #[test]
+    fn def_scheme_declines_an_unannotated_parameter() {
+        // `(def (id x) x)` — `x` is unannotated (`Any`), so its signature needs the connected solve
+        // (A2). A1 declines the scheme and defers to β-reduction.
+        let ast = parse("(module m (def (id x) x) (def (main) (id 5)) (export main))");
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "id");
+        assert!(
+            def_scheme(&mut db, d).is_none(),
+            "an unannotated param must defer to β-reduction (A2 territory)"
+        );
+    }
+
+    #[test]
+    fn def_scheme_of_an_annotated_recursive_def_is_determined_by_absorption() {
+        // KEY FINDING (shrinks A2): an ANNOTATED recursive def types WITHOUT an explicit fixpoint. The
+        // self-call `(sum-to …)` returns `Any` (the recursion guard in `apply_type`), and `Any` is
+        // ABSORBED by unification/join with the concrete parts — the base case `0` and `(+ n …)` pin
+        // the result to Int64. So `def_scheme(sum-to)` = Int64 -> Int64 already, and this is
+        // order-independent (the self-call is always `Any` regardless of visit order; the concrete
+        // branch determines the type). An explicit recursion fixpoint (A2) is only needed when NO
+        // concrete part pins the result — which, for terminating monomorphic recursion, cannot happen
+        // (there must be a base case, and it pins the type).
+        let ast = parse(
+            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "sum-to");
+        let scheme = def_scheme(&mut db, d).expect("annotated recursive def types via absorption");
+        let expected = Ty::Fn(Box::new(Ty::int64()), Box::new(Ty::int64()));
+        assert!(
+            scheme.ty.agrees_with(&expected),
+            "sum-to scheme {} != Int64->Int64",
+            scheme.ty.render_name()
+        );
+    }
+
+    #[test]
+    fn def_scheme_of_an_unannotated_recursive_def_is_solved_by_a2() {
+        // The ACTUAL corpus `sum-to` has an UNANNOTATED param `(def (sum-to n) …)`. A2's connected solve
+        // (`solve_recursive_params`) infers `n : Int64` from its uses (`(= n 0)`, `(+ n …)`), so the def
+        // now HAS a scheme `Int64 -> Int64` — where before A2 it declined. (The mechanism the recursive
+        // corpus rides.)
+        let ast = parse(
+            "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let d = def_of(&db, "sum-to");
+        let scheme = def_scheme(&mut db, d).expect("A2 solves the unannotated recursive signature");
+        let expected = Ty::Fn(Box::new(Ty::int64()), Box::new(Ty::int64()));
+        assert!(
+            scheme.ty.agrees_with(&expected),
+            "sum-to scheme {} != Int64->Int64",
+            scheme.ty.render_name()
+        );
+    }
+
+    #[test]
+    fn recursive_param_solve_is_order_independent() {
+        // The NON-NEGOTIABLE property (build-order Stage 2 "done when"; the coarse-kind post-mortem): a
+        // recursive def's parameter type is the SAME regardless of which node's type is demanded first.
+        // Solve `sum-to`'s param via two different first-demands and assert they agree.
+        let src = "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))";
+
+        // Order A: demand the def's scheme first (drives the solve from the signature).
+        let mut db_a = Db::load(parse(src));
+        let da = def_of(&db_a, "sum-to");
+        let sa = def_scheme(&mut db_a, da).expect("scheme A");
+
+        // Order B: demand `main`'s body type first (drives the solve from the call site), THEN the scheme.
+        let mut db_b = Db::load(parse(src));
+        let main_b = db_b.defs[def_of(&db_b, "main")].body.expect("main body");
+        let _ = type_of(&mut db_b, main_b);
+        let db_b_def = def_of(&db_b, "sum-to");
+        let sb = def_scheme(&mut db_b, db_b_def).expect("scheme B");
+
+        assert_eq!(
+            sa.ty.render_name(),
+            sb.ty.render_name(),
+            "recursive param solve must be order-independent"
         );
     }
 }

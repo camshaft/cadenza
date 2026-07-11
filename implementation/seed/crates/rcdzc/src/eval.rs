@@ -174,11 +174,21 @@ fn sign_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
 /// is structurally copied (its children reduced in turn).
 pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, StructId>) -> StructId {
     // A reference to a substituted parameter → its argument. A parameter reference resolves to
-    // `Ref { value: <param binder occ> }`; if that binder is one we're substituting, use the arg.
-    if let Resolved::Ref { value } = resolved_of(db, body)
-        && let Some(&arg) = arg_of.get(&value)
-    {
-        return arg;
+    // `Ref { value: <param binder occ> }`; if that binder is one we're substituting, use the arg. The
+    // ref is followed TRANSITIVELY: a MATCH-ARM BINDER `k` resolves (Case 5) to the scrutinee
+    // occurrence, which itself resolves to the param binder — so `k` reaches the substituted argument
+    // through the chain. (A chain that does not end at a substituted binder is not substituted.)
+    if let Resolved::Ref { value } = resolved_of(db, body) {
+        let mut target = value;
+        loop {
+            if let Some(&arg) = arg_of.get(&target) {
+                return arg;
+            }
+            match resolved_of(db, target) {
+                Resolved::Ref { value: next } => target = next,
+                _ => break,
+            }
+        }
     }
     // The parameter OCCURRENCE itself (in the binder position, not a ref) is not substituted — only
     // references are; but a bare param used as a value resolves to `Param{binder}` — substitute it.
@@ -348,6 +358,15 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             collect_callees(db, cond, out);
             collect_callees(db, then_, out);
             collect_callees(db, else_, out);
+        }
+        // A match's scrutinee and every arm BODY run when this body runs — a self-call inside an arm
+        // (e.g. `sum-to`'s match base case) is a real edge, so descend into each. (A pattern is not
+        // executed code — it is a probe — so it contributes no callee.)
+        Resolved::Match { scrutinee, arms } => {
+            collect_callees(db, scrutinee, out);
+            for (_, body) in arms {
+                collect_callees(db, body, out);
+            }
         }
         Resolved::Let { bindings, body } => {
             for (_, value) in bindings {

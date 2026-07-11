@@ -199,8 +199,35 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Core::Convert { operand, .. } => {
             collect_reached_poisons(db, operand, out);
         }
-        // A parameter reference is a runtime local read — no sub-poison, no fault to collect.
-        Core::Param { .. } | Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => {}
+        // An A-normal `let`: every bound value is unconditionally computed (a kept binding names a
+        // value used more than once, always evaluated), and the body is unconditionally reached — so a
+        // provable trap in either is a build failure. Descend into each.
+        Core::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_reached_poisons(db, value, out);
+            }
+            collect_reached_poisons(db, body, out);
+        }
+        // A runtime call: its arguments are unconditionally evaluated, so descend into each. The
+        // CALLEE's own body faults surface when it is collected (a reachable def is checked on its own
+        // — `collect_faults` covers every def body), so we do not re-enter the callee here.
+        Core::Call { args, .. } => {
+            for arg in args {
+                collect_reached_poisons(db, arg, out);
+            }
+        }
+        // A match: the scrutinee is unconditionally evaluated (descend), but each arm BODY is guarded
+        // (only the matching arm runs) — so a provable trap inside an arm is NOT a build failure, the
+        // same reachability rule as an `if`'s branches. Do not descend into the arm bodies.
+        Core::Match { scrutinee, .. } => {
+            collect_reached_poisons(db, scrutinee, out);
+        }
+        // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
+        Core::LocalRef { .. }
+        | Core::Param { .. }
+        | Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::Unit => {}
     }
 }
 

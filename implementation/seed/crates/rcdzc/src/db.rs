@@ -158,6 +158,46 @@ pub struct Db {
     pub(crate) rec_visited: std::collections::HashSet<StructId>,
     pub(crate) rec_worklist: Vec<StructId>,
 
+    /// Memo of a top-level definition's generalized SIGNATURE as a [`crate::ty::Scheme`] — its type as
+    /// a value, so a CALL can be typed by instantiating the scheme rather than β-reducing the body
+    /// (`infer::def_scheme`). Keyed by the `db.defs` index. `None` for a def whose signature needs the
+    /// CONNECTED def-body solve that is not built yet (an unannotated parameter needing let-generalized
+    /// inference, or a recursive def needing a fixpoint) — the caller falls back to β-reduction (the
+    /// current typing path) for those. A pure function of the fixed def structure, so it caches like
+    /// `build_cache`. (Foundation for ANF step 2 — see `implementation/DESIGN-anf-step2-runtime-functions.md`.)
+    pub(crate) def_schemes: std::collections::HashMap<usize, Option<crate::ty::Scheme>>,
+
+    /// Memo of an UNANNOTATED RECURSIVE def's parameter types, solved by the connected def-body solve
+    /// (`infer::solve_recursive_params` — ANF step 2 / A2). Keyed by the parameter's NAME occurrence
+    /// (the `Param` binder). A recursive def cannot inline, so its parameters need machine types to
+    /// cross to a wasm function; unlike an annotated param (whose type is its annotation) or a
+    /// non-recursive one (which inlines at its call site), a recursive unannotated param's type is
+    /// INFERRED from its uses in the body + call sites by a single threaded-`Subst` solve — the one
+    /// place inference is a connected solve rather than the per-node column read. `type_of` of such a
+    /// `Param` reads this map (triggering the solve on first demand); the solve fills every parameter of
+    /// the def at once. Order-independent (unification is), so the two ends agree regardless of demand
+    /// order. A pure function of the fixed def structure, so it caches like `def_schemes`.
+    pub(crate) param_types: std::collections::HashMap<StructId, crate::ty::Ty>,
+
+    /// Guard against re-entering the recursive-parameter solve for a def already being solved — the
+    /// solve types the body with a LOCAL env (not `type_of`), so a self-call reads the provisional
+    /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
+    /// mid-solve returns without recomputing. Holds the def indices whose solve is on the stack.
+    pub(crate) solving_params: std::collections::HashSet<usize>,
+
+    /// The set of `let`-binding INITIALIZER occurrences that `lower` decided to KEEP as an A-normal
+    /// `Core::Let` binding — a runtime value used more than once, named once so it is computed once
+    /// (`reference-compiler.md` §The Core Representation Is In A-Normal Form). Populated while lowering
+    /// the enclosing `let` (before its body's references are lowered), then read when lowering a
+    /// `Resolved::Ref`: a ref to an init in this set lowers to a `Core::LocalRef` (read the shared
+    /// slot) rather than following through to the value's core (which would recompute it). A binding
+    /// NOT in this set is copy-propagated / erased — the admin-redex elimination that keeps naming
+    /// free (`reference-compiler.md` ¶3), so a single-use or constant binding leaves no `Let` and the
+    /// emitted bytes are unchanged. It is a memo of a lowering decision (like `build_cache`), not a
+    /// column: the decision is a pure function of the fixed `let` structure, so recording it once and
+    /// reading it at each reference keeps the two ends of one binding in agreement.
+    pub(crate) kept_bindings: std::collections::HashSet<StructId>,
+
     /// The number of structure nodes in the DECODED PROGRAM — the count before the prelude and any
     /// evaluator-synthesized nodes were appended. A `StructId` below this is a genuine user-program
     /// node the front-end's span table is keyed by; a `StructId` at or above it is a PRELUDE node (a
@@ -203,6 +243,10 @@ impl Db {
             recursive: std::collections::HashMap::new(),
             rec_visited: std::collections::HashSet::new(),
             rec_worklist: Vec::new(),
+            kept_bindings: std::collections::HashSet::new(),
+            def_schemes: std::collections::HashMap::new(),
+            param_types: std::collections::HashMap::new(),
+            solving_params: std::collections::HashSet::new(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),

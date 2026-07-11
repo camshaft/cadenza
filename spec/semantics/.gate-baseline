@@ -29,13 +29,24 @@ pass	a later let binding sees an earlier one in the same let
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
+pass	a match on a computed runtime value dispatches on the result
+pass	a match on a record field selects a later literal arm
+pass	a match on a record-field-access scrutinee dispatches on the field value
+pass	a match on a runtime integer scrutinee producing a boolean
+pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
 pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies to all its arguments at once
 pass	a negative hexadecimal literal negates its value
+pass	a negative integer literal pattern matches a runtime scrutinee
+pass	a nested match on a runtime scrutinee
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a parameter carries a type annotation in the signature
 pass	a record is constructed and a field is read
+pass	a recursive def computes over its argument
+pass	a recursive def with a match base case computes over its argument
+pass	a recursive predicate with the self-call in the else branch is a Bool condition
+pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bitwise AND masks bits
@@ -47,18 +58,22 @@ pass	a runtime greater-than compares by signed order
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime remainder takes the dividend's sign
+pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation of a negative value uses two's complement and never traps
 pass	a runtime truncation to an unsigned byte keeps the low bits
 pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a type annotation consistent with the value is transparent
+pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an inner binding shadows an outer one only within its scope
+pass	an integer literal pattern matches a runtime scrutinee
 pass	an integer literal with digit separators
 pass	an offered ordering is total and deterministic
 pass	an unannotated program with a valid typing type-checks and runs
@@ -94,6 +109,8 @@ pass	modulo gives the remainder
 pass	multi-argument application is curried application
 pass	multiplication
 pass	projecting a field is independent of the order fields are written
+pass	recursive factorial with a match base case
+pass	recursive fibonacci with literal match base cases
 pass	structural equality holds component-wise
 pass	subtraction
 pass	the boolean literals
@@ -106,14 +123,17 @@ pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
+pass	the largest factorial that fits the integer type computes exactly
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the minimum Int64 literal reads as an integer
 pass	the module entrypoint is the def named main regardless of its position
+pass	the other parity of a mutually-recursive pair
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	true is greater than false
 pass	true is not less than false
+pass	two functions defined by mutual recursion compute a result
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
@@ -292,10 +312,6 @@ todo	a map with values of two different types is a type error
 todo	a match arm binds a nested tuple inside a sum payload
 todo	a match arm building a fresh runtime compound infers its shape
 todo	a match not covering the scrutinee is a compile-time rejection
-todo	a match on a computed runtime value dispatches on the result
-todo	a match on a record field selects a later literal arm
-todo	a match on a record-field-access scrutinee dispatches on the field value
-todo	a match on a runtime integer scrutinee producing a boolean
 todo	a match on a tuple-element-access scrutinee dispatches on the element value
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
@@ -315,12 +331,10 @@ todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a multi-way string-head dispatch resolves an operator name to its operation
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a name bound to a string keys a map by its value, not the literal name
-todo	a name pattern binds the runtime scrutinee when no literal arm matches
 todo	a named function is partially applied, bound, and used
 todo	a named multi-argument function applies in explicit curried form
 todo	a named width alias and its width-indexed expansion name the same type
 todo	a nearer handler on the call chain shadows an outer one
-todo	a negative integer literal pattern matches a runtime scrutinee
 todo	a negative right-shift count traps rather than masking
 todo	a negative shift count traps rather than masking
 todo	a negative string index yields None rather than wrapping to a large offset
@@ -332,7 +346,6 @@ todo	a nested constructor payload that misses the inner variant falls through to
 todo	a nested constructor value dispatches on both tags in a match
 todo	a nested element kind mismatch in equality is a type error
 todo	a nested literal pattern of the wrong type is a type error
-todo	a nested match on a runtime scrutinee
 todo	a nested option value annotated with the wrong inner payload type is rejected
 todo	a nested runtime tuple is returned as a result
 todo	a nested sum match missing an inner variant is non-exhaustive
@@ -388,8 +401,6 @@ todo	a record with a duplicate field name is a type error
 todo	a record with a non-adjacent duplicate field name is a type error
 todo	a record with a runtime field is returned as a program result
 todo	a recursive byte walk sums a runtime sequence via Bytes.at and match
-todo	a recursive def computes over its argument
-todo	a recursive def with a match base case computes over its argument
 todo	a recursive emitter dispatches on a sum's variants to build bytes per node
 todo	a recursive fold of a cons-list to bytes is the whole program result
 todo	a recursive function counts down through a stateful effect and bails at zero
@@ -401,8 +412,6 @@ todo	a recursive function that threads a tuple accumulator returns it
 todo	a recursive function threads two nested handlers' states at once
 todo	a recursive list accumulator grown by push and returned in the base arm stays a list
 todo	a recursive lower from a sum to Bytes assembles its output in match arms
-todo	a recursive predicate with the self-call in the else branch is a Bool condition
-todo	a recursive predicate with the self-call in the then branch is a Bool condition
 todo	a recursive reader decodes a CBOR application tree and evaluates it by head index
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
@@ -426,7 +435,6 @@ todo	a runtime multiplication that overflows traps
 todo	a runtime overflowing left shift traps
 todo	a runtime right shift by the bit width or more traps
 todo	a runtime scrutinee matching no arm traps
-todo	a runtime scrutinee selects a non-first literal arm
 todo	a runtime string bound from a sum payload compares equal to a string parameter
 todo	a runtime string compared against a literal folds against the literal side
 todo	a runtime string equality selects a branch by comparing a parameter to a literal
@@ -448,7 +456,6 @@ todo	a runtime-scrutinee match with a bare-binder first arm and a differently-ty
 todo	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 todo	a scalar element is projected directly from a function's runtime tuple result
 todo	a scalar element is projected from a let-bound runtime tuple
-todo	a self-recursive Bool-returning function whose recursive call is the then-branch
 todo	a sequencing block discards a pure compound intermediate
 todo	a sequencing block discards a pure list intermediate
 todo	a sequencing block whose last form is unit yields unit
@@ -546,7 +553,6 @@ todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an arithmetic operator with a single operand is rejected, not a crash
 todo	an association list is searched by key with a tuple-carrying Option match
-todo	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 todo	an effect discharged by a handler does not escape to the manifest
 todo	an effect operation reached with neither a handler nor a delegation is rejected
 todo	an effect performed in a callee is discharged by the caller's handler
@@ -576,7 +582,6 @@ todo	an in-bounds slice yields Some of the bytes at that range
 todo	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 todo	an integer if condition is a type error, not a running conditional
 todo	an integer literal pattern against a boolean scrutinee is a type error
-todo	an integer literal pattern matches a runtime scrutinee
 todo	an integer width above the 64-bit ceiling is rejected
 todo	an integer width from runtime data is rejected, keeping widths non-dependent
 todo	an internally ill-typed unselected match arm body is a type error
@@ -812,8 +817,6 @@ todo	reading the text a printer produced round-trips to an equal value
 todo	record equality is independent of the order fields are written
 todo	record fields render in canonical (key-sorted) order regardless of source order
 todo	record reshaping is subset comparison as explicit projection
-todo	recursive factorial with a match base case
-todo	recursive fibonacci with literal match base cases
 todo	removing a key drops its association and the size
 todo	removing an absent key leaves the map unchanged
 todo	removing an element yields a set without it
@@ -875,7 +878,6 @@ todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
 todo	the guarded-let conditional takes its else-branch when the conjunction is false
 todo	the intersection contains the elements in both sets
-todo	the largest factorial that fits the integer type computes exactly
 todo	the le modifier encodes a u16 little-endian
 todo	the length of a byte sequence is its byte count
 todo	the length of a concatenation is the sum of the two lengths
@@ -886,7 +888,6 @@ todo	the length of a slice is the slice's byte count
 todo	the maximum unsigned 8-bit value is its per-width bound
 todo	the minimum signed 8-bit value is its per-width bound
 todo	the number of elements counts distinct elements
-todo	the other parity of a mutually-recursive pair
 todo	the prelude binds Constructor values not pre-applied Sums
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
@@ -914,7 +915,6 @@ todo	two effects each declaring a same-named operation do not collide
 todo	two empty byte sequences are equal
 todo	two empty strings are equal
 todo	two equal chars compare equal
-todo	two functions defined by mutual recursion compute a result
 todo	two host calls consume their responses in order
 todo	two lists are concatenated into one flat list
 todo	two lists of different length are unequal, not a type error
