@@ -276,7 +276,7 @@ fn run(paths: &Paths, profile: &str, file: &Path, from: &str, store: Option<Path
     // ── The pipe: cdz-syntax <file> | rcdzc - -o - | cdz-run - ──
     // Stage 1 reads the program file and writes binary AST to stdout.
     let mut syntax = Command::new(&tools.syntax)
-        .args(["--from", from, "--to", "binary"])
+        .args(["convert", "--from", from, "--to", "binary"])
         .arg(file)
         .stdout(Stdio::piped())
         .spawn()
@@ -372,7 +372,7 @@ fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str) -> Ran {
 
     // Stage 1: program text (stdin) → binary AST (stdout).
     let mut syntax = Command::new(&tools.syntax)
-        .args(["--from", "sexpr", "--to", "binary", "-"])
+        .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -901,7 +901,7 @@ fn convert_bytes(tools: &Tools, input: &[u8], from: &str, to: &str) -> Option<Ve
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut child = Command::new(&tools.syntax)
-        .args(["--from", from, "--to", to, "-"])
+        .args(["convert", "--from", from, "--to", to, "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -984,9 +984,9 @@ fn emit(paths: &Paths, profile: &str, file: &Path, from: &str, out: Option<PathB
     let tools = build_tools(paths, profile);
     let out = out.unwrap_or_else(|| file.with_extension("wasm"));
 
-    // cdz-syntax <file> | rcdzc - -o <out>.
+    // cdz-syntax convert <file> | rcdzc - -o <out>.
     let syntax = Command::new(&tools.syntax)
-        .args(["--from", from, "--to", "binary"])
+        .args(["convert", "--from", from, "--to", "binary"])
         .arg(file)
         .stdout(Stdio::piped())
         .spawn()

@@ -20,3 +20,5 @@ edition = "2024"
 unicode-normalization = "0.1.25" # NFC on string/name leaves
 sha2 = "0.10"                    # schema-hash header over the arena type term
 num-bigint = "0.4"               # arbitrary-precision Int and the Decimal significand
+# Used ONLY by the `cdz-syntax` bin for arg parsing; the library itself takes no CLI dependency.
+clap = { version = "4", features = ["derive"] }

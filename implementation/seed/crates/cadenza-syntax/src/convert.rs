@@ -45,6 +45,19 @@ impl Format {
             Format::Flat => "flat",
         }
     }
+
+    /// Infer the surface format from a file path's extension: `.cdz`/`.ml` → ML, `.sexp`/`.sexpr` →
+    /// s-expr, `.bin`/`.cdzb` → binary. The output-only `debug`/`flat` views have no extension.
+    /// `None` if the path has no recognized extension (the caller then requires an explicit format).
+    pub fn from_extension(path: &str) -> Option<Format> {
+        let ext = std::path::Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+        match ext.as_str() {
+            "cdz" | "ml" => Some(Format::Ml),
+            "sexp" | "sexpr" => Some(Format::Sexpr),
+            "bin" | "cdzb" => Some(Format::Binary),
+            _ => None,
+        }
+    }
 }
 
 /// A conversion failure, with a human-readable message.
@@ -149,6 +162,18 @@ mod tests {
         assert_eq!(Format::parse("SEXPR"), Some(Format::Sexpr));
         assert_eq!(Format::parse("ml"), Some(Format::Ml));
         assert_eq!(Format::parse("nope"), None);
+    }
+
+    #[test]
+    fn format_from_extension() {
+        assert_eq!(Format::from_extension("prog.cdz"), Some(Format::Ml));
+        assert_eq!(Format::from_extension("prog.ml"), Some(Format::Ml));
+        assert_eq!(Format::from_extension("a/b/c.sexp"), Some(Format::Sexpr));
+        assert_eq!(Format::from_extension("prog.sexpr"), Some(Format::Sexpr));
+        assert_eq!(Format::from_extension("prog.bin"), Some(Format::Binary));
+        assert_eq!(Format::from_extension("PROG.CDZ"), Some(Format::Ml)); // case-insensitive
+        assert_eq!(Format::from_extension("prog"), None); // no extension
+        assert_eq!(Format::from_extension("prog.txt"), None); // unknown extension
     }
 
     #[test]
