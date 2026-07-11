@@ -104,16 +104,23 @@ fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
         .filter_map(|d| d.body.map(|b| (b, d.params.is_empty())))
         .collect();
     for (body, nullary) in bodies {
-        // Scope + type checking (`type_errors`) applies to EVERY body — a function body's free
-        // parameters are bound (a `Param` types fine), so an unbound name or type fault in it is still
-        // caught. The reached-POISON walk lowers the body, which only makes sense for a VALUE: a
-        // FUNCTION body (a def with parameters) is not lowered standalone — its params are
-        // unsubstituted until it is applied — so run the trap walk only on a nullary def's body (a
-        // value). A function body's traps surface when it is applied and its call site is lowered.
+        // TYPE CHECKING FIRST, then the reached-poison (lowering) walk — the safety ordering
+        // (`reference-compiler.md` §Outcomes Are Ordered By Safety). A CODED rejection (an ill-typed
+        // program, CDZ####) is a stronger, more actionable "no" than an uncoded DECLINE (a construct
+        // the compiler does not yet lower), so when a body is BOTH ill-typed and not-yet-lowerable
+        // (e.g. `(< 1 true)` — a type mismatch whose lowering would also decline as "runtime
+        // comparison"), the rejection is reported, not the decline. Collecting type faults before the
+        // lowering walk puts the rejection ahead of the decline in the fault list.
+        //
+        // `type_errors` applies to EVERY body — a function body's free parameters are bound (a `Param`
+        // types fine), so an unbound name or type fault in it is still caught. The reached-POISON walk
+        // lowers the body, which only makes sense for a VALUE: a FUNCTION body (a def with parameters)
+        // is not lowered standalone — its params are unsubstituted until it is applied — so run the
+        // trap walk only on a nullary def's body. A function body's traps surface at its call site.
+        faults.extend(type_errors(db, body));
         if nullary {
             collect_reached_poisons(db, body, &mut faults);
         }
-        faults.extend(type_errors(db, body));
     }
     faults
 }

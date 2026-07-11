@@ -103,11 +103,22 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
         // Representation Follows Its Solved Type At Selection). (Const arithmetic folds in `lower`;
         // this path is for a genuine runtime operand, which arrives with functions.)
         Core::Arith { op, lhs, rhs } => {
-            emit(db, lhs, out)?;
-            emit(db, rhs, out)?;
             let narrow = matches!(type_of(db, id), Ty::Int(it) if it.ground_width() <= 32);
-            out.push(arith_op(op, narrow));
-            Ok(())
+            // An op the flat rung can emit today: push both operands, then the machine op. An op with
+            // no Lir instruction yet (div/shift/bitwise) DECLINES rather than emit a wrong sequence —
+            // the decline boundary the runtime-operands increment widens. (In this increment every
+            // integer op FOLDS, so no runtime `Arith` reaches here at all; this keeps the path honest.)
+            match arith_op(op, narrow) {
+                Some(instr) => {
+                    emit(db, lhs, out)?;
+                    emit(db, rhs, out)?;
+                    out.push(instr);
+                    Ok(())
+                }
+                None => Err(Reject::decline(
+                    "a runtime integer operation of this kind is not yet emitted",
+                )),
+            }
         }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
@@ -115,22 +126,27 @@ fn emit(db: &mut Db, id: StructId, out: &mut Vec<Lir>) -> Result<(), Reject> {
     }
 }
 
-/// The flat wasm op for an arithmetic operation at the given width (i32 if `narrow`, else i64).
-fn arith_op(op: crate::resolved::Prim, narrow: bool) -> Lir {
+/// The flat wasm op for a runtime integer operation at the given width (i32 if `narrow`, else i64), or
+/// `None` if this backend has no instruction for it yet (the caller declines). Only `+`/`-`/`*` are
+/// emittable in this increment; division, shift, and bitwise ops need their Lir instructions + the
+/// signedness read-off (a signed vs unsigned shift/divide), which the runtime-operands increment adds.
+/// (Const folding handles all of them at compile time already; this is only the RUNTIME path.)
+fn arith_op(op: crate::resolved::Prim, narrow: bool) -> Option<Lir> {
     use crate::resolved::Prim::*;
-    match (op, narrow) {
+    Some(match (op, narrow) {
         (Add, false) => Lir::I64Add,
         (Sub, false) => Lir::I64Sub,
         (Mul, false) => Lir::I64Mul,
         (Add, true) => Lir::I32Add,
         (Sub, true) => Lir::I32Sub,
         (Mul, true) => Lir::I32Mul,
-        // A `Core::Arith` only ever carries an arith prim (its op comes from an arith-gated lowering),
-        // so a non-arith prim reaching arith selection is unreachable.
-        (IntCtor | UIntCtor | FnCtor | BoolTy | UnitTy, _) => {
-            unreachable!("non-arith prim reached arith selection")
-        }
-    }
+        // Not yet emittable as a runtime op — decline (the caller turns `None` into a clean decline).
+        (Div | Rem | Shl | Shr | BitAnd | BitOr | BitXor, _) => return None,
+        // A comparison is never carried by `Core::Arith` (it lowers via `lower_comparison` to a
+        // `ConstBool` or declines); a type-constructor / ground-type prim is not an operation. Neither
+        // reaches runtime arith selection.
+        (Lt | Gt | Le | Ge | Eq | IntCtor | UIntCtor | FnCtor | BoolTy | UnitTy, _) => return None,
+    })
 }
 
 /// The integer type of the node at `id`, if its solved type is an integer — used to ground a literal's

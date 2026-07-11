@@ -46,12 +46,20 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     names.insert("UInt".to_string(), ctor_record(ast, "UInt"));
     names.insert("->".to_string(), ctor_record(ast, "->"));
 
-    // The arithmetic operators — records whose META channel carries their type (`(meta t)`, a
+    // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
     // application of the value `+` resolves to — the SAME mechanism every application uses, dispatched
-    // by the head's meta channel, never by an operator name the resolver special-cases.
-    for op in ["+", "-", "*"] {
-        names.insert(op.to_string(), operator_record(ast, op));
+    // by the head's meta channel, never by an operator name the resolver special-cases. Arithmetic,
+    // division, shift, and bitwise all share the width-generic `∀a. (Int a) → (Int a) → (Int a)` type.
+    for op in ["+", "-", "*", "/", "%", "<<", ">>", "&", "|", "^"] {
+        names.insert(op.to_string(), operator_record(ast, op, OpShape::IntBinary));
+    }
+
+    // The relational comparisons — `∀a. a → a → Bool`. The operand is a BARE type variable (it relates
+    // `Bool` and structurally any value, not only integers) and the result is `Bool`. Same operator-
+    // record mechanism; only the `(meta t)` type-lambda differs.
+    for op in ["<", ">", "<=", ">=", "="] {
+        names.insert(op.to_string(), operator_record(ast, op, OpShape::Comparison));
     }
 
     // `Int64` — the pre-installed width-64 integer module (the module `(Int 64)` reduces to). Its
@@ -96,12 +104,26 @@ fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
     push_list(ast, vec![head, apply_field])
 }
 
+/// The type shape of a binary operator — which `(meta t)` type-lambda it carries. Both are ordinary
+/// AST written entirely in terms of the grammar (`fn`/`->`/`Int`), reduced to a `Scheme` by the one
+/// evaluator; the shape only selects which lambda body is built.
+#[derive(Clone, Copy)]
+enum OpShape {
+    /// `∀a. (Int a) → (Int a) → (Int a)` — the width-generic integer binary operators.
+    IntBinary,
+    /// `∀a. a → a → Bool` — the relational comparisons (bare operand var, `Bool` result).
+    Comparison,
+}
+
 /// An operator record `(record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic PRIM)))`. `(meta t)`
-/// is the operator's type — a compile-time lambda over the width `(fn (a) (-> (Int a) (-> (Int a)
-/// (Int a))))`, read generically by `infer`. `(meta apply)` is the reduction, read by `lower`.
-fn operator_record(ast: &mut Arenas, op: &str) -> StructId {
+/// is the operator's type — a compile-time type-lambda read generically by `infer`; `(meta apply)` is
+/// the reduction, read by `lower`. `shape` selects the type-lambda (integer-binary vs comparison).
+fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
     let head = push_atom(ast, Leaf::Name("record".to_string()));
-    let lambda = binop_type_lambda(ast);
+    let lambda = match shape {
+        OpShape::IntBinary => binop_type_lambda(ast),
+        OpShape::Comparison => comparison_type_lambda(ast),
+    };
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, op);
     let apply_field = meta_field(ast, "apply", prim);
@@ -131,6 +153,30 @@ fn binop_type_lambda(ast: &mut Arenas) -> StructId {
     let inner = arrow(ast, ia2, ia3);
     let body = arrow(ast, ia1, inner);
     // `(fn (a) BODY)`.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type-lambda `(fn (a) (-> a (-> a Bool)))` shared by the relational comparisons — generic over
+/// the operand type `a` (a BARE parameter, so it unifies with `Bool` or an integer or, structurally,
+/// any value), with a `Bool` result. `Bool` here is the ground-type prelude name the evaluator reduces
+/// to `Ty::Bool`. Written as ordinary AST so `infer` reduces it to a `Scheme` `∀a. a → a → Bool`, with
+/// `a` an ordinary lambda parameter — the same generic mechanism as the arithmetic lambda, differing
+/// only in that the operand is the bare variable rather than `(Int a)`.
+fn comparison_type_lambda(ast: &mut Arenas) -> StructId {
+    // A bare reference to the parameter `a`.
+    let a_ref = |ast: &mut Arenas| -> StructId { push_atom(ast, Leaf::Name("a".to_string())) };
+    let arrow = |ast: &mut Arenas, l: StructId, r: StructId| -> StructId {
+        let arr = push_atom(ast, Leaf::Name("->".to_string()));
+        push_list(ast, vec![arr, l, r])
+    };
+    let a1 = a_ref(ast);
+    let a2 = a_ref(ast);
+    let bool_res = push_atom(ast, Leaf::Name("Bool".to_string()));
+    let inner = arrow(ast, a2, bool_res); // (-> a Bool)
+    let body = arrow(ast, a1, inner); // (-> a (-> a Bool))
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let a_param = push_atom(ast, Leaf::Name("a".to_string()));
     let params = push_list(ast, vec![a_param]);

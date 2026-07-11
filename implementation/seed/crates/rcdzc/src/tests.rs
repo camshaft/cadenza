@@ -186,6 +186,27 @@ fn run_returns_s64(component_bytes: &[u8], name: &str) -> i64 {
     }
 }
 
+/// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the single
+/// bool result — the behavior check for a `Bool`-returning entrypoint (a comparison at the boundary).
+fn run_returns_bool(component_bytes: &[u8], name: &str) -> bool {
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let engine = Engine::default();
+    let component = Component::from_binary(&engine, component_bytes).expect("valid component");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &component).expect("instantiate");
+    let func = instance.get_func(&mut store, name).expect("export present");
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[], &mut results).expect("call");
+    func.post_return(&mut store).expect("post_return");
+    match results[0] {
+        Val::Bool(b) => b,
+        ref other => panic!("expected Bool result, got {other:?}"),
+    }
+}
+
 /// `(def (main) 42)` compiles to a component that runs to 42.
 #[test]
 fn scalar_runs_to_42() {
@@ -227,7 +248,7 @@ fn export_name_is_verbatim() {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::run_returns_s64;
+    use super::{run_returns_bool, run_returns_s64};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -236,6 +257,13 @@ mod stage1 {
         let src = format!("(module m (def (main) {body}) (export main))");
         let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
         run_returns_s64(&bytes, "main")
+    }
+
+    /// Compile the same shape and run `main`, returning its BOOL result — for a comparison entrypoint.
+    fn run_main_bool(body: &str) -> bool {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        run_returns_bool(&bytes, "main")
     }
 
     /// Compile the same program shape and expect a DECLINE/reject, returning the error message.
@@ -410,6 +438,122 @@ mod stage1 {
         // A built-in bound (`Int64.max`) and a literal share the operation without a hard-coded width:
         // `(- Int64.max Int64.max)` = 0. Both operands are the signed-64 instance; the op unifies them.
         assert_eq!(run_main("(- (. Int64 max) (. Int64 max))"), 0);
+    }
+
+    // ── the full binary-integer operator set (all fold at width 64) ──────────────────────────────
+
+    #[test]
+    fn division_truncates_toward_zero() {
+        // 06-numeric-model: (/ 7 2) = 3, (/ -7 2) = -3 — truncation toward zero, not floor.
+        assert_eq!(run_main("(/ 7 2)"), 3);
+        assert_eq!(run_main("(/ -7 2)"), -3);
+    }
+
+    #[test]
+    fn remainder_takes_sign_of_dividend() {
+        // (% -7 2) = -1 — the remainder's sign follows the dividend.
+        assert_eq!(run_main("(% -7 2)"), -1);
+    }
+
+    #[test]
+    fn remainder_by_minus_one_is_zero_even_at_min() {
+        // (% MIN -1) = 0 — the one case Rust's `%` panics on; must fold to 0, not trap.
+        assert_eq!(run_main("(% -9223372036854775808 -1)"), 0);
+    }
+
+    #[test]
+    fn division_by_zero_fails_the_build() {
+        // (/ 5 0) — a compile-provable trap fails the build (CDZ0304), not a shipped runtime trap.
+        assert!(expect_decline("(/ 5 0)").contains("defined value"));
+    }
+
+    #[test]
+    fn division_of_min_by_minus_one_overflows() {
+        // (/ MIN -1) overflows Int64 (the result 2^63 doesn't fit) — CDZ0304.
+        assert!(expect_decline("(/ -9223372036854775808 -1)").contains("defined value"));
+    }
+
+    #[test]
+    fn bitwise_ops_fold() {
+        // 06-numeric-model: & masks, | combines, ^ toggles.
+        assert_eq!(run_main("(& 255 127)"), 127);
+        assert_eq!(run_main("(| 12 3)"), 15);
+        assert_eq!(run_main("(^ 12 10)"), 6);
+    }
+
+    #[test]
+    fn left_shift_is_multiplication_and_folds() {
+        // (<< 1 7) = 128 — a left shift is exact multiplication by 2^count.
+        assert_eq!(run_main("(<< 1 7)"), 128);
+    }
+
+    #[test]
+    fn arithmetic_right_shift_folds() {
+        // (>> 256 7) = 2, and a NEGATIVE value sign-extends: (>> -256 7) = -2 (arithmetic, not logical).
+        assert_eq!(run_main("(>> 256 7)"), 2);
+        assert_eq!(run_main("(>> -256 7)"), -2);
+    }
+
+    #[test]
+    fn left_shift_that_overflows_fails_the_build() {
+        // (<< 4611686018427387904 1) overflows Int64 — traps like `*`, so CDZ0304, not a silent wrap.
+        assert!(expect_decline("(<< 4611686018427387904 1)").contains("defined value"));
+    }
+
+    #[test]
+    fn shift_by_the_width_or_more_fails_the_build() {
+        // (<< 1 64) — a shift count ≥ width traps rather than masking (CDZ0304).
+        assert!(expect_decline("(<< 1 64)").contains("defined value"));
+    }
+
+    #[test]
+    fn negative_shift_count_fails_the_build() {
+        // (<< 1 -1) — a negative shift count traps rather than masking (CDZ0304).
+        assert!(expect_decline("(<< 1 -1)").contains("defined value"));
+    }
+
+    // ── comparisons: ∀a. a → a → Bool, folded to a boolean, generic over the operand type ────────
+
+    #[test]
+    fn integer_comparisons_fold_to_bool() {
+        // Each relational operator folds two constant integers to a boolean. The entrypoint returns a
+        // Bool at the boundary (03-equality-and-observation).
+        assert!(run_main_bool("(< 1 2)"));
+        assert!(!run_main_bool("(> 1 2)"));
+        assert!(run_main_bool("(<= 2 2)"));
+        assert!(!run_main_bool("(>= 1 2)"));
+        assert!(run_main_bool("(= 3 3)"));
+        assert!(!run_main_bool("(= 3 4)"));
+    }
+
+    #[test]
+    fn comparison_is_generic_over_bool_operands() {
+        // 03-equality-and-observation: (< false true) = true, (<= false false) = true. The SAME
+        // operator orders booleans — its type is ∀a. a → a → Bool, a bare operand variable, so `a`
+        // unifies with Bool exactly as it does with an integer. No integer-specific comparison.
+        assert!(run_main_bool("(< false true)"));
+        assert!(run_main_bool("(<= false false)"));
+        assert!(run_main_bool("(> true false)"));
+        assert!(run_main_bool("(= true true)"));
+    }
+
+    #[test]
+    fn comparison_of_a_compound_declines() {
+        // Structural comparison over the value heap is a later stage — comparing records declines
+        // cleanly (the operator's type stays generic; only the fold's coverage is bounded).
+        let msg = expect_decline("(= (record (x 1)) (record (x 1)))");
+        assert!(msg.contains("compound") || msg.contains("value heap") || msg.contains("not yet"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_comparison_of_mismatched_operand_types_rejects_via_unification() {
+        // (< 1 true) — `<` types at ∀a. a → a → Bool; unifying the second operand `true` (Bool) against
+        // the first operand's `a` (fixed to Int by `1`) FAILS. The one generic rule catches it.
+        let msg = expect_decline("(< 1 true)");
+        assert!(
+            msg.contains("unify") || msg.contains("Bool") || msg.contains("Int") || msg.contains("differ"),
+            "expected a unification mismatch, got: {msg}"
+        );
     }
 
     #[test]

@@ -72,6 +72,14 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
     match resolved_of(db, id) {
         // A lambda parameter used as a bare type → its type variable.
         Resolved::Param { binder } => env.get(&binder).map(|v| Ty::Var(v.num)),
+        // A bare parameter REFERENCE used as a type (`(-> a (-> a Bool))` — the comparison operand): it
+        // resolves to a `Ref` to the parameter occurrence (a body-position name is looked up, not a
+        // formal), so follow the ref; if it lands on a parameter in `env`, that is its type variable.
+        // (This is the type-position sibling of `width_in_env` following a ref for `(Int a)`.) A ref to
+        // anything else reduces concretely below.
+        Resolved::Ref { value } if matches!(resolved_of(db, value), Resolved::Param { .. }) => {
+            type_in_env(db, value, env)
+        }
         // `(Int W)` / `(UInt W)` where W may be a parameter (a width variable) or a constant.
         Resolved::Apply { head, args } => {
             let prim = meta_apply_of(db, head)?;

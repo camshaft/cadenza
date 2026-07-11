@@ -1,8 +1,17 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a binary integer literal
 pass	a binary literal with digit separators
+pass	a boolean function result bound by let is still a boolean
+pass	a boolean is greater-than-or-equal to itself
+pass	a boolean is less-than-or-equal to itself
 pass	a boolean parameter forwarded to a conditional result
+pass	a boolean result propagates through a three-deep chain of forwarding functions
+pass	a boolean result threaded through a second function
 pass	a boolean-parameter function applied to false
+pass	a boolean-returning function called with a false result
+pass	a comparison-predicate function returns its boolean result
+pass	a conditional selects a branch by a runtime value that is not known at compile time
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional's condition may itself be a conditional
 pass	a decimal integer literal
@@ -10,9 +19,11 @@ pass	a function applied to an argument
 pass	a function bound to a name and then applied
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
+pass	a function returning a boolean predicate result
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose name is capitalized is called, not treated as a constructor
 pass	a hexadecimal integer literal
+pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal with digit separators
 pass	a later let binding sees an earlier one in the same let
 pass	a let binding is in scope in its body
@@ -25,20 +36,48 @@ pass	a negative hexadecimal literal negates its value
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a record is constructed and a field is read
 pass	a repeated let binding shadows the earlier one for what follows
+pass	a runtime conditional selects its then-branch when the runtime condition holds
+pass	a strict greater-than of equal operands is false
+pass	a strict less-than of equal operands is false
+pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an inner binding shadows an outer one only within its scope
 pass	an integer literal with digit separators
+pass	an offered ordering is total and deterministic
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
+pass	arithmetic right shift
+pass	arithmetic right shift of negative one is negative one
+pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
+pass	bitwise AND masks bits
+pass	bitwise OR combines bits
+pass	bitwise XOR is its own inverse
+pass	bitwise XOR toggles bits
+pass	extracting a high byte composes shift and mask
+pass	false is less than true
+pass	greater-than at the integer extremes is signed
+pass	greater-than comparison
+pass	greater-than-or-equal
+pass	hexadecimal, binary, and decimal spellings of one value are equal
+pass	integer division by a negative divisor truncates toward zero
+pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
+pass	integer division truncates toward zero
+pass	left shift
+pass	less-than at the integer extremes is signed, not unsigned
+pass	less-than compares negative operands by signed order
+pass	less-than-or-equal
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
+pass	modulo by -1 is zero even at the minimum integer
+pass	modulo gives the remainder
 pass	multi-argument application is curried application
 pass	multiplication
 pass	projecting a field is independent of the order fields are written
+pass	structural equality holds component-wise
 pass	subtraction
 pass	the boolean literals
 pass	the identity function applied to a boolean returns the boolean
@@ -47,6 +86,10 @@ pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the minimum Int64 literal reads as an integer
 pass	the module entrypoint is the def named main regardless of its position
+pass	the remainder takes the sign of the dividend for a negative dividend
+pass	the remainder takes the sign of the dividend for a negative divisor
+pass	true is greater than false
+pass	true is not less than false
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
@@ -64,7 +107,6 @@ todo	a CBOR reader walks a variable-length array using its decoded length as the
 todo	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 todo	a CBOR skip steps over a tagged item to the value it wraps
 todo	a CBOR skip walks past a whole nested item to the next offset
-todo	a LEB128 final byte is the shifted remainder masked to seven bits
 todo	a LEB128 non-final byte composes mask, continuation bit, and to-byte
 todo	a NaN nested in a list compares equal under the canonical byte form
 todo	a NaN nested in a sum payload compares equal under the canonical byte form
@@ -91,16 +133,10 @@ todo	a bool match missing the false arm is non-exhaustive
 todo	a bool match missing the true arm is non-exhaustive
 todo	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 todo	a boolean connective with a non-boolean operand is a type error
-todo	a boolean function result bound by let is still a boolean
-todo	a boolean is greater-than-or-equal to itself
-todo	a boolean is less-than-or-equal to itself
 todo	a boolean literal pattern against an integer scrutinee is a type error
 todo	a boolean literal pattern matches a runtime scrutinee
 todo	a boolean record field is projected as the program result
-todo	a boolean result propagates through a three-deep chain of forwarding functions
-todo	a boolean result threaded through a second function
 todo	a boolean tuple element is projected as the program result
-todo	a boolean-returning function called with a false result
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a bound name in a map key is used by its value, not the literal name
 todo	a built map renders its entries in canonical key order
@@ -119,12 +155,10 @@ todo	a checked integer conversion that does not fit traps
 todo	a checked integer conversion that fits succeeds
 todo	a checked result is consumed by matching its Option at run time
 todo	a closure captures the binding in scope where it was created
-todo	a comparison-predicate function returns its boolean result
 todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a compound if condition is a type error, not an unbound name
 todo	a conditional evaluates only the selected branch
 todo	a conditional inside a function with a constant condition and mismatched branches is a type error
-todo	a conditional selects a branch by a runtime value that is not known at compile time
 todo	a conditional shields a trap in a nested unselected branch
 todo	a conditional type error is caught even when the mismatched branch is the one taken
 todo	a conditional whose branches are unit yields unit
@@ -180,7 +214,6 @@ todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
 todo	a function open over a record's extra fields accepts any record with the used field
 todo	a function returning None or a nested Some infers its compound result shape
-todo	a function returning a boolean predicate result
 todo	a function returns a heap sub-node selected by a match arm
 todo	a function stored in a record field is called after extraction
 todo	a function stored in a tuple element is called after extraction
@@ -192,7 +225,6 @@ todo	a handler folds a counter across the operations it discharges
 todo	a handler resumes its continuation at most once by default
 todo	a header of packed nibbles and a length-prefixed body round-trips
 todo	a helper decodes bytes to a string and consumes the fallible result
-todo	a hexadecimal literal is case-insensitive
 todo	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 todo	a large whole-valued float renders its full value, not an integer saturation
 todo	a later declaration in a do block sees an earlier one
@@ -363,7 +395,6 @@ todo	a right shift by the bit width or more traps rather than masking
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime Option carrying a user sum is matched by a nested constructor pattern
 todo	a runtime compound structural equality is expressible as a hand-written recursive comparator
-todo	a runtime conditional selects its then-branch when the runtime condition holds
 todo	a runtime division by zero traps
 todo	a runtime left shift by the bit width or more traps
 todo	a runtime multiplication that overflows traps
@@ -409,8 +440,6 @@ todo	a slice whose end precedes its start yields None
 todo	a slice whose start equals its end is Some of the empty string
 todo	a slice with a negative start yields None
 todo	a stateful handler threads its counter across a function boundary
-todo	a strict greater-than of equal operands is false
-todo	a strict less-than of equal operands is false
 todo	a string carried as a sum-variant payload is bound and measured at run time
 todo	a string compared to a symbol is a type error
 todo	a string literal
@@ -514,7 +543,6 @@ todo	an empty string is unequal to a non-empty string
 todo	an empty-range slice of a non-empty string is Some of the empty string
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
-todo	an entrypoint returning a comparison presents a Bool result at the boundary
 todo	an expect of a list index result is an integer usable in arithmetic
 todo	an explicit annotation overrides the default-integer pragma
 todo	an explicit conversion makes the operation well-typed
@@ -529,7 +557,6 @@ todo	an integer width above the 64-bit ceiling is rejected
 todo	an integer width from runtime data is rejected, keeping widths non-dependent
 todo	an internally ill-typed unselected match arm body is a type error
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
-todo	an offered ordering is total and deterministic
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an operation on mismatched types is rejected at compile time
@@ -556,17 +583,10 @@ todo	annotating a quantity at a dimension the expression does not derive is an e
 todo	applying a boolean is a type error
 todo	applying a float is a type error
 todo	applying a non-function is a type error
-todo	arithmetic right shift
-todo	arithmetic right shift of negative one is negative one
-todo	arithmetic right shift preserves the sign bit for a negative operand
 todo	bit-field segments pack sub-byte values into one byte
-todo	bitwise AND masks bits
 todo	bitwise AND of an integer and a float does not silently promote
-todo	bitwise OR combines bits
 todo	bitwise OR of an integer and a float does not silently promote
-todo	bitwise XOR is its own inverse
 todo	bitwise XOR of an integer and a float does not silently promote
-todo	bitwise XOR toggles bits
 todo	byte length agrees with the length of the encoded bytes
 todo	byte length counts the normalized form, not the source spelling
 todo	byte length is the UTF-8 byte count
@@ -660,16 +680,10 @@ todo	expect unwraps the ok case of a runtime result
 todo	expect unwraps the present case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-todo	extracting a high byte composes shift and mask
-todo	false is less than true
 todo	floating-point uses the fixed rounding mode
 todo	functions are single-arity and curried
-todo	greater-than at the integer extremes is signed
-todo	greater-than comparison
 todo	greater-than of an integer and a float is rejected
-todo	greater-than-or-equal
 todo	greater-than-or-equal of an integer and a float is rejected
-todo	hexadecimal, binary, and decimal spellings of one value are equal
 todo	host calls are observed in the order they were made
 todo	identical negative zeros nested in a tuple compare equal
 todo	indexing a byte sequence out of bounds yields None
@@ -688,16 +702,9 @@ todo	inserting a present element is a no-op value
 todo	inserting a value of a different type into a map is a type error
 todo	inserting an element yields a set containing it
 todo	inserting into the empty map then looking a key up yields the value
-todo	integer division by a negative divisor truncates toward zero
-todo	integer division of a negative dividend truncates toward zero, not toward negative infinity
-todo	integer division truncates toward zero
 todo	integer to byte (truncate to 0-255)
 todo	integer to byte wraps on overflow
 todo	interning the same string twice yields equal symbols
-todo	left shift
-todo	less-than at the integer extremes is signed, not unsigned
-todo	less-than compares negative operands by signed order
-todo	less-than-or-equal
 todo	less-than-or-equal of an integer and a float is rejected
 todo	lists are equal by elements in order
 todo	looking up an absent key yields None
@@ -733,9 +740,7 @@ todo	mixing signed and unsigned of the same width does not silently promote
 todo	mixing two integer widths without a conversion does not silently promote
 todo	mixing two numeric types without an explicit conversion does not silently promote
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
-todo	modulo by -1 is zero even at the minimum integer
 todo	modulo by zero traps
-todo	modulo gives the remainder
 todo	modulo of an integer and a float does not silently promote
 todo	multiplication of an integer and a float does not silently promote
 todo	multiplication of the minimum integer by -1 overflows and traps
@@ -823,7 +828,6 @@ todo	string slicing yields Some of the substring
 todo	string to bytes (UTF-8)
 todo	string to bytes encodes multi-byte characters
 todo	strings differing only in Unicode normalization are equal
-todo	structural equality holds component-wise
 todo	subset record comparison is explicit projection, not an overloaded equality
 todo	subtracting quantities of incompatible dimension is a compile-time error
 todo	subtraction below the minimum integer overflows and traps
@@ -862,8 +866,6 @@ todo	the other parity of a mutually-recursive pair
 todo	the prelude binds Constructor values not pre-applied Sums
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
-todo	the remainder takes the sign of the dividend for a negative dividend
-todo	the remainder takes the sign of the dividend for a negative divisor
 todo	the same function called under two handlers is discharged by each in turn
 todo	the scalar length of a runtime multi-byte string counts scalars, not bytes
 todo	the three-way comparison is deconstructed by an exhaustive match
@@ -875,8 +877,6 @@ todo	the unit value
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
 todo	the width-indexed and aliased annotations of one value do not conflict
-todo	true is greater than false
-todo	true is not less than false
 todo	tuple access on a non-tuple is a type error
 todo	tuple access on a record is a type error
 todo	tuple access on a tuple chosen by a conditional projects the element

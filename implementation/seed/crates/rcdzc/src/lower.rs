@@ -104,6 +104,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
             match crate::eval::meta_apply_of(db, head) {
                 Some(prim) if prim.is_arith() => lower_arith(db, prim, &args),
+                Some(prim) if prim.is_comparison() => lower_comparison(db, prim, &args),
                 Some(prim) => match crate::eval::reduce_ctor(db, prim, &args) {
                     Ok(built) => core_of(db, built),
                     Err(msg) => Core::Poison(Reject::decline(msg)),
@@ -167,25 +168,126 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
             ));
         }
     };
+    // Each integer op evaluates over `i64` (the Stage default width) with the DEFINED numeric-model
+    // semantics; `None` marks a provable trap the checked default forbids (`numeric-model.md` §Overflow
+    // Is Defined). A later width stage generalizes the range/count the checks test to the solved width.
     let checked = match op {
         Prim::Add => x.checked_add(y),
         Prim::Sub => x.checked_sub(y),
         Prim::Mul => x.checked_mul(y),
-        // A non-arithmetic prim never reaches the fold (`lower_arith` is only called for an arith
-        // prim), so this arm is unreachable in practice; decline rather than panic.
-        Prim::IntCtor | Prim::UIntCtor | Prim::FnCtor | Prim::BoolTy | Prim::UnitTy => {
-            return Core::Poison(Reject::decline("not an arithmetic operation"));
+        // Division truncates toward zero; traps on a zero divisor and on `MIN / -1` (Rust's
+        // `checked_div` returns `None` for both — exactly the two defined traps).
+        Prim::Div => x.checked_div(y),
+        // Remainder takes the dividend's sign; traps on a zero divisor. `MIN % -1` is 0 (no overflow),
+        // but Rust's `%` panics there — `checked_rem` returns `None`, so special-case it to 0.
+        Prim::Rem => {
+            if y == -1 {
+                Some(0)
+            } else {
+                x.checked_rem(y)
+            }
+        }
+        // A left shift is exact multiplication by `2^count`: it traps on an out-of-range count
+        // (< 0 or ≥ width) AND on overflow past the width — NOT wasm's silent mask-and-wrap.
+        Prim::Shl => checked_shl_i64(x, y),
+        // Arithmetic (sign-extending) right shift; traps on an out-of-range count, never overflows.
+        Prim::Shr => checked_shr_i64(x, y),
+        // Bitwise operations are total on the two's-complement value — never trap.
+        Prim::BitAnd => Some(x & y),
+        Prim::BitOr => Some(x | y),
+        Prim::BitXor => Some(x ^ y),
+        // A non-integer-binary prim never reaches the fold (`lower_arith` is only called for an
+        // `is_arith` prim), so these arms are unreachable in practice; decline rather than panic.
+        Prim::Lt
+        | Prim::Gt
+        | Prim::Le
+        | Prim::Ge
+        | Prim::Eq
+        | Prim::IntCtor
+        | Prim::UIntCtor
+        | Prim::FnCtor
+        | Prim::BoolTy
+        | Prim::UnitTy => {
+            return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
     match checked {
         Some(n) => Core::ConstInt(IntValue::from_i64(n)),
-        // A provable overflow — the checked default traps, and the compiler can prove it, so the build
+        // A provable trap — the checked default traps, and the compiler can prove it, so the build
         // fails (CDZ0304) rather than emitting a component that traps (`numeric-model.md` §A Constant
         // Operation With No Value Is Rejected At Compile Time).
         None => Core::Poison(Reject::coded(
             Code::ConstTrap,
-            format!("integer overflow in constant {}", intrinsic_name(op)),
+            format!("constant {} has no defined value (overflow, divide-by-zero, or out-of-range shift)", intrinsic_name(op)),
         )),
+    }
+}
+
+/// A left shift as EXACT multiplication by `2^count`: `None` (a provable trap) if the count is outside
+/// `0..64` or the exact result overflows `i64` — a left shift is not exempt from Overflow Is Defined,
+/// so it traps like `*` rather than masking the count and wrapping (`numeric-model.md`).
+fn checked_shl_i64(x: i64, count: i64) -> Option<i64> {
+    if !(0..64).contains(&count) {
+        return None;
+    }
+    // Multiply by 2^count with overflow checking — the defined meaning of a left shift.
+    x.checked_mul(1i64.checked_shl(count as u32)?)
+}
+
+/// An ARITHMETIC (sign-extending) right shift: `None` if the count is outside `0..64` (an out-of-range
+/// count traps rather than masking). Never overflows. The signed shift preserves the sign bit, so
+/// shifting a negative value right fills with ones (e.g. `-256 >> 7 = -2`).
+fn checked_shr_i64(x: i64, count: i64) -> Option<i64> {
+    if !(0..64).contains(&count) {
+        return None;
+    }
+    Some(x >> count)
+}
+
+/// Lower a COMPARISON application (`< > <= >= =`). Folds two constant SCALARS (integers or booleans) to
+/// a `ConstBool` — a total ordering on the scalar's value. A compound or runtime operand DECLINES (I1
+/// is fold-only; structural comparison over the value heap, and runtime scalar comparison, arrive
+/// later) — the operator's type stays fully generic (`∀a. a → a → Bool`), only the fold's coverage is
+/// bounded. A poison operand propagates.
+fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
+    if args.len() != 2 {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            format!("{} takes exactly 2 operands", intrinsic_name(op)),
+        ));
+    }
+    let lhs = core_of(db, args[0]);
+    let rhs = core_of(db, args[1]);
+    match (lhs, rhs) {
+        (Core::ConstInt(a), Core::ConstInt(b)) => match (a.to_i64(), b.to_i64()) {
+            (Some(x), Some(y)) => Core::ConstBool(compare_ord(op, x.cmp(&y))),
+            // An operand beyond the fold's machine range — decline (a wider fold arrives with widths).
+            _ => Core::Poison(Reject::decline(
+                "comparison of an integer beyond the machine width is not yet folded",
+            )),
+        },
+        (Core::ConstBool(a), Core::ConstBool(b)) => Core::ConstBool(compare_ord(op, a.cmp(&b))),
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        // A compound (record/heap) or runtime operand — structural / runtime comparison is a later
+        // stage; decline cleanly rather than emit a wrong or trapping comparison.
+        _ => Core::Poison(Reject::decline(
+            "comparison of a compound or runtime value is not yet supported",
+        )),
+    }
+}
+
+/// Reduce an `Ordering` to the boolean the comparison `op` asks of it — the one place the relational
+/// prims map to their meaning, shared by every scalar the fold compares (integers and booleans agree
+/// on the ordering; only the comparison of the ordering differs). Equality is `Ordering::Equal`.
+fn compare_ord(op: Prim, ord: std::cmp::Ordering) -> bool {
+    use std::cmp::Ordering::*;
+    match op {
+        Prim::Lt => ord == Less,
+        Prim::Gt => ord == Greater,
+        Prim::Le => ord != Greater,
+        Prim::Ge => ord != Less,
+        Prim::Eq => ord == Equal,
+        _ => false, // not a comparison — unreachable (only called for `is_comparison` prims).
     }
 }
 
@@ -195,6 +297,18 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::Add => "+",
         Prim::Sub => "-",
         Prim::Mul => "*",
+        Prim::Div => "/",
+        Prim::Rem => "%",
+        Prim::Shl => "<<",
+        Prim::Shr => ">>",
+        Prim::BitAnd => "&",
+        Prim::BitOr => "|",
+        Prim::BitXor => "^",
+        Prim::Lt => "<",
+        Prim::Gt => ">",
+        Prim::Le => "<=",
+        Prim::Ge => ">=",
+        Prim::Eq => "=",
         Prim::IntCtor => "Int",
         Prim::UIntCtor => "UInt",
         Prim::FnCtor => "->",

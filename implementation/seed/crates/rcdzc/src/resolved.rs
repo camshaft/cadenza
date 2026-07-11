@@ -58,6 +58,33 @@ pub enum Prim {
     Add,
     Sub,
     Mul,
+    /// Truncating integer division `/` (toward zero) and remainder `%` (sign of the dividend). Both
+    /// trap on a zero divisor and on the `MIN / -1` overflow (`numeric-model.md` §Overflow Is Defined),
+    /// so a provable trap folds to CDZ0304 like `*`.
+    Div,
+    Rem,
+    /// Left shift `<<` — exact multiplication by `2^count`, so an overflowing shift traps like `*`, and
+    /// a shift count outside `0..width` traps rather than masking (`numeric-model.md` §A Shift Is Not
+    /// Exempt From Overflow Is Defined). Right shift `>>` is ARITHMETIC (sign-extending), also trapping
+    /// on an out-of-range count.
+    Shl,
+    Shr,
+    /// Bitwise `&` / `|` / `^` — total on the two's-complement value, never trap.
+    BitAnd,
+    BitOr,
+    BitXor,
+    /// The ordering comparisons `<` / `>` / `<=` / `>=` and equality `=` — each `∀a. a → a → Bool`.
+    /// Unlike arithmetic (which is `∀a. (Int a) → (Int a) → (Int a)`), a comparison's result is `Bool`,
+    /// and its operand is a BARE type variable — so it relates `Bool` as well as an integer (`(< false
+    /// true)` = `true`), and STRUCTURALLY any value (a tuple, a map, a type-value). The I1 fold decides
+    /// two constant SCALARS (`Int`/`Bool`); a compound or runtime operand declines (structural
+    /// comparison over the value heap is a later stage) — the generic type stays, coverage grows behind
+    /// a decline.
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Eq,
     /// `Int : Nat → Module` — applied to a width, builds the signed integer module of that width.
     IntCtor,
     /// `UInt : Nat → Module` — the unsigned integer module builder.
@@ -79,6 +106,18 @@ impl Prim {
             "+" => Some(Prim::Add),
             "-" => Some(Prim::Sub),
             "*" => Some(Prim::Mul),
+            "/" => Some(Prim::Div),
+            "%" => Some(Prim::Rem),
+            "<<" => Some(Prim::Shl),
+            ">>" => Some(Prim::Shr),
+            "&" => Some(Prim::BitAnd),
+            "|" => Some(Prim::BitOr),
+            "^" => Some(Prim::BitXor),
+            "<" => Some(Prim::Lt),
+            ">" => Some(Prim::Gt),
+            "<=" => Some(Prim::Le),
+            ">=" => Some(Prim::Ge),
+            "=" => Some(Prim::Eq),
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),
             "->" => Some(Prim::FnCtor),
@@ -88,9 +127,39 @@ impl Prim {
         }
     }
 
-    /// Whether this primitive is an arithmetic operation (vs a type constructor or a ground type).
+    /// Whether this primitive is a BINARY INTEGER operation — arithmetic, division, shift, or bitwise.
+    /// Every one has the shape `∀a. (Int a) → (Int a) → (Int a)` and folds on two constant integer
+    /// operands (a provable trap → CDZ0304); an operand that is not compile-time-known stays a runtime
+    /// `Core::Arith`. (A comparison is NOT one of these — its result is `Bool`, handled separately.)
     pub fn is_arith(self) -> bool {
-        matches!(self, Prim::Add | Prim::Sub | Prim::Mul)
+        matches!(
+            self,
+            Prim::Add
+                | Prim::Sub
+                | Prim::Mul
+                | Prim::Div
+                | Prim::Rem
+                | Prim::Shl
+                | Prim::Shr
+                | Prim::BitAnd
+                | Prim::BitOr
+                | Prim::BitXor
+        )
+    }
+
+    /// Whether this primitive is a relational comparison (`< > <= >=` or equality `=`) — shape `∀a. a →
+    /// a → Bool`, a bare type variable so it relates `Bool` and (structurally) any value as well as
+    /// integers, with a `Bool` result. Folds two constant SCALARS to a `ConstBool`; a compound/runtime
+    /// operand declines. Never traps.
+    pub fn is_comparison(self) -> bool {
+        matches!(self, Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq)
+    }
+
+    /// Whether this primitive is a BINARY OPERATOR reached by application (arithmetic OR comparison) —
+    /// the set the prelude installs as operator records and `meta_apply_of` dispatches. Used to route
+    /// an `Apply` whose head is one of these into the operator-fold path.
+    pub fn is_binop(self) -> bool {
+        self.is_arith() || self.is_comparison()
     }
 
     /// The ground type-value this primitive denotes directly, if it is one (`BoolTy`→Bool, …). A
