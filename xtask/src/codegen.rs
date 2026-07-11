@@ -22,54 +22,62 @@
 //!    byte ORACLE the rcdzc tests diff the hand-emitted bytes against; this makes it the SOURCE of
 //!    those bytes too, not just the after-the-fact check.
 
-use crate::{Paths, build_component, content_address};
+use crate::{Paths, build_component_with_features, content_address};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use std::path::PathBuf;
 use wit_parser::{Resolve, Type as WitType};
 use xshell::Shell;
 
-/// The core wasm value type a WIT primitive lowers to at the canonical-ABI core boundary. The runtime
-/// interface uses only these four; a richer WIT type (string, list, record) is NOT lowerable as a bare
-/// core scalar and is reported so the ABI cannot silently admit one.
+/// The LOGICAL (component-model) value type of a runtime op's param/result, as the WIT declares it.
+/// The runtime interface uses only these four; a richer WIT type (string, list, record) is NOT a bare
+/// scalar and is reported so the ABI cannot silently admit one. Kept LOGICAL (not collapsed to a core
+/// valtype) because the backend needs BOTH projections and they are not recoverable from each other: a
+/// core `i32` is the lowering of `u32`, `bool` AND `s32` alike, so the component import instance-type —
+/// which must structurally match the runtime's exported type — cannot be rebuilt from the core byte.
+/// One WIT source, two read-offs live in the backend (the byte encodings are wasm-spec constants, a
+/// TARGET concern, like the opcode table in `encode.rs`).
 #[derive(Clone, Copy)]
-enum CoreTy {
-    I32, // u32 / bool — a handle or a small scalar
-    I64, // s64
-    F64, // f64
+enum AbiTy {
+    U32,  // a heap handle or a small unsigned scalar
+    S64,  // a boxed signed 64-bit integer
+    Bool, // a boxed boolean
+    F64,  // a boxed float
 }
 
-impl CoreTy {
-    /// Map a WIT type to its core valtype, or `None` if it is not a bare core scalar (e.g. `string`,
+impl AbiTy {
+    /// Map a WIT type to its logical ABI type, or `None` if it is not a bare scalar (e.g. `string`,
     /// `tuple` — the runtime's `str-*` and `vec-split` results, which the envelope does not lower).
-    fn from_wit(t: WitType) -> Option<CoreTy> {
+    fn from_wit(t: WitType) -> Option<AbiTy> {
         match t {
-            WitType::U32 | WitType::Bool => Some(CoreTy::I32),
-            WitType::S64 => Some(CoreTy::I64),
-            WitType::F64 => Some(CoreTy::F64),
+            WitType::U32 => Some(AbiTy::U32),
+            WitType::Bool => Some(AbiTy::Bool),
+            WitType::S64 => Some(AbiTy::S64),
+            WitType::F64 => Some(AbiTy::F64),
             _ => None,
         }
     }
 
-    /// The generated `CoreValType::<variant>` path as tokens (the backend's own enum, defined alongside
+    /// The generated `AbiValType::<variant>` path as tokens (the backend's own enum, defined alongside
     /// the table), for splicing into a `quote!`.
     fn variant_tokens(self) -> TokenStream {
         match self {
-            CoreTy::I32 => quote!(CoreValType::I32),
-            CoreTy::I64 => quote!(CoreValType::I64),
-            CoreTy::F64 => quote!(CoreValType::F64),
+            AbiTy::U32 => quote!(AbiValType::U32),
+            AbiTy::S64 => quote!(AbiValType::S64),
+            AbiTy::Bool => quote!(AbiValType::Bool),
+            AbiTy::F64 => quote!(AbiValType::F64),
         }
     }
 }
 
-/// One runtime op resolved from the WIT: its name and core signature. A param or result the envelope
+/// One runtime op resolved from the WIT: its name and logical signature. A param or result the envelope
 /// cannot lower (a non-scalar WIT type) marks the op UNLOWERABLE — it is still listed (so the table
 /// mirrors the full interface) but flagged, and the backend never selects it.
 struct Op {
     name: String,
-    params: Vec<CoreTy>,
-    result: Option<CoreTy>,
-    /// `false` when a param or result is a non-core-scalar WIT type (`string`, `tuple`) — the op
+    params: Vec<AbiTy>,
+    result: Option<AbiTy>,
+    /// `false` when a param or result is a non-scalar WIT type (`string`, `tuple`) — the op
     /// exists in the interface but the bare-core-signature envelope cannot import it.
     lowerable: bool,
 }
@@ -98,16 +106,20 @@ fn generate_runtime_abi(paths: &Paths, check: bool) {
         }
     };
     let iface = "cadenza:runtime/heap";
-    // The runtime's CONTENT HASH — built + content-addressed the same way `xtask build` does, so the
+    // The runtime's CONTENT HASHES — built + content-addressed the same way `xtask build` does, so the
     // generated table changes whenever the runtime BINARY changes (not only its WIT). This is what
     // makes staleness automatic across a runtime-code change: rebuild → new hash → `runtime_abi.rs`
-    // differs → `codegen --check` fails until regenerated. (`build_component` runs `cargo component`;
-    // `xtask check` already builds the runtime, so the cost is shared.)
-    let runtime_hash = build_runtime_hash(paths);
+    // differs → `codegen --check` fails until regenerated. TWO builds are hashed: the RELEASE runtime
+    // (what a shipped program pins + composes) and the DEBUG-COUNTERS runtime (the same code with the
+    // `live-objects` leak counter compiled in — the Perceus balance probe composes THIS one). Both are
+    // recorded so a program can require the release runtime by hash AND a leak-check harness can locate
+    // the debug runtime by hash, neither hard-coded. (`xtask check` already builds the runtime, so the
+    // release build's cost is shared; the debug build is one extra `cargo component` invocation.)
+    let (runtime_hash, debug_runtime_hash) = build_runtime_hashes(paths);
     // Build the body as tokens (`render`), pretty-print + rustfmt it (`format_tokens`), then prepend the
     // `//!` module banner as text (a module doc is awkward as a token attribute). prettyplease-then-
     // rustfmt makes the committed file agree with BOTH `fmt --check` and `codegen --check`.
-    let body = format_tokens(render(&ops, iface, &runtime_hash));
+    let body = format_tokens(render(&ops, iface, &runtime_hash, &debug_runtime_hash));
     let source = format!("{}{body}", runtime_abi_banner());
 
     let summary = format!(
@@ -172,18 +184,38 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
     println!("xtask codegen: wrote {} ({summary})", out.display());
 }
 
-/// Build the value-heap runtime component and return its content address (SHA-256 hex) — the SAME
-/// derivation `xtask build` uses to key the runtime in the content-addressed store. Embedding this in
-/// the generated table is what ties the compiler's recorded `REQUIRED_RUNTIME_HASH` to the ACTUAL
-/// runtime bytes: a runtime-code change (even with an unchanged WIT) changes the hash, hence the
-/// generated file, hence `codegen --check` fails until regenerated. Exits on a build failure (the
-/// hash cannot be honestly recorded without the built artifact).
-fn build_runtime_hash(paths: &Paths) -> String {
+/// Build BOTH runtime components and return their content addresses `(release, debug_counters)` —
+/// the SAME SHA-256 derivation `xtask build` uses to key the store. Embedding these ties the compiler's
+/// recorded hashes to the ACTUAL runtime bytes: a runtime-code change (even with an unchanged WIT)
+/// changes a hash, hence the generated file, hence `codegen --check` fails until regenerated. Both
+/// builds write the SAME `target/.../cdz_runtime.wasm` path, so each build's bytes are read IMMEDIATELY,
+/// before the next overwrites. Exits on a build failure (a hash cannot be honestly recorded without the
+/// built artifact).
+fn build_runtime_hashes(paths: &Paths) -> (String, String) {
     let sh = Shell::new().expect("open a shell");
-    let wasm = build_component(&sh, &paths.seed, "cdz-runtime", "cdz_runtime");
-    let bytes = std::fs::read(&wasm)
-        .unwrap_or_else(|e| panic!("read built runtime {}: {e}", wasm.display()));
-    content_address(&bytes)
+    // Release runtime — what a shipped program pins and composes.
+    let release_wasm =
+        build_component_with_features(&sh, &paths.seed, "cdz-runtime", "cdz_runtime", &[]);
+    let release_bytes = std::fs::read(&release_wasm)
+        .unwrap_or_else(|e| panic!("read built runtime {}: {e}", release_wasm.display()));
+    let release_hash = content_address(&release_bytes);
+    // Debug-counters runtime — the same code with the `live-objects` leak counter compiled in. Read its
+    // bytes before it is (potentially) overwritten by a later build.
+    let debug_wasm = build_component_with_features(
+        &sh,
+        &paths.seed,
+        "cdz-runtime",
+        "cdz_runtime",
+        &["debug-counters"],
+    );
+    let debug_bytes = std::fs::read(&debug_wasm)
+        .unwrap_or_else(|e| panic!("read built runtime {}: {e}", debug_wasm.display()));
+    let debug_hash = content_address(&debug_bytes);
+    // Leave the RELEASE runtime as the artifact at the shared path (rebuild it last), so a plain
+    // `cargo component build` output on disk after codegen is the release one — the default a naive
+    // reader expects and the composed tests hash-match against.
+    let _ = build_component_with_features(&sh, &paths.seed, "cdz-runtime", "cdz_runtime", &[]);
+    (release_hash, debug_hash)
 }
 
 /// Format a generated `TokenStream` to the committed file's text: `prettyplease` FIRST (deterministic
@@ -237,13 +269,13 @@ fn resolve_ops(wit_path: &std::path::Path) -> Result<Vec<Op>, String> {
         let mut lowerable = true;
         let mut params = Vec::with_capacity(f.params.len());
         for (_pname, ty) in &f.params {
-            match CoreTy::from_wit(*ty) {
+            match AbiTy::from_wit(*ty) {
                 Some(c) => params.push(c),
                 None => lowerable = false,
             }
         }
         let result = match f.result {
-            Some(ty) => match CoreTy::from_wit(ty) {
+            Some(ty) => match AbiTy::from_wit(ty) {
                 Some(c) => Some(c),
                 None => {
                     lowerable = false;
@@ -271,7 +303,7 @@ fn resolve_ops(wit_path: &std::path::Path) -> Result<Vec<Op>, String> {
 /// reads like the emitted Rust and needs no manual escaping; `format_tokens` pretty-prints it. Doc
 /// comments are `#[doc = …]` attributes (which render as `///`). A leading `//!`-style module banner
 /// can't be a token attribute cleanly, so it is prepended as text by the caller.
-fn render(ops: &[Op], iface: &str, runtime_hash: &str) -> TokenStream {
+fn render(ops: &[Op], iface: &str, runtime_hash: &str, debug_runtime_hash: &str) -> TokenStream {
     // The RUNTIME_OPS rows.
     let rows = ops.iter().map(|op| {
         let name = &op.name;
@@ -298,18 +330,46 @@ fn render(ops: &[Op], iface: &str, runtime_hash: &str) -> TokenStream {
     });
 
     quote! {
-        #[doc = " A core wasm value type in a runtime op's signature (the canonical-ABI core boundary"]
-        #[doc = " uses only these three). Maps to the backend's `ValType`."]
+        #[doc = " The LOGICAL value type of a runtime op's param/result, as the WIT declares it (the"]
+        #[doc = " runtime interface uses only these four). Kept logical, NOT collapsed to a core valtype,"]
+        #[doc = " because the two envelope surfaces need different projections that are not recoverable from"]
+        #[doc = " each other: a core `i32` is the lowering of `u32`, `bool` AND `s32` alike, so the COMPONENT"]
+        #[doc = " import instance-type (which must structurally match the runtime's exported type) cannot be"]
+        #[doc = " rebuilt from the core byte. `core_byte` is the core-module import functype's valtype;"]
+        #[doc = " `comp_byte` is the component instance-type's primitive valtype. Both are wasm-spec"]
+        #[doc = " constants (a TARGET concern) so they live here in the backend, not in the generated data."]
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-        pub enum CoreValType { I32, I64, F64 }
+        pub enum AbiValType { U32, S64, Bool, F64 }
 
-        #[doc = " One value-heap runtime op the compiler may import: its WIT name and core signature. A"]
+        impl AbiValType {
+            #[doc = " The CORE wasm valtype byte a lowered handle/scalar occupies (i32=0x7F, i64=0x7E,"]
+            #[doc = " f64=0x7C) — a `u32` handle / `bool` both lower to i32."]
+            pub fn core_byte(self) -> u8 {
+                match self {
+                    AbiValType::U32 | AbiValType::Bool => 0x7F,
+                    AbiValType::S64 => 0x7E,
+                    AbiValType::F64 => 0x7C,
+                }
+            }
+            #[doc = " The COMPONENT-model primitive valtype byte (u32=0x79, s64=0x78, bool=0x7F, f64=0x75) —"]
+            #[doc = " the faithful boundary type the import instance-type declares."]
+            pub fn comp_byte(self) -> u8 {
+                match self {
+                    AbiValType::U32 => 0x79,
+                    AbiValType::S64 => 0x78,
+                    AbiValType::Bool => 0x7F,
+                    AbiValType::F64 => 0x75,
+                }
+            }
+        }
+
+        #[doc = " One value-heap runtime op the compiler may import: its WIT name and logical signature. A"]
         #[doc = " non-`lowerable` op carries a non-scalar WIT type (string/tuple) the bare-core envelope"]
         #[doc = " cannot import; it is listed for completeness but never selected."]
         pub struct RtOp {
             pub name: &'static str,
-            pub params: &'static [CoreValType],
-            pub result: Option<CoreValType>,
+            pub params: &'static [AbiValType],
+            pub result: Option<AbiValType>,
             pub lowerable: bool,
         }
 
@@ -322,6 +382,13 @@ fn render(ops: &[Op], iface: &str, runtime_hash: &str) -> TokenStream {
         #[doc = " against — the runtime a program built with this compiler requires. Regenerated from the"]
         #[doc = " built runtime bytes, so it tracks a runtime-code change automatically."]
         pub const REQUIRED_RUNTIME_HASH: &str = #runtime_hash;
+
+        #[doc = " The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code"]
+        #[doc = " with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped"]
+        #[doc = " program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness"]
+        #[doc = " composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness"]
+        #[doc = " locates the debug runtime by content address (from the store), never by rebuilding it."]
+        pub const DEBUG_RUNTIME_HASH: &str = #debug_runtime_hash;
 
         #[doc = " Every op the runtime `heap` interface declares, as structured signature data (sorted)."]
         pub const RUNTIME_OPS: &[RtOp] = &[ #(#rows)* ];
@@ -618,6 +685,11 @@ mod wasm_abi {
                 "COMP_SEC_CANONICAL",
                 "component CANONICAL-FUNCTION section id.",
                 ComponentSectionId::CanonicalFunction,
+            ),
+            comp_sec(
+                "COMP_SEC_IMPORT",
+                "component IMPORT section id.",
+                ComponentSectionId::Import,
             ),
             comp_sec(
                 "COMP_SEC_EXPORT",

@@ -203,6 +203,21 @@ value that never varies, that is pure waste (allocation + N stores + boxing, per
    zero init — and indistinguishable at every use site. The compiler does not decide this (the runtime
    does), but a static compound benefits automatically where it applies.
 
+4. **Reclamation of a static value — ELIDE at compile time, do NOT tag at runtime** (operator question,
+   2026-07-11: "could we tag something static so refcounting is a noop, or keep it simple and always
+   call?"). The answer is the middle that costs nothing: **where the compiler PROVES a value is static
+   (the build-once root of §2d), the Perceus pass (H2d) EMITS NO dup/drop for it** — a build-once global
+   is a persistent root that is never reclaimed, and accessors borrow, so both calls are simply omitted.
+   Compile-time knowledge → zero runtime cost and NO ABI change. This is strictly better than either
+   alternative: a runtime static-TAG (a sticky/saturating refcount) would cost a per-call branch AND
+   grow the runtime ABI (which grows only against a measured need, §2b) — NOT built speculatively; and
+   "always call" is unnecessary precisely where the compiler already knows. Where staticness is NOT
+   proven, the pass emits the ordinary dup/drop — and even then the cost is small, because the runtime's
+   inline-small-value hatch (point 3) makes dup/drop on an inline handle a noop anyway. So: elide when
+   proven static (free), emit otherwise (correct, cheap via inline handles), never a runtime tag. H2d
+   realizes this — a proven-static tuple carries no reclamation code; a runtime tuple carries balanced
+   dup/drop.
+
 **Why design it now:** the emission path (§2c) must, from its first version, DISTINGUISH a constant
 compound (→ build-once global / inline) from a runtime one (→ per-evaluation construction). Bolting
 this on later would mean re-touching every construction site and the reclamation contract (a build-once
@@ -251,21 +266,127 @@ from a different input than §2a:
    right before anything consumes it.
 2. **(H1) Import section + envelope plumbing, per-program-minimal, driven by a hand-written used-set.**
    Teach `serialize`/`envelope` to emit an import section for a GIVEN set of ops (computed, not fixed),
-   and the component to satisfy it. Test with a synthetic 1-op program (or a unit test that builds the
-   import section for `{arr-alloc}` and validates it against `wasm-encoder`). Still no `Core` compound
-   op, so the gate stays green; the byte oracle gains an "imports arr-alloc" case.
-3. **(H2) Runtime TUPLE: construct + project, end-to-end.** `Core::Tuple`/`Core::Proj` (or reuse
-   `Record`/`Member` for the runtime path); `select` emits `arr-alloc`/`arr-set` (construct) and
-   `arr-get` (project); the used-set drives the import. Run a program that builds and projects a
-   runtime tuple under wasmtime (composed with the runtime via `cdz-run`). This is the "one product
-   primitive" minimum and the first observable value-heap result. ⚡This needs the runtime wasm built
-   (`cargo component build` — [[runtime-wasm-build-recipe-cargo-component]]) and the run harness to
-   compose it (cdz-run already does — `RUNTIME_IFACE`).
-4. **(H3) Reclamation (consume/borrow → dup/drop).** The Perceus contract. Its own increment — reads
-   the ANF named value flow (step 1's payoff). Conservative first (dup-before-consume, like the seed).
+   and the component to satisfy it. Still no `Core` compound op, so the gate stays green; the byte
+   oracle gains an "imports arr-alloc" case. **Sub-steps (each unit-tested against a `wasm-encoder`
+   oracle before the next):**
+   - **H1a — core-module import section + index shift.** `serialize::core_module` takes the used-set
+     (ordered, sorted-by-name). It emits, BEFORE the function/code sections, a core IMPORT section
+     (id 2): one `(module="heap", name=<op>, desc=typeidx)` per used op, each op's core functype added
+     to the TYPE section first. The imported functions occupy core func indices `0..k`; the program's
+     own defined functions therefore start at index `k`, so the function section, the export section's
+     func indices, and every `Lir::Call(def-index)` shift by `k`. `layout.abs(def)` becomes
+     `import_count + position_in_order`. A used-set of size 0 emits NO import section and NO shift →
+     byte-identical to today (the scalar anchor). Unit test: a core module importing `arr-alloc` with
+     one exported nullary func is byte-identical to the `wasm-encoder` core-module oracle; and the
+     empty-used-set core module is byte-identical to today's.
+   - **H1b — component envelope import plumbing.** The component must (i) declare an import-instance-
+     type with one func-type+export per used op (component type section); (ii) `import` the runtime
+     interface `cadenza:runtime/heap@0.0.0+<REQUIRED_RUNTIME_HASH>` as an instance of that type;
+     (iii) `alias-export` each op out of the imported instance and `canon-lower` it to a core func;
+     (iv) build a core INSTANCE of the lowered funcs named to match the core module's `"heap"` import
+     module, and `core-instantiate` the program module threading that instance in; (v) alias/lift the
+     boundary exports out of the instantiated program (as today, but off the instantiated instance).
+     This is the 7-step shape the old `wit_envelope.rs::build_heap_envelope` used — hand-emit it
+     byte-identical to a `wasm-encoder` oracle built the same way. A used-set of size 0 emits today's
+     envelope exactly (no import instance, direct instantiate). Unit test: the 1-op envelope is
+     byte-identical to the oracle; the 0-op envelope is byte-identical to today's.
+   - The `REQUIRED_RUNTIME_HASH` suffix on the import name comes from `runtime_abi.rs` (H0) — the
+     import name is `{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}` (the versioned form `cdz-run`
+     recognizes). ⚠ CROSS-CUT: getting the core func-index shift consistent across serialize (func +
+     export sections, `Lir::Call`) and the envelope (canon-lower produces core funcs `0..k`, the
+     program module is instantiated AFTER, its exports aliased off the instance) is the whole
+     difficulty; the two oracles (core + component) pin each half independently.
+   - **H1a LANDED (`@85434d2`)** — core-module import section + index shift, byte-validated.
+   - **H1b-1 LANDED (`@c265a28`)** — the generated ABI keeps the LOGICAL WIT type (`AbiValType` =
+     U32/S64/Bool/F64), NOT a core-collapsed valtype, because the two envelope surfaces need different
+     projections that are not recoverable from each other (a core `i32` is the lowering of `u32`, `bool`
+     AND `s32` alike, so the component import instance-type can't be rebuilt from the core byte). One WIT
+     source; `AbiValType::core_byte()` / `comp_byte()` are the two read-offs (wasm-spec byte constants,
+     a target concern, in the backend). Restores the core+component distinction the old
+     `wit_envelope.rs::LogTy` carried but H0 dropped.
+   - **H1b LANDED (`@348e3c9`)** — the full import envelope, hand-emitted, byte-identical to
+     `ComponentBuilder`. Section order (the METHOD, that made this land byte-exact on the first run):
+     DUMP the `ComponentBuilder` 1-op oracle bytes first (an `#[ignore]` scratch test), then MIRROR the
+     exact section-by-section layout — never hand-reason the component-model encoding. The order is
+     7(import-instance-type) → 10(component-import) → 6(alias ops) → 8(lower ops) → 1(core module) →
+     2(TWO core-instances: lowered-ops-as-"heap" #0, program-instantiate #1) → 6(core-alias boundary off
+     instance 1) → 7(boundary functypes) → 8(lift) → 11(export). Index math: lowered ops = core funcs
+     `0..k`, boundary aliases = core funcs `k..k+m`; import instance-type = component type 0, boundary
+     functypes = types `1..=m`; op aliases = component funcs `0..k`, lifts = `k..k+m`; program is core
+     instance 1. Item grammar cross-checked against the `wasm-encoder` source (sort bytes CORE=0x00
+     FUNC=0x01 INSTANCE=0x05, CORE_INSTANCE_SORT=0x12; instance-type form `0x42` with 2k interleaved
+     ty/export decls; extern-name `0x00`-prefixed; canon-lower `01 00 <fn> 00`, canon-lift `00 00 <fn>
+     00 <ty>`; comp-alias `01 00 <inst> <name>`, core-alias `00 00 01 <inst> <name>`). Validated three
+     ways: byte-identity to the `ComponentBuilder` oracle; `Component::new` under wasmtime (structural +
+     component-type validity); the versioned hashed import name is present verbatim. The empty-import
+     path is unchanged (bare shape, byte-identical to a runtime-free program). The versioned name is
+     built in `mod.rs` from the generated `RUNTIME_IFACE`+`REQUIRED_RUNTIME_HASH` (envelope stays
+     ABI-agnostic). ⚠ Instantiation needs the runtime linked, so H1b checks validity/type only — the
+     end-to-end RUN lands in H2 (a real compound op + the composed runtime).
+3. **(H2) The TUPLE, taken to conclusion — construct + project + STATIC build-once + PERCEUS, run.**
+   ⚠ **OPERATOR DIRECTIVE (2026-07-11), the integer-work lesson:** take ONE feature all the way down
+   rather than implementing many in parallel. So H2 is NOT just "construct + project" with reclamation
+   deferred — it is the WHOLE tuple vertical: surface, fold (static correctness), runtime heap ops, the
+   static build-once path, AND Perceus dup/drop, each proven before the next. Two more directives shape
+   it: **(a) get the STATIC heap-value path right FIRST** (§2d) — a constant tuple must never emit
+   per-call `arr-alloc`; design/verify that before the runtime path so the runtime path can't mishandle
+   a constant. **(b) tuple element access is `(. t N)` — member access with an INTEGER key, NOT
+   `tuple.N`** (simpler; reuses the one `.` projection). Sub-increments:
+   - **H2a — surface + types + fold (STATIC-CORRECT FIRST).** `(tuple e…)` → a `Resolved::Tuple`;
+     `(. operand <int-literal>)` → tuple projection by position (member access already carries the key;
+     an integer key selects the tuple path). `Ty::Tuple(Vec<Ty>)` (arity + element types ARE the type —
+     a different arity/element-type is a different type, per the corpus `if`-branch cases). `Core::Tuple`
+     / `Core::Proj`. THE FOLD IS THE STATIC-CORRECTNESS GATE: a projection of a compile-time-visible
+     tuple by a constant index FOLDS to that element (no heap); an OUT-OF-ARITY index is a COMPILE-TIME
+     REJECT (CDZ0201 — [[an-out-of-arity-tuple-index-traps]] mandates reject, never a runtime trap); a
+     constant tuple that does not escape leaves no runtime trace. Byte-neutral: a runtime tuple that
+     survives still DECLINES at select (like `Core::Record` does today), so nothing emits yet.
+   - **H2b — runtime construct + project + COMPOSED RUN.** A surviving `Core::Tuple` → `arr-alloc(n)`
+     then per element `box-*`/`arr-set`; `Core::Proj` → `arr-get` then `get-*`. The used-set (the ops a
+     program lowers to) drives `emit`'s `imports` vec + `layout.import_base` (the H1 machinery, today
+     fed empty). RUN end-to-end under wasmtime COMPOSED with the real runtime, observing a SCALAR
+     result — the first observable heap round-trip. Non-folding trigger: a multi-use `let`-bound tuple
+     `(let ((t (tuple a b))) (+ (. t 0) (. t 1)))` over runtime params. ⚡Needs the `cargo component
+     build` runtime ([[runtime-wasm-build-recipe-cargo-component]]); compose via `RUNTIME_IFACE` as
+     `cdz-run` does. Boundary-compound + the type-directed renderer are a SEPARATE later increment (a
+     compound RETURNED to the host); H2b returns a scalar so no renderer is needed.
+   - **H2c — STATIC build-once (§2d).** A CONSTANT tuple that escapes to a non-foldable position →
+     built ONCE (a module-global / init sequence), referenced by handle, NOT per-call `arr-alloc`.
+     Proven by: a constant tuple's per-call body has NO `arr-alloc` (it reads the global). Its fully-run
+     exercise waits on the renderer, but the ROUTING (constant → build-once, runtime → per-eval) lands
+     here so it is never retrofitted.
+   - **H2d — PERCEUS reclamation.** Constructors CONSUME, accessors BORROW (`value-heap-runtime.md
+     §Constructors Consume And Accessors Borrow`); conservative dup/drop over the ANF named value flow
+     (step 1's payoff). Run against the refcounting runtime — a tuple built, projected, and dropped with
+     balanced refcounts (no leak, no use-after-free). This is what makes the tuple vertical COMPLETE.
+     Realized as: a kept HEAP-typed `Core::Let` binding (a runtime tuple — a constant one folds, H2c, so
+     it is never kept) is dead after a SCALAR body, so `select` closes the `let` with `local.get <slot>;
+     drop`; a scalar binding owns no heap cell → no drop. `drop` recursively releases the boxed children.
+     Static-elision (operator, 2026-07-11): a PROVEN-static value emits NO reclamation — but that path
+     never keeps (H2c), so the "kept ⇒ runtime ⇒ drop" rule is already the elision. Verified 3 ways:
+     emission (a runtime tuple `let` constructs-then-drops; a scalar `let` does not); composed
+     correctness (the round-trip still returns the right value WITH drops emitted — a drop that corrupted
+     a live child would break the projection); and the balance probe (a `debug-counters` runtime +
+     `live-objects == 0` after the run — the acceptance probe from the runtime's own suite).
+   - **FBIP / in-place update (the reuse story — operator Q 2026-07-11: "how do we update one field when
+     something else owns the value?").** The runtime already answers this with `reset` + `*-reuse`
+     (WIT 26–28, already generated `lowerable`), so our dup/drop API is exactly the right foundation and
+     reuse rides ON it — NO runtime/ABI work when we add it. A field update `{r with x=v}` compiles to
+     `token = reset(r); new = arr-alloc-reuse(n, token); <arr-set the fields>`. `reset` is drop-CONDITIONED-
+     on-uniqueness: if `rc(r)==1` (nobody else owns it) it hands back `r`'s emptied shell as a non-null
+     token → `arr-alloc-reuse` REFITS it in place (zero allocation — the Koka/Lean win); if `rc(r)>1`
+     (shared) it decrements and returns null → `arr-alloc-reuse` allocates FRESH (the COPY — the other
+     owner's value is untouched). So reuse-vs-copy is decided DYNAMICALLY by the refcount, there is NO
+     separate "clone" call, and a null token is always safe (token 0 makes the reuse-constructors behave
+     exactly as `arr-alloc`/`sum-new`). `dup` = retain (an unchanged field re-borrowed out of `r` and
+     kept past `r`'s drop is `dup`'d first — the "retained before releasing the parent" ordering rule).
+     H2d is the CONSERVATIVE Perceus (construct + drop, no reuse — our only tuple op is build+project, no
+     update); the reuse path lands as a codegen change with tuple/record UPDATE (an H4-era operation).
+4. **(H3 — folded into H2d)** Reclamation is no longer a separate increment; see H2d.
 5. **(H4) Records at runtime** (rides H2 — a record is a positional array), then **sums** (`sum-new`/
    `sum-disc`/`sum-payload`), then tuple/record/sum PATTERNS in match (the pattern engine grows a
-   product/sum probe — step 3's continuation), then `.of`→Option (task #59).
+   product/sum probe), the type-directed RENDERER (a compound returned to the host), then `.of`→Option
+   (task #59).
 
 ## 4. Watch-outs
 

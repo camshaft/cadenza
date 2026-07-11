@@ -48,6 +48,7 @@ impl Subst {
                     .map(|(k, t)| (k.clone(), self.apply(t)))
                     .collect(),
             ),
+            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
             Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
         }
     }
@@ -120,6 +121,17 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
                     Some(tb) => unify(subst, ta, tb)?,
                     None => return Err(mismatch(&a, &b)),
                 }
+            }
+            Ok(())
+        }
+        // Tuples unify at EQUAL ARITY, position by position — a different arity is an irreconcilable
+        // type (no structural subtyping), so it is the conflicting-use error.
+        (Ty::Tuple(ea), Ty::Tuple(eb)) => {
+            if ea.len() != eb.len() {
+                return Err(mismatch(&a, &b));
+            }
+            for (ta, tb) in ea.iter().zip(eb) {
+                unify(subst, ta, tb)?;
             }
             Ok(())
         }
@@ -201,6 +213,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::Var(w) => v == w,
         Ty::Fn(p, r) => occurs(subst, v, &p) || occurs(subst, v, &r),
         Ty::Record(fields) => fields.values().any(|ft| occurs(subst, v, ft)),
+        Ty::Tuple(elems) => elems.iter().any(|ft| occurs(subst, v, ft)),
         Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
     }
 }
@@ -286,6 +299,12 @@ fn rename(
             fields
                 .iter()
                 .map(|(k, t)| (k.clone(), rename(t, ty_map, width_map, sign_map)))
+                .collect(),
+        ),
+        Ty::Tuple(elems) => Ty::Tuple(
+            elems
+                .iter()
+                .map(|t| rename(t, ty_map, width_map, sign_map))
                 .collect(),
         ),
         Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),

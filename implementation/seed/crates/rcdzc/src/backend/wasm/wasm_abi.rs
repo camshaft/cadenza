@@ -122,6 +122,8 @@ pub const COMP_SEC_ALIAS: u8 = 0x06;
 pub const COMP_SEC_TYPE: u8 = 0x07;
 /// component CANONICAL-FUNCTION section id.
 pub const COMP_SEC_CANONICAL: u8 = 0x08;
+/// component IMPORT section id.
+pub const COMP_SEC_IMPORT: u8 = 0x0a;
 /// component EXPORT section id.
 pub const COMP_SEC_EXPORT: u8 = 0x0b;
 /// core export kind `func` — the export-descriptor byte for a function export.

@@ -262,11 +262,27 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     let store = store.unwrap_or_else(|| paths.repo.join("target/cadenza-store"));
     std::fs::create_dir_all(&store).expect("create store dir");
 
-    // Build the runtime component (wasm32) and content-address it.
-    println!("== xtask: building the value-heap runtime component ==");
+    // Build BOTH runtime components (wasm32) and content-address each into the store: the RELEASE
+    // runtime (what a shipped program pins + composes) and the DEBUG-COUNTERS runtime (the same code
+    // with the `live-objects` leak counter — the Perceus leak-check harness composes it, located by
+    // content address, never rebuilt). The debug build is read BEFORE the release build overwrites the
+    // shared output path.
+    println!("== xtask: building the value-heap runtime component (release + debug-counters) ==");
     let sh = Shell::new().expect("open a shell for the component build");
-    let runtime_wasm = build_component(&sh, &paths.seed, "cdz-runtime", "cdz_runtime");
 
+    let debug_wasm = build_component_with_features(
+        &sh,
+        &paths.seed,
+        "cdz-runtime",
+        "cdz_runtime",
+        &["debug-counters"],
+    );
+    let debug_bytes = std::fs::read(&debug_wasm).expect("read debug-counters runtime wasm");
+    let debug_hash = content_address(&debug_bytes);
+    std::fs::write(store.join(format!("{debug_hash}.wasm")), &debug_bytes).expect("store debug rt");
+    println!("   debug-counters runtime content address: {debug_hash}");
+
+    let runtime_wasm = build_component(&sh, &paths.seed, "cdz-runtime", "cdz_runtime");
     let runtime_bytes = std::fs::read(&runtime_wasm).expect("read runtime wasm");
     let runtime_hash = content_address(&runtime_bytes);
     println!("   runtime content address: {runtime_hash}");
@@ -274,16 +290,18 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     std::fs::write(&runtime_stored, &runtime_bytes).expect("store runtime");
     println!("   stored → {}", runtime_stored.display());
 
-    // A small manifest recording the stored runtime, for the host / verifier to consult.
+    // A small manifest recording both stored runtimes, for the host / verifier to consult.
     let manifest = format!(
         "# Cadenza content-addressed store — the value-heap runtime.\n\
-         runtime = \"{runtime_hash}\"\n"
+         runtime = \"{runtime_hash}\"\n\
+         debug_runtime = \"{debug_hash}\"\n"
     );
     std::fs::write(store.join("runtime.toml"), manifest).expect("write runtime.toml");
 
     println!("\n== xtask: done ==");
     println!("   store:   {}", store.display());
     println!("   runtime: {runtime_hash}");
+    println!("   debug:   {debug_hash}");
 }
 
 /// Compile a Cadenza program and run it — the whole pipeline end-to-end, delegating each stage to
@@ -1271,14 +1289,36 @@ pub(crate) fn content_address(bytes: &[u8]) -> String {
 /// returning the produced .wasm path. `cmd!` runs the child in the pushed crate dir and returns an
 /// `Err` on a non-zero exit (already echoing the command), so a build failure surfaces cleanly.
 pub(crate) fn build_component(sh: &Shell, seed: &Path, crate_dir: &str, artifact: &str) -> PathBuf {
+    build_component_with_features(sh, seed, crate_dir, artifact, &[])
+}
+
+/// As [`build_component`], but with a list of cargo `--features` to enable — e.g. the runtime's
+/// `debug-counters` (its `live-objects` leak counter). A feature-flagged build writes to the SAME
+/// `target/.../<artifact>.wasm` path as the default, so a caller that needs BOTH must read each build's
+/// bytes before the next overwrites (see `codegen`'s two-build hashing). Same crate dir, target, and
+/// error handling as the default build.
+pub(crate) fn build_component_with_features(
+    sh: &Shell,
+    seed: &Path,
+    crate_dir: &str,
+    artifact: &str,
+    features: &[&str],
+) -> PathBuf {
     let dir = seed.join("crates").join(crate_dir);
     let _pushed = sh.push_dir(&dir);
-    if let Err(e) = cmd!(
-        sh,
-        "cargo component build --release --target wasm32-unknown-unknown"
-    )
-    .run()
-    {
+    let build = if features.is_empty() {
+        cmd!(
+            sh,
+            "cargo component build --release --target wasm32-unknown-unknown"
+        )
+    } else {
+        let feats = features.join(",");
+        cmd!(
+            sh,
+            "cargo component build --release --target wasm32-unknown-unknown --features {feats}"
+        )
+    };
+    if let Err(e) = build.run() {
         eprintln!("cargo component build failed for {crate_dir}: {e}");
         std::process::exit(1);
     }

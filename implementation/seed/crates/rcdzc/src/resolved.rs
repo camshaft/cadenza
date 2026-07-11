@@ -246,6 +246,19 @@ pub enum Resolved {
     /// Generic Projection That Does Not Inspect Its Key). The projection resolves the field against
     /// the operand's type/value downstream.
     Member { operand: StructId, key: Symbol },
+    /// A TUPLE literal `(tuple e0 e1 …)` — a fixed-arity POSITIONAL product. The elements are AST
+    /// occurrences in order (resolved on demand); the tuple's ARITY and per-position element types ARE
+    /// its type (a tuple of different arity or a differently-typed position is a different type —
+    /// `type-system.md` §The Structural Types Are Record, Tuple, And Sum). Distinct from `Record` (named
+    /// fields): a tuple is accessed by POSITION (`Proj`), a record by NAME (`Member`).
+    Tuple { elems: Vec<StructId> },
+    /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
+    /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
+    /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a
+    /// record, is a type error decided downstream. An `index` outside the operand tuple's static arity is
+    /// a COMPILE-TIME type error (CDZ0201), never a runtime trap (`type-system.md` §A Tuple Is Split At A
+    /// Position Into A Prefix And A Suffix).
+    Proj { operand: StructId, index: usize },
     /// A NATIVE primitive value — what a prelude `(intrinsic …)` node resolves to (an arithmetic
     /// operation or a type constructor). The irreducible bottom a `Meta.apply` names; carried as a
     /// VALUE and reduced/lowered by the machinery that owns it, never special-cased by name

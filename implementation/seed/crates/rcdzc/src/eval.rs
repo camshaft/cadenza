@@ -380,6 +380,14 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             }
         }
         Resolved::Member { operand, .. } => collect_callees(db, operand, out),
+        // A tuple's elements and a projection's operand run when this body runs — a call inside them is
+        // a real edge, so descend.
+        Resolved::Tuple { elems } => {
+            for e in elems {
+                collect_callees(db, e, out);
+            }
+        }
+        Resolved::Proj { operand, .. } => collect_callees(db, operand, out),
         // An annotation is transparent — a call inside `(: (f x) T)` is a real edge of this body.
         Resolved::Annot { expr, .. } => collect_callees(db, expr, out),
         // A nested `fn` is a separate node — do NOT descend (its calls are its own edges). A bare ref,
@@ -520,6 +528,38 @@ pub fn member_value(db: &mut Db, operand: StructId, key: &Symbol) -> Member {
             trace!(target: "rcdzc::eval", operand = operand.0, key = %key.name, "project: operand is not a record");
             Member::NotRecord
         }
+    }
+}
+
+/// Reduce the value at `id` to the element occurrences of a COMPILE-TIME-VISIBLE tuple, if it reduces
+/// to one: a `(tuple …)` literal directly, or following a `Ref` to one. Returns the ordered element
+/// occurrences. `None` if the operand is not (statically reducible to) a tuple — a runtime tuple (a
+/// function parameter, a `Core::Let`-kept binding) is opaque here, so its projection stays a runtime
+/// `Core::Proj` rather than folding. This is the tuple analogue of `reduce_to_record_id`, and it is what
+/// makes a projection of a visible tuple fold (no heap) while a projection of a runtime tuple does not.
+///
+/// A `Ref` to a binding that was KEPT as a runtime `Core::Let` is NOT followed (the value lives in a
+/// slot at run time, not visibly here) — so a multi-use `let`-bound tuple projects at run time. A
+/// single-use / propagated binding's ref IS followed (it inlines to the tuple literal, which folds).
+pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<Vec<StructId>> {
+    match resolved_of(db, id) {
+        Resolved::Tuple { elems } => Some(elems),
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                // A kept multi-use runtime binding — opaque; its projection is a runtime read.
+                None
+            } else {
+                reduce_to_tuple_elems(db, value)
+            }
+        }
+        // A tuple that is itself an element projected from another compile-time-visible tuple.
+        Resolved::Proj { operand, index } => {
+            let elems = reduce_to_tuple_elems(db, operand)?;
+            let elem = *elems.get(index)?;
+            reduce_to_tuple_elems(db, elem)
+        }
+        Resolved::Annot { expr, .. } => reduce_to_tuple_elems(db, expr),
+        _ => None,
     }
 }
 

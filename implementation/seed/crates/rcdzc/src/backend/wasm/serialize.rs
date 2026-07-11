@@ -9,6 +9,7 @@
 
 use crate::backend::wasm::encode::{op, section, uleb_bytes, uleb128, wasm_vec};
 use crate::backend::wasm::lir::{Lir, ValType, comp_valtype_of, valtype_of};
+use crate::backend::wasm::runtime_abi::RtOp;
 use crate::backend::wasm::select::SelectedFunc;
 use crate::backend::wasm::wasm_abi;
 use crate::layout::Layout;
@@ -18,8 +19,39 @@ use crate::ty::Ty;
 /// as `wasm-encoder` writes it), not a hand-typed byte string.
 const CORE_MAGIC: &[u8] = wasm_abi::CORE_MAGIC;
 
-/// Serialize one flat instruction, appending its bytes to `out`. Exhaustive over `Lir`.
-fn instr(i: &Lir, out: &mut Vec<u8>) {
+/// The core functype `0x60 <params-vec> <results-vec>` of a runtime import op (from its generated
+/// signature). Each ABI type projects to its CORE valtype byte (`AbiValType::core_byte` — a `u32`
+/// handle lowers to i32, an `s64` to i64, …); the component-boundary bytes are the envelope's concern.
+/// A runtime op returns at most one core value; `dup`/`drop` return none.
+fn import_functype(o: &RtOp) -> Vec<u8> {
+    let mut out = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+    let params: Vec<u8> = o.params.iter().map(|c| c.core_byte()).collect();
+    out.extend_from_slice(&wasm_vec(params.len(), &params));
+    match o.result {
+        Some(c) => out.extend_from_slice(&wasm_vec(1, &[c.core_byte()])),
+        None => out.extend_from_slice(&wasm_vec(0, &[])),
+    }
+    out
+}
+
+/// One core import item: `<mod-len><mod> <name-len><name> 00 <typeidx>` — importing a func (desc kind
+/// `0x00`) of the given type index from module `"heap"` (the module name the component's threaded
+/// core-instance is bound under). The runtime resolves the op by its `name`.
+fn import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
+    const HEAP_MODULE: &str = "heap";
+    let mut item = uleb_bytes(HEAP_MODULE.len() as u64);
+    item.extend_from_slice(HEAP_MODULE.as_bytes());
+    item.extend_from_slice(&uleb_bytes(op_name.len() as u64));
+    item.extend_from_slice(op_name.as_bytes());
+    item.push(0x00); // import desc: func
+    uleb128(type_idx as u64, &mut item);
+    item
+}
+
+/// Serialize one flat instruction, appending its bytes to `out`. `import_index` maps a runtime op's
+/// name to its core function index (its position `0..k` in the import section), so a `CallImport`
+/// resolves by name to the same index the import section assigned. Exhaustive over `Lir`.
+fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut Vec<u8>) {
     match i {
         Lir::ConstI64(n) => {
             out.push(op::I64_CONST);
@@ -40,6 +72,16 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
         Lir::Call(func) => {
             out.push(op::CALL);
             uleb128(*func as u64, out);
+        }
+        Lir::CallImport(name) => {
+            // Resolve the op name to its import function index (its position in the import section).
+            // A `CallImport` for an op not in the import set is a compiler bug — `collect_used_ops`
+            // computes the set from the same emit, so every emitted op is present. Fall back to a
+            // no-op index of 0 is WRONG (would call the first import); instead index the map and, if
+            // absent (a bug), emit an obviously-invalid high index so validation catches it loudly.
+            let idx = import_index.get(name).copied().unwrap_or(u32::MAX);
+            out.push(op::CALL);
+            uleb128(idx as u64, out);
         }
         Lir::If(bt) => {
             out.push(op::IF);
@@ -107,8 +149,9 @@ fn instr(i: &Lir, out: &mut Vec<u8>) {
     }
 }
 
-/// One function's code-section entry: `<size> <local-decls> <instrs> end`.
-fn code_entry(f: &SelectedFunc) -> Vec<u8> {
+/// One function's code-section entry: `<size> <local-decls> <instrs> end`. `import_index` resolves a
+/// `CallImport` op name to its import function index.
+fn code_entry(f: &SelectedFunc, import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8> {
     let mut inner = Vec::new();
     // Local declarations, run-length-encoded by value type (Stage 0 bodies declare none → count 0).
     let groups = rle(&f.declared);
@@ -118,7 +161,7 @@ fn code_entry(f: &SelectedFunc) -> Vec<u8> {
         inner.push(vt.byte());
     }
     for i in &f.code {
-        instr(i, &mut inner);
+        instr(i, import_index, &mut inner);
     }
     inner.push(op::END);
     let mut out = uleb_bytes(inner.len() as u64);
@@ -142,27 +185,62 @@ fn functype(f: &SelectedFunc) -> Result<Vec<u8>, String> {
 }
 
 /// Assemble the embedded core module for a module's selected functions. `funcs[k]` is the function at
-/// emission position `k` (already in the layout's order), exported under `export_names[k]` when it is
-/// a boundary function. The export section names every boundary function by its absolute core index.
-pub fn core_module(funcs: &[SelectedFunc], layout: &Layout) -> Result<Vec<u8>, String> {
+/// emission position `k` (already in the layout's order). `imports` is the program's per-program set of
+/// runtime ops (ordered — the same order `layout` numbered them), imported from module `"heap"` at core
+/// func indices `0..imports.len()`; the program's own DEFINED functions therefore start at core index
+/// `imports.len()`, and the export section (and every `Lir::Call`, via `layout.abs`) account for that
+/// shift. An empty `imports` emits no import section and no shift — byte-identical to a runtime-free
+/// program (`component-abi.md` v3 migration: a program importing nothing crosses as under v2).
+pub fn core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
     let n = funcs.len();
+    let import_count = imports.len();
 
-    // Type section: one functype per function, in emission order.
+    // Type section: the IMPORT functypes first (type indices `0..import_count`), then one functype per
+    // defined function (type indices `import_count..import_count+n`). The type index space is separate
+    // from the function index space, but numbering imports' types first keeps a defined func's type
+    // index equal to `import_count + its emission position`, which the function section references.
     let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
-    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(n, &type_items));
+    let type_sec = section(
+        wasm_abi::CORE_SEC_TYPE,
+        &wasm_vec(import_count + n, &type_items),
+    );
 
-    // Function section: func i uses type i (1:1).
+    // Import section (id 2) — one func import per runtime op, in order, from module `"heap"`. Occupies
+    // core FUNCTION indices `0..import_count`. Omitted entirely when there are no imports. The same
+    // order fixes the `import_index` map a `CallImport` resolves against, so an op's call index equals
+    // its position here.
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let import_sec = if import_count == 0 {
+        Vec::new()
+    } else {
+        let mut import_items = Vec::new();
+        for (i, o) in imports.iter().enumerate() {
+            import_items.extend_from_slice(&import_item(o.name, i as u32));
+            import_index.insert(o.name, i as u32);
+        }
+        section(2, &wasm_vec(import_count, &import_items))
+    };
+
+    // Function section: defined func `i` (function index `import_count + i`) uses type index
+    // `import_count + i` (the import functypes came first).
     let mut func_items = Vec::new();
     for i in 0..n {
-        uleb128(i as u64, &mut func_items);
+        uleb128((import_count + i) as u64, &mut func_items);
     }
     let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n, &func_items));
 
     // Export section: export every boundary function under its verbatim name, by its absolute core
-    // index (its position in the layout's emission order).
+    // function index (`layout.abs`, which already includes the import shift).
     let mut export_items = Vec::new();
     for e in &layout.exports {
         let abs = layout.abs(e.def).ok_or_else(|| {
@@ -185,13 +263,14 @@ pub fn core_module(funcs: &[SelectedFunc], layout: &Layout) -> Result<Vec<u8>, S
     // Code section: bodies in emission order.
     let mut code_items = Vec::new();
     for f in funcs {
-        code_items.extend_from_slice(&code_entry(f));
+        code_items.extend_from_slice(&code_entry(f, &import_index));
     }
     let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n, &code_items));
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&code_sec);

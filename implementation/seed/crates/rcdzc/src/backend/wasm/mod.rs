@@ -16,9 +16,9 @@ pub mod envelope;
 pub mod lir;
 // The GENERATED value-heap runtime-ABI table (`cargo xtask codegen`, from the runtime WIT + the built
 // runtime's content hash) — the structured op signatures + typed `OPS` accessor the per-program import
-// section is built from (value-heap H1+). Not yet consumed (no runtime import emitted until compound
-// values land), so its items are dead for now; `cargo xtask codegen --check` (a hard gate in
-// `xtask check`) keeps it current with the runtime.
+// section + component envelope are built from (value-heap H1). `cargo xtask codegen --check` (a hard
+// gate in `xtask check`) keeps it current with the runtime. Most ops are unused until a compound op
+// lowers to them (value-heap H2+), so allow dead code on the table's unreferenced entries.
 #[allow(dead_code)]
 pub mod runtime_abi;
 pub mod select;
@@ -42,6 +42,37 @@ use crate::layout::Layout;
 /// Emit a WebAssembly component for the program in `db` under the boundary `layout`. Selects each
 /// definition in the layout's emission order, serializes the core module, and assembles the envelope.
 pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
+    // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
+    // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
+    // resolves to. Walk every reachable body's core for the value-heap ops it will emit
+    // (`collect_used_ops`, which mirrors `select`'s op choices exactly), collect them into a
+    // deterministic sorted set, and resolve each to its generated `RtOp`. Empty for a program that uses
+    // no runtime op — no import section, no shift → byte-identical to a runtime-free build.
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+
+    // The layout with the import base fixed to the used-set size — a defined function's absolute index
+    // is `import_base + its emission position` (imports occupy `0..import_base`). `layout` is otherwise
+    // as computed; clone-with-base so `abs` (read by both the export section and every `Lir::Call`)
+    // accounts for the shift.
+    let layout = Layout {
+        import_base: imports.len() as u32,
+        ..layout.clone()
+    };
+    let layout = &layout;
+
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
     // parameterized function (exported OR an internal callee reached by a runtime `Core::Call`) selects
     // to a real wasm function (params → local slots, body → machine ops). An EXPORT's params come from
@@ -59,7 +90,7 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     }
 
     // Serialize the embedded core module (multi-export core module, functions in emission order).
-    let core = serialize::core_module(&funcs, layout).map_err(Reject::decline)?;
+    let core = serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?;
 
     // Build the component-boundary export list (each export's parameter + result valtypes) and
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).
@@ -82,7 +113,24 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         });
     }
 
-    Ok(envelope::assemble(&core, &boundary))
+    // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime
+    // component is imported under, carrying the content-address suffix `cdz-run` resolves it by. Unused
+    // when `imports` is empty (the bare envelope). Built here (not in `envelope`) so the envelope stays
+    // ABI-agnostic; the ABI identity lives in the generated `runtime_abi` table.
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble(&core, &boundary, &imports, &import_name))
+}
+
+/// The program's runtime import name: the interface (`cadenza:runtime/heap`) pinned to the semver
+/// `0.0.0` with the runtime's content hash as build-metadata (`+<hash>`) — the versioned form `cdz-run`
+/// matches against the composed runtime (`component-abi.md` §The Value-Heap Runtime Crosses By A
+/// Well-Known Import). Both parts come from the generated ABI table, so a runtime change re-pins it.
+fn runtime_import_name() -> String {
+    format!(
+        "{}@0.0.0+{}",
+        runtime_abi::RUNTIME_IFACE,
+        runtime_abi::REQUIRED_RUNTIME_HASH
+    )
 }
 
 /// The AST body occurrence of definition `def`, or a decline if it is malformed (no body).
@@ -94,24 +142,31 @@ fn def_body(db: &Db, def: usize) -> Result<crate::ast::StructId, Reject> {
 
 #[cfg(test)]
 mod runtime_abi_tests {
-    use super::runtime_abi::{CoreValType, OPS, RUNTIME_IFACE, RUNTIME_OPS};
+    use super::runtime_abi::{AbiValType, OPS, RUNTIME_IFACE, RUNTIME_OPS};
 
     /// The generated ABI carries the known product/sum op signatures from the WIT — a guard that
-    /// `xtask codegen` faithfully maps the WIT types to core valtypes (arr-get borrows an index → i32,
-    /// sum-new pairs two handles → i32). Pins the H0 done-criterion: the structured data is correct.
+    /// `xtask codegen` faithfully maps the WIT types to LOGICAL ABI types (arr-get borrows a u32 index
+    /// → u32, sum-new pairs two u32 handles → u32). Pins the H0 done-criterion: the structured data is
+    /// correct, keeping the logical (not core-collapsed) type the component import instance-type needs.
     #[test]
     fn generated_ops_match_the_known_signatures() {
-        // `arr-get(arr, index) -> elem` : two i32 params (handle + index) → an i32 handle.
+        // `arr-get(arr, index) -> elem` : two u32 params (handle + index) → a u32 handle.
         assert_eq!(OPS.arr_get.name, "arr-get");
-        assert_eq!(OPS.arr_get.params, &[CoreValType::I32, CoreValType::I32]);
-        assert_eq!(OPS.arr_get.result, Some(CoreValType::I32));
+        assert_eq!(OPS.arr_get.params, &[AbiValType::U32, AbiValType::U32]);
+        assert_eq!(OPS.arr_get.result, Some(AbiValType::U32));
         // `sum-new(disc, payload) -> handle`.
         assert_eq!(OPS.sum_new.name, "sum-new");
-        assert_eq!(OPS.sum_new.params, &[CoreValType::I32, CoreValType::I32]);
-        // `box-int(s64) -> handle` : the one i64 param op.
-        assert_eq!(OPS.box_int.params, &[CoreValType::I64]);
+        assert_eq!(OPS.sum_new.params, &[AbiValType::U32, AbiValType::U32]);
+        // `box-int(s64) -> handle` : the one s64 param op.
+        assert_eq!(OPS.box_int.params, &[AbiValType::S64]);
         // `dup(handle)` : a borrow op with NO result.
         assert_eq!(OPS.dup.result, None);
+        // The two byte projections: a u32 handle is core i32 (0x7F) but component u32 (0x79) — the
+        // distinction the logical type preserves (H1b's whole reason for keeping it logical).
+        assert_eq!(AbiValType::U32.core_byte(), 0x7F);
+        assert_eq!(AbiValType::U32.comp_byte(), 0x79);
+        assert_eq!(AbiValType::S64.core_byte(), 0x7E);
+        assert_eq!(AbiValType::S64.comp_byte(), 0x78);
         assert_eq!(RUNTIME_IFACE, "cadenza:runtime/heap");
     }
 

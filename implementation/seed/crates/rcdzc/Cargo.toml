@@ -75,3 +75,11 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 wasm-encoder = "0.239"
 # Runs the emitted component in tests (the "run the artifact" behavior check). Tests only.
 wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"] }
+# The canonical component RUNNER (tests only) — composes the value-heap runtime and invokes an export,
+# exactly as the desk/gate do. Used by the value-heap behavior tests to run a component that IMPORTS the
+# runtime (the composed round-trip) without re-implementing composition in the test. It takes no
+# compiler-crate dependency, so this dev-dep introduces no cycle and never enters the compile path.
+cdz-run = { path = "../cdz-run" }
+# Content-address a candidate runtime wasm (SHA-256) to verify it matches the compiler's pinned
+# `REQUIRED_RUNTIME_HASH` before composing it — a stale runtime would compose wrong ops. Tests only.
+sha2 = "0.10"

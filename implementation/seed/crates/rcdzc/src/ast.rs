@@ -402,6 +402,18 @@ impl Arenas {
         }
     }
 
+    /// If `id` is an `Atom` of an integer literal, its value. (Used to read an integer member key as a
+    /// tuple position — `(. t 0)` — where a name key would be a record field instead.)
+    pub fn as_int(&self, id: StructId) -> Option<&IntValue> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Int { value, .. } => Some(value),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The head name of a `List` occurrence, if its first child is an `Atom(Name)`.
     pub fn head_name(&self, id: StructId) -> Option<&str> {
         match self.get(id) {

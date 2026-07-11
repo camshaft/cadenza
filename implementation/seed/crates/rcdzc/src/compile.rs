@@ -222,6 +222,14 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Core::Match { scrutinee, .. } => {
             collect_reached_poisons(db, scrutinee, out);
         }
+        // A tuple's elements are all unconditionally part of the value; a projection's operand is
+        // unconditionally evaluated. Descend into each.
+        Core::Tuple { elems } => {
+            for e in elems {
+                collect_reached_poisons(db, e, out);
+            }
+        }
+        Core::Proj { operand, .. } => collect_reached_poisons(db, operand, out),
         // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
         Core::LocalRef { .. }
         | Core::Param { .. }

@@ -47,16 +47,23 @@ pub struct ExportPlan {
 pub struct Layout {
     pub exports: Vec<ExportPlan>,
     /// Reachable definition indices in emission order (exported first, declaration order; then the
-    /// rest). Stage 0: the exported definitions. A body emitted at position `k` is wasm func `k`
-    /// (no runtime import yet, so the base is 0).
+    /// rest). A body emitted at position `k` is DEFINED wasm func `import_base + k` — runtime imports
+    /// occupy the function index space `0..import_base` ahead of every defined function.
     pub order: Vec<usize>,
+    /// The number of runtime-op imports the program declares — the offset added to a defined
+    /// function's emission position to get its absolute wasm function index. `0` for a program that
+    /// imports nothing (a scalar program), which is then byte-identical to a runtime-free build.
+    pub import_base: u32,
 }
 
 impl Layout {
-    /// The absolute wasm-function index of definition `def`, or `None` if it is not emitted. Stage 0
-    /// base is 0 (no runtime import), so it is the definition's position in `order`.
+    /// The absolute wasm-function index of definition `def`, or `None` if it is not emitted. Imports
+    /// occupy `0..import_base`, so a defined function's index is `import_base + its position in order`.
     pub fn abs(&self, def: usize) -> Option<u32> {
-        self.order.iter().position(|&d| d == def).map(|k| k as u32)
+        self.order
+            .iter()
+            .position(|&d| d == def)
+            .map(|k| self.import_base + k as u32)
     }
 }
 
@@ -133,7 +140,14 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         i += 1;
     }
 
-    Ok(Layout { exports, order })
+    // `import_base` is 0 until a program uses a runtime op: the per-program runtime-import set is
+    // computed by the backend when a `Core` compound op lowers to a heap call (value-heap H2). A
+    // program that imports nothing keeps base 0 and is byte-identical to a runtime-free build.
+    Ok(Layout {
+        exports,
+        order,
+        import_base: 0,
+    })
 }
 
 /// Collect the `db.defs` indices a body CALLS at runtime — the `Core::Call` callees reached from the
@@ -177,6 +191,12 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 collect_call_callees(db, *value, out);
             }
         }
+        crate::core::Core::Tuple { elems } => {
+            for e in elems {
+                collect_call_callees(db, e, out);
+            }
+        }
+        crate::core::Core::Proj { operand, .. } => collect_call_callees(db, operand, out),
         // Leaves and references have no sub-calls.
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstBool(_)

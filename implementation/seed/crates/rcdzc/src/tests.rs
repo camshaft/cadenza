@@ -183,7 +183,7 @@ fn envelope_matches_wasm_encoder_oracle() {
                 result: Some(0x78),
             })
             .collect();
-        let ours = assemble(&core, &exports);
+        let ours = assemble(&core, &exports, &[], "");
         assert_eq!(
             ours,
             oracle_component(&core, names),
@@ -264,6 +264,8 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
             params: vec![0x78, 0x78], // two s64 params
             result: Some(0x78),
         }],
+        &[],
+        "",
     );
     assert_eq!(ours, oracle, "parameterized envelope mismatch");
 }
@@ -340,8 +342,195 @@ fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
             params: vec![0x7D, 0x7C], // u8, s16
             result: Some(0x7E),       // s8
         }],
+        &[],
+        "",
     );
     assert_eq!(ours, oracle, "narrow-primitive envelope mismatch");
+}
+
+/// Value-heap H1a: a core module that IMPORTS a runtime op (`heap.arr-alloc`) is byte-identical to the
+/// `wasm-encoder` oracle — the per-program import section + the function-index SHIFT (the imported func
+/// is index 0, so the program's own exported func is index 1). One import, one nullary `() -> i64`
+/// export. This is the byte anchor for the import machinery before any `Core` compound op drives it.
+#[test]
+fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::backend::wasm::runtime_abi::OPS;
+    use crate::backend::wasm::select::SelectedFunc;
+    use crate::backend::wasm::serialize::core_module;
+    use crate::layout::{ExportPlan, Layout};
+    use crate::ty::Ty;
+
+    // One exported nullary `() -> i64` function returning `42`. With one import, it is DEFINED func
+    // index 1 (import `arr-alloc` is index 0) — `import_base = 1` in the layout makes `abs` report 1.
+    let func = SelectedFunc {
+        params: vec![],
+        ret: Ty::int64(),
+        code: vec![Lir::ConstI64(42)],
+        declared: vec![],
+    };
+    let layout = Layout {
+        exports: vec![ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: Ty::int64(),
+        }],
+        order: vec![0],
+        import_base: 1,
+    };
+    let ours = core_module(&[func], &[OPS.arr_alloc], &layout).expect("core module");
+
+    // The oracle: a core module importing `heap."arr-alloc" : (i32) -> i32`, then one defined
+    // `() -> i64` func (function index 1) exported as `main`, returning 42.
+    let oracle = {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // type 0: arr-alloc
+        types.ty().function(vec![], vec![ValType::I64]); // type 1: main
+        m.section(&types);
+        let mut imports = ImportSection::new();
+        imports.import("heap", "arr-alloc", EntityType::Function(0));
+        m.section(&imports);
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // defined func (index 1) uses type 1
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("main", ExportKind::Func, 1); // export the DEFINED func at index 1
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut f = Function::new(vec![]);
+        f.instruction(&Instruction::I64Const(42));
+        f.instruction(&Instruction::End);
+        code.function(&f);
+        m.section(&code);
+        m.finish()
+    };
+    assert_eq!(ours, oracle, "core module with a runtime import mismatch");
+}
+
+/// The program core module for the import-envelope oracle tests: imports `heap."arr-alloc" :
+/// (i32)->i32` (core func 0) and defines one nullary `() -> i64` `main` (core func 1) returning 42 —
+/// the same shape H1a's core oracle emits. Shared by our envelope and the `ComponentBuilder` oracle so
+/// the diff isolates the ENVELOPE.
+fn import_oracle_core() -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut m = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(vec![ValType::I32], vec![ValType::I32]); // type 0: arr-alloc
+    types.ty().function(vec![], vec![ValType::I64]); // type 1: main
+    m.section(&types);
+    let mut imports = ImportSection::new();
+    imports.import("heap", "arr-alloc", EntityType::Function(0));
+    m.section(&imports);
+    let mut funcs = FunctionSection::new();
+    funcs.function(1);
+    m.section(&funcs);
+    let mut exports = ExportSection::new();
+    exports.export("main", ExportKind::Func, 1);
+    m.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f = Function::new(vec![]);
+    f.instruction(&Instruction::I64Const(42));
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    m.section(&code);
+    m.finish()
+}
+
+/// The 1-op import-envelope built by `wasm-encoder`'s `ComponentBuilder` — the authoritative encoder,
+/// which tracks the alias/lower/instantiate index bookkeeping. The reference our hand-emitted import
+/// path is diffed against (`import arr-alloc:(u32)->u32`, one nullary `main:()->s64` export). This is
+/// exactly the 7-step shape the old `wit_envelope.rs::build_heap_envelope` produced.
+fn import_oracle_component(core: &[u8], import_name: &str) -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut c = ComponentBuilder::default();
+    // (1) import instance-type: one func-type + export per used op (`arr-alloc:(u32)->u32`).
+    let mut it = InstanceType::new();
+    {
+        let mut ft = it.ty().function();
+        ft.params([("p0", ComponentValType::Primitive(PrimitiveValType::U32))]);
+        ft.result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+    }
+    it.export("arr-alloc", ComponentTypeRef::Func(0));
+    let it_ty = c.type_instance(&it); // component type 0
+    // (2) import the runtime interface as an instance of that type.
+    let inst = c.import(import_name, ComponentTypeRef::Instance(it_ty)); // instance 0
+    // (3) alias-export each op out of the imported instance + canon-lower → core funcs 0..k.
+    let comp_fn = c.alias_export(inst, "arr-alloc", ComponentExportKind::Func);
+    c.lower_func(comp_fn, []); // core func 0
+    // (4) embed the program core module, (5) build a core-instance of the lowered funcs named "heap",
+    // then instantiate the program threading it in.
+    let module_idx = c.core_module_raw(core); // core module 0
+    let heap_inst = c.core_instantiate_exports([("arr-alloc", ExportKind::Func, 0u32)]); // core inst 0
+    let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+    // (6) alias `main` out of the instantiated program, (7) lift it as `() -> s64` and export it.
+    let run_core = c.core_alias_export(prog_inst, "main", ExportKind::Func);
+    let (run_ty, mut enc) = c.type_function();
+    enc.params::<[(&str, ComponentValType); 0], _>([])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+    let run_comp = c.lift_func(run_core, run_ty, []);
+    c.export("main", ComponentExportKind::Func, run_comp, None);
+    c.finish()
+}
+
+/// Value-heap H1b: the hand-emitted IMPORT envelope (a program importing one runtime op) is
+/// byte-identical to the `ComponentBuilder` oracle — the byte anchor that licenses hand-emitting the
+/// full component-model import plumbing (import-instance-type → import → alias → lower → core module →
+/// two core-instances → boundary alias/lift/export) with no external encoder in the compile path. Uses
+/// the SAME versioned import name and the GENERATED `OPS.arr_alloc` signature on our side.
+#[test]
+fn import_envelope_matches_component_builder_oracle() {
+    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::runtime_abi::OPS;
+    let core = import_oracle_core();
+    let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
+    let exports = vec![BoundaryExport {
+        name: "main".to_string(),
+        params: Vec::new(),
+        result: Some(0x78), // s64
+    }];
+    let ours = assemble(&core, &exports, &[OPS.arr_alloc], import_name);
+    let oracle = import_oracle_component(&core, import_name);
+    assert_eq!(ours, oracle, "import envelope mismatch vs ComponentBuilder");
+}
+
+/// Value-heap H1b: the hand-emitted import envelope PARSES and TYPE-CHECKS under wasmtime
+/// (`Component::new`) — structural + component-type validity, the semantic floor that catches every
+/// index/layout error the byte diff might not localize. It also carries the versioned, hashed import
+/// name `cdz-run` composes the runtime by. (Instantiation needs the runtime linked, so this checks
+/// validity/type only — the end-to-end run lands in H2 with a real compound op + the composed runtime.)
+#[test]
+fn import_envelope_is_a_valid_component_with_the_versioned_import() {
+    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::runtime_abi::{OPS, REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+    let core = import_oracle_core();
+    let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+    let exports = vec![BoundaryExport {
+        name: "main".to_string(),
+        params: Vec::new(),
+        result: Some(0x78),
+    }];
+    let bytes = assemble(&core, &exports, &[OPS.arr_alloc], &import_name);
+
+    // Structural + type validity: a bad section order, wrong index, or malformed item fails here.
+    let engine = wasmtime::Engine::default();
+    let component = wasmtime::component::Component::from_binary(&engine, &bytes);
+    assert!(
+        component.is_ok(),
+        "import envelope failed to load under wasmtime: {:?}",
+        component.err()
+    );
+
+    // The emitted bytes carry the exact versioned import name (interface@semver+hash) verbatim — the
+    // name the linker matches the composed runtime against. Assert its literal bytes are present.
+    let needle = import_name.as_bytes();
+    assert!(
+        bytes.windows(needle.len()).any(|w| w == needle),
+        "versioned import name `{import_name}` not found in the emitted component"
+    );
 }
 
 // ── the behavior run (wasmtime) ────────────────────────────────────────────────────────────────
@@ -485,6 +674,287 @@ fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::V
     let func = instance.get_func(&mut store, name).expect("export present");
     let mut results = [Val::S64(0)];
     func.call(&mut store, args, &mut results).is_err()
+}
+
+// ── value-heap H2b: a program that IMPORTS the runtime, run COMPOSED with it ─────────────────────
+//
+// A tuple built and projected at run time lowers to the heap ops (`arr-alloc`/`box-*`/`arr-set`/
+// `arr-get`/`get-*`), so the emitted component IMPORTS `cadenza:runtime/heap`. Running it needs the
+// runtime composed in — `cdz-run` does exactly that (the canonical runner), so the behavior test
+// drives the composed round-trip through it rather than re-implementing composition.
+
+/// Locate the built value-heap runtime component `.wasm` whose content hash matches the compiler's
+/// `REQUIRED_RUNTIME_HASH`, or `None` if it is not present (so the test SKIPS rather than fails when the
+/// runtime has not been built — `cargo xtask build`/`codegen` produces it). Searches the content-
+/// addressed store and the `cargo component` build output, relative to the repo root.
+fn find_runtime_wasm() -> Option<Vec<u8>> {
+    use crate::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
+    // `CARGO_MANIFEST_DIR` is `.../implementation/seed/crates/rcdzc`; the seed workspace root is three
+    // levels up, and the repo root one more.
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let seed = manifest.join("../..").canonicalize().ok()?; // .../implementation/seed
+    let repo = seed.join("../..").canonicalize().ok()?; // repo root
+    let candidates = [
+        // The content-addressed store (populated by `xtask build`).
+        repo.join(format!("target/cadenza-store/{REQUIRED_RUNTIME_HASH}.wasm")),
+        // The `cargo component build` output (populated by `xtask codegen`/`build`).
+        seed.join("crates/cdz-runtime/target/wasm32-unknown-unknown/release/cdz_runtime.wasm"),
+    ];
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(&path) {
+            // Only accept a runtime whose content hash matches what the compiler compiled against —
+            // a stale runtime would compose wrong ops (the /loop gotcha). Verify before use.
+            let hash = sha256_hex(&bytes);
+            if hash == REQUIRED_RUNTIME_HASH {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
+/// The SHA-256 of `bytes` as lowercase hex — the same content-address the store keys on and
+/// `REQUIRED_RUNTIME_HASH` records. (Uses `cdz-run`'s dep chain transitively; computed here to compare
+/// a found runtime against the pinned hash.)
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A `let`-bound tuple built ONCE from runtime params, then projected twice and summed — the composed
+/// heap round-trip. `t` is multi-use, so it is kept as a `Core::Let` binding (a real `arr-alloc`), and
+/// each `(. t i)` is a runtime `arr-get` (the binding is opaque to the fold). The two elements sum back
+/// to a scalar the boundary can carry — so this needs NO renderer, just the heap. Run composed: builds
+/// `(tuple a b)` on the heap, reads both back, adds → the scalar.
+#[test]
+fn a_runtime_tuple_round_trips_through_the_heap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // An EXPORTED function so the tuple's elements are genuine runtime params (unfoldable): build a
+    // 2-tuple from (a, b), project both, add. `t` used twice → kept → real heap construction.
+    let src = "(module m (def (pair-sum (: a Int64) (: b Int64)) \
+                 (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+
+    // It must IMPORT the runtime (the heap ops are used) — proven by the required-runtime probe.
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime tuple program must import the value-heap runtime"
+    );
+
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!(
+            "[H2b] runtime wasm not found (run `cargo xtask codegen`); skipping composed run"
+        );
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("pair-sum".to_string()),
+        args: vec!["20".to_string(), "22".to_string()],
+        runtime: Some(runtime),
+    };
+    // Compose + run: (tuple 20 22) built on the heap, both elements projected back, summed → 42.
+    let _ = Val::S64(0); // (Val import kept for parity with the other runtime tests.)
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "42", "composed heap round-trip"),
+        cdz_run::Outcome::Trap(t) => panic!("composed run trapped: {t}"),
+    }
+}
+
+// ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
+//
+// The operator directive: get the static heap-value path right FIRST — a constant compound must never
+// emit per-call `arr-alloc`. A fully-constant tuple is NOT a runtime computation, so a multi-use
+// `let`-bound constant tuple is NOT kept; each projection then folds straight through to the constant
+// element (`reduce_to_tuple_elems` follows an unkept binding). The result: the program imports NO
+// runtime op and builds no heap value — better than build-once. (The build-once GLOBAL for a constant
+// tuple that ESCAPES as a value activates with the first escape path — the type-directed renderer.)
+
+/// A multi-use `let`-bound CONSTANT tuple FOLDS AWAY: its projections reduce to the constant elements,
+/// so the program uses the value heap not at all — it imports NO runtime op and runs as a plain scalar.
+/// This is the H2c static-correctness win: zero per-call construction for a value that never varies.
+#[test]
+fn a_multi_use_constant_tuple_folds_away_with_no_heap() {
+    use crate::testkit::parse;
+    // `(let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))` — `t` is multi-use, but its value is a CONSTANT
+    // tuple, so it is not kept; both projections fold to 10 and 20, the body folds to `(+ 10 20)` → 30.
+    let src = "(module m (def (main) (let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The H2c property: NO runtime import — the static tuple left no heap trace at all.
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a constant tuple must fold away, importing no runtime op (no per-call arr-alloc)"
+    );
+    // And it runs to the folded scalar without any runtime composed in.
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
+}
+
+/// The contrast that pins the routing: the SAME program shape with a RUNTIME element (a parameter)
+/// genuinely allocates — it IS kept, imports the runtime, and round-trips through the heap (H2b). So
+/// staticness, not the syntactic shape, decides heap-vs-fold.
+#[test]
+fn a_runtime_element_tuple_still_uses_the_heap() {
+    use crate::testkit::parse;
+    // One constant, one runtime element → the tuple is NOT constant, so it is kept and built on the heap.
+    let src = "(module m (def (with-param (: a Int64)) \
+                 (let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))) (export with-param))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a tuple with a runtime element must build on the heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[H2c] runtime wasm not found; skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("with-param".to_string()),
+        args: vec!["32".to_string()],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "42", "10 + 32 through the heap"),
+        cdz_run::Outcome::Trap(t) => panic!("composed run trapped: {t}"),
+    }
+}
+
+// ── value-heap H2d: the Perceus BALANCE probe (no leak) ──────────────────────────────────────────
+//
+// The composed round-trip already rules out use-after-free (a drop of a still-live child would corrupt
+// the projection and change the result / trap). The remaining risk is a LEAK — a drop that never fires.
+// The runtime's `live-objects` (WIT 54) reports the live heap-cell count, but ONLY in a build compiled
+// with `--features debug-counters` (the shipped build returns 0 unconditionally). So this ACCEPTANCE
+// probe LOCATES that runtime by its generated `DEBUG_RUNTIME_HASH` (from the content-addressed store —
+// `xtask build` puts it there; NEVER built by the test — shelling out to cargo would be slow and couple
+// the test to the toolchain), composes it in one store, runs the heap round-trip, and asserts
+// `live-objects == 0`. `#[ignore]` because it needs `xtask build` to have populated the store — run
+// with `cargo test -p rcdzc perceus_balance -- --ignored` after a build.
+
+/// The `debug-counters` runtime bytes, located by the generated `DEBUG_RUNTIME_HASH` in the content-
+/// addressed store, or `None` if absent (so the probe skips rather than fails when `xtask build` has
+/// not populated the store). A plain file read keyed by content address — NO build, NO cargo call.
+fn find_debug_runtime_wasm() -> Option<Vec<u8>> {
+    use crate::backend::wasm::runtime_abi::DEBUG_RUNTIME_HASH;
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let seed = manifest.join("../..").canonicalize().ok()?;
+    let repo = seed.join("../..").canonicalize().ok()?;
+    let path = repo.join(format!("target/cadenza-store/{DEBUG_RUNTIME_HASH}.wasm"));
+    let bytes = std::fs::read(&path).ok()?;
+    // Guard against a stale store entry: only accept bytes whose hash matches the pinned debug hash.
+    (sha256_hex(&bytes) == DEBUG_RUNTIME_HASH).then_some(bytes)
+}
+
+/// H2d ACCEPTANCE: after a heap round-trip, the runtime's live-cell count is 0 — the dup/drop discipline
+/// balanced (no leak). Composes a `debug-counters` runtime in ONE store (so the program's heap ops and
+/// the `live-objects` read share the same allocator), runs `pair-sum(20,22)` (builds a 2-tuple, boxes 2
+/// elements, projects both, drops the tuple — which cascades to the 2 boxes), then reads `live-objects`.
+#[test]
+#[ignore]
+fn perceus_balance_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[H2d] debug-counters runtime not in the store (run `cargo xtask build`); skipping balance probe"
+        );
+        return;
+    };
+
+    // The program: build a runtime 2-tuple, project both elements, sum. It imports the heap + `drop`.
+    let src = "(module m (def (pair-sum (: a Int64) (: b Int64)) \
+                 (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+
+    let engine = Engine::default();
+    let program_component = Component::new(&engine, &program).expect("program component");
+    let runtime_component = Component::new(&engine, &runtime_bytes).expect("runtime component");
+    let mut store = Store::new(&engine, ());
+
+    // Instantiate the runtime ONCE; keep the instance so we can read `live-objects` after the run.
+    let rt_linker: Linker<()> = Linker::new(&engine);
+    let rt_instance = rt_linker
+        .instantiate(&mut store, &runtime_component)
+        .expect("instantiate runtime");
+    let heap_idx = rt_instance
+        .get_export_index(&mut store, None, "cadenza:runtime/heap")
+        .expect("runtime exports heap");
+
+    // Forward every heap function into the program's import, under the program's exact (hashed) name.
+    let req = cdz_run::required_runtime(&program)
+        .expect("valid")
+        .expect("program imports the runtime");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let heap_func_names = runtime_heap_func_names(&engine, &runtime_component);
+    let mut iface = linker.instance(&req.import_name).expect("linker instance");
+    for fname in &heap_func_names {
+        let fidx = rt_instance
+            .get_export_index(&mut store, Some(&heap_idx), fname)
+            .expect("heap func");
+        let f = rt_instance.get_func(&mut store, fidx).expect("func");
+        let fname = fname.clone();
+        iface
+            .func_new(&fname, move |mut ctx, params, results| {
+                f.call(&mut ctx, params, results)?;
+                f.post_return(&mut ctx)?;
+                Ok(())
+            })
+            .expect("forward heap func");
+    }
+
+    // Run the program's export.
+    let instance = linker
+        .instantiate(&mut store, &program_component)
+        .expect("instantiate program");
+    let func = instance
+        .get_func(&mut store, "pair-sum")
+        .expect("pair-sum export");
+    let mut results = [Val::S64(0)];
+    func.call(&mut store, &[Val::S64(20), Val::S64(22)], &mut results)
+        .expect("call");
+    func.post_return(&mut store).expect("post_return");
+    assert_eq!(results[0], Val::S64(42), "the round-trip still computes 42");
+
+    // Read `live-objects` off the runtime instance — the dup/drop discipline must leave 0 live cells.
+    let live_idx = rt_instance
+        .get_export_index(&mut store, Some(&heap_idx), "live-objects")
+        .expect("runtime exports live-objects");
+    let live = rt_instance
+        .get_func(&mut store, live_idx)
+        .expect("live-objects func");
+    let mut live_out = [Val::U32(0)];
+    live.call(&mut store, &[], &mut live_out)
+        .expect("live-objects call");
+    assert_eq!(
+        live_out[0],
+        Val::U32(0),
+        "Perceus leak: {live_out:?} heap cells still live after the round-trip (expected 0)"
+    );
+}
+
+/// The heap interface's function names, read off the runtime component's type (the same discovery
+/// `cdz-run` does) — so the balance probe forwards exactly what the runtime exports, nothing hard-coded.
+fn runtime_heap_func_names(
+    engine: &wasmtime::Engine,
+    runtime: &wasmtime::component::Component,
+) -> Vec<String> {
+    use wasmtime::component::types::ComponentItem;
+    for (name, item) in runtime.component_type().exports(engine) {
+        if name != "cadenza:runtime/heap" {
+            continue;
+        }
+        if let ComponentItem::ComponentInstance(inst) = item {
+            return inst
+                .exports(engine)
+                .filter_map(|(fname, i)| {
+                    matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
+                })
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 /// `(def (main) 42)` compiles to a component that runs to 42.
@@ -1852,6 +2322,85 @@ mod stage1 {
     fn returning_a_record_declines_pending_the_value_heap() {
         // A record used as a runtime VALUE (returned, not projected) needs the value heap — declines.
         assert!(expect_decline("(record (x 1))").contains("value heap"));
+    }
+
+    // ── Value-heap H2a: tuple surface + fold (static-correct first) ───────────────────────────────
+    //
+    // A tuple projected by a constant index over a compile-time-visible tuple FOLDS to the element (no
+    // heap) — the same static reduction a record member fold takes, so these run to a scalar. A runtime
+    // tuple (one that escapes) DECLINES pending H2b's heap emission. An out-of-arity index and a non-
+    // tuple projection are COMPILE-TIME rejects (CDZ0201), never runtime traps.
+
+    #[test]
+    fn a_constant_tuple_projection_folds_to_its_element() {
+        // `(. (tuple 10 20 30) 1)` — a projection of a visible tuple by a constant index folds to the
+        // element `20`, with no heap: the component runs to 20.
+        assert_eq!(run_main("(. (tuple 10 20 30) 1)"), 20);
+        // Position 0 and the last position, too.
+        assert_eq!(run_main("(. (tuple 10 20 30) 0)"), 10);
+        assert_eq!(run_main("(. (tuple 10 20 30) 2)"), 30);
+    }
+
+    #[test]
+    fn a_let_bound_constant_tuple_projection_folds() {
+        // A `let`-bound tuple projected ONCE is copy-propagated (single use) and folds — the binding is
+        // not kept, so the projection sees the literal `(tuple 1 2)` and reduces to `2`.
+        assert_eq!(run_main("(let ((t (tuple 1 2))) (. t 1))"), 2);
+    }
+
+    #[test]
+    fn a_nested_tuple_projection_folds() {
+        // `(. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0)` — project the second inner tuple, then its
+        // first element: folds through both levels to `3`.
+        assert_eq!(run_main("(. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0)"), 3);
+    }
+
+    #[test]
+    fn an_out_of_arity_tuple_index_is_a_compile_time_error() {
+        // `(. (tuple 10 20 30) 3)` — position 3 of a 3-element tuple (valid 0..2) is out of range. It
+        // is REJECTED at compile time (CDZ0201), NOT deferred to a runtime trap (the arity-trap
+        // learning: an out-of-arity index on a statically-known tuple is a type error).
+        let msg = expect_decline("(. (tuple 10 20 30) 3)");
+        assert!(msg.contains("out of range"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_tuple_projection_on_a_non_tuple_is_a_compile_time_error() {
+        // `(. 5 0)` — projecting a position of a non-tuple has no defined result → CDZ0201 at compile
+        // time. (An integer key distinguishes this from record member access, which says "requires a
+        // record"; a tuple projection says "requires a tuple".)
+        let msg = expect_decline("(. 5 0)");
+        assert!(msg.contains("requires a tuple"), "got: {msg}");
+    }
+
+    #[test]
+    fn returning_a_tuple_declines_at_the_boundary_pending_the_renderer() {
+        // A tuple RETURNED to the host builds on the heap (H2b), but a compound cannot cross the
+        // component boundary until the type-directed renderer lands (a later increment) — so it
+        // declines at the boundary, naming the missing boundary representation (NOT at construction).
+        // The internal round-trip (build + project back to a scalar) is what H2b runs; returning the
+        // compound itself waits on the renderer.
+        let msg = expect_decline("(tuple 1 2)");
+        assert!(msg.contains("boundary representation"), "got: {msg}");
+    }
+
+    #[test]
+    fn tuple_branches_of_different_arity_are_a_type_error() {
+        // 02-binding-and-control: `(if true (tuple 1 2) (tuple 3 4 5))` pairs a 2-tuple with a 3-tuple —
+        // different types (a tuple's arity is part of its type), so the whole `if` has no single type
+        // and is rejected (CDZ0201/0203). A check comparing only branch KIND (both "a tuple") would
+        // wrongly accept it. Projected to keep the whole thing a value the compiler must type.
+        let msg = expect_decline("(. (if true (tuple 1 2) (tuple 3 4 5)) 0)");
+        assert!(msg.contains("branches differ"), "got: {msg}");
+    }
+
+    #[test]
+    fn tuple_branches_of_different_element_type_are_a_type_error() {
+        // `(if true (tuple 1 2) (tuple 1 true))` pairs `(Tuple Int64 Int64)` with `(Tuple Int64 Bool)`
+        // — the second position's types differ, so the branches disagree (checked STRUCTURALLY, not at
+        // coarse kind). Rejected.
+        let msg = expect_decline("(. (if true (tuple 1 2) (tuple 1 true)) 0)");
+        assert!(msg.contains("branches differ"), "got: {msg}");
     }
 
     // ── the prelude: a built-in module is an arena record, reached by the same projection ──────
