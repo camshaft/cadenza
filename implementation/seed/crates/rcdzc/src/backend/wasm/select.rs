@@ -151,6 +151,16 @@ fn emit(
         Core::Record { .. } => Err(Reject::decline(
             "constructing a record at run time needs the value heap (not yet built)",
         )),
+        // A runtime TUPLE / PROJECTION that survived the fold (H2a lands the surface + fold; the heap
+        // emission — `arr-alloc`/`arr-set`/`arr-get` — is H2b). Decline cleanly for now, exactly like a
+        // runtime record, so a constant tuple (which folds) still compiles and a runtime one declines
+        // rather than emitting a wrong sequence.
+        Core::Tuple { .. } => Err(Reject::decline(
+            "constructing a tuple at run time needs the value heap (not yet built)",
+        )),
+        Core::Proj { .. } => Err(Reject::decline(
+            "projecting a runtime tuple needs the value heap (not yet built)",
+        )),
         Core::If { cond, then_, else_ } => {
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.

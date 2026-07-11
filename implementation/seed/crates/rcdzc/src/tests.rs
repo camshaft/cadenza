@@ -2043,6 +2043,82 @@ mod stage1 {
         assert!(expect_decline("(record (x 1))").contains("value heap"));
     }
 
+    // ── Value-heap H2a: tuple surface + fold (static-correct first) ───────────────────────────────
+    //
+    // A tuple projected by a constant index over a compile-time-visible tuple FOLDS to the element (no
+    // heap) — the same static reduction a record member fold takes, so these run to a scalar. A runtime
+    // tuple (one that escapes) DECLINES pending H2b's heap emission. An out-of-arity index and a non-
+    // tuple projection are COMPILE-TIME rejects (CDZ0201), never runtime traps.
+
+    #[test]
+    fn a_constant_tuple_projection_folds_to_its_element() {
+        // `(. (tuple 10 20 30) 1)` — a projection of a visible tuple by a constant index folds to the
+        // element `20`, with no heap: the component runs to 20.
+        assert_eq!(run_main("(. (tuple 10 20 30) 1)"), 20);
+        // Position 0 and the last position, too.
+        assert_eq!(run_main("(. (tuple 10 20 30) 0)"), 10);
+        assert_eq!(run_main("(. (tuple 10 20 30) 2)"), 30);
+    }
+
+    #[test]
+    fn a_let_bound_constant_tuple_projection_folds() {
+        // A `let`-bound tuple projected ONCE is copy-propagated (single use) and folds — the binding is
+        // not kept, so the projection sees the literal `(tuple 1 2)` and reduces to `2`.
+        assert_eq!(run_main("(let ((t (tuple 1 2))) (. t 1))"), 2);
+    }
+
+    #[test]
+    fn a_nested_tuple_projection_folds() {
+        // `(. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0)` — project the second inner tuple, then its
+        // first element: folds through both levels to `3`.
+        assert_eq!(run_main("(. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0)"), 3);
+    }
+
+    #[test]
+    fn an_out_of_arity_tuple_index_is_a_compile_time_error() {
+        // `(. (tuple 10 20 30) 3)` — position 3 of a 3-element tuple (valid 0..2) is out of range. It
+        // is REJECTED at compile time (CDZ0201), NOT deferred to a runtime trap (the arity-trap
+        // learning: an out-of-arity index on a statically-known tuple is a type error).
+        let msg = expect_decline("(. (tuple 10 20 30) 3)");
+        assert!(msg.contains("out of range"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_tuple_projection_on_a_non_tuple_is_a_compile_time_error() {
+        // `(. 5 0)` — projecting a position of a non-tuple has no defined result → CDZ0201 at compile
+        // time. (An integer key distinguishes this from record member access, which says "requires a
+        // record"; a tuple projection says "requires a tuple".)
+        let msg = expect_decline("(. 5 0)");
+        assert!(msg.contains("requires a tuple"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_runtime_tuple_declines_pending_the_heap() {
+        // A tuple used as a runtime VALUE (returned, not projected away) needs the value heap — H2a
+        // declines it cleanly (H2b lands the heap construction). This is the byte-neutral boundary:
+        // a constant tuple folds, a surviving one declines (like a runtime record).
+        assert!(expect_decline("(tuple 1 2)").contains("value heap"));
+    }
+
+    #[test]
+    fn tuple_branches_of_different_arity_are_a_type_error() {
+        // 02-binding-and-control: `(if true (tuple 1 2) (tuple 3 4 5))` pairs a 2-tuple with a 3-tuple —
+        // different types (a tuple's arity is part of its type), so the whole `if` has no single type
+        // and is rejected (CDZ0201/0203). A check comparing only branch KIND (both "a tuple") would
+        // wrongly accept it. Projected to keep the whole thing a value the compiler must type.
+        let msg = expect_decline("(. (if true (tuple 1 2) (tuple 3 4 5)) 0)");
+        assert!(msg.contains("branches differ"), "got: {msg}");
+    }
+
+    #[test]
+    fn tuple_branches_of_different_element_type_are_a_type_error() {
+        // `(if true (tuple 1 2) (tuple 1 true))` pairs `(Tuple Int64 Int64)` with `(Tuple Int64 Bool)`
+        // — the second position's types differ, so the branches disagree (checked STRUCTURALLY, not at
+        // coarse kind). Rejected.
+        let msg = expect_decline("(. (if true (tuple 1 2) (tuple 1 true)) 0)");
+        assert!(msg.contains("branches differ"), "got: {msg}");
+    }
+
     // ── the prelude: a built-in module is an arena record, reached by the same projection ──────
 
     #[test]

@@ -91,6 +91,33 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 )),
             },
         },
+        // A tuple literal — kept as a compound. Like a record, it folds away only when a projection
+        // reads a visible element of it; a tuple that survives (constructed from runtime operands, or a
+        // constant tuple that escapes) is a `Core::Tuple` the backend builds on the heap.
+        Resolved::Tuple { elems } => Core::Tuple { elems },
+        // A tuple PROJECTION `(. t N)`. FOLD when the operand reduces to a compile-time-visible tuple:
+        // lower the element's core directly (no heap, like a record member fold). Otherwise the operand
+        // is a RUNTIME tuple (a parameter, a kept `let` binding) — emit a `Core::Proj` the backend lowers
+        // to `arr-get`. An out-of-arity index is impossible here (rejected in `type_errors` before
+        // selection); defensively, a projection past a visible tuple's arity poisons.
+        Resolved::Proj { operand, index } => {
+            match crate::eval::reduce_to_tuple_elems(db, operand) {
+                Some(elems) => match elems.get(index) {
+                    Some(&elem) => {
+                        trace!(target: "rcdzc::fold", node = id.0, index, "tuple projection folds to a visible element");
+                        core_of(db, elem)
+                    }
+                    None => Core::Poison(Reject::coded(
+                        Code::Malformed,
+                        format!("tuple index {index} is out of range"),
+                    )),
+                },
+                None => {
+                    trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection stays runtime (operand is a runtime tuple)");
+                    Core::Proj { operand, index }
+                }
+            }
+        }
         Resolved::If { cond, then_, else_ } => Core::If { cond, then_, else_ },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
         // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
@@ -454,6 +481,13 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             | Core::Convert { .. }
             | Core::If { .. }
             | Core::Record { .. }
+            // A tuple constructs a heap value (an allocation), and a projection reads one — both are
+            // runtime computations worth naming when used more than once. Keeping a multi-use tuple as a
+            // `Core::Let` binding is ALSO what makes its projection stay runtime (the binding is opaque
+            // to the fold via `reduce_to_tuple_elems`, which does not follow a kept binding) — so a
+            // `let`-bound tuple built once and projected is the H2b runtime round-trip.
+            | Core::Tuple { .. }
+            | Core::Proj { .. }
     )
 }
 
@@ -493,6 +527,14 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             n
         }
         Resolved::Member { operand, .. } => uses_in(db, operand, init),
+        Resolved::Tuple { elems } => {
+            let mut n = 0;
+            for &e in &elems {
+                n += uses_in(db, e, init);
+            }
+            n
+        }
+        Resolved::Proj { operand, .. } => uses_in(db, operand, init),
         Resolved::Annot { expr, .. } => uses_in(db, expr, init),
         Resolved::Apply { head, args } => {
             let mut n = uses_in(db, head, init);

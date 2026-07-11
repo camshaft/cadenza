@@ -85,6 +85,16 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             crate::eval::Member::Field(value) => type_of(db, value),
             _ => Ty::Any,
         },
+        // A tuple's type is the tuple of its elements' types, in position order (each a lazy `type_of`).
+        // Arity + element types ARE the type.
+        Resolved::Tuple { elems } => Ty::Tuple(elems.iter().map(|&e| type_of(db, e)).collect()),
+        // A tuple projection's type is the operand tuple's element type AT `index`. An operand that is
+        // not a tuple, or an index outside its arity, has no element type — typed `Any` here so it does
+        // not cascade; the actual fault (CDZ0201) is reported by `type_errors`.
+        Resolved::Proj { operand, index } => match type_of(db, operand) {
+            Ty::Tuple(elems) => elems.get(index).cloned().unwrap_or(Ty::Any),
+            _ => Ty::Any,
+        },
         Resolved::If { cond, then_, else_ } => {
             // Reading the children's types is the backward demand: each is a lazy `type_of`.
             let _cond_ty = type_of(db, cond);
@@ -367,9 +377,17 @@ fn collect_param_constraints(
         Resolved::Member { operand, .. } => {
             collect_param_constraints(db, operand, env, def, subst, fresh)
         }
+        Resolved::Proj { operand, .. } => {
+            collect_param_constraints(db, operand, env, def, subst, fresh)
+        }
         Resolved::Record { fields } => {
             for value in fields.values() {
                 collect_param_constraints(db, *value, env, def, subst, fresh);
+            }
+        }
+        Resolved::Tuple { elems } => {
+            for &e in &elems {
+                collect_param_constraints(db, e, env, def, subst, fresh);
             }
         }
         // Leaves and references contribute no sub-constraints (a bare param ref's constraint comes from
@@ -727,6 +745,47 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 crate::eval::Member::NotRecord => {}
             }
             collect(db, operand, out);
+        }
+        // Tuple projection `(. t N)`: the operand must be a TUPLE, and `N` must be within its static
+        // arity. Both faults are CDZ0201, decided at COMPILE TIME — an out-of-arity index is NOT a
+        // runtime trap (`type-system.md` §A Tuple Is Split At A Position Into A Prefix And A Suffix;
+        // [[an-out-of-arity-tuple-index-traps]]). A poison operand reports its own fault via the descent.
+        Resolved::Proj { operand, index } => {
+            let operand_is_poison = matches!(resolved_of(db, operand), Resolved::Poison(_));
+            match type_of(db, operand) {
+                Ty::Tuple(elems) => {
+                    if index >= elems.len() {
+                        trace!(target: "rcdzc::infer", node = id.0, index, arity = elems.len(), "fault: tuple index out of arity (CDZ0201)");
+                        out.push(Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "tuple index {index} is out of range for a {}-element tuple",
+                                elems.len()
+                            ),
+                        ));
+                    }
+                }
+                // A non-tuple operand (that is not itself a poison) — projecting a position of a
+                // non-tuple has no defined result.
+                _ if !operand_is_poison => {
+                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: tuple projection on a non-tuple (CDZ0201)");
+                    out.push(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "tuple projection requires a tuple, found {}",
+                            type_of(db, operand).render_name()
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+            collect(db, operand, out);
+        }
+        // A tuple literal: descend into each element for its own faults.
+        Resolved::Tuple { elems } => {
+            for &e in &elems {
+                collect(db, e, out);
+            }
         }
         // Descend into the new binding/aggregate forms for their own faults.
         Resolved::Let { bindings, body } => {

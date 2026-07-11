@@ -129,6 +129,11 @@ pub enum Ty {
     /// fields were written (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields), and a
     /// field's type is looked up by name in O(log n).
     Record(std::collections::BTreeMap<crate::resolved::Symbol, Ty>),
+    /// A tuple: a fixed-ARITY POSITIONAL product, each position with its own type. The arity AND the
+    /// per-position types ARE the type — a tuple of a different arity, or with a differently-typed
+    /// position, is a DIFFERENT type (`type-system.md` §The Structural Types Are Record, Tuple, And
+    /// Sum). Distinct from `Record` (a set of NAMED fields): a tuple is projected by position.
+    Tuple(Vec<Ty>),
     /// A function type `param → result`, curried (a multi-parameter operation is nested `Fn`s). What
     /// an operator's (and later a function's) `Meta.t` denotes; an application unifies the argument
     /// against `param` and takes `result`.
@@ -196,6 +201,12 @@ impl Ty {
                         None => false,
                     })
             }
+            // Two tuples agree iff they have the SAME ARITY and each position's types agree — a
+            // different arity is a different type (the corpus `if`-branch cases: a 2-tuple and a 3-tuple
+            // do not agree, nor a `(Tuple Int Int)` with a `(Tuple Int Bool)`).
+            (Ty::Tuple(a), Ty::Tuple(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|(ta, tb)| ta.agrees_with(tb))
+            }
             _ => false,
         }
     }
@@ -234,6 +245,10 @@ impl Ty {
                     .collect();
                 Ty::Record(joined)
             }
+            // Two agreeing tuples join position-wise (same arity, guaranteed by `agrees_with`).
+            (Ty::Tuple(a), Ty::Tuple(b)) if self.agrees_with(other) => {
+                Ty::Tuple(a.iter().zip(b).map(|(ta, tb)| ta.join(tb)).collect())
+            }
             _ => self.clone(),
         }
     }
@@ -257,6 +272,17 @@ impl Ty {
                 let mut s = String::from("(record");
                 for (k, t) in fields {
                     s.push_str(&format!(" ({} {})", k.name, t.render_name()));
+                }
+                s.push(')');
+                s
+            }
+            // A tuple renders as `(Tuple T0 T1 …)` in position order — the shape the renderer walks
+            // (its arity and element types are its type).
+            Ty::Tuple(elems) => {
+                let mut s = String::from("(Tuple");
+                for t in elems {
+                    s.push(' ');
+                    s.push_str(&t.render_name());
                 }
                 s.push(')');
                 s

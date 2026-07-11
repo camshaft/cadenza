@@ -47,6 +47,7 @@ const GRAMMAR: &[&str] = &[
     "if",
     "match",
     "record",
+    "tuple",
     ".",
     "module",
     "def",
@@ -110,6 +111,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("match") => resolve_match(db, id),
                 Some("let") => resolve_let(db, id),
                 Some("record") => resolve_record(db, id),
+                Some("tuple") => resolve_tuple(db, id),
                 Some(".") => resolve_member(db, id),
                 Some("fn") => resolve_lambda(db, id),
                 Some(":") => resolve_annot(db, id),
@@ -670,8 +672,11 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
     Resolved::Record { fields }
 }
 
-/// Resolve `(. operand key)`. The key is a LABEL (bare or `(meta …)`), never resolved as a value.
-/// A key that is neither is not yet supported (declines).
+/// Resolve `(. operand key)` — the ONE dotted projection form, whose KEY KIND selects the meaning:
+/// an INTEGER-literal key is a positional TUPLE projection (`Proj` at that index — `(. t 0)`); a NAME
+/// (or `(meta …)`) key is a named record/module member (`Member`). This is the "tuple access is just
+/// an integer" surface (simpler than a `tuple.N` sigil; the one `.` form serves both). A key that is
+/// neither an integer nor a label is a computed key, not yet supported (declines).
 fn resolve_member(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, ".").unwrap_or(&[]);
     if tail.len() != 2 {
@@ -681,6 +686,17 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
         ));
     }
     let operand = tail[0];
+    // An INTEGER-literal key is a positional tuple projection. The index must be a non-negative integer
+    // that fits a `usize` (a position); a negative or absurd index is malformed.
+    if let Some(value) = db.ast.as_int(tail[1]) {
+        return match tuple_index(value) {
+            Some(index) => Resolved::Proj { operand, index },
+            None => Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a tuple index must be a non-negative position",
+            )),
+        };
+    }
     let key = match read_key(db, tail[1]) {
         Some(sym) => sym,
         None => {
@@ -690,6 +706,25 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
         }
     };
     Resolved::Member { operand, key }
+}
+
+/// A tuple index from an integer-literal key: a non-negative position that fits a `usize`, else `None`
+/// (a negative index is not a position; an out-of-arity index is checked later against the operand's
+/// static arity, where the tuple's type is known).
+fn tuple_index(value: &crate::ast::IntValue) -> Option<usize> {
+    if value.negative {
+        return None;
+    }
+    value.to_i64().and_then(|n| usize::try_from(n).ok())
+}
+
+/// Resolve `(tuple e0 e1 …)` — a positional product literal. Every element is an AST occurrence in
+/// order (resolved on demand); there is no key (positions are implicit). An empty `(tuple)` has no
+/// elements — it is the empty product, which coincides with unit; but the reader writes `()` for unit,
+/// so a written `(tuple)` is kept as a zero-element tuple here and typed as such (its arity is 0).
+fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
+    let elems = db.ast.as_form(id, "tuple").unwrap_or(&[]).to_vec();
+    Resolved::Tuple { elems }
 }
 
 /// Resolve `(: expr ty_expr)` — a type annotation. Both children stay AST occurrences: `expr` is the

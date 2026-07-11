@@ -62,6 +62,19 @@ pub enum Core {
     /// returned) — which needs the value heap and therefore DECLINES for now. Carrying the variant
     /// lets member-access fold read the field set.
     Record { fields: BTreeMap<Symbol, StructId> },
+    /// A TUPLE value — a fixed-arity positional product, each element referenced by its AST occurrence.
+    /// Present only when the tuple SURVIVES to selection as a RUNTIME value (constructed from runtime
+    /// operands, or a constant tuple that escapes — a projection of a compile-time-visible tuple folds to
+    /// the element in `lower`, leaving no `Tuple`). The backend builds it on the value heap
+    /// (`arr-alloc` + per-element `box-*`/`arr-set`), or — for a proven-CONSTANT tuple — builds it ONCE
+    /// (the static build-once path, §2d). Elements are lowered on demand.
+    Tuple { elems: Vec<StructId> },
+    /// A tuple PROJECTION — read element `index` of the tuple the `operand` occurrence denotes. Present
+    /// only when the operand is a RUNTIME tuple (a projection of a compile-time-visible tuple folds to
+    /// the element directly in `lower`, so it never reaches here). The backend emits `arr-get` +
+    /// `get-*`. The `index` is within the operand's static arity (checked in `type_errors` before
+    /// selection — an out-of-arity index is a compile-time reject, never a runtime trap).
+    Proj { operand: StructId, index: usize },
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
     If {
         cond: StructId,

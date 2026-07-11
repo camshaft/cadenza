@@ -203,6 +203,21 @@ value that never varies, that is pure waste (allocation + N stores + boxing, per
    zero init — and indistinguishable at every use site. The compiler does not decide this (the runtime
    does), but a static compound benefits automatically where it applies.
 
+4. **Reclamation of a static value — ELIDE at compile time, do NOT tag at runtime** (operator question,
+   2026-07-11: "could we tag something static so refcounting is a noop, or keep it simple and always
+   call?"). The answer is the middle that costs nothing: **where the compiler PROVES a value is static
+   (the build-once root of §2d), the Perceus pass (H2d) EMITS NO dup/drop for it** — a build-once global
+   is a persistent root that is never reclaimed, and accessors borrow, so both calls are simply omitted.
+   Compile-time knowledge → zero runtime cost and NO ABI change. This is strictly better than either
+   alternative: a runtime static-TAG (a sticky/saturating refcount) would cost a per-call branch AND
+   grow the runtime ABI (which grows only against a measured need, §2b) — NOT built speculatively; and
+   "always call" is unnecessary precisely where the compiler already knows. Where staticness is NOT
+   proven, the pass emits the ordinary dup/drop — and even then the cost is small, because the runtime's
+   inline-small-value hatch (point 3) makes dup/drop on an inline handle a noop anyway. So: elide when
+   proven static (free), emit otherwise (correct, cheap via inline handles), never a runtime tag. H2d
+   realizes this — a proven-static tuple carries no reclamation code; a runtime tuple carries balanced
+   dup/drop.
+
 **Why design it now:** the emission path (§2c) must, from its first version, DISTINGUISH a constant
 compound (→ build-once global / inline) from a runtime one (→ per-evaluation construction). Bolting
 this on later would mean re-touching every construction site and the reclamation contract (a build-once
@@ -308,18 +323,47 @@ from a different input than §2a:
      built in `mod.rs` from the generated `RUNTIME_IFACE`+`REQUIRED_RUNTIME_HASH` (envelope stays
      ABI-agnostic). ⚠ Instantiation needs the runtime linked, so H1b checks validity/type only — the
      end-to-end RUN lands in H2 (a real compound op + the composed runtime).
-3. **(H2) Runtime TUPLE: construct + project, end-to-end.** `Core::Tuple`/`Core::Proj` (or reuse
-   `Record`/`Member` for the runtime path); `select` emits `arr-alloc`/`arr-set` (construct) and
-   `arr-get` (project); the used-set drives the import. Run a program that builds and projects a
-   runtime tuple under wasmtime (composed with the runtime via `cdz-run`). This is the "one product
-   primitive" minimum and the first observable value-heap result. ⚡This needs the runtime wasm built
-   (`cargo component build` — [[runtime-wasm-build-recipe-cargo-component]]) and the run harness to
-   compose it (cdz-run already does — `RUNTIME_IFACE`).
-4. **(H3) Reclamation (consume/borrow → dup/drop).** The Perceus contract. Its own increment — reads
-   the ANF named value flow (step 1's payoff). Conservative first (dup-before-consume, like the seed).
+3. **(H2) The TUPLE, taken to conclusion — construct + project + STATIC build-once + PERCEUS, run.**
+   ⚠ **OPERATOR DIRECTIVE (2026-07-11), the integer-work lesson:** take ONE feature all the way down
+   rather than implementing many in parallel. So H2 is NOT just "construct + project" with reclamation
+   deferred — it is the WHOLE tuple vertical: surface, fold (static correctness), runtime heap ops, the
+   static build-once path, AND Perceus dup/drop, each proven before the next. Two more directives shape
+   it: **(a) get the STATIC heap-value path right FIRST** (§2d) — a constant tuple must never emit
+   per-call `arr-alloc`; design/verify that before the runtime path so the runtime path can't mishandle
+   a constant. **(b) tuple element access is `(. t N)` — member access with an INTEGER key, NOT
+   `tuple.N`** (simpler; reuses the one `.` projection). Sub-increments:
+   - **H2a — surface + types + fold (STATIC-CORRECT FIRST).** `(tuple e…)` → a `Resolved::Tuple`;
+     `(. operand <int-literal>)` → tuple projection by position (member access already carries the key;
+     an integer key selects the tuple path). `Ty::Tuple(Vec<Ty>)` (arity + element types ARE the type —
+     a different arity/element-type is a different type, per the corpus `if`-branch cases). `Core::Tuple`
+     / `Core::Proj`. THE FOLD IS THE STATIC-CORRECTNESS GATE: a projection of a compile-time-visible
+     tuple by a constant index FOLDS to that element (no heap); an OUT-OF-ARITY index is a COMPILE-TIME
+     REJECT (CDZ0201 — [[an-out-of-arity-tuple-index-traps]] mandates reject, never a runtime trap); a
+     constant tuple that does not escape leaves no runtime trace. Byte-neutral: a runtime tuple that
+     survives still DECLINES at select (like `Core::Record` does today), so nothing emits yet.
+   - **H2b — runtime construct + project + COMPOSED RUN.** A surviving `Core::Tuple` → `arr-alloc(n)`
+     then per element `box-*`/`arr-set`; `Core::Proj` → `arr-get` then `get-*`. The used-set (the ops a
+     program lowers to) drives `emit`'s `imports` vec + `layout.import_base` (the H1 machinery, today
+     fed empty). RUN end-to-end under wasmtime COMPOSED with the real runtime, observing a SCALAR
+     result — the first observable heap round-trip. Non-folding trigger: a multi-use `let`-bound tuple
+     `(let ((t (tuple a b))) (+ (. t 0) (. t 1)))` over runtime params. ⚡Needs the `cargo component
+     build` runtime ([[runtime-wasm-build-recipe-cargo-component]]); compose via `RUNTIME_IFACE` as
+     `cdz-run` does. Boundary-compound + the type-directed renderer are a SEPARATE later increment (a
+     compound RETURNED to the host); H2b returns a scalar so no renderer is needed.
+   - **H2c — STATIC build-once (§2d).** A CONSTANT tuple that escapes to a non-foldable position →
+     built ONCE (a module-global / init sequence), referenced by handle, NOT per-call `arr-alloc`.
+     Proven by: a constant tuple's per-call body has NO `arr-alloc` (it reads the global). Its fully-run
+     exercise waits on the renderer, but the ROUTING (constant → build-once, runtime → per-eval) lands
+     here so it is never retrofitted.
+   - **H2d — PERCEUS reclamation.** Constructors CONSUME, accessors BORROW (`value-heap-runtime.md
+     §Constructors Consume And Accessors Borrow`); conservative dup/drop over the ANF named value flow
+     (step 1's payoff). Run against the refcounting runtime — a tuple built, projected, and dropped with
+     balanced refcounts (no leak, no use-after-free). This is what makes the tuple vertical COMPLETE.
+4. **(H3 — folded into H2d)** Reclamation is no longer a separate increment; see H2d.
 5. **(H4) Records at runtime** (rides H2 — a record is a positional array), then **sums** (`sum-new`/
    `sum-disc`/`sum-payload`), then tuple/record/sum PATTERNS in match (the pattern engine grows a
-   product/sum probe — step 3's continuation), then `.of`→Option (task #59).
+   product/sum probe), the type-directed RENDERER (a compound returned to the host), then `.of`→Option
+   (task #59).
 
 ## 4. Watch-outs
 

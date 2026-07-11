@@ -175,6 +175,10 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // compile time and does not construct one at runtime, so a record reaching a machine slot has
         // no scalar representation here and DECLINES (the value heap is a later stage).
         Ty::Record(_) => None,
+        // A tuple is a value-heap compound (a handle) — the same as a record for slot purposes. H2a
+        // folds a projected tuple; a runtime tuple's heap slot (an i32 handle) arrives with H2b, so it
+        // has no scalar slot here yet and declines.
+        Ty::Tuple(_) => None,
         // A function value has no scalar machine representation (runtime closures are a later stage);
         // one reaching a slot declines.
         Ty::Fn(_, _) => None,
@@ -237,6 +241,9 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A record crosses the boundary as a compound value the runtime holds — deferred to the
         // value-heap stage; no scalar boundary valtype, so it declines here.
         Ty::Record(_) => None,
+        // A tuple crosses the boundary as a compound the runtime holds (the type-directed renderer, a
+        // later increment); no scalar boundary valtype, so it declines here.
+        Ty::Tuple(_) => None,
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,
