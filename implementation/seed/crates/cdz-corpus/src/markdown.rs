@@ -651,4 +651,19 @@ mod tests {
           (output (: 42 Int64)))"#;
         assert_preserves(sexpr);
     }
+
+    #[test]
+    fn read_markdown_matches_read_sexpr() {
+        // The xtask reader seam: reading a migrated `.md` yields the identical record STREAM the
+        // source `.sexp` does — the property the `records` bin relies on to serve either extension.
+        let sexpr = r#"(case "integer addition" (input (+ 2 3)) (output (: 5 Int64)))
+(case "no implicit promotion"
+  (input (+ 2 2.0))
+  (trap "numeric type mismatch")
+  (compiler (error CDZ0301)))"#;
+        let md = migrate(sexpr).unwrap();
+        let from_sexpr = crate::render(&crate::read(sexpr).unwrap());
+        let from_md = crate::render(&crate::read_markdown(&md).unwrap());
+        assert_eq!(from_sexpr, from_md, "md:\n{md}");
+    }
 }

@@ -739,17 +739,42 @@ fn expected_value(payload: &str) -> String {
     inner.to_string()
 }
 
-/// The default corpus: every `spec/semantics/*.sexp`, sorted for stable order.
+/// The default corpus: every `spec/semantics/NN-*.{sexp,md}`, sorted for stable order. Corpus files
+/// follow the `NN-feature` naming convention (a numeric prefix), which distinguishes a migrated
+/// corpus `.md` from an ordinary docs `.md` like `README.md` — only digit-led stems are corpus files.
+/// A stem may exist as `.sexp` (source) and/or `.md` (migrated); during the migration both may
+/// coexist, so a `.sexp` whose stem also has a `.md` is dropped — the `.md` wins. That way a file
+/// cuts over to markdown the moment it is migrated, and its `.sexp` can be deleted afterward with
+/// zero change to the gate.
 fn default_corpus_files(paths: &Paths) -> Vec<PathBuf> {
     let dir = paths.repo.join("spec/semantics");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+    let entries: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| {
             eprintln!("xtask gate: reading {}: {e}", dir.display());
             std::process::exit(1);
         })
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "sexp"))
+        .filter(|p| p.extension().is_some_and(|x| x == "sexp" || x == "md"))
+        // Only the `NN-feature` corpus files, never an ordinary docs `.md` (e.g. README.md).
+        .filter(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()))
+        })
+        .collect();
+    let migrated: std::collections::HashSet<_> = entries
+        .iter()
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .filter_map(|p| p.file_stem().map(|s| s.to_os_string()))
+        .collect();
+    let mut files: Vec<PathBuf> = entries
+        .into_iter()
+        .filter(|p| {
+            // Keep every `.md`; keep a `.sexp` only if its stem has no migrated `.md`.
+            !(p.extension().is_some_and(|x| x == "sexp")
+                && p.file_stem().is_some_and(|s| migrated.contains(s)))
+        })
         .collect();
     files.sort();
     files

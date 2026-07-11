@@ -69,12 +69,20 @@ fn main() -> ExitCode {
 }
 
 /// `records FILE…`: read each corpus file, normalize its cases, and emit the flat record stream to
-/// stdout (records from all files concatenated, in file then case order).
+/// stdout (records from all files concatenated, in file then case order). A `.md` file is read as a
+/// migrated markdown corpus; any other extension is read as the s-expression corpus. Both paths emit
+/// the identical record stream (see [`cdz_corpus::read_markdown`]).
 fn run_records(files: &[String]) -> Result<(), String> {
     let mut out = String::new();
     for path in files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
-        let records = cdz_corpus::read(&text).map_err(|e| format!("{path}: {e}"))?;
+        let is_markdown = Path::new(path).extension().is_some_and(|x| x == "md");
+        let records = if is_markdown {
+            cdz_corpus::read_markdown(&text)
+        } else {
+            cdz_corpus::read(&text)
+        }
+        .map_err(|e| format!("{path}: {e}"))?;
         out.push_str(&cdz_corpus::render(&records));
     }
     std::io::stdout()

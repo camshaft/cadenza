@@ -86,6 +86,15 @@ pub fn read(text: &str) -> Result<Vec<Record>, String> {
     Ok(records)
 }
 
+/// Parse a MIGRATED markdown corpus file's `text` into records — the same `Record`s [`read`] would
+/// produce for the equivalent `.sexp`. It reconstructs the s-expression corpus from the markdown
+/// (via [`markdown::to_sexpr`], the inverse of [`markdown::migrate`]) and reads that, so a `.md` and
+/// its source `.sexp` yield an identical record stream — which is exactly what `markdown::check`
+/// verifies. This is the reader the xtask gate uses for a migrated file.
+pub fn read_markdown(text: &str) -> Result<Vec<Record>, String> {
+    read(&markdown::to_sexpr(text)?)
+}
+
 /// Render `records` to the flat record stream (see the module docs for the format).
 pub fn render(records: &[Record]) -> String {
     let mut out = String::new();
