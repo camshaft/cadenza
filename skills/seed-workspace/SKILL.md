@@ -60,6 +60,9 @@ echo '(module m (def (main) 42) (export main))' > /tmp/p.cdz && cargo xtask run 
 ```
 cargo xtask check
 ```
+Each step's full output is captured to `target/xtask-logs/check-<timestamp>.log`; the console shows
+just a ✓ per step. On the first failing step it prints the whole captured log inline (and the path),
+so **read that — don't re-run with `| tail`**; the log has everything.
 
 **Run the behavior gate** (compile+run each corpus case, compare to the recorded outcome):
 ```
