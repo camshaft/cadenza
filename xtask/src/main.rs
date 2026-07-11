@@ -21,6 +21,10 @@
 //!   check       omnibus health check: build + test + clippy + wasm-runtime + gate
 //!   roundtrip   every corpus program round-trips through the syntax surfaces
 //!   fmt         format program file(s) through the printer (--check for CI)
+//!
+//! Global `--profile <name>` chooses the cargo profile the pipeline tools are built under; it
+//! defaults to `release-debug` (optimized, so the corpus gate is fast). Pass `--profile dev` for a
+//! quick unoptimized build when iterating on the tools themselves.
 
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
@@ -32,6 +36,12 @@ use xshell::{Shell, cmd};
 #[derive(Parser)]
 #[command(name = "xtask", about = "The one interface for driving the Cadenza workspace.")]
 struct Cli {
+    /// The cargo profile the pipeline tools (cdz-syntax / rcdzc / cdz-run) are built under. Defaults
+    /// to `release-debug` (optimized, so the corpus gate is fast); pass `--profile dev` for a quick
+    /// unoptimized build when iterating on the tools themselves.
+    #[arg(long, global = true, default_value = "release-debug")]
+    profile: String,
+
     #[command(subcommand)]
     command: Cmd,
 }
@@ -113,16 +123,20 @@ enum Cmd {
 
 fn main() {
     let paths = Paths::resolve();
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    let profile = cli.profile.as_str();
+    match cli.command {
+        // `build` builds the runtime component under its own release settings (cargo component), not
+        // the tool profile — so the profile flag doesn't apply to it.
         Cmd::Build { store } => build(&paths, store),
-        Cmd::Run { file, from, store } => run(&paths, &file, &from, store),
+        Cmd::Run { file, from, store } => run(&paths, profile, &file, &from, store),
         Cmd::Gate { files, store, case, save, check } => {
-            gate(&paths, GateOpts { files, store, case, save, check })
+            gate(&paths, profile, GateOpts { files, store, case, save, check })
         }
-        Cmd::Check => check(&paths),
-        Cmd::Roundtrip { files } => roundtrip(&paths, files),
-        Cmd::Fmt { files, to, check } => fmt(&paths, files, &to, check),
-        Cmd::Emit { file, from, out } => emit(&paths, &file, &from, out),
+        Cmd::Check => check(&paths, profile),
+        Cmd::Roundtrip { files } => roundtrip(&paths, profile, files),
+        Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
+        Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
     }
 }
 
@@ -188,7 +202,7 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
 /// (a parse error, a diagnostic) inherits straight to the terminal. The tools are built ONCE first,
 /// then the built binaries are piped, so the three piped stages don't contend on cargo's build lock.
 /// cdz-run's stdout — the program's result — is inherited to this process's stdout.
-fn run(paths: &Paths, file: &Path, from: &str, store: Option<PathBuf>) {
+fn run(paths: &Paths, profile: &str, file: &Path, from: &str, store: Option<PathBuf>) {
     use std::process::{Command, Stdio};
 
     if !file.exists() {
@@ -198,7 +212,7 @@ fn run(paths: &Paths, file: &Path, from: &str, store: Option<PathBuf>) {
 
     // Build the three tools once, so the pipe below runs finished binaries rather than three
     // concurrent `cargo run`s racing the build lock.
-    let tools = build_tools(paths);
+    let tools = build_tools(paths, profile);
 
     // ── The pipe: cdz-syntax <file> | rcdzc - -o - | cdz-run - ──
     // Stage 1 reads the program file and writes binary AST to stdout.
@@ -259,16 +273,25 @@ struct Tools {
     run: PathBuf,
 }
 
-/// Build the three pipeline tools once and return their binary paths — shared by `run` and `gate`
-/// so neither pays a per-invocation `cargo run` build.
-fn build_tools(paths: &Paths) -> Tools {
+/// Build the three pipeline tools once (under `profile`) and return their binary paths — shared by
+/// `run`/`gate`/`roundtrip`/`fmt`/`emit` so none pays a per-invocation `cargo run` build. The
+/// interactive commands use `dev` (fast build); the corpus gate uses `release-debug` (optimized), so
+/// that the ~900-case run is not dominated by unoptimized tools.
+fn build_tools(paths: &Paths, profile: &str) -> Tools {
     let sh = Shell::new().expect("open a shell");
     sh.change_dir(&paths.repo);
-    if let Err(e) = cmd!(sh, "cargo build --quiet -p cadenza-syntax -p rcdzc -p cdz-run").quiet().run() {
+    if let Err(e) =
+        cmd!(sh, "cargo build --quiet --profile {profile} -p cadenza-syntax -p rcdzc -p cdz-run")
+            .quiet()
+            .run()
+    {
         eprintln!("xtask: building the tools failed: {e}");
         std::process::exit(1);
     }
-    let bin = paths.repo.join("target/debug");
+    // Cargo puts the `dev` profile's artifacts under `target/debug`; every other profile lands under
+    // `target/<profile>`.
+    let subdir = if profile == "dev" { "debug" } else { profile };
+    let bin = paths.repo.join("target").join(subdir);
     Tools { syntax: bin.join("cdz-syntax"), rcdzc: bin.join("rcdzc"), run: bin.join("cdz-run") }
 }
 
@@ -343,8 +366,8 @@ struct GateOpts {
 
 /// Run one or more corpus files through the pipeline and grade each case against its recorded
 /// outcome. Delegates case parsing + normalization to `cdz-syntax corpus`, then drives each program.
-fn gate(paths: &Paths, opts: GateOpts) {
-    let tools = build_tools(paths);
+fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
+    let tools = build_tools(paths, profile);
     let files = if opts.files.is_empty() { default_corpus_files(paths) } else { opts.files.clone() };
 
     // `--case`: run only matching cases and print each one's program / expected / actual — the
@@ -697,7 +720,7 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) -> i32 {
 
 /// Run the whole health check: workspace build, tests, clippy, the wasm runtime build, and the
 /// behavior gate. Each step prints one pass/fail line; the first failing step exits non-zero.
-fn check(paths: &Paths) {
+fn check(paths: &Paths, profile: &str) {
     let sh = Shell::new().expect("open a shell");
     sh.change_dir(&paths.repo);
 
@@ -724,7 +747,9 @@ fn check(paths: &Paths) {
     // baseline, fall back to a plain `gate` (any fail is a failure).
     let gate_arg = if baseline_path(paths).exists() { "--check" } else { "" };
     let mut gate_cmd = std::process::Command::new(std::env::current_exe().expect("current exe"));
-    gate_cmd.arg("gate").current_dir(&paths.repo);
+    // Forward the profile so the gate's pipeline tools are built the same way (before the subcommand,
+    // since `--profile` is a global arg).
+    gate_cmd.args(["--profile", profile, "gate"]).current_dir(&paths.repo);
     if !gate_arg.is_empty() {
         gate_cmd.arg(gate_arg);
     }
@@ -752,8 +777,8 @@ fn step(name: &str, ok: bool) {
 /// For every corpus program, confirm sexpr→binary→sexpr and sexpr→ml→sexpr reproduce a
 /// structurally-equal AST — i.e. re-encoding the round-tripped text to binary yields the SAME bytes
 /// as the original. Guards `cadenza-syntax` (reader/printer/codec) independently of the compiler.
-fn roundtrip(paths: &Paths, files: Vec<PathBuf>) {
-    let tools = build_tools(paths);
+fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
+    let tools = build_tools(paths, profile);
     let files = if files.is_empty() { default_corpus_files(paths) } else { files };
 
     let (mut ok, mut fail) = (0u32, 0u32);
@@ -834,12 +859,12 @@ fn convert_bytes(tools: &Tools, input: &[u8], from: &str, to: &str) -> Option<Ve
 
 /// Format each file through the printer (round-trip its own surface to canonical form). `--check`
 /// writes nothing and exits non-zero if any file is not already canonical.
-fn fmt(paths: &Paths, files: Vec<PathBuf>, to: &str, check: bool) {
+fn fmt(paths: &Paths, profile: &str, files: Vec<PathBuf>, to: &str, check: bool) {
     if files.is_empty() {
         eprintln!("xtask fmt: name at least one file");
         std::process::exit(1);
     }
-    let tools = build_tools(paths);
+    let tools = build_tools(paths, profile);
     let mut unformatted: Vec<String> = Vec::new();
 
     for file in &files {
@@ -889,7 +914,7 @@ fn fmt(paths: &Paths, files: Vec<PathBuf>, to: &str, check: bool) {
 // emit — compile a program to a component and write it out (the compile-only half of `run`).
 // ============================================================================================
 
-fn emit(paths: &Paths, file: &Path, from: &str, out: Option<PathBuf>) {
+fn emit(paths: &Paths, profile: &str, file: &Path, from: &str, out: Option<PathBuf>) {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -897,7 +922,7 @@ fn emit(paths: &Paths, file: &Path, from: &str, out: Option<PathBuf>) {
         eprintln!("xtask emit: no such file: {}", file.display());
         std::process::exit(1);
     }
-    let tools = build_tools(paths);
+    let tools = build_tools(paths, profile);
     let out = out.unwrap_or_else(|| file.with_extension("wasm"));
 
     // cdz-syntax <file> | rcdzc - -o <out>.
