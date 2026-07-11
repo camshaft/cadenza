@@ -62,6 +62,14 @@ version = "0.3"
 features = ["env-filter", "fmt"]
 
 [dev-dependencies]
+# The real front-end reader (TESTS ONLY — like wasm-encoder/wasmtime below, never in the compile
+# path, so the "copy, don't depend" round-trip is preserved). Test fixtures read the s-expression
+# surface with the SAME reader the corpus gate uses (`sexpr::read`, which desugars `a.b` → `(. a b)`)
+# rather than a hand-rolled reader that would drift from it. The bridge is BYTES: `sexpr::read` → its
+# `codec::encode` → rcdzc's `codec::decode` — so every test also EXERCISES that the copied `codec.rs`
+# stays byte-identical to `cadenza-syntax` (the invariant the copy depends on), turning a silent
+# assumption into a checked one.
+cadenza-syntax = { path = "../cadenza-syntax" }
 # The independent byte ORACLE (tests only): licenses the hand-emitted byte path by asserting it is
 # byte-identical to the authoritative component-model encoder. NEVER in the compile path.
 wasm-encoder = "0.239"

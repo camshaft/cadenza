@@ -125,6 +125,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: comparison prim");
                     lower_comparison(db, prim, &args)
                 }
+                Some(prim) if prim.is_conversion() => {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: conversion prim");
+                    lower_conversion(db, id, prim, &args)
+                }
                 Some(prim) => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: type-constructor prim");
                     match crate::eval::reduce_ctor(db, prim, &args) {
@@ -240,6 +244,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::Le
         | Prim::Ge
         | Prim::Eq
+        | Prim::Wrap
         | Prim::IntCtor
         | Prim::UIntCtor
         | Prim::FnCtor
@@ -343,6 +348,55 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     }
 }
 
+/// Lower a CONVERSION application (`T.wrap`). Truncating: keeps the low `N` bits of the operand at the
+/// TARGET width/signedness (`Prim::Wrap`), NEVER traps. The target type is the CONVERSION NODE's own
+/// solved type (`type_of(db, id)`), read here so the fold and the runtime path agree on the width. A
+/// constant operand FOLDS via `IntValue::wrap_to` to a `ConstInt` already at the target width; a runtime
+/// operand becomes a `Core::Convert` the backend emits as a mask-and-reinterpret. A poison propagates.
+fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
+    if args.len() != 1 {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            format!("{} takes exactly 1 operand", intrinsic_name(op)),
+        ));
+    }
+    // The target width/signedness = the conversion node's solved type (an integer). If it is not an
+    // integer type (an unresolved/absurd target), decline rather than guess.
+    let target = match crate::infer::type_of(db, id) {
+        crate::ty::Ty::Int(it) => it,
+        _ => {
+            return Core::Poison(Reject::decline(
+                "a conversion target is not a definite integer type",
+            ));
+        }
+    };
+    let (signed, width) = (target.ground_signed(), target.ground_width());
+    match core_of(db, args[0]) {
+        Core::ConstInt(v) => {
+            // Fold: truncate to the target width at arbitrary precision (total — never traps).
+            let wrapped = v.wrap_to(signed, width);
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "folded constant wrap");
+            Core::ConstInt(wrapped)
+        }
+        Core::Poison(r) => Core::Poison(r),
+        // A runtime operand: emit the mask-and-reinterpret at selection (the target is read off this
+        // node's solved type there, the same `type_of(id)` used here).
+        _ => {
+            if is_scalar(db, args[0]) {
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), signed, width, "conversion stays runtime (scalar operand)");
+                Core::Convert {
+                    op,
+                    operand: args[0],
+                }
+            } else {
+                Core::Poison(Reject::decline(
+                    "a conversion of a non-scalar operand has no meaning",
+                ))
+            }
+        }
+    }
+}
+
 /// Whether the node at `id` has a SCALAR solved type — an integer or a boolean, which occupies a
 /// machine slot the backend can compare or compute on directly (as opposed to a compound/heap value).
 fn is_scalar(db: &mut Db, id: StructId) -> bool {
@@ -385,6 +439,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::Le => "<=",
         Prim::Ge => ">=",
         Prim::Eq => "=",
+        Prim::Wrap => "wrap",
         Prim::IntCtor => "Int",
         Prim::UIntCtor => "UInt",
         Prim::FnCtor => "->",

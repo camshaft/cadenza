@@ -62,6 +62,11 @@ pub enum Core {
         lhs: StructId,
         rhs: StructId,
     },
+    /// A runtime integer CONVERSION on one operand (child by AST `StructId`) — present only when the
+    /// fold could not reduce it (the operand is a runtime value). `Prim::Wrap` truncates the operand to
+    /// the node's solved TARGET width/signedness (read off at selection); a constant operand folds to a
+    /// `ConstInt` in `lower`. The target is the conversion node's OWN solved type, not the operand's.
+    Convert { op: Prim, operand: StructId },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
     /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of
     /// the parameter's slot. This is the runtime value a bare literal is not: a parameter's value is

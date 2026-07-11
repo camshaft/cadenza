@@ -149,7 +149,19 @@ impl<'a, 'b> Reader<'a, 'b> {
         }
     }
 
+    /// Read a node, then fold any tightly-following `.member` postfixes into member access. This is what
+    /// makes `(Int 8).max` and `Int8.max` read to the SAME `(. … max)` shape — the paren form is the
+    /// postfix sibling of the bare-token dotted-name sugar (`classify_token`), extended to an arbitrary
+    /// preceding form (a list, string, …). Both are input-only sugar: `print` always emits the explicit
+    /// `(. operand key)` list, so the round-trip stays stable.
     fn read_node(&mut self) -> Result<StructId, ReadError> {
+        let primary = self.read_primary()?;
+        self.read_postfix_members(primary)
+    }
+
+    /// Read one primary node (a list, string, sigil form, or atom) — WITHOUT the postfix `.member`
+    /// handling that `read_node` layers on top.
+    fn read_primary(&mut self) -> Result<StructId, ReadError> {
         self.skip_ws();
         match self.peek() {
             None => Err(ReadError("unexpected end of input".into())),
@@ -178,6 +190,41 @@ impl<'a, 'b> Reader<'a, 'b> {
             }
             Some(_) => self.read_atom_or_name(),
         }
+    }
+
+    /// Fold `.member` postfixes that IMMEDIATELY follow `node` (no intervening whitespace) into nested
+    /// member access: `(Int 8).max` → `(. (Int 8) max)`, `(. x).a.b` → `(. (. (. x) a) b)`. A postfix
+    /// applies only when the `.` is followed by an identifier SEGMENT (a letter/`_`-led run) — so `(. p
+    /// x)` (a `.` head with a trailing space) and a numeric `.5` are left for ordinary reading, and the
+    /// segment rule matches `is_dotted_name`'s per-segment rule so `(e).a` and `e.a` agree. `self.src` is
+    /// valid UTF-8 and `.` is ASCII, so `pos+1` is a char boundary and the next char decodes cleanly.
+    fn read_postfix_members(&mut self, mut node: StructId) -> Result<StructId, ReadError> {
+        while self.peek() == Some(b'.') {
+            let next_char = std::str::from_utf8(&self.src[self.pos + 1..])
+                .ok()
+                .and_then(|s| s.chars().next());
+            match next_char {
+                Some(c) if c.is_alphabetic() || c == '_' => {
+                    self.bump(); // '.'
+                    // A segment runs up to whitespace, a paren, a comment, or the NEXT '.' (which starts
+                    // a further postfix on the next loop iteration).
+                    let start = self.pos;
+                    while let Some(b) = self.peek() {
+                        if matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'(' | b')' | b';' | b'.') {
+                            break;
+                        }
+                        self.pos += 1;
+                    }
+                    let seg = std::str::from_utf8(&self.src[start..self.pos])
+                        .map_err(|_| ReadError("non-utf8 member segment".into()))?;
+                    let dot = self.b.name(".");
+                    let key = self.b.name(seg);
+                    node = self.b.list(vec![dot, node, key]);
+                }
+                _ => break,
+            }
+        }
+        Ok(node)
     }
 
     fn read_list(&mut self) -> Result<StructId, ReadError> {
@@ -406,6 +453,45 @@ mod tests {
         let tail = a.as_form(a.root, ".").unwrap();
         assert_eq!(a.as_name(tail[0]), Some("Sign"));
         assert_eq!(a.as_name(tail[1]), Some("Neg"));
+    }
+
+    #[test]
+    fn postfix_member_after_a_paren_desugars() {
+        // `(Int 8).max` reads to `(. (Int 8) max)` — the paren-postfix sibling of `Int8.max`. This is
+        // what lets a type-constructor application be projected directly (the modules `(Int N)` builds
+        // carry `max`/`min`/`wrap`), reading identically to the aliased-name form.
+        let a = read("(Int 8).max").unwrap();
+        assert_eq!(a.head_name(a.root), Some("."));
+        let tail = a.as_form(a.root, ".").unwrap();
+        // operand is the `(Int 8)` application; key is `max`.
+        assert_eq!(a.head_name(tail[0]), Some("Int"));
+        assert_eq!(a.as_name(tail[1]), Some("max"));
+    }
+
+    #[test]
+    fn postfix_member_chains_and_composes_with_application() {
+        // `((. (UInt 48) wrap) -1)` is unaffected (explicit form), and a chained postfix `(Int 8).x.y`
+        // nests left-to-right: `(. (. (Int 8) x) y)`.
+        let a = read("(Int 8).x.y").unwrap();
+        assert_eq!(a.head_name(a.root), Some("."));
+        let outer = a.as_form(a.root, ".").unwrap();
+        assert_eq!(a.as_name(outer[1]), Some("y"));
+        assert_eq!(a.head_name(outer[0]), Some(".")); // inner (. (Int 8) x)
+        let inner = a.as_form(outer[0], ".").unwrap();
+        assert_eq!(a.head_name(inner[0]), Some("Int"));
+        assert_eq!(a.as_name(inner[1]), Some("x"));
+    }
+
+    #[test]
+    fn dot_head_form_is_not_a_postfix() {
+        // `(. p x)` — a `.` that heads a list (with a following space) is ordinary member-access
+        // structure, NOT a postfix on the preceding token. Pins that the postfix only fires on a `.`
+        // glued to an identifier segment.
+        let a = read("(. p x)").unwrap();
+        assert_eq!(a.head_name(a.root), Some("."));
+        let tail = a.as_form(a.root, ".").unwrap();
+        assert_eq!(a.as_name(tail[0]), Some("p"));
+        assert_eq!(a.as_name(tail[1]), Some("x"));
     }
 
     #[test]

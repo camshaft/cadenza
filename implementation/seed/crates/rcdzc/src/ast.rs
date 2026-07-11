@@ -179,6 +179,50 @@ impl IntValue {
         self.to_i64_bits() as i32
     }
 
+    /// TRUNCATE this value to a `(signed, width)` integer, keeping the low `width` bits of its two's-
+    /// complement representation and interpreting them at the target — the value `T.wrap` produces. A
+    /// value already in range is unchanged (`200 → UInt8 200`); one out of range keeps its low bits
+    /// (`256 → UInt8 0`, `-1 → UInt8 255`, `-1 → Int8 -1`). Total (never traps), the defining property of
+    /// `wrap`. Returns the truncated value as a canonical [`IntValue`]. Widths `1..=128` supported.
+    ///
+    /// The low-`width` bits are taken from the value's INFINITE two's-complement expansion (a negative
+    /// value has an all-ones high extension), so `-1` wrapped to any width is that width's all-ones
+    /// pattern. Reinterpreting those bits at the target sign then decides the result's sign: unsigned
+    /// keeps them as a magnitude; signed treats bit `width-1` as the sign bit.
+    pub fn wrap_to(&self, signed: bool, width: u32) -> IntValue {
+        debug_assert!((1..=128).contains(&width), "width out of range");
+        // The value's low-128-bit two's-complement pattern (enough for widths ≤ 128): a magnitude for a
+        // non-negative value, its two's-complement negation for a negative one.
+        let mut mag: u128 = 0;
+        for &b in &self.magnitude {
+            mag = mag.wrapping_shl(8) | (b as u128);
+        }
+        let bits: u128 = if self.negative {
+            mag.wrapping_neg()
+        } else {
+            mag
+        };
+        // Keep the low `width` bits.
+        let low = if width >= 128 {
+            bits
+        } else {
+            bits & ((1u128 << width) - 1)
+        };
+        if signed && width >= 1 && (low >> (width - 1)) & 1 == 1 {
+            // The target's sign bit is set → a negative value: `low - 2^width`, i.e. magnitude
+            // `2^width - low`, negative.
+            let modulus = if width >= 128 { 0u128 } else { 1u128 << width };
+            // width < 128 here (a 128-bit signed value with its top bit set still fits u128 magnitude
+            // 2^128 - low, which overflows u128 only when low==0 — but low==0 means non-negative, so the
+            // sign-bit branch is unreachable at width==128; guard with wrapping to stay total).
+            let magnitude = modulus.wrapping_sub(low);
+            IntValue::from_neg_u128(magnitude)
+        } else {
+            // Non-negative: the low bits ARE the magnitude.
+            IntValue::from_u128(low)
+        }
+    }
+
     /// Narrow to a machine `i64`, or `None` if the value does not fit. Used where a downstream pass
     /// requires a fixed-width integer and must decline (not truncate) an out-of-range literal.
     pub fn to_i64(&self) -> Option<i64> {
@@ -382,5 +426,32 @@ mod tests {
         assert_eq!(l1, l2);
         assert_eq!(a.head_name(root), Some("+"));
         assert_eq!(a.as_form(root, "+").map(|t| t.len()), Some(2));
+    }
+
+    #[test]
+    fn wrap_to_truncates_and_reinterprets() {
+        let iv = |n: i64| IntValue::from_i64(n);
+        // In range: unchanged.
+        assert_eq!(iv(200).wrap_to(false, 8), IntValue::from_u128(200)); // UInt8
+        assert_eq!(iv(-1).wrap_to(true, 8), iv(-1)); // Int8: -1 stays -1
+        // Out of range unsigned: keep low 8 bits.
+        assert_eq!(iv(256).wrap_to(false, 8), IntValue::zero()); // 0x100 → 0
+        assert_eq!(iv(511).wrap_to(false, 8), IntValue::from_u128(255)); // 0x1FF → 0xFF
+        // Negative into unsigned: two's-complement low bits.
+        assert_eq!(iv(-1).wrap_to(false, 8), IntValue::from_u128(255)); // all ones
+        assert_eq!(iv(-256).wrap_to(false, 8), IntValue::zero()); // 0x...F00 → 0
+        // Into signed: the target's sign bit decides. 200 = 0xC8, bit7 set → -56 as Int8.
+        assert_eq!(iv(200).wrap_to(true, 8), iv(-56));
+        assert_eq!(iv(128).wrap_to(true, 8), iv(-128)); // Int8.min
+        // A wide value truncated to 48 bits (a non-aliased internal width): -1 → 2^48-1.
+        assert_eq!(
+            iv(-1).wrap_to(false, 48),
+            IntValue::from_u128((1u128 << 48) - 1)
+        );
+        // Width 64: -1 → UInt64.max (2^64-1).
+        assert_eq!(
+            iv(-1).wrap_to(false, 64),
+            IntValue::from_u128(u64::MAX as u128)
+        );
     }
 }

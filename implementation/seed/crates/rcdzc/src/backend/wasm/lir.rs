@@ -149,6 +149,14 @@ pub enum Lir {
     /// 0 for `MIN % -1` (it forms no quotient, so it does not overflow) — exactly the numeric model.
     I64RemS,
     I64RemU,
+    /// Slot-crossing conversions used by a runtime `wrap` (and any op moving a value between machine
+    /// slots): `i32.wrap_i64` drops the high 32 bits of an i64 into an i32; `i64.extend_i32_s`/`_u`
+    /// widen an i32 into an i64, sign- or zero-extending by the SOURCE signedness (to preserve the
+    /// source's value before the target mask). Never trap. (A runtime `wrap` also reuses the i32/i64
+    /// `shl`+`shr_{s,u}` above for the width-generic narrow extend `(x << (M-N)) >> (M-N)`.)
+    I32WrapI64,
+    I64ExtendI32S,
+    I64ExtendI32U,
 }
 
 /// The wasm value type a value of solved type `ty` occupies inside a function body, or `None` for a

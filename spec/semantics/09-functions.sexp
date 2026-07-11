@@ -764,3 +764,39 @@
   (input  (module m (def (main (: n Int8)) n)))
   (call   main (: -128 Int8))
   (output (: -128 Int8)))
+
+; --- Truncating conversion `T.wrap` over a runtime operand: the emitted mask-and-reinterpret ------
+; `T.wrap` truncates any integer to width T, keeping the low bits of its two's-complement value — the
+; principled, TYPE-directed form of a byte-truncation (the width comes from the type `UInt8`, not a magic
+; op name). It is TOTAL — it never traps, whatever the input (the checked companion `T.of`, which reports
+; an out-of-range value rather than truncating, returns an Option and arrives with sum types). On a
+; runtime operand it cannot fold, so the conversion is EMITTED (a slot move + a mask, + a sign-extend for
+; a signed target). These `(call …)` cases run `wrap` over a runtime Int64 argument, pinning that the
+; emitted path agrees with the constant fold across the slot-crossing (i64 source → narrow target) the
+; folded cases never reach. CORE (no `(needs …)`): the seed realizes `wrap` for the aliased widths.
+
+(case "a runtime truncation to an unsigned byte keeps the low bits"
+  (doc    "`(def (main (: n Int64)) (UInt8.wrap n))` called with 300 = 0x12C. `wrap` keeps the low 8 bits
+           (0x2C = 44), emitted as an `i32.wrap_i64` of the parameter then a mask — 44 : UInt8. Pins the
+           runtime truncating conversion (a self-hosted encoder truncating a computed value to a byte).")
+  (input  (module m (def (main (: n Int64)) (UInt8.wrap n))))
+  (call   main (: 300 Int64))
+  (output (: 44 UInt8)))
+
+(case "a runtime truncation of a negative value uses two's complement and never traps"
+  (doc    "`(UInt8.wrap n)` with n = -1 at run time = 255 — the low 8 bits of -1's two's-complement (all
+           ones). It does NOT trap on the negative value (contrast the checked `T.of`, which would report
+           it): `wrap` is total. Pins the emitted conversion reinterprets the low bits for a negative
+           runtime operand exactly as the constant fold does.")
+  (input  (module m (def (main (: n Int64)) (UInt8.wrap n))))
+  (call   main (: -1 Int64))
+  (output (: 255 UInt8)))
+
+(case "a runtime truncation into a signed byte sign-extends"
+  (doc    "`(def (main (: n Int64)) (Int8.wrap n))` called with 200. The low 8 bits (0xC8) have bit 7
+           set, so as a SIGNED Int8 the value is -56 (sign-extended) — crossing the boundary as s8. Pins
+           that a signed target's `wrap` sign-extends from the target's high bit, distinct from the
+           unsigned truncation above.")
+  (input  (module m (def (main (: n Int64)) (Int8.wrap n))))
+  (call   main (: 200 Int64))
+  (output (: -56 Int8)))

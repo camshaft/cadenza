@@ -674,10 +674,50 @@ pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
         }
     }
 
+    // `wrap` — the truncating conversion INTO this width, built identically to the prelude's named-width
+    // modules (`prelude::wrap_field`) so `(Int N).wrap` and `Int8.wrap` denote the same operation. Its
+    // `(meta t)` is `(fn (a) (-> (Int a) TARGET))` (generic source, this width as target); `(meta apply)`
+    // the shared `wrap` intrinsic.
+    fields.push(wrap_field(db, signed, width));
+
     let head = db.push_name("record");
     let mut children = vec![head];
     children.append(&mut fields);
     db.push_list(children)
+}
+
+/// The module's `wrap` field, appended on `&mut Db` — the constructor-side twin of `prelude::wrap_field`
+/// (the two MUST build the same shape so `(Int N).wrap` and the named-width `Int8.wrap` are one
+/// operation). `(wrap (record ((meta t) (fn (a) (-> (Int a) TARGET))) ((meta apply) (intrinsic wrap))))`.
+fn wrap_field(db: &mut Db, signed: bool, width: u32) -> StructId {
+    // `(fn (a) (-> (Int a) TARGET))`.
+    let int_a = {
+        let int = db.push_name("Int");
+        let a = db.push_name("a");
+        db.push_list(vec![int, a])
+    };
+    let target = {
+        let ctor = db.push_name(if signed { "Int" } else { "UInt" });
+        let w = db.push_atom(Leaf::Int {
+            value: IntValue::from_i64(width as i64),
+            radix: crate::ast::Radix::Dec,
+        });
+        db.push_list(vec![ctor, w])
+    };
+    let arr = db.push_name("->");
+    let body = db.push_list(vec![arr, int_a, target]);
+    let fn_head = db.push_name("fn");
+    let a_param = db.push_name("a");
+    let params = db.push_list(vec![a_param]);
+    let lambda = db.push_list(vec![fn_head, params, body]);
+    // `(record ((meta t) lambda) ((meta apply) (intrinsic wrap)))`.
+    let rec_head = db.push_name("record");
+    let t_field = meta_field(db, "t", lambda);
+    let prim = intrinsic_node(db, "wrap");
+    let apply_field = meta_field(db, "apply", prim);
+    let record = db.push_list(vec![rec_head, t_field, apply_field]);
+    let k = db.push_name("wrap");
+    db.push_list(vec![k, record])
 }
 
 /// The (max, min) bounds of a `(signed, width)` integer as arbitrary-precision [`IntValue`]s, computed
@@ -706,6 +746,15 @@ fn meta_field(db: &mut Db, key: &str, value: StructId) -> StructId {
     let key_name = db.push_name(key);
     let meta_key = db.push_list(vec![meta_head, key_name]);
     db.push_list(vec![meta_key, value])
+}
+
+/// An `(intrinsic NAME)` node (appended) — the arena form a native primitive value takes, mirroring
+/// `prelude::intrinsic_node` on `&mut Db` (so a constructor-built module's `wrap` field carries the
+/// same intrinsic the prelude's named-width modules do).
+fn intrinsic_node(db: &mut Db, name: &str) -> StructId {
+    let head = db.push_name("intrinsic");
+    let who = db.push_name(name);
+    db.push_list(vec![head, who])
 }
 
 /// A `(name (: INT (Int/UInt WIDTH)))` record field — an arbitrary-precision integer constant ANNOTATED

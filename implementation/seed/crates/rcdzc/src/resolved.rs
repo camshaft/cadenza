@@ -89,6 +89,14 @@ pub enum Prim {
     Le,
     Ge,
     Eq,
+    /// The TRUNCATING integer conversion `T.wrap : ∀(w,s). Int^s_w → T` — keeps the low `N` bits of the
+    /// source's two's-complement value and interprets them at the TARGET width `N` and signedness. The
+    /// source is a fully-polymorphic integer (any width/sign, via the operator record's type-lambda); the
+    /// target is the MODULE's own width, read off the application's solved type at lowering. So there is
+    /// ONE `Wrap` prim, not one per source type — no pair-explosion. It never traps and never returns an
+    /// `Option`: truncation is total (`(UInt8.wrap 256) = 0`, `(UInt8.wrap -1) = 255`). The CHECKED
+    /// companion `T.of` (returns `Option<T>`, `None` when out of range) arrives with sum types.
+    Wrap,
     /// `Int : Nat → Module` — applied to a width, builds the signed integer module of that width.
     IntCtor,
     /// `UInt : Nat → Module` — the unsigned integer module builder.
@@ -122,6 +130,7 @@ impl Prim {
             "<=" => Some(Prim::Le),
             ">=" => Some(Prim::Ge),
             "=" => Some(Prim::Eq),
+            "wrap" => Some(Prim::Wrap),
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),
             "->" => Some(Prim::FnCtor),
@@ -149,6 +158,13 @@ impl Prim {
                 | Prim::BitOr
                 | Prim::BitXor
         )
+    }
+
+    /// Whether this primitive is an integer CONVERSION — a unary op from a polymorphic source integer to
+    /// a fixed target width. `Wrap` (truncating, returns `T`) is the only one now; the checked `Of`
+    /// (returning `Option<T>`) joins it with sum types. Routed as a unary application in `lower`/`select`.
+    pub fn is_conversion(self) -> bool {
+        matches!(self, Prim::Wrap)
     }
 
     /// Whether this primitive is a relational comparison (`< > <= >=` or equality `=`) — shape `∀a. a →

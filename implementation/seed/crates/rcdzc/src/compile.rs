@@ -195,6 +195,10 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }
+        // A conversion's operand is unconditionally evaluated.
+        Core::Convert { operand, .. } => {
+            collect_reached_poisons(db, operand, out);
+        }
         // A parameter reference is a runtime local read — no sub-poison, no fault to collect.
         Core::Param { .. } | Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => {}
     }

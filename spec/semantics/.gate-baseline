@@ -47,6 +47,9 @@ pass	a runtime greater-than compares by signed order
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime remainder takes the dividend's sign
+pass	a runtime truncation into a signed byte sign-extends
+pass	a runtime truncation of a negative value uses two's complement and never traps
+pass	a runtime truncation to an unsigned byte keeps the low bits
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a strict greater-than of equal operands is false

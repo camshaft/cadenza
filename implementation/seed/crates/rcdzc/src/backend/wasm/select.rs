@@ -234,6 +234,19 @@ fn emit(
                 )),
             }
         }
+        // A runtime integer CONVERSION. `wrap` TRUNCATES the operand to this node's target width/sign
+        // (read off `type_of(id)`): move the operand into the target slot, keep its low N bits, and
+        // reinterpret them at the target sign. Total (never traps) — the const path folds identically in
+        // `lower`. This is the runtime sibling of `IntValue::wrap_to`.
+        Core::Convert { op, operand } => {
+            let src = Machine::of(int_ty_of(db, operand));
+            let dst = Machine::of(int_ty_of(db, id));
+            trace!(target: "rcdzc::select", node = id.0, ?op, from_width = src.width, to_width = dst.width, "emit runtime conversion");
+            match op {
+                Prim::Wrap => emit_wrap(db, src, dst, operand, slots, base, high, scratch_ty, out),
+                _ => Err(Reject::decline("not a runtime conversion")),
+            }
+        }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),
@@ -715,6 +728,71 @@ fn emit_shift(
         emit_range_check(m, sr, out);
     }
     out.push(Lir::LocalGet(sr));
+    Ok(())
+}
+
+/// Emit a runtime `wrap` — TRUNCATE the operand (source machine `src`) to the target `dst`'s width and
+/// signedness, keeping the low `dst.width` bits and reinterpreting them at the target sign. NEVER traps
+/// (the whole point of `wrap`). Three composed steps, all width-generic:
+///
+///   1. emit the operand (it lands in the SOURCE slot, normalized to the source width);
+///   2. MOVE it to the TARGET slot: `i32.wrap_i64` (i64→i32, drops the high half — which the mask would
+///      drop anyway) or `i64.extend_i32_{s,u}` (i32→i64, extended by the SOURCE sign so the source value
+///      is preserved before masking); same slot → nothing;
+///   3. TRUNCATE to `dst.width` in the target slot when it is narrow (`dst.width < slot bits`): `and` the
+///      low-`N`-bits mask, then — if the TARGET is signed — sign-extend from bit `N-1` via
+///      `(x << (M-N)) >> (M-N)` (arithmetic shr). An unsigned target stops after the mask (zero-filled).
+///
+/// A full-width target (`dst.width == slot bits`) needs no truncation after the slot move — the slot IS
+/// the width. The result is left normalized in the target slot, exactly as every other value.
+#[allow(clippy::too_many_arguments)]
+fn emit_wrap(
+    db: &mut Db,
+    src: Machine,
+    dst: Machine,
+    operand: StructId,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    // 1. The operand, in the source slot.
+    emit(db, operand, slots, base, high, scratch_ty, out)?;
+    // 2. Move into the target slot (drop/extend the machine width). The extend is by the SOURCE sign so
+    //    the source value's bits are preserved into the wider slot before the target mask.
+    match (src.slot32, dst.slot32) {
+        (false, true) => out.push(Lir::I32WrapI64), // i64 source → i32 target
+        (true, false) => out.push(if src.signed {
+            Lir::I64ExtendI32S
+        } else {
+            Lir::I64ExtendI32U
+        }),
+        _ => {} // same slot width — nothing to move
+    }
+    // 3. Truncate to the target width within the target slot, when narrower than the slot.
+    if dst.narrow() {
+        let slot_bits = dst.slot_bits();
+        if dst.signed {
+            // Sign-extend from bit N-1: `(x << (M-N)) >> (M-N)` with arithmetic (signed) shr. This both
+            // masks (the << pushes the high bits out) and sign-fills. `dst.shr()` is arithmetic for a
+            // signed dst.
+            let shift = (slot_bits - dst.width) as i64;
+            out.push(dst.konst(shift));
+            out.push(dst.shl());
+            out.push(dst.konst(shift));
+            out.push(dst.shr());
+        } else {
+            // Zero-fill: mask to the low N bits.
+            let mask = if dst.width >= 64 {
+                -1i64 // all ones (unreachable for narrow, but total)
+            } else {
+                (1i64 << dst.width) - 1
+            };
+            out.push(dst.konst(mask));
+            out.push(dst.and());
+        }
+    }
     Ok(())
 }
 
