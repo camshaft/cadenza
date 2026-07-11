@@ -988,101 +988,15 @@ fn perceus_balance_leaves_no_live_objects() {
     );
 }
 
-// ── value-heap H3a: a compound RETURNED as a component ref (the escape path) ──────────────────────
-
-/// H3a: a def that RETURNS a tuple hands the caller a u32 HANDLE (a ref into the composed runtime's
-/// store) — ownership transferred, NOT dropped. The caller reads the value back through the runtime's
-/// own accessors (the "display function"): `arr-len` for the arity, `arr-get` + `get-int` per element.
-/// This is the escape path that lets a genuine RUNTIME compound leave a function — no const-fold, no
-/// canonical-text renderer. Composed under wasmtime end-to-end.
-#[test]
-fn a_returned_tuple_is_a_readable_handle() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_runtime_wasm() else {
-        eprintln!(
-            "[H3a] runtime wasm not found (run `cargo xtask codegen`); skipping composed run"
-        );
-        return;
-    };
-    // `make` builds a 2-tuple from two runtime params and RETURNS it — the tuple escapes as the result,
-    // so its binding is NOT dropped (ownership transfers to the caller).
-    let src = "(module m (def (make (: a Int64) (: b Int64)) (tuple a b)) (export make))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    // The export's result is a compound → crosses as a u32 handle.
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    let handle = match rt.call("make", &[Val::S64(7), Val::S64(35)]) {
-        Val::U32(h) => h,
-        other => panic!("expected a u32 handle, got {other:?}"),
-    };
-    // Read the value back through the runtime accessors — the caller's "display function".
-    assert_eq!(
-        rt.heap_call("arr-len", &[Val::U32(handle)]),
-        Val::U32(2),
-        "arity 2"
-    );
-    // Element 0 is a boxed int handle; get-int reads its s64 payload. Same for element 1.
-    let e0 = rt.heap_call("arr-get", &[Val::U32(handle), Val::U32(0)]);
-    let e1 = rt.heap_call("arr-get", &[Val::U32(handle), Val::U32(1)]);
-    let (Val::U32(e0), Val::U32(e1)) = (e0, e1) else {
-        panic!("arr-get must return element handles");
-    };
-    assert_eq!(
-        rt.heap_call("get-int", &[Val::U32(e0)]),
-        Val::S64(7),
-        "element 0 = 7"
-    );
-    assert_eq!(
-        rt.heap_call("get-int", &[Val::U32(e1)]),
-        Val::S64(35),
-        "element 1 = 35"
-    );
-}
-
-/// H3a ownership: the RETURNED tuple's binding is NOT dropped (its ownership transfers to the caller),
-/// so a `let`-bound tuple that is the result balances only when the CALLER releases it. Under the
-/// debug-counters runtime: after `make` returns the handle, the tuple's cells are LIVE (NOT reclaimed —
-/// that would be use-after-free); then the test `drop`s the handle and the count returns to 0. This
-/// pins the ownership-transfer-on-return rule (an escaped value is not dropped by the callee, a caller
-/// drop reclaims it cleanly). NOTE on the count: the two small-int ELEMENTS ride INLINE in the handle
-/// bits (§2d's small-value hatch — `box-int` of a fixnum allocates no heap cell), so only the ARRAY
-/// node is a real cell → 1 live, not 3. Big elements would box; the ownership property is the same.
-#[test]
-#[ignore]
-fn a_returned_tuple_transfers_ownership_then_caller_drops() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "[H3a] debug-counters runtime not in the store (run `cargo xtask build`); skipping"
-        );
-        return;
-    };
-    let src = "(module m (def (make (: a Int64) (: b Int64)) (tuple a b)) (export make))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    let handle = match rt.call("make", &[Val::S64(1), Val::S64(2)]) {
-        Val::U32(h) => h,
-        other => panic!("expected a handle, got {other:?}"),
-    };
-    // The callee did NOT drop the returned tuple: its cell is live (1 — the array; the two small-int
-    // elements ride inline, no heap cell). NOT reclaimed by the callee (that would be use-after-free).
-    assert_eq!(
-        rt.live_objects(),
-        1,
-        "a returned tuple keeps its cell live (ownership transferred, not reclaimed)"
-    );
-    // The caller now owns it — dropping the handle reclaims the value (a big-element tuple would cascade
-    // to its boxed children; here the inline elements have no cell to free).
-    rt.heap_call("drop", &[Val::U32(handle)]);
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "the caller's drop reclaims the transferred tuple"
-    );
-}
+// ── value-heap H3a: a compound RETURNED transfers ownership; the HOST-facing return is a RESOURCE ──
+//
+// A compound leaving a function transfers ownership of its handle to the consumer (the callee does not
+// drop it — `binding_escapes`). The HOST-facing return (a compound crossing the component boundary) is
+// NOT a raw handle — that was a shortcut. It will be a monomorphized component-model RESOURCE carrying
+// `display-value` / `display-type` methods (the resource vertical, tasks below); until that lands, a
+// compound host-return DECLINES (reject-don't-miscompile — `export_result_valtype`). The internal
+// ownership-transfer behavior is still exercised by the H2 round-trips + the balance probe; the two
+// former raw-handle-to-host tests are removed as the shortcut they tested is being replaced.
 
 /// The heap interface's function names, read off the runtime component's type (the same discovery
 /// `cdz-run` does) — so the balance probe forwards exactly what the runtime exports, nothing hard-coded.
@@ -2524,20 +2438,15 @@ mod stage1 {
     }
 
     #[test]
-    fn returning_a_tuple_crosses_the_boundary_as_a_handle() {
-        // A tuple RETURNED to the host crosses the component boundary as a u32 HANDLE — a ref into the
-        // composed runtime's store (H3a, the escape path). So `(tuple 1 2)` as a program result COMPILES
-        // now (it did NOT before H3a — it declined for a missing boundary representation). The caller
-        // reads the value back through the runtime accessors; the e2e ref-return test
-        // (`a_returned_tuple_is_a_readable_handle`) exercises that composed read.
-        use crate::testkit::parse;
-        let src = "(module m (def (main) (tuple 1 2)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)));
-        assert!(
-            bytes.is_ok(),
-            "a returned tuple must compile (crosses as a handle): {:?}",
-            bytes.err()
-        );
+    fn returning_a_tuple_to_the_host_declines_pending_the_resource_renderer() {
+        // A tuple RETURNED across the host boundary needs the type-directed RENDERER to produce its
+        // canonical text — the compound will cross as a monomorphized component RESOURCE with
+        // `display-value`/`display-type` methods (the resource vertical). Until that lands, a compound
+        // host-return DECLINES (reject-don't-miscompile) rather than handing the host a raw handle it
+        // would misreport. (A compound CONSUMED internally — projected, threaded — works via the heap;
+        // only the host-facing return waits on the resource + renderer.)
+        let msg = expect_decline("(tuple 1 2)");
+        assert!(msg.contains("renderer"), "got: {msg}");
     }
 
     #[test]

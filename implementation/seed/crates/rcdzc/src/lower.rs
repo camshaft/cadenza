@@ -671,6 +671,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::IntCtor
         | Prim::UIntCtor
         | Prim::FnCtor
+        | Prim::TupleCtor
         | Prim::BoolTy
         | Prim::UnitTy => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
@@ -866,6 +867,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::IntCtor => "Int",
         Prim::UIntCtor => "UInt",
         Prim::FnCtor => "->",
+        Prim::TupleCtor => "Tuple",
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
     }

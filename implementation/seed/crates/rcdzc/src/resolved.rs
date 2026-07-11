@@ -103,6 +103,11 @@ pub enum Prim {
     UIntCtor,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
+    /// `Tuple : (Type…) → Type` — the tuple-type constructor, VARIADIC over its element types. `(Tuple
+    /// Int64 Bool)` builds the type-value `(Tuple Int64 Bool)`; a different arity or element type is a
+    /// different type. Used in type position (an annotation `(: e (Tuple …))`), the arity/element check
+    /// the annotation needs.
+    TupleCtor,
     /// The ground type-values — nullary "constructors" that ARE a type-value directly (`Bool`/`Unit`
     /// resolve to a record whose `(meta t)` holds one of these).
     BoolTy,
@@ -134,6 +139,7 @@ impl Prim {
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),
             "->" => Some(Prim::FnCtor),
+            "Tuple" => Some(Prim::TupleCtor),
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
             _ => None,

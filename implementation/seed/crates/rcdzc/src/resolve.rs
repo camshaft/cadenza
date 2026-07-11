@@ -555,6 +555,14 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             let r = decode_ty(db, *tail.get(1)?)?;
             Some(Ty::Fn(Box::new(p), Box::new(r)))
         }
+        "Tuple" => {
+            let tail = db.ast.as_form(node, "Tuple")?;
+            let mut elems = Vec::with_capacity(tail.len());
+            for &e in tail {
+                elems.push(decode_ty(db, e)?);
+            }
+            Some(Ty::Tuple(elems))
+        }
         _ => None,
     }
 }

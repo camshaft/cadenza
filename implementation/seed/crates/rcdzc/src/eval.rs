@@ -620,6 +620,20 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
             trace!(target: "rcdzc::eval", ty = %fn_ty.render_name(), "ctor (->): built function type-value");
             Ok(encode_typeval(db, &fn_ty))
         }
+        // `Tuple` — VARIADIC over its element TYPES: reduce each arg to a `Ty`, build `Ty::Tuple`. Its
+        // arity + element types ARE the type, so `(: e (Tuple T…))` checks the value's shape against it
+        // (a wrong arity/element is CDZ0203 at the annotation, via `agrees_with`).
+        Prim::TupleCtor => {
+            let mut elems = Vec::with_capacity(args.len());
+            for (i, &a) in args.iter().enumerate() {
+                let t =
+                    typeval_of(db, a).ok_or_else(|| format!("Tuple element {i} is not a type"))?;
+                elems.push(t);
+            }
+            let tup = crate::ty::Ty::Tuple(elems);
+            trace!(target: "rcdzc::eval", ty = %tup.render_name(), "ctor (Tuple): built tuple type-value");
+            Ok(encode_typeval(db, &tup))
+        }
         _ => Err("not a type constructor".to_string()),
     }
 }
@@ -697,6 +711,14 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             let pe = encode_ty(db, p);
             let re = encode_ty(db, r);
             db.push_list(vec![arr, pe, re])
+        }
+        // A tuple: `(Tuple <elem>…)` — the head then each element type encoded in order.
+        Ty::Tuple(elems) => {
+            let mut items = vec![db.push_name("Tuple")];
+            for e in elems {
+                items.push(encode_ty(db, e));
+            }
+            db.push_list(items)
         }
         // Var/Any/Record shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),

@@ -292,6 +292,16 @@ pub fn core_module(
 pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
     match ret {
         Ty::Unit => Ok(None),
+        // A COMPOUND returned across the HOST boundary needs the type-directed RENDERER to produce its
+        // canonical text (`(tuple 0 true)`, …) — a later increment. Its internal handle representation
+        // (`comp_valtype_of` → u32) is right for a compound CONSUMED internally (threaded between defs,
+        // projected), but handing the host a raw handle would misreport the value (the gate reads
+        // `1114400` where the corpus expects the rendered tuple). So a compound host-export DECLINES
+        // pending the renderer — reject-don't-miscompile, NOT a raw-handle leak.
+        Ty::Tuple(_) | Ty::Record(_) => Err(format!(
+            "returning a {} across the host boundary needs the value renderer (not yet built)",
+            ret.render_name()
+        )),
         other => match comp_valtype_of(other) {
             Some(b) => Ok(Some(b)),
             None => Err(format!(
