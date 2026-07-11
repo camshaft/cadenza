@@ -57,6 +57,30 @@ pub struct Export {
     pub def: Option<usize>,
 }
 
+/// The backstop β-reduction nesting depth. The active-set catches recursion precisely; this bounds
+/// any divergence it misses. Generous so a deep-but-terminating fold is never falsely bounded.
+pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 512;
+
+/// An RAII guard for one active β-reduction: holds the reduction depth bumped for its lifetime and
+/// decrements it on drop, so the depth exactly reflects the reductions currently on the stack. Held by
+/// the evaluator across the reduce-and-evaluate of a lambda application.
+pub struct ReductionGuard<'a> {
+    db: &'a mut Db,
+}
+
+impl ReductionGuard<'_> {
+    /// The database, to continue reducing within this guarded scope.
+    pub fn db(&mut self) -> &mut Db {
+        self.db
+    }
+}
+
+impl Drop for ReductionGuard<'_> {
+    fn drop(&mut self) {
+        self.db.reduce_depth = self.db.reduce_depth.saturating_sub(1);
+    }
+}
+
 /// The memo key for a built constructor value: the primitive applied plus its argument VALUES (not
 /// occurrences), so two `(Int 64)` written at different source occurrences — or the same occurrence
 /// demanded repeatedly — share one built module. `i64` args cover the width of `(Int W)`; the key
@@ -94,6 +118,15 @@ pub struct Db {
     /// shadows a built-in by the ordinary lookup precedence.
     pub prelude: BTreeMap<String, StructId>,
 
+    /// The evaluator's current β-reduction nesting depth. β-reduction inlines a callee's body; a
+    /// TERMINATING fold bottoms out at a bounded depth, while a RECURSIVE function inlines without end.
+    /// So a bounded depth is the sound guard: past [`REDUCE_DEPTH_LIMIT`] the evaluator declines rather
+    /// than diverging (`reference-compiler.md` §The Evaluator Bounds Its Own Reduction And Declines
+    /// Rather Than Diverges). (A body-on-the-stack set is NOT a sound recursion signal — `(f (f v))`
+    /// legitimately nests the same body twice while both calls terminate; only the depth distinguishes
+    /// a terminating nest from an unbounded one.)
+    pub(crate) reduce_depth: u32,
+
     /// Memo of built values the evaluator produced by applying a native constructor — keyed by the
     /// reduction `(prim, arg-values)`, mapping to the built node's occurrence. Without it, a
     /// type-constructor application like `(Int 64)` would append a FRESH module on every demand
@@ -129,11 +162,23 @@ impl Db {
             exports,
             parent,
             prelude,
+            reduce_depth: 0,
             build_cache: std::collections::HashMap::new(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),
         }
+    }
+
+    /// Enter a β-reduction: on success returns a guard that holds the depth bumped for its lifetime;
+    /// `None` if the depth is already at [`REDUCE_DEPTH_LIMIT`] — a reduction that deep is a diverging
+    /// (recursive) fold, so the evaluator DECLINES. Dropping the guard leaves the reduction.
+    pub fn enter_reduction(&mut self) -> Option<ReductionGuard<'_>> {
+        if self.reduce_depth >= REDUCE_DEPTH_LIMIT {
+            return None;
+        }
+        self.reduce_depth += 1;
+        Some(ReductionGuard { db: self })
     }
 
     /// The occurrence a previously-built constructor value was cached at, if any — the evaluator

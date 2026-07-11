@@ -80,11 +80,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Apply { head, args } => {
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
             // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
-            // `(+ 5 1)` → `6`, with no function value emitted.
-            match crate::eval::apply_lambda(db, head, &args) {
-                Ok(Some(reduced)) => return core_of(db, reduced),
-                Ok(None) => {} // not a lambda — try the primitive `(meta apply)` path below.
-                Err(msg) => return Core::Poison(Reject::decline(msg)),
+            // `(+ 5 1)` → `6`, with no function value emitted. The reduction runs UNDER a guard keyed
+            // by the lambda's body, so a recursive call (which re-enters the same body while lowering
+            // the reduced result) is detected and DECLINES rather than inlining without end.
+            if crate::eval::lambda_body(db, head).is_some() {
+                // Reduce and lower under a depth guard: a terminating fold bottoms out; a recursive
+                // function inlines past the bound and DECLINES rather than diverging.
+                match db.enter_reduction() {
+                    Some(mut guard) => {
+                        let g = guard.db();
+                        return match crate::eval::apply_lambda(g, head, &args) {
+                            Ok(Some(reduced)) => core_of(g, reduced),
+                            Ok(None) => unreachable!("lambda_body implies a lambda head"),
+                            Err(msg) => Core::Poison(Reject::decline(msg)),
+                        };
+                    }
+                    None => {
+                        return Core::Poison(Reject::decline(
+                            "a recursive function needs runtime specialization (not yet built)",
+                        ));
+                    }
+                }
             }
             match crate::eval::meta_apply_of(db, head) {
                 Some(prim) if prim.is_arith() => lower_arith(db, prim, &args),

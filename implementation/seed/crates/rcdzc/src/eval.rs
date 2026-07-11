@@ -176,6 +176,12 @@ pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Op
     }
 }
 
+/// The body occurrence of the lambda `head` reduces to, if any — the stable per-function identity the
+/// recursion guard keys on (so a recursive call, which re-enters the same body, is detected).
+pub fn lambda_body(db: &mut Db, head: StructId) -> Option<StructId> {
+    lambda_of(db, head).map(|(_, body)| body)
+}
+
 /// If the value at `id` reduces to a lambda, its parameters and body. Follows a `Ref` (a `let`-bound
 /// function) AND reduces an `Apply` head (a function RETURNED by another application — `(adder 10)`
 /// reduces to the inner `(fn (x) …)`, so `((adder 10) 5)` applies it). This is what makes curried and
