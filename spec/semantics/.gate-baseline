@@ -82,6 +82,13 @@ pass	projecting a field is independent of the order fields are written
 pass	structural equality holds component-wise
 pass	subtraction
 pass	the boolean literals
+pass	the entrypoint adds one to its runtime argument
+pass	the entrypoint branches on its runtime argument
+pass	the entrypoint compares its runtime argument to a bound
+pass	the entrypoint multiplies its runtime argument
+pass	the entrypoint returns its runtime argument unchanged
+pass	the entrypoint returns its runtime boolean argument
+pass	the entrypoint sums its two runtime arguments
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the maximum Int64 in hexadecimal reads as an integer

@@ -643,3 +643,88 @@
             (def (bad (: a Bool)) (+ a 1))
             (def (main)           (bad true))))
   (error  CDZ0203))
+
+; --- Runtime arguments to the entrypoint: (call <export> <arg>…) --------------------------------
+; Every case above calls a parameterized function with CONSTANT arguments, so the compiler folds the
+; whole program to a value at compile time — a real strength (a compile-provable trap fails the build),
+; but it means the emitted component's runtime machinery (parameter slots, `local.get`, a genuine
+; runtime `+`/`*`/comparison, a branch on a runtime value) is never exercised. A value that arrives at
+; RUN TIME — an argument supplied to the exported entry from outside the component — cannot be folded:
+; the entry becomes `input -> output` and its parameter crosses the boundary as a lifted value
+; (contracts/component-abi.md §The Entry Is A Plain Function; §The Exported Interface Is The Declared
+; Signature — the interface is read from the export's declared PARAMETER and result types). These cases
+; use the `(call <export> <arg>…)` clause to run the exported entry with runtime arguments, so the
+; operation over the parameter is emitted as real instructions rather than constant-folded. Each `<arg>`
+; is a `(: <value> <Type>)` value-form; the runner coerces it to the export's declared parameter type.
+; The parameter MUST be annotated (`(: x Int64)`) — an entry's boundary representation follows its
+; declared signature, and an unannotated parameter has no boundary width, so the compiler declines it.
+; CORE cases (no `(needs …)`): the seed realizes a parameterized export, because a compiler authored in
+; Cadenza is itself a component whose entry takes its input as a runtime argument.
+
+(case "the entrypoint returns its runtime argument unchanged"
+  (doc    "The identity entry: `(def (main (: x Int64)) x)` exported and called with the runtime
+           argument 42. The argument arrives from OUTSIDE the component (not a compile-time constant), so
+           it cannot be folded — the body is a bare parameter reference lowered to a `local.get` of the
+           entry's one parameter slot, lifted back across the boundary. Pins that a parameterized entry
+           receives a runtime value and returns it, the minimal exercise of the boundary parameter path
+           the folded nullary cases never reach (contracts/component-abi.md §The Entry Is A Plain
+           Function — an entry is `input -> output`, its parameter type carrying a boundary form).")
+  (input  (module m (def (main (: x Int64)) x)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64)))
+
+(case "the entrypoint adds one to its runtime argument"
+  (doc    "`(def (main (: x Int64)) (+ x 1))` exported and called with 41. One operand of `+` is the
+           runtime parameter `x`, so the addition CANNOT fold to a constant — it is emitted as a genuine
+           runtime `i64.add` over the parameter's local slot and the literal 1. (Contrast the folded
+           `(+ 2 3)` in 06-numeric-model, which the compiler reduces to 5 at build time.) This is the
+           smallest case that exercises the runtime arithmetic path a program's machinery actually runs;
+           41 + 1 = 42.")
+  (input  (module m (def (main (: x Int64)) (+ x 1))))
+  (call   main (: 41 Int64))
+  (output (: 42 Int64)))
+
+(case "the entrypoint multiplies its runtime argument"
+  (doc    "`(def (main (: x Int64)) (* x 3))` called with 7 — a runtime `i64.mul` over the parameter and
+           the literal 3, yielding 21. Companion to the runtime `+` case, pinning that multiplication too
+           is emitted as a real instruction (not folded) when an operand is a runtime argument.")
+  (input  (module m (def (main (: x Int64)) (* x 3))))
+  (call   main (: 7 Int64))
+  (output (: 21 Int64)))
+
+(case "the entrypoint sums its two runtime arguments"
+  (doc    "A two-parameter entry `(def (main (: a Int64) (: b Int64)) (+ a b))` called with 20 and 22.
+           BOTH operands are runtime arguments, so the `+` is a runtime `i64.add` over two parameter
+           slots — nothing is constant. Pins that an entry takes MORE than one boundary argument, each in
+           its own local slot in signature order, and the arguments are supplied in order; 20 + 22 = 42.")
+  (input  (module m (def (main (: a Int64) (: b Int64)) (+ a b))))
+  (call   main (: 20 Int64) (: 22 Int64))
+  (output (: 42 Int64)))
+
+(case "the entrypoint returns its runtime boolean argument"
+  (doc    "`(def (main (: b Bool)) b)` called with the runtime boolean `true`. Pins that a Bool crosses
+           the entry boundary as a runtime argument (not only an integer) and lifts back unchanged — the
+           boolean boundary representation on the parameter side, mirroring the Bool result cases.")
+  (input  (module m (def (main (: b Bool)) b)))
+  (call   main (: true Bool))
+  (output (: true Bool)))
+
+(case "the entrypoint compares its runtime argument to a bound"
+  (doc    "`(def (main (: x Int64)) (< x 10))` called with 5 — a runtime `<` comparison between the
+           parameter and the literal 10, producing a Bool. The comparison cannot fold (one operand is a
+           runtime value), so it is emitted as a real runtime comparison. 5 < 10 is true. Pins that a
+           relational operator over a runtime argument runs as an instruction and yields a boundary Bool.")
+  (input  (module m (def (main (: x Int64)) (< x 10))))
+  (call   main (: 5 Int64))
+  (output (: true Bool)))
+
+(case "the entrypoint branches on its runtime argument"
+  (doc    "`(def (main (: x Int64)) (if (< x 0) 0 x))` — clamp-to-zero — called with -3. The `if`
+           condition is a runtime comparison on the parameter, so the branch is a genuine runtime
+           structured `if` (not a compile-time choice of arm): with x = -3 the condition holds and the
+           entry yields 0. Pins that control flow driven by a runtime argument is emitted as a real
+           branch, the last piece of the runtime machinery the folded nullary cases skip. (A negative
+           argument also exercises the runner taking a leading-`-` value as the argument, not a flag.)")
+  (input  (module m (def (main (: x Int64)) (if (< x 0) 0 x))))
+  (call   main (: -3 Int64))
+  (output (: 0 Int64)))

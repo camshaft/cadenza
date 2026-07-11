@@ -395,8 +395,11 @@ enum Ran {
 }
 
 /// Drive one program's s-expression `text` through cdz-syntax → rcdzc → cdz-run, returning the
-/// outcome. Uses a real pipe with the program fed on cdz-syntax's stdin (no temp files).
-fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str) -> Ran {
+/// outcome. Uses a real pipe with the program fed on cdz-syntax's stdin (no temp files). When `call`
+/// is given, the export is invoked with those runtime arguments (`--call <export> --arg <v>…`) — how a
+/// case exercises a parameterized entrypoint rather than a nullary one; `None` runs the sole export
+/// with no arguments (the common case).
+fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str, call: Option<&Call>) -> Ran {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -437,6 +440,15 @@ fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str) -> Ran {
         .stderr(Stdio::piped());
     if let Some(dir) = store {
         run.arg("--store").arg(dir);
+    }
+    // A `(call …)` case names the export and passes runtime arguments; cdz-run coerces each `--arg` to
+    // the export's declared parameter type (its `--arg` allows a leading `-`, so a negative value is
+    // taken as the argument, not a flag).
+    if let Some(call) = call {
+        run.arg("--call").arg(&call.export);
+        for arg in &call.args {
+            run.arg("--arg").arg(arg);
+        }
     }
     let mut child = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
     child
@@ -550,7 +562,7 @@ fn gate_one_case(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], need
                 continue;
             }
             found += 1;
-            let ran = run_program(tools, store, &rec.program);
+            let ran = run_program(tools, store, &rec.program, rec.call.as_ref());
             let actual = match &ran {
                 Ran::Value(v) => format!("value {v}"),
                 Ran::Declined => "declined (compiler can't compile it yet)".to_string(),
@@ -563,6 +575,9 @@ fn gate_one_case(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], need
             };
             println!("case:     {}", rec.description);
             println!("program:  {}", rec.program);
+            if let Some(call) = &rec.call {
+                println!("call:     {} {}", call.export, call.args.join(" "));
+            }
             println!("expect:   {}", rec.expect);
             println!("actual:   {actual}");
             println!("verdict:  {verdict}\n");
@@ -589,9 +604,20 @@ enum Grade {
 struct CorpusRecord {
     description: String,
     program: String,
+    /// A `(call …)` clause: the export to invoke and its runtime arguments. `None` when the case has
+    /// no `(call …)` — the program's sole export is run with no arguments (the common nullary case).
+    call: Option<Call>,
     /// The `expect` line's payload, e.g. `output (: 42 Int64)`, `error CDZ0201`, `trap "…"`.
     expect: String,
     needs: Vec<String>,
+}
+
+/// A corpus case's `(call <export> <arg>…)` clause, parsed from the record stream. The export is run
+/// with these arguments (already reduced to bare value text by `cdz-syntax corpus`), which cdz-run
+/// coerces to the export's declared parameter types — the path that exercises a parameterized entry.
+struct Call {
+    export: String,
+    args: Vec<String>,
 }
 
 /// Run `cdz-syntax corpus <file>` and parse its record stream.
@@ -613,25 +639,36 @@ fn read_corpus(tools: &Tools, file: &Path) -> Vec<CorpusRecord> {
     parse_records(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// Parse the flat record stream: `key\tvalue` lines, records separated by a `---` line.
+/// Parse the flat record stream: `key\tvalue` lines, records separated by a `---` line. A `call` line
+/// (the export) and any following `arg` lines (its arguments, in order) build the record's optional
+/// `(call …)` clause.
 fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut records = Vec::new();
     let (mut desc, mut prog, mut expect, mut needs) =
         (String::new(), String::new(), String::new(), Vec::new());
+    let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
     for line in text.lines() {
         if line == "---" {
+            let call = call_export.take().map(|export| Call {
+                export,
+                args: std::mem::take(&mut call_args),
+            });
             records.push(CorpusRecord {
                 description: std::mem::take(&mut desc),
                 program: std::mem::take(&mut prog),
+                call,
                 expect: std::mem::take(&mut expect),
                 needs: std::mem::take(&mut needs),
             });
+            call_args.clear();
             continue;
         }
         if let Some((key, val)) = line.split_once('\t') {
             match key {
                 "case" => desc = val.to_string(),
                 "program" => prog = val.to_string(),
+                "call" => call_export = Some(val.to_string()),
+                "arg" => call_args.push(val.to_string()),
                 "expect" => expect = val.to_string(),
                 "needs" => needs.push(val.to_string()),
                 _ => {}
@@ -643,7 +680,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
 
 /// Grade one case: drive its program, then compare against the recorded expectation.
 fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord) -> Grade {
-    let ran = run_program(tools, store, &rec.program);
+    let ran = run_program(tools, store, &rec.program, rec.call.as_ref());
     grade_ran(rec, &ran)
 }
 
