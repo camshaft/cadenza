@@ -176,11 +176,19 @@ pub fn apply_lambda(db: &mut Db, head: StructId, args: &[StructId]) -> Result<Op
     }
 }
 
-/// If the value at `id` reduces to a lambda (following a `Ref`), its parameters and body.
+/// If the value at `id` reduces to a lambda, its parameters and body. Follows a `Ref` (a `let`-bound
+/// function) AND reduces an `Apply` head (a function RETURNED by another application — `(adder 10)`
+/// reduces to the inner `(fn (x) …)`, so `((adder 10) 5)` applies it). This is what makes curried and
+/// returned functions work: the head of an application is itself evaluated to a lambda first.
 fn lambda_of(db: &mut Db, id: StructId) -> Option<(Vec<StructId>, StructId)> {
     match resolved_of(db, id) {
         Resolved::Lambda { params, body } => Some((params, body)),
         Resolved::Ref { value } => lambda_of(db, value),
+        Resolved::Apply { head, args } => {
+            // Reduce the inner application to a value, then see if THAT is a lambda.
+            let reduced = apply_lambda(db, head, &args).ok().flatten()?;
+            lambda_of(db, reduced)
+        }
         _ => None,
     }
 }
