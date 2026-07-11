@@ -165,30 +165,35 @@ fn envelope_matches_wasm_encoder_oracle() {
 
 // ── the behavior run (wasmtime) ────────────────────────────────────────────────────────────────
 
-/// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the
-/// single s64 result. The "run the artifact" behavior check.
-fn run_returns_s64(component_bytes: &[u8], name: &str) -> i64 {
-    use wasmtime::component::{Component, Linker, Val};
-    use wasmtime::{Engine, Store};
+/// A component-boundary result type a behavior test can read back — one method decoding a wasmtime
+/// `Val` into the Rust value the test asserts on. Adding a new boundary return type (a `u32`, a
+/// string, later a compound) is one more `impl FromVal`, no new run helper.
+trait FromVal: Sized {
+    /// Decode a boundary result value, panicking with a type-named message on a mismatch.
+    fn from_val(v: &wasmtime::component::Val) -> Self;
+}
 
-    let engine = Engine::default();
-    let component = Component::from_binary(&engine, component_bytes).expect("valid component");
-    let linker: Linker<()> = Linker::new(&engine);
-    let mut store = Store::new(&engine, ());
-    let instance = linker.instantiate(&mut store, &component).expect("instantiate");
-    let func = instance.get_func(&mut store, name).expect("export present");
-    let mut results = [Val::S64(0)];
-    func.call(&mut store, &[], &mut results).expect("call");
-    func.post_return(&mut store).expect("post_return");
-    match results[0] {
-        Val::S64(n) => n,
-        ref other => panic!("expected S64 result, got {other:?}"),
+impl FromVal for i64 {
+    fn from_val(v: &wasmtime::component::Val) -> i64 {
+        match v {
+            wasmtime::component::Val::S64(n) => *n,
+            other => panic!("expected S64 result, got {other:?}"),
+        }
+    }
+}
+
+impl FromVal for bool {
+    fn from_val(v: &wasmtime::component::Val) -> bool {
+        match v {
+            wasmtime::component::Val::Bool(b) => *b,
+            other => panic!("expected Bool result, got {other:?}"),
+        }
     }
 }
 
 /// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the single
-/// bool result — the behavior check for a `Bool`-returning entrypoint (a comparison at the boundary).
-fn run_returns_bool(component_bytes: &[u8], name: &str) -> bool {
+/// result decoded to `T` — the "run the artifact" behavior check, generic over the boundary type.
+fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
     use wasmtime::component::{Component, Linker, Val};
     use wasmtime::{Engine, Store};
 
@@ -198,27 +203,26 @@ fn run_returns_bool(component_bytes: &[u8], name: &str) -> bool {
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &component).expect("instantiate");
     let func = instance.get_func(&mut store, name).expect("export present");
+    // A one-slot result buffer; the initial value is overwritten by the call (its variant is
+    // irrelevant — `call` writes the actual result), then decoded to `T`.
     let mut results = [Val::Bool(false)];
     func.call(&mut store, &[], &mut results).expect("call");
     func.post_return(&mut store).expect("post_return");
-    match results[0] {
-        Val::Bool(b) => b,
-        ref other => panic!("expected Bool result, got {other:?}"),
-    }
+    T::from_val(&results[0])
 }
 
 /// `(def (main) 42)` compiles to a component that runs to 42.
 #[test]
 fn scalar_runs_to_42() {
     let bytes = compile_component(&prog_scalar()).expect("compile");
-    assert_eq!(run_returns_s64(&bytes, "main"), 42);
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
 }
 
 /// `(def (main) (if false 1 2))` compiles to a component that runs to 2 (the else branch).
 #[test]
 fn if_runs_to_2() {
     let bytes = compile_component(&prog_if()).expect("compile");
-    assert_eq!(run_returns_s64(&bytes, "main"), 2);
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
 }
 
 // ── decline-don't-miscompile ───────────────────────────────────────────────────────────────────
@@ -238,7 +242,7 @@ fn unsupported_construct_declines() {
 fn export_name_is_verbatim() {
     let bytes = compile_component(&prog_scalar()).expect("compile");
     // If the name were renamed, `run_returns_s64(.., "main")` would fail to find the export.
-    assert_eq!(run_returns_s64(&bytes, "main"), 42);
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
 }
 
 // ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────
@@ -248,22 +252,27 @@ fn export_name_is_verbatim() {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{run_returns_bool, run_returns_s64};
+    use super::{run_returns, FromVal};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
-    /// Compile `(module m (def (main) BODY) (export main))` and run `main`, returning its s64 result.
-    fn run_main(body: &str) -> i64 {
+    /// Compile `(module m (def (main) BODY) (export main))` and run `main`, returning its result
+    /// decoded to `T`. Generic over the boundary type: adding a new one is one more `impl FromVal`.
+    fn run_main_as<T: FromVal>(body: &str) -> T {
         let src = format!("(module m (def (main) {body}) (export main))");
         let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-        run_returns_s64(&bytes, "main")
+        run_returns::<T>(&bytes, "main")
     }
 
-    /// Compile the same shape and run `main`, returning its BOOL result — for a comparison entrypoint.
+    /// The common case: an integer-returning body. (A thin fixed-type alias over `run_main_as` so the
+    /// many integer cases read `run_main("..")` and dodge integer-literal type inference.)
+    fn run_main(body: &str) -> i64 {
+        run_main_as::<i64>(body)
+    }
+
+    /// A boolean-returning body — a comparison entrypoint.
     fn run_main_bool(body: &str) -> bool {
-        let src = format!("(module m (def (main) {body}) (export main))");
-        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-        run_returns_bool(&bytes, "main")
+        run_main_as::<bool>(body)
     }
 
     /// Compile the same program shape and expect a DECLINE/reject, returning the error message.
