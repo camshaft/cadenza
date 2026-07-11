@@ -251,9 +251,36 @@ from a different input than §2a:
    right before anything consumes it.
 2. **(H1) Import section + envelope plumbing, per-program-minimal, driven by a hand-written used-set.**
    Teach `serialize`/`envelope` to emit an import section for a GIVEN set of ops (computed, not fixed),
-   and the component to satisfy it. Test with a synthetic 1-op program (or a unit test that builds the
-   import section for `{arr-alloc}` and validates it against `wasm-encoder`). Still no `Core` compound
-   op, so the gate stays green; the byte oracle gains an "imports arr-alloc" case.
+   and the component to satisfy it. Still no `Core` compound op, so the gate stays green; the byte
+   oracle gains an "imports arr-alloc" case. **Sub-steps (each unit-tested against a `wasm-encoder`
+   oracle before the next):**
+   - **H1a — core-module import section + index shift.** `serialize::core_module` takes the used-set
+     (ordered, sorted-by-name). It emits, BEFORE the function/code sections, a core IMPORT section
+     (id 2): one `(module="heap", name=<op>, desc=typeidx)` per used op, each op's core functype added
+     to the TYPE section first. The imported functions occupy core func indices `0..k`; the program's
+     own defined functions therefore start at index `k`, so the function section, the export section's
+     func indices, and every `Lir::Call(def-index)` shift by `k`. `layout.abs(def)` becomes
+     `import_count + position_in_order`. A used-set of size 0 emits NO import section and NO shift →
+     byte-identical to today (the scalar anchor). Unit test: a core module importing `arr-alloc` with
+     one exported nullary func is byte-identical to the `wasm-encoder` core-module oracle; and the
+     empty-used-set core module is byte-identical to today's.
+   - **H1b — component envelope import plumbing.** The component must (i) declare an import-instance-
+     type with one func-type+export per used op (component type section); (ii) `import` the runtime
+     interface `cadenza:runtime/heap@0.0.0+<REQUIRED_RUNTIME_HASH>` as an instance of that type;
+     (iii) `alias-export` each op out of the imported instance and `canon-lower` it to a core func;
+     (iv) build a core INSTANCE of the lowered funcs named to match the core module's `"heap"` import
+     module, and `core-instantiate` the program module threading that instance in; (v) alias/lift the
+     boundary exports out of the instantiated program (as today, but off the instantiated instance).
+     This is the 7-step shape the old `wit_envelope.rs::build_heap_envelope` used — hand-emit it
+     byte-identical to a `wasm-encoder` oracle built the same way. A used-set of size 0 emits today's
+     envelope exactly (no import instance, direct instantiate). Unit test: the 1-op envelope is
+     byte-identical to the oracle; the 0-op envelope is byte-identical to today's.
+   - The `REQUIRED_RUNTIME_HASH` suffix on the import name comes from `runtime_abi.rs` (H0) — the
+     import name is `{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}` (the versioned form `cdz-run`
+     recognizes). ⚠ CROSS-CUT: getting the core func-index shift consistent across serialize (func +
+     export sections, `Lir::Call`) and the envelope (canon-lower produces core funcs `0..k`, the
+     program module is instantiated AFTER, its exports aliased off the instance) is the whole
+     difficulty; the two oracles (core + component) pin each half independently.
 3. **(H2) Runtime TUPLE: construct + project, end-to-end.** `Core::Tuple`/`Core::Proj` (or reuse
    `Record`/`Member` for the runtime path); `select` emits `arr-alloc`/`arr-set` (construct) and
    `arr-get` (project); the used-set drives the import. Run a program that builds and projects a
