@@ -186,9 +186,8 @@ pub fn unescape_backtick_name(token: &str) -> String {
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
-            match chars.next() {
-                Some(e) => out.push(e),
-                None => {}
+            if let Some(e) = chars.next() {
+                out.push(e);
             }
         } else {
             out.push(c);

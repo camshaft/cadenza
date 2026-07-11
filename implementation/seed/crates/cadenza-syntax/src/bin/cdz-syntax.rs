@@ -24,16 +24,16 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     // `corpus FILE…` is a distinct mode from the `--from/--to` converter — dispatch it first.
     let mut argv = std::env::args().skip(1);
-    if let Some(first) = argv.next() {
-        if first == "corpus" {
-            return match run_corpus(argv.collect()) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(msg) => {
-                    eprintln!("cdz-syntax corpus: {msg}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
+    if let Some(first) = argv.next()
+        && first == "corpus"
+    {
+        return match run_corpus(argv.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(msg) => {
+                eprintln!("cdz-syntax corpus: {msg}");
+                ExitCode::FAILURE
+            }
+        };
     }
     match run() {
         Ok(()) => ExitCode::SUCCESS,

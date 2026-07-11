@@ -83,21 +83,22 @@ impl<'a> Printer<'a> {
 
         if let Some(head) = head {
             // ---- infix binary operator ----
-            if let Some(prec) = infix_prec(&head) {
-                if args.len() == 2 {
-                    return self.infix(&head, prec, args[0], args[1], parent_prec);
-                }
+            if let Some(prec) = infix_prec(&head)
+                && args.len() == 2
+            {
+                return self.infix(&head, prec, args[0], args[1], parent_prec);
             }
             // ---- member access `(. obj key)` -> obj.key ----
-            if head == "." && args.len() == 2 {
-                if let Some(key) = self.plain_key(args[1]) {
-                    self.doc.ibox(0);
-                    self.expr(args[0], PREC_MEMBER);
-                    self.doc.word(".");
-                    self.doc.word(emit_name(&key));
-                    self.doc.end();
-                    return;
-                }
+            if head == "."
+                && args.len() == 2
+                && let Some(key) = self.plain_key(args[1])
+            {
+                self.doc.ibox(0);
+                self.expr(args[0], PREC_MEMBER);
+                self.doc.word(".");
+                self.doc.word(emit_name(&key));
+                self.doc.end();
+                return;
             }
             // ---- quasiquote / unquote sigils ----
             if head == "quasiquote" && args.len() == 1 {
@@ -239,13 +240,13 @@ impl<'a> Printer<'a> {
         loop {
             match self.a.get(left) {
                 Struct::List(items) if items.len() == 3 => {
-                    if let Some(h) = self.head_name(items[0]) {
-                        if infix_prec(&h) == Some(prec) {
-                            operands.push(items[2]);
-                            ops.push(h);
-                            left = items[1];
-                            continue;
-                        }
+                    if let Some(h) = self.head_name(items[0])
+                        && infix_prec(&h) == Some(prec)
+                    {
+                        operands.push(items[2]);
+                        ops.push(h);
+                        left = items[1];
+                        continue;
                     }
                     break;
                 }
@@ -480,11 +481,12 @@ impl<'a> Printer<'a> {
             self.doc.hardbreak(); // one member per line
             // a `(doc …)` module member renders as a `///` line (body position); anything else as
             // its ordinary form.
-            if let Some(a) = self.a.as_form(form, "doc") {
-                if a.len() == 1 && self.is_string(a[0]) {
-                    self.print_doc(a[0]);
-                    continue;
-                }
+            if let Some(a) = self.a.as_form(form, "doc")
+                && a.len() == 1
+                && self.is_string(a[0])
+            {
+                self.print_doc(a[0]);
+                continue;
             }
             self.expr(form, 0);
         }
@@ -595,26 +597,27 @@ impl<'a> Printer<'a> {
     /// a constructor application `(Ctor p…)` -> `Ctor(p, …)`; a dotted ctor `(. A B)` -> `A.B`; a
     /// bare name / literal prints as itself.
     fn pattern(&mut self, id: StructId) {
-        if let Some(tail) = self.a.as_form(id, "guard") {
-            if tail.len() == 2 {
-                let (pat, guard) = (tail[0], tail[1]);
-                self.pattern(pat);
-                self.doc.word(" if ");
-                self.expr(guard, 0);
-                return;
-            }
+        if let Some(tail) = self.a.as_form(id, "guard")
+            && tail.len() == 2
+        {
+            let (pat, guard) = (tail[0], tail[1]);
+            self.pattern(pat);
+            self.doc.word(" if ");
+            self.expr(guard, 0);
+            return;
         }
         match self.a.get(id) {
             Struct::List(items) if !items.is_empty() => {
                 let items = items.clone();
                 // dotted constructor `(. A B)` prints as A.B
-                if self.head_name(items[0]).as_deref() == Some(".") && items.len() == 3 {
-                    if let Some(key) = self.plain_key(items[2]) {
-                        self.pattern(items[1]);
-                        self.doc.word(".");
-                        self.doc.word(emit_name(&key));
-                        return;
-                    }
+                if self.head_name(items[0]).as_deref() == Some(".")
+                    && items.len() == 3
+                    && let Some(key) = self.plain_key(items[2])
+                {
+                    self.pattern(items[1]);
+                    self.doc.word(".");
+                    self.doc.word(emit_name(&key));
+                    return;
                 }
                 // constructor applied to sub-patterns: Ctor(p, …)
                 self.pattern(items[0]);

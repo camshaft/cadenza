@@ -298,11 +298,7 @@ impl<'a> Parser<'a> {
         let start = self.cur_span();
         let mut left = self.prefix();
         left = self.postfix(left, start);
-        loop {
-            let op_name = match self.infix_op() {
-                Some(name) => name,
-                None => break,
-            };
+        while let Some(op_name) = self.infix_op() {
             let prec = infix_prec(op_name).expect("infix_op returns only infix names");
             if prec < min_prec {
                 break;

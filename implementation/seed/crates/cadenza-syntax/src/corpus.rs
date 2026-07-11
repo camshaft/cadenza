@@ -148,10 +148,10 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
             Some("compiler") => {
                 // `(compiler (error <CODE>))` — a provable-at-compile-time rejection accompanying a
                 // dynamic `(trap …)`. The compiler's recorded outcome is the rejection.
-                if let Some(inner) = a.as_form(clause, "compiler").and_then(|t| t.first().copied()) {
-                    if a.head_name(inner) == Some("error") {
-                        compiler_error = a.as_form(inner, "error").and_then(|t| t.first().copied()).and_then(|id| a.as_name(id).map(str::to_string));
-                    }
+                if let Some(inner) = a.as_form(clause, "compiler").and_then(|t| t.first().copied())
+                    && a.head_name(inner) == Some("error")
+                {
+                    compiler_error = a.as_form(inner, "error").and_then(|t| t.first().copied()).and_then(|id| a.as_name(id).map(str::to_string));
                 }
             }
             Some("needs") => {

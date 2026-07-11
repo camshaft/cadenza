@@ -28,10 +28,10 @@ fn inputs_of(file: &Arenas) -> Vec<Arenas> {
     let mut out = Vec::new();
     // walk the whole structure arena for any `(input X)` form and lift X into its own arena
     for id in (0..file.structure.len() as u32).map(StructId) {
-        if let Some(args) = file.as_form(id, "input") {
-            if args.len() == 1 {
-                out.push(lift(file, args[0]));
-            }
+        if let Some(args) = file.as_form(id, "input")
+            && args.len() == 1
+        {
+            out.push(lift(file, args[0]));
         }
     }
     out

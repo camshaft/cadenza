@@ -131,11 +131,11 @@ impl Doc {
                 Token::Break { blank_space, .. } => {
                     // A pending break's span ends at the NEXT break or the box's end. Resolve the
                     // previous pending break (if this break is a sibling in the same box).
-                    if let Some(&top) = stack.last() {
-                        if matches!(self.tokens[top], Token::Break { .. }) {
-                            size[top] += total;
-                            stack.pop();
-                        }
+                    if let Some(&top) = stack.last()
+                        && matches!(self.tokens[top], Token::Break { .. })
+                    {
+                        size[top] += total;
+                        stack.pop();
                     }
                     size[i] = -total;
                     stack.push(i);
@@ -143,11 +143,11 @@ impl Doc {
                 }
                 Token::End => {
                     // Resolve a trailing pending break, then the matching Begin.
-                    if let Some(&top) = stack.last() {
-                        if matches!(self.tokens[top], Token::Break { .. }) {
-                            size[top] += total;
-                            stack.pop();
-                        }
+                    if let Some(&top) = stack.last()
+                        && matches!(self.tokens[top], Token::Break { .. })
+                    {
+                        size[top] += total;
+                        stack.pop();
                     }
                     if let Some(begin) = stack.pop() {
                         size[begin] += total;
@@ -171,8 +171,8 @@ impl Doc {
         let mut indent: isize = 0;
         let mut pending_indent: isize = 0;
 
-        for i in 0..n {
-            match &self.tokens[i] {
+        for (token, &tok_size) in self.tokens.iter().zip(&size) {
+            match token {
                 Token::Text(s) => {
                     if pending_indent > 0 {
                         for _ in 0..pending_indent {
@@ -184,7 +184,7 @@ impl Doc {
                     space -= s.chars().count() as isize;
                 }
                 Token::Begin { offset, breaks } => {
-                    let fits = size[i] <= space;
+                    let fits = tok_size <= space;
                     frames.push(Frame { indent, breaks: *breaks, fits });
                     if !fits {
                         indent += offset;
@@ -202,7 +202,7 @@ impl Doc {
                         Some(f) if f.fits => false, // whole box is flat: never break
                         Some(f) => match f.breaks {
                             Breaks::Consistent => true, // every break fires
-                            Breaks::Inconsistent => size[i] > space, // fill: break on overflow
+                            Breaks::Inconsistent => tok_size > space, // fill: break on overflow
                         },
                     };
                     if fires {
