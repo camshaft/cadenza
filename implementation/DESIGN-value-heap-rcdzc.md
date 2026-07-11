@@ -281,6 +281,28 @@ from a different input than §2a:
      export sections, `Lir::Call`) and the envelope (canon-lower produces core funcs `0..k`, the
      program module is instantiated AFTER, its exports aliased off the instance) is the whole
      difficulty; the two oracles (core + component) pin each half independently.
+   - **H1a LANDED (`@85434d2`)** — core-module import section + index shift, byte-validated.
+   - **H1b implementation notes (the byte-exact envelope):** the ORACLE is built with `wasm-encoder`'s
+     high-level `ComponentBuilder` (the API the old `build_heap_envelope` used — it does the index
+     bookkeeping for aliases/lowers/instantiate), NOT the raw section API, because the import path's
+     index dependencies (an alias references the import instance, a lower references the alias, the core
+     instance references the lowered funcs, the program instance references the core instance) are
+     exactly what `ComponentBuilder` tracks. Our `assemble` still hand-emits sections; the test diffs
+     our bytes against the `ComponentBuilder` oracle. **Section-order caveat:** `ComponentBuilder` emits
+     in the order methods are called, so to keep the diff meaningful `assemble` must emit sections in
+     the SAME order the builder produces for the import path (which differs from the no-import path's
+     "type(7) before alias(6)" — with imports, the instance-TYPE (7) comes first, then the component
+     IMPORT (id 5? — verify: component-import section), then the alias(6)/canon(8)/core-instance(2)/
+     core-alias(6) sequence). The 0-op path keeps today's exact ordering (unchanged bytes). Determine
+     the exact section IDs + order by dumping the `ComponentBuilder` oracle bytes first, then mirror.
+   - **De-risking:** because the ordering is subtle, H1b is validated ONLY by the byte oracle (a diff
+     against `ComponentBuilder`), plus a `wasmtime` load test (the component parses + type-checks with
+     the runtime composed) — NOT hand-reasoned. If matching `ComponentBuilder`'s exact bytes proves too
+     fiddly, fall back to: keep the raw-section hand-emit but validate by `wasmparser`-parsing our
+     output (structural validity) + a `wasmtime` compose-and-instantiate (semantic validity), accepting
+     that our byte layout may differ from `ComponentBuilder`'s while remaining a valid, equivalent
+     component. Byte-identity to a SPECIFIC encoder is the ideal; structural+semantic validity is the
+     floor.
 3. **(H2) Runtime TUPLE: construct + project, end-to-end.** `Core::Tuple`/`Core::Proj` (or reuse
    `Record`/`Member` for the runtime path); `select` emits `arr-alloc`/`arr-set` (construct) and
    `arr-get` (project); the used-set drives the import. Run a program that builds and projects a
