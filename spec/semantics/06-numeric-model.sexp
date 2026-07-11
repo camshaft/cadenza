@@ -395,18 +395,18 @@
            the compiler β-reduces by substituting the constant arguments, turning the body into
            `(* 9223372036854775807 2)` — now a provable constant overflow. The compiler rejects at
            compile time (CDZ0304) via β-reduction, exactly as direct constant expressions do.")
-  (input  (module m
+  (input  (do
             (def (mul a b) (* a b))
-            (def (main) (mul 9223372036854775807 2))))
+            (def (main) (mul 9223372036854775807 2)) (export main)))
   (error  CDZ0304))
 
 (case "a runtime subtraction that overflows traps"
   (doc    "The 'runtime' companion of `(- Int64.min 1)`: with constant arguments supplied as parameters,
            the compiler β-reduces by substituting them, turning the body into `(- -9223372036854775808 1)`
            — now a provable constant overflow. The compiler rejects at compile time (CDZ0304).")
-  (input  (module m
+  (input  (do
             (def (sub a b) (- a b))
-            (def (main) (sub -9223372036854775808 1))))
+            (def (main) (sub -9223372036854775808 1)) (export main)))
   (error  CDZ0304))
 
 (case "multiplication"
@@ -482,9 +482,9 @@
   (doc    "The 'runtime' companion: with a zero divisor supplied as a parameter, the compiler β-reduces
            by substituting the constant arguments, turning the body into `(/ 5 0)` — now a provable
            division by zero. The compiler rejects at compile time (CDZ0304) via β-reduction.")
-  (input  (module m
+  (input  (do
             (def (div a b) (/ a b))
-            (def (main) (div 5 0))))
+            (def (main) (div 5 0)) (export main)))
   (error  CDZ0304))
 
 (case "a division whose divisor folds to zero still traps"
@@ -624,9 +624,9 @@
   (doc    "The 'runtime' companion of `(<< 1 64)`: with constant arguments supplied as parameters, the
            compiler β-reduces by substituting them, turning the body into `(<< 1 64)` — now a provable
            out-of-range shift. The compiler rejects at compile time (CDZ0304) via β-reduction.")
-  (input  (module m
+  (input  (do
             (def (sh a b) (<< a b))
-            (def (main) (sh 1 64))))
+            (def (main) (sh 1 64)) (export main)))
   (error  CDZ0304))
 
 (case "a runtime overflowing left shift traps"
@@ -634,9 +634,9 @@
            parameters, the compiler β-reduces by substituting them, turning the body into
            `(<< 4611686018427387904 1)` — now a provable overflow. The compiler rejects at compile
            time (CDZ0304) via β-reduction.")
-  (input  (module m
+  (input  (do
             (def (sh a b) (<< a b))
-            (def (main) (sh 4611686018427387904 1))))
+            (def (main) (sh 4611686018427387904 1)) (export main)))
   (error  CDZ0304))
 
 ; The out-of-range shift-count rule (#Overflow Is Defined: "a shift count outside the type's bit
@@ -665,9 +665,9 @@
   (doc    "The 'runtime' companion of `(>> 256 64)`: with constant arguments supplied as parameters, the
            compiler β-reduces by substituting them, turning the body into `(>> 256 64)` — now a provable
            out-of-range shift. The compiler rejects at compile time (CDZ0304) via β-reduction.")
-  (input  (module m
+  (input  (do
             (def (sh a b) (>> a b))
-            (def (main) (sh 256 64))))
+            (def (main) (sh 256 64)) (export main)))
   (error  CDZ0304))
 
 ; --- Checked and wrapping arithmetic: the two DEFINED non-trapping overflow outcomes ----------------
@@ -715,12 +715,12 @@
            `(add-or 20 22 -1)` = 42 (fits), `(add-or Int64.max 1 -1)` = -1 (overflowed → None → d).
            Their sum is 41. Pins checked arithmetic flowing as a runtime `Option<Int64>` matched by its
            `Some`/`None` arms — the fallible-arithmetic control flow, not just the folded constant.")
-  (input  (module m
+  (input  (do
             (def (add-or a b d)
               (match (Int64.checked-add a b)
                 ((Some v) v)
                 ((None _) d)))
-            (def (main) (+ (add-or 20 22 -1) (add-or Int64.max 1 -1)))))
+            (def (main) (+ (add-or 20 22 -1) (add-or Int64.max 1 -1))) (export main)))
   (output (: 41 Int64)))
 
 (case "wrapping addition wraps modulo two to the sixty-fourth on overflow"
@@ -749,9 +749,9 @@
            i64.add path (wasm's add wraps; no overflow guard), so `(w Int64.max 1)` = Int64.min — the
            same wrap the const fold gives. Pins that wrapping is emitted as the raw i64 op, not the
            checked/trapping one.")
-  (input  (module m
+  (input  (do
             (def (w a b) (Int64.wrapping-add a b))
-            (def (main) (w Int64.max 1))))
+            (def (main) (w Int64.max 1)) (export main)))
   (output (: -9223372036854775808 Int64)))
 
 (case "greater-than comparison"
@@ -864,9 +864,9 @@
            fold — a self-hosted LEB128 encoder works on the runtime values it is fed, not only on
            literals. The const cases above fold and so cannot witness the emitted bitwise path; this
            one, taking `n` through a parameter, does.")
-  (input  (module m
+  (input  (do
             (def (leb-byte n) (Int.to-byte (| (& n 127) 128)))
-            (def (main)       (leb-byte 300))))
+            (def (main)       (leb-byte 300)) (export main)))
   (output (: 172 Int64)))
 
 (case "extracting a high byte composes shift and mask"
@@ -891,35 +891,35 @@
   (doc    "`(def (main (: a Int64) (: b Int64)) (/ a b))` called with (-7, 2). The division cannot fold
            (both operands are runtime), so it is emitted as `i64.div_s`, which truncates toward zero —
            -7/2 = -3, matching the folded `(/ -7 2)` case. Pins the emitted signed-division path.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (/ a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (/ a b)) (export main)))
   (call   main (: -7 Int64) (: 2 Int64))
   (output (: -3 Int64)))
 
 (case "a runtime remainder takes the dividend's sign"
   (doc    "`(% a b)` over runtime operands emits `i64.rem_s`; `(-7, 2)` = -1, the remainder taking the
            dividend's sign, matching the folded `(% -7 2)`. Pins the emitted remainder path.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (% a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (% a b)) (export main)))
   (call   main (: -7 Int64) (: 2 Int64))
   (output (: -1 Int64)))
 
 (case "a runtime bitwise AND masks bits"
   (doc    "`(& a b)` over runtime operands emits `i64.and`; `(255, 127)` = 127 — the low-7-bit mask a
            LEB128 encoder applies to a value computed at run time. Pins the emitted bitwise-AND path.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (& a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (& a b)) (export main)))
   (call   main (: 255 Int64) (: 127 Int64))
   (output (: 127 Int64)))
 
 (case "a runtime bitwise OR combines bits"
   (doc    "`(| a b)` emits `i64.or`; `(42, 128)` = 170 — setting the LEB128 continuation bit on a runtime
            byte. Pins the emitted bitwise-OR path.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (| a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (| a b)) (export main)))
   (call   main (: 42 Int64) (: 128 Int64))
   (output (: 170 Int64)))
 
 (case "a runtime bitwise XOR toggles bits"
   (doc    "`(^ a b)` emits `i64.xor`; `(12, 10)` = 6. Pins the emitted bitwise-XOR path, the third
            bitwise operator alongside `&`/`|`.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (^ a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (^ a b)) (export main)))
   (call   main (: 12 Int64) (: 10 Int64))
   (output (: 6 Int64)))
 
@@ -927,7 +927,7 @@
   (doc    "`(<< a b)` over runtime operands emits the guarded `i64.shl` (count checked against the width,
            result checked for overflow); `(1, 7)` = 128, matching the folded `(<< 1 7)`. Pins the emitted
            left-shift path — the shift a LEB encoder runs on a runtime group index.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (<< a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (<< a b)) (export main)))
   (call   main (: 1 Int64) (: 7 Int64))
   (output (: 128 Int64)))
 
@@ -935,14 +935,14 @@
   (doc    "`(>> a b)` on a signed runtime operand emits `i64.shr_s` (arithmetic, sign-extending);
            `(-256, 7)` = -2, matching the folded `(>> -256 7)`. A logical shift would answer a large
            positive value — pins that the emitted `>>` is the arithmetic shift signed LEB128 relies on.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (>> a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (>> a b)) (export main)))
   (call   main (: -256 Int64) (: 7 Int64))
   (output (: -2 Int64)))
 
 (case "a runtime greater-than compares by signed order"
   (doc    "`(> a b)` over runtime operands emits `i64.gt_s`; `(5, 3)` = true. Pins the emitted signed
            ordering comparison (a bounds check a compiler runs on a runtime length).")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (> a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (> a b)) (export main)))
   (call   main (: 5 Int64) (: 3 Int64))
   (output (: true Bool)))
 
@@ -951,7 +951,7 @@
            Int64.min's bit pattern is the largest UNSIGNED value, so an unsigned compare would wrongly
            answer false — pins that the emitted comparison is SIGNED for a signed type, the runtime dual
            of the folded `(< -9223372036854775808 9223372036854775807)` case.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (< a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (< a b)) (export main)))
   (call   main (: -9223372036854775808 Int64) (: 9223372036854775807 Int64))
   (output (: true Bool)))
 
@@ -1267,7 +1267,7 @@
            rejected at compile time (CDZ0302), keeping the feature at indexed types over compile-time
            naturals rather than dependent types — no runtime value ever determines a type.")
   (needs  numeric-model)
-  (input  (module m
+  (input  (do
             (def (mk n) (: 5 (UInt n)))
-            (def (main) (mk 8))))
+            (def (main) (mk 8)) (export main)))
   (error  CDZ0302))

@@ -286,9 +286,9 @@
            1..4. Feeding `s` as a parameter defeats const-folding, so this exercises the runtime UTF-8
            slice walk, which must agree with the folded literal cases above.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (f s) (Option.expect (String.slice s 1 4) "in range"))
-            (def (main) (f "hello"))))
+            (def (main) (f "hello")) (export main)))
   (output (: "ell" String)))
 
 (case "a runtime string slice addresses scalar values, not bytes"
@@ -297,9 +297,9 @@
            the wrong range; pins that the runtime walk maps scalar offsets to byte offsets, exactly as
            String.at does (13-strings §reading a string's scalar addresses scalar values, not bytes).")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (f s) (Option.expect (String.slice s 1 3) "in range"))
-            (def (main) (f "aébc"))))
+            (def (main) (f "aébc")) (export main)))
   (output (: "éb" String)))
 
 (case "a runtime string slice out of range yields None"
@@ -307,9 +307,9 @@
            None — the runtime bounds check agrees with the folded out-of-range case. The match takes the
            None arm (-1), witnessing the absent result rather than a trap or a short string.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (f s) (match (String.slice s 0 5) ((Some x) (String.byte-len x)) ((None _) -1)))
-            (def (main) (f "hi"))))
+            (def (main) (f "hi")) (export main)))
   (output (: -1 Int64)))
 
 (case "a runtime string slice with an empty in-range span is Some of the empty string"
@@ -317,9 +317,9 @@
            not None (the empty-span boundary, on the runtime path). `String.byte-len` of the result is
            0, distinguishing Some \"\" (0) from None (which the match would send elsewhere).")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (f s) (match (String.slice s 2 2) ((Some x) (String.byte-len x)) ((None _) -1)))
-            (def (main) (f "hello"))))
+            (def (main) (f "hello")) (export main)))
   (output (: 0 Int64)))
 
 ; --- A string operation consumes a string SELECTED by runtime control flow -----------------
@@ -338,18 +338,18 @@
            if-selected one (the control below, which the seed runs). The seed declines the match case
            (\"unsupported dotted-application\") — its string-op argument resolution follows a runtime
            `if` but not a runtime `match`.")
-  (input   (module m
+  (input   (do
              (def (f n) (String.scalar-len (match n (0 "zero") (_ "other"))))
-             (def (main) (f 5))))
+             (def (main) (f 5)) (export main)))
   (output  (: 5 Int64)))
 
 (case "String.scalar-len of a string selected by a runtime if"
   (doc    "The control the case above must match: `String.scalar-len` of a string chosen by a runtime `if`
            computes the selected string's length — `(if b \"hello\" \"hi\")` with b=true is \"hello\",
            length 5. The seed runs this; the match companion must behave identically.")
-  (input   (module m
+  (input   (do
              (def (f b) (String.scalar-len (if b "hello" "hi")))
-             (def (main) (f true))))
+             (def (main) (f true)) (export main)))
   (output  (: 5 Int64)))
 
 ; --- A string flows as a genuine RUNTIME value: a fn parameter, a return, a sum payload -----------
@@ -367,9 +367,9 @@
            body takes its byte length. `String.byte-len` of a runtime string parameter is 5 — the UTF-8
            byte count. Pins that a string flows across a function boundary as a first-class value, not
            only as a folded constant (the front end passes a form's head string to a classifier this way).")
-  (input   (module m
+  (input   (do
              (def (len2 s) (String.byte-len s))
-             (def (main)   (len2 "hello"))))
+             (def (main)   (len2 "hello")) (export main)))
   (output  (: 5 Int64)))
 
 (case "a runtime string equality selects a branch by comparing a parameter to a literal"
@@ -377,9 +377,9 @@
            name-dispatch primitive a compiler uses to recognize a form's head. Equality is structural
            over the UTF-8 bytes: `(pick \"def\")` is 1 (bytes match), `(pick \"x\")` is 0 (length
            differs). Their sum is 1. Pins runtime string `=` as a byte comparison, not a handle identity.")
-  (input   (module m
+  (input   (do
              (def (pick s) (if (= s "def") 1 0))
-             (def (main)   (+ (pick "def") (pick "x")))))
+             (def (main)   (+ (pick "def") (pick "x"))) (export main)))
   (output  (: 1 Int64)))
 
 (case "a multi-way string-head dispatch resolves an operator name to its operation"
@@ -394,12 +394,12 @@
            MULTI-way dispatch — several head names, each selecting a distinct operation — which is what a
            real head resolver is; the falls-through default (an unrecognized head) yields 0 here, the
            value-level stand-in for the front end's decline on an unknown head.")
-  (input   (module m
+  (input   (do
              (def (eval-head h a b)
                (if (= h "+") (+ a b)
                (if (= h "-") (- a b)
                (if (= h "*") (* a b) 0))))
-             (def (main) (eval-head "+" 20 22))))
+             (def (main) (eval-head "+" 20 22)) (export main)))
   (output  (: 42 Int64)))
 
 (case "a string carried as a sum-variant payload is bound and measured at run time"
@@ -407,10 +407,10 @@
            byte length. `(weigh (Node.NSym \"hello\"))` is 5 (the bound string's byte length) and
            `(weigh (Node.NInt 3))` is 3, summing to 8. Pins a string as a runtime sum payload — the
            shape of a symbol-carrying AST node the compiler walks — bound by a match arm and consumed.")
-  (input   (module m
+  (input   (do
              (type Node (NInt Int64) (NSym String))
              (def (weigh n) (match n ((Node.NInt i) i) ((Node.NSym s) (String.byte-len s))))
-             (def (main)    (+ (weigh (Node.NSym "hello")) (weigh (Node.NInt 3))))))
+             (def (main)    (+ (weigh (Node.NSym "hello")) (weigh (Node.NInt 3)))) (export main)))
   (output  (: 8 Int64)))
 
 (case "concatenating two runtime strings and measuring the result"
@@ -418,9 +418,9 @@
            length is the sum of the operands' — `(join \"foo\" \"bar\")` is \"foobar\", byte length 6.
            Pins runtime string concatenation (how a compiler assembles a name or a diagnostic from
            fragments), agreeing with `(+ (byte-len a) (byte-len b))` when neither operand is empty.")
-  (input   (module m
+  (input   (do
              (def (join a b) (String.byte-len (String.concat a b)))
-             (def (main)     (join "foo" "bar"))))
+             (def (main)     (join "foo" "bar")) (export main)))
   (output  (: 6 Int64)))
 
 (case "a tail-recursive string accumulator builds a runtime string and its length is measured"
@@ -435,9 +435,9 @@
            branches to the heap kind, the recursive `if` is rejected `if branches differ in kind`
            (the then-branch `s` is heap, the else self-call defaulted to Int64); the same
            accumulator-return-kind convergence a heap-list or Bytes accumulator needs.")
-  (input   (module m
+  (input   (do
              (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-             (def (main)    (String.byte-len (rep "" 3)))))
+             (def (main)    (String.byte-len (rep "" 3))) (export main)))
   (output  (: 3 Int64)))
 
 (case "the byte length of a runtime string equals the length of its encoded bytes"
@@ -446,9 +446,9 @@
            the encode-then-measure path are one number. `\"café\"` has byte length 5 (é is two bytes), so
            this is true. Pins that a runtime String IS its UTF-8 bytes (String.to-bytes is the identity on
            the underlying representation), the invariant the Bytes-backed String realization rests on.")
-  (input   (module m
+  (input   (do
              (def (agree s) (= (String.byte-len s) (Bytes.len (String.to-bytes s))))
-             (def (main)    (agree "café"))))
+             (def (main)    (agree "café")) (export main)))
   (output  (: true Bool)))
 
 (case "the scalar length of a runtime multi-byte string counts scalars, not bytes"
@@ -457,9 +457,9 @@
            on a runtime value agrees with the const `chars().count()` — the runtime counts the UTF-8
            leading bytes (those not of the form 10xxxxxx), which for well-formed UTF-8 is the scalar
            count (collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length).")
-  (input   (module m
+  (input   (do
              (def (slen s) (String.scalar-len s))
-             (def (main)   (slen "café"))))
+             (def (main)   (slen "café")) (export main)))
   (output  (: 4 Int64)))
 
 (case "a runtime string is indexed by scalar and the extracted scalar is returned"
@@ -470,9 +470,9 @@
            to the scalar's byte span and slices it (a String is a Bytes-backed leaf), matching the const
            `chars().nth`. The concat forces a runtime value (a bare literal would const-fold).")
   (needs   fallible-access)
-  (input   (module m
+  (input   (do
              (def (at s i) (String.at (String.concat s "") i))
-             (def (main)   (at "café" 3))))
+             (def (main)   (at "café" 3)) (export main)))
   (output  (: (Some "é") (Option String))))
 
 (case "indexing a runtime string past its last scalar yields None"
@@ -482,9 +482,9 @@
            runtime `String.at` out-of-bounds is a handled absence — the branch a reader takes at
            end-of-input.")
   (needs   fallible-access)
-  (input   (module m
+  (input   (do
              (def (at s i) (String.at (String.concat s "") i))
-             (def (main)   (match (at "hi" 5) ((Some c) (String.byte-len c)) ((None _) -1)))))
+             (def (main)   (match (at "hi" 5) ((Some c) (String.byte-len c)) ((None _) -1))) (export main)))
   (output  (: -1 Int64)))
 
 (case "a runtime string returned across the run boundary renders as its quoted text"
@@ -494,9 +494,9 @@
            of the `b\"…\"` Bytes renderer): a runtime String is walked byte-by-byte and quoted/escaped,
            byte-identical to the const `\"…\"` form. Pins RETURNING a runtime string (distinct from the
            cases above, which consume one to a scalar) — the compound-value output ABI for strings.")
-  (input   (module m
+  (input   (do
              (def (join a b) (String.concat a b))
-             (def (main)     (join "hel" "lo"))))
+             (def (main)     (join "hel" "lo")) (export main)))
   (output  (: "hello" String)))
 
 (case "a returned runtime string with a multi-byte scalar renders the scalar verbatim"
@@ -505,9 +505,9 @@
            const path's `{:?}`, which prints printable Unicode literally). Pins that the emitted string
            renderer's escaping agrees with the const renderer on multi-byte scalars, so a rendered string
            reads back to the same value.")
-  (input   (module m
+  (input   (do
              (def (id s) (if true s s))
-             (def (main) (id "café"))))
+             (def (main) (id "café")) (export main)))
   (output  (: "café" String)))
 
 (case "a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape"
@@ -519,8 +519,8 @@
            7 98))) is the 3-scalar string a-BEL-b; it renders with the BEL byte raw. Pins the round-trip
            the value-oracle gate now checks independently (re-reading the rendered text): a rendered
            string MUST read back to the same value, so the renderer emits ONLY the closed escapes.")
-  (input   (module m
-             (def (main) (Option.expect (String.from-bytes (Bytes.of (list 97 7 98))) "well-formed"))))
+  (input   (do
+             (def (main) (Option.expect (String.from-bytes (Bytes.of (list 97 7 98))) "well-formed")) (export main)))
   (output  (: "ab" String)))
 
 ; --- Decoding bytes to a string is TOTAL, never trapping ---------------------------------------
@@ -605,11 +605,11 @@
            must survive the boundary the way `Bytes.at`/`List.at` results now do. Companion of the
            round-trip case above, which matches `from-bytes` at `main`; this one crosses a call.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (dec b) (match (String.from-bytes b)
                            ((Some s) (String.byte-len s))
                            ((None _) -1)))
-            (def (main) (dec (Bytes.of (list 104 105))))))
+            (def (main) (dec (Bytes.of (list 104 105)))) (export main)))
   (output (: 2 Int64)))
 
 (case "decoding ill-formed bytes through a helper takes the None arm"
@@ -621,11 +621,11 @@
            and code points > U+10FFFF) drives the fallible decode's `None`, so a reader handles
            malformed input rather than trapping on it. Companion of the well-formed case above.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (dec b) (match (String.from-bytes b)
                            ((Some s) (String.byte-len s))
                            ((None _) -1)))
-            (def (main) (dec (Bytes.of (list 255))))))
+            (def (main) (dec (Bytes.of (list 255)))) (export main)))
   (output (: -1 Int64)))
 
 (case "a utf8 bin segment binds a decoded string when the bytes are well-formed"

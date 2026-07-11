@@ -23,11 +23,11 @@
            Unit). The (output …) clause pins the terminal condition and (host-calls …) pins the ordered
            host-call observation.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
               (host (log)
-                (log.emit "ready")))))
+                (log.emit "ready"))) (export main)))
   (output (: unit Unit))
   (host-calls (call log.emit (: "ready" String))))
 
@@ -61,7 +61,7 @@
            performing function is recursive. A generation that does not yet follow a recursive call in
            delegation reachability must not reject a program the delegation grants.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect log (op emit (-> String Unit)))
             (def (go n)
               (if (= n 0)
@@ -69,7 +69,7 @@
                   (do (log.emit "x") (go (- n 1)))))
             (def (main)
               (host (log)
-                (go 1)))))
+                (go 1))) (export main)))
   (output (: unit Unit))
   (host-calls (call log.emit (: "x" String))))
 
@@ -82,10 +82,10 @@
            (CDZ0402, now merged), since host-binding is an entrypoint routing decision rather than a
            declaration-time property.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
-              (log.emit "ready"))))
+              (log.emit "ready")) (export main)))
   (error  CDZ0401))
 
 (case "a delegation naming an effect that is never reached is rejected as latent authority"
@@ -95,11 +95,11 @@
            is rejected (CDZ0404). The manifest must be exactly the effects that escape, no more and no
            fewer.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
               (host (log)
-                42))))
+                42)) (export main)))
   (error  CDZ0404))
 
 (case "the program manifest is the union of its entrypoints' delegations"
@@ -109,11 +109,11 @@
            delegate — then terminates normally with the unit value. The (output …) clause pins the
            terminal condition.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
               (host (log)
-                (log.emit "1")))))
+                (log.emit "1"))) (export main)))
   (output (: unit Unit))
   (host-calls (call log.emit (: "1" String))))
 
@@ -122,9 +122,9 @@
            Is Its Row: an entrypoint that delegates no effect to the host has the empty effect row, runs
            straight to normal termination with no suspension, and its manifest is empty. (host-calls)
            asserts none was made. This is realized by the seed today (no effect surface needed).")
-  (input  (module m
+  (input  (do
             (def (main)
-              42)))
+              42) (export main)))
   (output (: 42 Int64))
   (host-calls))
 
@@ -135,11 +135,11 @@
            returns in call order, so the run's result is a deterministic function of input and that
            response; (host-calls …) pins the call.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
               (host (ask)
-                (+ 1 (ask.ask))))))
+                (+ 1 (ask.ask)))) (export main)))
   (host-responses (respond ask.ask (: 41 Int64)))
   (host-calls (call ask.ask))
   (output (: 42 Int64)))

@@ -98,10 +98,10 @@
            module's definitions, not only a record literal's fields (core-semantics.md #A Module Evaluates
            To A Record Of Its Exports: each definition registers its name as a field). A generation that
            does not yet detect a duplicate definition declines rather than silently choosing one.")
-  (input  (module m
+  (input  (do
             (def (f) 1)
             (def (f) 2)
-            (def (main) (f))))
+            (def (main) (f)) (export main)))
   (error  CDZ0201))
 
 (case "a top-level value definition binds a name usable by the program's functions"
@@ -115,9 +115,9 @@
            (\"def without a signature\") — but a value definition is an ordinary definition form, so it MUST
            bind here. (This is load-bearing for a Cadenza-authored compiler whose shared tables — e.g. an
            opcode record generated as `(def op (record …))` — are top-level value definitions.)")
-  (input  (module m
+  (input  (do
             (def answer 42)
-            (def (main) answer)))
+            (def (main) answer) (export main)))
   (output (: 42 Int64)))
 
 (case "a top-level value definition binds a record projected by the program's functions"
@@ -129,9 +129,9 @@
            for self-hosting. A compiler that accepts only function definitions at top level rejects this
            well-typed program (\"def without a signature\"); a value definition binding a record MUST bind
            here and project.")
-  (input  (module m
+  (input  (do
             (def tbl (record (a 7) (b 8)))
-            (def (main) (. tbl b))))
+            (def (main) (. tbl b)) (export main)))
   (output (: 8 Int64)))
 
 (case "a value definition may carry a leading doc, like a function definition"
@@ -144,9 +144,9 @@
            accepting the doc'd function form — an asymmetry a definition form must not have. Load-bearing
            for a Cadenza-authored compiler whose generated shared tables are documented value defs (e.g.
            `(def op (doc \"opcode bytes\") (record …))`).")
-  (input  (module m
+  (input  (do
             (def answer (doc "the answer") 42)
-            (def (main) answer)))
+            (def (main) answer) (export main)))
   (output (: 42 Int64)))
 
 (case "a module function calls a sibling export by name"

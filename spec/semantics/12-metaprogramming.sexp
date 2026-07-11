@@ -268,11 +268,11 @@
            arm and yields 42. A generation that realizes `Ast.decode` only over a compile-time-constant
            argument (folding it away) declines the runtime-argument form (\"unsupported dotted-application\")
            — but decode is an ordinary total operation on a runtime `Bytes` value, so it MUST run here.")
-  (input  (module case
+  (input  (do
             (def (main) (dec (Ast.encode (Ast.Int 42))))
             (def (dec b) (match (Ast.decode b)
                            ((Ok a)  (match a ((Ast.Int n) n) (other -1)))
-                           ((Err _) -2)))))
+                           ((Err _) -2))) (export main)))
   (output (: 42 Int64)))
 
 (case "a quote-built and constructor-built AST of the same tree encode to identical bytes"

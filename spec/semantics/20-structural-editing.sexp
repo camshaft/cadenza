@@ -46,14 +46,14 @@
            tree-walk: a mutually-recursive descent over the `Exp` sum evaluating an arithmetic tree.
            `(3*4)+5` evaluates to 17. This is the substrate every structural pass (resolve, fold,
            lower — and a refactoring) is built on.")
-  (input  (module case
+  (input  (do
             (type Exp (Lit Int64) (Add (Tuple Exp Exp)) (Mul (Tuple Exp Exp)))
             (def (main) (eval (Add (tuple (Mul (tuple (Lit 3) (Lit 4))) (Lit 5)))))
             (def (eval e)
               (match e
                 ((Exp.Lit n) n)
                 ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))
-                ((Exp.Mul (tuple a b)) (* (eval a) (eval b)))))))
+                ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
   (output (: 17 Int64)))
 
 (case "a transformation maps a syntax tree to a syntax tree and preserves meaning"
@@ -66,7 +66,7 @@
            the original (`(= (eval e) (eval (simp e)))` is true) — the property that makes a refactor a
            refactor. (Payload literals are compared by binding then `=` via `is-lit`, since a
            constructor pattern binds its payload rather than matching a nested literal directly.)")
-  (input  (module case
+  (input  (do
             (type Exp (Lit Int64) (Add (Tuple Exp Exp)) (Mul (Tuple Exp Exp)))
             (def (main)
               (let ((e (Add (tuple (Mul (tuple (Lit 6) (Lit 1))) (Lit 0)))))
@@ -87,7 +87,7 @@
               (match e
                 ((Exp.Lit n) n)
                 ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))
-                ((Exp.Mul (tuple a b)) (* (eval a) (eval b)))))))
+                ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
   (output (: true Bool)))
 
 ; The simp case above WORKS AROUND a limitation, worth pinning directly: it simplifies children with
@@ -122,7 +122,7 @@
            patterns (a generation that does not yet do so declines \"constructor pattern against unresolved
            scrutinee\" rather than miscompiling; the sibling case below pins the same shape where the tuple
            elements are calls to a DIFFERENT function taking a recursive-sum argument).")
-  (input  (module case
+  (input  (do
             (type E (Lit Int64) (Add (Tuple E E)))
             (def (fold e)
               (match e
@@ -136,7 +136,7 @@
                 ((E.Lit n) n)
                 ((E.Add (tuple a b)) (+ (ev a) (ev b)))))
             (def (main)
-              (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5))))))))))
+              (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5)))))))) (export main)))
   (output (: 12 Int64)))
 
 ; The tuple-of-recursive-results constructor match (above) is realized for SELF-recursive calls; the
@@ -170,7 +170,7 @@
            site because the recursive-sum argument's shape is not statically resolvable, the same reason
            the self-call case needed. A generation that does not yet resolve such a call's result shape at
            the pattern site declines rather than miscompiling.")
-  (input  (module case
+  (input  (do
             (type E (Lit Int64) (Add (Tuple E E)))
             (def (classify e)
               (match e
@@ -184,7 +184,7 @@
                     ((tuple (Some x) (Some y)) (+ x y))
                     (_                         -1)))))
             (def (main)
-              (comb (E.Add (tuple (E.Lit 3) (E.Lit 4)))))))
+              (comb (E.Add (tuple (E.Lit 3) (E.Lit 4))))) (export main)))
   (output (: 7 Int64)))
 
 (case "a transformation observably rewrites the tree, not just its value"
@@ -194,7 +194,7 @@
            rewrite eliminates 4 nodes. Together with the previous case (meaning preserved) this is the
            full statement of a sound refactor: the tree changed, the meaning did not. An agent scripts
            exactly this — a function over the syntax tree whose result it can measure and re-check.")
-  (input  (module case
+  (input  (do
             (type Exp (Lit Int64) (Add (Tuple Exp Exp)) (Mul (Tuple Exp Exp)))
             (def (main)
               (let ((e (Add (tuple (Mul (tuple (Lit 6) (Lit 1))) (Lit 0)))))
@@ -215,7 +215,7 @@
               (match e
                 ((Exp.Lit n) 1)
                 ((Exp.Add (tuple a b)) (+ 1 (+ (size a) (size b))))
-                ((Exp.Mul (tuple a b)) (+ 1 (+ (size a) (size b))))))))
+                ((Exp.Mul (tuple a b)) (+ 1 (+ (size a) (size b)))))) (export main)))
   (output (: 4 Int64)))
 
 (case "the built-in Ast is transformed as an ordinary value"
@@ -226,12 +226,12 @@
            the built-in-`Ast` analogue of the `Exp` rewrites above. Demonstrated INLINE (the seed
            realizes the built-in `Ast` within a single definition); the ASPIRATIONAL companion below
            composes the same rewrite across a function boundary, the shape a real pass takes.")
-  (input  (module case
+  (input  (do
             (def (main)
               (let ((e (quote 5)))
                 (match (match e ((Ast.Int n) (Ast.Int (+ n 100))) (o o))
                   ((Ast.Int r) r)
-                  (_ 0))))))
+                  (_ 0)))) (export main)))
   (output (: 105 Int64)))
 
 ; ============================================================================================
@@ -259,12 +259,12 @@
            built-in `Ast` only inline (core case above), so composing it across a boundary is the
            increment a later generation lands. `(needs builtin-ast-across-calls)`.")
   (needs  builtin-ast-across-calls)
-  (input  (module case
+  (input  (do
             (def (main) (= (bump (quote 7)) (Ast.Int 8)))
             (def (bump node)
               (match node
                 ((Ast.Int n) (Ast.Int (+ n 1)))
-                (other other)))))
+                (other other))) (export main)))
   (output (: true Bool)))
 
 ; A REWRITE RULE reads in the shape of the code it rewrites. The quote pattern `` `(+ ,x 0) `` IS the
@@ -286,11 +286,11 @@
            performs — the agent authors intent, not delimiter bookkeeping. `(needs quote-patterns)`;
            also relies on the built-in `Ast` composing across a call (companion above).")
   (needs  quote-patterns)
-  (input  (module case
+  (input  (do
             (def (main) (= (simp (quote (+ x 0))) (quote x)))
             (def (simp node)
               (match node
                 (`(+ ,x 0) x)
                 (`(* ,x 1) x)
-                (other     other)))))
+                (other     other))) (export main)))
   (output (: true Bool)))

@@ -137,9 +137,9 @@
            handle compare rather than a byte scan. The equality is over a RUNTIME Symbol operand, not
            two constants.")
   (needs  symbols)
-  (input  (module m
+  (input  (do
             (def (resolve s) (if (= s (Symbol.of "map-insert")) 1 0))
-            (def (main) (resolve (Symbol.of "map-insert")))))
+            (def (main) (resolve (Symbol.of "map-insert"))) (export main)))
   (output (: 1 Int64)))
 
 (case "a runtime symbol that differs from the interned constant does not match"
@@ -148,9 +148,9 @@
            comparison is a genuine content test (1 for the matching name, 0 for a different one), not a
            blanket answer.")
   (needs  symbols)
-  (input  (module m
+  (input  (do
             (def (resolve s) (if (= s (Symbol.of "map-insert")) 1 0))
-            (def (main) (resolve (Symbol.of "other")))))
+            (def (main) (resolve (Symbol.of "other"))) (export main)))
   (output (: 0 Int64)))
 
 ; ============================================================================================

@@ -10,9 +10,9 @@
            field `x`, so it is typed open over the other fields and accepts a record that also has `y`.
            Row polymorphism, not a fixed shape, is what inference assigns.")
   (needs  rows)
-  (input  (module m
+  (input  (do
             (def (get-x r) (. r x))
-            (def (main) (get-x (record (x 1) (y 2))))))
+            (def (main) (get-x (record (x 1) (y 2)))) (export main)))
   (output (: 1 Int64)))
 
 (case "subset record comparison is explicit projection, not an overloaded equality"
@@ -20,10 +20,10 @@
            comparing a two-field record against a one-field record by first projecting the shared field
            yields true; `=` is never silently widened to ignore the extra field.")
   (needs  rows)
-  (input  (module m
+  (input  (do
             (def (main)
               (= (. (record (x 1) (y 2)) x)
-                 (. (record (x 1)) x)))))
+                 (. (record (x 1)) x))) (export main)))
   (output (: true Bool)))
 
 ; --- Record reshaping: explicit row operations yield a new closed record -------------------
@@ -242,12 +242,12 @@
            carries variants the module does not close; a match covering the known variant plus an
            open-tail arm is exhaustive and handles an unknown variant as data.")
   (needs  open-sums)
-  (input  (module m
+  (input  (do
             (def (name-of e)
               (match e
                 ((Known _) "known")
                 (_         "other")))
-            (def (main) (name-of (Known unit)))))
+            (def (main) (name-of (Known unit))) (export main)))
   (output (: "known" String)))
 
 (case "a match on an open sum omitting the open-tail arm is rejected"
@@ -255,11 +255,11 @@
            compile-time rejection): because an open sum's variant set is not closed, a match without an
            open-tail arm cannot be exhaustive and is rejected (CDZ0210) rather than run.")
   (needs  open-sums)
-  (input  (module m
+  (input  (do
             (def (name-of e)
               (match e
                 ((Known _) "known")))
-            (def (main) (name-of (Unknown unit)))))
+            (def (main) (name-of (Unknown unit))) (export main)))
   (error  CDZ0210))
 
 (case "an open sum's payload decodes against a schema to a typed result"
@@ -267,9 +267,9 @@
            decoded against a schema resolved at run time, yielding a typed Ok result on a match. A
            successful decode of an Int64 payload yields (Ok 7).")
   (needs  open-sums)
-  (input  (module m
+  (input  (do
             (def (main)
-              (decode Int64-schema (payload-of (Measured 7))))))
+              (decode Int64-schema (payload-of (Measured 7)))) (export main)))
   (output (: (Ok 7) (Result Int64 DecodeError))))
 
 (case "an open sum payload that does not match its schema yields a typed failure, not a trap"
@@ -278,7 +278,7 @@
            an Err, so a fold over an open vocabulary handles a malformed payload as data rather than
            halting.")
   (needs  open-sums)
-  (input  (module m
+  (input  (do
             (def (main)
-              (decode Int64-schema (payload-of (Labeled "x"))))))
+              (decode Int64-schema (payload-of (Labeled "x")))) (export main)))
   (output (: (Err (DecodeError unit)) (Result Int64 DecodeError))))

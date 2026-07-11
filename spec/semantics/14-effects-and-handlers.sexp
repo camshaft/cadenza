@@ -38,11 +38,11 @@
            deterministically computes 100. How the host produces the response — inline, fiber-suspend, or
            re-derive from the recorded responses — is host policy the program does not observe.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
               (host (ask)
-                (* (ask.ask) 10)))))
+                (* (ask.ask) 10))) (export main)))
   (host-responses (respond ask.ask (: 10 Int64)))
   (host-calls (call ask.ask))
   (output (: 100 Int64)))
@@ -52,11 +52,11 @@
            Responses: two host calls consume two responses in the order made; the sum is a deterministic
            function of input and the ordered response sequence.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
               (host (ask)
-                (+ (ask.ask) (ask.ask))))))
+                (+ (ask.ask) (ask.ask)))) (export main)))
   (host-responses (respond ask.ask (: 3 Int64))
                   (respond ask.ask (: 4 Int64)))
   (host-calls (call ask.ask) (call ask.ask))
@@ -77,13 +77,13 @@
            host call arises only under a tail-resumptive/abortive intra-program handler, never spanning a
            reified continuation a re-derivation could not reconstruct.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (effect Scale (op by (-> Int64 Int64)))
             (def (main)
               (host (ask)
                 (handle unit ((Scale.by (n) s (resume (* n 2) s)))
-                  (Scale.by (ask.ask)))))))
+                  (Scale.by (ask.ask))))) (export main)))
   (host-responses (respond ask.ask (: 21 Int64)))
   (host-calls (call ask.ask))
   (output (: 42 Int64)))
@@ -112,14 +112,14 @@
            observe host I/O without the performing code knowing — and the first case exercising
            re-perform-to-parent, guarding the under-frame.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (effect Count (op tick (-> Unit Unit)))
             (def (main)
               (host (ask)
                 (handle unit ((Count.tick (u) s (resume unit s)))
                   (handle unit ((ask.ask () s (do (Count.tick) (resume (ask.ask) s))))
-                    (+ (ask.ask) (ask.ask))))))))
+                    (+ (ask.ask) (ask.ask)))))) (export main)))
   (host-responses (respond ask.ask (: 3 Int64))
                   (respond ask.ask (: 4 Int64)))
   (host-calls (call ask.ask) (call ask.ask))
@@ -135,11 +135,11 @@
            an effect internally. Operations are qualified by their declaring effect (#An Effect Declaration
            Names The Effect And Types Its Operations).")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Choose (op pick (-> Unit Int64)))
             (def (main)
               (handle unit ((Choose.pick () s (resume 5 s)))
-                (+ (Choose.pick) 1)))))
+                (+ (Choose.pick) 1))) (export main)))
   (output (: 6 Int64))
   (host-calls))
 
@@ -149,11 +149,11 @@
            single value (the resumed computation is not duplicated). `Get` is declared with a nullary
            operation `get` returning Int64, performed as `(Get.get)`; the handler is stateless.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Get (op get (-> Unit Int64)))
             (def (main)
               (handle unit ((Get.get () s (resume 41 s)))
-                (+ (Get.get) 1)))))
+                (+ (Get.get) 1))) (export main)))
   (output (: 42 Int64))
   (host-calls))
 
@@ -177,13 +177,13 @@
            genuinely folds. This upgrades the fresh-name idiom from a pure function of its argument to a
            real supply — the compiler's `Fresh` state model.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Fresh (op next (-> Unit Int64)))
             (def (main)
               (handle 0 ((Fresh.next (u) s (resume s (+ s 1))))
                 (do (Fresh.next)
                     (Fresh.next)
-                    (Fresh.next))))))
+                    (Fresh.next)))) (export main)))
   (output (: 2 Int64)))
 
 (case "a handler accumulates into a list and a read-out operation reads it back"
@@ -201,7 +201,7 @@
            it needs the list-growth capability to build the accumulator.")
   (needs  effects)
   (needs  list-growth)
-  (input  (module m
+  (input  (do
             (effect Diag (op emit (-> Int64 Unit))
                          (op collect (-> Unit (List Int64))))
             (def (main)
@@ -209,7 +209,7 @@
                               (Diag.collect (u) s (resume s s)))
                 (do (Diag.emit 201)
                     (Diag.emit 210)
-                    (Diag.collect))))))
+                    (Diag.collect)))) (export main)))
   (output (: (list 201 210) (List Int64))))
 
 (case "a RECURSIVE effectful walk accumulates into a list-state handler"
@@ -225,7 +225,7 @@
            makes `main` return a scalar so the whole program is the runtime-scalar path.")
   (needs  effects)
   (needs  list-growth)
-  (input  (module m
+  (input  (do
             (effect Diag (op emit (-> Int64 Unit))
                          (op collect (-> Unit (List Int64))))
             (def (walk n)
@@ -235,7 +235,7 @@
             (def (main)
               (handle (list) ((Diag.emit (v) s (resume unit (List.push s v)))
                               (Diag.collect (u) s (resume s s)))
-                (List.len (walk 3))))))
+                (List.len (walk 3)))) (export main)))
   (output (: 3 Int64)))
 
 (case "two effects each declaring a same-named operation do not collide"
@@ -246,13 +246,13 @@
            stateless (seed `unit`). Pins that an operation is reached through its declaring effect and a
            shared operation name is collision-free.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Unify (op resolve (-> Int64 Int64)))
             (effect Scope (op resolve (-> Int64 Int64)))
             (def (main)
               (handle unit ((Unify.resolve (x) s (resume (+ x 1) s))
                             (Scope.resolve (x) s (resume x s)))
-                (Unify.resolve 4)))))
+                (Unify.resolve 4))) (export main)))
   (output (: 5 Int64))
   (host-calls))
 
@@ -286,9 +286,9 @@
            operations. A generation that does not yet detect a duplicate operation name declines rather
            than silently choosing one.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect E (op f (-> Int64 Int64)) (op f (-> Int64 Int64)))
-            (def (main) 1)))
+            (def (main) 1) (export main)))
   (error  CDZ0201))
 
 ; --- Handler resolution is dynamic in extent, across function boundaries ------------------------
@@ -310,12 +310,12 @@
            the witness that a function may perform an operation its CALLER discharges. The handler is
            stateless (seed `unit`).")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Bump (op by (-> Int64 Int64)))
             (def (gen) (Bump.by 41))
             (def (main)
               (handle unit ((Bump.by (n) s (resume (+ n 1) s)))
-                (gen)))))
+                (gen))) (export main)))
   (output (: 42 Int64))
   (host-calls))
 
@@ -327,13 +327,13 @@
            `(+ 5 100)` = 105. An intermediate function that installs no handler is transparent to
            resolution — it is merely a frame on the chain. The handler is stateless.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Ping (op ping (-> Unit Int64)))
             (def (leaf) (Ping.ping))
             (def (mid)  (+ (leaf) 100))
             (def (main)
               (handle unit ((Ping.ping () s (resume 5 s)))
-                (mid)))))
+                (mid))) (export main)))
   (output (: 105 Int64))
   (host-calls))
 
@@ -346,11 +346,11 @@
            forward). The result is 10, not 1000 — pinning that the nearest DYNAMIC handler discharges the
            operation and shadows the outer one. Both handlers are stateless.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Mul (op by (-> Int64 Int64)))
             (def (leaf) (Mul.by 1))
             (def (mid)  (handle unit ((Mul.by (x) s (resume (* x 10) s))) (leaf)))
-            (def (main) (handle unit ((Mul.by (x) s (resume (* x 100) s))) (mid)))))
+            (def (main) (handle unit ((Mul.by (x) s (resume (* x 100) s))) (mid))) (export main)))
   (output (: 10 Int64))
   (host-calls))
 
@@ -366,12 +366,12 @@
            ungranted (CDZ0401); the defined output 32 is the witness for dynamic resolution. Both handlers
            are stateless.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Get (op get (-> Unit Int64)))
             (def (ask) (+ (Get.get) 1))
             (def (main)
               (+ (handle unit ((Get.get () s (resume 10 s))) (ask))
-                 (handle unit ((Get.get () s (resume 20 s))) (ask))))))
+                 (handle unit ((Get.get () s (resume 20 s))) (ask)))) (export main)))
   (output (: 32 Int64))
   (host-calls))
 
@@ -384,7 +384,7 @@
            Pins that dynamic resolution reaches an arbitrarily deep enclosing handler and that the
            intermediate frames are transparent. The handler is stateless.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Ask (op ask (-> Unit Int64)))
             (def (d) (Ask.ask))
             (def (c) (+ (d) 1))
@@ -392,7 +392,7 @@
             (def (a) (+ (b) 1))
             (def (main)
               (handle unit ((Ask.ask () s (resume 7 s)))
-                (a)))))
+                (a))) (export main)))
   (output (: 10 Int64))
   (host-calls))
 
@@ -407,13 +407,13 @@
            calls, exactly as the compiler's fresh-name supply must. The handle evaluates to the body's
            tuple; the final counter 2 is discarded.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Fresh (op next (-> Unit Int64)))
             (def (label)   (Fresh.next))
             (def (pair-of) (tuple (label) (label)))
             (def (main)
               (handle 0 ((Fresh.next (u) s (resume s (+ s 1))))
-                (pair-of)))))
+                (pair-of))) (export main)))
   (output (: (tuple 0 1) (Tuple Int64 Int64))))
 
 ; --- A recursive function drives an effect (the state-machine idiom) --------------------------
@@ -442,7 +442,7 @@
            the compiler declines rather than inlines (reject-don't-miscompile). The recorded output
            3 is the semantics a monomorphizing generation produces.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Countdown (op tick (-> Unit Int64)))
             (def (loop)
               (if (= (Countdown.tick) 0)
@@ -450,7 +450,7 @@
                   (+ 1 (loop))))
             (def (main)
               (handle 3 ((Countdown.tick (u) s (resume s (- s 1))))
-                (loop)))))
+                (loop))) (export main)))
   (output (: 3 Int64)))
 
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
@@ -465,7 +465,7 @@
            and needs effect-context monomorphization; the recorded output 6 is the realized
            semantics.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Idx (op next (-> Unit Int64)))
             (def (sum-down)
               (let ((i (Idx.next)))
@@ -474,7 +474,7 @@
                     (+ i (sum-down)))))
             (def (main)
               (handle 3 ((Idx.next (u) s (resume s (- s 1))))
-                (sum-down)))))
+                (sum-down))) (export main)))
   (output (: 6 Int64)))
 
 (case "a recursive function threads two nested handlers' states at once"
@@ -494,7 +494,7 @@
            state (a fresh-name counter AND a diagnostics list). Recursive-while-performing, so it
            needs effect-context monomorphization; the recorded output 30 is the realized semantics.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect A (op tick (-> Unit Int64)))
             (effect B (op bump (-> Unit Int64)))
             (def (loop)
@@ -504,7 +504,7 @@
             (def (main)
               (handle 0 ((B.bump (u) s (resume s (+ s 10))))
                 (handle 3 ((A.tick (u) s (resume s (- s 1))))
-                  (loop))))))
+                  (loop)))) (export main)))
   (output (: 30 Int64)))
 
 (case "a recursive function that installs a fresh handler on each call grows its context without bound"
@@ -524,7 +524,7 @@
            output 100 is that semantics. This case guards against the compiler crashing on
            unbounded context growth.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Fresh (op next (-> Unit Int64)))
             (def (loop n)
               (handle 100 ((Fresh.next (u) s (resume s (+ s 1))))
@@ -532,7 +532,7 @@
                     (Fresh.next)
                     (loop (- n 1)))))
             (def (main)
-              (loop 2))))
+              (loop 2)) (export main)))
   (output (: 100 Int64)))
 
 ; --- Rejections the routing model introduces ----------------------------------------------------
@@ -566,11 +566,11 @@
            String argument yields a garbage integer). A generation that does not yet check a perform's
            arguments declines rather than emitting the mistyped operation.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect E (op op (-> Int64 Int64)))
             (def (main)
               (handle unit ((E.op (n) s (resume n s)))
-                (E.op true)))))
+                (E.op true))) (export main)))
   (error  CDZ0201))
 
 ; The perform-argument check must fire for EVERY declared parameter type, not only Int64. An operation
@@ -597,11 +597,11 @@
            rejected. The argument check must be uniform across parameter types. A generation that does not
            yet check a String-parameter op's argument declines rather than binding the mistyped value.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect E (op emit (-> String Unit)))
             (def (main)
               (handle unit ((E.emit (s) st (resume unit st)))
-                (E.emit 42)))))
+                (E.emit 42))) (export main)))
   (error  CDZ0201))
 
 ; The perform-argument check must also fire for a COMPOUND declared parameter type, not only the scalar
@@ -627,11 +627,11 @@
            argument check must be uniform across all parameter type shapes. A generation that does not yet
            check a compound-parameter op's argument declines rather than binding the mistyped value.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect E (op put (-> (List Int64) Unit)))
             (def (main)
               (handle unit ((E.put (xs) s (resume unit s)))
-                (E.put 42)))))
+                (E.put 42))) (export main)))
   (error  CDZ0201))
 
 ; The SAME spec sentence has a second half: performing an operation must "YIELD the operation's declared
@@ -662,11 +662,11 @@
            rejecting. A generation that does not yet check the resume value against the result type
            declines rather than yielding it.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect E (op op (-> Int64 Int64)))
             (def (main)
               (handle unit ((E.op (n) s (resume true s)))
-                (E.op 1)))))
+                (E.op 1))) (export main)))
   (error  CDZ0201))
 
 ; The resume-value result-type check must hold when the declared result type is a COMPOUND, not only a
@@ -692,11 +692,11 @@
            a list is declared renders `(list)`, a type-confusion wrong value. A generation that does not yet
            check a compound result type declines rather than yielding the mistyped value.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect E (op get (-> (List Int64))))
             (def (main)
               (handle unit ((E.get () s (resume 42 s)))
-                (E.get)))))
+                (E.get))) (export main)))
   (error  CDZ0201))
 
 ; A resume carries two values — `(resume <value> <state>)` — and BOTH are ordinary expressions subject to
@@ -718,11 +718,11 @@
            generation that does not yet scope-check the resume state declines rather than emitting a
            component.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect E (op put (-> Int64 Unit)))
             (def (main)
               (handle unit ((E.put (p) s (resume unit undefined-xyz)))
-                (E.put 1)))))
+                (E.put 1))) (export main)))
   (error  CDZ0101))
 
 (case "a handler arm for an operation the effect does not declare is rejected"
@@ -732,11 +732,11 @@
            Operation Its Effect Declares). A generation that does not yet check arm membership declines
            rather than running the program (reject-don't-miscompile).")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Choose (op pick (-> Unit Int64)))
             (def (main)
               (handle unit ((Choose.guess () s (resume 5 s)))
-                (Choose.pick)))))
+                (Choose.pick))) (export main)))
   (error  CDZ0403))
 
 (case "an effect operation reached with neither a handler nor a delegation is rejected"
@@ -749,10 +749,10 @@
            Contrast the interpose case above, where an enclosing `host (ask)` delegation gives the effect
            a home.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect Ask (op ask (-> Unit Int64)))
             (def (main)
-              (+ (Ask.ask) 1))))
+              (+ (Ask.ask) 1)) (export main)))
   (error  CDZ0401))
 
 (case "a program that delegates no effect is pure and never suspends"
@@ -760,7 +760,7 @@
            no effect it must route runs straight to normal termination, makes no host call, and has an
            empty manifest. This is the same property the compiler component itself has.")
   (needs  effects)
-  (input  (module m
-            (def (main) (+ 20 22))))
+  (input  (do
+            (def (main) (+ 20 22)) (export main)))
   (output (: 42 Int64))
   (host-calls))

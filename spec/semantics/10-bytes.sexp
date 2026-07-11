@@ -285,9 +285,9 @@
            ASCII `A B C`, so the byte-string display shows them literally. Pins that Bytes is a runtime
            value, not only a compile-time literal — the compiler's output type flowing at run time.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (mk n) (Bytes.of (list n 66 67)))
-            (def (main)  (mk 65))))
+            (def (main)  (mk 65)) (export main)))
   (output (: b"ABC" Bytes)))
 
 (case "constructing a byte sequence with a runtime value out of range traps"
@@ -297,9 +297,9 @@
            A Defined Outcome) rather than truncating `256` to `0` via a wrapping `as u8`. Pins that the
            bound is enforced on the value, not only on a compile-time literal.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (mk n) (Bytes.of (list n)))
-            (def (main)  (mk 256))))
+            (def (main)  (mk 256)) (export main)))
   (trap   "byte value out of range"))
 
 (case "the length of a runtime byte sequence is its byte count"
@@ -307,9 +307,9 @@
            to a SCALAR count via the runtime's bytes-len, the fold-to-scalar half of the idiom (like a
            recursive list sum). `(Bytes.len (Bytes.of (list n 2 3)))` = 3 for any `n`.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (sz n) (Bytes.len (Bytes.of (list n 2 3))))
-            (def (main)  (sz 9))))
+            (def (main)  (sz 9)) (export main)))
   (output (: 3 Int64)))
 
 (case "concatenating byte sequences built at run time appends their bytes in order"
@@ -321,9 +321,9 @@
            for `a=7 b=8` — bytes 7 (BEL), 8 (backspace), 9 (tab) render as escapes (9 is the `\\t` special
            escape). Pins runtime concatenation — how a compiler joins the byte fragments of its output.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (join a b) (Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9))))
-            (def (main)      (join 7 8))))
+            (def (main)      (join 7 8)) (export main)))
   (output (: b"\x07\x08\t" Bytes)))
 
 (case "a recursively-built byte sequence assembles its bytes at run time"
@@ -334,11 +334,11 @@
            self-hosted compiler uses to emit a component's wasm bytes — concatenating byte fragments in
            a recursion whose depth is driven by the program being compiled.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (rep n) (if (< n 1)
                             (Bytes.of (list))
                             (Bytes.concat (Bytes.of (list 88)) (rep (- n 1)))))
-            (def (main)  (rep 4))))
+            (def (main)  (rep 4)) (export main)))
   (output (: b"XXXX" Bytes)))
 
 (case "an unsigned LEB128 encoder emits the known-answer multibyte encoding"
@@ -355,12 +355,12 @@
            output, so this is a tighter check on the emit path than any primitive alone. The companion
            `(uleb 100)` (100 < 128) exits in one byte to `b\"d\"`, exercising the base case.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (uleb n)
               (if (< n 128)
                   (Bytes.of (list (Int.to-byte n)))
                   (Bytes.concat (Bytes.of (list (Int.to-byte (| (& n 127) 128)))) (uleb (>> n 7)))))
-            (def (main) (uleb 624485))))
+            (def (main) (uleb 624485)) (export main)))
   (output (: b"\xe5\x8e&" Bytes)))
 
 (case "an unsigned LEB128 encoder emits a single byte below the continuation threshold"
@@ -369,12 +369,12 @@
            `b\"d\"` (byte 100 is ASCII `d`). Pins the terminator arm in isolation from the recursive
            multibyte path, so a regression in either arm is localized.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (uleb n)
               (if (< n 128)
                   (Bytes.of (list (Int.to-byte n)))
                   (Bytes.concat (Bytes.of (list (Int.to-byte (| (& n 127) 128)))) (uleb (>> n 7)))))
-            (def (main) (uleb 100))))
+            (def (main) (uleb 100)) (export main)))
   (output (: b"d" Bytes)))
 
 (case "a recursive emitter dispatches on a sum's variants to build bytes per node"
@@ -391,14 +391,14 @@
            self-hosted compiler is written in — the exhaustive per-variant byte map that turns a typed IR
            node into its instruction bytes.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (type Expr (Lit Int64) (Neg Expr) (Add (Tuple Expr Expr)))
             (def (emit e)
               (match e
                 ((Expr.Lit n)           (Bytes.of (list 0x42)))
                 ((Expr.Neg x)           (Bytes.concat (emit x) (Bytes.of (list 0x7C))))
                 ((Expr.Add (tuple a b)) (Bytes.concat (emit a) (Bytes.concat (emit b) (Bytes.of (list 0x6A)))))))
-            (def (main) (emit (Expr.Add (tuple (Expr.Lit 1) (Expr.Neg (Expr.Lit 2))))))))
+            (def (main) (emit (Expr.Add (tuple (Expr.Lit 1) (Expr.Neg (Expr.Lit 2)))))) (export main)))
   (output (: b"BB|j" Bytes)))
 
 (case "a recursive fold of a cons-list to bytes is the whole program result"
@@ -415,7 +415,7 @@
            stream (a list of encoded instruction/section fragments) into the component's byte vector,
            the list-fold companion of the per-node tree-walk emitter above.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (type BL BNil (BCons (Tuple Bytes BL)))
             (def (build n) (if (< n 1)
                                (BL.BNil ())
@@ -423,7 +423,7 @@
             (def (cat-all xs) (match xs
                                 ((BL.BNil _)            (Bytes.of (list)))
                                 ((BL.BCons (tuple h t)) (Bytes.concat h (cat-all t)))))
-            (def (main) (cat-all (build 3)))))
+            (def (main) (cat-all (build 3))) (export main)))
   (output (: b"CBA" Bytes)))
 
 ; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
@@ -441,9 +441,9 @@
            Bytes 20, 30 are non-printable, so the byte-string display escapes them. Pins the fallible
            slice on a runtime value — how a compiler reads a sub-range of its input bytes without copying.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
-            (def (main)     (sl 10 1 2))))
+            (def (main)     (sl 10 1 2)) (export main)))
   (output (: (Some b"\x14\x1e") (Option Bytes))))
 
 (case "slicing a runtime byte sequence past the end yields None"
@@ -452,9 +452,9 @@
            returning a short result. The runtime companion of the const past-the-end case, pinning that
            the bound is checked on the value at run time.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
-            (def (main)     (sl 10 2 3))))
+            (def (main)     (sl 10 2 3)) (export main)))
   (output (: (None unit) (Option Bytes))))
 
 (case "slicing a runtime byte sequence with a negative start yields None"
@@ -463,9 +463,9 @@
            companion of the const negative-start case: the check is on the signed value, so a runtime
            negative start is caught before it can wrap.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
-            (def (main)     (sl 10 -1 2))))
+            (def (main)     (sl 10 -1 2)) (export main)))
   (output (: (None unit) (Option Bytes))))
 
 (case "compacting a byte sequence built at run time preserves its bytes"
@@ -475,9 +475,9 @@
            that compact is value-preserving on a runtime value — how a compiler keeps a small slice of a
            large input while letting the input be reclaimed. `(mk 1)` = `b\"\\x01\\x02\\x03\"`.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (mk n) (Bytes.compact (Bytes.of (list n 2 3))))
-            (def (main) (mk 1))))
+            (def (main) (mk 1)) (export main)))
   (output (: b"\x01\x02\x03" Bytes)))
 
 ; --- A runtime `Bytes.at` Option is MATCHED — the reader's core idiom -------------------------------
@@ -495,9 +495,9 @@
            so it unifies with the scalar `None` arm — the reader's per-byte dispatch. Pins that a runtime
            `Bytes.at` Option matches like any `Option<Int64>`.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (at b i) (match (Bytes.at b i) ((Some x) x) (None -1)))
-            (def (main)   (at (Bytes.of (list 10 20 30)) 1))))
+            (def (main)   (at (Bytes.of (list 10 20 30)) 1)) (export main)))
   (output (: 20 Int64)))
 
 (case "matching a runtime Bytes.at Option takes the None arm past the end"
@@ -505,9 +505,9 @@
            match takes the `None` arm and returns -1. Pins that both arms of a runtime `Bytes.at` match
            are reachable and unify — the terminating branch of the byte-walk.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (at b i) (match (Bytes.at b i) ((Some x) x) (None -1)))
-            (def (main)   (at (Bytes.of (list 10 20 30)) 9))))
+            (def (main)   (at (Bytes.of (list 10 20 30)) 9)) (export main)))
   (output (: -1 Int64)))
 
 (case "a recursive byte walk sums a runtime sequence via Bytes.at and match"
@@ -517,12 +517,12 @@
            function driving over the input bytes by matching `Bytes.at` compiles and runs — the core
            `bytes → AST` loop a self-hosted front end is built on.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (go b i acc)
               (match (Bytes.at b i)
                 ((Some x) (go b (+ i 1) (+ acc x)))
                 (None acc)))
-            (def (main) (go (Bytes.of (list 10 20 30)) 0 0))))
+            (def (main) (go (Bytes.of (list 10 20 30)) 0 0)) (export main)))
   (output (: 60 Int64)))
 
 (case "a CBOR head decodes its major type and big-endian argument from the input bytes"
@@ -539,7 +539,7 @@
            wrong mask, wrong place value) changes the decoded number, so this is a tighter check on the
            input path than any primitive alone.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (byte-at b i)  (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (major b i)    (>> (byte-at b i) 5))
             (def (info b i)     (& (byte-at b i) 31))
@@ -548,7 +548,7 @@
             (def (place k)      (if (< k 1) 1 (* 256 (place (- k 1)))))
             (def (arg b i)      (if (< (info b i) 24) (info b i) (be b (+ i 1) 2)))
             (def (main)         (tuple (major (Bytes.of (list 0x19 0x01 0x2C)) 0)
-                                       (arg   (Bytes.of (list 0x19 0x01 0x2C)) 0)))))
+                                       (arg   (Bytes.of (list 0x19 0x01 0x2C)) 0))) (export main)))
   (output (: (tuple 0 300) (Tuple Int64 Int64))))
 
 (case "a CBOR atom decodes each scalar major type to its value"
@@ -564,7 +564,7 @@
            self-hosted front end reads. Completes the reader's decode surface: head dispatch (which
            operation), length iteration (how many children), and atom decode (each leaf's value).")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (byte-at b i)    (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i) (>> (byte-at b i) 5))
             (def (cbor-info b i)  (& (byte-at b i) 31))
@@ -577,7 +577,7 @@
                   (cbor-arg b i))))
             (def (main) (+ (dec (Bytes.of (list 0x29)) 0)
                         (+ (dec (Bytes.of (list 0xF5)) 0)
-                           (dec (Bytes.of (list 0x0A)) 0))))))
+                           (dec (Bytes.of (list 0x0A)) 0)))) (export main)))
   (output (: 1 Int64)))
 
 (case "a CBOR simple value that is not a known boolean is classified as not-a-boolean"
@@ -595,14 +595,14 @@
            to `false`). The reader's fix is to route a non-boolean major-7 value to a decline (KError),
            not default it; this case pins the discrimination the decline depends on.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (classify-simple arg)
               (if (= arg 21) 1
               (if (= arg 20) 0
                              (- 0 1))))
             (def (main) (+ (classify-simple 20)
                         (+ (* 10 (classify-simple 21))
-                           (* 100 (classify-simple 27)))))))
+                           (* 100 (classify-simple 27))))) (export main)))
   (output (: -90 Int64)))
 
 (case "resolving a head against a prelude symbol rejects a length-mismatched prefix"
@@ -618,7 +618,7 @@
            whose name is a prefix of another. The positive companion (exact match → 1) is the head
            resolution the whole-module compile path already exercises end-to-end.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-info b i)     (& (byte-at b i) 31))
             (def (cbor-arg b i)      (if (< (cbor-info b i) 24) (cbor-info b i) (byte-at b (+ i 1))))
@@ -632,7 +632,7 @@
                   (if (= (entry-byte b e j) (lit-byte lit j)) (neq-go b e lit (+ j 1) n) false)
                   true))
             (def (name-eq b e lit n) (if (= (entry-len b e) n) (neq-go b e lit 0 n) false))
-            (def (main) (if (name-eq (Bytes.of (list 0x62 0x2B 0x2B)) 0 b"+" 1) 1 0))))
+            (def (main) (if (name-eq (Bytes.of (list 0x62 0x2B 0x2B)) 0 b"+" 1) 1 0)) (export main)))
   (output (: 0 Int64)))
 
 (case "a CBOR skip walks past a whole nested item to the next offset"
@@ -650,7 +650,7 @@
            `skip-elems`) over runtime input bytes, the navigation half of `bytes → AST` that the
            head-decode's value-extraction half complements.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i)    (>> (byte-at b i) 5))
             (def (cbor-info b i)     (& (byte-at b i) 31))
@@ -663,7 +663,7 @@
               (if (or (= (cbor-major b i) 3) (= (cbor-major b i) 2))
                   (+ (+ i (cbor-head-len b i)) (cbor-arg b i))
                   (+ i (cbor-head-len b i)))))
-            (def (main) (cbor-skip (Bytes.of (list 0x82 0x82 0x01 0x02 0x03)) 0))))
+            (def (main) (cbor-skip (Bytes.of (list 0x82 0x82 0x01 0x02 0x03)) 0)) (export main)))
   (output (: 5 Int64)))
 
 (case "a recursive reader decodes a CBOR application tree and evaluates it by head index"
@@ -683,7 +683,7 @@
            reads the wrong operand and changes the result, so this is a tighter check on the reader than
            any primitive alone — the input dual of the LEB128 known-answer emit case.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i)    (>> (byte-at b i) 5))
             (def (cbor-info b i)     (& (byte-at b i) 31))
@@ -702,7 +702,7 @@
                       (+ (ev b (child-off b i 1)) (ev b (child-off b i 2)))
                       (* (ev b (child-off b i 1)) (ev b (child-off b i 2))))
                   (cbor-arg b i)))
-            (def (main) (ev (Bytes.of (list 0x83 0x00 0x01 0x83 0x01 0x02 0x0B)) 0))))
+            (def (main) (ev (Bytes.of (list 0x83 0x00 0x01 0x83 0x01 0x02 0x0B)) 0)) (export main)))
   (output (: 23 Int64)))
 
 (case "a CBOR reader walks a variable-length array using its decoded length as the element count"
@@ -719,7 +719,7 @@
            module's def list or a call's argument list), the count half of `bytes → AST` that the
            head-index-dispatch case complements.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i)    (>> (byte-at b i) 5))
             (def (cbor-info b i)     (& (byte-at b i) 31))
@@ -734,7 +734,7 @@
             (def (elem b i k)    (skip-elems b (elem0 b i) k))
             (def (sum-elems b i k n) (if (< k n) (+ (cbor-arg b (elem b i k)) (sum-elems b i (+ k 1) n)) 0))
             (def (sum-array b i) (sum-elems b i 0 (cbor-arg b i)))
-            (def (main) (sum-array (Bytes.of (list 0x84 0x0A 0x14 0x18 0x1E 0x18 0x28)) 0))))
+            (def (main) (sum-array (Bytes.of (list 0x84 0x0A 0x14 0x18 0x1E 0x18 0x28)) 0)) (export main)))
   (output (: 100 Int64)))
 
 (case "a CBOR skip steps over a tagged item to the value it wraps"
@@ -749,7 +749,7 @@
            name, reading the wrong element. Completes the item-kind coverage of `cbor-skip` (array /
            string / tag / scalar) the reader needs to traverse the whole canonical AST.")
   (needs  fallible-access)
-  (input  (module m
+  (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i)    (>> (byte-at b i) 5))
             (def (cbor-info b i)     (& (byte-at b i) 31))
@@ -764,7 +764,7 @@
               (if (= (cbor-major b i) 6)
                   (cbor-skip b (+ i (cbor-head-len b i)))
                   (+ i (cbor-head-len b i))))))
-            (def (main) (cbor-skip (Bytes.of (list 0xD8 0x27 0x01)) 0))))
+            (def (main) (cbor-skip (Bytes.of (list 0xD8 0x27 0x01)) 0)) (export main)))
   (output (: 3 Int64)))
 
 ; --- The `b"…"` literal reads to a byte sequence, and rendering round-trips -----------------------
@@ -806,7 +806,7 @@
            special escape), and `B`; passing it through a runtime function and rendering the result
            yields `b\"A\\nB\"` — reading and displaying a byte sequence are inverses.")
   (needs  bytes)
-  (input  (module m
+  (input  (do
             (def (id b) b)
-            (def (main) (id b"A\nB"))))
+            (def (main) (id b"A\nB")) (export main)))
   (output (: b"A\nB" Bytes)))

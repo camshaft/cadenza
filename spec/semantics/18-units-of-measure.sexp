@@ -256,9 +256,9 @@
            `speed` is plain Float64 division; the quantity types are the compile-time contract, not a
            runtime representation.")
   (needs  units-of-measure)
-  (input  (module m
+  (input  (do
             (def (speed d t) (/ d t))
-            (def (main) (speed (Qty.of 100.0 (Unit.base #"metre")) (Qty.of 4.0 (Unit.base #"second"))))))
+            (def (main) (speed (Qty.of 100.0 (Unit.base #"metre")) (Qty.of 4.0 (Unit.base #"second")))) (export main)))
   (output (: (Qty.of 25.0 (Unit./ (Unit.base #"metre") (Unit.base #"second")))
              (Qty Float64 (Unit./ (Unit.base #"metre") (Unit.base #"second"))))))
 

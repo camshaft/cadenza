@@ -149,9 +149,9 @@
            companion `(let ((n (I true))) (match n …))` (a let-bound, then matched, scrutinee) IS rejected;
            only the constructor written directly in scrutinee position slips. A generation that type-checks
            the scrutinee constructor's payload declines rather than running the mistyped program.")
-  (input  (module m
+  (input  (do
             (type N (I Int64) (J Int64))
-            (def (main) (match (I true) ((I x) x) ((J y) y)))))
+            (def (main) (match (I true) ((I x) x) ((J y) y))) (export main)))
   (error  CDZ0201))
 
 ; The annotation check must also catch a tuple's ARITY mismatch, not only its element TYPES. A tuple is
@@ -413,9 +413,9 @@
            never runs but must TYPE-CHECK. A generation without the Never-unifies rule would reject the
            branch-type mismatch. Pins that a divergent branch does not spoil a well-typed conditional.")
   (needs  never)
-  (input  (module m
+  (input  (do
             (def (f b) (if b 1 (trap "unreachable")))
-            (def (main) (f true))))
+            (def (main) (f true)) (export main)))
   (output (: 1 Int64)))
 
 (case "a function whose body always diverges has result type Never"
@@ -425,9 +425,9 @@
            condition is the trap, not a value. Pins that a Never-returning function is callable in a
            typed position — the honest type for a function that never returns normally.")
   (needs  never)
-  (input  (module m
+  (input  (do
             (def (bomb) (trap "unreachable"))
-            (def (main) (+ 1 (bomb)))))
+            (def (main) (+ 1 (bomb))) (export main)))
   (trap   "unreachable"))
 
 (case "a match on an uninhabited scrutinee is exhaustive with zero arms"
@@ -439,7 +439,7 @@
            so the program traps. Pins that the empty sum makes a zero-arm match vacuously exhaustive
            rather than an error.")
   (needs  never)
-  (input  (module m
+  (input  (do
             (def (never-returns) (trap "unreachable"))
-            (def (main) (match (never-returns)))))
+            (def (main) (match (never-returns))) (export main)))
   (trap   "unreachable"))

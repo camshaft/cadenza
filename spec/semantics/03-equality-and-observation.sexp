@@ -97,18 +97,18 @@
            float operand, matching the canonical-byte-form comparison the constant cases above use.
            The seed declines (\"non-constant float equality … not yet emitted\") — it folds constant
            float equality but has not emitted the runtime comparison.")
-  (input  (module m
+  (input  (do
             (def (f x) (= x 3.5))
-            (def (main) (f 3.5))))
+            (def (main) (f 3.5)) (export main)))
   (output (: true Bool)))
 
 (case "runtime float inequality compares by canonical byte form"
   (doc    "The companion with an unequal runtime operand: f(2.5) compares 2.5 to 3.5 and is false.
            Confirms the runtime float comparison is a genuine value test (true for 3.5, false for
            2.5), not a constant fold. The seed declines the same way.")
-  (input  (module m
+  (input  (do
             (def (f x) (= x 3.5))
-            (def (main) (f 2.5))))
+            (def (main) (f 2.5)) (export main)))
   (output (: false Bool)))
 
 ; --- Equality of two RUNTIME strings, neither a compile-time literal --------------------------
@@ -133,18 +133,18 @@
            declines (\"runtime compound equality (heap walk) not yet emitted\"): it folds a literal-side
            comparison but has not emitted the two-runtime heap walk. A program comparing two names read
            from data takes this shape.")
-  (input  (module m
+  (input  (do
             (def (eq2 a b) (= a b))
-            (def (main) (eq2 "foo" "foo"))))
+            (def (main) (eq2 "foo" "foo")) (export main)))
   (output (: true Bool)))
 
 (case "two unequal runtime strings compare false by their contents"
   (doc    "The companion with unequal runtime operands: `(eq2 \"foo\" \"bar\")` is false. Confirms the
            two-runtime string comparison is a genuine content test, not a constant fold (true for equal
            contents, false for different). The seed declines the same way as the equal case.")
-  (input  (module m
+  (input  (do
             (def (eq2 a b) (= a b))
-            (def (main) (eq2 "foo" "bar"))))
+            (def (main) (eq2 "foo" "bar")) (export main)))
   (output (: false Bool)))
 
 (case "a runtime string compared against a literal folds against the literal side"
@@ -152,9 +152,9 @@
            the comparison folds against that side and the seed compiles it. `f` compares its String
            parameter to the literal \"x\"; `(f \"x\")` is true. Pins that the runtime-string equality
            gap is specifically the BOTH-runtime case — a literal on either side is already emitted.")
-  (input  (module m
+  (input  (do
             (def (f s) (= s "x"))
-            (def (main) (f "x"))))
+            (def (main) (f "x")) (export main)))
   (output (: true Bool)))
 
 (case "a runtime string bound from a sum payload compares equal to a string parameter"
@@ -168,10 +168,10 @@
            emitted\") — the payload/aliased-operand companion of the two-parameter case; a program that
            compares a name it destructured from a data node against an expected name takes exactly this
            shape.")
-  (input  (module case
+  (input  (do
             (type Wrap (Wrap String))
             (def (payload-is w name) (match w ((Wrap.Wrap s) (= s name))))
-            (def (main) (payload-is (Wrap.Wrap "foo") "foo"))))
+            (def (main) (payload-is (Wrap.Wrap "foo") "foo")) (export main)))
   (output (: true Bool)))
 
 ; --- Equality of two RUNTIME compound values (a heap walk over the value heap) -----------------
@@ -196,10 +196,10 @@
            runtime-float and two-runtime-string equality cases above — all three are the same
            not-yet-emitted runtime comparison. A generation emitting the heap walk reproduces true.")
   (needs  sum-type-declaration)
-  (input  (module m
+  (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
-            (def (main) (if (= (mk 1) (mk 1)) 1 0))))
+            (def (main) (if (= (mk 1) (mk 1)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
 (case "two differing runtime sum values compare unequal by a heap walk"
@@ -208,10 +208,10 @@
            the runtime compound comparison is a genuine structural test, not a constant fold. The seed
            declines the same way as the equal case.")
   (needs  sum-type-declaration)
-  (input  (module m
+  (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
-            (def (main) (if (= (mk 1) (mk 2)) 1 0))))
+            (def (main) (if (= (mk 1) (mk 2)) 1 0)) (export main)))
   (output (: 0 Int64)))
 
 (case "a runtime compound structural equality is expressible as a hand-written recursive comparator"
@@ -224,14 +224,14 @@
            convenience over this, not a new expressive power — so a program (a proof kernel comparing
            terms, a compiler comparing AST nodes) is not blocked, only more verbose.")
   (needs  sum-type-declaration)
-  (input  (module m
+  (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
             (def (same a b)
               (match a
                 ((N.I x) (match b ((N.I y) (= x y)) ((N.J _) false)))
                 ((N.J x) (match b ((N.J y) (= x y)) ((N.I _) false)))))
-            (def (main) (if (same (mk 1) (mk 1)) 1 0))))
+            (def (main) (if (same (mk 1) (mk 1)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
 (case "an offered ordering is total and deterministic"
@@ -249,9 +249,9 @@
            reads a program's result kind and frames `run` accordingly; the result kind is one of a fixed
            set (Int64 / Bool), selected by the operator that produces the result (a comparison yields
            Bool, `+`/`-`/`*`/`/`/`%` yield Int64).")
-  (input  (module m
+  (input  (do
             (def (lt a b) (< a b))
-            (def (main)   (lt 20 22))))
+            (def (main)   (lt 20 22)) (export main)))
   (output (: true Bool)))
 
 (case "an entrypoint returning arithmetic presents an Int64 result at the boundary"
@@ -261,9 +261,9 @@
            the entrypoint's boundary result type is type-directed — Bool for a comparison, Int64 for
            arithmetic — the same program shape emitting a different boundary type from its result type
            alone.")
-  (input  (module m
+  (input  (do
             (def (add a b) (+ a b))
-            (def (main)    (add 20 22))))
+            (def (main)    (add 20 22)) (export main)))
   (output (: 42 Int64)))
 
 ; --- Bool offers a total order in which false is less than true --------------------------
@@ -388,11 +388,11 @@
            Expression Evaluated Only For Its Effect Yields The Unit Value). The (output …) primary clause
            pins the terminal condition; the (host-calls …) observation pins the call sequence.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
               (host (log)
-                (log.emit "hello")))))
+                (log.emit "hello"))) (export main)))
   (output (: unit Unit))
   (host-calls (call log.emit (: "hello" String))))
 
@@ -404,13 +404,13 @@
            (core-semantics.md #An Expression Evaluated Only For Its Effect Yields The Unit Value); the
            (output …) clause pins that terminal condition and the (host-calls …) observation pins the order.")
   (needs  effects)
-  (input  (module m
+  (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
               (host (log)
                 (do
                   (log.emit "first")
-                  (log.emit "second"))))))
+                  (log.emit "second")))) (export main)))
   (output (: unit Unit))
   (host-calls (call log.emit (: "first" String))
               (call log.emit (: "second" String))))

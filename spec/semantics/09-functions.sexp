@@ -48,9 +48,9 @@
            the let-bound `apply-twice` above does — the difference is only whether the HOF is named or
            let-bound. The seed declines the named case (\"bare lambda in scalar position\"): it inlines
            a lambda argument into a let-bound HOF but not into a named-def HOF.")
-  (input  (module m
+  (input  (do
             (def (ap g v) (g v))
-            (def (main) (ap (fn (x) (* x 2)) 7))))
+            (def (main) (ap (fn (x) (* x 2)) 7)) (export main)))
   (output (: 14 Int64)))
 
 (case "a function is returned as a result"
@@ -125,9 +125,9 @@
            projects element 1, yielding 9. A positional access on a nullary function's tuple result
            must project it, exactly as it does for a unary function's result (above) — not trap. The
            seed traps: it does not reduce the nullary call `(mk)` to its tuple body for the access.")
-  (input   (module m
+  (input   (do
              (def (mk) (tuple 7 9))
-             (def (main) (tuple.1 (mk)))))
+             (def (main) (tuple.1 (mk))) (export main)))
   (output  (: 9 Int64)))
 
 (case "a field is projected from a record returned by a nullary function"
@@ -136,9 +136,9 @@
            like projecting a unary function's record result (above), not trap. The seed traps on the
            nullary case.")
   (needs   collections)
-  (input   (module m
+  (input   (do
              (def (mk) (record (a 5)))
-             (def (main) (. (mk) a))))
+             (def (main) (. (mk) a)) (export main)))
   (output  (: 5 Int64)))
 
 (case "applying a non-function is a type error"
@@ -216,10 +216,10 @@
 (case "a recursive def computes over its argument"
   (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments:
            sum-to counts down to 0 through direct self-recursion. sum-to(3) = 3 + 2 + 1 + 0 = 6.")
-  (input  (module m
+  (input  (do
             (def (sum-to n)
               (if (= n 0) 0 (+ n (sum-to (+ n -1)))))
-            (def (main) (sum-to 3))))
+            (def (main) (sum-to 3)) (export main)))
   (output (: 6 Int64)))
 
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
@@ -238,10 +238,10 @@
            bound of 5 over indices 0,1,2 (all < 5) it is true, so the outer `if` yields 1. Pins that a
            recursive Bool function whose self-call is the then-branch infers a Bool return regardless of
            branch order — the shape a reader's name matcher takes ('all bytes equal so far, else fail').")
-  (input  (module m
+  (input  (do
             (def (all-lt i n bound)
               (if (< i n) (if (< i bound) (all-lt (+ i 1) n bound) false) true))
-            (def (main) (if (all-lt 0 3 5) 1 0))))
+            (def (main) (if (all-lt 0 3 5) 1 0)) (export main)))
   (output (: 1 Int64)))
 
 (case "a recursive predicate with the self-call in the else branch is a Bool condition"
@@ -250,10 +250,10 @@
            from i is NOT < the bound. With n=3, bound=0 over indices 0,1,2 (none < 0) it is true → 1.
            Pins that BOTH branch orders of a recursive Bool predicate type identically as a Bool
            condition (the return-kind inference is order-independent).")
-  (input  (module m
+  (input  (do
             (def (all-ge i n bound)
               (if (< i n) (if (< i bound) false (all-ge (+ i 1) n bound)) true))
-            (def (main) (if (all-ge 0 3 0) 1 0))))
+            (def (main) (if (all-ge 0 3 0) 1 0)) (export main)))
   (output (: 1 Int64)))
 
 (case "a recursive def with a match base case computes over its argument"
@@ -263,37 +263,37 @@
            sum-to(n) matches 0 → 0, else n + sum-to(n-1). The base-case arm must be selected from
            the RUNTIME value of n; sum-to(3) = 3 + 2 + 1 + 0 = 6. Companion to the if-based
            `sum-to` above — both must agree.")
-  (input  (module m
+  (input  (do
             (def (sum-to n)
               (match n
                 (0 0)
                 (_ (+ n (sum-to (- n 1))))))
-            (def (main) (sum-to 3))))
+            (def (main) (sum-to 3)) (export main)))
   (output (: 6 Int64)))
 
 (case "recursive factorial with a match base case"
   (doc    "core-semantics.md §Recursion: factorial via a match on the argument. The 0 arm is the
            base case, reached only from the runtime value hitting 0 after counting down; without
            selecting the 0 arm at run time the recursion would never terminate. fact(5) = 120.")
-  (input  (module m
+  (input  (do
             (def (fact n)
               (match n
                 (0 1)
                 (_ (* n (fact (- n 1))))))
-            (def (main) (fact 5))))
+            (def (main) (fact 5)) (export main)))
   (output (: 120 Int64)))
 
 (case "recursive fibonacci with literal match base cases"
   (doc    "core-semantics.md §Recursion: two literal base-case arms (0 and 1) matched against the
            runtime argument, and a recursive arm summing the two predecessors. fib(10) = 55.
            Exercises multiple literal arms dispatching on a runtime scrutinee within a recursion.")
-  (input  (module m
+  (input  (do
             (def (fib n)
               (match n
                 (0 0)
                 (1 1)
                 (_ (+ (fib (- n 1)) (fib (- n 2))))))
-            (def (main) (fib 10))))
+            (def (main) (fib 10)) (export main)))
   (output (: 55 Int64)))
 
 ; --- Overflow checking holds THROUGH a recursive call chain, not only at the top level ----
@@ -310,12 +310,12 @@
   (doc    "fact(20) = 2432902008176640000, the largest factorial within Int64 (fact(21) overflows). The
            recursion multiplies 20·19·…·1 with the checked `*`, and every intermediate product stays in
            range, so it computes the exact value — the passing companion of the overflow case below.")
-  (input  (module m
+  (input  (do
             (def (fact n)
               (match n
                 (0 1)
                 (_ (* n (fact (- n 1))))))
-            (def (main) (fact 20))))
+            (def (main) (fact 20)) (export main)))
   (output (: 2432902008176640000 Int64)))
 
 (case "a factorial that overflows the integer type traps through the recursion"
@@ -324,12 +324,12 @@
            (numeric-model.md #Overflow Is Defined), not wrap to a wrong value. Pins that overflow
            checking is emitted on the recursive arithmetic path, not only for a top-level constant
            operation — the recursion companion of `(* Int64.max 2)`.")
-  (input  (module m
+  (input  (do
             (def (fact n)
               (match n
                 (0 1)
                 (_ (* n (fact (- n 1))))))
-            (def (main) (fact 21))))
+            (def (main) (fact 21)) (export main)))
   (trap   "integer overflow"))
 
 ; --- Two functions may recurse through EACH OTHER (mutual recursion) ----------------------
@@ -345,20 +345,20 @@
            even(10) counts 10→9→…→0 alternating between the two defs and returns true (10 is even). Pins
            that mutual recursion resolves (each def is in scope in the other's body) and terminates via
            the shared base case, carrying the Bool result across the run boundary.")
-  (input  (module m
+  (input  (do
             (def (even n) (if (= n 0) true  (odd  (- n 1))))
             (def (odd  n) (if (= n 0) false (even (- n 1))))
-            (def (main) (even 10))))
+            (def (main) (even 10)) (export main)))
   (output (: true Bool)))
 
 (case "the other parity of a mutually-recursive pair"
   (doc    "The companion on the other outcome: even(7) alternates even→odd→…→base and returns false (7
            is odd). Confirms the mutual recursion follows the runtime count to the correct base-case
            result for both parities, not a fixed answer.")
-  (input  (module m
+  (input  (do
             (def (even n) (if (= n 0) true  (odd  (- n 1))))
             (def (odd  n) (if (= n 0) false (even (- n 1))))
-            (def (main) (even 7))))
+            (def (main) (even 7)) (export main)))
   (output (: false Bool)))
 
 (case "a self-recursive Bool-returning function whose recursive call is the then-branch"
@@ -375,9 +375,9 @@
            heap-accumulator kind race). The mirror shape — self-call in the ELSE, literal in the THEN —
            and an Int-returning self-recursive function both settle correctly; this pins the Bool + then
            combination that does not yet.")
-  (input  (module m
+  (input  (do
             (def (go i n) (if (< i n) (go (+ i 1) n) true))
-            (def (main) (if (go 0 3) 1 0))))
+            (def (main) (if (go 0 3) 1 0)) (export main)))
   (output (: 1 Int64)))
 
 (case "functions are single-arity and curried"
@@ -411,9 +411,9 @@
            program by that desugaring, so both must yield 7. This pins the rule for a NAMED def (the
            cases above use lambda values); a def is single-arity and curried just like a lambda, so
            `(add 3)` is a closure `((add 3) 4)` then applies.")
-  (input  (module m
+  (input  (do
             (def (add x y) (+ x y))
-            (def (main) ((add 3) 4))))
+            (def (main) ((add 3) 4)) (export main)))
   (output (: 7 Int64)))
 
 (case "a named multi-argument function applies to all its arguments at once"
@@ -425,10 +425,10 @@
            arguments read into an argument list, then pushed left-to-right before the `call` (wasm's
            calling convention) — rather than the nested single-application form. The three-argument
            companion `(add3 10 20 12) = 42` pins that an arbitrary arity, not just two, applies at once.")
-  (input  (module m
+  (input  (do
             (def (add2 a b)   (+ a b))
             (def (add3 a b c) (+ a (+ b c)))
-            (def (main)       (+ (add2 20 22) (- (add3 10 20 12) 42)))))
+            (def (main)       (+ (add2 20 22) (- (add3 10 20 12) 42))) (export main)))
   (output (: 42 Int64)))
 
 (case "the module entrypoint is the def named main regardless of its position"
@@ -442,9 +442,9 @@
            entry and miscompile (or must decline); selecting `main` by name reorders it to the entry
            slot no matter where it sits. The call itself is the ordinary N-ary call lowering — the
            argument `41` pushed before the `call` — exercised across the forward edge.")
-  (input  (module m
+  (input  (do
             (def (main) (f 41))
-            (def (f x)  (+ x 1))))
+            (def (f x)  (+ x 1)) (export main)))
   (output (: 42 Int64)))
 
 (case "a named function is partially applied, bound, and used"
@@ -452,9 +452,9 @@
            def too — `(add 3)` returns a closure awaiting the second argument, bound to `inc` and then
            applied to 4, yielding 7. The lambda form of this already holds; a named def must behave
            identically since multi-param defs desugar to curried single-arity functions.")
-  (input  (module m
+  (input  (do
             (def (add x y) (+ x y))
-            (def (main) (let ((inc (add 3))) (inc 4)))))
+            (def (main) (let ((inc (add 3))) (inc 4))) (export main)))
   (output (: 7 Int64)))
 
 ; --- A function's result type is not restricted to Int64 --------------------------------
@@ -469,35 +469,35 @@
 (case "a function returning a boolean predicate result"
   (doc    "`is-zero` is an ordinary predicate: it returns the Bool `(= n 0)`. Calling it from
            `main` yields that Bool as the program's result. is-zero(0) = true.")
-  (input  (module m
+  (input  (do
             (def (is-zero n) (= n 0))
-            (def (main) (is-zero 0))))
+            (def (main) (is-zero 0)) (export main)))
   (output (: true Bool)))
 
 (case "a boolean-returning function called with a false result"
   (doc    "The companion to the case above: is-zero(5) = false. Confirms the Bool result is carried
            faithfully across the run boundary for both truth values, not coerced or truncated.")
-  (input  (module m
+  (input  (do
             (def (is-zero n) (= n 0))
-            (def (main) (is-zero 5))))
+            (def (main) (is-zero 5)) (export main)))
   (output (: false Bool)))
 
 (case "a comparison-predicate function returns its boolean result"
   (doc    "core-semantics.md §Ordering Where Offered Is Total, as a function result: `lt5` returns
            `(< n 5)`. lt5(3) = true. A comparison predicate is the most common Bool-returning
            helper a compiler writes (bounds checks, dispatch guards).")
-  (input  (module m
+  (input  (do
             (def (lt5 n) (< n 5))
-            (def (main) (lt5 3))))
+            (def (main) (lt5 3)) (export main)))
   (output (: true Bool)))
 
 (case "a boolean result threaded through a second function"
   (doc    "core-semantics.md §A Function Is A First-Class Value: `b` forwards `a`'s Bool result, and
            `main` returns `b`'s. The Bool return type propagates through the call chain; b(1) = false.")
-  (input  (module m
+  (input  (do
             (def (a n) (= n 0))
             (def (b n) (a n))
-            (def (main) (b 1))))
+            (def (main) (b 1)) (export main)))
   (output (: false Bool)))
 
 (case "a boolean result propagates through a three-deep chain of forwarding functions"
@@ -513,19 +513,19 @@
            `b` mismatched result kinds versus the `i32`/Bool value they actually forward. a(0) = true.
            This pins that result-type resolution iterates to convergence across an arbitrary-depth chain,
            the companion of the two-deep case and of the recursive Bool cases earlier in this file.")
-  (input  (module m
+  (input  (do
             (def (main) (a 0))
             (def (a n)  (b n))
             (def (b n)  (c n))
-            (def (c n)  (= n 0))))
+            (def (c n)  (= n 0)) (export main)))
   (output (: true Bool)))
 
 (case "a boolean function result bound by let is still a boolean"
   (doc    "core-semantics.md §Binding Is Lexical: binding a predicate's result to a name and
            returning that name does not change its type. The program's result is the Bool true.")
-  (input  (module m
+  (input  (do
             (def (is-zero n) (= n 0))
-            (def (main) (let ((r (is-zero 0))) r))))
+            (def (main) (let ((r (is-zero 0))) r)) (export main)))
   (output (: true Bool)))
 
 ; --- A function's PARAMETER type is not restricted to Int64 -----------------------------
@@ -539,26 +539,26 @@
 (case "a function takes a boolean parameter and branches on it"
   (doc    "`f` takes a Bool `b` and returns 10 or 20 via `if`. Applying it to `true` binds b=true,
            selecting the then-branch: f(true) = 10. The parameter is a Bool, not an Int64.")
-  (input  (module m
+  (input  (do
             (def (f b) (if b 10 20))
-            (def (main) (f true))))
+            (def (main) (f true)) (export main)))
   (output (: 10 Int64)))
 
 (case "a boolean-parameter function applied to false"
   (doc    "The companion of the case above: f(false) = 20. Confirms both Bool argument values are
            bound and dispatched correctly through a call.")
-  (input  (module m
+  (input  (do
             (def (f b) (if b 10 20))
-            (def (main) (f false))))
+            (def (main) (f false)) (export main)))
   (output (: 20 Int64)))
 
 (case "a boolean parameter forwarded to a conditional result"
   (doc    "core-semantics.md §A Function Is A First-Class Value: `both` takes two Bools and returns
            `b` when `a` is true, else false — a logical AND. both(true, true) = true. Exercises two
            Bool parameters in one signature, curried.")
-  (input  (module m
+  (input  (do
             (def (both a b) (if a b false))
-            (def (main) (both true true))))
+            (def (main) (both true true)) (export main)))
   (output (: true Bool)))
 
 ; --- A parameter whose type the body does not constrain is polymorphic -------------------
@@ -575,9 +575,9 @@
 (case "the identity function applied to an integer returns the integer"
   (doc    "The control: `(def (id x) x)` applied to an Int64 returns it. id(42) = 42. The body does
            not constrain `x`'s type; applying to an integer determines it here.")
-  (input  (module m
+  (input  (do
             (def (id x) x)
-            (def (main) (id 42))))
+            (def (main) (id 42)) (export main)))
   (output (: 42 Int64)))
 
 (case "the identity function applied to a boolean returns the boolean"
@@ -587,9 +587,9 @@
            Int64. The seed defaults the unconstrained parameter to Int64 and declines a Bool argument
            (\"argument kind mismatch\"); a full inference generalizes `x` to a type variable so both
            applications type-check.")
-  (input  (module m
+  (input  (do
             (def (id x) x)
-            (def (main) (id true))))
+            (def (main) (id true)) (export main)))
   (output (: true Bool)))
 
 ; A function's name is an ordinary lexical binding, and #Binding Is Lexical resolves a reference to the
@@ -613,9 +613,9 @@
            is not a binding-precedence rule: the lowercase `(def (bar) …)` companion is called correctly,
            and the uppercase one must be too. A generation that does not resolve a capitalized name to its
            user binding declines rather than answering `(Foo 10)` (reject-don't-miscompile).")
-  (input  (module m
+  (input  (do
             (def (Foo x) (+ x 1))
-            (def (main) (Foo 10))))
+            (def (main) (Foo 10)) (export main)))
   (output (: 11 Int64)))
 
 (case "a parameter carries a type annotation in the signature"
@@ -627,9 +627,9 @@
            value. `(annotated 20 22)` = 42. Pins that a signature reads through a `(: name Type)` binder
            to the name it binds, so an author can pin a parameter's type where inference would otherwise
            leave it open — the disambiguation an ambiguous runtime parameter requires.")
-  (input  (module m
+  (input  (do
             (def (annotated (: a Int64) b) (+ a b))
-            (def (main)                    (annotated 20 22))))
+            (def (main)                    (annotated 20 22)) (export main)))
   (output (: 42 Int64)))
 
 (case "a parameter annotation contradicting its use is rejected"
@@ -639,9 +639,9 @@
            is rejected (CDZ0203) rather than having the annotation silently replace the inferred type or
            the use silently reinterpret the annotation. The contradiction is between the WRITTEN Bool and
            the INFERRED Int64 at the same binding, exactly the conflicting-annotation shape.")
-  (input  (module m
+  (input  (do
             (def (bad (: a Bool)) (+ a 1))
-            (def (main)           (bad true))))
+            (def (main)           (bad true)) (export main)))
   (error  CDZ0203))
 
 ; --- Runtime arguments to the entrypoint: (call <export> <arg>…) --------------------------------
@@ -669,7 +669,7 @@
            receives a runtime value and returns it, the minimal exercise of the boundary parameter path
            the folded nullary cases never reach (contracts/component-abi.md §The Entry Is A Plain
            Function — an entry is `input -> output`, its parameter type carrying a boundary form).")
-  (input  (module m (def (main (: x Int64)) x)))
+  (input  (do (def (main (: x Int64)) x) (export main)))
   (call   main (: 42 Int64))
   (output (: 42 Int64)))
 
@@ -680,7 +680,7 @@
            `(+ 2 3)` in 06-numeric-model, which the compiler reduces to 5 at build time.) This is the
            smallest case that exercises the runtime arithmetic path a program's machinery actually runs;
            41 + 1 = 42.")
-  (input  (module m (def (main (: x Int64)) (+ x 1))))
+  (input  (do (def (main (: x Int64)) (+ x 1)) (export main)))
   (call   main (: 41 Int64))
   (output (: 42 Int64)))
 
@@ -688,7 +688,7 @@
   (doc    "`(def (main (: x Int64)) (* x 3))` called with 7 — a runtime `i64.mul` over the parameter and
            the literal 3, yielding 21. Companion to the runtime `+` case, pinning that multiplication too
            is emitted as a real instruction (not folded) when an operand is a runtime argument.")
-  (input  (module m (def (main (: x Int64)) (* x 3))))
+  (input  (do (def (main (: x Int64)) (* x 3)) (export main)))
   (call   main (: 7 Int64))
   (output (: 21 Int64)))
 
@@ -697,7 +697,7 @@
            BOTH operands are runtime arguments, so the `+` is a runtime `i64.add` over two parameter
            slots — nothing is constant. Pins that an entry takes MORE than one boundary argument, each in
            its own local slot in signature order, and the arguments are supplied in order; 20 + 22 = 42.")
-  (input  (module m (def (main (: a Int64) (: b Int64)) (+ a b))))
+  (input  (do (def (main (: a Int64) (: b Int64)) (+ a b)) (export main)))
   (call   main (: 20 Int64) (: 22 Int64))
   (output (: 42 Int64)))
 
@@ -705,7 +705,7 @@
   (doc    "`(def (main (: b Bool)) b)` called with the runtime boolean `true`. Pins that a Bool crosses
            the entry boundary as a runtime argument (not only an integer) and lifts back unchanged — the
            boolean boundary representation on the parameter side, mirroring the Bool result cases.")
-  (input  (module m (def (main (: b Bool)) b)))
+  (input  (do (def (main (: b Bool)) b) (export main)))
   (call   main (: true Bool))
   (output (: true Bool)))
 
@@ -714,7 +714,7 @@
            parameter and the literal 10, producing a Bool. The comparison cannot fold (one operand is a
            runtime value), so it is emitted as a real runtime comparison. 5 < 10 is true. Pins that a
            relational operator over a runtime argument runs as an instruction and yields a boundary Bool.")
-  (input  (module m (def (main (: x Int64)) (< x 10))))
+  (input  (do (def (main (: x Int64)) (< x 10)) (export main)))
   (call   main (: 5 Int64))
   (output (: true Bool)))
 
@@ -725,7 +725,7 @@
            entry yields 0. Pins that control flow driven by a runtime argument is emitted as a real
            branch, the last piece of the runtime machinery the folded nullary cases skip. (A negative
            argument also exercises the runner taking a leading-`-` value as the argument, not a flag.)")
-  (input  (module m (def (main (: x Int64)) (if (< x 0) 0 x))))
+  (input  (do (def (main (: x Int64)) (if (< x 0) 0 x)) (export main)))
   (call   main (: -3 Int64))
   (output (: 0 Int64)))
 
@@ -743,7 +743,7 @@
            component `u8` (its faithful width, not a machine s32/u32), lifts to the i32 slot the body
            reads, and lowers back to `u8` — 200. Pins that an aliased narrow width has a boundary form
            and that a UInt8 argument round-trips through the component edge unchanged.")
-  (input  (module m (def (main (: n UInt8)) n)))
+  (input  (do (def (main (: n UInt8)) n) (export main)))
   (call   main (: 200 UInt8))
   (output (: 200 UInt8)))
 
@@ -753,7 +753,7 @@
            computes in the i32 slot and range-checks the result back to 0..=255. 200+55 fits, so it
            returns 255 — the companion overflow (200+56=256) is the trap case pinned in 06-numeric-model.
            Pins that a NARROW runtime arithmetic op runs over faithful-u8 boundary arguments.")
-  (input  (module m (def (main (: a UInt8) (: b UInt8)) (+ a b))))
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ a b)) (export main)))
   (call   main (: 200 UInt8) (: 55 UInt8))
   (output (: 255 UInt8)))
 
@@ -761,7 +761,7 @@
   (doc    "`(def (main (: n Int8)) n)` called with -128 (Int8.min). The parameter crosses as the
            component `s8`, so the sign is preserved at the boundary (an s8 -128, not a widened s32). Pins
            the signed narrow-width boundary form and that Int8.min round-trips.")
-  (input  (module m (def (main (: n Int8)) n)))
+  (input  (do (def (main (: n Int8)) n) (export main)))
   (call   main (: -128 Int8))
   (output (: -128 Int8)))
 
@@ -779,7 +779,7 @@
   (doc    "`(def (main (: n Int64)) (UInt8.wrap n))` called with 300 = 0x12C. `wrap` keeps the low 8 bits
            (0x2C = 44), emitted as an `i32.wrap_i64` of the parameter then a mask — 44 : UInt8. Pins the
            runtime truncating conversion (a self-hosted encoder truncating a computed value to a byte).")
-  (input  (module m (def (main (: n Int64)) (UInt8.wrap n))))
+  (input  (do (def (main (: n Int64)) (UInt8.wrap n)) (export main)))
   (call   main (: 300 Int64))
   (output (: 44 UInt8)))
 
@@ -788,7 +788,7 @@
            ones). It does NOT trap on the negative value (contrast the checked `T.of`, which would report
            it): `wrap` is total. Pins the emitted conversion reinterprets the low bits for a negative
            runtime operand exactly as the constant fold does.")
-  (input  (module m (def (main (: n Int64)) (UInt8.wrap n))))
+  (input  (do (def (main (: n Int64)) (UInt8.wrap n)) (export main)))
   (call   main (: -1 Int64))
   (output (: 255 UInt8)))
 
@@ -797,6 +797,6 @@
            set, so as a SIGNED Int8 the value is -56 (sign-extended) — crossing the boundary as s8. Pins
            that a signed target's `wrap` sign-extends from the target's high bit, distinct from the
            unsigned truncation above.")
-  (input  (module m (def (main (: n Int64)) (Int8.wrap n))))
+  (input  (do (def (main (: n Int64)) (Int8.wrap n)) (export main)))
   (call   main (: 200 Int64))
   (output (: -56 Int8)))
