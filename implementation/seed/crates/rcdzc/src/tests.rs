@@ -183,7 +183,7 @@ fn envelope_matches_wasm_encoder_oracle() {
                 result: Some(0x78),
             })
             .collect();
-        let ours = assemble(&core, &exports);
+        let ours = assemble(&core, &exports, &[], "");
         assert_eq!(
             ours,
             oracle_component(&core, names),
@@ -264,6 +264,8 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
             params: vec![0x78, 0x78], // two s64 params
             result: Some(0x78),
         }],
+        &[],
+        "",
     );
     assert_eq!(ours, oracle, "parameterized envelope mismatch");
 }
@@ -340,6 +342,8 @@ fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
             params: vec![0x7D, 0x7C], // u8, s16
             result: Some(0x7E),       // s8
         }],
+        &[],
+        "",
     );
     assert_eq!(ours, oracle, "narrow-primitive envelope mismatch");
 }
@@ -405,6 +409,128 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         m.finish()
     };
     assert_eq!(ours, oracle, "core module with a runtime import mismatch");
+}
+
+/// The program core module for the import-envelope oracle tests: imports `heap."arr-alloc" :
+/// (i32)->i32` (core func 0) and defines one nullary `() -> i64` `main` (core func 1) returning 42 —
+/// the same shape H1a's core oracle emits. Shared by our envelope and the `ComponentBuilder` oracle so
+/// the diff isolates the ENVELOPE.
+fn import_oracle_core() -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut m = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(vec![ValType::I32], vec![ValType::I32]); // type 0: arr-alloc
+    types.ty().function(vec![], vec![ValType::I64]); // type 1: main
+    m.section(&types);
+    let mut imports = ImportSection::new();
+    imports.import("heap", "arr-alloc", EntityType::Function(0));
+    m.section(&imports);
+    let mut funcs = FunctionSection::new();
+    funcs.function(1);
+    m.section(&funcs);
+    let mut exports = ExportSection::new();
+    exports.export("main", ExportKind::Func, 1);
+    m.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f = Function::new(vec![]);
+    f.instruction(&Instruction::I64Const(42));
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    m.section(&code);
+    m.finish()
+}
+
+/// The 1-op import-envelope built by `wasm-encoder`'s `ComponentBuilder` — the authoritative encoder,
+/// which tracks the alias/lower/instantiate index bookkeeping. The reference our hand-emitted import
+/// path is diffed against (`import arr-alloc:(u32)->u32`, one nullary `main:()->s64` export). This is
+/// exactly the 7-step shape the old `wit_envelope.rs::build_heap_envelope` produced.
+fn import_oracle_component(core: &[u8], import_name: &str) -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut c = ComponentBuilder::default();
+    // (1) import instance-type: one func-type + export per used op (`arr-alloc:(u32)->u32`).
+    let mut it = InstanceType::new();
+    {
+        let mut ft = it.ty().function();
+        ft.params([("p0", ComponentValType::Primitive(PrimitiveValType::U32))]);
+        ft.result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+    }
+    it.export("arr-alloc", ComponentTypeRef::Func(0));
+    let it_ty = c.type_instance(&it); // component type 0
+    // (2) import the runtime interface as an instance of that type.
+    let inst = c.import(import_name, ComponentTypeRef::Instance(it_ty)); // instance 0
+    // (3) alias-export each op out of the imported instance + canon-lower → core funcs 0..k.
+    let comp_fn = c.alias_export(inst, "arr-alloc", ComponentExportKind::Func);
+    c.lower_func(comp_fn, []); // core func 0
+    // (4) embed the program core module, (5) build a core-instance of the lowered funcs named "heap",
+    // then instantiate the program threading it in.
+    let module_idx = c.core_module_raw(core); // core module 0
+    let heap_inst = c.core_instantiate_exports([("arr-alloc", ExportKind::Func, 0u32)]); // core inst 0
+    let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+    // (6) alias `main` out of the instantiated program, (7) lift it as `() -> s64` and export it.
+    let run_core = c.core_alias_export(prog_inst, "main", ExportKind::Func);
+    let (run_ty, mut enc) = c.type_function();
+    enc.params::<[(&str, ComponentValType); 0], _>([])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+    let run_comp = c.lift_func(run_core, run_ty, []);
+    c.export("main", ComponentExportKind::Func, run_comp, None);
+    c.finish()
+}
+
+/// Value-heap H1b: the hand-emitted IMPORT envelope (a program importing one runtime op) is
+/// byte-identical to the `ComponentBuilder` oracle — the byte anchor that licenses hand-emitting the
+/// full component-model import plumbing (import-instance-type → import → alias → lower → core module →
+/// two core-instances → boundary alias/lift/export) with no external encoder in the compile path. Uses
+/// the SAME versioned import name and the GENERATED `OPS.arr_alloc` signature on our side.
+#[test]
+fn import_envelope_matches_component_builder_oracle() {
+    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::runtime_abi::OPS;
+    let core = import_oracle_core();
+    let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
+    let exports = vec![BoundaryExport {
+        name: "main".to_string(),
+        params: Vec::new(),
+        result: Some(0x78), // s64
+    }];
+    let ours = assemble(&core, &exports, &[OPS.arr_alloc], import_name);
+    let oracle = import_oracle_component(&core, import_name);
+    assert_eq!(ours, oracle, "import envelope mismatch vs ComponentBuilder");
+}
+
+/// Value-heap H1b: the hand-emitted import envelope PARSES and TYPE-CHECKS under wasmtime
+/// (`Component::new`) — structural + component-type validity, the semantic floor that catches every
+/// index/layout error the byte diff might not localize. It also carries the versioned, hashed import
+/// name `cdz-run` composes the runtime by. (Instantiation needs the runtime linked, so this checks
+/// validity/type only — the end-to-end run lands in H2 with a real compound op + the composed runtime.)
+#[test]
+fn import_envelope_is_a_valid_component_with_the_versioned_import() {
+    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::runtime_abi::{OPS, REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+    let core = import_oracle_core();
+    let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+    let exports = vec![BoundaryExport {
+        name: "main".to_string(),
+        params: Vec::new(),
+        result: Some(0x78),
+    }];
+    let bytes = assemble(&core, &exports, &[OPS.arr_alloc], &import_name);
+
+    // Structural + type validity: a bad section order, wrong index, or malformed item fails here.
+    let engine = wasmtime::Engine::default();
+    let component = wasmtime::component::Component::from_binary(&engine, &bytes);
+    assert!(
+        component.is_ok(),
+        "import envelope failed to load under wasmtime: {:?}",
+        component.err()
+    );
+
+    // The emitted bytes carry the exact versioned import name (interface@semver+hash) verbatim — the
+    // name the linker matches the composed runtime against. Assert its literal bytes are present.
+    let needle = import_name.as_bytes();
+    assert!(
+        bytes.windows(needle.len()).any(|w| w == needle),
+        "versioned import name `{import_name}` not found in the emitted component"
+    );
 }
 
 // ── the behavior run (wasmtime) ────────────────────────────────────────────────────────────────

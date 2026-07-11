@@ -16,9 +16,9 @@ pub mod envelope;
 pub mod lir;
 // The GENERATED value-heap runtime-ABI table (`cargo xtask codegen`, from the runtime WIT + the built
 // runtime's content hash) — the structured op signatures + typed `OPS` accessor the per-program import
-// section is built from (value-heap H1+). Not yet consumed (no runtime import emitted until compound
-// values land), so its items are dead for now; `cargo xtask codegen --check` (a hard gate in
-// `xtask check`) keeps it current with the runtime.
+// section + component envelope are built from (value-heap H1). `cargo xtask codegen --check` (a hard
+// gate in `xtask check`) keeps it current with the runtime. Most ops are unused until a compound op
+// lowers to them (value-heap H2+), so allow dead code on the table's unreferenced entries.
 #[allow(dead_code)]
 pub mod runtime_abi;
 pub mod select;
@@ -78,7 +78,24 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         });
     }
 
-    Ok(envelope::assemble(&core, &boundary))
+    // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime
+    // component is imported under, carrying the content-address suffix `cdz-run` resolves it by. Unused
+    // when `imports` is empty (the bare envelope). Built here (not in `envelope`) so the envelope stays
+    // ABI-agnostic; the ABI identity lives in the generated `runtime_abi` table.
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble(&core, &boundary, &imports, &import_name))
+}
+
+/// The program's runtime import name: the interface (`cadenza:runtime/heap`) pinned to the semver
+/// `0.0.0` with the runtime's content hash as build-metadata (`+<hash>`) — the versioned form `cdz-run`
+/// matches against the composed runtime (`component-abi.md` §The Value-Heap Runtime Crosses By A
+/// Well-Known Import). Both parts come from the generated ABI table, so a runtime change re-pins it.
+fn runtime_import_name() -> String {
+    format!(
+        "{}@0.0.0+{}",
+        runtime_abi::RUNTIME_IFACE,
+        runtime_abi::REQUIRED_RUNTIME_HASH
+    )
 }
 
 /// The AST body occurrence of definition `def`, or a decline if it is malformed (no body).
