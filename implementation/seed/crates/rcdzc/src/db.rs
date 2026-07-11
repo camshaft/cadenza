@@ -333,11 +333,19 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>) {
             };
             let sig_occ = tail.first().copied().unwrap_or(item);
             let body = tail.get(1).copied();
-            defs.push(Def { name, sig_occ, params, body });
-        } else if let Some(tail) = ast.as_form(item, "export") {
-            if let Some(name) = tail.first().and_then(|&s| ast.as_name(s)) {
-                exports.push(Export { name: name.to_string(), def: None });
-            }
+            defs.push(Def {
+                name,
+                sig_occ,
+                params,
+                body,
+            });
+        } else if let Some(tail) = ast.as_form(item, "export")
+            && let Some(name) = tail.first().and_then(|&s| ast.as_name(s))
+        {
+            exports.push(Export {
+                name: name.to_string(),
+                def: None,
+            });
         }
     }
 

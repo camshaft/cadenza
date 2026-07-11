@@ -65,14 +65,21 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     let mut diagnostics = Vec::new();
     for &target in targets {
         match backend::emit(target, &mut db, &layout) {
-            Ok(bytes) => artifacts.push(Artifact::new(target.artifact_kind(), program_name(&db), bytes)),
+            Ok(bytes) => artifacts.push(Artifact::new(
+                target.artifact_kind(),
+                program_name(&db),
+                bytes,
+            )),
             Err(mut r) => {
                 sanitize_origin(&db, &mut r);
                 diagnostics.push(Diagnostic::from_reject(&r));
             }
         }
     }
-    CompileOutput { artifacts, diagnostics }
+    CompileOutput {
+        artifacts,
+        diagnostics,
+    }
 }
 
 /// Drop a fault's origin node if it is NOT a user-program node — the diagnostic boundary. A fault may
@@ -82,10 +89,10 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
 /// diagnostic, a non-user origin is cleared to `None` (reported as unanchored) rather than leaked
 /// (`query-engine.md` §Provenance Is Recovered By Back-Reference — only a real source node maps back).
 fn sanitize_origin(db: &Db, reject: &mut Reject) {
-    if let Some(id) = reject.at {
-        if !db.is_user_node(id) {
-            reject.at = None;
-        }
+    if let Some(id) = reject.at
+        && !db.is_user_node(id)
+    {
+        reject.at = None;
     }
 }
 
@@ -93,7 +100,11 @@ fn sanitize_origin(db: &Db, reject: &mut Reject) {
 /// or the first error diagnostic. What the tests and simple callers use.
 pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
     let out = compile(
-        &[Artifact::new(Artifact::KIND_AST, "main", ast_bytes.to_vec())],
+        &[Artifact::new(
+            Artifact::KIND_AST,
+            "main",
+            ast_bytes.to_vec(),
+        )],
         &[Target::Wasm],
     );
     match out.artifact(Target::Wasm.artifact_kind()) {
@@ -184,7 +195,10 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
 /// The program's name for artifact labelling — the first exported name, or "main". (A cosmetic label;
 /// the artifact's identity is its kind + bytes.)
 fn program_name(db: &Db) -> String {
-    db.exports.first().map(|e| e.name.clone()).unwrap_or_else(|| "main".to_string())
+    db.exports
+        .first()
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| "main".to_string())
 }
 
 /// A failed compilation: no artifacts, one error diagnostic per reject.

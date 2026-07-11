@@ -35,10 +35,16 @@ impl Subst {
                 Some(t) => self.apply(t),
                 None => Ty::Var(*v),
             },
-            Ty::Int(it) => Ty::Int(IntTy { signed: it.signed, width: self.apply_width(it.width) }),
+            Ty::Int(it) => Ty::Int(IntTy {
+                signed: it.signed,
+                width: self.apply_width(it.width),
+            }),
             Ty::Fn(p, r) => Ty::Fn(Box::new(self.apply(p)), Box::new(self.apply(r))),
             Ty::Record(fields) => Ty::Record(
-                fields.iter().map(|(k, t)| (k.clone(), self.apply(t))).collect(),
+                fields
+                    .iter()
+                    .map(|(k, t)| (k.clone(), self.apply(t)))
+                    .collect(),
             ),
             Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
         }
@@ -147,11 +153,22 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
     }
 }
 
-/// The conflicting-use type error for two irreconcilable types.
+/// The conflicting-use type error for two irreconcilable types. The CODE distinguishes the KIND of
+/// conflict: two DIFFERENT NUMERIC types (a width or signedness mismatch — `Int32` vs `Int64`, signed
+/// vs unsigned) is the numeric-model's no-silent-promotion rule (CDZ0301); ANY OTHER conflict (a
+/// non-numeric type where another is required — `Bool` vs `Int64`) is the general type mismatch
+/// (CDZ0203). This matches the corpus: CDZ0301 is reserved for two-different-numeric, everything else
+/// is CDZ0203.
 fn mismatch(a: &Ty, b: &Ty) -> Reject {
     tracing::trace!(target: "rcdzc::unify", lhs = %a.render_name(), rhs = %b.render_name(), "unify FAILED (conflicting use)");
+    let both_numeric = matches!(a, Ty::Int(_)) && matches!(b, Ty::Int(_));
+    let code = if both_numeric {
+        Code::NumericMismatch
+    } else {
+        Code::TypeMismatch
+    };
     Reject::coded(
-        Code::NumericMismatch,
+        code,
         format!("cannot unify {} with {}", a.render_name(), b.render_name()),
     )
 }
@@ -196,13 +213,19 @@ pub fn instantiate(scheme: &Scheme, fresh: &mut Fresh) -> Ty {
 fn rename(ty: &Ty, ty_map: &HashMap<u32, u32>, width_map: &HashMap<u32, u32>) -> Ty {
     match ty {
         Ty::Var(v) => Ty::Var(*ty_map.get(v).unwrap_or(v)),
-        Ty::Int(it) => Ty::Int(IntTy { signed: it.signed, width: rename_width(it.width, width_map) }),
+        Ty::Int(it) => Ty::Int(IntTy {
+            signed: it.signed,
+            width: rename_width(it.width, width_map),
+        }),
         Ty::Fn(p, r) => Ty::Fn(
             Box::new(rename(p, ty_map, width_map)),
             Box::new(rename(r, ty_map, width_map)),
         ),
         Ty::Record(fields) => Ty::Record(
-            fields.iter().map(|(k, t)| (k.clone(), rename(t, ty_map, width_map))).collect(),
+            fields
+                .iter()
+                .map(|(k, t)| (k.clone(), rename(t, ty_map, width_map)))
+                .collect(),
         ),
         Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
     }
@@ -239,7 +262,10 @@ mod tests {
     #[test]
     fn width_var_unifies_then_fixes() {
         // (Int w) unified with Int64 fixes w := 64.
-        let wv = Ty::Int(IntTy { signed: true, width: Width::Var(5) });
+        let wv = Ty::Int(IntTy {
+            signed: true,
+            width: Width::Var(5),
+        });
         let mut s = Subst::new();
         unify(&mut s, &wv, &Ty::int64()).unwrap();
         assert_eq!(s.apply(&wv), Ty::int64());
@@ -247,7 +273,10 @@ mod tests {
 
     #[test]
     fn different_fixed_widths_conflict() {
-        let i32t = Ty::Int(IntTy { signed: true, width: Width::Fixed(32) });
+        let i32t = Ty::Int(IntTy {
+            signed: true,
+            width: Width::Fixed(32),
+        });
         let i64t = Ty::int64();
         let mut s = Subst::new();
         assert!(unify(&mut s, &i32t, &i64t).is_err());

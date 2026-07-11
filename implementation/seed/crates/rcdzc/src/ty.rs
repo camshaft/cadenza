@@ -57,12 +57,18 @@ impl IntTy {
     /// A deferred signed integer — the type a bare integer literal takes before any constraint or
     /// defaulting fixes its width.
     pub fn deferred() -> IntTy {
-        IntTy { signed: true, width: Width::Deferred }
+        IntTy {
+            signed: true,
+            width: Width::Deferred,
+        }
     }
 
     /// The signed 64-bit integer (`Int64`) — the concrete type an unresolved width grounds to.
     pub fn i64() -> IntTy {
-        IntTy { signed: true, width: Width::Fixed(DEFAULT_INT_WIDTH) }
+        IntTy {
+            signed: true,
+            width: Width::Fixed(DEFAULT_INT_WIDTH),
+        }
     }
 
     /// The concrete width this integer takes at the machine boundary: its fixed width, or the default
@@ -171,7 +177,10 @@ impl Ty {
                     (Width::Deferred, _) | (_, Width::Deferred) => Width::Deferred,
                     _ => a.width,
                 };
-                Ty::Int(IntTy { signed: a.signed, width })
+                Ty::Int(IntTy {
+                    signed: a.signed,
+                    width,
+                })
             }
             // Two agreeing records join field-wise (a deferred width in one branch's field is fixed by
             // the other). If they disagree, keep `self` — the branches-agree check reports the fault.
@@ -235,6 +244,10 @@ pub struct Scheme {
 impl Scheme {
     /// A monomorphic scheme — a plain type with nothing quantified.
     pub fn mono(ty: Ty) -> Scheme {
-        Scheme { ty_vars: Vec::new(), width_vars: Vec::new(), ty }
+        Scheme {
+            ty_vars: Vec::new(),
+            width_vars: Vec::new(),
+            ty,
+        }
     }
 }

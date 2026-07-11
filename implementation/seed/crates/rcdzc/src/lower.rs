@@ -46,6 +46,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core — follow the ref (the `let` binding folds away).
         Resolved::Ref { value } => core_of(db, value),
+        // A type annotation ERASES to its expression's core — `(: e T)` runs exactly as `e` (the
+        // annotation's force is entirely on inference; it has no runtime trace).
+        Resolved::Annot { expr, .. } => core_of(db, expr),
         // A `let`'s value is its body's value (the bindings are compile-time structure).
         Resolved::Let { body, .. } => core_of(db, body),
         // A record value — kept as a compound; folds away only when a member reads a field of it.
@@ -65,7 +68,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // THAT root cause rather than the generic "requires a record".
             crate::eval::Member::NotRecord => match core_of(db, operand) {
                 Core::Poison(r) => Core::Poison(r),
-                _ => Core::Poison(Reject::coded(Code::Malformed, "member access requires a record")),
+                _ => Core::Poison(Reject::coded(
+                    Code::Malformed,
+                    "member access requires a record",
+                )),
             },
         },
         Resolved::If { cond, then_, else_ } => Core::If { cond, then_, else_ },
@@ -148,7 +154,11 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     match (lhs, rhs) {
         (Core::ConstInt(a), Core::ConstInt(b)) => fold_arith(op, a, b),
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
-        _ => Core::Arith { op, lhs: args[0], rhs: args[1] },
+        _ => Core::Arith {
+            op,
+            lhs: args[0],
+            rhs: args[1],
+        },
     }
 }
 
@@ -224,7 +234,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
             tracing::trace!(target: "rcdzc::fold", op = intrinsic_name(op), "constant op traps → CDZ0304 (fails build)");
             Core::Poison(Reject::coded(
                 Code::ConstTrap,
-                format!("constant {} has no defined value (overflow, divide-by-zero, or out-of-range shift)", intrinsic_name(op)),
+                format!(
+                    "constant {} has no defined value (overflow, divide-by-zero, or out-of-range shift)",
+                    intrinsic_name(op)
+                ),
             ))
         }
     }
@@ -334,7 +347,10 @@ mod tests {
     fn lowers_a_literal_to_a_const() {
         let (ast, body) = scalar_program();
         let mut db = Db::load(ast);
-        assert_eq!(core_of(&mut db, body), Core::ConstInt(IntValue::from_i64(42)));
+        assert_eq!(
+            core_of(&mut db, body),
+            Core::ConstInt(IntValue::from_i64(42))
+        );
     }
 
     #[test]
@@ -344,8 +360,14 @@ mod tests {
         match core_of(&mut db, if_node) {
             Core::If { cond, then_, else_ } => {
                 assert_eq!(core_of(&mut db, cond), Core::ConstBool(false));
-                assert_eq!(core_of(&mut db, then_), Core::ConstInt(IntValue::from_i64(1)));
-                assert_eq!(core_of(&mut db, else_), Core::ConstInt(IntValue::from_i64(2)));
+                assert_eq!(
+                    core_of(&mut db, then_),
+                    Core::ConstInt(IntValue::from_i64(1))
+                );
+                assert_eq!(
+                    core_of(&mut db, else_),
+                    Core::ConstInt(IntValue::from_i64(2))
+                );
             }
             other => panic!("expected If, got {other:?}"),
         }

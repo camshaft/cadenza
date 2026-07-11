@@ -46,8 +46,13 @@ pub fn parse_int(tok: &str) -> Option<(BigInt, Radix)> {
     if let Some(radix_body) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0b")) {
         let is_hex = body.as_bytes().get(1) == Some(&b'x');
         let well_formed = !radix_body.is_empty()
-            && radix_body.chars().next().is_some_and(|c| is_radix_digit(c, is_hex))
-            && radix_body.chars().all(|c| is_radix_digit(c, is_hex) || c == '_')
+            && radix_body
+                .chars()
+                .next()
+                .is_some_and(|c| is_radix_digit(c, is_hex))
+            && radix_body
+                .chars()
+                .all(|c| is_radix_digit(c, is_hex) || c == '_')
             && separators_between_digits(radix_body, |c| is_radix_digit(c, is_hex));
         if !well_formed {
             return None;
@@ -61,7 +66,9 @@ pub fn parse_int(tok: &str) -> Option<(BigInt, Radix)> {
     // Plain decimal: must start with a digit, only digits + between-digits `_`.
     let starts_digit = body.chars().next().is_some_and(|c| c.is_ascii_digit());
     let only_digits_seps = body.chars().all(|c| c.is_ascii_digit() || c == '_');
-    if !(starts_digit && only_digits_seps && separators_between_digits(body, |c| c.is_ascii_digit()))
+    if !(starts_digit
+        && only_digits_seps
+        && separators_between_digits(body, |c| c.is_ascii_digit()))
     {
         return None;
     }
@@ -131,14 +138,22 @@ pub fn parse_float(tok: &str) -> Option<Decimal> {
 fn normalize_decimal(negative: bool, mut significand: BigInt, mut exponent: i64) -> Decimal {
     use num_bigint::Sign;
     if significand.sign() == Sign::NoSign {
-        return Decimal { negative, significand, exponent: 0 };
+        return Decimal {
+            negative,
+            significand,
+            exponent: 0,
+        };
     }
     let ten = BigInt::from(10);
     while (&significand % &ten).sign() == Sign::NoSign {
         significand /= &ten;
         exponent += 1;
     }
-    Decimal { negative, significand, exponent }
+    Decimal {
+        negative,
+        significand,
+        exponent,
+    }
 }
 
 /// Unescape a string literal's INNER content (between the quotes) and NFC-normalize it — the
@@ -209,8 +224,14 @@ pub fn render_int(value: &BigInt, radix: Radix) -> String {
     let neg = matches!(sign, Sign::Minus);
     let digits = match radix {
         Radix::Dec => BigInt::from_bytes_be(num_bigint::Sign::Plus, &mag).to_str_radix(10),
-        Radix::Hex => format!("0x{}", BigInt::from_bytes_be(num_bigint::Sign::Plus, &mag).to_str_radix(16)),
-        Radix::Bin => format!("0b{}", BigInt::from_bytes_be(num_bigint::Sign::Plus, &mag).to_str_radix(2)),
+        Radix::Hex => format!(
+            "0x{}",
+            BigInt::from_bytes_be(num_bigint::Sign::Plus, &mag).to_str_radix(16)
+        ),
+        Radix::Bin => format!(
+            "0b{}",
+            BigInt::from_bytes_be(num_bigint::Sign::Plus, &mag).to_str_radix(2)
+        ),
     };
     if neg { format!("-{digits}") } else { digits }
 }
@@ -293,7 +314,10 @@ mod tests {
         assert_eq!(parse_int("0x2A"), Some((BigInt::from(42), Radix::Hex)));
         assert_eq!(parse_int("0b101010"), Some((BigInt::from(42), Radix::Bin)));
         assert_eq!(parse_int("-0x10"), Some((BigInt::from(-16), Radix::Hex)));
-        assert_eq!(parse_int("1_000_000"), Some((BigInt::from(1_000_000), Radix::Dec)));
+        assert_eq!(
+            parse_int("1_000_000"),
+            Some((BigInt::from(1_000_000), Radix::Dec))
+        );
     }
 
     #[test]
@@ -308,22 +332,40 @@ mod tests {
     fn floats_exact() {
         assert_eq!(
             parse_float("1.5"),
-            Some(Decimal { negative: false, significand: BigInt::from(15), exponent: -1 })
+            Some(Decimal {
+                negative: false,
+                significand: BigInt::from(15),
+                exponent: -1
+            })
         );
         assert_eq!(
             parse_float("1.5e10"),
-            Some(Decimal { negative: false, significand: BigInt::from(15), exponent: 9 })
+            Some(Decimal {
+                negative: false,
+                significand: BigInt::from(15),
+                exponent: 9
+            })
         );
         assert_eq!(
             parse_float("-0.25"),
-            Some(Decimal { negative: true, significand: BigInt::from(25), exponent: -2 })
+            Some(Decimal {
+                negative: true,
+                significand: BigInt::from(25),
+                exponent: -2
+            })
         );
     }
 
     #[test]
     fn classify_word_dispatch() {
         assert_eq!(classify_word("true"), Leaf::Bool(true));
-        assert_eq!(classify_word("42"), Leaf::Int { value: BigInt::from(42), radix: Radix::Dec });
+        assert_eq!(
+            classify_word("42"),
+            Leaf::Int {
+                value: BigInt::from(42),
+                radix: Radix::Dec
+            }
+        );
         assert!(matches!(classify_word("1.5"), Leaf::Float(_)));
         assert_eq!(classify_word("foo"), Leaf::Name("foo".to_string()));
         // A malformed number stays a Name (rejected downstream), never silently repaired.
@@ -335,33 +377,77 @@ mod tests {
     #[test]
     fn int_render_reparses() {
         for (v, r) in [
-            (42i64, Radix::Dec), (42, Radix::Hex), (42, Radix::Bin),
-            (-16, Radix::Hex), (0, Radix::Dec), (255, Radix::Hex), (-1, Radix::Dec),
+            (42i64, Radix::Dec),
+            (42, Radix::Hex),
+            (42, Radix::Bin),
+            (-16, Radix::Hex),
+            (0, Radix::Dec),
+            (255, Radix::Hex),
+            (-1, Radix::Dec),
         ] {
             let value = BigInt::from(v);
             let text = render_int(&value, r);
-            assert_eq!(parse_int(&text), Some((value, r)), "render {v} base {r:?} -> {text}");
+            assert_eq!(
+                parse_int(&text),
+                Some((value, r)),
+                "render {v} base {r:?} -> {text}"
+            );
         }
     }
 
     #[test]
     fn float_render_reparses() {
         for d in [
-            Decimal { negative: false, significand: BigInt::from(15), exponent: -1 }, // 1.5
-            Decimal { negative: false, significand: BigInt::from(15), exponent: 9 },   // 15e9
-            Decimal { negative: true, significand: BigInt::from(25), exponent: -2 },   // -0.25
-            Decimal { negative: false, significand: BigInt::from(5), exponent: 0 },    // 5.0
-            Decimal { negative: true, significand: BigInt::from(0u32), exponent: 0 },  // -0.0
-            Decimal { negative: false, significand: BigInt::from(1), exponent: -10 },  // 0.0000000001
+            Decimal {
+                negative: false,
+                significand: BigInt::from(15),
+                exponent: -1,
+            }, // 1.5
+            Decimal {
+                negative: false,
+                significand: BigInt::from(15),
+                exponent: 9,
+            }, // 15e9
+            Decimal {
+                negative: true,
+                significand: BigInt::from(25),
+                exponent: -2,
+            }, // -0.25
+            Decimal {
+                negative: false,
+                significand: BigInt::from(5),
+                exponent: 0,
+            }, // 5.0
+            Decimal {
+                negative: true,
+                significand: BigInt::from(0u32),
+                exponent: 0,
+            }, // -0.0
+            Decimal {
+                negative: false,
+                significand: BigInt::from(1),
+                exponent: -10,
+            }, // 0.0000000001
         ] {
             let text = render_decimal(&d);
-            assert_eq!(parse_float(&text), Some(d.clone()), "render {d:?} -> {text}");
+            assert_eq!(
+                parse_float(&text),
+                Some(d.clone()),
+                "render {d:?} -> {text}"
+            );
         }
     }
 
     #[test]
     fn string_escape_reparses() {
-        for s in ["hello", "a\nb", "tab\there", "quote\"inside", "back\\slash", ""] {
+        for s in [
+            "hello",
+            "a\nb",
+            "tab\there",
+            "quote\"inside",
+            "back\\slash",
+            "",
+        ] {
             assert_eq!(unescape_string(&escape_string(s)), s);
         }
     }

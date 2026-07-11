@@ -25,7 +25,10 @@ pub struct SpanTable {
 
 impl SpanTable {
     pub fn new(file: FileId) -> SpanTable {
-        SpanTable { file, spans: Vec::new() }
+        SpanTable {
+            file,
+            spans: Vec::new(),
+        }
     }
 
     /// Record the span for the next occurrence. The parser calls this once per created `StructId`,

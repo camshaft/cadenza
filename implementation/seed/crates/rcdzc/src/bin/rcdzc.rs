@@ -21,13 +21,16 @@
 //! `-o` is the exact output FILE path. With no `-o`, artifacts are written to the current directory.
 
 use clap::Parser;
-use rcdzc::{compile, Artifact, Severity, Target};
+use rcdzc::{Artifact, Severity, Target, compile};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Compile Cadenza binary-AST artifacts to one or more backend targets.
 #[derive(Parser)]
-#[command(name = "rcdzc", about = "The reference Cadenza → component compiler (artifacts in, artifacts out).")]
+#[command(
+    name = "rcdzc",
+    about = "The reference Cadenza → component compiler (artifacts in, artifacts out)."
+)]
 struct Cli {
     /// Input artifacts: `path`, `name=path`, or `kind:name=path` (kind defaults to `ast`).
     #[arg(required = true, value_name = "INPUT")]
@@ -69,7 +72,7 @@ fn main() -> ExitCode {
     // `trace!` sites compile to no-ops at runtime — a normal run pays nothing. The subscriber living
     // only in the binary is the right split: the lib is instrumentation-only, the bin decides the sink.
     if std::env::var("RUST_LOG").is_ok() {
-        use tracing_subscriber::{fmt, EnvFilter};
+        use tracing_subscriber::{EnvFilter, fmt};
         let _ = fmt()
             .with_env_filter(EnvFilter::from_default_env())
             .with_writer(std::io::stderr)
@@ -140,11 +143,18 @@ fn main() -> ExitCode {
             }
             [] => {} // no artifact (errors already reported); fall through to the exit status.
             many => {
-                eprintln!("rcdzc: `-o -` writes ONE artifact to stdout, but {} were produced", many.len());
+                eprintln!(
+                    "rcdzc: `-o -` writes ONE artifact to stdout, but {} were produced",
+                    many.len()
+                );
                 return ExitCode::FAILURE;
             }
         }
-        return if out.has_error() { ExitCode::FAILURE } else { ExitCode::SUCCESS };
+        return if out.has_error() {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
     }
 
     // Decide whether `-o` names an exact output FILE (single artifact, not an existing directory) or
@@ -169,7 +179,11 @@ fn main() -> ExitCode {
             eprintln!("rcdzc: cannot write {}: {e}", path.display());
             return ExitCode::FAILURE;
         }
-        eprintln!("rcdzc: wrote {} ({} bytes)", path.display(), art.bytes.len());
+        eprintln!(
+            "rcdzc: wrote {} ({} bytes)",
+            path.display(),
+            art.bytes.len()
+        );
     }
 
     if out.has_error() {
@@ -200,7 +214,11 @@ fn parse_input_spec(spec: &str) -> InputSpec {
         Some((n, p)) => (n.to_string(), PathBuf::from(p)),
         None => {
             let path = PathBuf::from(rest);
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("input").to_string();
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("input")
+                .to_string();
             (stem, path)
         }
     };

@@ -37,11 +37,7 @@ impl<I: Iterator> Peek2<I> {
 
     pub fn next_if(&mut self, f: impl FnOnce(&I::Item) -> bool) -> Option<I::Item> {
         let v = self.peek()?;
-        if f(v) {
-            self.next()
-        } else {
-            None
-        }
+        if f(v) { self.next() } else { None }
     }
 
     pub fn next_if_eq<V>(&mut self, v: V) -> Option<I::Item>

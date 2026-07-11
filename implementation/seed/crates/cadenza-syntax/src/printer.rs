@@ -20,14 +20,17 @@ use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::doc::Doc;
 use crate::lexer::Lexer;
 use crate::literal;
-use crate::token::{self, infix_prec, Kind, PREC_MEMBER};
+use crate::token::{self, Kind, PREC_MEMBER, infix_prec};
 
 /// Indentation per box level (spaces). A layout choice, not a contract.
 const INDENT: isize = 2;
 
 /// Pretty-print `arenas` to ML text targeting `width` columns.
 pub fn print(arenas: &Arenas, width: usize) -> String {
-    let mut p = Printer { a: arenas, doc: Doc::new() };
+    let mut p = Printer {
+        a: arenas,
+        doc: Doc::new(),
+    };
     p.expr(arenas.root, 0);
     p.doc.render(width)
 }
@@ -455,9 +458,7 @@ impl<'a> Printer<'a> {
     /// the plain-expression path — inline when they fit, else a flat-laid-out indented continuation.
     fn is_block_body(&self, id: StructId) -> bool {
         let (head, args) = match self.a.get(id) {
-            Struct::List(items) if !items.is_empty() => {
-                (self.head_name(items[0]), &items[1..])
-            }
+            Struct::List(items) if !items.is_empty() => (self.head_name(items[0]), &items[1..]),
             _ => return false,
         };
         match head.as_deref() {
@@ -719,7 +720,8 @@ impl<'a> Printer<'a> {
     /// still round-trips. A record additionally needs its field key to be a name; a map key is any
     /// expression.
     fn is_pairs(&self, args: &[StructId]) -> bool {
-        args.iter().all(|&a| matches!(self.a.get(a), Struct::List(p) if p.len() == 2))
+        args.iter()
+            .all(|&a| matches!(self.a.get(a), Struct::List(p) if p.len() == 2))
     }
 
     /// A record the `{ name = e, … }` surface handles: every field is a `(name value)` pair whose
@@ -798,9 +800,7 @@ fn name_is_bare_safe(s: &str) -> bool {
     }
     let mut toks = Lexer::new(s).filter(|t| !t.kind.is_trivia());
     match (toks.next(), toks.next()) {
-        (Some(t), None) => {
-            t.kind == Kind::Ident && t.span.start == 0 && t.span.end == s.len()
-        }
+        (Some(t), None) => t.kind == Kind::Ident && t.span.start == 0 && t.span.end == s.len(),
         _ => false,
     }
 }
@@ -819,7 +819,10 @@ mod tests {
         let b = parser::read_ml(&printed);
         assert!(b.ok(), "reparse of printed {printed:?}: {:?}", b.errors);
         let printed2 = print(&b.arenas, width);
-        assert_eq!(printed, printed2, "not idempotent: {src:?} -> {printed:?} -> {printed2:?}");
+        assert_eq!(
+            printed, printed2,
+            "not idempotent: {src:?} -> {printed:?} -> {printed2:?}"
+        );
         printed
     }
 
@@ -828,24 +831,39 @@ mod tests {
         assert_eq!(assert_roundtrip("1 + 2 * 3", 80), "1 + 2 * 3");
         assert_eq!(assert_roundtrip("f(a, b, c)", 80), "f(a, b, c)");
         assert_eq!(assert_roundtrip("a.b.c", 80), "a.b.c");
-        assert_eq!(assert_roundtrip("if a then b else c", 80), "if a then b else c");
+        assert_eq!(
+            assert_roundtrip("if a then b else c", 80),
+            "if a then b else c"
+        );
         // `let … in` always breaks the body to its own line at the let column (ML idiom).
         assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
-        assert_eq!(assert_roundtrip("fn(x, y) => x + y", 80), "fn(x, y) => x + y");
+        assert_eq!(
+            assert_roundtrip("fn(x, y) => x + y", 80),
+            "fn(x, y) => x + y"
+        );
     }
 
     #[test]
     fn function_definition() {
         // named def vs anonymous lambda are distinct surfaces.
-        assert_eq!(assert_roundtrip("fn add(a, b) = a + b", 80), "fn add(a, b) = a + b");
+        assert_eq!(
+            assert_roundtrip("fn add(a, b) = a + b", 80),
+            "fn add(a, b) = a + b"
+        );
         assert_eq!(assert_roundtrip("fn main() = 42", 80), "fn main() = 42");
         assert_eq!(assert_roundtrip("fn(x) => x * 2", 80), "fn(x) => x * 2");
     }
 
     #[test]
     fn module_block() {
-        let out = assert_roundtrip("module math { fn add(a, b) = a + b fn main() = add(2, 3) }", 80);
-        assert_eq!(out, "module math {\n  fn add(a, b) = a + b\n  fn main() = add(2, 3)\n}");
+        let out = assert_roundtrip(
+            "module math { fn add(a, b) = a + b fn main() = add(2, 3) }",
+            80,
+        );
+        assert_eq!(
+            out,
+            "module math {\n  fn add(a, b) = a + b\n  fn main() = add(2, 3)\n}"
+        );
     }
 
     #[test]
@@ -853,7 +871,10 @@ mod tests {
         // A brace-delimited body (match) stays on the `=` line and breaks internally; arms indent
         // one level under the def, not two.
         let out = assert_roundtrip("fn describe(s) = match s { A(_) => 1, B(_) => 2 }", 80);
-        assert_eq!(out, "fn describe(s) = match s {\n  A(_) => 1,\n  B(_) => 2,\n}");
+        assert_eq!(
+            out,
+            "fn describe(s) = match s {\n  A(_) => 1,\n  B(_) => 2,\n}"
+        );
     }
 
     #[test]
@@ -870,7 +891,10 @@ mod tests {
         let out = assert_roundtrip("fn point() = { x = 1, y = 2, z = 3 }", 20);
         assert_eq!(out, "fn point() = {\n  x = 1,\n  y = 2,\n  z = 3\n}");
         // and inline when it fits
-        assert_eq!(assert_roundtrip("fn point() = { x = 1 }", 80), "fn point() = { x = 1 }");
+        assert_eq!(
+            assert_roundtrip("fn point() = { x = 1 }", 80),
+            "fn point() = { x = 1 }"
+        );
     }
 
     #[test]
@@ -889,7 +913,10 @@ mod tests {
     #[test]
     fn last_arg_hug_fits_inline() {
         // When the whole call fits, hugging is invisible — it stays on one line.
-        assert_eq!(assert_roundtrip("map(items, fn(x) => x + 1)", 80), "map(items, fn(x) => x + 1)");
+        assert_eq!(
+            assert_roundtrip("map(items, fn(x) => x + 1)", 80),
+            "map(items, fn(x) => x + 1)"
+        );
     }
 
     #[test]
@@ -904,7 +931,10 @@ mod tests {
     fn plain_call_all_or_nothing_when_wide() {
         // A call with no block-like last arg breaks all args one per line when it overflows.
         let out = assert_roundtrip("some-function(alpha, beta, gamma, delta)", 20);
-        assert_eq!(out, "some-function(\n  alpha,\n  beta,\n  gamma,\n  delta\n)");
+        assert_eq!(
+            out,
+            "some-function(\n  alpha,\n  beta,\n  gamma,\n  delta\n)"
+        );
     }
 
     #[test]
@@ -913,7 +943,10 @@ mod tests {
         assert_eq!(assert_roundtrip("[1, 2, 3]", 80), "[1, 2, 3]");
         assert_eq!(assert_roundtrip("(1, 2)", 80), "(1, 2)");
         assert_eq!(assert_roundtrip("(1, 2, 3)", 80), "(1, 2, 3)");
-        assert_eq!(assert_roundtrip("#{ \"a\": 1, \"b\": 2 }", 80), "#{ \"a\": 1, \"b\": 2 }");
+        assert_eq!(
+            assert_roundtrip("#{ \"a\": 1, \"b\": 2 }", 80),
+            "#{ \"a\": 1, \"b\": 2 }"
+        );
         assert_eq!(assert_roundtrip("#{ 1: 10 }", 80), "#{ 1: 10 }");
     }
 
@@ -926,8 +959,14 @@ mod tests {
 
     #[test]
     fn literals_break_all_or_nothing_when_wide() {
-        let out = assert_roundtrip("{ name = \"alice\", scores = [90, 85, 95], active = true }", 30);
-        assert_eq!(out, "{\n  name = \"alice\",\n  scores = [90, 85, 95],\n  active = true\n}");
+        let out = assert_roundtrip(
+            "{ name = \"alice\", scores = [90, 85, 95], active = true }",
+            30,
+        );
+        assert_eq!(
+            out,
+            "{\n  name = \"alice\",\n  scores = [90, 85, 95],\n  active = true\n}"
+        );
     }
 
     #[test]
@@ -954,7 +993,10 @@ mod tests {
         let printed = print(&a, 80);
         assert_eq!(printed, "/// hi\nfn f(x) = x + 1");
         let b = parser::read_ml(&printed);
-        assert!(b.ok() && b.arenas.structurally_eq(&a), "printed:\n{printed}");
+        assert!(
+            b.ok() && b.arenas.structurally_eq(&a),
+            "printed:\n{printed}"
+        );
     }
 
     #[test]
@@ -965,7 +1007,10 @@ mod tests {
         let printed = print(&a, 80);
         assert_eq!(printed, "def(f(x), `:`(Int64), x + 1)");
         let b = parser::read_ml(&printed);
-        assert!(b.ok() && b.arenas.structurally_eq(&a), "printed:\n{printed}");
+        assert!(
+            b.ok() && b.arenas.structurally_eq(&a),
+            "printed:\n{printed}"
+        );
     }
 
     #[test]
@@ -993,7 +1038,10 @@ mod tests {
         // Arms go one per line even at a WIDE width where they would fit on one line — the ML/Rust
         // convention, never packed.
         let out = assert_roundtrip("match e { Some(n) => n, None => 0, _ => neg }", 200);
-        assert_eq!(out, "match e {\n  Some(n) => n,\n  None => 0,\n  _ => neg,\n}", "got:\n{out}");
+        assert_eq!(
+            out, "match e {\n  Some(n) => n,\n  None => 0,\n  _ => neg,\n}",
+            "got:\n{out}"
+        );
     }
 
     #[test]
@@ -1019,7 +1067,10 @@ mod tests {
         let a = sexpr::read("(list + -)").unwrap();
         let printed = print(&a, 80);
         // + and - as ordinary list elements -> backtick-escaped names
-        assert!(printed.contains("`+`") && printed.contains("`-`"), "got: {printed}");
+        assert!(
+            printed.contains("`+`") && printed.contains("`-`"),
+            "got: {printed}"
+        );
     }
 
     #[test]

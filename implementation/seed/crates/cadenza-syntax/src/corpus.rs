@@ -140,22 +140,37 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     .map(|form| value_form_text(a, form));
             }
             Some("error") => {
-                error = a.as_form(clause, "error").and_then(|t| t.first().copied()).and_then(|id| a.as_name(id).map(str::to_string));
+                error = a
+                    .as_form(clause, "error")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| a.as_name(id).map(str::to_string));
             }
             Some("trap") => {
-                trap = a.as_form(clause, "trap").and_then(|t| t.first().copied()).and_then(|id| string_leaf(a, id));
+                trap = a
+                    .as_form(clause, "trap")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| string_leaf(a, id));
             }
             Some("compiler") => {
                 // `(compiler (error <CODE>))` — a provable-at-compile-time rejection accompanying a
                 // dynamic `(trap …)`. The compiler's recorded outcome is the rejection.
-                if let Some(inner) = a.as_form(clause, "compiler").and_then(|t| t.first().copied())
+                if let Some(inner) = a
+                    .as_form(clause, "compiler")
+                    .and_then(|t| t.first().copied())
                     && a.head_name(inner) == Some("error")
                 {
-                    compiler_error = a.as_form(inner, "error").and_then(|t| t.first().copied()).and_then(|id| a.as_name(id).map(str::to_string));
+                    compiler_error = a
+                        .as_form(inner, "error")
+                        .and_then(|t| t.first().copied())
+                        .and_then(|id| a.as_name(id).map(str::to_string));
                 }
             }
             Some("needs") => {
-                if let Some(cap) = a.as_form(clause, "needs").and_then(|t| t.first().copied()).and_then(|id| a.as_name(id)) {
+                if let Some(cap) = a
+                    .as_form(clause, "needs")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| a.as_name(id))
+                {
                     needs.push(cap.to_string());
                 }
             }
@@ -179,7 +194,12 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         return Err(format!("case {description:?} has no primary result clause"));
     };
 
-    Ok(Record { description, program, expect, needs })
+    Ok(Record {
+        description,
+        program,
+        expect,
+        needs,
+    })
 }
 
 /// Normalize a case's `input` occurrence to the runnable export shape, returning one-line s-expr text:

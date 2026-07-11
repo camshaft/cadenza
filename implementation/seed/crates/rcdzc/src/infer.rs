@@ -96,12 +96,28 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // constructor's application yields a type value, typed `Any` at the value level. `apply_type`
         // returns the result type (unification FAULTS are surfaced separately by `type_errors`).
         Resolved::Apply { head, args } => apply_type(db, head, &args),
+        // A type annotation `(: expr T)`: the node's type is the annotation type `T`, with `expr`'s
+        // type UNIFIED into it — so a deferred width in `expr` (a bare literal) is GROUNDED by `T`
+        // (`(: 5 Int64)` types as `Int64`), and a genuine conflict (`(: true Int64)`) is a fault the
+        // `type_errors` side reports (here we return `T`, the asserted type, so the value column stays
+        // definite). If `T` is not a type expression this stage reduces, fall back to `expr`'s type.
+        Resolved::Annot { expr, ty_expr } => match crate::eval::typeval_of(db, ty_expr) {
+            Some(annot_ty) => {
+                let expr_ty = type_of(db, expr);
+                let mut subst = Subst::new();
+                let _ = crate::unify::unify(&mut subst, &annot_ty, &expr_ty);
+                subst.apply(&annot_ty)
+            }
+            None => type_of(db, expr),
+        },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
-        // A lambda parameter used as a value — a formal whose type is being solved. Milestone A types
-        // it `Any` (it never reaches a runtime slot yet — a lambda's runtime form is deferred); the
-        // full HM rule gives it a fresh variable per its binder in Milestone B.
-        Resolved::Param { .. } => Ty::Any,
+        // A lambda/def parameter used as a value — a formal. If its binder is ANNOTATED (`(: a T)`),
+        // its type is that annotation `T` — so the body type-checks against a definite parameter type
+        // (`(: a Bool)` used as an integer operand is caught). An UNANNOTATED parameter is `Any` (it
+        // never reaches a runtime slot until it is substituted at a call site, where the concrete
+        // argument's type flows in via the fold); the full HM rule gives it a fresh variable later.
+        Resolved::Param { binder } => param_annot_ty(db, binder).unwrap_or(Ty::Any),
         // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value
         // (a `(typeval …)` node, OR a value the evaluator reduces to a type) types as `Type`; this is
         // what makes a type first-class (it can be passed, returned, checked). A compile-time lambda
@@ -109,6 +125,21 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::TypeVal(_) => Ty::Type,
         Resolved::Lambda { .. } => Ty::Any,
     }
+}
+
+/// The declared type of an annotated parameter whose NAME occurrence is `binder`, if any. A parameter
+/// is annotated when its name sits in a `(: name T)` binder (the name's parent is that form); the type
+/// is `T` reduced to a `Ty` by the evaluator (`typeval_of`). `None` for a bare (unannotated) parameter
+/// or an unreducible annotation type — in which case the parameter's type is left open (`Any`).
+fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
+    let parent = db.parent_of(binder)?;
+    let tail = db.ast.as_form(parent, ":")?;
+    // The binder must be the NAME position (first) of the `(: name T)`, not the type position.
+    if tail.first().copied() != Some(binder) {
+        return None;
+    }
+    let ty_expr = *tail.get(1)?;
+    crate::eval::typeval_of(db, ty_expr)
 }
 
 /// The result type of applying `head` to `args` — the ONE generic application rule. Read the head's
@@ -255,8 +286,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // Project via the evaluator (reduces refs / a ctor-built module), so a missing field on a
             // built module is caught too. A poison operand reports its OWN fault (via the descent
             // below), so we don't add a redundant "not a record" for it.
-            let operand_is_poison =
-                matches!(resolved_of(db, operand), Resolved::Poison(_));
+            let operand_is_poison = matches!(resolved_of(db, operand), Resolved::Poison(_));
             match crate::eval::member_value(db, operand, &key) {
                 crate::eval::Member::Field(_) => {}
                 crate::eval::Member::NoField => out.push(Reject::coded(
@@ -300,6 +330,28 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             for &arg in &args {
                 collect(db, arg, out);
             }
+        }
+        // A type annotation `(: expr T)`: UNIFY the asserted type `T` against `expr`'s type. A failure
+        // is the conflicting-use type error (`(: true Int64)` — Bool asserted as Int64 → CDZ0203); a
+        // success grounds a deferred width harmlessly. If `T` is not a type this stage reduces, decline
+        // the CHECK (no false reject) — the expr still type-checks on its own via the descent below.
+        Resolved::Annot { expr, ty_expr } => {
+            if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
+                let expr_ty = type_of(db, expr);
+                let mut subst = Subst::new();
+                if let Err(reject) = crate::unify::unify(&mut subst, &annot_ty, &expr_ty) {
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "annotation type {} does not match value type {}",
+                            annot_ty.render_name(),
+                            expr_ty.render_name()
+                        ),
+                    ));
+                    let _ = reject; // the annotation's own message supersedes the raw unify message.
+                }
+            }
+            collect(db, expr, out);
         }
         // A scope-error poison (an unbound name) is UNCONDITIONAL well-formedness — report it here,
         // where the walk descends into EVERY position (including an `if`'s branches), so an unbound

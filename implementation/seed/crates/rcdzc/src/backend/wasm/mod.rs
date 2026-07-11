@@ -18,7 +18,7 @@ pub mod select;
 pub mod serialize;
 
 use crate::backend::wasm::envelope::BoundaryExport;
-use crate::backend::wasm::select::{select_body, SelectedFunc};
+use crate::backend::wasm::select::{SelectedFunc, select_body};
 use crate::db::Db;
 use crate::diag::Reject;
 use crate::layout::Layout;
@@ -41,7 +41,10 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let mut boundary: Vec<BoundaryExport> = Vec::new();
     for e in &layout.exports {
         let result = serialize::export_result_valtype(&e.result).map_err(Reject::decline)?;
-        boundary.push(BoundaryExport { name: e.name.clone(), result });
+        boundary.push(BoundaryExport {
+            name: e.name.clone(),
+            result,
+        });
     }
 
     Ok(envelope::assemble(&core, &boundary))

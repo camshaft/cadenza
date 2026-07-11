@@ -40,7 +40,10 @@ pub struct Symbol {
 impl Symbol {
     /// An unqualified label from a source spelling (the Stage-0 case — no namespace).
     pub fn plain(name: impl Into<String>) -> Symbol {
-        Symbol { namespace: None, name: name.into() }
+        Symbol {
+            namespace: None,
+            name: name.into(),
+        }
     }
 }
 
@@ -51,6 +54,7 @@ impl Symbol {
 ///    `lower`/`select` by the width read off the solved type;
 ///  - type CONSTRUCTORS (`Int`/`UInt`) — `Meta.apply` builders the evaluator applies to a width to
 ///    build a concrete integer MODULE record, and the function-type constructor `->`.
+///
 /// A prelude `(intrinsic NAME)` node names one of these; the name→prim table is the ONE place a prim
 /// spelling lives (the prelude authors it), so nothing downstream matches a source name.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -193,9 +197,16 @@ pub enum Resolved {
     /// body that follow (sequential; a later binding sees earlier ones; a repeat shadows). The whole
     /// form's value is `body`'s value. Bindings are carried as `(binder-name-occ, init-occ)` pairs so
     /// scope resolution finds them by walking here from a reference.
-    Let { bindings: Vec<(StructId, StructId)>, body: StructId },
+    Let {
+        bindings: Vec<(StructId, StructId)>,
+        body: StructId,
+    },
     /// A two-way conditional. The three children are AST occurrences resolved on demand.
-    If { cond: StructId, then_: StructId, else_: StructId },
+    If {
+        cond: StructId,
+        then_: StructId,
+        else_: StructId,
+    },
     /// A record literal: a fixed SET of named fields, each label mapping to its value occurrence. Held
     /// as a `BTreeMap` so the fields are canonically ordered (order-independent equality/projection)
     /// and a field lookup is O(log n), not a linear scan. The labels are symbols (never resolved); the
@@ -219,6 +230,17 @@ pub enum Resolved {
     /// (`prelude-and-resolution.md` §A Form Whose Head Is Not A Grammar Name Is Dispatched By The Kind
     /// Of Value Its Head Resolves To).
     Apply { head: StructId, args: Vec<StructId> },
+    /// A TYPE ANNOTATION `(: expr ty_expr)` — the value of `expr`, with its type CONSTRAINED to the
+    /// type `ty_expr` denotes. The annotation is transparent to the value: `(: e T)` evaluates and
+    /// lowers exactly as `e` (the annotation ERASES). Its force is on inference — the type `ty_expr`
+    /// reduces to is unified into `expr`'s type, so `(: 5 Int64)` pins the literal's width and `(: true
+    /// Int64)` is a conflicting-use rejection (CDZ0203). This is what disambiguates an otherwise-
+    /// ambiguous type (an integer parameter with no other constraint), which is why it must exist
+    /// before a runtime parameter can be given a definite machine width. Both children are AST
+    /// occurrences: `expr` the annotated value, `ty_expr` the type EXPRESSION — reduced to a `Ty` by
+    /// the evaluator downstream (`typeval_of`), NOT here, since resolve is a pure per-node classify and
+    /// reducing a type constructor like `(Int 8)` needs the evaluator.
+    Annot { expr: StructId, ty_expr: StructId },
     /// A first-class TYPE value. A type is an ordinary value (mixable, returnable) — using `Bool` in
     /// type position projects a record's `(meta t)` field, which holds one of these; a type
     /// constructor applied (`(Int a)`, `(-> A B)`) reduces through the one evaluator to one of these.
@@ -234,7 +256,10 @@ pub enum Resolved {
     /// operator's `Meta.t` is such a lambda over the width (`(fn (a) (-> (Int a) …))`), so a "type
     /// scheme" is just a compile-time lambda from a type/width to a type — instantiation is applying
     /// it to a fresh variable. Params are the binder-name occurrences; `body` is the body occurrence.
-    Lambda { params: Vec<StructId>, body: StructId },
+    Lambda {
+        params: Vec<StructId>,
+        body: StructId,
+    },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled
     /// literal. Carries its reject/decline so the fault is reported at the node it was found.
     Poison(Reject),

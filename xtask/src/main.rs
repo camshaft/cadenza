@@ -35,7 +35,10 @@ use xshell::{Shell, cmd};
 /// The one interface for driving the Cadenza seed workspace. Every knob is a typed flag; there are
 /// no environment-variable knobs.
 #[derive(Parser)]
-#[command(name = "xtask", about = "The one interface for driving the Cadenza workspace.")]
+#[command(
+    name = "xtask",
+    about = "The one interface for driving the Cadenza workspace."
+)]
 struct Cli {
     /// The cargo profile the pipeline tools (cdz-syntax / rcdzc / cdz-run) are built under. Defaults
     /// to `release-debug` (optimized, so the corpus gate is fast); pass `--profile dev` for a quick
@@ -136,9 +139,23 @@ fn main() {
         // the tool profile — so the profile flag doesn't apply to it.
         Cmd::Build { store } => build(&paths, store),
         Cmd::Run { file, from, store } => run(&paths, profile, &file, &from, store),
-        Cmd::Gate { files, store, case, save, check } => {
-            gate(&paths, profile, GateOpts { files, store, case, save, check })
-        }
+        Cmd::Gate {
+            files,
+            store,
+            case,
+            save,
+            check,
+        } => gate(
+            &paths,
+            profile,
+            GateOpts {
+                files,
+                store,
+                case,
+                save,
+                check,
+            },
+        ),
         Cmd::Check => check(&paths, profile),
         Cmd::Roundtrip { files } => roundtrip(&paths, profile, files),
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
@@ -209,7 +226,9 @@ fn setup(paths: &Paths) {
         std::os::unix::fs::symlink(&want, &link).expect("create symlink");
         #[cfg(not(unix))]
         {
-            eprintln!("  ! symlinks not supported on this platform — link .claude/{name} → {name}/ by hand");
+            eprintln!(
+                "  ! symlinks not supported on this platform — link .claude/{name} → {name}/ by hand"
+            );
             continue;
         }
         println!("  + linked .claude/{name} → {}", want.display());
@@ -286,7 +305,9 @@ fn run(paths: &Paths, profile: &str, file: &Path, from: &str, store: Option<Path
     // Stage 2 reads AST from stage 1's stdout, writes the component to stdout.
     let mut rcdzc = Command::new(&tools.rcdzc)
         .args(["-", "-o", "-"])
-        .stdin(Stdio::from(syntax.stdout.take().expect("cdz-syntax stdout")))
+        .stdin(Stdio::from(
+            syntax.stdout.take().expect("cdz-syntax stdout"),
+        ))
         .stdout(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| launch_fail("rcdzc", e));
@@ -294,7 +315,8 @@ fn run(paths: &Paths, profile: &str, file: &Path, from: &str, store: Option<Path
     // Stage 3 reads the component from stage 2's stdout, runs it, and prints the result to OUR
     // stdout (inherited). The store the runtime is resolved from is forwarded when given.
     let mut run = Command::new(&tools.run);
-    run.arg("-").stdin(Stdio::from(rcdzc.stdout.take().expect("rcdzc stdout")));
+    run.arg("-")
+        .stdin(Stdio::from(rcdzc.stdout.take().expect("rcdzc stdout")));
     if let Some(dir) = &store {
         run.arg("--store").arg(dir);
     }
@@ -340,10 +362,12 @@ struct Tools {
 fn build_tools(paths: &Paths, profile: &str) -> Tools {
     let sh = Shell::new().expect("open a shell");
     sh.change_dir(&paths.repo);
-    if let Err(e) =
-        cmd!(sh, "cargo build --quiet --profile {profile} -p cadenza-syntax -p rcdzc -p cdz-run")
-            .quiet()
-            .run()
+    if let Err(e) = cmd!(
+        sh,
+        "cargo build --quiet --profile {profile} -p cadenza-syntax -p rcdzc -p cdz-run"
+    )
+    .quiet()
+    .run()
     {
         eprintln!("xtask: building the tools failed: {e}");
         std::process::exit(1);
@@ -352,7 +376,11 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     // `target/<profile>`.
     let subdir = if profile == "dev" { "debug" } else { profile };
     let bin = paths.repo.join("target").join(subdir);
-    Tools { syntax: bin.join("cdz-syntax"), rcdzc: bin.join("rcdzc"), run: bin.join("cdz-run") }
+    Tools {
+        syntax: bin.join("cdz-syntax"),
+        rcdzc: bin.join("rcdzc"),
+        run: bin.join("cdz-run"),
+    }
 }
 
 /// The outcome of driving one program (sexpr text) through the pipeline.
@@ -379,7 +407,12 @@ fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str) -> Ran {
         .stderr(Stdio::null())
         .spawn()
         .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
-    syntax.stdin.take().unwrap().write_all(program.as_bytes()).ok();
+    syntax
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(program.as_bytes())
+        .ok();
 
     // Stage 2: AST → component; capture stderr so a decline carries its diagnostic.
     let rcdzc = Command::new(&tools.rcdzc)
@@ -397,12 +430,20 @@ fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str) -> Ran {
 
     // Stage 3: run the component (its stdout is the value; a trap goes to stderr with exit 1).
     let mut run = Command::new(&tools.run);
-    run.arg("-").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    run.arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(dir) = store {
         run.arg("--store").arg(dir);
     }
     let mut child = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
-    child.stdin.take().unwrap().write_all(&rcdzc_out.stdout).ok();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&rcdzc_out.stdout)
+        .ok();
     let run_out = child.wait_with_output().expect("wait cdz-run");
     if run_out.status.success() {
         Ran::Value(String::from_utf8_lossy(&run_out.stdout).trim().to_string())
@@ -412,7 +453,11 @@ fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str) -> Ran {
 }
 
 fn first_line(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).lines().next().unwrap_or("").to_string()
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Options for `gate` (grows without re-threading a widening arg list).
@@ -428,7 +473,11 @@ struct GateOpts {
 /// outcome. Delegates case parsing + normalization to `cdz-syntax corpus`, then drives each program.
 fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     let tools = build_tools(paths, profile);
-    let files = if opts.files.is_empty() { default_corpus_files(paths) } else { opts.files.clone() };
+    let files = if opts.files.is_empty() {
+        default_corpus_files(paths)
+    } else {
+        opts.files.clone()
+    };
 
     // `--case`: run only matching cases and print each one's program / expected / actual — the
     // single-case debug loop, not a pass/fail tally.
@@ -473,7 +522,11 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
 
     if opts.save {
         save_baseline(paths, &verdicts);
-        println!("\nbaseline saved: {} cases → {}", verdicts.len(), baseline_path(paths).display());
+        println!(
+            "\nbaseline saved: {} cases → {}",
+            verdicts.len(),
+            baseline_path(paths).display()
+        );
         return;
     }
     if opts.check {
@@ -549,7 +602,11 @@ fn read_corpus(tools: &Tools, file: &Path) -> Vec<CorpusRecord> {
         .output()
         .unwrap_or_else(|e| launch_fail("cdz-syntax corpus", e));
     if !out.status.success() {
-        eprintln!("xtask gate: reading {}: {}", file.display(), first_line(&out.stderr));
+        eprintln!(
+            "xtask gate: reading {}: {}",
+            file.display(),
+            first_line(&out.stderr)
+        );
         std::process::exit(1);
     }
     parse_records(&String::from_utf8_lossy(&out.stdout))
@@ -558,7 +615,8 @@ fn read_corpus(tools: &Tools, file: &Path) -> Vec<CorpusRecord> {
 /// Parse the flat record stream: `key\tvalue` lines, records separated by a `---` line.
 fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut records = Vec::new();
-    let (mut desc, mut prog, mut expect, mut needs) = (String::new(), String::new(), String::new(), Vec::new());
+    let (mut desc, mut prog, mut expect, mut needs) =
+        (String::new(), String::new(), String::new(), Vec::new());
     for line in text.lines() {
         if line == "---" {
             records.push(CorpusRecord {
@@ -595,7 +653,10 @@ fn grade_ran(rec: &CorpusRecord, ran: &Ran) -> Grade {
     if !rec.needs.is_empty() {
         return Grade::Todo;
     }
-    let (kind, payload) = rec.expect.split_once(' ').unwrap_or((rec.expect.as_str(), ""));
+    let (kind, payload) = rec
+        .expect
+        .split_once(' ')
+        .unwrap_or((rec.expect.as_str(), ""));
     match kind {
         // `output (: <value> <Type>)`: the run must produce that value. cdz-run renders the value
         // alone, so compare against the value-form's value (the first element after `:`).
@@ -692,8 +753,10 @@ fn baseline_path(paths: &Paths) -> PathBuf {
 /// Write the current verdicts as the baseline: one `verdict\tdescription` line per case, sorted by
 /// description so the file is stable and a diff is meaningful.
 fn save_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) {
-    let mut lines: Vec<String> =
-        verdicts.iter().map(|(d, v)| format!("{}\t{d}", v.tag())).collect();
+    let mut lines: Vec<String> = verdicts
+        .iter()
+        .map(|(d, v)| format!("{}\t{d}", v.tag()))
+        .collect();
     lines.sort();
     let body = format!(
         "# gate baseline — per-case verdicts (verdict\\tdescription). Regenerate with `cargo xtask gate --save`.\n{}\n",
@@ -710,7 +773,10 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) -> i32 {
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(_) => {
-            eprintln!("xtask gate --check: no baseline at {} (create it with `gate --save`)", path.display());
+            eprintln!(
+                "xtask gate --check: no baseline at {} (create it with `gate --save`)",
+                path.display()
+            );
             return 2;
         }
     };
@@ -766,10 +832,17 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) -> i32 {
     }
 
     if regressed.is_empty() && vanished.is_empty() {
-        println!("\ngate --check: OK (no regressions vs baseline; {} newly passing)", gained.len());
+        println!(
+            "\ngate --check: OK (no regressions vs baseline; {} newly passing)",
+            gained.len()
+        );
         0
     } else {
-        println!("\ngate --check: FAIL ({} regressed, {} vanished)", regressed.len(), vanished.len());
+        println!(
+            "\ngate --check: FAIL ({} regressed, {} vanished)",
+            regressed.len(),
+            vanished.len()
+        );
         1
     }
 }
@@ -797,7 +870,11 @@ fn check(paths: &Paths, profile: &str) {
     // The wasm runtime is EXCLUDED from the native workspace, so a plain `cargo build` skips it — a
     // silent gap the check closes by building it explicitly for its target.
     let rt = paths.seed.join("crates/cdz-runtime");
-    log.step("wasm-runtime", "cargo build --release --target wasm32-unknown-unknown", &rt);
+    log.step(
+        "wasm-runtime",
+        "cargo build --release --target wasm32-unknown-unknown",
+        &rt,
+    );
 
     // The behavior gate — invoke this same xtask binary. Use `gate --check` (vs the baseline) when a
     // baseline exists, so `check` asks "did anything REGRESS?" rather than "are there any known
@@ -894,7 +971,10 @@ impl Log {
             eprint!("{text}");
         }
         eprintln!("──── end log ────");
-        eprintln!("\ncheck: FAILED at `{failed_step}` — full log above and at {}", self.path.display());
+        eprintln!(
+            "\ncheck: FAILED at `{failed_step}` — full log above and at {}",
+            self.path.display()
+        );
         std::process::exit(1);
     }
 }
@@ -908,7 +988,11 @@ impl Log {
 /// as the original. Guards `cadenza-syntax` (reader/printer/codec) independently of the compiler.
 fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
     let tools = build_tools(paths, profile);
-    let files = if files.is_empty() { default_corpus_files(paths) } else { files };
+    let files = if files.is_empty() {
+        default_corpus_files(paths)
+    } else {
+        files
+    };
 
     let (mut ok, mut fail) = (0u32, 0u32);
     let mut failures: Vec<String> = Vec::new();
@@ -934,7 +1018,10 @@ fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
                     }
                     None => {
                         fail += 1;
-                        failures.push(format!("{}: round-trip via {surface} errored", rec.description));
+                        failures.push(format!(
+                            "{}: round-trip via {surface} errored",
+                            rec.description
+                        ));
                     }
                 }
             }
@@ -1097,8 +1184,11 @@ fn content_address(bytes: &[u8]) -> String {
 fn build_component(sh: &Shell, seed: &Path, crate_dir: &str, artifact: &str) -> PathBuf {
     let dir = seed.join("crates").join(crate_dir);
     let _pushed = sh.push_dir(&dir);
-    if let Err(e) =
-        cmd!(sh, "cargo component build --release --target wasm32-unknown-unknown").run()
+    if let Err(e) = cmd!(
+        sh,
+        "cargo component build --release --target wasm32-unknown-unknown"
+    )
+    .run()
     {
         eprintln!("cargo component build failed for {crate_dir}: {e}");
         std::process::exit(1);

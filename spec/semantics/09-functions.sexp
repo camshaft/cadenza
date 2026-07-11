@@ -617,3 +617,29 @@
             (def (Foo x) (+ x 1))
             (def (main) (Foo 10))))
   (output (: 11 Int64)))
+
+(case "a parameter carries a type annotation in the signature"
+  (doc    "A `def` parameter may be written `(: name Type)` in the signature — an annotation in BINDER
+           position. `(: a Int64)` binds `a` (the annotation names the binder, not an opaque form) and
+           constrains its type to Int64, per type-system.md §Annotations Constrain, Never Contradict:
+           the annotation is an additional unification constraint on the parameter, not an override. The
+           body references `a` exactly as an unannotated parameter — the annotation is transparent to the
+           value. `(annotated 20 22)` = 42. Pins that a signature reads through a `(: name Type)` binder
+           to the name it binds, so an author can pin a parameter's type where inference would otherwise
+           leave it open — the disambiguation an ambiguous runtime parameter requires.")
+  (input  (module m
+            (def (annotated (: a Int64) b) (+ a b))
+            (def (main)                    (annotated 20 22))))
+  (output (: 42 Int64)))
+
+(case "a parameter annotation contradicting its use is rejected"
+  (doc    "An annotation constrains and MUST NOT contradict (type-system.md §Annotations Constrain,
+           Never Contradict): a parameter annotated `(: a Bool)` but used where an Int64 is required —
+           `(+ a 1)` unifies `a` with the integer operand of `+` — cannot be reconciled, so the program
+           is rejected (CDZ0203) rather than having the annotation silently replace the inferred type or
+           the use silently reinterpret the annotation. The contradiction is between the WRITTEN Bool and
+           the INFERRED Int64 at the same binding, exactly the conflicting-annotation shape.")
+  (input  (module m
+            (def (bad (: a Bool)) (+ a 1))
+            (def (main)           (bad true))))
+  (error  CDZ0203))

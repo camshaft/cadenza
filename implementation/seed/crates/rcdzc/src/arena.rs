@@ -75,7 +75,10 @@ pub struct Arena<Id: Index, Node> {
 impl<Id: Index, Node> Arena<Id, Node> {
     /// An empty arena.
     pub fn new() -> Arena<Id, Node> {
-        Arena { nodes: Vec::new(), _id: PhantomData }
+        Arena {
+            nodes: Vec::new(),
+            _id: PhantomData,
+        }
     }
 
     /// Append `node`, returning its identity (its index). Deterministic: the k-th push is index k.
@@ -129,7 +132,10 @@ pub struct Column<Id: Index, T> {
 impl<Id: Index, T> Column<Id, T> {
     /// An empty column (every slot absent).
     pub fn new() -> Column<Id, T> {
-        Column { slots: Vec::new(), _id: PhantomData }
+        Column {
+            slots: Vec::new(),
+            _id: PhantomData,
+        }
     }
 
     /// Fill the slot at `id` with `value`, growing the column to reach it. A producer calls this to

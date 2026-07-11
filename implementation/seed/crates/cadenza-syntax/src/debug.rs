@@ -125,7 +125,10 @@ mod tests {
         assert!(out.contains("Atom Int 42 (dec)"), "{out}");
         // Nesting: the outer list is at depth 0, its atom children indented.
         assert!(out.starts_with('#'), "{out}");
-        assert!(out.contains("\n  #"), "expected indented children in:\n{out}");
+        assert!(
+            out.contains("\n  #"),
+            "expected indented children in:\n{out}"
+        );
     }
 
     #[test]
@@ -139,8 +142,14 @@ mod tests {
         let arenas = sexpr::read("(def (main) 42)").unwrap();
         let out = print_flat(&arenas);
         // The three sections, sized, with the root pointing at the top structure entry.
-        assert!(out.contains(&format!("leaves ({}):", arenas.leaves.len())), "{out}");
-        assert!(out.contains(&format!("structure ({}):", arenas.structure.len())), "{out}");
+        assert!(
+            out.contains(&format!("leaves ({}):", arenas.leaves.len())),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("structure ({}):", arenas.structure.len())),
+            "{out}"
+        );
         assert!(out.contains(&format!("root: S{}", arenas.root.0)), "{out}");
         // Leaves are addressed L#, and a List references its children by S#.
         assert!(out.contains("L0  Name def"), "{out}");
@@ -153,7 +162,10 @@ mod tests {
         // at the same L#. Confirm the leaf pool holds a single `Name main`.
         let arenas = sexpr::read("(do (def (main) 1) (export main))").unwrap();
         let out = print_flat(&arenas);
-        let mains = out.lines().filter(|l| l.trim_end().ends_with("Name main")).count();
+        let mains = out
+            .lines()
+            .filter(|l| l.trim_end().ends_with("Name main"))
+            .count();
         assert_eq!(mains, 1, "expected `main` interned to one leaf:\n{out}");
     }
 }

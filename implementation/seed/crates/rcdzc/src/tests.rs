@@ -28,7 +28,10 @@ fn prog_scalar() -> Vec<u8> {
         let main = b.name("main");
         b.list(vec![main])
     };
-    let body = b.atom_leaf(Leaf::Int { value: IntValue::from_i64(42), radix: Radix::Dec });
+    let body = b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(42),
+        radix: Radix::Dec,
+    });
     let def_form = b.list(vec![def, sig, body]);
     let export = b.name("export");
     let main_ref = b.name("main");
@@ -49,8 +52,14 @@ fn prog_if() -> Vec<u8> {
     };
     let if_head = b.name("if");
     let cond = b.atom_leaf(Leaf::Bool(false));
-    let then_ = b.atom_leaf(Leaf::Int { value: IntValue::from_i64(1), radix: Radix::Dec });
-    let else_ = b.atom_leaf(Leaf::Int { value: IntValue::from_i64(2), radix: Radix::Dec });
+    let then_ = b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(1),
+        radix: Radix::Dec,
+    });
+    let else_ = b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(2),
+        radix: Radix::Dec,
+    });
     let if_form = b.list(vec![if_head, cond, then_, else_]);
     let def_form = b.list(vec![def, sig, if_form]);
     let export = b.name("export");
@@ -72,7 +81,10 @@ fn prog_unsupported() -> Vec<u8> {
         b.list(vec![main])
     };
     let frob = b.name("frobnicate");
-    let one = b.atom_leaf(Leaf::Int { value: IntValue::from_i64(1), radix: Radix::Dec });
+    let one = b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(1),
+        radix: Radix::Dec,
+    });
     let body = b.list(vec![frob, one]);
     let def_form = b.list(vec![def, sig, body]);
     let export = b.name("export");
@@ -90,7 +102,10 @@ fn prog_unsupported() -> Vec<u8> {
 fn oracle_component(core: &[u8], names: &[&str]) -> Vec<u8> {
     use wasm_encoder::*;
     let mut c = Component::new();
-    c.section(&RawSection { id: ComponentSectionId::CoreModule as u8, data: core });
+    c.section(&RawSection {
+        id: ComponentSectionId::CoreModule as u8,
+        data: core,
+    });
     let mut inst = InstanceSection::new();
     inst.instantiate(0, std::iter::empty::<(&str, ModuleArg)>());
     c.section(&inst);
@@ -103,7 +118,11 @@ fn oracle_component(core: &[u8], names: &[&str]) -> Vec<u8> {
     c.section(&ts);
     let mut al = ComponentAliasSection::new();
     for nm in names {
-        al.alias(Alias::CoreInstanceExport { instance: 0, kind: ExportKind::Func, name: nm });
+        al.alias(Alias::CoreInstanceExport {
+            instance: 0,
+            kind: ExportKind::Func,
+            name: nm,
+        });
     }
     c.section(&al);
     let mut canon = CanonicalFunctionSection::new();
@@ -153,13 +172,22 @@ fn oracle_core(names: &[&str]) -> Vec<u8> {
 /// encoder in the byte path).
 #[test]
 fn envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{assemble, BoundaryExport};
+    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
     for names in [&["run"][..], &["run", "double"][..]] {
         let core = oracle_core(names);
-        let exports: Vec<BoundaryExport> =
-            names.iter().map(|n| BoundaryExport { name: n.to_string(), result: Some(0x78) }).collect();
+        let exports: Vec<BoundaryExport> = names
+            .iter()
+            .map(|n| BoundaryExport {
+                name: n.to_string(),
+                result: Some(0x78),
+            })
+            .collect();
         let ours = assemble(&core, &exports);
-        assert_eq!(ours, oracle_component(&core, names), "envelope mismatch for {names:?}");
+        assert_eq!(
+            ours,
+            oracle_component(&core, names),
+            "envelope mismatch for {names:?}"
+        );
     }
 }
 
@@ -201,7 +229,9 @@ fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
     let component = Component::from_binary(&engine, component_bytes).expect("valid component");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store = Store::new(&engine, ());
-    let instance = linker.instantiate(&mut store, &component).expect("instantiate");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
     let func = instance.get_func(&mut store, name).expect("export present");
     // A one-slot result buffer; the initial value is overwritten by the call (its variant is
     // irrelevant — `call` writes the actual result), then decoded to `T`.
@@ -233,7 +263,10 @@ fn if_runs_to_2() {
 fn unsupported_construct_declines() {
     let err = compile_component(&prog_unsupported()).expect_err("must decline");
     assert_eq!(err.severity, crate::abi::Severity::Error);
-    assert!(err.message.contains("frobnicate"), "diagnostic should name the construct: {err:?}");
+    assert!(
+        err.message.contains("frobnicate"),
+        "diagnostic should name the construct: {err:?}"
+    );
 }
 
 /// The `main` export crosses the boundary VERBATIM — the component actually exports `main` (no
@@ -252,8 +285,8 @@ fn export_name_is_verbatim() {
 // region. These pin (a) that a fault anchors to a real user node, and (b) the boundary invariant: a
 // prelude/synthesized node id NEVER reaches a diagnostic.
 mod diagnostics {
-    use crate::ast::StructId;
     use crate::abi::Artifact;
+    use crate::ast::StructId;
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::db::Db;
@@ -263,8 +296,14 @@ mod diagnostics {
     fn first_error(src: &str) -> crate::abi::Diagnostic {
         let ast = parse(src);
         let bytes = crate::codec::encode(&ast);
-        let out = compile(&[Artifact::new(Artifact::KIND_AST, "m", bytes)], &[Target::Wasm]);
-        out.diagnostics.into_iter().find(|d| d.severity == crate::abi::Severity::Error).expect("an error")
+        let out = compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+            &[Target::Wasm],
+        );
+        out.diagnostics
+            .into_iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .expect("an error")
     }
 
     #[test]
@@ -277,7 +316,10 @@ mod diagnostics {
         // It resolves to a real user node — the same identity the span table is keyed by.
         let ast = parse("(module m (def (main) nope) (export main))");
         let db = Db::load(ast);
-        assert!(db.is_user_node(StructId(node)), "node {node} must be a user node");
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a user node"
+        );
     }
 
     #[test]
@@ -307,7 +349,10 @@ mod diagnostics {
         if let Some(node) = d.node {
             let ast = parse("(module m (def (main) (if 5 1 2)) (export main))");
             let db = Db::load(ast);
-            assert!(db.is_user_node(StructId(node)), "node {node} must be a user node");
+            assert!(
+                db.is_user_node(StructId(node)),
+                "node {node} must be a user node"
+            );
         }
     }
 }
@@ -319,7 +364,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{run_returns, FromVal};
+    use super::{FromVal, run_returns};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -618,7 +663,10 @@ mod stage1 {
         // Structural comparison over the value heap is a later stage — comparing records declines
         // cleanly (the operator's type stays generic; only the fold's coverage is bounded).
         let msg = expect_decline("(= (record (x 1)) (record (x 1)))");
-        assert!(msg.contains("compound") || msg.contains("value heap") || msg.contains("not yet"), "got: {msg}");
+        assert!(
+            msg.contains("compound") || msg.contains("value heap") || msg.contains("not yet"),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -627,7 +675,10 @@ mod stage1 {
         // the first operand's `a` (fixed to Int by `1`) FAILS. The one generic rule catches it.
         let msg = expect_decline("(< 1 true)");
         assert!(
-            msg.contains("unify") || msg.contains("Bool") || msg.contains("Int") || msg.contains("differ"),
+            msg.contains("unify")
+                || msg.contains("Bool")
+                || msg.contains("Int")
+                || msg.contains("differ"),
             "expected a unification mismatch, got: {msg}"
         );
     }
@@ -650,6 +701,83 @@ mod stage1 {
         assert!(
             msg.contains("unify") || msg.contains("Bool") || msg.contains("Int"),
             "expected a unification mismatch naming the types, got: {msg}"
+        );
+    }
+
+    // ── type annotations `(: e T)`: transparent to the value, constrains the type ────────────────
+
+    #[test]
+    fn an_annotation_matching_the_value_is_transparent() {
+        // `(: 5 Int64)` runs exactly as `5` — the annotation erases; 5 is already Int64.
+        assert_eq!(run_main("(: 5 Int64)"), 5);
+    }
+
+    #[test]
+    fn an_annotation_is_transparent_around_an_expression() {
+        // The annotation wraps any expression, not just a literal — `(: (+ 2 3) Int64)` = 5.
+        assert_eq!(run_main("(: (+ 2 3) Int64)"), 5);
+    }
+
+    #[test]
+    fn an_annotation_grounds_a_width_via_int_ctor() {
+        // The type side is a full type EXPRESSION reduced by the evaluator: `(: 5 (Int 64))` uses the
+        // `(Int 64)` constructor application as the annotation type. Runs as 5.
+        assert_eq!(run_main("(: 5 (Int 64))"), 5);
+    }
+
+    #[test]
+    fn a_bool_annotation_on_a_bool_is_transparent() {
+        // `(: true Bool)` — the annotation matches; the comparison-style Bool boundary returns it.
+        assert!(run_main_bool("(: true Bool)"));
+    }
+
+    #[test]
+    fn an_annotation_conflicting_with_the_value_rejects() {
+        // `(: true Int64)` — Bool asserted as Int64. Unifying the annotation type against the value's
+        // type FAILS → CDZ0203 (the disambiguation force turned against a genuine conflict).
+        let msg = expect_decline("(: true Int64)");
+        assert!(
+            msg.contains("does not match") || msg.contains("Int") || msg.contains("Bool"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_annotation_inside_arithmetic_is_transparent() {
+        // `(+ (: 2 Int64) 3)` — the annotation on an operand erases; the arithmetic folds to 5.
+        assert_eq!(run_main("(+ (: 2 Int64) 3)"), 5);
+    }
+
+    #[test]
+    fn an_annotated_def_parameter_binds_and_folds() {
+        // `(def (w (: a Int64) b) (+ a b))` — the annotated binder `(: a Int64)` binds `a` (the body's
+        // `a` resolves through the annotation, not UNBOUND), and the call folds. 09-functions witness.
+        let src = "(module m (def (w (: a Int64) b) (+ a b)) (def (main) (w 20 22)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+    }
+
+    #[test]
+    fn an_annotated_fn_parameter_binds() {
+        // The same through a `fn` lambda: `((fn ((: x Int64)) (+ x 1)) 5)` = 6.
+        assert_eq!(run_main("((fn ((: x Int64)) (+ x 1)) 5)"), 6);
+    }
+
+    #[test]
+    fn a_contradicting_parameter_annotation_rejects() {
+        // `(def (bad (: a Bool)) (+ a 1))` — `a` annotated Bool but used as an integer operand of `+`;
+        // the annotation contradicts the use → CDZ0203 (type-system.md Annotations Constrain, Never
+        // Contradict). 09-functions witness.
+        let src = "(module m (def (bad (: a Bool)) (+ a 1)) (def (main) (bad true)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("must reject")
+            .message;
+        assert!(
+            msg.contains("match")
+                || msg.contains("Bool")
+                || msg.contains("Int")
+                || msg.contains("unify"),
+            "got: {msg}"
         );
     }
 
@@ -717,7 +845,10 @@ mod stage1 {
         let msg = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("recursion must decline")
             .message;
-        assert!(msg.contains("recursive") || msg.contains("runtime"), "got: {msg}");
+        assert!(
+            msg.contains("recursive") || msg.contains("runtime"),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -731,7 +862,10 @@ mod stage1 {
         let msg = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("branching recursion must decline")
             .message;
-        assert!(msg.contains("recursive") || msg.contains("runtime"), "got: {msg}");
+        assert!(
+            msg.contains("recursive") || msg.contains("runtime"),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -745,7 +879,10 @@ mod stage1 {
         let msg = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("mutual recursion must decline")
             .message;
-        assert!(msg.contains("recursive") || msg.contains("runtime"), "got: {msg}");
+        assert!(
+            msg.contains("recursive") || msg.contains("runtime"),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -771,7 +908,12 @@ mod stage1 {
         let ast = parse("(module m (def (t) Bool) (def (main) 0) (export main))");
         let mut db = Db::load(ast);
         // Locate the `Bool` occurrence: the body of def `t`.
-        let bool_occ = db.defs.iter().find(|d| d.name == "t").and_then(|d| d.body).expect("def t");
+        let bool_occ = db
+            .defs
+            .iter()
+            .find(|d| d.name == "t")
+            .and_then(|d| d.body)
+            .expect("def t");
         assert_eq!(type_of(&mut db, bool_occ), Ty::Type);
     }
 
@@ -784,7 +926,9 @@ mod stage1 {
         use crate::eval::{meta_apply_of, reduce_ctor};
         use crate::testkit::parse;
         // Two separate `(Int 64)` applications, plus one used twice.
-        let ast = parse("(module m (def (main) (. (Int 64) max)) (def (other) (. (Int 64) min)) (export main))");
+        let ast = parse(
+            "(module m (def (main) (. (Int 64) max)) (def (other) (. (Int 64) min)) (export main))",
+        );
         let mut db = Db::load(ast);
         // Find the two `(Int 64)` applications by resolving them; force each module build several times.
         // (We reduce directly via the evaluator to exercise the cache without threading occurrences.)

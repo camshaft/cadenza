@@ -66,32 +66,50 @@ impl Doc {
 
     /// A break that is a single space when flat.
     pub fn space(&mut self) {
-        self.tokens.push(Token::Break { blank_space: 1, offset: 0 });
+        self.tokens.push(Token::Break {
+            blank_space: 1,
+            offset: 0,
+        });
     }
 
     /// A break that is nothing when flat (a soft break).
     pub fn zerobreak(&mut self) {
-        self.tokens.push(Token::Break { blank_space: 0, offset: 0 });
+        self.tokens.push(Token::Break {
+            blank_space: 0,
+            offset: 0,
+        });
     }
 
     /// A break that always fires (a hard newline), forcing the enclosing box to break.
     pub fn hardbreak(&mut self) {
-        self.tokens.push(Token::Break { blank_space: HARDBREAK_WIDTH, offset: 0 });
+        self.tokens.push(Token::Break {
+            blank_space: HARDBREAK_WIDTH,
+            offset: 0,
+        });
     }
 
     /// A break with an explicit flat width and firing indent offset.
     pub fn break_with(&mut self, blank_space: usize, offset: isize) {
-        self.tokens.push(Token::Break { blank_space, offset });
+        self.tokens.push(Token::Break {
+            blank_space,
+            offset,
+        });
     }
 
     /// Open a consistent box (all-or-nothing: if it breaks, every break inside fires).
     pub fn cbox(&mut self, offset: isize) {
-        self.tokens.push(Token::Begin { offset, breaks: Breaks::Consistent });
+        self.tokens.push(Token::Begin {
+            offset,
+            breaks: Breaks::Consistent,
+        });
     }
 
     /// Open an inconsistent box (fill: breaks fire only on overflow).
     pub fn ibox(&mut self, offset: isize) {
-        self.tokens.push(Token::Begin { offset, breaks: Breaks::Inconsistent });
+        self.tokens.push(Token::Begin {
+            offset,
+            breaks: Breaks::Inconsistent,
+        });
     }
 
     /// Close the most recent box.
@@ -185,7 +203,11 @@ impl Doc {
                 }
                 Token::Begin { offset, breaks } => {
                     let fits = tok_size <= space;
-                    frames.push(Frame { indent, breaks: *breaks, fits });
+                    frames.push(Frame {
+                        indent,
+                        breaks: *breaks,
+                        fits,
+                    });
                     if !fits {
                         indent += offset;
                     }
@@ -195,13 +217,16 @@ impl Doc {
                         indent = f.indent;
                     }
                 }
-                Token::Break { blank_space, offset } => {
+                Token::Break {
+                    blank_space,
+                    offset,
+                } => {
                     let top = frames.last();
                     let fires = match top {
-                        None => true, // a break outside any box always fires
+                        None => true,               // a break outside any box always fires
                         Some(f) if f.fits => false, // whole box is flat: never break
                         Some(f) => match f.breaks {
-                            Breaks::Consistent => true, // every break fires
+                            Breaks::Consistent => true,               // every break fires
                             Breaks::Inconsistent => tok_size > space, // fill: break on overflow
                         },
                     };

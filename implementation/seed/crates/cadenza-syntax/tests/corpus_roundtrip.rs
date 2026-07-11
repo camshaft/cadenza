@@ -100,7 +100,10 @@ fn ml_surface_round_trips_the_corpus() {
                     } else {
                         "not idempotent".to_string()
                     };
-                    entry.1 = format!("{reason}\n    s-expr: {}\n    ml:     {ml}", sexpr::print(&input));
+                    entry.1 = format!(
+                        "{reason}\n    s-expr: {}\n    ml:     {ml}",
+                        sexpr::print(&input)
+                    );
                 }
             }
         }
@@ -114,5 +117,8 @@ fn ml_surface_round_trips_the_corpus() {
         }
     }
     assert!(files >= 20, "expected >=20 corpus files, found {files}");
-    assert_eq!(passed, total, "not all corpus inputs round-trip through the ML surface");
+    assert_eq!(
+        passed, total,
+        "not all corpus inputs round-trip through the ML surface"
+    );
 }

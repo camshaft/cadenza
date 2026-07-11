@@ -41,8 +41,12 @@ pub fn emit(target: Target, db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Rej
         Target::Wasm => wasm::emit(db, layout),
     };
     match &result {
-        Ok(bytes) => tracing::trace!(target: "rcdzc::backend", ?target, bytes = bytes.len(), "emitted artifact"),
-        Err(r) => tracing::trace!(target: "rcdzc::backend", ?target, reason = %r.message, "backend DECLINED"),
+        Ok(bytes) => {
+            tracing::trace!(target: "rcdzc::backend", ?target, bytes = bytes.len(), "emitted artifact")
+        }
+        Err(r) => {
+            tracing::trace!(target: "rcdzc::backend", ?target, reason = %r.message, "backend DECLINED")
+        }
     }
     result
 }

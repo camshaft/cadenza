@@ -32,7 +32,10 @@ pub enum Leaf {
     /// An integer literal: its exact value plus the base its text used. The base is display-only
     /// (`42`, `0x2A`, `0b101010` are the same value) but is recorded so the printed form re-reads to
     /// the same leaf — a faithful text round-trip. Digit-separator (`_`) positions are NOT recorded.
-    Int { value: BigInt, radix: Radix },
+    Int {
+        value: BigInt,
+        radix: Radix,
+    },
     Float(Decimal),
     Str(String),
     Bool(bool),
@@ -141,7 +144,11 @@ impl Builder {
     }
 
     pub fn finish(self, root: StructId) -> Arenas {
-        Arenas { leaves: self.leaves, structure: self.structure, root }
+        Arenas {
+            leaves: self.leaves,
+            structure: self.structure,
+            root,
+        }
     }
 }
 
@@ -199,8 +206,7 @@ impl Arenas {
         match (self.get(a), other.get(b)) {
             (Struct::Atom(la), Struct::Atom(lb)) => self.leaf(*la) == other.leaf(*lb),
             (Struct::List(xs), Struct::List(ys)) => {
-                xs.len() == ys.len()
-                    && xs.iter().zip(ys).all(|(&x, &y)| self.node_eq(x, other, y))
+                xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| self.node_eq(x, other, y))
             }
             _ => false,
         }

@@ -13,7 +13,7 @@
 //! matching this order is what keeps a single nullary-scalar entry byte-identical to the oracle (and
 //! to the old compiler's frame).
 
-use crate::backend::wasm::encode::{section, uleb128, uleb_bytes, wasm_vec};
+use crate::backend::wasm::encode::{section, uleb_bytes, uleb128, wasm_vec};
 
 /// The component-model preamble (`\0asm` + component-layer version).
 const COMPONENT_MAGIC: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00];

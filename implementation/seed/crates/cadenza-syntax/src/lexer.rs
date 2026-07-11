@@ -29,7 +29,9 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Lexer<'a> {
-        Lexer { chars: Peek2::new(Chars::new(src)) }
+        Lexer {
+            chars: Peek2::new(Chars::new(src)),
+        }
     }
 
     fn peek(&mut self) -> Option<char> {
@@ -57,7 +59,10 @@ impl<'a> Lexer<'a> {
         let kind = match a.value {
             ' ' | '\t' | '\r' | '\n' => {
                 let span = self.span_while(a, |c| matches!(c, ' ' | '\t' | '\r' | '\n'));
-                return Some(Token { kind: Kind::Whitespace, span });
+                return Some(Token {
+                    kind: Kind::Whitespace,
+                    span,
+                });
             }
             '(' => Kind::LParen,
             ')' => Kind::RParen,
@@ -71,7 +76,10 @@ impl<'a> Lexer<'a> {
             ',' => match self.peek() {
                 Some('@') => {
                     let b = self.bump().unwrap();
-                    return Some(Token { kind: Kind::UnquoteSplice, span: a.span.merge(b.span) });
+                    return Some(Token {
+                        kind: Kind::UnquoteSplice,
+                        span: a.span.merge(b.span),
+                    });
                 }
                 _ => Kind::Comma,
             },
@@ -83,7 +91,10 @@ impl<'a> Lexer<'a> {
             '=' => match self.peek() {
                 Some('>') => {
                     let b = self.bump().unwrap();
-                    return Some(Token { kind: Kind::FatArrow, span: a.span.merge(b.span) });
+                    return Some(Token {
+                        kind: Kind::FatArrow,
+                        span: a.span.merge(b.span),
+                    });
                 }
                 _ => Kind::Eq,
             },
@@ -111,20 +122,32 @@ impl<'a> Lexer<'a> {
             for &(ch, kind) in alts {
                 if next == ch {
                     let b = self.bump().unwrap();
-                    return Token { kind, span: a.span.merge(b.span) };
+                    return Token {
+                        kind,
+                        span: a.span.merge(b.span),
+                    };
                 }
             }
         }
-        Token { kind: base, span: a.span }
+        Token {
+            kind: base,
+            span: a.span,
+        }
     }
 
     /// `+`/`*` with an optional `%` wrapping suffix.
     fn wrapping(&mut self, a: Char, plain: Kind, wrapping: Kind) -> Token {
         if self.peek() == Some('%') {
             let b = self.bump().unwrap();
-            Token { kind: wrapping, span: a.span.merge(b.span) }
+            Token {
+                kind: wrapping,
+                span: a.span.merge(b.span),
+            }
         } else {
-            Token { kind: plain, span: a.span }
+            Token {
+                kind: plain,
+                span: a.span,
+            }
         }
     }
 
@@ -137,10 +160,17 @@ impl<'a> Lexer<'a> {
                 self.bump(); // third '/'
             }
             let span = self.span_while(a, |c| c != '\n');
-            let kind = if doc { Kind::DocComment } else { Kind::LineComment };
+            let kind = if doc {
+                Kind::DocComment
+            } else {
+                Kind::LineComment
+            };
             Token { kind, span }
         } else {
-            Token { kind: Kind::Slash, span: a.span }
+            Token {
+                kind: Kind::Slash,
+                span: a.span,
+            }
         }
     }
 
@@ -151,14 +181,23 @@ impl<'a> Lexer<'a> {
         match self.peek() {
             Some('>') => {
                 let b = self.bump().unwrap();
-                Token { kind: Kind::Arrow, span: a.span.merge(b.span) }
+                Token {
+                    kind: Kind::Arrow,
+                    span: a.span.merge(b.span),
+                }
             }
             Some(d) if d.is_ascii_digit() => self.number(a),
             Some('%') => {
                 let b = self.bump().unwrap();
-                Token { kind: Kind::MinusPct, span: a.span.merge(b.span) }
+                Token {
+                    kind: Kind::MinusPct,
+                    span: a.span.merge(b.span),
+                }
             }
-            _ => Token { kind: Kind::Minus, span: a.span },
+            _ => Token {
+                kind: Kind::Minus,
+                span: a.span,
+            },
         }
     }
 
@@ -166,10 +205,25 @@ impl<'a> Lexer<'a> {
         let mut end = a.span;
         loop {
             match self.bump() {
-                None => return Token { kind: Kind::Error, span: a.span.merge(end) }, // unterminated
-                Some(c) if c.value == '`' => return Token { kind: Kind::BacktickName, span: a.span.merge(c.span) },
+                None => {
+                    return Token {
+                        kind: Kind::Error,
+                        span: a.span.merge(end),
+                    };
+                } // unterminated
+                Some(c) if c.value == '`' => {
+                    return Token {
+                        kind: Kind::BacktickName,
+                        span: a.span.merge(c.span),
+                    };
+                }
                 Some(c) if c.value == '\\' => match self.bump() {
-                    None => return Token { kind: Kind::Error, span: a.span.merge(c.span) },
+                    None => {
+                        return Token {
+                            kind: Kind::Error,
+                            span: a.span.merge(c.span),
+                        };
+                    }
                     Some(d) => end = d.span,
                 },
                 Some(c) => end = c.span,
@@ -181,10 +235,25 @@ impl<'a> Lexer<'a> {
         let mut end = a.span;
         loop {
             match self.bump() {
-                None => return Token { kind: Kind::Error, span: a.span.merge(end) }, // unterminated
-                Some(c) if c.value == '"' => return Token { kind: Kind::Str, span: a.span.merge(c.span) },
+                None => {
+                    return Token {
+                        kind: Kind::Error,
+                        span: a.span.merge(end),
+                    };
+                } // unterminated
+                Some(c) if c.value == '"' => {
+                    return Token {
+                        kind: Kind::Str,
+                        span: a.span.merge(c.span),
+                    };
+                }
                 Some(c) if c.value == '\\' => match self.bump() {
-                    None => return Token { kind: Kind::Error, span: a.span.merge(c.span) },
+                    None => {
+                        return Token {
+                            kind: Kind::Error,
+                            span: a.span.merge(c.span),
+                        };
+                    }
                     Some(d) => end = d.span,
                 },
                 Some(c) => end = c.span,
@@ -200,7 +269,10 @@ impl<'a> Lexer<'a> {
         let mut end = a.span;
         // For a `-0x…`/`-0b…` (the `minus` path, `a` is the `-`), consume the `0` so the radix
         // prefix `x`/`b` becomes the current char, exactly as when `a` is the bare `0`.
-        if a.value == '-' && self.peek() == Some('0') && matches!(self.peek2(), Some('x' | 'X' | 'b' | 'B')) {
+        if a.value == '-'
+            && self.peek() == Some('0')
+            && matches!(self.peek2(), Some('x' | 'X' | 'b' | 'B'))
+        {
             end = self.bump().unwrap().span; // the `0`
         }
         // radix prefix: current char is x/X/b/B, and the char before it was `0` (either `a` itself,
@@ -211,7 +283,10 @@ impl<'a> Lexer<'a> {
             while matches!(self.peek(), Some(c) if c.is_ascii_hexdigit() || c == '_') {
                 end = self.bump().unwrap().span;
             }
-            return Token { kind: Kind::Int, span: a.span.merge(end) };
+            return Token {
+                kind: Kind::Int,
+                span: a.span.merge(end),
+            };
         }
         let mut is_float = false;
         // integer part (a may itself be a digit, or the leading `-`).
@@ -250,7 +325,10 @@ impl<'a> Lexer<'a> {
             }
         }
         let kind = if is_float { Kind::Float } else { Kind::Int };
-        Token { kind, span: a.span.merge(end) }
+        Token {
+            kind,
+            span: a.span.merge(end),
+        }
     }
 
     /// An identifier word (`a` is its first char): alphanumerics/`_`/non-ASCII, with kebab `-`
@@ -269,7 +347,10 @@ impl<'a> Lexer<'a> {
                 _ => break,
             }
         }
-        Token { kind: Kind::Ident, span: a.span.merge(end) }
+        Token {
+            kind: Kind::Ident,
+            span: a.span.merge(end),
+        }
     }
 }
 
@@ -295,7 +376,10 @@ mod tests {
     use super::*;
 
     fn kinds(src: &str) -> Vec<Kind> {
-        Lexer::new(src).map(|t| t.kind).filter(|k| !k.is_trivia()).collect()
+        Lexer::new(src)
+            .map(|t| t.kind)
+            .filter(|k| !k.is_trivia())
+            .collect()
     }
 
     fn spanned_text(src: &str) -> Vec<(&str, Kind)> {
@@ -318,7 +402,10 @@ mod tests {
 
     #[test]
     fn words_are_ident_not_keywords() {
-        assert_eq!(kinds("let if match true false and or else"), vec![Kind::Ident; 8]);
+        assert_eq!(
+            kinds("let if match true false and or else"),
+            vec![Kind::Ident; 8]
+        );
     }
 
     #[test]
@@ -326,18 +413,37 @@ mod tests {
         assert_eq!(
             kinds("a <= b << c >= d >> e => f -> g"),
             vec![
-                Kind::Ident, Kind::Le, Kind::Ident, Kind::Shl, Kind::Ident, Kind::Ge, Kind::Ident,
-                Kind::Shr, Kind::Ident, Kind::FatArrow, Kind::Ident, Kind::Arrow, Kind::Ident,
+                Kind::Ident,
+                Kind::Le,
+                Kind::Ident,
+                Kind::Shl,
+                Kind::Ident,
+                Kind::Ge,
+                Kind::Ident,
+                Kind::Shr,
+                Kind::Ident,
+                Kind::FatArrow,
+                Kind::Ident,
+                Kind::Arrow,
+                Kind::Ident,
             ]
         );
     }
 
     #[test]
     fn wrapping_operators() {
-        assert_eq!(kinds("a +% b -% c *% d"), vec![
-            Kind::Ident, Kind::PlusPct, Kind::Ident, Kind::MinusPct, Kind::Ident, Kind::StarPct,
-            Kind::Ident,
-        ]);
+        assert_eq!(
+            kinds("a +% b -% c *% d"),
+            vec![
+                Kind::Ident,
+                Kind::PlusPct,
+                Kind::Ident,
+                Kind::MinusPct,
+                Kind::Ident,
+                Kind::StarPct,
+                Kind::Ident,
+            ]
+        );
     }
 
     #[test]
@@ -370,11 +476,20 @@ mod tests {
 
     #[test]
     fn comments_and_docs() {
-        assert_eq!(spanned_text("a // c\nb"), vec![("a", Kind::Ident), ("b", Kind::Ident)]);
+        assert_eq!(
+            spanned_text("a // c\nb"),
+            vec![("a", Kind::Ident), ("b", Kind::Ident)]
+        );
         let toks: Vec<_> = Lexer::new("// hello\n").collect();
         assert_eq!(toks[0].kind, Kind::LineComment);
-        assert_eq!(&"// hello\n"[toks[0].span.start..toks[0].span.end], "// hello");
-        assert_eq!(Lexer::new("/// doc\n").next().unwrap().kind, Kind::DocComment);
+        assert_eq!(
+            &"// hello\n"[toks[0].span.start..toks[0].span.end],
+            "// hello"
+        );
+        assert_eq!(
+            Lexer::new("/// doc\n").next().unwrap().kind,
+            Kind::DocComment
+        );
     }
 
     #[test]
@@ -386,7 +501,10 @@ mod tests {
 
     #[test]
     fn quasiquote_sigils() {
-        assert_eq!(kinds("`{ x }"), vec![Kind::Backtick, Kind::LBrace, Kind::Ident, Kind::RBrace]);
+        assert_eq!(
+            kinds("`{ x }"),
+            vec![Kind::Backtick, Kind::LBrace, Kind::Ident, Kind::RBrace]
+        );
         assert_eq!(kinds(",x"), vec![Kind::Comma, Kind::Ident]);
         assert_eq!(kinds(",@xs"), vec![Kind::UnquoteSplice, Kind::Ident]);
     }
