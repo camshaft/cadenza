@@ -1402,24 +1402,24 @@ mod recursion {
     }
 
     #[test]
-    fn an_unannotated_recursive_def_still_declines() {
-        // The corpus shape `(def (sum-to n) …)` — an UNANNOTATED param needs the connected solve (A2),
-        // so it DECLINES cleanly (no component), never miscompiles. Pins the honest boundary of B1.
-        let out = crate::compile::compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "main",
-                crate::codec::encode(&parse(
-                    "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
-                )),
-            )],
-            &[crate::backend::Target::Wasm],
+    fn an_unannotated_recursive_def_runs_via_a2() {
+        // The corpus shape `(def (sum-to n) …)` — an UNANNOTATED recursive param, inferred `Int64` by
+        // the connected solve (A2, `solve_recursive_params`). Where B1 declined, it now COMPILES and
+        // RUNS: sum-to(3) = 6. This is the case the recursive corpus rides.
+        let bytes = component(
+            "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
         );
-        assert!(
-            out.artifact(crate::backend::Target::Wasm.artifact_kind())
-                .is_none(),
-            "an unannotated recursive def must decline, not compile"
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 6);
+    }
+
+    #[test]
+    fn unannotated_mutual_recursion_runs_via_a2() {
+        // Mutual recursion with UNANNOTATED params — each param solved independently from its own body
+        // (`(= n 0)`, `(- n 1)`), the cross-call passing an integer. even(10) → true → 1.
+        let bytes = component(
+            "(module m (def (even n) (if (= n 0) true (odd (- n 1)))) (def (odd n) (if (= n 0) false (even (- n 1)))) (def (main) (if (even 10) 1 0)) (export main))",
         );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
     }
 }
 

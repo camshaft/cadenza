@@ -167,6 +167,24 @@ pub struct Db {
     /// `build_cache`. (Foundation for ANF step 2 — see `implementation/DESIGN-anf-step2-runtime-functions.md`.)
     pub(crate) def_schemes: std::collections::HashMap<usize, Option<crate::ty::Scheme>>,
 
+    /// Memo of an UNANNOTATED RECURSIVE def's parameter types, solved by the connected def-body solve
+    /// (`infer::solve_recursive_params` — ANF step 2 / A2). Keyed by the parameter's NAME occurrence
+    /// (the `Param` binder). A recursive def cannot inline, so its parameters need machine types to
+    /// cross to a wasm function; unlike an annotated param (whose type is its annotation) or a
+    /// non-recursive one (which inlines at its call site), a recursive unannotated param's type is
+    /// INFERRED from its uses in the body + call sites by a single threaded-`Subst` solve — the one
+    /// place inference is a connected solve rather than the per-node column read. `type_of` of such a
+    /// `Param` reads this map (triggering the solve on first demand); the solve fills every parameter of
+    /// the def at once. Order-independent (unification is), so the two ends agree regardless of demand
+    /// order. A pure function of the fixed def structure, so it caches like `def_schemes`.
+    pub(crate) param_types: std::collections::HashMap<StructId, crate::ty::Ty>,
+
+    /// Guard against re-entering the recursive-parameter solve for a def already being solved — the
+    /// solve types the body with a LOCAL env (not `type_of`), so a self-call reads the provisional
+    /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
+    /// mid-solve returns without recomputing. Holds the def indices whose solve is on the stack.
+    pub(crate) solving_params: std::collections::HashSet<usize>,
+
     /// The set of `let`-binding INITIALIZER occurrences that `lower` decided to KEEP as an A-normal
     /// `Core::Let` binding — a runtime value used more than once, named once so it is computed once
     /// (`reference-compiler.md` §The Core Representation Is In A-Normal Form). Populated while lowering
@@ -227,6 +245,8 @@ impl Db {
             rec_worklist: Vec::new(),
             kept_bindings: std::collections::HashSet::new(),
             def_schemes: std::collections::HashMap::new(),
+            param_types: std::collections::HashMap::new(),
+            solving_params: std::collections::HashSet::new(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),

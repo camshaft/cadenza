@@ -36,6 +36,9 @@ pass	a negative hexadecimal literal negates its value
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a parameter carries a type annotation in the signature
 pass	a record is constructed and a field is read
+pass	a recursive def computes over its argument
+pass	a recursive predicate with the self-call in the else branch is a Bool condition
+pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bitwise AND masks bits
@@ -51,6 +54,7 @@ pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation of a negative value uses two's complement and never traps
 pass	a runtime truncation to an unsigned byte keeps the low bits
 pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
@@ -110,10 +114,12 @@ pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the minimum Int64 literal reads as an integer
 pass	the module entrypoint is the def named main regardless of its position
+pass	the other parity of a mutually-recursive pair
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	true is greater than false
 pass	true is not less than false
+pass	two functions defined by mutual recursion compute a result
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
@@ -388,7 +394,6 @@ todo	a record with a duplicate field name is a type error
 todo	a record with a non-adjacent duplicate field name is a type error
 todo	a record with a runtime field is returned as a program result
 todo	a recursive byte walk sums a runtime sequence via Bytes.at and match
-todo	a recursive def computes over its argument
 todo	a recursive def with a match base case computes over its argument
 todo	a recursive emitter dispatches on a sum's variants to build bytes per node
 todo	a recursive fold of a cons-list to bytes is the whole program result
@@ -401,8 +406,6 @@ todo	a recursive function that threads a tuple accumulator returns it
 todo	a recursive function threads two nested handlers' states at once
 todo	a recursive list accumulator grown by push and returned in the base arm stays a list
 todo	a recursive lower from a sum to Bytes assembles its output in match arms
-todo	a recursive predicate with the self-call in the else branch is a Bool condition
-todo	a recursive predicate with the self-call in the then branch is a Bool condition
 todo	a recursive reader decodes a CBOR application tree and evaluates it by head index
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
@@ -448,7 +451,6 @@ todo	a runtime-scrutinee match with a bare-binder first arm and a differently-ty
 todo	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 todo	a scalar element is projected directly from a function's runtime tuple result
 todo	a scalar element is projected from a let-bound runtime tuple
-todo	a self-recursive Bool-returning function whose recursive call is the then-branch
 todo	a sequencing block discards a pure compound intermediate
 todo	a sequencing block discards a pure list intermediate
 todo	a sequencing block whose last form is unit yields unit
@@ -886,7 +888,6 @@ todo	the length of a slice is the slice's byte count
 todo	the maximum unsigned 8-bit value is its per-width bound
 todo	the minimum signed 8-bit value is its per-width bound
 todo	the number of elements counts distinct elements
-todo	the other parity of a mutually-recursive pair
 todo	the prelude binds Constructor values not pre-applied Sums
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
@@ -914,7 +915,6 @@ todo	two effects each declaring a same-named operation do not collide
 todo	two empty byte sequences are equal
 todo	two empty strings are equal
 todo	two equal chars compare equal
-todo	two functions defined by mutual recursion compute a result
 todo	two host calls consume their responses in order
 todo	two lists are concatenated into one flat list
 todo	two lists of different length are unequal, not a type error
