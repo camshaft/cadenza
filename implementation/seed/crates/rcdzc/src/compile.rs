@@ -88,12 +88,17 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
     }
 }
 
-/// Every reached fault across the reachable definitions: a compile-provable poison plus a type
-/// mismatch, per definition body.
-fn collect_faults(db: &mut Db, layout: &Layout) -> Vec<Reject> {
+/// Every fault across the program's definitions. Well-formedness — scope resolution and type
+/// checking — is UNCONDITIONAL: it holds over EVERY top-level definition's body, not only the ones
+/// reachable from an export, because a program is well-formed or not regardless of what is asked to
+/// compile (`core-semantics.md` §Binding Is Lexical — the unbound-name rule is not gated on
+/// reachability; an ill-formed uncalled sibling definition is still rejected). Emission stays
+/// reachability-driven (the `layout` decides what is emitted); only well-formedness is total.
+fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
     let mut faults = Vec::new();
-    // Reachable definition bodies, in emission order.
-    let bodies: Vec<StructId> = layout.exports.iter().map(|e| e.body).collect();
+    // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
+    // demands each definition once, which is what well-formedness requires.)
+    let bodies: Vec<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
     for body in bodies {
         collect_reached_poisons(db, body, &mut faults);
         faults.extend(type_errors(db, body));
