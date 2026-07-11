@@ -1,11 +1,19 @@
 # ANF step 2 — runtime functions + recursion (`Core::Call`, reachability, recursion typing)
 
-**Status (updated 2026-07-11):** A1 landed `@376acc3` (def_scheme), B1 landed `@6fbe023` (Core::Call +
-reachability — ANNOTATED recursive functions run end-to-end). **A2 remains** (unannotated-parameter
-inference — the connected def-body solve) as the deferred miscompile-prone piece; it is what ungates
-the corpus's unannotated recursive cases. Written 2026-07-11 on branch `rcdzc-rewrite`. Companion to
-`scope-next/implementation/DESIGN-anf-rewrite.md` (§7 recommends introducing ANF *with* runtime
-functions). Line numbers were landmarks at `073efda`.
+**Status (updated 2026-07-11): ALL OF STEP 2 LANDED.** A1 `@376acc3` (def_scheme), B1 `@6fbe023`
+(Core::Call + reachability — annotated recursion), **A2 `@8f9948c` (unannotated recursive-parameter
+inference — the connected def-body solve)**. Gate 115→121 pass, 0 fail (the recursive corpus cases:
+self-recursion, both Bool-predicate branch orders, mutual recursion). Written 2026-07-11 on branch
+`rcdzc-rewrite`. Companion to `scope-next/implementation/DESIGN-anf-rewrite.md` (§7 recommends
+introducing ANF *with* runtime functions). Line numbers were landmarks at `073efda`.
+
+> **A2 outcome (the miscompile-prone piece, done carefully):** `infer::solve_recursive_params` — a
+> single threaded-`Subst` connected solve over a recursive def's body, gated on `eval::is_recursive`
+> (non-recursive defs still inline). Constraints from operator schemes + self-calls; ground numeric→
+> Int64, unconstrained→Any (declines, never guesses). Order-independence tested via two demand orders.
+> Key enabling fix: `type_of` no longer memoizes a provisional `Any` (else a param typed before its
+> solve freezes stale). The `match`-based recursive cases (`fib`/`fact`) still need the match engine
+> (step 3), not A2.
 
 > **B1 outcome:** annotated `sum-to`/`fac`/`all-lt`/`all-ge`/mutual `is-even`/`is-odd` all compile and
 > run under wasmtime; overflow traps across call frames; an unannotated recursive def declines cleanly.
