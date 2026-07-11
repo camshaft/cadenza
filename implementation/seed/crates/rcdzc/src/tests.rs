@@ -722,25 +722,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Compile `(module m (def (main) BODY) (export main))` — where BODY uses the value heap — and RUN it
-/// composed with the runtime via `cdz-run`, returning the rendered result string. `None` if the runtime
-/// wasm is unavailable (the caller SKIPS). Panics on a compile error or a trap (a real failure).
-fn run_heap_main(body: &str) -> Option<String> {
-    use crate::testkit::parse;
-    let runtime = find_runtime_wasm()?;
-    let src = format!("(module m (def (main) {body}) (export main))");
-    let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: Vec::new(),
-        runtime: Some(runtime),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => Some(s),
-        cdz_run::Outcome::Trap(t) => panic!("composed run trapped: {t}"),
-    }
-}
-
 /// A `let`-bound tuple built ONCE from runtime params, then projected twice and summed — the composed
 /// heap round-trip. `t` is multi-use, so it is kept as a `Core::Let` binding (a real `arr-alloc`), and
 /// each `(. t i)` is a runtime `arr-get` (the binding is opaque to the fold). The two elements sum back
