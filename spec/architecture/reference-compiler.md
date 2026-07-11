@@ -216,6 +216,18 @@ cannot reduce to a value is refused observably rather than by the compiler faili
 (§An Unbounded Handler Context is the effect-specific instance of this rule; §A Guarded Operation Reserves
 Bounded Scratch Or Declines is its emission-side sibling).
 
+The compiler MUST determine that a definition's reduction would not terminate by a static analysis of the
+resolved call graph performed without reducing — a definition reachable from itself through the call edges its
+body names — and MUST make that determination at the single point every application funnels through, so that a
+definition that would not reduce to a normal form is declined *before* its reduction begins rather than after a
+proxy for non-termination trips. A reduction-step-count bound MUST NOT be the primary detector of
+non-termination, because a body that branches into several self-calls per level floods the reduction long
+before a step bound is reached; and the set of bodies currently active on the reduction stack MUST NOT be the
+detector, because a legitimate non-recursive nesting of one body within itself is not a cycle in the call graph
+and rejecting it would refuse a terminating program. A reduction-step bound MAY remain as a backstop for a
+non-recursive reduction that nests unexpectedly deep, but the call-graph property is the detector the decline
+rests on.
+
 ### A Value Built At Compile Time Is Indistinguishable From One Built At Run Time
 
 A value the evaluator constructs at compile time MUST be indistinguishable, to every operation that later
@@ -305,9 +317,30 @@ A type MUST be an ordinary value carried and reduced by the same machinery as an
 generic instantiation is an ordinary application the one evaluator reduces rather than a distinct construct
 ([type-system.md §Generics Are Type-Valued Parameters](../capabilities/type-system.md)).
 
+A parametric type constructor MUST be a built-in operation value applied through the ordinary application
+mechanism, not a user-level function value the evaluator β-reduces, because a compile-time reduction cannot
+assemble a type value by substitution — a type value is an inert leaf under substitution, so there is no
+reduction that turns a function applied to a width into the type it denotes — and only a built-in operation
+that constructs a type from its arguments can produce one, so a type constructor bottoms out on such an
+operation reached by the one application path rather than on a lambda that cannot build its result. The
+operation that builds a type from a given width and the site that reads a type annotation MUST share one
+type-building operation, so that the type a constructor produces and the type an annotation checks against
+cannot drift.
+
+A type annotation of an expression MUST be represented as a dedicated node that carries the expression and the
+type expression, not as a function value applied to the two, because a function that returns its first
+argument discards the second, whereas an annotation must turn the *value* of the type expression into a
+*constraint* on the expression's type — a construct the type pass unifies and the lowering erases, distinct
+from any function application.
+
 A pattern MUST be represented as an ordinary expression of the representation it appears in, distinguished
 only by a binder leaf and a wildcard leaf, so that a pattern is resolved and lowered by the same passes as
 the equivalent constructing expression rather than by a separate pattern construct.
+
+A capture-avoiding substitution the evaluator performs to reduce an application MUST rely on the arguments
+being closed in the caller's scope for its hygiene rather than on renaming bound names on every reduction, so
+that a reduction that only ever substitutes closed arguments carries no name-freshening machinery it does not
+need, while a reduction that could substitute an open term is refused rather than performed unhygienically.
 
 ### An Unrealized Built-In Field Declines Where A Missing User Field Rejects
 
@@ -394,6 +427,18 @@ The compiler MUST NOT classify exports into privileged kinds distinguished by an
 signatures, so that no export is recognized by name or by the shape of its body where the signature already
 carries the distinction.
 
+### A Type Without A Boundary Representation Declines At The Boundary
+
+A type that has no representation in the boundary's own type vocabulary — a value type the target's interface
+format cannot carry faithfully — MUST cause the compiler to decline the export or import that would cross it,
+naming the type, rather than substitute a wider or approximate boundary type that would let the value cross
+under a representation that does not enforce its invariant, so that a type usable internally but with no
+faithful wire form forces an explicit conversion to a type that has one rather than silently crossing as
+something it is not. This keeps the boundary a place where the host sees only values its own type vocabulary
+constrains, consistent with the boundary being the declared signature (§The Exported Interface Is The Declared
+Signature) and with a decline being a first-class outcome produced where the decision is made (§A "No" Is A
+First-Class Value Produced Where The Decision Is Made).
+
 ### An Export Name Crosses The Boundary Verbatim
 
 The compiler MUST emit an export under the name the source declares for it, without renaming, so that the
@@ -458,6 +503,35 @@ less (the byte-identity cost of over-reserving is recorded in
 An operation whose correct emission would need control flow the flat rung and a bounded scratch set cannot
 express MUST decline rather than emit a plausible sequence, so that a construct awaiting a later phase is a
 clean decline rather than a wrong result (§A "No" Is A First-Class Value Produced Where The Decision Is Made).
+
+### A Runtime Arithmetic Operation Traps On Overflow Through A Width-Generic Guard
+
+An arithmetic operation whose operands are not all known at compile time — one that survives to run time
+because a value crosses into it from a source the evaluator cannot fold, such as a boundary parameter — MUST
+be emitted so that it traps when its true result leaves the operand type, rather than as the target's bare
+instruction whose out-of-range result silently wraps, so that the runtime outcome of an unqualified operation
+agrees with the compile-time outcome the poison rule already fixes (§A Compile-Provable Trap Fails The Build)
+and an overflow the compiler could not prove is a runtime trap rather than a wrong value.
+
+The guard an arithmetic operation emits MUST be generic over the operand's type: a value of a given width is
+carried in the smallest machine slot that holds it, and the emitted sequence is the machine operation together
+with the check that the true result lies within the operand type's range for that width and signedness, so
+that one recipe traps correctly at every width and signedness rather than a hand-written guard per width, and
+the machine slot is a representation choice invisible to the trapping contract.
+
+### A Truncating Conversion Is One Operation Whose Target Is Its Solved Type
+
+A conversion that reinterprets a value into another integer type by keeping its low bits MUST be one operation
+generic in its source, whose target width and signedness are read from the conversion's already-solved type at
+lowering, rather than one operation per source-and-target pair, so that the number of conversion operations
+grows with the number of types rather than with their square and the target is determined by the type the
+value is solved to rather than by a distinct operation per destination (§The Machine Representation Is A
+Read-Off Of The Solved Type).
+
+A truncating conversion MUST NOT trap, so that a conversion the author wrote to discard high bits is total and
+a genuinely fallible narrowing is instead the operation that reports the out-of-range case as an absent value,
+keeping the trapping outcome reserved for an operation whose overflow denotes a defect rather than an intended
+truncation ([numeric-model.md](../capabilities/numeric-model.md)).
 
 ### The Component Envelope Is Derived From The Runtime Contract
 

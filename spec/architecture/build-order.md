@@ -40,6 +40,21 @@ The reconciliation: **Stage 0 builds a thin vertical slice through every phase a
 Every later stage then **deepens one phase** against a gate that already exists. The foundation is built right
 from the first slice; capability breadth grows through the gate. The order below is the deepening sequence.
 
+**A deep vertical slice through one type is the forcing function that validates the foundation.** The thin
+Stage-0 slice proves the phases connect, but a scalar program that only *folds* to a constant never exercises
+the parts of the system a value must survive to reach: the component boundary, the runtime trap contract, and
+the machine representation. Those are exactly the decisions a from-scratch build is tempted to defer and then
+must rip out — because a deferred boundary or trap decision is one that features built on top of it depended
+on. So immediately after the core and the one evaluator exist, the plan drives **one scalar type all the way to
+runtime with full support** — operands crossing the boundary, overflow trapping at run time, a truncating
+conversion — *before* patterns, the completed backend, functions, and effects are layered on. This is not the
+late-stage *breadth* of Stage 8 (many widths, numeric completeness), which is cheap because the substrate
+holds; it is early-stage *depth*, whose whole purpose is to stress the substrate against a value that runs and
+surface the whole-system questions while the core is still at its thinnest. The recorded grounding is that
+pushing integers end-to-end to runtime is the increment that drove thinking about the system as a whole and
+about what had to exist before anything was layered on that would otherwise be ripped out
+([pushing integers end-to-end to runtime is the forcing function that validates the foundation](../learnings/2026-07-11-pushing-integers-end-to-end-to-runtime-is-the-forcing-function-that-validates-the-foundation.md)).
+
 ## The Spine — Disciplines Held From Genesis Through Every Stage
 
 These are not stages; they are established in Stage 0 and hold unbroken through all that follow. A stage is not
@@ -175,7 +190,7 @@ compile-time-foldable case (no runtime closure, no capture), before the harder f
 returned closures) that need β-reduction through the evaluator. Crucially, an arithmetic intrinsic is **generic
 over the integer type**: `+` types at `(Int w) → (Int w) → (Int w)` for a single width variable `w`, so it
 unifies its operands' widths and signedness rather than hard-coding `Int64` — the first real exercise of a type
-variable and the same width-parametric machinery Stage 7 generalizes to every width. Getting a generic-over-width
+variable and the same width-parametric machinery Stage 8 generalizes to every width. Getting a generic-over-width
 `+` working end-to-end (fold `(+ 2 3)` to `5`, reject a width mismatch as a conflicting use) is the recommended
 first foothold: it is the intersection of the prelude discipline (Stage 1 — the operation is a prelude value,
 lowered at selection), real unification (this stage — one width variable), and the one evaluator (Stage 3 — the
@@ -193,7 +208,7 @@ collection and reachability; the erasure fence.
 
 **Depends on.** The solved type column (Stage 2), because lowering reads types and monomorphization reduces
 type-valued applications. The evaluator is built here because it is the one place compile-time meaning lives,
-and both effects (Stage 6) and breadth-as-data (Stage 7) reduce *through* it — it must exist before them.
+and both effects (Stage 7) and breadth-as-data (Stage 8) reduce *through* it — it must exist before them.
 
 **Realizes.** [reference-compiler.md §The Core Representation Is In A-Normal Form](./reference-compiler.md),
 [§Compile-Time Evaluation Is One Reduction Tier](./reference-compiler.md), and its trap / reachability /
@@ -215,7 +230,50 @@ A fold that drops a dead branch also dropping that branch's type-check — value
 rejection-preserving
 ([a fold that eliminates a branch must not eliminate its type-check](../learnings/2026-07-07-a-fold-that-eliminates-a-branch-must-not-eliminate-its-type-check.md)).
 
-### Stage 4 — The Pattern Engine: One Set Of Probes And Binders
+### Stage 4 — One Scalar Type End-To-End To Runtime: The Foundation-Validating Depth Slice
+
+**Establishes.** One scalar type driven to full runtime completeness on the scalar backend Stage 0 stood up:
+a runtime operand that the evaluator cannot fold (a value arriving through an exported parameter, since every
+call to a definition applied to constants folds away — §depends-on); an arithmetic operation that *traps* on
+runtime overflow through a width-generic guard rather than emitting the target's silently-wrapping instruction;
+a boundary that carries only types with a faithful wire form and declines a type that has none; and a
+truncating conversion that is one operation whose target is its solved type and never traps. This is *depth*,
+not breadth — one type, all the way — and its purpose is to stress the boundary, the trap contract, and the
+machine representation while the core is at its thinnest.
+
+**Depends on.** The type column (Stage 2), because the width and signedness a guard and a boundary valtype read
+are solved facts, and the core and evaluator (Stage 3), because a runtime operand is defined by what the
+evaluator *cannot* fold — a call to a definition applied to constants monomorphizes away, so the only shape
+that forces a value to survive to run time is an exported *parameterized* entry. It needs no more backend than
+Stage 0's scalar emitter (no value heap yet), and it deliberately precedes patterns, the completed backend,
+functions, and effects, because those layer onto boundary and representation decisions this slice validates.
+
+**Realizes.** [reference-compiler.md §A Runtime Arithmetic Operation Traps On Overflow Through A Width-Generic
+Guard](./reference-compiler.md), [§A Truncating Conversion Is One Operation Whose Target Is Its Solved Type](./reference-compiler.md),
+[§A Type Without A Boundary Representation Declines At The Boundary](./reference-compiler.md); and
+[prelude-and-resolution.md §A Numeric Width Is A Type Record](./prelude-and-resolution.md) (signedness, like
+width, is determined by unification).
+
+**Done when.** An exported function taking a scalar parameter runs under the boundary and returns the right
+value; an unqualified operation whose runtime result overflows the operand type *traps* rather than wrapping
+(the runtime sibling of the compile-provable-trap rule, checked at more than one width); a type that has no
+faithful boundary form declines the export naming the type rather than crossing as a wider one; and a
+truncating conversion of a runtime value keeps its low bits without trapping. Signedness behaves as a solved
+axis: an annotation grounds a literal's signedness (a literal annotated to an unsigned type does not clash with
+a signed default) because the annotation is unified in, not special-cased.
+
+**Watch out for.** Emitting the target's bare arithmetic instruction — its out-of-range result silently wraps,
+a miscompile invisible until a value actually runs (the const-fold path is already correct, so the gap hides
+until a runtime operand exists) ([pushing integers end-to-end to runtime is the forcing function that validates
+the foundation](../learnings/2026-07-11-pushing-integers-end-to-end-to-runtime-is-the-forcing-function-that-validates-the-foundation.md)).
+Modeling signedness as a fixed field a literal is assigned rather than a unification axis — the fixed field
+clashes the first time an annotation grounds a literal the other way, and the range-special-case that seems to
+fix it does not generalize; make signedness a variable like width. A conversion operation per source-and-target
+pair — it explodes with the square of the type count; one operation with the target read off the solved type
+does not. Believing a runtime operand exists without an exported parameter — a nullary entry over constants
+folds to a constant and never exercises the runtime path.
+
+### Stage 5 — The Pattern Engine: One Set Of Probes And Binders
 
 **Establishes.** The one match engine — an arm is a conjunction of probes and binders, a match a top-to-bottom
 disjunction — with sum and product matching retrofitted onto it first for parity, then each further category
@@ -223,8 +281,8 @@ added as a new kind of probe. A binding position is a single-arm irrefutable mat
 decline triad at the decision point, and whole-pattern (nested) linearity.
 
 **Depends on.** Resolution's pattern mode (Stage 1), the type column for exhaustiveness (variant counts, Stage
-2), and the core to lower into (Stage 3). It is foundational for real programs but not for the thin slice, so
-it deepens after the core exists.
+2), and the core to lower into (Stage 3). It is foundational for real programs but not for the depth slice, so
+it deepens after the core and the scalar-to-runtime slice (Stage 4) exist.
 
 **Realizes.** [reference-compiler.md §Matching Is One Engine Of Probes And Binders](./reference-compiler.md);
 [prelude-and-resolution.md §A Pattern Name Binds Unless It Names A Constructor](./prelude-and-resolution.md).
@@ -242,7 +300,7 @@ reorder a later arm ahead of an earlier one. A binding-position pattern's refuta
 different code than the equivalent single-arm non-exhaustive match — the desugared and direct paths must agree
 ([exhaustiveness keys on the arm set, not the scrutinee value](../learnings/2026-07-07-exhaustiveness-hides-a-bug-in-the-static-scrutinee-present-arm-corner.md)).
 
-### Stage 5 — One Backend To Completion, And The Value-Heap Runtime
+### Stage 6 — One Backend To Completion, And The Value-Heap Runtime
 
 **Establishes.** Instruction selection completed to the full value language, filling the artifact column; the
 value-heap runtime the backend emits against — the tagless uniform cell, consume/borrow, canonical value
@@ -250,8 +308,10 @@ forms, inline handles, and the persistent collections; the component envelope; a
 This deepens Stage 0's trivial scalar backend into a complete one.
 
 **Depends on.** The core and the evaluator (Stage 3), which the backend reads to fill the artifact column, and
-the pattern engine (Stage 4), whose matches it emits. Compound *types* exist from Stage 2 and compound *const*
-values from Stage 3; this stage adds their *runtime* construction and the runtime that holds them.
+the pattern engine (Stage 5), whose matches it emits. Compound *types* exist from Stage 2 and compound *const*
+values from Stage 3; this stage adds their *runtime* construction and the runtime that holds them. The scalar
+runtime path, boundary, and trap contract this backend generalizes to compound values were validated at scalar
+depth in Stage 4.
 
 **Realizes.** [reference-compiler.md §Instruction Selection Emits Against A Fixed Runtime And Envelope](./reference-compiler.md)
 and §The Reader, Printer, And Renderer Are Built As Duals; [value-heap-runtime.md](./value-heap-runtime.md) in
@@ -274,7 +334,7 @@ collection comparing unequal across the const/runtime boundary
 A shared scratch-local mechanism over-reserving and breaking byte-identity for the client that needs less
 ([sharing the scratch-local mechanism cost right-shift its byte-identity](../learnings/2026-07-07-sharing-the-scratch-local-mechanism-cost-right-shift-its-byte-identity.md)).
 
-### Stage 6 — Effects: Classify First, Resolve By Monomorphization
+### Stage 7 — Effects: Classify First, Resolve By Monomorphization
 
 **Establishes.** Effects as records of their operations; classification of each handler arm by resumption shape
 (tail-resumptive-once / never-resumes / general); tail-resumptive lowering to plain code with no continuation
@@ -282,7 +342,7 @@ object; the discharging handler as a compile-time constant resolved by inlining 
 the routing-agnostic declaration surface and the manifest as the computed union of delegated, reached effects.
 
 **Depends on.** The core and evaluator (Stage 3) — effects lower *through* the core and reuse the
-monomorphization machinery — and the completed backend (Stage 5) to emit the manifest boundary. It is last of
+monomorphization machinery — and the completed backend (Stage 6) to emit the manifest boundary. It is last of
 the mechanism stages because it is the deepest reuse of everything below it.
 
 **Realizes.** [reference-compiler.md §Effects Are Classified First And Resolved By Monomorphization](./reference-compiler.md),
@@ -303,15 +363,20 @@ A decline that leaks into a valid component that traps at run time — the most 
 Recursive-perform state carried through shared mutable storage rather than threaded through the specialized
 call boundary.
 
-### Stage 7 — Breadth As Data: Widths, Collections, Numeric Completeness
+### Stage 8 — Breadth As Data: Widths, Collections, Numeric Completeness
 
-**Establishes.** The remaining value-language breadth — integer widths, the full collection operation sets,
-numeric completeness — added as prelude entries and meta fields rather than new machinery. An integer type is
-`(Int width)`, a record whose meta channel carries its signedness and width; a new width is one prelude entry.
+**Establishes.** The remaining value-language breadth — the *rest* of the integer widths beyond the one Stage 4
+drove to runtime, the full collection operation sets, numeric completeness — added as prelude entries and meta
+fields rather than new machinery. An integer type is `(Int width)`, a record whose meta channel carries its
+signedness and width; a new width is one prelude entry. This stage is the breadth that Stage 4's depth made
+cheap: the guard recipe, boundary rule, and conversion shape are already width-generic, so each further width
+is a map entry, not new machinery.
 
 **Depends on.** Records-everywhere (Stage 1), so each addition is a map entry; the type column (Stage 2) for
-the no-implicit-promotion rule; and the completed backend (Stage 5) to emit the width-selected machine
-operations. It comes last because it is the *payoff* of the foundation — cheap because the substrate holds.
+the no-implicit-promotion rule; the scalar-to-runtime slice (Stage 4), whose width-generic guard, boundary, and
+conversion each further width reuses unchanged; and the completed backend (Stage 6) to emit the width-selected
+machine operations for compound and collection values. It comes last because it is the *payoff* of the
+foundation — cheap because the substrate holds.
 
 **Realizes.** [prelude-and-resolution.md §A Numeric Width Is A Type Record, Its Machine Operation Read From Its
 Meta](./prelude-and-resolution.md); [numeric-model.md](../capabilities/numeric-model.md);
@@ -327,13 +392,31 @@ generalization of the checked-integer core.
 discipline, not a way to add the width. An implicit promotion between widths — there is none; a mismatch is an
 explicit-conversion site or a rejection.
 
+## What Is Not Yet Built — The Honest Frontier
+
+A reproduction guide is only useful if it distinguishes the target shape from the frontier the reference
+implementation has actually reached, so that a rebuild does not assume a mechanism it will not find and does not
+mistake a deliberate deferral for an omission. As of this writing the reference implementation has driven the
+scalar-to-runtime depth slice (Stage 4) to completion but has **not** yet built *runtime user functions*: every
+call to a user-defined definition is reduced away by the one compile-time evaluator (a definition applied to
+constants monomorphizes to its result), so there is no runtime call instruction, no runtime function table, and
+a *recursive* user definition — which the evaluator cannot reduce to a normal form — **declines** rather than
+emitting a runtime call (§The Evaluator Bounds Its Own Reduction, detected by the static call-graph analysis).
+The compile-time-reduction tier therefore stands alone: it is the whole of the function story until the
+runtime-call capability is built, at which point recursion stops declining and becomes a runtime call the
+layout reaches past the exports. A rebuild should expect this ordering — the evaluator's reduction of calls is
+real and load-bearing from Stage 3, while runtime function emission is a later capability — rather than assume a
+runtime call path exists from the start. The named-binding A-normalization of the core (naming a shared runtime
+subexpression once) likewise arrives with the stage that first has a non-atomic runtime value to name; until
+then a binding whose value is compile-time structure is copy-propagated away.
+
 ## After The Stages — The Second Backend And The Self-Hosted Generation
 
 The plan above builds *one* compiler, one backend, to the full value language plus effects. Two things follow
 it, each a separate effort against the now-stable architecture rather than a stage of it:
 
 - **A second backend** is added by plugging a new artifact-column producer into the seam
-  ([backends-and-targets.md](./backends-and-targets.md)) — the entire front (Stages 1–4, 6–7) is shared
+  ([backends-and-targets.md](./backends-and-targets.md)) — the entire front (Stages 1–5, 7–8) is shared
   unchanged, and the new backend inherits the front's decline boundaries and may widen them only where its
   target genuinely expresses more. This is why the seam is fixed early even though only one backend is built in
   the ordering: the second is bounded work, not a fork.

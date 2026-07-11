@@ -10,6 +10,37 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [Pushing integers end-to-end to runtime is the forcing function that validates the foundation](./2026-07-11-pushing-integers-end-to-end-to-runtime-is-the-forcing-function-that-validates-the-foundation.md)
+  — the operator's "get integers really solid to runtime before layering anything on" push, and *why* it drove
+  whole-system thinking. A thin scalar slice that only *folds* never exercises the boundary, the runtime trap
+  contract, or the machine representation; driving *one* type all the way to runtime surfaces every decision a
+  from-scratch build is tempted to defer and then must rip out — signedness-is-a-fixed-field (wrong: it is a
+  unification variable like width, so `(: 200 UInt8)` grounds by unify and "annotations constrain, never
+  contradict" falls out for free), overflow-wraps-silently (wrong: a runtime op must trap through a
+  width-generic guard, the const-fold side was already right so the miscompile hid until a value ran),
+  every-width-crosses-the-wire (wrong: a non-aliased width has no boundary form and declines), and
+  a-conversion-per-type-pair (wrong: one `wrap` prim with target read off the solved type, and it never traps —
+  no sharp edges). The through-line: a genuine runtime integer operand only exists behind an exported
+  *parameterized* function (every other call folds), so the arc validated the boundary/trap/representation
+  *before* runtime functions, recursion, records, or effects were built on top. Reframes the build order: one
+  scalar type end-to-end is early foundation-validating *depth*, distinct from late cheap width *breadth*. Drove
+  build-order.md's new §The-Two-Forces principle + new Stage 4, and requirement folds into reference-compiler.md
+  (runtime overflow guard; truncating conversion; boundary-declines-a-typeless-wire-form) and
+  prelude-and-resolution.md (signedness is a unification axis).
+- [A clean-room rebuild needs the refused alternative recorded, not just the right shape](./2026-07-11-a-clean-room-rebuild-needs-the-refused-alternative-not-just-the-right-shape.md)
+  — the operator's test: could you rebuild from the design docs alone, or would you repeat the mistakes? An audit
+  of the columns-rewrite source against the architecture docs found the *shape* right almost everywhere but
+  several requirements stating the correct answer without the *tempting wrong answer they refuse* — so a rebuild
+  re-derives it. Gaps: how to bound evaluator recursion (a static call-graph DFS, NOT a depth bound that explodes
+  on a branching recursive body, NOT an on-stack set that false-positives `(f (f v))`); why a type constructor is
+  a native intrinsic and not a closure (β-reduction can't assemble a type value — a type is inert under
+  substitution); why annotation is a dedicated node not a lambda (a lambda discards the arg annotation must read
+  as a type); β-reduction is capture-safe by *closed arguments*, not α-rename. Also the inverse hazard: several
+  mechanisms in memory/design-docs (a `Core::Let` ANF step, compound collection ctors, a CDZ0305 slot-descending
+  erasure fence) are NOT in the current rewrite source — folding them would write requirements for absent code
+  (violates §XV). The rule: a reproduction requirement with a tempting wrong alternative must name it and why it
+  fails. Drove the "how" fold into §The Evaluator Bounds Its Own Reduction, the intrinsic/annotation reqs in
+  §Nothing Is Privileged By Name, and build-order.md's new §What Is Not Yet Built — The Honest Frontier.
 - [The compiler is columns indexed by node identity — a query is a column read, and the artifact is just the last column](./2026-07-10-the-compiler-is-columns-indexed-by-node-identity-a-query-is-a-column-read.md)
   — the operator named the organizing model for a from-scratch rebuild, sharper than the incremental-computation
   direction the IR-shape research had floated. The compiler's WHOLE STATE is columns (a bunch of `Vec`s) keyed

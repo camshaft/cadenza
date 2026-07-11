@@ -179,6 +179,16 @@ the type name ([numeric-model.md](../capabilities/numeric-model.md), which fixes
 overflow-traps rule per width, the checked-versus-wrapping conversions, the no-implicit-promotion rule that
 two integer types unify only at equal width and signedness).
 
+An integer type's signedness, like its width, MUST be a value the type solver determines under unification —
+each an axis that a literal leaves open and that a use or an annotation grounds — rather than a fixed property
+a literal is assigned before it is used, so that a literal is polymorphic in both signedness and width until a
+context fixes them, an operation that serves both signednesses is one prelude entry generic over a signedness
+variable rather than one entry per signedness, and the rule that an annotation constrains a value's type
+without contradicting it is a consequence of unifying the annotation's signedness and width into the value
+rather than a special case for a literal. Two integer types whose signedness or width are each fixed to
+different values MUST fail to unify (the no-implicit-promotion rule above), so that grounding an axis by
+unification never silently promotes across a genuine mismatch.
+
 ### An Effect Is A Record Of Its Operations, Reached By The One Projection
 
 A declared effect MUST resolve to a record of its operations, and a performed operation MUST be reached by
