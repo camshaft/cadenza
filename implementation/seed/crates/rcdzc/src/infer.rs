@@ -118,6 +118,14 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
 /// head with no type, a non-function head, an arity/unify mismatch — return `Any` so the value column
 /// stays total; the actual FAULT is reported by `type_errors`.
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
+    // A LAMBDA head β-reduces; the application's type is the reduced body's type. (For C's corpus
+    // every function call folds this way; a scheme-based typing of a lambda head arrives with a def's
+    // inferred scheme.)
+    match crate::eval::apply_lambda(db, head, args) {
+        Ok(Some(reduced)) => return type_of(db, reduced),
+        Ok(None) => {}
+        Err(_) => return Ty::Any,
+    }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
@@ -148,6 +156,12 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
+    // A LAMBDA head β-reduces; its faults live in the reduced body, checked when that body is
+    // collected (it is reached from this node's core). So the scheme-based check below is only for a
+    // non-lambda head (an operator).
+    if matches!(crate::eval::apply_lambda(db, head, args), Ok(Some(_))) {
+        return;
+    }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
