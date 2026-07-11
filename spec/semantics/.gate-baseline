@@ -37,7 +37,16 @@ pass	a nested-let chain that reuses each binding folds to one value
 pass	a parameter carries a type annotation in the signature
 pass	a record is constructed and a field is read
 pass	a repeated let binding shadows the earlier one for what follows
+pass	a runtime arithmetic right shift preserves the sign
+pass	a runtime bitwise AND masks bits
+pass	a runtime bitwise OR combines bits
+pass	a runtime bitwise XOR toggles bits
 pass	a runtime conditional selects its then-branch when the runtime condition holds
+pass	a runtime division truncates toward zero
+pass	a runtime greater-than compares by signed order
+pass	a runtime left shift multiplies by a power of two
+pass	a runtime less-than at the integer extremes is signed
+pass	a runtime remainder takes the dividend's sign
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a type annotation consistent with the value is transparent

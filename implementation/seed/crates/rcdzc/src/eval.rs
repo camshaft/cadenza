@@ -40,24 +40,31 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
             let mut env: HashMap<StructId, TyOrWidth> = HashMap::new();
             let mut ty_vars = Vec::new();
             let mut width_vars = Vec::new();
+            let mut sign_vars = Vec::new();
             for &p in &params {
                 let n = fresh.var();
                 // A parameter's kind (type var vs width var) is decided by HOW it is used; we record a
                 // single fresh number and let the use site pick. Track it as both — the body reduction
-                // uses it as a width inside `(Int _)` and as a type elsewhere.
-                env.insert(p, TyOrWidth { num: n });
+                // uses it as a width inside `(Int _)` and as a type elsewhere. A PAIRED fresh sign
+                // variable makes an integer-typed operand generic over signedness too: `(Int a)` in an
+                // operator's type-lambda denotes an integer of width `a` AND this shared sign, so `+`
+                // is `∀(width a, sign s_a). (Int^{s_a}_a) → (Int^{s_a}_a) → (Int^{s_a}_a)` — one
+                // operator serving signed and unsigned (a UInt64+UInt64 grounds `s_a` unsigned; an
+                // Int64/UInt64 mix is a sign conflict, CDZ0301). The sign is shared across the three
+                // `(Int a)` occurrences exactly as the width is.
+                let s = fresh.var();
+                env.insert(p, TyOrWidth { num: n, sign: s });
                 ty_vars.push(n);
                 width_vars.push(n);
+                sign_vars.push(s);
             }
             let ty = type_in_env(db, body, &env)?;
             trace!(target: "rcdzc::eval", node = id.0, scheme = %ty.render_name(), quantified = params.len(), "read (meta t) as a polymorphic scheme");
-            // Only the vars actually mentioned matter; keep the lists (unused ones are harmless). The
-            // arithmetic operators are signed-only for now (no sign var), so `sign_vars` is empty until
-            // an operator is made generic over signedness.
+            // Only the vars actually mentioned matter; keep the lists (unused ones are harmless).
             Some(Scheme {
                 ty_vars,
                 width_vars,
-                sign_vars: Vec::new(),
+                sign_vars,
                 ty,
             })
         }
@@ -72,11 +79,14 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
     }
 }
 
-/// A lambda parameter's fresh variable number — used as a type variable OR a width variable depending
-/// on the position it appears in (`(Int a)` → width; a bare `a` → type). One number serves both.
+/// A lambda parameter's fresh variables — used as a type variable OR a width variable depending on the
+/// position it appears in (`(Int a)` → width; a bare `a` → type), with a PAIRED sign variable so an
+/// integer operand of variable width is generic over signedness too. `num` serves the type/width axis;
+/// `sign` is the sign variable used when the parameter is a variable width inside `(Int a)`.
 #[derive(Clone, Copy)]
 struct TyOrWidth {
     num: u32,
+    sign: u32,
 }
 
 /// Reduce a type expression to a `Ty` under an environment binding lambda parameters to fresh
@@ -100,12 +110,17 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
             let prim = meta_apply_of(db, head)?;
             match prim {
                 Prim::IntCtor | Prim::UIntCtor if args.len() == 1 => {
-                    let signed = matches!(prim, Prim::IntCtor);
                     let width = width_in_env(db, args[0], env)?;
-                    Some(Ty::Int(IntTy {
-                        sign: crate::ty::Sign::Fixed(signed),
-                        width,
-                    }))
+                    // When the width is a bound PARAMETER (a width variable), the operand is generic over
+                    // signedness too — its sign is that parameter's PAIRED sign variable, so `(Int a)` in
+                    // `+`'s type-lambda relates signed and unsigned alike. When the width is CONCRETE
+                    // (`(Int 8)`, `(UInt 8)`), the constructor fixes the sign as written — a literal
+                    // annotation's type is exactly what it says.
+                    let sign = match sign_in_env(db, args[0], env) {
+                        Some(s) => crate::ty::Sign::Var(s),
+                        None => crate::ty::Sign::Fixed(matches!(prim, Prim::IntCtor)),
+                    };
+                    Some(Ty::Int(IntTy { sign, width }))
                 }
                 Prim::FnCtor if args.len() == 2 => {
                     let p = type_in_env(db, args[0], env)?;
@@ -130,6 +145,18 @@ fn width_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) -
             .and_then(|n| u32::try_from(n).ok())
             .map(Width::Fixed),
         Resolved::Ref { value } => width_in_env(db, value, env),
+        _ => None,
+    }
+}
+
+/// The PAIRED sign variable of a width expression that is a bound parameter, or `None` if the width is
+/// concrete (a constant). When a width is a variable, its integer type is generic over signedness too;
+/// when concrete, the constructor's own signedness applies. (Follows a `Ref` to reach the parameter,
+/// mirroring `width_in_env`.)
+fn sign_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) -> Option<u32> {
+    match resolved_of(db, id) {
+        Resolved::Param { binder } => env.get(&binder).map(|v| v.sign),
+        Resolved::Ref { value } => sign_in_env(db, value, env),
         _ => None,
     }
 }

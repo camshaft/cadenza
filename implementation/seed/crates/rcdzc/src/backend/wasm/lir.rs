@@ -75,34 +75,80 @@ pub enum Lir {
     I64Add,
     I64Sub,
     I64Mul,
-    /// `i32.add` / `i32.sub` / `i32.mul` — 32-bit integer arithmetic.
+    /// `i32.add` / `i32.sub` / `i32.mul` — 32-bit integer arithmetic. The machine op for a ≤32-bit
+    /// width (`Int8`/`Int16`/`Int32`, and their unsigned peers), whose value sits sign-/zero-extended in
+    /// an i32 slot.
     I32Add,
     I32Sub,
     I32Mul,
-    /// 64-bit integer comparisons leaving an i32 boolean. Signed variants (`_s`) for a signed integer;
-    /// equality (`eq`) is sign-agnostic. (Unsigned `_u` variants arrive with the widths/signedness
-    /// stage; the width-64 default integer is signed, so these cover it.)
+    /// `i32.div_s` / `i32.div_u` / `i32.rem_s` / `i32.rem_u` — 32-bit division / remainder. Trap on ÷0
+    /// (and `div_s` on `i32::MIN/-1`, which IS the overflow at width 32). For a NARROW signed width
+    /// (8/16) the machine op does not overflow, so the `MIN/-1` case is guarded explicitly.
+    I32DivS,
+    I32DivU,
+    I32RemS,
+    I32RemU,
+    /// `i32.and` / `i32.or` / `i32.xor` — 32-bit bitwise (total, never trap); `and`/`xor` also serve the
+    /// signed-overflow guard at width 32.
+    I32And,
+    I32Or,
+    I32Xor,
+    /// `i32.ne` — 32-bit inequality leaving an i32 boolean (the width-32 mul guard `r/a != b`).
+    I32Ne,
+    /// `i32.shl` / `i32.shr_s` / `i32.shr_u` — 32-bit shifts (count masked mod 32). The runtime shift
+    /// path guards the count and (for `<<`) overflow, so the mask/wrap is never observed with a bad count.
+    I32Shl,
+    I32ShrS,
+    I32ShrU,
+    /// 64-bit integer comparisons leaving an i32 boolean. Signed (`_s`) and unsigned (`_u`) variants —
+    /// the operands' SIGNEDNESS selects which (an unsigned type orders by magnitude, so `_u`, where a
+    /// signed type orders by two's-complement value, so `_s`); equality (`eq`) is sign-agnostic.
     I64Eq,
     I64LtS,
     I64GtS,
     I64LeS,
     I64GeS,
+    I64LtU,
+    I64GtU,
+    I64LeU,
+    I64GeU,
     /// 32-bit integer comparisons leaving an i32 boolean — for a ≤32-bit integer OR a boolean operand
-    /// (a bool is an i32). Signed variants; `eq` is sign-agnostic.
+    /// (a bool is an i32). Signed and unsigned variants (a ≤32-bit value is properly sign-/zero-extended
+    /// in its slot, so `_s`/`_u` compare it correctly); `eq` is sign-agnostic.
     I32Eq,
     I32LtS,
     I32GtS,
     I32LeS,
     I32GeS,
-    /// `i64.xor` / `i64.and` — bitwise ops the signed-overflow guard uses to test the sign bits of the
-    /// operands and result (`((r^a)&(r^b))<0` for add).
-    I64Xor,
+    I32LtU,
+    I32GtU,
+    I32LeU,
+    I32GeU,
+    /// `i64.and` / `i64.or` / `i64.xor` — bitwise ops. Total on the two's-complement value (never trap),
+    /// so a runtime `&`/`|`/`^` is just the operands then the op. `and`/`xor` also serve the signed-
+    /// overflow guard, which tests the sign bits of the operands and result (`((r^a)&(r^b))<0` for add).
     I64And,
+    I64Or,
+    I64Xor,
     /// `i64.ne` — inequality leaving an i32 boolean, used by the mul guard (`r/a != b`).
     I64Ne,
-    /// `i64.div_s` — signed division. Used by the mul overflow guard (`r/a`); it also traps natively on
-    /// division by zero and on `MIN/-1` (the sole mul-overflow case the `r/a≠b` test can't catch).
+    /// `i64.shl` / `i64.shr_s` / `i64.shr_u` — the machine shifts (count masked mod 64, never trapping).
+    /// The runtime shift path GUARDS these: an out-of-range count and (for `<<`) an overflow are tested
+    /// explicitly and trap, so the masking/wrapping wasm shift is never observed with a bad count. `shr_s`
+    /// is the arithmetic (sign-extending) right shift for a signed type; `shr_u` the logical one for an
+    /// unsigned type.
+    I64Shl,
+    I64ShrS,
+    I64ShrU,
+    /// `i64.div_s` / `i64.div_u` — signed / unsigned division. Trap natively on division by zero, and
+    /// `div_s` also on `MIN/-1` (the two defined division traps, and the sole mul-overflow case the
+    /// `r/a≠b` guard can't catch). `div_s` is reused by the mul overflow guard (`r/a`).
     I64DivS,
+    I64DivU,
+    /// `i64.rem_s` / `i64.rem_u` — signed / unsigned remainder. Trap on division by zero; `rem_s` yields
+    /// 0 for `MIN % -1` (it forms no quotient, so it does not overflow) — exactly the numeric model.
+    I64RemS,
+    I64RemU,
 }
 
 /// The wasm value type a value of solved type `ty` occupies inside a function body, or `None` for a

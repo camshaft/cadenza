@@ -546,6 +546,465 @@ fn nested_runtime_checked_ops_compose() {
     ));
 }
 
+// ── runtime integer ops, width-generic: the full operator set over boundary parameters ──────────
+//
+// Every op below runs over RUNTIME operands (exported parameters), so it exercises the emitted machine
+// instructions + guards, NOT the constant fold (the corpus `(call …)` cases prove the folded-then-run
+// agreement; these pin the emitted path directly and, crucially, the TRAP behavior a folded case can't
+// reach without a compile-time-provable input). Each helper compiles `(def (f <params>) <body>)` and
+// runs `f` under wasmtime with the given args. Widths 8/16/32/64 (the aliased, boundary-representable
+// ones) both signednesses; the emitter is width-generic (a value promotes to the smallest slot that
+// holds it, computes there, then range-checks back to its N-bit type).
+mod runtime_ops {
+    use super::{FromVal, call_traps, run_returns_with};
+    use crate::compile::compile_component;
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    /// Compile `(module m (def (f <params>) <body>) (export f))` and return its bytes.
+    fn func(params: &str, body: &str) -> Vec<u8> {
+        let src = format!("(module m (def (f {params}) {body}) (export f))");
+        compile_component(&crate::codec::encode(&parse(&src))).expect("compile")
+    }
+
+    /// Run `f(args)` decoding the result to `T`.
+    fn run<T: FromVal>(params: &str, body: &str, args: &[Val]) -> T {
+        run_returns_with::<T>(&func(params, body), "f", args)
+    }
+
+    /// Whether `f(args)` traps.
+    fn traps(params: &str, body: &str, args: &[Val]) -> bool {
+        call_traps(&func(params, body), "f", args)
+    }
+
+    // ── bitwise: total, never trap; width-agnostic on a normalized value ─────────────────────────
+
+    #[test]
+    fn runtime_bitwise_over_int64() {
+        // & | ^ over two runtime i64 operands — the LEB128/section-encoding arithmetic a self-hosted
+        // compiler runs on values computed at run time.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(& a b)",
+                &[Val::S64(255), Val::S64(127)]
+            ),
+            127
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(| a b)",
+                &[Val::S64(42), Val::S64(128)]
+            ),
+            170
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(^ a b)",
+                &[Val::S64(12), Val::S64(10)]
+            ),
+            6
+        );
+    }
+
+    // ── division / remainder: signed + unsigned, native traps on ÷0 and MIN/-1 ────────────────────
+
+    #[test]
+    fn runtime_signed_division_truncates_toward_zero() {
+        // i64.div_s truncates toward zero (not floor): 7/2=3, -7/2=-3. Remainder takes the dividend's
+        // sign: -7%2=-1.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(/ a b)",
+                &[Val::S64(7), Val::S64(2)]
+            ),
+            3
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(/ a b)",
+                &[Val::S64(-7), Val::S64(2)]
+            ),
+            -3
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(% a b)",
+                &[Val::S64(-7), Val::S64(2)]
+            ),
+            -1
+        );
+    }
+
+    #[test]
+    fn runtime_division_traps_on_zero_and_overflow() {
+        // ÷0 traps (i64.div_s native); MIN/-1 overflows and traps (i64.div_s native). Remainder MIN%-1
+        // does NOT overflow — i64.rem_s yields 0 (it forms no quotient).
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(/ a b)",
+            &[Val::S64(5), Val::S64(0)]
+        ));
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(/ a b)",
+            &[Val::S64(i64::MIN), Val::S64(-1)]
+        ));
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(% a b)",
+                &[Val::S64(i64::MIN), Val::S64(-1)]
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn runtime_unsigned_division_is_magnitude() {
+        // UInt64 division is unsigned: UInt64.max / 2 = (2^64-1)/2 = 2^63-1, a value a SIGNED div_s would
+        // get wrong (it would read the operand as -1). Pins div_u selection off the unsigned type.
+        assert_eq!(
+            run::<u64>(
+                "(: a UInt64) (: b UInt64)",
+                "(/ a b)",
+                &[Val::U64(u64::MAX), Val::U64(2)]
+            ),
+            u64::MAX / 2
+        );
+        assert!(traps(
+            "(: a UInt64) (: b UInt64)",
+            "(/ a b)",
+            &[Val::U64(5), Val::U64(0)]
+        ));
+    }
+
+    // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
+
+    #[test]
+    fn runtime_left_shift_multiplies_and_traps_on_overflow() {
+        // << is exact ×2^count: 1<<7=128. An overflowing shift TRAPS (not a silent wrap): 2^62 << 2 = 2^64
+        // overflows Int64. An out-of-range count (≥64, or negative) traps rather than masking.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(<< a b)",
+                &[Val::S64(1), Val::S64(7)]
+            ),
+            128
+        );
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(<< a b)",
+            &[Val::S64(1i64 << 62), Val::S64(2)]
+        ));
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(<< a b)",
+            &[Val::S64(1), Val::S64(64)]
+        ));
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(<< a b)",
+            &[Val::S64(1), Val::S64(-1)]
+        ));
+    }
+
+    #[test]
+    fn runtime_signed_right_shift_is_arithmetic() {
+        // >> on a signed type is ARITHMETIC (sign-extending): -256 >> 7 = -2 (a logical shift would give a
+        // huge positive value). An out-of-range count traps.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(>> a b)",
+                &[Val::S64(256), Val::S64(7)]
+            ),
+            2
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(>> a b)",
+                &[Val::S64(-256), Val::S64(7)]
+            ),
+            -2
+        );
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(>> a b)",
+            &[Val::S64(256), Val::S64(64)]
+        ));
+    }
+
+    #[test]
+    fn runtime_unsigned_right_shift_is_logical() {
+        // >> on an UNSIGNED type is LOGICAL (zero-filling): UInt64.max >> 1 = 2^63-1. A signed shr_s would
+        // sign-extend (reading the operand as -1) and answer -1 = UInt64.max — the sign selects the shift.
+        assert_eq!(
+            run::<u64>(
+                "(: a UInt64) (: b UInt64)",
+                "(>> a b)",
+                &[Val::U64(u64::MAX), Val::U64(1)]
+            ),
+            u64::MAX >> 1
+        );
+    }
+
+    // ── unsigned checked +/-/*: the unsigned overflow guards (carry/borrow) ───────────────────────
+
+    #[test]
+    fn runtime_unsigned_addition_traps_on_carry() {
+        // UInt64 addition wraps in wasm; the guard `r <ᵤ a` traps on carry-out. In range it computes.
+        assert_eq!(
+            run::<u64>(
+                "(: a UInt64) (: b UInt64)",
+                "(+ a b)",
+                &[Val::U64(20), Val::U64(22)]
+            ),
+            42
+        );
+        assert!(traps(
+            "(: a UInt64) (: b UInt64)",
+            "(+ a b)",
+            &[Val::U64(u64::MAX), Val::U64(1)]
+        ));
+    }
+
+    #[test]
+    fn runtime_unsigned_subtraction_traps_below_zero() {
+        // An unsigned value cannot go below 0: 0 - 1 traps (the guard `a <ᵤ b`), it does NOT wrap to MAX.
+        assert_eq!(
+            run::<u64>(
+                "(: a UInt64) (: b UInt64)",
+                "(- a b)",
+                &[Val::U64(10), Val::U64(3)]
+            ),
+            7
+        );
+        assert!(traps(
+            "(: a UInt64) (: b UInt64)",
+            "(- a b)",
+            &[Val::U64(0), Val::U64(1)]
+        ));
+    }
+
+    #[test]
+    fn runtime_unsigned_multiplication_traps_on_overflow() {
+        // UInt64 mul guard `a≠0 && r/ᵤa≠b`. In range computes; a product past 2^64 traps.
+        assert_eq!(
+            run::<u64>(
+                "(: a UInt64) (: b UInt64)",
+                "(* a b)",
+                &[Val::U64(6), Val::U64(7)]
+            ),
+            42
+        );
+        assert!(traps(
+            "(: a UInt64) (: b UInt64)",
+            "(* a b)",
+            &[Val::U64(u64::MAX), Val::U64(2)]
+        ));
+    }
+
+    // ── unsigned comparison: _u selection — the dual of the signed-ordering case ──────────────────
+
+    #[test]
+    fn runtime_unsigned_comparison_orders_by_magnitude() {
+        // (< a b) on UInt64: 0 < UInt64.max is true under the UNSIGNED order (i64.lt_u). Read as SIGNED,
+        // UInt64.max's bit pattern is -1, which a lt_s would rank BELOW 0 and answer false. Pins _u
+        // selection off the unsigned type — the dual of the signed `(< Int64.min Int64.max)` case.
+        assert!(run::<bool>(
+            "(: a UInt64) (: b UInt64)",
+            "(< a b)",
+            &[Val::U64(0), Val::U64(u64::MAX)]
+        ));
+        // And the signed operand stays signed: -1 < 1 is true (a lt_u would read -1 as huge → false).
+        assert!(run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(< a b)",
+            &[Val::S64(-1), Val::S64(1)]
+        ));
+    }
+
+    // ── narrow widths (≤32-bit): compute in i32, range-check back to the N-bit type ───────────────
+
+    #[test]
+    fn runtime_narrow_signed_addition_range_checks() {
+        // Int8 addition: 100+27=127 fits (Int8.max), 100+28=128 does NOT — the i32 add is exact, the
+        // range-check to [-128,127] traps. A wrap would give -128 (the classic signed-overflow bug).
+        // (Int8 crosses the boundary as s32 in this codebase, so args/result are S32/i32.)
+        assert_eq!(
+            run::<i32>(
+                "(: a Int8) (: b Int8)",
+                "(+ a b)",
+                &[Val::S32(100), Val::S32(27)]
+            ),
+            127
+        );
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(+ a b)",
+            &[Val::S32(100), Val::S32(28)]
+        ));
+    }
+
+    #[test]
+    fn runtime_narrow_signed_subtraction_range_checks_both_edges() {
+        // Int8 subtraction relies ENTIRELY on the range-check (a narrow i32 sub cannot overflow the
+        // slot): 100-(-50)=150 > Int8.max(127) traps the UPPER edge; -100-50=-150 < Int8.min(-128) traps
+        // the LOWER edge; -100-27=-127 fits. Pins that both narrow-sub overflow directions trap (the
+        // add case only exercises the upper edge).
+        assert_eq!(
+            run::<i32>(
+                "(: a Int8) (: b Int8)",
+                "(- a b)",
+                &[Val::S32(-100), Val::S32(27)]
+            ),
+            -127
+        );
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(- a b)",
+            &[Val::S32(100), Val::S32(-50)]
+        ));
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(- a b)",
+            &[Val::S32(-100), Val::S32(50)]
+        ));
+    }
+
+    #[test]
+    fn runtime_narrow_unsigned_addition_and_subtraction() {
+        // UInt8: 200+55=255 fits, 200+56=256 traps (range-check to [0,255]); 0-1 traps below zero.
+        assert_eq!(
+            run::<u32>(
+                "(: a UInt8) (: b UInt8)",
+                "(+ a b)",
+                &[Val::U32(200), Val::U32(55)]
+            ),
+            255
+        );
+        assert!(traps(
+            "(: a UInt8) (: b UInt8)",
+            "(+ a b)",
+            &[Val::U32(200), Val::U32(56)]
+        ));
+        assert!(traps(
+            "(: a UInt8) (: b UInt8)",
+            "(- a b)",
+            &[Val::U32(0), Val::U32(1)]
+        ));
+    }
+
+    #[test]
+    fn runtime_narrow_multiplication_range_checks() {
+        // UInt8 mul: 15*17=255 fits; 16*16=256 traps (the i32 product is exact, range-check to 255 traps).
+        assert_eq!(
+            run::<u32>(
+                "(: a UInt8) (: b UInt8)",
+                "(* a b)",
+                &[Val::U32(15), Val::U32(17)]
+            ),
+            255
+        );
+        assert!(traps(
+            "(: a UInt8) (: b UInt8)",
+            "(* a b)",
+            &[Val::U32(16), Val::U32(16)]
+        ));
+    }
+
+    #[test]
+    fn runtime_narrow_signed_division_min_over_minus_one_traps() {
+        // Int8 division: -128 / -1 = 128 overflows Int8 (max 127). The i32 div_s does NOT trap here (128
+        // fits i32), so the range-check catches it — the narrow-signed-division overflow the machine op
+        // misses. In range: -100/3 = -33 (truncates toward zero).
+        assert_eq!(
+            run::<i32>(
+                "(: a Int8) (: b Int8)",
+                "(/ a b)",
+                &[Val::S32(-100), Val::S32(3)]
+            ),
+            -33
+        );
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(/ a b)",
+            &[Val::S32(-128), Val::S32(-1)]
+        ));
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(/ a b)",
+            &[Val::S32(5), Val::S32(0)]
+        ));
+    }
+
+    #[test]
+    fn runtime_narrow_left_shift_range_checks() {
+        // UInt8 shift: 1<<7=128 fits, 1<<8 traps (count ≥ N=8). And 3<<7=384 overflows UInt8 (the count
+        // is in range but the result exceeds 255) → the range-check traps. Pins the count bound is N (8),
+        // not the slot width (32), and that a narrow << is range-checked.
+        assert_eq!(
+            run::<u32>(
+                "(: a UInt8) (: b UInt8)",
+                "(<< a b)",
+                &[Val::U32(1), Val::U32(7)]
+            ),
+            128
+        );
+        assert!(traps(
+            "(: a UInt8) (: b UInt8)",
+            "(<< a b)",
+            &[Val::U32(1), Val::U32(8)]
+        ));
+        assert!(traps(
+            "(: a UInt8) (: b UInt8)",
+            "(<< a b)",
+            &[Val::U32(3), Val::U32(7)]
+        ));
+    }
+
+    #[test]
+    fn runtime_narrow_unsigned_right_shift_is_logical() {
+        // UInt8.max >> 1 = 127 (logical, zero-fill). Pins narrow shr_u — the op selection follows the
+        // unsigned type.
+        assert_eq!(
+            run::<u32>(
+                "(: a UInt8) (: b UInt8)",
+                "(>> a b)",
+                &[Val::U32(255), Val::U32(1)]
+            ),
+            127
+        );
+    }
+
+    #[test]
+    fn runtime_int32_full_width_addition_traps() {
+        // Int32 is a FULL i32-slot width (N == slot bits): the machine i32.add carry/borrow guard is what
+        // traps, not a range-check. Int32.max + 1 traps; in range computes.
+        assert_eq!(
+            run::<i32>(
+                "(: a Int32) (: b Int32)",
+                "(+ a b)",
+                &[Val::S32(20), Val::S32(22)]
+            ),
+            42
+        );
+        assert!(traps(
+            "(: a Int32) (: b Int32)",
+            "(+ a b)",
+            &[Val::S32(i32::MAX), Val::S32(1)]
+        ));
+    }
+}
+
 // ── decline-don't-miscompile ───────────────────────────────────────────────────────────────────
 
 /// An unsupported construct reached unconditionally yields NO component and an error diagnostic —
