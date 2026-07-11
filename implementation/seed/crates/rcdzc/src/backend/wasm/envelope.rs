@@ -32,11 +32,12 @@ mod sec {
 /// <argcount=0>` = `01 00 00 00`.
 const INSTANCE_BODY: &[u8] = &[0x01, 0x00, 0x00, 0x00];
 
-/// One export as the envelope assembler needs it: its verbatim boundary name and its result's
-/// component valtype byte (`None` for a unit / no-result export). Stage 0 exports are nullary, so
-/// there are no parameters yet.
+/// One export as the envelope assembler needs it: its verbatim boundary name, its parameter component
+/// valtype bytes (in order; empty for a nullary export), and its result's component valtype byte
+/// (`None` for a unit / no-result export).
 pub struct BoundaryExport {
     pub name: String,
+    pub params: Vec<u8>,
     pub result: Option<u8>,
 }
 
@@ -89,12 +90,21 @@ pub fn assemble(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
     out
 }
 
-/// A sec-7 component functype item for a nullary scalar signature: `<func:0x40> <params-vec>
-/// <result-form>`. The result form is `00 <valtype>` for one result, `01 00` for none. (Matches the
-/// oracle: `() -> s64` = `40 00 00 78`; `() -> ()` = `40 00 01 00`.)
+/// A sec-7 component functype item: `<func:0x40> <params-vec> <result-form>`. The params vec is
+/// `<count> (<name> <valtype>)*` — each parameter is NAMED at the component boundary (a positional
+/// call ignores the name, so they are synthesized `p0`, `p1`, …). The result form is `00 <valtype>`
+/// for one result, `01 00` for none. (Matches the oracle: `() -> s64` = `40 00 00 78`; a `(p0: s64,
+/// p1: s64) -> s64` prefixes the two named params.)
 fn comp_functype(e: &BoundaryExport) -> Vec<u8> {
     let mut item = vec![0x40]; // function type form
-    item.extend_from_slice(&wasm_vec(0, &[])); // no params (Stage 0 exports are nullary)
+    let mut param_items = Vec::new();
+    for (i, &vt) in e.params.iter().enumerate() {
+        let pname = format!("p{i}");
+        param_items.extend_from_slice(&uleb_bytes(pname.len() as u64));
+        param_items.extend_from_slice(pname.as_bytes());
+        param_items.push(vt);
+    }
+    item.extend_from_slice(&wasm_vec(e.params.len(), &param_items));
     match e.result {
         Some(vt) => item.extend_from_slice(&[0x00, vt]),
         None => item.extend_from_slice(&[0x01, 0x00]),

@@ -31,8 +31,11 @@ pub struct ExportPlan {
     pub def: usize,
     /// The AST occurrence of the definition body — the root the backend walks the core from.
     pub body: StructId,
-    /// The solved parameter types, in order. Stage 0 exports are nullary (empty).
-    pub params: Vec<Ty>,
+    /// The parameters, in signature order — each the `(name-occurrence, solved-type)` the backend
+    /// needs to assign a local slot and a boundary valtype (`select_function`). Empty for a nullary
+    /// export. The name occurrence is what a body reference to the parameter binds to (seen through a
+    /// `(: a T)` annotated binder), so it is the slot-map key.
+    pub params: Vec<(StructId, Ty)>,
     /// The solved result type the entry returns.
     pub result: Ty,
 }
@@ -64,8 +67,7 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         return Err(Reject::decline("no `(export …)`: nothing is public"));
     }
 
-    // Resolve each export to a plan by its DECLARED signature. An export naming no definition, or a
-    // parameterized definition (Stage 0 realizes only nullary), declines.
+    // Resolve each export to a plan by its DECLARED signature. An export naming no definition declines.
     let mut exports: Vec<ExportPlan> = Vec::new();
     for i in 0..db.exports.len() {
         let name = db.exports[i].name.clone();
@@ -77,11 +79,6 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
                 )));
             }
         };
-        if !db.defs[def].params.is_empty() {
-            return Err(Reject::decline(format!(
-                "export `{name}`: parameterized exports not yet supported (nullary only)"
-            )));
-        }
         let body = match db.defs[def].body {
             Some(b) => b,
             None => {
@@ -90,13 +87,19 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
                 )));
             }
         };
+        // The parameters — each `(name-occurrence, solved-type)`. An exported parameter needs a
+        // DEFINITE type: its type is solved by demanding `type_of` on its binder, which is the
+        // annotation type for an annotated param and `Any` for an unannotated one. An unannotated
+        // (ambiguous) parameter has no machine width, so it DECLINES asking for an annotation — the
+        // no-implicit-width rule (the backend can't pick a width the program didn't ask for).
+        let params = export_params(db, def, &name)?;
         // The result type is the entry body's solved type — a lazy read of the type column.
         let result = type_of(db, body);
         exports.push(ExportPlan {
             name,
             def,
             body,
-            params: Vec::new(),
+            params,
             result,
         });
     }
@@ -111,6 +114,36 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     }
 
     Ok(Layout { exports, order })
+}
+
+/// The exported parameters of definition `def` — each `(name-occurrence, solved-type)`, in signature
+/// order. The name occurrence is what a body reference binds to (through a `(: a T)` binder); its type
+/// is solved by `type_of` on that occurrence (the annotation type, or `Any` if unannotated). An
+/// exported parameter with NO definite scalar type (an unannotated/ambiguous one, whose type has no
+/// machine representation) DECLINES asking for an annotation — the backend must not invent a width the
+/// program did not write (`numeric-model.md` no implicit width; the operator's "ambiguous params
+/// require annotations").
+fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructId, Ty)>, Reject> {
+    let sig_params = db.defs[def].params.clone();
+    let mut out = Vec::new();
+    for p in sig_params {
+        // The name occurrence — bare `a`, or the inner name of an annotated binder `(: a T)`.
+        let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+            Some(name_occ) => name_occ,
+            None => p,
+        };
+        let ty = type_of(db, binder);
+        // A parameter must have a machine representation to cross the boundary. `Any` (an unannotated
+        // param whose type nothing fixed) has none — decline, pointing at the annotation it needs.
+        if crate::backend::wasm::lir::valtype_of(&ty).is_none() {
+            return Err(Reject::decline(format!(
+                "export `{name}`: parameter type is ambiguous — annotate it, e.g. `(: p Int64)`"
+            ))
+            .at(binder));
+        }
+        out.push((binder, ty));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

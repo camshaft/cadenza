@@ -179,6 +179,7 @@ fn envelope_matches_wasm_encoder_oracle() {
             .iter()
             .map(|n| BoundaryExport {
                 name: n.to_string(),
+                params: Vec::new(),
                 result: Some(0x78),
             })
             .collect();
@@ -189,6 +190,82 @@ fn envelope_matches_wasm_encoder_oracle() {
             "envelope mismatch for {names:?}"
         );
     }
+}
+
+/// The hand-emitted envelope for a PARAMETERIZED export `(p0: s64, p1: s64) -> s64` is byte-identical
+/// to the `wasm-encoder` oracle — licenses the named-parameter component functype the exported
+/// runtime function needs.
+#[test]
+fn parameterized_envelope_matches_wasm_encoder_oracle() {
+    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    // A core module with one `(i64, i64) -> i64` function returning param 0 + param 1.
+    let core = {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types
+            .ty()
+            .function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("add", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut f = Function::new(vec![]);
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::I64Add);
+        f.instruction(&Instruction::End);
+        code.function(&f);
+        m.section(&code);
+        m.finish()
+    };
+    // The oracle component: one export `add : (p0: s64, p1: s64) -> s64`.
+    let oracle = {
+        use wasm_encoder::*;
+        let mut c = Component::new();
+        c.section(&RawSection {
+            id: ComponentSectionId::CoreModule as u8,
+            data: &core,
+        });
+        let mut inst = InstanceSection::new();
+        inst.instantiate(0, std::iter::empty::<(&str, ModuleArg)>());
+        c.section(&inst);
+        let mut ts = ComponentTypeSection::new();
+        ts.function()
+            .params([
+                ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
+                ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
+            ])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.section(&ts);
+        let mut al = ComponentAliasSection::new();
+        al.alias(Alias::CoreInstanceExport {
+            instance: 0,
+            kind: ExportKind::Func,
+            name: "add",
+        });
+        c.section(&al);
+        let mut canon = CanonicalFunctionSection::new();
+        canon.lift(0, 0, []);
+        c.section(&canon);
+        let mut ex = ComponentExportSection::new();
+        ex.export("add", ComponentExportKind::Func, 0, None);
+        c.section(&ex);
+        c.finish()
+    };
+    let ours = assemble(
+        &core,
+        &[BoundaryExport {
+            name: "add".to_string(),
+            params: vec![0x78, 0x78], // two s64 params
+            result: Some(0x78),
+        }],
+    );
+    assert_eq!(ours, oracle, "parameterized envelope mismatch");
 }
 
 // ── the behavior run (wasmtime) ────────────────────────────────────────────────────────────────
@@ -222,6 +299,16 @@ impl FromVal for bool {
 /// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the single
 /// result decoded to `T` — the "run the artifact" behavior check, generic over the boundary type.
 fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
+    run_returns_with(component_bytes, name, &[])
+}
+
+/// Instantiate `component_bytes` and call export `name` WITH the given argument values, decoding the
+/// single result to `T` — the behavior check for a parameterized exported function.
+fn run_returns_with<T: FromVal>(
+    component_bytes: &[u8],
+    name: &str,
+    args: &[wasmtime::component::Val],
+) -> T {
     use wasmtime::component::{Component, Linker, Val};
     use wasmtime::{Engine, Store};
 
@@ -236,7 +323,7 @@ fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
     // A one-slot result buffer; the initial value is overwritten by the call (its variant is
     // irrelevant — `call` writes the actual result), then decoded to `T`.
     let mut results = [Val::Bool(false)];
-    func.call(&mut store, &[], &mut results).expect("call");
+    func.call(&mut store, args, &mut results).expect("call");
     func.post_return(&mut store).expect("post_return");
     T::from_val(&results[0])
 }
@@ -253,6 +340,66 @@ fn scalar_runs_to_42() {
 fn if_runs_to_2() {
     let bytes = compile_component(&prog_if()).expect("compile");
     assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
+}
+
+// ── exported parameterized functions: runtime operands, end-to-end (compile → run with args) ─────
+
+/// An exported `(def (add (: a Int64) (: b Int64)) (+ a b))` compiles to a component whose `add`
+/// export is a real wasm function taking two s64 params — run under wasmtime with (20, 22) it returns
+/// 42. This is the end-to-end proof of runtime integer operands: the body did NOT fold (the params
+/// are unknown), it emitted `local.get 0; local.get 1; i64.add`, and the boundary carries the params.
+#[test]
+fn an_exported_addition_runs_over_runtime_args() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let got: i64 = run_returns_with(&bytes, "add", &[Val::S64(20), Val::S64(22)]);
+    assert_eq!(got, 42);
+    // A different argument pair exercises the SAME function — the value is genuinely runtime.
+    let got2: i64 = run_returns_with(&bytes, "add", &[Val::S64(100), Val::S64(-1)]);
+    assert_eq!(got2, 99);
+}
+
+/// An exported comparison `(def (lt (: a Int64) (: b Int64)) (< a b))` runs to a boolean over runtime
+/// args — the signed machine comparison at the boundary.
+#[test]
+fn an_exported_comparison_runs_over_runtime_args() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (lt (: a Int64) (: b Int64)) (< a b)) (export lt))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(run_returns_with::<bool>(
+        &bytes,
+        "lt",
+        &[Val::S64(1), Val::S64(2)]
+    ));
+    assert!(!run_returns_with::<bool>(
+        &bytes,
+        "lt",
+        &[Val::S64(5), Val::S64(5)]
+    ));
+    // Signed: -1 < 1 is true (an unsigned compare would read -1 as huge and say false).
+    assert!(run_returns_with::<bool>(
+        &bytes,
+        "lt",
+        &[Val::S64(-1), Val::S64(1)]
+    ));
+}
+
+/// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
+/// compiler DECLINES asking for an annotation rather than inventing a width.
+#[test]
+fn an_unannotated_exported_parameter_declines() {
+    use crate::testkit::parse;
+    let src = "(module m (def (id x) x) (export id))";
+    let msg = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("must decline")
+        .message;
+    assert!(
+        msg.contains("ambiguous") || msg.contains("annotate"),
+        "got: {msg}"
+    );
 }
 
 // ── decline-don't-miscompile ───────────────────────────────────────────────────────────────────
