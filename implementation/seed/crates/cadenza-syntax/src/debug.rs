@@ -30,6 +30,50 @@ pub fn print(arenas: &Arenas) -> String {
     out
 }
 
+/// Render `arenas` FLAT — the two arenas dumped literally, exactly as they sit in memory (and on
+/// the wire): the leaf pool, then the structure vector, then the root id. Unlike the tree view, this
+/// shows the storage directly — leaf INTERNING (each distinct leaf once; a `List` references leaves
+/// by id) and the post-order structure layout (a child's id precedes its parent's). Useful for
+/// seeing what the codec actually serializes.
+///
+/// Example, for `(def (main) 42)`:
+/// ```text
+/// leaves (4):
+///   L0  Name def
+///   L1  Name main
+///   L2  Int 42 (dec)
+///   (…)
+/// structure (5):
+///   S0  Atom L0
+///   S1  Atom L1
+///   S2  List [S1]
+///   S3  Atom L2
+///   S4  List [S0 S2 S3]
+/// root: S4
+/// ```
+pub fn print_flat(arenas: &Arenas) -> String {
+    let mut out = String::new();
+
+    out.push_str(&format!("leaves ({}):\n", arenas.leaves.len()));
+    for (i, l) in arenas.leaves.iter().enumerate() {
+        out.push_str(&format!("  L{i}  {}\n", leaf(l)));
+    }
+
+    out.push_str(&format!("structure ({}):\n", arenas.structure.len()));
+    for (i, s) in arenas.structure.iter().enumerate() {
+        match s {
+            Struct::Atom(leaf_id) => out.push_str(&format!("  S{i}  Atom L{}\n", leaf_id.0)),
+            Struct::List(children) => {
+                let ids: Vec<String> = children.iter().map(|c| format!("S{}", c.0)).collect();
+                out.push_str(&format!("  S{i}  List [{}]\n", ids.join(" ")));
+            }
+        }
+    }
+
+    out.push_str(&format!("root: S{}\n", arenas.root.0));
+    out
+}
+
 fn node(a: &Arenas, id: StructId, depth: usize, out: &mut String) {
     for _ in 0..depth {
         out.push_str("  ");
@@ -88,5 +132,28 @@ mod tests {
     fn hex_radix_is_shown() {
         let arenas = sexpr::read("0x2A").unwrap();
         assert!(print(&arenas).contains("Int 42 (hex)"));
+    }
+
+    #[test]
+    fn flat_dumps_the_arenas() {
+        let arenas = sexpr::read("(def (main) 42)").unwrap();
+        let out = print_flat(&arenas);
+        // The three sections, sized, with the root pointing at the top structure entry.
+        assert!(out.contains(&format!("leaves ({}):", arenas.leaves.len())), "{out}");
+        assert!(out.contains(&format!("structure ({}):", arenas.structure.len())), "{out}");
+        assert!(out.contains(&format!("root: S{}", arenas.root.0)), "{out}");
+        // Leaves are addressed L#, and a List references its children by S#.
+        assert!(out.contains("L0  Name def"), "{out}");
+        assert!(out.contains("List ["), "{out}");
+    }
+
+    #[test]
+    fn flat_shows_leaf_interning() {
+        // `main` occurs TWICE in the source but is interned to ONE leaf; two Atom occurrences point
+        // at the same L#. Confirm the leaf pool holds a single `Name main`.
+        let arenas = sexpr::read("(do (def (main) 1) (export main))").unwrap();
+        let out = print_flat(&arenas);
+        let mains = out.lines().filter(|l| l.trim_end().ends_with("Name main")).count();
+        assert_eq!(mains, 1, "expected `main` interned to one leaf:\n{out}");
     }
 }

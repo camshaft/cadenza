@@ -1,12 +1,14 @@
 //! `cdz-syntax` — convert a Cadenza program between its three surfaces, and read the corpus.
 //!
-//! Reads a program in one format and writes it in another. Formats: `binary`, `sexpr`, `ml`, and
-//! `debug` (output only — a readable view of the binary AST's raw structure).
+//! Reads a program in one format and writes it in another. Formats: `binary`, `sexpr`, `ml`, and two
+//! output-only views of the binary AST — `debug` (an indented tree) and `flat` (the arenas dumped
+//! literally: leaf pool + structure vector + root).
 //!
 //! ```text
 //! cdz-syntax --from <fmt> --to <fmt> [FILE]
 //! cdz-syntax -f <fmt> -t <fmt> [FILE]
-//! cdz-syntax --from binary --to debug prog.bin   # inspect a binary AST's structure
+//! cdz-syntax --from binary --to debug prog.bin   # inspect a binary AST as a tree
+//! cdz-syntax --from binary --to flat prog.bin    # dump the arenas (leaves + structure + root)
 //! cdz-syntax corpus FILE…            # parse corpus cases → one normalized record per case
 //! ```
 //!
@@ -146,9 +148,10 @@ fn read_input(file: Option<&str>) -> Result<Vec<u8>, String> {
 const USAGE: &str = "\
 usage: cdz-syntax --from <fmt> --to <fmt> [--width N] [FILE]
   convert a Cadenza program between surfaces (reads FILE or stdin, writes stdout)
-  formats: binary | sexpr | ml | debug   (debug is output-only: the binary AST's raw structure)
+  formats: binary | sexpr | ml | debug | flat   (debug/flat are output-only views of the AST)
   --width N   target line width for `ml` output (default 100)
   e.g.  cdz-syntax --from sexpr --to binary prog.sexp > prog.bin
         cat prog.bin | cdz-syntax -f binary -t sexpr
         cdz-syntax -f sexpr -t ml --width 40 prog.sexp
-        cdz-syntax -f binary -t debug prog.bin";
+        cdz-syntax -f binary -t debug prog.bin
+        cdz-syntax -f binary -t flat prog.bin";
