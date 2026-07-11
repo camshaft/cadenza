@@ -92,11 +92,14 @@ fn run_records(files: &[String]) -> Result<(), String> {
 }
 
 /// `migrate [--write] FILE…`: project each `.sexp` corpus file to markdown. With `--write`, the
-/// output goes to `<stem>.md` beside the input; otherwise it prints to stdout.
+/// output goes to `<stem>.md` beside the input; otherwise it prints to stdout. The document is
+/// titled with the file's stem (e.g. `01-literals`).
 fn run_migrate(write: bool, files: &[String]) -> Result<(), String> {
     for path in files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
-        let md = cdz_corpus::markdown::migrate(&text).map_err(|e| format!("{path}: {e}"))?;
+        let title = Path::new(path).file_stem().and_then(|s| s.to_str());
+        let md = cdz_corpus::markdown::migrate_titled(&text, title)
+            .map_err(|e| format!("{path}: {e}"))?;
         if write {
             let out_path = Path::new(path).with_extension("md");
             std::fs::write(&out_path, md)

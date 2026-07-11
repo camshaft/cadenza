@@ -7,9 +7,11 @@
 //!
 //! ## The format
 //!
-//! One case is a `###` heading (its description), optional prose (its `doc`), then one **tagged code
-//! fence per DSL clause**. The fence's role is the LAST token of its info string; a leading `cdz`
-//! marks the ML-bearing blocks (for highlighting) and is ignored by dispatch:
+//! The document opens with a `#` title (the file's name). Inter-case `;` narrative becomes markdown
+//! prose, and a `; --- Title --- ` banner in the source becomes a `## Section` heading. One case is a
+//! `###` heading (its description), optional prose (its `doc`), then one **tagged code fence per DSL
+//! clause**. The fence's role is the LAST token of its info string; a leading `cdz` marks the
+//! ML-bearing blocks (for highlighting) and is ignored by dispatch:
 //!
 //! | clause                     | fence tag            | body                         |
 //! |----------------------------|----------------------|------------------------------|
@@ -44,10 +46,18 @@ const ML_WIDTH: usize = 90;
 // Public API
 // ============================================================================
 
-/// Migrate a corpus `.sexp` file's text to markdown.
-pub fn migrate(sexpr_text: &str) -> Result<String, String> {
+/// Migrate a corpus `.sexp` file's text to markdown, with an optional document `title` (a `# …`
+/// heading emitted at the top — typically the file's name). Passing `None` omits the title, which
+/// keeps the output stable for tests and for re-migrating reconstructed text.
+pub fn migrate_titled(sexpr_text: &str, title: Option<&str>) -> Result<String, String> {
     let mut out = String::new();
     let mut first = true;
+    if let Some(title) = title {
+        out.push_str("# ");
+        out.push_str(title);
+        out.push('\n');
+        first = false;
+    }
     for seg in segment(sexpr_text) {
         match seg {
             Segment::Prose(text) => {
@@ -86,8 +96,14 @@ pub fn migrate(sexpr_text: &str) -> Result<String, String> {
     Ok(out)
 }
 
+/// Migrate a corpus `.sexp` file's text to markdown, without a document title.
+pub fn migrate(sexpr_text: &str) -> Result<String, String> {
+    migrate_titled(sexpr_text, None)
+}
+
 /// Verify a migration is behaviour-preserving: the reconstructed corpus produces a record stream
-/// byte-identical to the original's. Returns the offending diff on mismatch.
+/// byte-identical to the original's. Returns the offending diff on mismatch. The document title
+/// does not affect the record stream, so `check` uses the untitled form.
 pub fn check(sexpr_text: &str) -> Result<(), String> {
     let md = migrate(sexpr_text)?;
     let reconstructed = to_sexpr(&md)?;
@@ -392,34 +408,63 @@ fn normalize_prose(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Extract prose from a run of `;` comment lines (an inter-case gap). Consecutive comment lines join
-/// into one paragraph; a blank line separates paragraphs. Non-comment content is ignored.
+/// Extract markdown prose from a run of `;` comment lines (an inter-case gap). Consecutive comment
+/// lines join into one paragraph; a blank line separates paragraphs. A **banner** line — a comment
+/// whose content is a title fenced by `---` dash-runs (`--- The number / identifier boundary ---`) —
+/// becomes a `## Section` heading instead of prose, and a bare divider (dashes with no title) is
+/// dropped. Non-comment content is ignored.
 fn prose_from_comments(gap: &str) -> String {
-    let mut paragraphs: Vec<String> = Vec::new();
+    let mut blocks: Vec<String> = Vec::new();
     let mut current: Vec<String> = Vec::new();
+    let flush = |current: &mut Vec<String>, blocks: &mut Vec<String>| {
+        if !current.is_empty() {
+            let para = current.join(" ");
+            let para = para.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !para.is_empty() {
+                blocks.push(para);
+            }
+            current.clear();
+        }
+    };
     for line in gap.lines() {
         let t = line.trim_start();
         if let Some(rest) = t.strip_prefix(';') {
-            current.push(
-                rest.strip_prefix(' ')
-                    .unwrap_or(rest)
-                    .trim_end()
-                    .to_string(),
-            );
-        } else if t.is_empty() && !current.is_empty() {
-            paragraphs.push(current.join(" "));
-            current.clear();
+            let content = rest.strip_prefix(' ').unwrap_or(rest).trim_end();
+            if let Some(banner) = banner_title(content) {
+                // A section banner ends the current paragraph and becomes a heading (or, if it has
+                // no title, is dropped as a bare divider).
+                flush(&mut current, &mut blocks);
+                if !banner.is_empty() {
+                    blocks.push(format!("## {banner}"));
+                }
+            } else {
+                current.push(content.to_string());
+            }
+        } else if t.is_empty() {
+            flush(&mut current, &mut blocks);
         }
     }
-    if !current.is_empty() {
-        paragraphs.push(current.join(" "));
+    flush(&mut current, &mut blocks);
+    blocks.join("\n\n")
+}
+
+/// If `content` is a section banner — its text stripped of leading/trailing `-`/space runs, and it
+/// actually contained a `---` dash-run of 3+ — return the inner title (possibly empty for a bare
+/// divider). Otherwise `None`. A prose line that merely contains a lone `-` (a hyphen or an em-dash
+/// surrogate) is NOT a banner: the run must be 3+ dashes.
+fn banner_title(content: &str) -> Option<&str> {
+    if !content.contains("---") {
+        return None;
     }
-    paragraphs
-        .into_iter()
-        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    // A banner is composed only of dashes, spaces, and the title text between them; strip the
+    // dash-runs off both ends.
+    let title = content.trim_matches(|c: char| c == '-' || c == ' ');
+    // Guard against a normal sentence that happens to contain `---`: a banner's title itself must
+    // not contain a 3+ dash run (the dashes only frame it).
+    if title.contains("---") {
+        return None;
+    }
+    Some(title)
 }
 
 /// Render a Rust string as an s-expression string literal (quotes + escapes).
@@ -665,5 +710,38 @@ mod tests {
         let from_sexpr = crate::render(&crate::read(sexpr).unwrap());
         let from_md = crate::render(&crate::read_markdown(&md).unwrap());
         assert_eq!(from_sexpr, from_md, "md:\n{md}");
+    }
+
+    #[test]
+    fn title_and_banner_headings() {
+        // A `; --- Title --- ` banner becomes `## Title`; a bare `; -----` divider is dropped; the
+        // document title becomes `# name`. None of these affect the reconstructed record stream.
+        let sexpr = r#"; --- Radix literals ------------------------------
+; Intro prose for the section.
+(case "hex" (input 0xff) (output (: 255 Int64)))
+; ------------------------------
+(case "dec" (input 42) (output (: 42 Int64)))"#;
+        let md = migrate_titled(sexpr, Some("01-literals")).unwrap();
+        assert!(md.starts_with("# 01-literals\n"), "md:\n{md}");
+        assert!(md.contains("## Radix literals"), "md:\n{md}");
+        assert!(md.contains("Intro prose for the section."), "md:\n{md}");
+        // the bare divider between the two cases produced no heading (count `## ` lines exactly, not
+        // the `## ` substring that also sits inside every `### ` case heading).
+        let section_headings = md.lines().filter(|l| l.starts_with("## ")).count();
+        assert_eq!(section_headings, 1, "md:\n{md}");
+        // and the title/headings don't disturb the record stream
+        let from_sexpr = crate::render(&crate::read(sexpr).unwrap());
+        let from_md = crate::render(&crate::read_markdown(&md).unwrap());
+        assert_eq!(from_sexpr, from_md, "md:\n{md}");
+    }
+
+    #[test]
+    fn em_dash_in_prose_is_not_a_banner() {
+        // An em-dash or a lone hyphen inside prose must NOT be mistaken for a section banner (only a
+        // 3+ dash run frames a banner).
+        assert_eq!(banner_title("a value — its type"), None);
+        assert_eq!(banner_title("a-b hyphenated"), None);
+        assert_eq!(banner_title("--- Real Banner ---"), Some("Real Banner"));
+        assert_eq!(banner_title("----------"), Some(""));
     }
 }
