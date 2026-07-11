@@ -92,7 +92,8 @@ enum Cmd {
         check: bool,
     },
     /// The omnibus health check: workspace build, tests, clippy, the wasm runtime build, and the
-    /// behavior gate — one pass/fail line per step, non-zero exit if any step fails.
+    /// behavior gate. Each step's output is captured to a log file (`target/xtask-logs/`); the
+    /// console shows one ✓ per step, and the first failing step prints the whole log + its path.
     Check,
     /// Round-trip every corpus program through the syntax surfaces (sexpr→binary→sexpr and
     /// sexpr→ml→sexpr) and confirm each reproduces a structurally-equal AST — guards `cadenza-syntax`
@@ -778,53 +779,122 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) -> i32 {
 // ============================================================================================
 
 /// Run the whole health check: workspace build, tests, clippy, the wasm runtime build, and the
-/// behavior gate. Each step prints one pass/fail line; the first failing step exits non-zero.
+/// behavior gate. Each step's full output is CAPTURED to a log file rather than flooding the console;
+/// the console shows one ✓ per passing step. The first failing step prints the whole captured log
+/// (so an agent reads it in place instead of re-running with `| tail`) and its path, then exits.
 fn check(paths: &Paths, profile: &str) {
-    let sh = Shell::new().expect("open a shell");
-    sh.change_dir(&paths.repo);
+    let mut log = Log::create(paths, "check");
+    println!("check: logging to {}", log.path.display());
 
-    // Native workspace: build, test, then clippy. Clippy runs WITHOUT `-D warnings` — it surfaces
-    // lints (they print) but does not fail the check, because the sibling crates are under active
-    // rewrite and carry stylistic lints that are not a health signal. `build`/`test`/`gate` are the
-    // real bar; tighten clippy to deny-warnings once the crates are lint-clean.
-    step("build", cmd!(sh, "cargo build --workspace --quiet").quiet().run().is_ok());
-    step("test", cmd!(sh, "cargo test --workspace --quiet").quiet().run().is_ok());
-    step("clippy", cmd!(sh, "cargo clippy --workspace --quiet").quiet().run().is_ok());
+    // Each step runs its command with stdout+stderr appended to the log. Native workspace first:
+    // build, test, then clippy (WITHOUT `-D warnings` — sibling crates under rewrite carry stylistic
+    // lints that aren't a health signal; build/test/gate are the real bar).
+    let repo = &paths.repo;
+    log.step("build", "cargo build --workspace", repo);
+    log.step("test", "cargo test --workspace", repo);
+    log.step("clippy", "cargo clippy --workspace", repo);
 
     // The wasm runtime is EXCLUDED from the native workspace, so a plain `cargo build` skips it — a
     // silent gap the check closes by building it explicitly for its target.
     let rt = paths.seed.join("crates/cdz-runtime");
-    let rt_ok = {
-        let _p = sh.push_dir(&rt);
-        cmd!(sh, "cargo build --release --quiet --target wasm32-unknown-unknown").quiet().run().is_ok()
-    };
-    step("wasm-runtime", rt_ok);
+    log.step("wasm-runtime", "cargo build --release --target wasm32-unknown-unknown", &rt);
 
     // The behavior gate — invoke this same xtask binary. Use `gate --check` (vs the baseline) when a
     // baseline exists, so `check` asks "did anything REGRESS?" rather than "are there any known
     // gaps?" — a green check means the library is healthy AND the compiler didn't backslide. With no
-    // baseline, fall back to a plain `gate` (any fail is a failure).
-    let gate_arg = if baseline_path(paths).exists() { "--check" } else { "" };
-    let mut gate_cmd = std::process::Command::new(std::env::current_exe().expect("current exe"));
-    // Forward the profile so the gate's pipeline tools are built the same way (before the subcommand,
-    // since `--profile` is a global arg).
-    gate_cmd.args(["--profile", profile, "gate"]).current_dir(&paths.repo);
-    if !gate_arg.is_empty() {
-        gate_cmd.arg(gate_arg);
-    }
-    let gate_ok = gate_cmd.status().map(|s| s.success()).unwrap_or(false);
-    step("gate", gate_ok);
+    // baseline, fall back to a plain `gate`. The gate's own summary is short, so let it print to the
+    // console (it is the useful signal) while its verbose build noise still lands in the log.
+    let xtask = std::env::current_exe().expect("current exe");
+    let xtask = xtask.to_string_lossy();
+    let gate_cmd = if baseline_path(paths).exists() {
+        format!("{xtask} --profile {profile} gate --check")
+    } else {
+        format!("{xtask} --profile {profile} gate")
+    };
+    log.step_show("gate", &gate_cmd, repo);
 
-    println!("\ncheck: all green ✓");
+    println!("\ncheck: all green ✓  (full log: {})", log.path.display());
 }
 
-/// Report one check step; abort the whole check on the first failure.
-fn step(name: &str, ok: bool) {
-    if ok {
-        println!("  ✓ {name}");
-    } else {
-        eprintln!("  ✗ {name} — FAILED");
-        eprintln!("\ncheck: FAILED at `{name}`");
+/// A captured-output log for a multi-step command. Each step's child process writes its stdout and
+/// stderr into one appended file; the console stays quiet on success and gets the whole log on the
+/// first failure (with the path), so there is nothing to re-run to see what happened.
+struct Log {
+    path: PathBuf,
+    file: std::fs::File,
+}
+
+impl Log {
+    /// Open `target/xtask-logs/<cmd>-<timestamp>.log` (timestamped, so runs don't overwrite).
+    fn create(paths: &Paths, cmd: &str) -> Log {
+        let dir = paths.repo.join("target/xtask-logs");
+        std::fs::create_dir_all(&dir).expect("create xtask-logs dir");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let path = dir.join(format!("{cmd}-{stamp}.log"));
+        let file = std::fs::File::create(&path).expect("create log file");
+        Log { path, file }
+    }
+
+    /// Run a step with its output captured to the log; print `✓ name` on success. On failure, dump
+    /// the whole log to the console and exit. `cmd` is a `program arg arg…` string run in `dir`.
+    fn step(&mut self, name: &str, cmd: &str, dir: &Path) {
+        self.run_step(name, cmd, dir, false);
+    }
+
+    /// Like `step`, but the child's output ALSO streams to the console (tee) — for a step whose own
+    /// output is a concise, useful signal (the gate's tally), not build noise.
+    fn step_show(&mut self, name: &str, cmd: &str, dir: &Path) {
+        self.run_step(name, cmd, dir, true);
+    }
+
+    fn run_step(&mut self, name: &str, cmd: &str, dir: &Path, show: bool) {
+        use std::io::Write;
+        writeln!(self.file, "\n==== {name}: {cmd} ====").ok();
+        self.file.flush().ok();
+
+        // Split the command string into program + args (our commands have no quoted args).
+        let mut parts = cmd.split_whitespace();
+        let program = parts.next().expect("non-empty command");
+        let args: Vec<&str> = parts.collect();
+
+        // Capture stdout+stderr. (A true live tee would need thread-per-pipe; capture-then-print is
+        // enough here — steps are short and the console output is the point, not streaming.)
+        let out = std::process::Command::new(program)
+            .args(&args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| {
+                eprintln!("  ✗ {name} — could not launch: {e}");
+                std::process::exit(1);
+            });
+        self.file.write_all(&out.stdout).ok();
+        self.file.write_all(&out.stderr).ok();
+        self.file.flush().ok();
+        if show {
+            std::io::stdout().write_all(&out.stdout).ok();
+            std::io::stderr().write_all(&out.stderr).ok();
+        }
+
+        if out.status.success() {
+            println!("  ✓ {name}");
+        } else {
+            eprintln!("  ✗ {name} — FAILED");
+            self.dump_and_exit(name);
+        }
+    }
+
+    /// Print the whole captured log to the console (so the failure is readable without re-running)
+    /// plus its path, then exit non-zero.
+    fn dump_and_exit(&self, failed_step: &str) -> ! {
+        eprintln!("\n──── full log ({}) ────", self.path.display());
+        if let Ok(text) = std::fs::read_to_string(&self.path) {
+            eprint!("{text}");
+        }
+        eprintln!("──── end log ────");
+        eprintln!("\ncheck: FAILED at `{failed_step}` — full log above and at {}", self.path.display());
         std::process::exit(1);
     }
 }
