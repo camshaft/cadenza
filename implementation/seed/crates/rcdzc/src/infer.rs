@@ -118,13 +118,21 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
 /// head with no type, a non-function head, an arity/unify mismatch — return `Any` so the value column
 /// stays total; the actual FAULT is reported by `type_errors`.
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
-    // A LAMBDA head β-reduces; the application's type is the reduced body's type. (For C's corpus
-    // every function call folds this way; a scheme-based typing of a lambda head arrives with a def's
-    // inferred scheme.)
-    match crate::eval::apply_lambda(db, head, args) {
-        Ok(Some(reduced)) => return type_of(db, reduced),
-        Ok(None) => {}
-        Err(_) => return Ty::Any,
+    // A LAMBDA head β-reduces; the application's type is the reduced body's type. The reduction runs
+    // under the recursion guard (keyed by the lambda body), so a recursive call declines to `Any`
+    // rather than diverging — matching lowering. (For C's corpus every function call folds this way;
+    // a scheme-based typing of a lambda head arrives with a def's inferred scheme.)
+    if crate::eval::lambda_body(db, head).is_some() {
+        return match db.enter_reduction() {
+            Some(mut guard) => {
+                let g = guard.db();
+                match crate::eval::apply_lambda(g, head, args) {
+                    Ok(Some(reduced)) => type_of(g, reduced),
+                    _ => Ty::Any,
+                }
+            }
+            None => Ty::Any, // recursive — the fault is reported by the lowering/poison path.
+        };
     }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {

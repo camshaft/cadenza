@@ -98,9 +98,21 @@ fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
     let mut faults = Vec::new();
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
-    let bodies: Vec<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
-    for body in bodies {
-        collect_reached_poisons(db, body, &mut faults);
+    let bodies: Vec<(StructId, bool)> = db
+        .defs
+        .iter()
+        .filter_map(|d| d.body.map(|b| (b, d.params.is_empty())))
+        .collect();
+    for (body, nullary) in bodies {
+        // Scope + type checking (`type_errors`) applies to EVERY body — a function body's free
+        // parameters are bound (a `Param` types fine), so an unbound name or type fault in it is still
+        // caught. The reached-POISON walk lowers the body, which only makes sense for a VALUE: a
+        // FUNCTION body (a def with parameters) is not lowered standalone — its params are
+        // unsubstituted until it is applied — so run the trap walk only on a nullary def's body (a
+        // value). A function body's traps surface when it is applied and its call site is lowered.
+        if nullary {
+            collect_reached_poisons(db, body, &mut faults);
+        }
         faults.extend(type_errors(db, body));
     }
     faults
