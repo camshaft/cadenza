@@ -20,3 +20,11 @@ exclude = ["implementation/seed/crates/cdz-runtime"]
 
 [profile.dev]
 debug = false
+
+# `release-debug` — dev's fast-to-build settings plus optimization. Used to build the pipeline tools
+# for the corpus gate, where compiling+running ~900 cases through cdz-syntax→rcdzc→cdz-run is
+# expensive enough that an unoptimized build dominates the wall clock. Inherits from dev (so it keeps
+# `debug = false` and the dev feature set) and turns on `opt-level`.
+[profile.release-debug]
+inherits = "dev"
+opt-level = 2
