@@ -313,6 +313,22 @@ pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
     }
 }
 
+/// An export's RESULT as the envelope needs it — the same mapping as [`export_result_valtype`] lifted
+/// into the [`BoundaryResult`] the assembler consumes. Unit → `None`; a scalar → its primitive byte; a
+/// COMPOUND → the canonical binary value form as `list<u8>` (the escape path — `BoundaryResult::Bytes`),
+/// EXCEPT that the escape encoder (the resource `encode()` renderer) is not yet emitted, so a compound
+/// host-return still DECLINES here rather than crossing as a raw handle (removed at R3, when the
+/// renderer lands). The `Bytes` variant is exercised by the R0 envelope oracle + wasmtime tests, which
+/// hand-build a `list<u8>`-returning core (the byte layer proven independently of the renderer).
+pub fn export_result(ret: &Ty) -> Result<crate::backend::wasm::envelope::BoundaryResult, String> {
+    use crate::backend::wasm::envelope::BoundaryResult;
+    match export_result_valtype(ret) {
+        Ok(None) => Ok(BoundaryResult::None),
+        Ok(Some(b)) => Ok(BoundaryResult::Primitive(b)),
+        Err(e) => Err(e),
+    }
+}
+
 /// Run-length encode a slot-valtype vector into `(count, valtype)` groups (wasm local-decl form).
 fn rle(valtypes: &[ValType]) -> Vec<(u32, ValType)> {
     let mut groups: Vec<(u32, ValType)> = Vec::new();

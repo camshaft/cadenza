@@ -172,7 +172,7 @@ fn oracle_core(names: &[&str]) -> Vec<u8> {
 /// encoder in the byte path).
 #[test]
 fn envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     for names in [&["run"][..], &["run", "double"][..]] {
         let core = oracle_core(names);
         let exports: Vec<BoundaryExport> = names
@@ -180,7 +180,7 @@ fn envelope_matches_wasm_encoder_oracle() {
             .map(|n| BoundaryExport {
                 name: n.to_string(),
                 params: Vec::new(),
-                result: Some(0x78),
+                result: BoundaryResult::Primitive(0x78),
             })
             .collect();
         let ours = assemble(&core, &exports, &[], "");
@@ -197,7 +197,7 @@ fn envelope_matches_wasm_encoder_oracle() {
 /// runtime function needs.
 #[test]
 fn parameterized_envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     // A core module with one `(i64, i64) -> i64` function returning param 0 + param 1.
     let core = {
         use wasm_encoder::*;
@@ -262,7 +262,7 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
         &[BoundaryExport {
             name: "add".to_string(),
             params: vec![0x78, 0x78], // two s64 params
-            result: Some(0x78),
+            result: BoundaryResult::Primitive(0x78),
         }],
         &[],
         "",
@@ -276,7 +276,7 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
 /// `(p0: u8, p1: s16) -> s8` over a `(i32, i32) -> i32` core covers three of the four narrow primitives.
 #[test]
 fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     // A minimal `(i32, i32) -> i32` core — the machine signature a narrow-width export lowers to (a
     // ≤32-bit value occupies an i32 slot; the ABI lifts it to the narrow primitive at the edge).
     let core = {
@@ -339,8 +339,8 @@ fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
         &core,
         &[BoundaryExport {
             name: "f".to_string(),
-            params: vec![0x7D, 0x7C], // u8, s16
-            result: Some(0x7E),       // s8
+            params: vec![0x7D, 0x7C],                // u8, s16
+            result: BoundaryResult::Primitive(0x7E), // s8
         }],
         &[],
         "",
@@ -483,14 +483,14 @@ fn import_oracle_component(core: &[u8], import_name: &str) -> Vec<u8> {
 /// the SAME versioned import name and the GENERATED `OPS.arr_alloc` signature on our side.
 #[test]
 fn import_envelope_matches_component_builder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     use crate::backend::wasm::runtime_abi::OPS;
     let core = import_oracle_core();
     let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
     let exports = vec![BoundaryExport {
         name: "main".to_string(),
         params: Vec::new(),
-        result: Some(0x78), // s64
+        result: BoundaryResult::Primitive(0x78), // s64
     }];
     let ours = assemble(&core, &exports, &[OPS.arr_alloc], import_name);
     let oracle = import_oracle_component(&core, import_name);
@@ -504,14 +504,14 @@ fn import_envelope_matches_component_builder_oracle() {
 /// validity/type only — the end-to-end run lands in H2 with a real compound op + the composed runtime.)
 #[test]
 fn import_envelope_is_a_valid_component_with_the_versioned_import() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     use crate::backend::wasm::runtime_abi::{OPS, REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
     let core = import_oracle_core();
     let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
     let exports = vec![BoundaryExport {
         name: "main".to_string(),
         params: Vec::new(),
-        result: Some(0x78),
+        result: BoundaryResult::Primitive(0x78),
     }];
     let bytes = assemble(&core, &exports, &[OPS.arr_alloc], &import_name);
 
@@ -3140,5 +3140,170 @@ mod stage1 {
         });
         let c = reduce_ctor(&mut db, p, &[w8]).expect("build");
         assert_ne!(a, c, "different widths are different modules");
+    }
+}
+
+// ── value-heap R0: the canonical `list<u8>` ABI (memory + cabi_realloc + list<u8> lift) ────────────
+//
+// The escape path (a compound crossing to the host) returns the value's CANONICAL BINARY VALUE FORM as
+// `list<u8>` (`contracts/deterministic-value-form.md`; the resource `encode()` method's return — R1+).
+// R0 is the ABI substrate beneath it: a core module with a linear memory + `cabi_realloc`, and a
+// `-> list<u8>` component lift that reads the canonical-ABI `(ptr, len)` return area out of that
+// memory. Proven two ways, exactly as the H1b import envelope was: the hand-emitted envelope is
+// byte-identical to the `ComponentBuilder` oracle, AND it RUNS under wasmtime, returning the bytes.
+//
+// The core module here is a hand-built `wasm-encoder` fixture (a nullary entry returning a retptr to
+// constant bytes) — R0 proves the ENVELOPE's list-lift byte layer independently of the serializer that
+// will emit the real renderer core (R1/R2). This mirrors H1b, whose oracle used `import_oracle_core`.
+mod r0 {
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
+
+    /// A minimal core module returning a constant `list<u8>` by the canonical ABI: exports `memory`, a
+    /// stub `cabi_realloc`, and `main : () -> i32` returning a pointer to an 8-byte return area holding
+    /// `[data-ptr:i32, data-len:i32]`. The payload bytes and the return area are preloaded via a data
+    /// segment (so `main` is just `i32.const <retarea>`), which is enough to RUN — the host reads the
+    /// result out of guest memory and never calls realloc for a nullary result. Payload = `[1,2,3]`.
+    /// The exact core the R0 serializer will emit (a real renderer writing bytes + the return area) is
+    /// R1/R2; this fixture isolates the envelope's list-lift byte layer.
+    pub(super) fn working_list_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        // Types: main `()->i32`, cabi_realloc `(i32×4)->i32`.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![], vec![ValType::I32]); // 0: main
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        ); // 1: cabi_realloc
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0); // main
+        funcs.function(1); // cabi_realloc
+        m.section(&funcs);
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        m.section(&mems);
+        let mut exports = ExportSection::new();
+        exports.export("memory", ExportKind::Memory, 0);
+        exports.export("main", ExportKind::Func, 0);
+        exports.export("cabi_realloc", ExportKind::Func, 1);
+        m.section(&exports);
+        // Data: payload [1,2,3] at offset 0; return area [ptr=0, len=3] at offset 8.
+        let mut data = DataSection::new();
+        let bytes = [
+            1u8, 2, 3, 0, 0, 0, 0, 0, /* retarea@8 */ 0, 0, 0, 0, 3, 0, 0, 0,
+        ];
+        data.active(0, &ConstExpr::i32_const(0), bytes.iter().copied());
+        // Code.
+        let mut code = CodeSection::new();
+        let mut main = Function::new(vec![]);
+        main.instruction(&Instruction::I32Const(8)); // return the retarea pointer
+        main.instruction(&Instruction::End);
+        code.function(&main);
+        let mut realloc = Function::new(vec![]);
+        realloc.instruction(&Instruction::I32Const(0)); // stub (never called for a nullary result)
+        realloc.instruction(&Instruction::End);
+        code.function(&realloc);
+        m.section(&code);
+        m.section(&data);
+        m.finish()
+    }
+
+    /// Wrap `core` in a `() -> list<u8>` component with `ComponentBuilder` — the authoritative reference
+    /// the hand-emitted list-lift envelope is diffed against (memory + realloc aliases + the `list u8`
+    /// defined type + the Memory/Realloc canon-lift options). No runtime import (the bare shape).
+    fn oracle_list_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let module_idx = c.core_module_raw(core); // core module 0
+        let prog_inst = c.core_instantiate(module_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let main_core = c.core_alias_export(prog_inst, "main", ExportKind::Func);
+        let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
+        let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+        let (list_u8, ldef) = c.type_defined();
+        ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (main_ty, mut enc) = c.type_function();
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(list_u8)));
+        let main_comp = c.lift_func(
+            main_core,
+            main_ty,
+            [
+                CanonicalOption::Memory(mem),
+                CanonicalOption::Realloc(realloc),
+            ],
+        );
+        c.export("main", ComponentExportKind::Func, main_comp, None);
+        c.finish()
+    }
+
+    /// The hand-emitted `() -> list<u8>` bare-escape envelope is BYTE-IDENTICAL to the `ComponentBuilder`
+    /// oracle — the anchor that licenses hand-emitting the memory/realloc-aliasing + list-lift plumbing
+    /// with no external encoder in the compile path (`reference-compiler.md` §Emission Is Validated
+    /// Byte-Identical To An Independent Encoder). This is R0's byte gate.
+    #[test]
+    fn list_u8_envelope_matches_component_builder_oracle() {
+        let core = working_list_core();
+        let exports = vec![BoundaryExport {
+            name: "main".to_string(),
+            params: Vec::new(),
+            result: BoundaryResult::Bytes,
+        }];
+        let ours = assemble(&core, &exports, &[], "");
+        let oracle = oracle_list_component(&core);
+        assert_eq!(
+            ours, oracle,
+            "list<u8> envelope mismatch vs ComponentBuilder"
+        );
+    }
+
+    /// The hand-emitted `() -> list<u8>` component RUNS under wasmtime and returns the bytes — R0's
+    /// behavior gate (the byte-identity check alone can't prove the canonical-ABI `(ptr, len)` return
+    /// area is read correctly). Observed by execution: `main()` returns `[1, 2, 3]`.
+    #[test]
+    fn list_u8_envelope_runs_and_returns_the_bytes() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+
+        let core = working_list_core();
+        let exports = vec![BoundaryExport {
+            name: "main".to_string(),
+            params: Vec::new(),
+            result: BoundaryResult::Bytes,
+        }];
+        let comp = assemble(&core, &exports, &[], "");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let func = instance
+            .get_func(&mut store, "main")
+            .expect("export present");
+        let mut results = [Val::Bool(false)];
+        func.call(&mut store, &[], &mut results).expect("call");
+        func.post_return(&mut store).expect("post_return");
+        match &results[0] {
+            Val::List(items) => {
+                let got: Vec<u8> = items
+                    .iter()
+                    .map(|v| match v {
+                        Val::U8(b) => *b,
+                        other => panic!("list element not u8: {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(got, vec![1, 2, 3], "list<u8> round-trip");
+            }
+            other => panic!("expected a list result, got {other:?}"),
+        }
     }
 }

@@ -57,13 +57,31 @@ mod sec {
 /// the threaded core-instance of lowered ops is bound under (they must match).
 const HEAP_MODULE: &str = "heap";
 
+/// An export's RESULT as the boundary crosses it. A scalar crosses as a component primitive byte; a
+/// compound's canonical binary value form crosses as `list<u8>` (the R0 escape-path ABI — the resource
+/// method's `encode()` return); a unit-returning export has no result. Distinguished as an enum (not a
+/// bare `Option<u8>`) because a `list<u8>` result reshapes the envelope: it needs the core module's
+/// `memory` + `cabi_realloc` aliased in and the canon-lift to carry Memory/Realloc options, so the
+/// distinction must survive to the assembler.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum BoundaryResult {
+    /// No result — a unit-returning export.
+    None,
+    /// A component primitive valtype byte (`s64`/`u32`/`bool`/…) — the faithful boundary form of a
+    /// scalar. Crosses by value with no memory involvement.
+    Primitive(u8),
+    /// A `list<u8>` — the canonical binary value form of a compound, crossing through linear memory by
+    /// the canonical ABI (a `(ptr, len)` return area). Requires the exporting core module to export
+    /// `memory` + `cabi_realloc` (`contracts/deterministic-value-form.md`; `value-interchange.md`).
+    Bytes,
+}
+
 /// One export as the envelope assembler needs it: its verbatim boundary name, its parameter component
-/// valtype bytes (in order; empty for a nullary export), and its result's component valtype byte
-/// (`None` for a unit / no-result export).
+/// valtype bytes (in order; empty for a nullary export), and its result form (see [`BoundaryResult`]).
 pub struct BoundaryExport {
     pub name: String,
     pub params: Vec<u8>,
-    pub result: Option<u8>,
+    pub result: BoundaryResult,
 }
 
 /// Assemble the whole component around an embedded `core` module. `exports` are the boundary exports
@@ -85,15 +103,23 @@ pub fn assemble(
     }
 }
 
-/// The BARE shape (no runtime import) — unchanged from before the value heap, byte-identical to the
-/// oracle for a runtime-free program.
+/// The BARE shape (no runtime import). Two sub-shapes, chosen by whether any export returns a
+/// `list<u8>` (the canonical binary value form — the escape path). An all-scalar/unit program takes the
+/// original TYPE(7)-before-ALIAS(6) path, byte-identical to a pre-value-heap program (the scalar
+/// byte-neutrality guard). A program with a `list<u8>` result takes the [`assemble_bare_bytes`] path,
+/// which aliases the core module's `memory` + `cabi_realloc` and lifts through them — matching the
+/// `ComponentBuilder` oracle (ALIAS(6)-before-TYPE(7), its call order).
 fn assemble_bare(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
+    if exports.iter().any(|e| e.result == BoundaryResult::Bytes) {
+        return assemble_bare_bytes(core, exports);
+    }
     let n = exports.len();
 
-    // sec 7: one component functype per export (nullary → its result form).
+    // sec 7: one component functype per export (nullary → its result form). No `list<u8>` result here
+    // (the caller routed those to `assemble_bare_bytes`), so the list-type index is unused.
     let mut type_items = Vec::new();
     for e in exports {
-        type_items.extend_from_slice(&comp_functype(e));
+        type_items.extend_from_slice(&comp_functype(e, 0));
     }
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(n, &type_items));
 
@@ -127,6 +153,78 @@ fn assemble_bare(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
     // Component TYPE (7) BEFORE core ALIAS (6) — load-bearing for byte identity.
     out.extend_from_slice(&type_sec);
     out.extend_from_slice(&alias_sec);
+    out.extend_from_slice(&canon_sec);
+    out.extend_from_slice(&export_sec);
+    out
+}
+
+/// The BARE shape with a `list<u8>` result — the escape-path ABI (a compound's canonical binary value
+/// form crosses as `list<u8>`, the resource `encode()` return). No runtime import, but the lift reads
+/// the `(ptr, len)` return area out of the core module's linear memory, so it aliases the core's
+/// `memory` + `cabi_realloc` and carries them as canon-lift options. Follows the `ComponentBuilder`
+/// oracle's call order — ALIAS(6) before TYPE(7) — so the bytes match. Index spaces (with
+/// `m = exports.len()`):
+///   * export core-funcs → core funcs `0..m`; `cabi_realloc` → core func `m`; `memory` → memory 0.
+///   * `list u8` defined type → component type 0; boundary functypes → component types `1..=m`.
+///   * lifts → component funcs `0..m` (no lowered ops precede them in the bare shape).
+///
+/// A scalar export mixed in (a program exporting both a scalar and a compound) lifts with no options; a
+/// `list<u8>` export lifts with Memory+Realloc. The core module MUST export `memory` and
+/// `cabi_realloc` (the R0 serializer emits both whenever any export returns `list<u8>`).
+fn assemble_bare_bytes(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
+    let m = exports.len();
+    let list_type_idx: u32 = 0; // the shared `list u8` type is component type 0
+    let mem_idx: u32 = 0; // the sole aliased memory
+    let realloc_func: u32 = m as u32; // core func after the m export funcs
+
+    // sec 6: alias each export's core func (core funcs 0..m), then `memory`, then `cabi_realloc`.
+    let mut alias_items = Vec::new();
+    for e in exports {
+        alias_items.extend_from_slice(&core_alias_item(0, &e.name));
+    }
+    alias_items.extend_from_slice(&memory_alias_item(0, "memory"));
+    alias_items.extend_from_slice(&core_alias_item(0, "cabi_realloc"));
+    let alias_sec = section(sec::ALIAS, &wasm_vec(m + 2, &alias_items));
+
+    // sec 7: the shared `list u8` defined type (type 0), then one functype per export (types 1..=m).
+    let mut type_items = list_u8_defined_type();
+    for e in exports {
+        type_items.extend_from_slice(&comp_functype(e, list_type_idx));
+    }
+    let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1 + m, &type_items));
+
+    // sec 8: lift export j (core func j) using functype type `1+j`; a `list<u8>` result carries the
+    // Memory+Realloc options, a scalar result none.
+    let mut canon_items = Vec::new();
+    for (j, e) in exports.iter().enumerate() {
+        let core_func = j as u32;
+        let type_idx = (1 + j) as u32;
+        match e.result {
+            BoundaryResult::Bytes => canon_items.extend_from_slice(&canon_lift_list_item(
+                core_func,
+                mem_idx,
+                realloc_func,
+                type_idx,
+            )),
+            _ => canon_items.extend_from_slice(&canon_lift_item(core_func, type_idx)),
+        }
+    }
+    let canon_sec = section(sec::CANON, &wasm_vec(m, &canon_items));
+
+    // sec 11: export each lifted component func (0..m) under its verbatim name.
+    let mut export_items = Vec::new();
+    for (j, e) in exports.iter().enumerate() {
+        export_items.extend_from_slice(&comp_export_item(&e.name, j as u32));
+    }
+    let export_sec = section(sec::COMPONENT_EXPORT, &wasm_vec(m, &export_items));
+
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    out.extend_from_slice(&core_module_section(core)); // sec 1
+    out.extend_from_slice(&section(sec::CORE_INSTANCE, &[0x01, 0x00, 0x00, 0x00])); // sec 2
+    // ALIAS(6) before TYPE(7) here — the oracle's call order for the memory/realloc-lift shape.
+    out.extend_from_slice(&alias_sec);
+    out.extend_from_slice(&type_sec);
     out.extend_from_slice(&canon_sec);
     out.extend_from_slice(&export_sec);
     out
@@ -234,11 +332,19 @@ fn assemble_with_imports(
         section(sec::ALIAS, &wasm_vec(m, &items))
     };
 
-    // sec 7 (second): one component functype per boundary export → component types `1..=m`.
+    // sec 7 (second): one component functype per boundary export → component types `1..=m`. A
+    // `list<u8>` result in the IMPORT shape (a compound-returning program that ALSO uses runtime ops —
+    // the real escape encoder, R2) is not yet emitted: the import shape lays no `list u8` defined type,
+    // so `comp_functype`'s list-type index is a placeholder here. `emit` only produces a `Bytes` result
+    // through the bare escape path today; the import+bytes combination lands with R2.
     let boundary_type_sec = {
         let mut items = Vec::new();
         for e in exports {
-            items.extend_from_slice(&comp_functype(e));
+            debug_assert!(
+                e.result != BoundaryResult::Bytes,
+                "a list<u8> boundary result under the runtime-import envelope is R2, not yet emitted"
+            );
+            items.extend_from_slice(&comp_functype(e, 0));
         }
         section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
     };
@@ -317,8 +423,10 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
 
 /// A sec-7 component functype item for a BOUNDARY export: `<func:0x40> <params-vec> <result-form>`. The
 /// params vec is `<count> (<name> <valtype>)*` — each parameter NAMED (synthesized `p0`, `p1`, …). The
-/// result form is `00 <valtype>` for one result, `01 00` for none.
-fn comp_functype(e: &BoundaryExport) -> Vec<u8> {
+/// result form is `00 <valtype>` for one result (a primitive's own byte, or a DEFINED type by index for
+/// a `list<u8>`), `01 00` for none. `list_type_idx` is the component-type index of the shared `list u8`
+/// defined type, referenced when the result is [`BoundaryResult::Bytes`].
+fn comp_functype(e: &BoundaryExport, list_type_idx: u32) -> Vec<u8> {
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM]; // function type form
     let mut param_items = Vec::new();
     for (i, &vt) in e.params.iter().enumerate() {
@@ -329,8 +437,14 @@ fn comp_functype(e: &BoundaryExport) -> Vec<u8> {
     }
     item.extend_from_slice(&wasm_vec(e.params.len(), &param_items));
     match e.result {
-        Some(vt) => item.extend_from_slice(&[0x00, vt]),
-        None => item.extend_from_slice(&[0x01, 0x00]),
+        // A primitive result is its own valtype byte, inline; a `list<u8>` result references the shared
+        // defined type by index (both under result-form `0x00` = "one result").
+        BoundaryResult::Primitive(vt) => item.extend_from_slice(&[0x00, vt]),
+        BoundaryResult::Bytes => {
+            item.push(0x00);
+            uleb128(list_type_idx as u64, &mut item);
+        }
+        BoundaryResult::None => item.extend_from_slice(&[0x01, 0x00]),
     }
     item
 }
@@ -374,6 +488,47 @@ fn canon_lift_item(core_func: u32, type_idx: u32) -> Vec<u8> {
     item.push(0x00); // canon options: none
     uleb128(type_idx as u64, &mut item);
     item
+}
+
+/// A sec-8 canon-lift item for a `list<u8>`-returning boundary func: `00 00 <core-func> <opts> <type>`,
+/// where the canon-options vec carries the MEMORY and REALLOC the canonical ABI needs to read the
+/// `(ptr, len)` return area out of the core module's linear memory (`00 00 <core-func> 02 03 <mem-idx>
+/// 04 <realloc-func-idx> <type>`). Option tags: `0x03 <mem-idx>` = Memory, `0x04 <core-func-idx>` =
+/// Realloc — the exact byte shape the `ComponentBuilder` oracle emits for `CanonicalOption::Memory` +
+/// `::Realloc` (pinned by the R0 byte-identity test; the tags are component-model canon-opt encodings
+/// `wasm-encoder` does not expose as public constants). Options are ordered Memory-then-Realloc.
+fn canon_lift_list_item(core_func: u32, mem_idx: u32, realloc_func: u32, type_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x00, 0x00];
+    uleb128(core_func as u64, &mut item);
+    // canon options vec: count 2, then Memory then Realloc.
+    item.push(0x02);
+    item.push(0x03); // CanonicalOption::Memory
+    uleb128(mem_idx as u64, &mut item);
+    item.push(0x04); // CanonicalOption::Realloc
+    uleb128(realloc_func as u64, &mut item);
+    uleb128(type_idx as u64, &mut item);
+    item
+}
+
+/// A sec-6 MEMORY alias item (alias a core-instance's exported memory): `00 02 01 <instance> <namelen>
+/// <name>` — core-sort `0x00`, core-MEMORY-kind `0x02`, alias-target core-instance-export `0x01`, the
+/// instance index, then the export name. The `0x02` (memory) kind is the only difference from
+/// [`core_alias_item`] (a func alias, kind `0x00`); pinned by the R0 byte-identity oracle.
+fn memory_alias_item(instance: u32, name: &str) -> Vec<u8> {
+    let mut item = vec![0x00, 0x02, 0x01];
+    uleb128(instance as u64, &mut item);
+    item.extend_from_slice(&uleb_bytes(name.len() as u64));
+    item.extend_from_slice(name.as_bytes());
+    item
+}
+
+/// The sec-7 defined-type item for `list<u8>`: `70 7d` — the component-model `list` defined-type tag
+/// `0x70` followed by the element valtype (`u8` = `wasm_abi::COMP_U8`). It is the canonical binary value
+/// form's boundary type (the resource `encode()` return); shared by every `list<u8>`-returning export,
+/// laid at a fixed component-type index. The `0x70` list tag is a component-model structural encoding
+/// `wasm-encoder` does not expose as a constant, pinned by the R0 byte-identity oracle.
+fn list_u8_defined_type() -> Vec<u8> {
+    vec![0x70, wasm_abi::COMP_U8]
 }
 
 /// A sec-11 component-export item: `00 <namelen><name> 01 <func-idx> 00` — name, sort component

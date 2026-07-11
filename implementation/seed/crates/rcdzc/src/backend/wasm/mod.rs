@@ -96,9 +96,14 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).
     let mut boundary: Vec<BoundaryExport> = Vec::new();
     for e in &layout.exports {
-        let result = serialize::export_result_valtype(&e.result).map_err(Reject::decline)?;
+        // The export's RESULT crosses as a `BoundaryResult`: unit → None, a scalar → its primitive
+        // byte, a compound → the canonical binary value form as `list<u8>` (the escape path). Until the
+        // resource `encode()` renderer lands (R2/R3) a compound host-return DECLINES here rather than
+        // crossing as a raw handle — `export_result` carries that decline.
+        let result = serialize::export_result(&e.result).map_err(Reject::decline)?;
         // Each parameter's COMPONENT-boundary valtype (distinct from the core valtype — a signed 64
-        // integer is `s64` at the boundary, `i64` in the core). Reuses the result mapping per param.
+        // integer is `s64` at the boundary, `i64` in the core). A parameter is a scalar (a `list<u8>`
+        // INPUT is not yet a surface type), so its faithful primitive byte is required.
         let mut params = Vec::new();
         for (_, ty) in &e.params {
             let vt = serialize::export_result_valtype(ty)
