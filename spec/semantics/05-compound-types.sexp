@@ -2825,6 +2825,52 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "a generic sum with TWO type parameters instantiates each independently"
+  (doc    "A generic sum with TWO implicit type parameters — `(type Pair (Pr a b))`, so `Pr : ∀a b. a → b
+           → Pair a b`. `(Pair.Pr 5 true)` instantiates `a = Int64`, `b = Bool` independently; the
+           `(Pair.Pr x y)` arm binds both, and projecting `x` yields 5. Pins that first-appearance order
+           binds two distinct parameters (not one aliased param, and not a positional confusion): the
+           payload heap array holds an Int64 in slot 0 and a Bool in slot 1, and each is threaded through
+           the constructor's two-parameter scheme. Escaping the value renders `(: (Pr 5 true) (Pair Int64
+           Bool))` — the type carries both instantiated arguments in declaration order.")
+  (input  (do
+            (type Pair (Pr a b))
+            (def (main) (match (Pair.Pr 5 true) ((Pair.Pr x y) x)))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "one generic sum instantiated at two different types in one program"
+  (doc    "The SAME generic sum ctor used at two DISTINCT instantiations in one program — `(type Box (Bx
+           a))` applied to Int64 (`Box.Bx 10`) and to Bool (`Box.Bx true`). Each `match` binds the payload
+           at its own instantiation: the Int64 arm yields 10, the Bool arm folds `true` to 1, and the sum
+           is 11. Pins that a generic ctor's scheme is re-instantiated PER USE (not frozen to the first
+           instantiation seen): a compiler that monomorphized `Box` to its first observed type argument
+           would misjudge the Bool payload's width/slot. The two uses share one declaration but not one
+           instantiation.")
+  (input  (do
+            (type Box (Bx a))
+            (def (main)
+              (+ (match (Box.Bx 10)   ((Box.Bx v) v))
+                 (match (Box.Bx true) ((Box.Bx b) (if b 1 0)))))
+            (export main)))
+  (output (: 11 Int64)))
+
+(case "an all-nullary enum dispatches its runtime-selected variant and escapes"
+  (doc    "An enum whose variants are ALL nullary — `(type Color Red Green Blue)` — each variant is the
+           inline-unit CONSTANT (no arr-alloc(0) payload). A function selects one at runtime via nested
+           `if`, and a `match` over the three qualified nullary arms recovers the discriminant: `(f 2)`
+           picks `Color.Blue`, whose arm yields 2. Pins that a runtime-selected nullary variant carries
+           the right discriminant through the heap (not aliased to the first/zero variant), and — the
+           escape sibling — `Color.Green` as a value renders `(: (Green unit) Color)` with its bare
+           variant name and the reconstructed unit payload.")
+  (input  (do
+            (type Color Red Green Blue)
+            (def (f (: n Int64))
+              (if (= n 0) Color.Red (if (= n 1) Color.Green Color.Blue)))
+            (def (main) (match (f 2) ((Color.Red) 0) ((Color.Green) 1) ((Color.Blue) 2)))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "a program's unary variant reusing a prelude nullary variant name is unary"
   (doc    "A program declares `(type Expr (Lit Int64) (Neg Expr))` whose `Neg` variant carries a
            payload — reusing the NAME of the prelude `(type Sign Neg Zero Pos)`'s NULLARY `Neg`.
