@@ -365,17 +365,18 @@ fn assemble_with_imports(
         section(sec::ALIAS, &wasm_vec(m, &items))
     };
 
-    // sec 7 (second): one component functype per boundary export → component types `1..=m`. A
-    // `list<u8>` result in the IMPORT shape (a compound-returning program that ALSO uses runtime ops —
-    // the real escape encoder, R2) is not yet emitted: the import shape lays no `list u8` defined type,
-    // so `comp_functype`'s list-type index is a placeholder here. `emit` only produces a `Bytes` result
-    // through the bare escape path today; the import+bytes combination lands with R2.
+    // sec 7 (second): one component functype per boundary export → component types `1..=m`. This
+    // multi-export-with-imports assembler never carries a `list<u8>` result: a compound that escapes
+    // AND uses runtime ops takes the dedicated `assemble_runtime_resource` path instead (the resource
+    // whose `encode()` walks the live handle), so no `list u8` defined type is laid here and
+    // `comp_functype`'s list-type index is unused. The `debug_assert` pins that a `Bytes` result never
+    // reaches this assembler.
     let boundary_type_sec = {
         let mut items = Vec::new();
         for e in exports {
             debug_assert!(
                 e.result != BoundaryResult::Bytes,
-                "a list<u8> boundary result under the runtime-import envelope is R2, not yet emitted"
+                "a list<u8> boundary result takes the assemble_runtime_resource path, not this one"
             );
             items.extend_from_slice(&comp_functype(e, 0));
         }
