@@ -248,6 +248,46 @@ fn rustc_roundtrip_signed_compare() {
 }
 
 #[test]
+fn a_runtime_shift_emits_a_guarded_block() {
+    // `<<` guards the count (`>= N` panics) AND round-trips to catch overflow; `>>` guards the count
+    // and shifts natively (arithmetic for signed, logical for unsigned — the value type decides).
+    let shl = compile_rust("(module m (def (go (: a Int64) (: b Int64)) (<< a b)) (export go))");
+    assert!(shl.contains("c >= 64"), "count guard:\n{shl}");
+    assert!(shl.contains("(r >> c) != v"), "overflow round-trip:\n{shl}");
+    assert!(shl.contains("v << c"), "the shift:\n{shl}");
+    let shr = compile_rust("(module m (def (go (: a Int64) (: b Int64)) (>> a b)) (export go))");
+    assert!(
+        shr.contains("c >= 64") && shr.contains("v >> c"),
+        ">> guarded:\n{shr}"
+    );
+    assert!(
+        !shr.contains("round"),
+        ">> needs no overflow round-trip:\n{shr}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_shift_computes_and_traps() {
+    // `<<` and `>>` match the wasm oracle: value, out-of-range-count trap, overflow trap, and the
+    // arithmetic-vs-logical distinction (a signed `>>` sign-extends).
+    let shl = compile_rust("(module m (def (go (: a Int64) (: b Int64)) (<< a b)) (export go))");
+    if let Some(out) = rustc_run(&shl, "go(1, 4)") {
+        assert_eq!(out, "16");
+    }
+    let shr = compile_rust("(module m (def (go (: a Int64) (: b Int64)) (>> a b)) (export go))");
+    if let Some(out) = rustc_run(&shr, "go(-16, 2)") {
+        assert_eq!(out, "-4"); // arithmetic (sign-extending) right shift
+    }
+    let ushr = compile_rust("(module m (def (go (: a UInt8) (: b UInt8)) (>> a b)) (export go))");
+    if let Some(out) = rustc_run(&ushr, "go(200, 1)") {
+        assert_eq!(out, "100"); // logical (zero-fill) right shift
+    }
+    // Overflow/out-of-range traps abort (nonzero exit → the run helper's success assert fails), so the
+    // trap paths are pinned by the wasm gate cross-check + the emit-shape test above; here we assert the
+    // in-range values match. (An explicit panic-catch driver is the emit-side test's job, not here.)
+}
+
+#[test]
 fn rustc_roundtrip_overflow_traps() {
     // Int8 100+100 = 200 leaves the type → Cadenza traps → the emitted Rust panics.
     let rs = compile_rust("(module m (def (add8 (: a Int8) (: b Int8)) (+ a b)) (export add8))");

@@ -295,9 +295,9 @@ fn emit_const_int_at(it: IntTy, v: &IntValue) -> Result<String, Reject> {
 /// Render a runtime arithmetic op as a Rust expression, honoring the numeric model's traps:
 ///  - `+`/`-`/`*` → `<lhs>.checked_add(<rhs>).unwrap_or_else(|| <trap>)` — trap (panic) on overflow;
 ///  - `/`/`%` → `checked_div`/`checked_rem` — trap on ÷0 and `MIN / -1`;
-///  - `&`/`|`/`^` → the total bitwise operator.
-///
-/// A shift is DECLINED (its out-of-range-count trap and exact-multiply overflow are not yet rendered).
+///  - `&`/`|`/`^` → the total bitwise operator;
+///  - `<<`/`>>` → a guarded block: count `>= N` traps; `<<` also round-trips to trap on overflow;
+///    `>>` is arithmetic (signed) / logical (unsigned) via the value type's own `>>`.
 fn emit_arith(
     db: &mut Db,
     id: StructId,
@@ -350,14 +350,42 @@ fn emit_arith(
             };
             Ok(format!("({l} {sym} {r})"))
         }
-        // A shift's exact-multiply overflow (`<<`) and out-of-range-count trap are not yet rendered
-        // faithfully — decline rather than emit a wrapping/masking shift that would disagree with the
-        // trapping semantics.
+        // A runtime shift, honoring the numeric model's trapping semantics exactly (mirroring the wasm
+        // backend's `emit_shift` — `numeric-model.md` §A Shift Is Not Exempt From Overflow Is Defined):
+        //   - COUNT GUARD: a count outside `0..N` traps. The count is read as `u32` and compared `>= N`,
+        //     which catches BOTH a too-large count and a negative one (a negative read unsigned is huge);
+        //   - `<<` is exact `*2^count`, so it TRAPS on overflow: shift, then round-trip `(r >> count)`
+        //     must recover the value — Rust's `>>` is arithmetic for a signed type / logical for an
+        //     unsigned one, so the inverse is exact and the check catches a dropped high bit;
+        //   - `>>` is arithmetic (signed) / logical (unsigned) — Rust's native `>>` on the value's type
+        //     already IS that, so the count guard is the only trap.
+        // `it` is the op's aliased width N (a non-aliased width already declined at `rust_type`), so the
+        // Rust value type IS the N-bit native type — no wider-slot round-trip like wasm needs. Emitted as
+        // a block that binds the value + count once (so a computed operand is evaluated once) then guards.
         Prim::Shl | Prim::Shr => {
-            let _ = id;
-            Err(Reject::decline(
-                "the Rust backend does not yet render a runtime shift (trapping semantics)",
-            ))
+            let width = it.ground_width();
+            let vty = types::rust_type(&Ty::Int(it)).ok_or_else(|| {
+                Reject::decline("shift value width has no native Rust representation")
+            })?;
+            // The count expression: its own solved type (a shift count is not rigidly the value's type),
+            // cast to u32 for the guard and the shift-count position.
+            let count_it = int_ty_of(db, rhs);
+            let count = emit_grounded(db, rhs, count_it, env, layout)?;
+            if matches!(op, Prim::Shr) {
+                // `>>`: guard the count, then the native shift (arithmetic/logical by `vty`'s sign).
+                Ok(format!(
+                    "{{ let v: {vty} = {l}; let c = ({count}) as u32; \
+                     if c >= {width} {{ panic!(\"shift count out of range\") }} v >> c }}"
+                ))
+            } else {
+                // `<<`: guard the count, shift, then round-trip to detect an overflow (a dropped bit).
+                Ok(format!(
+                    "{{ let v: {vty} = {l}; let c = ({count}) as u32; \
+                     if c >= {width} {{ panic!(\"shift count out of range\") }} \
+                     let r = v << c; \
+                     if (r >> c) != v {{ panic!(\"integer overflow in left shift\") }} r }}"
+                ))
+            }
         }
         _ => Err(Reject::decline(
             "not a runtime integer arithmetic operation",
