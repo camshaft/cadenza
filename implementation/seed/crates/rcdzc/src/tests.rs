@@ -9720,18 +9720,31 @@ mod debug_info {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{self, Request};
-    use crate::testkit::parse;
+    use crate::spans;
+    use crate::testkit::{parse, parse_spanned};
 
-    /// Compile `src` to a `component` under `target`, returning the component bytes.
+    /// The `ast` + `spans` input artifacts for `src` — the pair a debug-enabled driver supplies.
+    fn debug_inputs(src: &str) -> Vec<Artifact> {
+        let (arenas, span_data) = parse_spanned(src);
+        vec![
+            Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&arenas)),
+            Artifact::new(spans::KIND_SPANS, "m", spans::encode(&span_data)),
+        ]
+    }
+
+    /// Compile `src` to a `component` under `target`, returning the component bytes. A debug target
+    /// (which requires the `spans` input, §9.4) is given both artifacts; a plain target just the `ast`.
     fn component_of(src: &str, target: Target) -> Vec<u8> {
-        let out = compile(
-            &[Artifact::new(
+        let inputs = if target.needs_spans() {
+            debug_inputs(src)
+        } else {
+            vec![Artifact::new(
                 Artifact::KIND_AST,
                 "m",
                 crate::codec::encode(&parse(src)),
-            )],
-            &[target],
-        );
+            )]
+        };
+        let out = compile(&inputs, &[target]);
         assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
         out.artifact("component")
             .expect("a component artifact")
@@ -9898,12 +9911,15 @@ mod debug_info {
 
     #[test]
     fn a_sidecar_emit_wasm_debug_request_drives_the_debug_component() {
-        // Mode-E enablement end-to-end: an `EMIT_WASM_DEBUG` request in the sidecar list drives a
-        // debug-carrying `component` — the debug directive is a request, not a build flag.
+        // Mode-E enablement end-to-end: an `EMIT_WASM_DEBUG` request in the sidecar list, with the
+        // `spans` input supplied, drives a debug-carrying `component` — the debug directive is a
+        // request, not a build flag.
         let src = "(module m (def (main) 42) (export main))";
+        let (arenas, span_data) = parse_spanned(src);
         let out = compile(
             &[
-                Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&parse(src))),
+                Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&arenas)),
+                Artifact::new(spans::KIND_SPANS, "m", spans::encode(&span_data)),
                 Artifact::new(
                     sidecar::KIND_SIDECAR,
                     "drive",
@@ -9921,5 +9937,81 @@ mod debug_info {
         // The round-trip through the sidecar codec preserves the debug request.
         let reqs = sidecar::decode(&sidecar::encode(&[Request::Emit(Target::WasmDebug)]));
         assert_eq!(reqs, Some(vec![Request::Emit(Target::WasmDebug)]));
+    }
+
+    #[test]
+    fn a_debug_emit_without_spans_declines() {
+        // §9.4 — a debug artifact requested WITHOUT the `spans` input is a decline, not a silent
+        // undecorated component. The debug `Emit` is the signal; `spans` is the data — required together.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &[Artifact::new(
+                Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[Target::WasmDebug],
+        );
+        assert!(out.has_error(), "must decline without a spans input");
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .unwrap();
+        assert!(
+            d.message.contains("`spans`"),
+            "the decline must name the missing spans input: {}",
+            d.message
+        );
+        // Crucially, NO component was produced — not an undecorated one.
+        assert!(out.artifact("component").is_none());
+    }
+
+    #[test]
+    fn a_malformed_spans_artifact_declines() {
+        // A present-but-malformed `spans` input is a decline (reject-don't-miscompile at the tool edge),
+        // exactly like a malformed sidecar list.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&parse(src))),
+                // A path length claiming 9 bytes but with none present — a truncated table.
+                Artifact::new(spans::KIND_SPANS, "m", vec![0x09]),
+            ],
+            &[Target::WasmDebug],
+        );
+        assert!(out.has_error());
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .unwrap();
+        assert!(
+            d.message.contains("malformed `spans`"),
+            "message: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_plain_wasm_target_ignores_a_spans_input() {
+        // A `spans` input present without a debug request changes nothing — the plain component is
+        // byte-identical to one compiled with no spans input at all (spans are inert until a debug
+        // target reads them).
+        let src = "(module m (def (main) 42) (export main))";
+        let (arenas, span_data) = parse_spanned(src);
+        let with_spans = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&arenas)),
+                Artifact::new(spans::KIND_SPANS, "m", spans::encode(&span_data)),
+            ],
+            &[Target::Wasm],
+        );
+        let without = component_of(src, Target::Wasm);
+        assert_eq!(
+            with_spans.artifact("component").expect("component"),
+            without.as_slice(),
+            "a spans input must not change the plain (non-debug) component's bytes"
+        );
     }
 }

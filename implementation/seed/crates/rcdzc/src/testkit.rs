@@ -29,6 +29,33 @@ pub fn parse(src: &str) -> Arenas {
         .unwrap_or_else(|| panic!("cadenza-syntax bytes failed to decode with rcdzc codec: {src}"))
 }
 
+/// Read a test program AND its span side-table, the way a real debug-enabled driver would: the
+/// front-end's `read_spanned` produces both the arena and a `SpanTable` keyed by the same `StructId`
+/// space, which we project to rcdzc's [`crate::spans::SpanData`] (the `spans` input artifact form).
+/// The arena bytes round-trip through the codec exactly as [`parse`] does, so the returned `SpanData`
+/// aligns 1:1 with the decoded arena. Used by the debug-info tests to supply the `spans` input.
+pub fn parse_spanned(src: &str) -> (Arenas, crate::spans::SpanData) {
+    let (arenas, span_table) = cadenza_syntax::sexpr::read_spanned(src)
+        .unwrap_or_else(|e| panic!("test s-expr failed to read: {e:?}\n  src: {src}"));
+    let bytes = cadenza_syntax::codec::encode(&arenas);
+    let decoded = crate::codec::decode(&bytes)
+        .unwrap_or_else(|| panic!("cadenza-syntax bytes failed to decode with rcdzc codec: {src}"));
+    // Project the front-end SpanTable → rcdzc's (start, len) form, one entry per occurrence in id order.
+    let spans: Vec<(u32, u32)> = (0..span_table.len())
+        .map(|i| {
+            let sp = span_table
+                .get(cadenza_syntax::ast::StructId(i as u32))
+                .expect("span for every occurrence");
+            (sp.start as u32, (sp.end - sp.start) as u32)
+        })
+        .collect();
+    let data = crate::spans::SpanData {
+        module_path: "test.cdz".to_string(),
+        spans,
+    };
+    (decoded, data)
+}
+
 /// Build `(module m (def (main) 42) (export main))` and return `(arenas, the-42-literal-node-id)`.
 /// The literal id is what the `type_of` / `core_of` queries are asked about.
 pub fn scalar_program() -> (Arenas, StructId) {

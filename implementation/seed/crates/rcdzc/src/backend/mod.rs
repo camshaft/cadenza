@@ -62,6 +62,14 @@ impl Target {
             Target::Rust | Target::RustAsync => "rust",
         }
     }
+
+    /// Whether emitting this target requires the `spans` input artifact (the source side-table debug
+    /// info is drawn from — `DESIGN-debug-info-rcdzc.md` §9.4). A debug target requested without spans
+    /// DECLINES (`compile`), rather than silently producing an undecorated artifact. The DWARF sidecar
+    /// target ([`Target::Dwarf`], a later increment) will report `true` here too.
+    pub fn needs_spans(self) -> bool {
+        matches!(self, Target::WasmDebug)
+    }
 }
 
 /// Emit the artifact for `target` from the program in `db` under `layout`. The seam: dispatch to the

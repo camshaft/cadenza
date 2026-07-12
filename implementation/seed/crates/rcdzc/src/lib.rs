@@ -65,6 +65,10 @@ pub mod compile;
 // The sidecar request list — the program that DRIVES a compilation (Emit an output column / Query a
 // fact column), crossing as one more kinded input artifact. Generalizes `compile`'s `targets`.
 pub mod sidecar;
+// The span side-table — source byte ranges keyed by `StructId`, crossing as its OWN kinded input
+// artifact (`kind == "spans"`) so the AST stays span-free. Read by the backend to emit debug info
+// (`DESIGN-debug-info-rcdzc.md` §2.1a).
+pub mod spans;
 
 // The host boundary — process/thread/stack concerns the pure core excludes (NOT ported to the
 // Cadenza self-host). Runs compilation on a stack sized to reach the recursive-descent depth guard,

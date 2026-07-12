@@ -26,6 +26,7 @@ use crate::infer::type_errors;
 use crate::layout::{self, Layout};
 use crate::lower::core_of;
 use crate::sidecar;
+use crate::spans;
 use tracing::trace;
 
 /// Compile a set of kinded input artifacts to the requested targets. The `ast` input is decoded into
@@ -69,6 +70,32 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
             sidecar::Request::Query(q) => queries.push(q.clone()),
             sidecar::Request::Emit(t) => emit_targets.push(*t),
         }
+    }
+
+    // Decode the optional `spans` input — the source-position side-table the backend reads to emit
+    // debug information (`DESIGN-debug-info-rcdzc.md` §2.1a). A present-but-MALFORMED table is a
+    // DECLINE, exactly like a malformed sidecar list (reject-don't-miscompile at the tool edge). Absent
+    // is the common case (no debug build), and nothing reads it.
+    let span_data = match inputs.iter().find(|a| a.kind == spans::KIND_SPANS) {
+        Some(a) => match spans::decode(&a.bytes) {
+            Some(s) => Some(s),
+            None => return fail(vec![Reject::decline("malformed `spans` artifact")]),
+        },
+        None => None,
+    };
+
+    // §9.4 — a debug `Emit` request needs the `spans` DATA to draw its debug info from. If a debug
+    // target is requested but no `spans` input is present, DECLINE with a specific diagnostic rather
+    // than silently emit an undecorated component (which would let "the user asked for debug and got a
+    // debug-free artifact with no explanation" happen). The debug `Emit` is the SIGNAL; `spans` is the
+    // DATA — both are required together. (D0's `name` section does not itself need spans, but keeping
+    // the requirement uniform means the DWARF increments D2+ inherit it for free and a debug build
+    // always either carries full debug info or says why it cannot.)
+    if emit_targets.iter().any(|t| t.needs_spans()) && span_data.is_none() {
+        return fail(vec![Reject::decline(
+            "a debug artifact was requested but no `spans` input artifact was supplied \
+             (debug info needs the source span side-table)",
+        )]);
     }
 
     // Run the QUERIES first. A fact read is TOTAL (`tooling-and-lsp.md` §An Agent Queries The Compiler
