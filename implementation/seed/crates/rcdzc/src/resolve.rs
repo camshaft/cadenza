@@ -358,19 +358,14 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(tail) = db.ast.as_form(form, "fn") {
         let params_occ = tail.first().copied()?;
         let body_occ = tail.get(1).copied();
-        if Some(from) == body_occ
-            && let Struct::List(params) = db.ast.get(params_occ)
-        {
-            // A parameter binds the name it declares — bare `a` or annotated `(: a T)` alike.
-            let mut found = None;
-            for &p in params {
-                if let Some((n, name_occ)) = param_name(db, p)
-                    && n == name
-                {
-                    found = Some(name_occ);
-                }
-            }
-            return found.map(|v| Resolved::Ref { value: v });
+        if Some(from) == body_occ && matches!(db.ast.get(params_occ), Struct::List(_)) {
+            // A parameter binds the name it declares — bare `a` or annotated `(: a T)` alike. The last
+            // param of `name` wins (shadowing among params). O(1) via the precomputed per-scope binder
+            // index (built once at load; see `Db::binder_in_scope`) — a linear scan here was O(N²) when
+            // N body references each ascended into an N-parameter signature.
+            return db
+                .binder_in_scope(form, name)
+                .map(|v| Resolved::Ref { value: v });
         }
         return None;
     }
@@ -380,19 +375,13 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(tail) = db.ast.as_form(form, "def") {
         let sig_occ = tail.first().copied()?;
         let body_occ = tail.get(1).copied();
-        if Some(from) == body_occ
-            && let Struct::List(sig) = db.ast.get(sig_occ)
-        {
-            // sig = [NAME, param…]; a reference binds to the matching PARAM's name occurrence.
-            let mut found = None;
-            for &p in sig.iter().skip(1) {
-                if let Some((n, name_occ)) = param_name(db, p)
-                    && n == name
-                {
-                    found = Some(name_occ);
-                }
-            }
-            return found.map(|v| Resolved::Ref { value: v });
+        if Some(from) == body_occ && matches!(db.ast.get(sig_occ), Struct::List(_)) {
+            // sig = [NAME, param…]; a reference binds to the matching PARAM's name occurrence, last-wins.
+            // O(1) via the precomputed per-scope binder index (see `Db::binder_in_scope`) rather than the
+            // O(N)-per-reference signature scan that made N references into an N-param def O(N²).
+            return db
+                .binder_in_scope(form, name)
+                .map(|v| Resolved::Ref { value: v });
         }
         return None;
     }
@@ -502,24 +491,10 @@ fn match_arm_variant_binds(
     Some((scrutinee, variant_head))
 }
 
-/// The NAME a parameter occurrence binds, and the occurrence that name lives at — seeing through a
-/// `(: name T)` annotated binder. A parameter in a `fn`/`def` signature is EITHER a bare name (`a`) or
-/// an annotated binder `(: a T)`; both bind `a`. Returns `(name, name-occurrence)`, where the
-/// occurrence is the NAME's own node (so a reference binds to the name, and the annotation's type `T`
-/// is read as the name's sibling — see `param_annot_ty`). `None` if the occurrence is neither shape.
-fn param_name(db: &Db, param: StructId) -> Option<(&str, StructId)> {
-    // A bare name parameter.
-    if let Some(n) = db.ast.as_name(param) {
-        return Some((n, param));
-    }
-    // An annotated binder `(: name T)` — bind the inner name; its type is `T`.
-    if let Some(tail) = db.ast.as_form(param, ":") {
-        let name_occ = *tail.first()?;
-        let n = db.ast.as_name(name_occ)?;
-        return Some((n, name_occ));
-    }
-    None
-}
+// (The parameter-name extraction that `binder_in`'s Case-3/Case-4 used lives in `db::build_scope_binders`
+// now: the per-scope binder index is precomputed once at load, so resolution probes it in O(1) rather
+// than re-deriving each parameter's name on every reference. `param_annot_ty` reads a binder's `(: a T)`
+// annotation directly where it needs the type.)
 
 /// The value occurrence of the LAST binding named `name` visible from a lookup at this bindings-list,
 /// or `None`. Last wins so a repeated binding shadows the earlier one.

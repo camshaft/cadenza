@@ -1079,6 +1079,38 @@ fn a_let_bound_value_under_a_fn_param_compiles() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 22);
 }
 
+/// A reference to EACH of a wide signature's parameters resolves to the right one — the correctness
+/// guard for the O(1) per-scope binder index (`Db::scope_binders`) that replaced `binder_in`'s
+/// O(params)-per-reference signature scan. `f` takes six params and its body references three of them
+/// out of order; the wrong index (or an off-by-one on the def NAME) would bind a reference to the
+/// wrong parameter and compute a wrong result. `(f 1 2 4 8 16 32)` → `p1 + p3 + p5` = 2+8+32 = 42.
+#[test]
+fn each_parameter_of_a_wide_signature_resolves_to_its_own_binder() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (f (: p0 Int64) (: p1 Int64) (: p2 Int64) (: p3 Int64) (: p4 Int64) (: p5 Int64)) \
+                    (+ p1 (+ p3 p5))) \
+                 (def (main) (f 1 2 4 8 16 32)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+}
+
+/// A synthesized (β-reduced) scope form's parameters still resolve — the regression guard for the
+/// per-scope binder index. The index is built at load over the ORIGINAL arena, but β-reduction copies
+/// a lambda/def body into FRESH `fn`/`def` nodes; a parameter reference inside such a copy must find
+/// its binder too (the incremental `push_list` re-index). `(Int 8)` builds its module by reducing the
+/// `Int` type-lambda `(fn (w) …)`, and `.wrap` reads the built width — this exact path regressed to "a
+/// conversion target is not a definite integer type" when the synthesized `fn`'s `w` found no binder.
+#[test]
+fn a_parameter_inside_a_synthesized_scope_form_resolves() {
+    use crate::testkit::parse;
+    // `(Int 8).wrap 200` = -56: builds the width-8 module through the copied `Int` type-lambda, then
+    // wraps. A miss on the synthesized lambda's width param declines the conversion.
+    let src = "(module m (def (main) ((Int 8).wrap 200)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(run_returns::<i8>(&bytes, "main"), -56);
+}
+
 /// The value-heap companion: a `let`-bound runtime TUPLE inside a parameterized function, projected —
 /// `(g 10)` inlines `(let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))`, `t`'s init substitutes `n`, and `(. t
 /// 0)` reads element 0 = `n+1` = 11. Exercises the atom-copy fix on a heap-compound let-local (the case

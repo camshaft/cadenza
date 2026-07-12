@@ -228,6 +228,25 @@ pub struct Db {
     /// [`defs`]: Db::defs
     def_name_index: crate::fxhash::FxHashMap<String, usize>,
 
+    /// Per-SCOPE-FORM parameter binder index: `(scope_form_occ, param_name) → the param's NAME
+    /// occurrence`. Covers the two forms whose parameters bind by a signature scan — a `fn`'s param
+    /// list and a `def`'s signature. Built once at load ([`build_scope_binders`]).
+    ///
+    /// `binder_in`'s Case-3/Case-4 answered "does this scope declare `name`, and where?" by scanning
+    /// ALL parameters of the signature (to honour last-wins shadowing) on EVERY body reference — so a
+    /// body with N references into an N-parameter signature (a wide `(def (f p0 … pN) (+ p0 (+ p1 …)))`
+    /// or a wide record/tuple over the params) was O(N²). This map makes each lookup O(1). LAST-wins is
+    /// baked in at build time (a later param of the same name overwrites the earlier entry), matching
+    /// the old forward scan's "last assignment wins". Keyed by the SCOPE FORM's occurrence, so distinct
+    /// signatures never collide (the per-scope analog of `def_name_index`, and it composes with
+    /// `lookup_scope`'s parent-walk unchanged — only the innermost per-form probe is now O(1)).
+    ///
+    /// Nested (`scope → name → occ`) rather than a `(scope, name)` tuple key so the inner lookup can
+    /// borrow the reference's `&str` directly (via `String: Borrow<str>`) — no per-lookup `String`
+    /// allocation on the hot resolve path.
+    scope_binders:
+        crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>>,
+
     /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
     /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
     /// occurrence it binds to. `resolve` consults it after the lexical scope, so a program binding
@@ -415,6 +434,9 @@ impl Db {
             }
         }
         let (parent, child_ix) = parent_index(&ast);
+        // Index each SCOPE FORM's parameter binders by name (last-wins), so `binder_in`'s per-reference
+        // "does this scope declare `name`?" probe is O(1) rather than an O(params) signature scan.
+        let scope_binders = build_scope_binders(&ast);
         // Index each def by its body occurrence — the reverse of `defs[i].body`, so a "which def owns
         // this body?" lookup is O(1) rather than a linear scan of `defs`. A def with no body (malformed)
         // contributes no entry; a body occurrence is unique to one def, so no collision.
@@ -437,6 +459,7 @@ impl Db {
             child_ix,
             def_by_body,
             def_name_index: def_by_name,
+            scope_binders,
             prelude,
             user_node_count,
             reduce_depth: 0,
@@ -494,6 +517,17 @@ impl Db {
         self.child_ix.get(id.0 as usize).copied().unwrap_or(0) as usize
     }
 
+    /// The NAME occurrence the parameter binder `name` binds within the scope form `scope` (a `fn` or a
+    /// `def`), or `None` if that scope declares no such parameter. O(1) via the load-time
+    /// [`scope_binders`] index; last-wins shadowing among same-named params is baked into the index.
+    /// `resolve::binder_in` uses it for a def/lambda body's parameter references (replacing an
+    /// O(params)-per-reference signature scan). See [`scope_binders`].
+    ///
+    /// [`scope_binders`]: Db::scope_binders
+    pub fn binder_in_scope(&self, scope: StructId, name: &str) -> Option<StructId> {
+        self.scope_binders.get(&scope)?.get(name).copied()
+    }
+
     /// Whether `id` is a genuine USER-PROGRAM node — one the decoded program contained, which the
     /// front-end's span table can map to a text region. A prelude binding or an evaluator-synthesized
     /// node (β-reduced body, built `(Int W)` module) is NOT one: it has no source position, so its id
@@ -538,7 +572,58 @@ impl Db {
         self.ast.structure.push(Struct::List(children));
         self.parent.push(None);
         self.child_ix.push(0);
+        // A SYNTHESIZED scope form (β-reduction copies a `fn`/`def` body, building fresh `fn`/`def`
+        // nodes) must join the per-scope binder index too — `binder_in` resolves parameter references
+        // inside a reduced lambda body against THIS node, and the load-time build only covered the
+        // original arena. Without this, a reference inside a copied lambda body finds no binder (the
+        // `(Int 8).wrap` regression). Cheap: only fires for a `fn`/`def` head, and indexes that one
+        // signature's parameters once.
+        self.index_scope_binders(sid);
         sid
+    }
+
+    /// If `form` is a `fn`/`def` scope form, (re)build its entry in the per-scope binder index — the
+    /// incremental counterpart of the load-time [`build_scope_binders`], for a node synthesized after
+    /// load. Idempotent: re-indexing the same form recomputes the same last-wins map.
+    fn index_scope_binders(&mut self, form: StructId) {
+        let params_occ = if let Some(tail) = self.ast.as_form(form, "fn") {
+            tail.first().copied()
+        } else if let Some(tail) = self.ast.as_form(form, "def") {
+            tail.first().copied()
+        } else {
+            return;
+        };
+        let Some(params_occ) = params_occ else {
+            return;
+        };
+        let Struct::List(children) = self.ast.get(params_occ) else {
+            return;
+        };
+        let is_def = self.ast.as_form(form, "def").is_some();
+        let params: Vec<StructId> = if is_def {
+            children.iter().skip(1).copied().collect()
+        } else {
+            children.clone()
+        };
+        let mut map: crate::fxhash::FxHashMap<String, StructId> = crate::fxhash::FxHashMap::default();
+        for p in params {
+            // A parameter is a bare name atom or an annotated binder `(: name T)` (its first child is
+            // the name) — the two shapes `build_scope_binders`/`param_name` recognize.
+            let binder = if let Some(n) = self.ast.as_name(p) {
+                Some((n.to_string(), p))
+            } else if let Some(tail) = self.ast.as_form(p, ":") {
+                tail.first()
+                    .and_then(|&no| self.ast.as_name(no).map(|n| (n.to_string(), no)))
+            } else {
+                None
+            };
+            if let Some((n, occ)) = binder {
+                map.insert(n, occ); // last-wins
+            }
+        }
+        if !map.is_empty() {
+            self.scope_binders.insert(form, map);
+        }
     }
 
     /// Convenience: append an `Atom` of a `Name`.
@@ -640,6 +725,69 @@ fn parent_index(ast: &Arenas) -> (Vec<Option<StructId>>, Vec<u32>) {
         }
     }
     (parent, child_ix)
+}
+
+/// Build the per-scope-form parameter binder index (`Db::scope_binders`): for every `fn` and `def`
+/// occurrence in the arena, a `name → binder-name-occurrence` map of its parameters, LAST-wins (a
+/// later param of the same name overwrites the earlier — matching the old forward scan's shadowing).
+/// One pass over the arena. This replaces the O(params)-per-reference signature scan `binder_in`'s
+/// Case-3/Case-4 did (O(N²) for N references into an N-param scope) with an O(1) probe.
+///
+/// A parameter is either a bare name atom (`a`) or an annotated binder `(: a T)` whose FIRST child is
+/// the name — the same two shapes `resolve::param_name` recognizes. The scope FORM's occurrence is the
+/// key, so `binder_in` (which has the form id in hand) can probe directly.
+fn build_scope_binders(
+    ast: &Arenas,
+) -> crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>> {
+    // The name a parameter occurrence declares, with its NAME occurrence — bare `a` or `(: a T)`.
+    // Mirrors `resolve::param_name` (kept in sync; a divergence would resolve a param wrong).
+    fn param_binder(ast: &Arenas, param: StructId) -> Option<(&str, StructId)> {
+        if let Some(n) = ast.as_name(param) {
+            return Some((n, param));
+        }
+        let tail = ast.as_form(param, ":")?;
+        let name_occ = *tail.first()?;
+        let n = ast.as_name(name_occ)?;
+        Some((n, name_occ))
+    }
+
+    let mut out: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>> =
+        crate::fxhash::FxHashMap::default();
+    for i in 0..ast.structure.len() {
+        let form = StructId(i as u32);
+        // A `(fn (params…) body)` — the parameters are the children of its first tail element.
+        // A `(def (NAME param…) body)` — the parameters are the signature's children after NAME.
+        let params_occ = if let Some(tail) = ast.as_form(form, "fn") {
+            tail.first().copied()
+        } else if let Some(tail) = ast.as_form(form, "def") {
+            tail.first().copied()
+        } else {
+            None
+        };
+        let Some(params_occ) = params_occ else {
+            continue;
+        };
+        let Struct::List(children) = ast.get(params_occ) else {
+            continue;
+        };
+        // For a `fn` the whole list is parameters; for a `def` the first child is the def NAME, not a
+        // parameter — skip it. Distinguish by which form matched (a `def`'s signature holds the name).
+        let is_def = ast.as_form(form, "def").is_some();
+        let params = if is_def { &children[1.min(children.len())..] } else { &children[..] };
+        if params.is_empty() {
+            continue;
+        }
+        let mut map: crate::fxhash::FxHashMap<String, StructId> = crate::fxhash::FxHashMap::default();
+        for &p in params {
+            if let Some((n, name_occ)) = param_binder(ast, p) {
+                map.insert(n.to_string(), name_occ); // last-wins
+            }
+        }
+        if !map.is_empty() {
+            out.insert(form, map);
+        }
+    }
+    out
 }
 
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
