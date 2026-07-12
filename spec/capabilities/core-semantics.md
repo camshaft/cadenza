@@ -252,6 +252,14 @@ A trap MUST carry a defined kind that identifies why the program halted.
 
 The kind of trap a given operation raises MUST be a deterministic function of the operation and its inputs.
 
+### A Trap Occurs Only Where Its Computation Is Observed
+
+A trap MUST occur when the computation that would raise it is observed — when its value flows to the program's result, to a host call, or to an operation that inspects it (an arithmetic or comparison operand, an `if` condition, a match scrutinee, a projected tuple element or record field, a referenced binding, or an argument bound to a parameter the function body uses). A computation whose value is observed in this sense MUST be evaluated, so its trap MUST occur.
+
+An implementation MAY decline to evaluate a computation whose value cannot affect the program's observable behavior — one whose result reaches neither the program's terminal value nor any host call — and so MAY elide a trap that computation would raise. A tuple or record element that is never projected, a `let` binding that is never referenced, and an argument bound to a parameter the function body never uses are unobserved in this sense: constructing the surrounding value does not require evaluating them, so an implementation that omits them, and the traps they would have raised, is conformant. This is the same laziness the language already grants a conditional's unselected branch, a boolean connective's shielded operand, and a match arm that does not match — generalized to any subexpression whose value no observation depends on. Whether a trap occurs is therefore a property of whether its computation's value is observed, not of the syntactic form the computation appears in.
+
+Because eliding a computation the implementation can PROVE would trap is far more likely a program defect than an intent, an implementation SHOULD emit a diagnostic of non-error severity — one that leaves the build successful — when it drops a provably-trapping computation whose value is unobserved, so that a program does not silently discard a computation that could never have produced a value.
+
 ### Partial Operations Have A Defined Outcome
 
 An operation that has no result for some inputs MUST, on those inputs, either evaluate to a value the executable semantics defines or raise a trap of a defined kind.

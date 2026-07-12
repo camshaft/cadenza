@@ -3230,3 +3230,43 @@
                 ((map (1 v) .. rest) (Map.size rest))
                 (_                   0))) (export main)))
   (output (: 1 Int64)))
+
+; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
+; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
+; computation that would raise it is observed — its value flowing to the result, a host call, or an
+; inspecting operation. A tuple element that is never projected and a record field that is never read
+; are unobserved: constructing the surrounding value does not require evaluating them, so an
+; implementation MAY elide them and the traps they would have raised. This is the same laziness the
+; spec grants a conditional's unselected branch, generalized to any subexpression no observation
+; depends on. The ANCHOR cases below pin the dual: the moment the element IS projected, its trap fires.
+; (A provably-trapping element that is elided also earns a non-error diagnostic — CDZ0305 — but the
+; build still succeeds and the value is the recorded one; the gate observes the run, the diagnostic is
+; asserted by a compiler unit test.)
+
+(case "an un-projected tuple element is not evaluated, so its trap does not occur"
+  (doc    "`(. (tuple 42 (/ 100 x)) 0)` with x = 0 projects element 0 (42); element 1 is a division by
+           zero. Element 1's value is never observed — nothing projects it — so building the tuple need
+           not evaluate it, and its trap does not occur: the program yields 42. This is the compound
+           analogue of a conditional's unselected branch (core-semantics.md §A Trap Occurs Only Where
+           Its Computation Is Observed). The anchor case below pins that projecting element 1 DOES trap.")
+  (input  (do (def (main (: x Int64)) (. (tuple 42 (/ 100 x)) 0)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 42 Int64)))
+
+(case "an un-read record field is not evaluated, so its trap does not occur"
+  (doc    "The record companion: `(. (record (a 42) (b (/ 100 x))) a)` with x = 0 reads field `a` (42);
+           field `b` is a division by zero that is never read, so it is unobserved and its trap does not
+           occur — the program yields 42. Pins the elision is not tuple-specific: any un-observed element
+           of a constructed value need not be evaluated.")
+  (input  (do (def (main (: x Int64)) (. (record (a 42) (b (/ 100 x))) a)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 42 Int64)))
+
+(case "a projected tuple element IS observed, so its trap occurs (the anchor)"
+  (doc    "The control that pins the trap fires the moment the element IS projected: `(+ (. (tuple x (/
+           100 x)) 0) (. (tuple x (/ 100 x)) 1))` with x = 0 projects element 1 (`/ 100 0`), whose value
+           flows into the sum — observed — so it traps. Contrast the elision case above where element 1
+           is never projected. Confirms the elision is specifically about an UN-observed element.")
+  (input  (do (def (main (: x Int64)) (+ (. (tuple x (/ 100 x)) 0) (. (tuple x (/ 100 x)) 1))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "division by zero"))

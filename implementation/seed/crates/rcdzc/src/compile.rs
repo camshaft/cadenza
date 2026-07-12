@@ -67,9 +67,15 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     }
     trace!(target: "rcdzc::compile", targets = targets.len(), "program clean — emitting artifacts");
 
+    // WARNINGS (non-error; ride alongside the artifact). The program is clean — every REACHED provable
+    // trap already faulted above — so a computation that PROVES it traps yet survives to here was
+    // dropped by dead-code elimination (its value is unobserved: an unprojected element, an unreferenced
+    // binding, an unused argument). That is conformant (`core-semantics.md` §A Trap Occurs Only Where
+    // Its Computation Is Observed) but almost always a defect, so warn — the build still succeeds.
+    let mut diagnostics = collect_dead_trap_warnings(&mut db);
+
     // Clean: ask each requested target's backend to fill its artifact.
     let mut artifacts = Vec::new();
-    let mut diagnostics = Vec::new();
     for &target in targets {
         match backend::emit(target, &mut db, &layout) {
             Ok(bytes) => artifacts.push(Artifact::new(
@@ -334,6 +340,128 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::Unit => {}
+    }
+}
+
+/// Collect DEAD-TRAP warnings across the reachable definitions — the non-error diagnostics that ride
+/// alongside a produced artifact (`core-semantics.md` §A Trap Occurs Only Where Its Computation Is
+/// Observed). Called only on a CLEAN program: `collect_faults` has already proven every REACHED
+/// provable trap is a build error (CDZ0304), so any computation that folds to a `ConstTrap` yet
+/// survives here was dropped by dead-code elimination — its value is unobserved. Warn at each such
+/// drop so a program does not silently discard a computation that could never have produced a value.
+///
+/// Mirrors `collect_faults`' root set: every def body (a nullary body is walked directly; a
+/// parameterized body's drops surface at its nullary call site through the inlining the walk follows).
+fn collect_dead_trap_warnings(db: &mut Db) -> Vec<Diagnostic> {
+    let bodies: Vec<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
+    let mut warnings = Vec::new();
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for body in bodies {
+        walk_for_dead_traps(db, body, &mut warnings, &mut seen);
+    }
+    warnings
+}
+
+/// Walk the RESOLVED tree from `id` looking for a computation the fold DROPPED that PROVABLY traps —
+/// an unprojected tuple element, an unreferenced `let` binding, an argument bound to an unused
+/// parameter. At each VALUE-DISCARDING position (a tuple element, a record field, a `let` initializer,
+/// a call argument) test whether the child folds to a `ConstTrap`; if it does, its trap was elided, so
+/// warn (and do NOT descend into it — the outermost dropped trap is the one to report). Elsewhere
+/// recurse into the positions a value flows through, so a drop nested inside them is still found.
+///
+/// CONTROL-FLOW branches (an `if`'s branches, a `match` arm's body) are NOT descended: a trap there is
+/// the language's sanctioned laziness (`core-semantics.md` §Conditionals Evaluate One Branch), not a
+/// discarded-value defect — warning on it would relitigate a laziness the spec already grants. `seen`
+/// dedups (a shared occurrence reached by two paths warns once).
+fn walk_for_dead_traps(
+    db: &mut Db,
+    id: StructId,
+    out: &mut Vec<Diagnostic>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    use crate::resolved::Resolved;
+    if !seen.insert(id.0) {
+        return;
+    }
+    // A child in a value-DISCARDING position: warn if it folds to a provable trap (its value is
+    // dropped, so the trap was elided), else recurse to find a drop nested deeper inside it.
+    let discarded = |db: &mut Db, child: StructId, out: &mut Vec<Diagnostic>, seen: &mut _| {
+        if is_dropped_const_trap(db, child) {
+            // Attribute the warning to a USER node — a synthesized/prelude origin has no span. Prefer
+            // the trap's own anchor; fall back to the discarding child occurrence.
+            let at = dropped_trap_anchor(db, child).filter(|&n| db.is_user_node(n));
+            out.push(Diagnostic::warning(
+                Code::DeadTrap,
+                "this computation always traps but its value is never used, so it was eliminated \
+                 (an unused element, binding, or argument) — likely a bug",
+                at,
+            ));
+        } else {
+            walk_for_dead_traps(db, child, out, seen);
+        }
+    };
+    match crate::resolve::resolved_of(db, id) {
+        // Value-discarding positions: each constituent whose value may be dropped.
+        Resolved::Tuple { elems } => {
+            for e in elems.iter() {
+                discarded(db, *e, out, seen);
+            }
+        }
+        Resolved::Record { fields } => {
+            for v in fields.values().copied().collect::<Vec<_>>() {
+                discarded(db, v, out, seen);
+            }
+        }
+        Resolved::Let { bindings, body } => {
+            for (_, init) in &bindings {
+                discarded(db, *init, out, seen);
+            }
+            walk_for_dead_traps(db, body, out, seen);
+        }
+        Resolved::Apply { head, args } => {
+            walk_for_dead_traps(db, head, out, seen);
+            for a in args.iter() {
+                discarded(db, *a, out, seen);
+            }
+        }
+        // Value-flowing positions: recurse (a reached trap here already faulted; a nested DROP is still
+        // worth finding). A projection reads its operand; an annotation erases; a member reads its
+        // operand; a ref follows to its value.
+        Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
+            walk_for_dead_traps(db, operand, out, seen);
+        }
+        Resolved::Annot { expr, .. } => walk_for_dead_traps(db, expr, out, seen),
+        Resolved::Ref { value } => walk_for_dead_traps(db, value, out, seen),
+        // CONTROL FLOW — a branch/arm is sanctioned laziness; do not descend into the guarded parts.
+        // The condition/scrutinee IS unconditionally evaluated, so a drop there is worth finding.
+        Resolved::If { cond, .. } => walk_for_dead_traps(db, cond, out, seen),
+        Resolved::Match { scrutinee, .. } => walk_for_dead_traps(db, scrutinee, out, seen),
+        // Leaves and non-descending forms.
+        Resolved::Int(_)
+        | Resolved::Bool(_)
+        | Resolved::Unit
+        | Resolved::Prim(_)
+        | Resolved::Param { .. }
+        | Resolved::TypeVal(_)
+        | Resolved::Lambda { .. }
+        | Resolved::SumPayload { .. }
+        | Resolved::Poison(_) => {}
+    }
+}
+
+/// Whether the node at `id` folds to a compile-provable trap (a `ConstTrap` poison). This is the
+/// discarded-value test: a child in a value-dropping position that folds to a `ConstTrap` had its trap
+/// eliminated (a reached one would have faulted the build in `collect_faults`).
+fn is_dropped_const_trap(db: &mut Db, id: StructId) -> bool {
+    matches!(core_of(db, id), Core::Poison(r) if r.code == Some(Code::ConstTrap))
+}
+
+/// The node a dropped `ConstTrap` at `id` should be attributed to — the trap's own recorded anchor if
+/// it carries one (the precise faulting operation), else the discarded occurrence itself.
+fn dropped_trap_anchor(db: &mut Db, id: StructId) -> Option<StructId> {
+    match core_of(db, id) {
+        Core::Poison(r) => r.at.or(Some(id)),
+        _ => Some(id),
     }
 }
 

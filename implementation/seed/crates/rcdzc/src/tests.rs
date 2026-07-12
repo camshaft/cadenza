@@ -3328,6 +3328,104 @@ mod diagnostics {
             );
         }
     }
+
+    // ── Dead-trap warning (CDZ0305) — a non-error diagnostic riding alongside a produced artifact.
+    // A computation that PROVABLY traps but whose value is unobserved (an unprojected element, an
+    // unreferenced binding, an unused argument) is eliminated (`core-semantics.md` §A Trap Occurs Only
+    // Where Its Computation Is Observed) — conformant, so the build SUCCEEDS, but a warning is emitted.
+
+    /// Compile a program and return its warning diagnostics (severity `Warning`) — asserting the
+    /// component WAS produced (a warning must ride alongside a success, never a denial).
+    fn warnings_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+        let bytes = crate::codec::encode(&parse(src));
+        let out = compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+            &[Target::Wasm],
+        );
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_some(),
+            "a warning must accompany a PRODUCED component, but compilation failed: {:?}",
+            out.diagnostics
+        );
+        out.diagnostics
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Warning)
+            .collect()
+    }
+
+    #[test]
+    fn an_eliminated_provable_trap_warns_but_still_compiles() {
+        // Each shape drops a computation that PROVABLY traps because its value is unobserved: an
+        // unprojected tuple element, an unread record field, an unreferenced let binding, an argument
+        // bound to an unused parameter. All compile (the value is not observed) AND warn CDZ0305.
+        for src in [
+            "(module m (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main))",
+            "(module m (def (main) (. (record (a 42) (b (/ 100 0))) a)) (export main))",
+            "(module m (def (main) (let ((t (/ 100 0))) 5)) (export main))",
+            "(module m (def (f x y) x) (def (main) (f 7 (/ 100 0))) (export main))",
+        ] {
+            let ws = warnings_of(src);
+            assert_eq!(
+                ws.len(),
+                1,
+                "expected exactly one dead-trap warning for `{src}`, got {ws:?}"
+            );
+            assert_eq!(ws[0].code.as_deref(), Some("CDZ0305"), "for `{src}`");
+        }
+    }
+
+    #[test]
+    fn a_dead_trap_warning_anchors_to_a_user_node() {
+        // The warning carries a node index that resolves to a real user node — the front-end maps it to
+        // the trapping computation's span, never a prelude/synthesized id.
+        let src = "(module m (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main))";
+        let ws = warnings_of(src);
+        assert_eq!(ws.len(), 1);
+        let node = ws[0].node.expect("a dead-trap warning must carry a node");
+        let db = Db::load(parse(src));
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a user node"
+        );
+    }
+
+    #[test]
+    fn an_observed_provable_trap_is_an_error_not_a_warning() {
+        // The dual: a provable trap whose value IS observed (element 0 projected) is a build ERROR
+        // (CDZ0304), not a warning — it denies the component.
+        let src = "(module m (def (main) (. (tuple (/ 1 0) 42) 0)) (export main))";
+        let bytes = crate::codec::encode(&parse(src));
+        let out = compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+            &[Target::Wasm],
+        );
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_none(),
+            "an observed provable trap must deny the component"
+        );
+        assert_eq!(
+            out.diagnostics.iter().find(|d| d.severity
+                == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+                .as_deref(),
+            Some("CDZ0304")
+        );
+    }
+
+    #[test]
+    fn a_clean_program_and_an_unprovable_trap_do_not_warn() {
+        // A clean projection warns not at all; a RUNTIME (unprovable) trap in a dropped position is not
+        // flagged either — the warning fires only on a PROVABLE trap, so no false positive on code the
+        // compiler cannot prove traps.
+        assert!(warnings_of("(module m (def (main) (. (tuple 42 7) 0)) (export main))").is_empty());
+        assert!(
+            warnings_of(
+                "(module m (def (main (: x Int64)) (. (tuple 42 (/ 100 x)) 0)) (export main))"
+            )
+            .is_empty(),
+            "a runtime (unprovable) trap in a dropped position must NOT warn"
+        );
+    }
 }
 
 // ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────

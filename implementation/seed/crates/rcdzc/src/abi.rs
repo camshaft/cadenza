@@ -67,6 +67,23 @@ impl Diagnostic {
             node: reject.at.map(|id| id.0),
         }
     }
+
+    /// Build a WARNING diagnostic — a non-error that rides alongside a produced artifact (it does not
+    /// deny the component; `has_error` ignores it). The compiler emits these for a program that is
+    /// well-formed but suspect, e.g. a provably-trapping computation eliminated because its value is
+    /// unobserved (`core-semantics.md` §A Trap Occurs Only Where Its Computation Is Observed).
+    pub fn warning(
+        code: crate::diag::Code,
+        message: impl Into<String>,
+        node: Option<crate::ast::StructId>,
+    ) -> Diagnostic {
+        Diagnostic {
+            severity: Severity::Warning,
+            code: Some(code.code().to_string()),
+            message: message.into(),
+            node: node.map(|id| id.0),
+        }
+    }
 }
 
 /// The output of a compilation: the produced artifacts and the always-live diagnostics channel.

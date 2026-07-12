@@ -39,6 +39,14 @@ pub enum Code {
     /// non-exhaustiveness rejection, distinct from a shape defect). For a scalar scrutinee this is a
     /// match with no wildcard tail; for a sum it is a missing variant (a later increment).
     NonExhaustive,
+    /// A computation the compiler PROVES would trap (`ConstTrap`'s outcome) was ELIMINATED because its
+    /// value is unobserved — an unprojected tuple/record element, an unreferenced `let` binding, an
+    /// argument bound to an unused parameter. NOT a rejection: the build succeeds (the dead computation
+    /// need not run — `core-semantics.md` §A Trap Occurs Only Where Its Computation Is Observed). This
+    /// is the WARNING severity's code, emitted so a program does not silently discard a computation that
+    /// could never have produced a value (almost always a defect). The error-severity companion is
+    /// `ConstTrap` (CDZ0304), emitted when the same provable trap IS observed.
+    DeadTrap,
 }
 
 impl Code {
@@ -52,6 +60,7 @@ impl Code {
             Code::NumericMismatch => "CDZ0301",
             Code::IntOutOfRange => "CDZ0302",
             Code::ConstTrap => "CDZ0304",
+            Code::DeadTrap => "CDZ0305",
             Code::NonExhaustive => "CDZ0210",
         }
     }

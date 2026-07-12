@@ -1154,3 +1154,32 @@
   (input  (do (def (main (: n Int64)) (Int8.wrap n)) (export main)))
   (call   main (: 200 Int64))
   (output (: -56 Int8)))
+
+; ── An argument bound to an unused parameter is UNOBSERVED, so its trap is not raised ────────────────
+; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: an argument whose value the
+; function body never uses is unobserved — its value reaches neither the result nor a host call — so an
+; implementation MAY decline to evaluate it, eliding the trap it would have raised. The dual anchor pins
+; that the moment the body USES the parameter, the argument is observed and its trap fires. This is the
+; call-boundary companion of the un-projected tuple element in 05-compound-types.sexp. (An argument that
+; PROVABLY traps and is elided also earns a non-error diagnostic — CDZ0305 — asserted by a compiler unit
+; test; the gate observes the run, and the build succeeds.)
+
+(case "an argument bound to an unused parameter is not evaluated, so its trap does not occur"
+  (doc    "`(def (f x y) x)` ignores its second parameter `y`. Calling `(f 7 (/ 1 d))` with d = 0 passes
+           a division by zero as the unused argument. `y`'s value is never observed in the body, so the
+           argument need not be evaluated and its trap does not occur — the program yields 7. Uses a
+           runtime (parameter-driven) div0 so this is a genuine emitted-code question, not a constant
+           fold. The anchor below pins that a USED argument's trap DOES fire.")
+  (input  (do (def (f x y) x) (def (main (: d Int64)) (f 7 (/ 1 d))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case "an argument bound to a used parameter IS observed, so its trap occurs (the anchor)"
+  (doc    "The control: `(def (f x y) y)` returns its SECOND parameter, so `(f 7 (/ 1 d))` with d = 0
+           observes the trapping argument — its value flows out as the result — and must trap. Pins that
+           the elision above is specifically about an argument whose parameter is UNUSED; the trap fires
+           the moment the argument is observed. The call-boundary dual of the projected-tuple-element
+           anchor in 05-compound-types.sexp.")
+  (input  (do (def (f x y) y) (def (main (: d Int64)) (f 7 (/ 1 d))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "division by zero"))

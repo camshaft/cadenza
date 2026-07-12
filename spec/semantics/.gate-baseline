@@ -236,6 +236,7 @@ pass	an Option carrying a Result is matched across two different sum types
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an annotated value takes a narrower integer width
 pass	an annotation that contradicts the value is rejected
+pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an element is projected from a runtime-constructed tuple
@@ -256,6 +257,8 @@ pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
 pass	an option value annotated with the wrong payload type is rejected
 pass	an ordering operator with a single operand is rejected, not a crash
+pass	an un-projected tuple element is not evaluated, so its trap does not occur
+pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
@@ -547,6 +550,7 @@ todo	a plain record compared to a nominal record of the same shape is a type err
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 todo	a program's syntax tree is an ordinary value walked recursively across calls
+todo	a projected tuple element IS observed, so its trap occurs (the anchor)
 todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
 todo	a quantity's erased value is the identical numeric value the bare literal has
@@ -681,6 +685,7 @@ todo	an IEC binary prefix scales a unit by a power of two
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
+todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an effect discharged by a handler does not escape to the manifest
 todo	an effect operation reached with neither a handler nor a delegation is rejected
