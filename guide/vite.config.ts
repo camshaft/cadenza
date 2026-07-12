@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { copyFileSync } from "node:fs";
+import { copyFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 // GitHub Pages has no server-side SPA rewrite: a deep link like `/cadenza/basics` 404s. Pages serves
@@ -12,9 +12,14 @@ function spaFallback(): Plugin {
   return {
     name: "spa-404-fallback",
     apply: "build",
+    // `closeBundle` runs even when the build FAILED before writing `index.html`. Guard on the file
+    // existing so this fallback never fails a build itself — and, crucially, never MASKS the real
+    // build error with a confusing `ENOENT … 404.html`.
     closeBundle() {
       const out = resolve(fileURLToPath(new URL("./dist", import.meta.url)));
-      copyFileSync(resolve(out, "index.html"), resolve(out, "404.html"));
+      const index = resolve(out, "index.html");
+      if (!existsSync(index)) return;
+      copyFileSync(index, resolve(out, "404.html"));
     },
   };
 }
