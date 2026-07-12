@@ -55,6 +55,8 @@ pub struct Export {
     pub name: String,
     /// Index into [`Db::defs`] of the definition this export names, or `None` if no such def exists.
     pub def: Option<usize>,
+    /// The `(export NAME)` clause occurrence, for a diagnostic to anchor to (e.g. a duplicate export).
+    pub occ: StructId,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -412,6 +414,7 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>) {
             exports.push(Export {
                 name: name.to_string(),
                 def: None,
+                occ: item,
             });
         }
     }

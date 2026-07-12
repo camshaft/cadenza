@@ -104,6 +104,28 @@
             (def (main) (f)) (export main)))
   (error  CDZ0201))
 
+; A duplicate EXPORT clause is the export-side analogue of the duplicate definition above: a module's
+; exports are a record whose fields are the exported names (core-semantics.md #A Module Evaluates To A
+; Record Of Its Exports), and a record has a fixed set of field names, so exporting the same name twice
+; places two entries under one field — the same CDZ0201 ill-formedness. It MUST be rejected before
+; emitting: two export entries of one name are forbidden by the component binary format, so emitting
+; them produces a component that fails to parse — a decline-don't-miscompile violation.
+
+(case "a duplicate export clause for the same name is rejected"
+  (doc    "`(export a)` twice names the export `a` twice. A module's exports are a record with a fixed
+           set of field names, so a repeated export is the CDZ0201 duplicate-field ill-formedness — the
+           export analogue of the duplicate definition above and of `(record (a 1) (a 2))`. The compiler
+           MUST reject it (CDZ0201), never emit a component with two export entries named `a` (which the
+           component binary format forbids, so the emitted bytes fail to parse).")
+  (input  (do (def (a) 42) (export a) (export a)))
+  (error  CDZ0201))
+
+(case "a duplicate export of the entry is rejected"
+  (doc    "The `main` sibling: `(export main)` twice. Same CDZ0201 duplicate-export rejection — the
+           defect is independent of the exported name, not special to the entry-selection path.")
+  (input  (do (def (main) 42) (export main) (export main)))
+  (error  CDZ0201))
+
 (case "a top-level value definition binds a name usable by the program's functions"
   (doc    "A definition is 'a value, function, type' (glossary), and each registers its name in the module
            (core-semantics.md #A Module Evaluates To A Record Of Its Exports). So a VALUE definition

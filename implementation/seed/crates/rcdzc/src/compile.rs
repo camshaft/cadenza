@@ -163,6 +163,29 @@ fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
             .at(sig_occ),
         );
     }
+    // DUPLICATE EXPORT. A module's exports are a record whose fields are the exported names
+    // (core-semantics.md §A Module Evaluates To A Record Of Its Exports), and a record has a fixed set
+    // of field names — so exporting the same name twice is the same ill-formedness as a duplicate
+    // record field or a duplicate definition (CDZ0201). Two `(export a)` clauses would emit two export
+    // entries named `a`, which the component binary format forbids, so the emitted bytes fail to parse:
+    // reject BEFORE emitting rather than miscompile an invalid component (decline-don't-miscompile).
+    // Each export clause after the first with a given name is reported, anchored at its clause.
+    let mut seen_exports: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let dup_exports: Vec<(String, StructId)> = db
+        .exports
+        .iter()
+        .filter(|e| !seen_exports.insert(e.name.as_str()))
+        .map(|e| (e.name.clone(), e.occ))
+        .collect();
+    for (name, occ) in dup_exports {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                format!("`{name}` is exported more than once (a module has a fixed set of names)"),
+            )
+            .at(occ),
+        );
+    }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
     let bodies: Vec<(StructId, bool)> = db
