@@ -325,6 +325,29 @@ impl Ty {
             (Ty::Tuple(a), Ty::Tuple(b)) if self.agrees_with(other) => {
                 Ty::Tuple(a.iter().zip(b.iter()).map(|(ta, tb)| ta.join(tb)).collect())
             }
+            // Two agreeing SUMS join their type ARGS pairwise, so a payload resolved in EITHER branch
+            // determines the joined arg — `(Option ?0)` ⊔ `(Option Int64)` = `(Option Int64)`. Without
+            // this, an `if` whose branches are the SAME sum built two ways (a nullary variant `(None)` :
+            // `Option ?0` in one branch, a payload variant `(Some n)` : `Option Int64` in the other) took
+            // the `_ => self.clone()` fallthrough and kept the FIRST branch's type — so a leading `None`
+            // pinned the result to `(Option ?0)` with `?0` free, and the value-heap layout then declined
+            // "projecting a tuple element of type ?0 needs the value heap". Joining the args makes the
+            // conditional's type ORDER-INDEPENDENT: the payload-carrying branch fixes the parameter in
+            // either position. (`agrees_with` guarantees same `decl` + arg arity.)
+            (Ty::Sum { decl, name, args: aa }, Ty::Sum { args: ab, .. })
+                if self.agrees_with(other) =>
+            {
+                Ty::Sum {
+                    decl: *decl,
+                    name: name.clone(),
+                    args: aa.iter().zip(ab.iter()).map(|(x, y)| x.join(y)).collect(),
+                }
+            }
+            // Two agreeing lists join their element type — a deferred element (`List ?0`, the empty list)
+            // is fixed by the other branch's `List Int64`, the list analogue of the sum-arg join above.
+            (Ty::List(a), Ty::List(b)) if self.agrees_with(other) => {
+                Ty::List(Box::new(a.join(b)))
+            }
             _ => self.clone(),
         }
     }

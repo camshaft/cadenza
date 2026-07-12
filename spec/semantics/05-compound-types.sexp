@@ -1001,11 +1001,68 @@
   (doc    "The `None` companion of the case above: with n=0 the branch selects `(None unit)`, whose
            canonical form is `(None unit)` (a nullary variant carries the unit value). Pins that the
            runtime discriminant switch renders a nullary variant's name and its unit payload correctly,
-           distinct from the `Some` arm.")
+           distinct from the `Some` arm. The value's type is `(Option Int64)` — the two `if` branches
+           unify to one Option whose payload the `(Some n)` branch fixes to `Int64`, so the `None` result
+           is an `Option Int64` (the SAME type the `Some`-path sibling above reports), NOT `Option Any`;
+           the `if`-branch join is symmetric, so a leading `None` does not leave the payload unresolved.")
   (input  (do
             (def (f n) (if (= n 0) (None unit) (Some n)))
             (def (main) (f 0)) (export main)))
-  (output (: (None unit) (Option Any))))
+  (output (: (None unit) (Option Int64))))
+
+; --- An `if` that builds a sum must type-check REGARDLESS of branch order --------------------------
+; core-semantics.md #Conditionals Evaluate One Branch + type-system.md #Inference Is Principal Type
+; Inference By Unification: an `if`'s type is the join of its two branches, and the join must be
+; SYMMETRIC — a payload-carrying branch determines the sum's type parameter whether it is written first
+; or second. A runtime `(if c (None) (Some n))` and `(if c (Some n) (None))` build the SAME
+; `(Option Int64)`; a generation whose branch-type join kept the FIRST branch's type left a leading
+; nullary `None`'s payload parameter unresolved (`Option ?0`), and the value-heap layout then declined
+; "projecting a tuple element of type ?0 needs the value heap". The order of `if` branches MUST NOT
+; change whether a well-typed sum type-checks. (Same root cause across Option's one parameter and
+; Result's two — the join now recurses into a sum's type args, so any branch fixes them.)
+
+(case "an Option built by an if with the nullary branch first type-checks"
+  (doc    "`(match (if (= n 0) (None) (Some n)) ((Some k) k) ((None) 0))` with n = 5 yields `(Some 5)`,
+           matched to 5. The nullary `(None)` (unconstrained payload) is the THEN branch and the
+           payload-carrying `(Some n)` the ELSE branch. A generation that joined the branch types
+           left-to-right pinned the result to `(Option ?0)` (the leading `None`) with `?0` free and
+           DECLINED at value-heap layout; the join must be symmetric so the `Some` branch fixes the
+           payload in either position. The Some-first control below is identical but for branch order.
+           Expected: 5.")
+  (input  (do (def (g (: n Int64)) (match (if (= n 0) (None) (Some n)) ((Some k) k) ((None) 0)))
+              (def (main (: n Int64)) (g n)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "an Option built by an if with the payload branch first type-checks (the control)"
+  (doc    "The control pinning the case above is BRANCH ORDER, not the value: the same Option with the
+           payload-carrying branch FIRST — `(if (> n 0) (Some n) (None))` — type-checks and runs, 5 for
+           n = 5. Identical variants and match; only the order differs. Triangulates the payload type is
+           determinable and the bug was order-dependent (left-to-right) branch-type resolution.")
+  (input  (do (def (g (: n Int64)) (match (if (> n 0) (Some n) (None)) ((Some k) k) ((None) 0)))
+              (def (main (: n Int64)) (g n)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "the nullary-first if returns the None arm on the base path"
+  (doc    "The None path of the same nullary-first program: with n = 0 the `if` takes `(None)` and the
+           match's `(None)` arm returns 0. Pins that both paths of the branch-order-fixed program compute
+           correctly, not only the Some path. Expected: 0.")
+  (input  (do (def (g (: n Int64)) (match (if (= n 0) (None) (Some n)) ((Some k) k) ((None) 0)))
+              (def (main (: n Int64)) (g n)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "a Result built by an if with the Err branch first type-checks"
+  (doc    "The Result companion (two type parameters): `(match (if (= n 0) (Err n) (Ok n)) ((Ok k) k)
+           ((Err e) 0))` with n = 5 yields `(Ok 5)`, matched to 5. Both of Result's parameters must be
+           resolved from the branches regardless of order — a generation that joined left-to-right left
+           one parameter unresolved (`?1`) at value-heap layout when the Err branch was first. Pins the
+           symmetric join spans a multi-parameter sum, not only Option. Expected: 5.")
+  (input  (do (def (g (: n Int64)) (match (if (= n 0) (Err n) (Ok n)) ((Ok k) k) ((Err e) 0)))
+              (def (main (: n Int64)) (g n)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
 
 (case "a runtime sum whose payload is a runtime tuple nests across the boundary"
   (doc    "`(Some (tuple n 1))` with n=7 produces `(Some (tuple 7 1))` — a runtime sum carrying a

@@ -5847,6 +5847,48 @@ mod stage1 {
     }
 
     #[test]
+    fn an_if_over_a_sum_type_checks_regardless_of_branch_order() {
+        // A runtime `if` whose branches build the SAME sum two ways — a nullary variant `(None)` :
+        // `Option ?0` and a payload variant `(Some n)` : `Option Int64` — must COMPILE in EITHER order.
+        // The `if`'s type is the JOIN of its branches; `Ty::join` now joins two agreeing sums' type ARGS
+        // pairwise, so the payload-carrying branch fixes the parameter whether it is first or second.
+        // Before, a leading `None` took the join's fallthrough and kept `(Option ?0)` with `?0` free, so
+        // the value-heap layout declined "projecting a tuple element of type ?0 needs the value heap".
+        for branches in ["(None) (Some n)", "(Some n) (None)"] {
+            let src = format!(
+                "(module m (def (g (: n Int64)) \
+                   (match (if (= n 0) {branches}) ((Some k) k) ((None) 0))) \
+                 (def (main (: n Int64)) (g n)) (export main))"
+            );
+            assert!(
+                compile_component(&crate::codec::encode(&parse(&src))).is_ok(),
+                "an if-built Option must compile with branches in order [{branches}]"
+            );
+        }
+        // The Result companion — two type parameters, resolved from either branch (the sibling finding).
+        for branches in ["(Err n) (Ok n)", "(Ok n) (Err n)"] {
+            let src = format!(
+                "(module m (def (g (: n Int64)) \
+                   (match (if (= n 0) {branches}) ((Ok k) k) ((Err e) 0))) \
+                 (def (main (: n Int64)) (g n)) (export main))"
+            );
+            assert!(
+                compile_component(&crate::codec::encode(&parse(&src))).is_ok(),
+                "an if-built Result must compile with branches in order [{branches}]"
+            );
+        }
+        // NO OVER-ACCEPTANCE: genuinely mismatched branches (a sum vs a bare integer) still reject.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (g (: n Int64)) (if (> n 0) (Some n) n)) \
+                 (def (main (: n Int64)) (g n)) (export main))"
+            )))
+            .is_err(),
+            "an if whose branches are a sum and a scalar must still be a type mismatch"
+        );
+    }
+
+    #[test]
     fn a_non_exhaustive_nested_sum_match_is_rejected() {
         // A nested match missing the inner `Neg` case with no wildcard is NON-EXHAUSTIVE at the INNER
         // switch (the outer `Full` is reached, but its inner `Inner` leaves `Neg` uncovered). The

@@ -5,6 +5,7 @@ pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
+pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
@@ -50,6 +51,8 @@ pass	a conditional with too many operands is rejected, not a crash
 pass	a conditional with two tuple branches of different arity is a type error
 pass	a conditional with two tuple branches of different element type is a type error
 pass	a conditional's condition may itself be a conditional
+pass	a conditionally-selected nullary variant is returned as a runtime sum result
+pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
@@ -265,6 +268,8 @@ pass	a zero-bit integer width is rejected
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
+pass	an Option built by an if with the nullary branch first type-checks
+pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an annotated value takes a narrower integer width
@@ -402,6 +407,7 @@ pass	the maximum unsigned 8-bit value is its per-width bound
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum signed 8-bit value is its per-width bound
 pass	the module entrypoint is the def named main regardless of its position
+pass	the nullary-first if returns the None arm on the base path
 pass	the other parity of a mutually-recursive pair
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
@@ -470,8 +476,6 @@ todo	a closure captures the binding in scope where it was created
 todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
 todo	a conditional with two list branches of different length is well-typed
-todo	a conditionally-selected nullary variant is returned as a runtime sum result
-todo	a conditionally-selected variant is returned as a runtime sum result
 todo	a constructor pattern in a tuple payload slot is matched in one arm
 todo	a constructor pattern nested under Some matches a runtime list element
 todo	a constructor whose payload is a constructor keeps the outer variant tag
