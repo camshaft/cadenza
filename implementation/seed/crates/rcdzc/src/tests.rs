@@ -7091,6 +7091,24 @@ mod stage1 {
     }
 
     #[test]
+    fn an_effect_reached_with_no_handler_or_delegation_is_cdz0401() {
+        // E1d: an effect operation performed with NEITHER an enclosing handler NOR a host delegation has
+        // no home — CDZ0401 (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error).
+        // A handled perform is reduced away before lowering, so any perform reaching lowering directly is
+        // ungranted. Reported cleanly (not as a leaked "unknown intrinsic" / unbound `effect-op`).
+        let src = "(do (effect Ask (op ask (-> Unit Int64))) \
+                   (def (main) (+ ((. Ask ask)) 1)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("an ungranted effect must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0401"),
+            "expected CDZ0401 (no home for a reached effect), got: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn a_handle_arm_binds_its_params_and_state_in_scope() {
         // E1b: an arm `(op (params…) state body)` binds the operation parameters AND the state binder in
         // the arm body — so a reference to `s` (state) in a `resume` is IN SCOPE, not an unbound-name

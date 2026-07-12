@@ -357,6 +357,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
         // bare type/module used at runtime declines at the erasure fence.
         Resolved::Apply { head, args } => {
+            // A PERFORM WITH NO HOME. If the head is an effect OPERATION and this application is being
+            // lowered directly, no enclosing handler discharged it (a handled perform is REDUCED AWAY by
+            // `effects::reduce_handle` before its body is lowered, so it never reaches here) and no host
+            // delegation routed it (E2). An effect reached with neither a handler nor a delegation is
+            // rejected — CDZ0401, the merged "no home for a reached effect" check
+            // (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). Reported here
+            // rather than leaking the op's `(intrinsic perform)` marker as an "unknown intrinsic" and its
+            // `(meta effect-op)` node as an unbound `effect-op`.
+            if crate::eval::effect_op_of(db, head).is_some() {
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: perform with no enclosing handler/delegation (CDZ0401)");
+                return Core::Poison(Reject::coded(
+                    crate::diag::Code::EffectNoHome,
+                    "this effect operation is reached with neither an enclosing handler nor a host \
+                     delegation, so it has no home (add a handler or delegate it at the entrypoint)",
+                ));
+            }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
             // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
             // `(+ 5 1)` → `6`, with no function value emitted. The reduction runs UNDER a guard keyed
