@@ -507,14 +507,14 @@ fn ordered_param_binders(db: &Db, def: usize) -> Vec<StructId> {
 /// nullary def is just `R`). Memoized on `db.def_schemes` keyed by the def index (a pure function of
 /// the fixed def structure).
 ///
-/// **A1 scope (see `implementation/DESIGN-anf-step2-runtime-functions.md`).** This computes the scheme
-/// ONLY for a def whose signature is already fully DETERMINED without a connected def-body solve —
-/// every parameter has a definite machine type (from its annotation) and the body types to a definite
-/// type reading those params. That covers an exported/annotated function, whose scheme here AGREES
-/// with what β-reduction produces at a call (cross-checked in tests). It returns `None` — deferring to
-/// the existing β-reduction typing — when a parameter is undetermined (`Any`, an unannotated param
-/// needing inference) OR the body's type is `Any` (a recursive self-call, which needs the fixpoint A2
-/// adds). So this is purely additive: no call yet reads it, and the fallback path is unchanged.
+/// (See `implementation/DESIGN-anf-step2-runtime-functions.md`.) This computes the scheme for a def
+/// whose signature is DETERMINED: an annotated/exported function (its params have definite machine
+/// types and the body types reading them — the scheme AGREES with what β-reduction produces at a call,
+/// cross-checked in tests), OR an unannotated RECURSIVE def whose parameters the connected solve
+/// (`solve_recursive_params`, A2) has pinned. It returns `None` — deferring to β-reduction typing —
+/// only when a parameter stays undetermined (`Any`, no use constrained it). This scheme is READ at a
+/// runtime call site: `lower` emits a `Core::Call` to a recursive callee whose scheme is `Some`, and
+/// `infer` types a recursive call by it.
 pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     if let Some(cached) = db.def_schemes.get(&def) {
         return cached.clone();
@@ -824,8 +824,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // Member access: the operand must be a record, and it must have the named field. Both faults
         // are CDZ0201 (`core-semantics.md` §Member Access Projects A Record Field — projecting a field
-        // of a non-record, or an absent field, has no defined result). The user record is CLOSED (a
-        // missing field rejects) — distinct from an open built-in module (a later stage).
+        // of a non-record, or an absent field, has no defined result). A built-in module is CLOSED the
+        // same way a user record is: it carries every field it will ever have, and an unrealized field
+        // DECLINES when projected rather than being absent (`prelude.rs` — there is no open-module rule).
         Resolved::Member { operand, key } => {
             // Project via the evaluator (reduces refs / a ctor-built module), so a missing field on a
             // built module is caught too. A poison operand reports its OWN fault (via the descent
