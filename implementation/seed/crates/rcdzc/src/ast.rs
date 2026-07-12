@@ -44,10 +44,10 @@ pub enum Leaf {
 
 /// An arbitrary-precision integer value: a sign plus a big-endian magnitude. This is the whole of
 /// what the encoding needs — a sign and a vector of bytes — so there is deliberately NO bignum
-/// library behind it. The AST only CARRIES the value; arithmetic on an integer literal is a later
-/// compile-time-evaluation concern that will operate on these bytes directly. Arbitrary precision
-/// with nothing to depend on. The concrete machine width a literal takes is a downstream type
-/// decision, not fixed here.
+/// library behind it. The AST only CARRIES the value; compile-time arithmetic on it is a separate
+/// concern (`lower::fold_arith` folds `+`/`-`/`*`/… over an `IntValue`, checked, with a provable-trap
+/// fallback), reading the magnitude rather than depending on a bignum crate. The concrete machine
+/// width a literal takes is a downstream type decision, not fixed here.
 ///
 /// Canonical invariant for a value built through [`IntValue::from_i64`] / [`IntValue::zero`]: the
 /// magnitude carries no leading zero bytes and is empty iff the value is zero, so equal values share
