@@ -65,7 +65,10 @@ fn rewrite_additive_identity_ml_to_ml() {
     );
     assert!(ok);
     assert_eq!(stdout.trim(), "f(a, b)");
-    assert!(stderr.contains("rewrote 2 site(s)"), "count on stderr: {stderr}");
+    assert!(
+        stderr.contains("rewrote 2 site(s)"),
+        "count on stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -133,7 +136,13 @@ fn rewrite_no_match_is_a_no_op_that_reprints() {
 fn query_guard_filters_by_structure() {
     // `(+ ,(x is-literal) ,y)` matches only the site whose first operand is a literal.
     let (ok, stdout, _) = run(
-        &["query", "(+ ,(x is-literal) ,y)", "--from", "sexpr", "--count"],
+        &[
+            "query",
+            "(+ ,(x is-literal) ,y)",
+            "--from",
+            "sexpr",
+            "--count",
+        ],
         "(do (+ 1 a) (+ b c))",
     );
     assert!(ok);
@@ -155,13 +164,24 @@ fn query_inside_restricts_to_ancestor() {
     );
     assert!(ok);
     // exactly one `x` line (the one under danger).
-    assert_eq!(stdout.lines().filter(|l| l.contains(": x")).count(), 1, "{stdout}");
+    assert_eq!(
+        stdout.lines().filter(|l| l.contains(": x")).count(),
+        1,
+        "{stdout}"
+    );
 }
 
 #[test]
 fn query_has_requires_descendant() {
     let (ok, stdout, _) = run(
-        &["query", "(fn ,@_)", "--from", "sexpr", "--has", "(raise ,_)"],
+        &[
+            "query",
+            "(fn ,@_)",
+            "--from",
+            "sexpr",
+            "--has",
+            "(raise ,_)",
+        ],
         "(do (fn a (raise e)) (fn b (return c)))",
     );
     assert!(ok);
@@ -201,7 +221,14 @@ fn rewrite_with_a_rules_file_applies_a_peephole_set() {
 fn rewrite_top_down_does_a_single_pass_unwrap() {
     let (ok, stdout, _) = run(
         &[
-            "rewrite", "(wrap ,x)", ",x", "--from", "sexpr", "--to", "sexpr", "--top-down",
+            "rewrite",
+            "(wrap ,x)",
+            ",x",
+            "--from",
+            "sexpr",
+            "--to",
+            "sexpr",
+            "--top-down",
         ],
         "(wrap (wrap a))",
     );
@@ -237,7 +264,10 @@ fn query_over_a_directory_reports_each_file() {
     // per-file headers and both matches present.
     assert!(stdout.contains("a.ml ==="), "{stdout}");
     assert!(stdout.contains("b.sexp ==="), "{stdout}");
-    assert!(stdout.contains("(+ x 0)") && stdout.contains("(+ y 0)"), "{stdout}");
+    assert!(
+        stdout.contains("(+ x 0)") && stdout.contains("(+ y 0)"),
+        "{stdout}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -299,7 +329,10 @@ fn rewrite_write_leaves_unmatched_file_untouched() {
 
 #[test]
 fn rewrite_write_rejects_stdin() {
-    let (ok, _, stderr) = run(&["rewrite", "(+ ,x 0)", ",x", "--from", "ml", "--write"], "a + 0");
+    let (ok, _, stderr) = run(
+        &["rewrite", "(+ ,x 0)", ",x", "--from", "ml", "--write"],
+        "a + 0",
+    );
     assert!(!ok);
     assert!(stderr.contains("FILE"), "reason: {stderr}");
 }
@@ -315,7 +348,10 @@ fn rewrite_diff_shows_a_unified_hunk_and_does_not_write() {
     );
     assert!(ok);
     assert!(stdout.contains("@@ -1,1 +1,1 @@"), "hunk: {stdout}");
-    assert!(stdout.contains("-f(a + 0)") && stdout.contains("+f(a)"), "{stdout}");
+    assert!(
+        stdout.contains("-f(a + 0)") && stdout.contains("+f(a)"),
+        "{stdout}"
+    );
     // the file itself is untouched (diff is preview only).
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "f(a + 0)\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -327,7 +363,14 @@ fn rewrite_write_and_diff_are_mutually_exclusive() {
     let f = dir.join("p.ml");
     std::fs::write(&f, "f(a + 0)\n").unwrap();
     let (ok, _, stderr) = run(
-        &["rewrite", "(+ ,x 0)", ",x", f.to_str().unwrap(), "--write", "--diff"],
+        &[
+            "rewrite",
+            "(+ ,x 0)",
+            ",x",
+            f.to_str().unwrap(),
+            "--write",
+            "--diff",
+        ],
         "",
     );
     assert!(!ok);
@@ -360,7 +403,11 @@ fn diff_reports_a_changed_subtree_at_its_path() {
     std::fs::write(dir.join("a.ml"), "f(a + 0, b + 0)\n").unwrap();
     std::fs::write(dir.join("b.ml"), "f(a, b + 0)\n").unwrap();
     let (ok, stdout, _) = run(
-        &["diff", dir.join("a.ml").to_str().unwrap(), dir.join("b.ml").to_str().unwrap()],
+        &[
+            "diff",
+            dir.join("a.ml").to_str().unwrap(),
+            dir.join("b.ml").to_str().unwrap(),
+        ],
         "",
     );
     assert!(ok);
@@ -376,14 +423,22 @@ fn diff_json_is_wellformed() {
     std::fs::write(dir.join("a.sexp"), "(+ a b)\n").unwrap();
     std::fs::write(dir.join("b.sexp"), "(+ a c)\n").unwrap();
     let (ok, stdout, _) = run(
-        &["diff", dir.join("a.sexp").to_str().unwrap(), dir.join("b.sexp").to_str().unwrap(), "--json"],
+        &[
+            "diff",
+            dir.join("a.sexp").to_str().unwrap(),
+            dir.join("b.sexp").to_str().unwrap(),
+            "--json",
+        ],
         "",
     );
     assert!(ok);
     let s = stdout.trim();
     assert!(s.contains("\"path\":[2]"), "{s}");
     assert!(s.contains("\"kind\":\"replace\""), "{s}");
-    assert!(s.contains("\"old\":\"b\"") && s.contains("\"new\":\"c\""), "{s}");
+    assert!(
+        s.contains("\"old\":\"b\"") && s.contains("\"new\":\"c\""),
+        "{s}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -392,7 +447,11 @@ fn diff_identical_reports_no_change() {
     let dir = scratch_dir("diffid");
     std::fs::write(dir.join("a.ml"), "f(x)\n").unwrap();
     let (ok, stdout, stderr) = run(
-        &["diff", dir.join("a.ml").to_str().unwrap(), dir.join("a.ml").to_str().unwrap()],
+        &[
+            "diff",
+            dir.join("a.ml").to_str().unwrap(),
+            dir.join("a.ml").to_str().unwrap(),
+        ],
         "",
     );
     assert!(ok);
@@ -417,7 +476,10 @@ fn lint_flags_a_matching_pattern_with_location_and_severity() {
         "",
     );
     assert!(!ok, "an error-severity diagnostic exits non-zero");
-    assert!(stdout.contains("code.ml:2:"), "location on line 2: {stdout}");
+    assert!(
+        stdout.contains("code.ml:2:"),
+        "location on line 2: {stdout}"
+    );
     assert!(stdout.contains("error: do not use"), "{stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -489,7 +551,12 @@ fn lint_from_a_rules_file_over_a_directory() {
     let rules = dir.join("r.lint");
     std::fs::write(&rules, "(lint (deprecated ,@_) \"no\" error)\n").unwrap();
     let (ok, stdout, _) = run(
-        &["lint", dir.to_str().unwrap(), "--rules", rules.to_str().unwrap()],
+        &[
+            "lint",
+            dir.to_str().unwrap(),
+            "--rules",
+            rules.to_str().unwrap(),
+        ],
         "",
     );
     assert!(!ok, "error found in a.ml");
@@ -516,7 +583,10 @@ fn clones_finds_a_duplicated_subtree_across_files() {
     assert!(ok);
     assert!(stdout.contains("(validate config strict)"), "{stdout}");
     assert!(stdout.contains("2 occurrences"), "{stdout}");
-    assert!(stdout.contains("a.ml:") && stdout.contains("b.ml:"), "cross-file: {stdout}");
+    assert!(
+        stdout.contains("a.ml:") && stdout.contains("b.ml:"),
+        "cross-file: {stdout}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -526,7 +596,15 @@ fn clones_min_size_filters_trivial() {
     // `x` recurs but is tiny; a big min-size finds nothing.
     std::fs::write(dir.join("a.sexp"), "(f x x x)\n").unwrap();
     let (ok, stderr) = {
-        let (ok, _out, err) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--min-size", "5"], "");
+        let (ok, _out, err) = run(
+            &[
+                "clones",
+                dir.join("a.sexp").to_str().unwrap(),
+                "--min-size",
+                "5",
+            ],
+            "",
+        );
         (ok, err)
     };
     assert!(ok);
@@ -538,7 +616,16 @@ fn clones_min_size_filters_trivial() {
 fn clones_json_is_wellformed() {
     let dir = scratch_dir("clone3");
     std::fs::write(dir.join("a.sexp"), "(do (k a b) (k a b))\n").unwrap();
-    let (ok, stdout, _) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--min-size", "3", "--json"], "");
+    let (ok, stdout, _) = run(
+        &[
+            "clones",
+            dir.join("a.sexp").to_str().unwrap(),
+            "--min-size",
+            "3",
+            "--json",
+        ],
+        "",
+    );
     assert!(ok);
     let s = stdout.trim();
     assert!(s.starts_with('[') && s.ends_with(']'), "array: {s}");
@@ -552,7 +639,15 @@ fn clones_json_is_wellformed() {
 fn clones_reports_nothing_when_all_distinct() {
     let dir = scratch_dir("clone4");
     std::fs::write(dir.join("a.sexp"), "(do (f a) (g b) (h c))\n").unwrap();
-    let (ok, _out, stderr) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--min-size", "2"], "");
+    let (ok, _out, stderr) = run(
+        &[
+            "clones",
+            dir.join("a.sexp").to_str().unwrap(),
+            "--min-size",
+            "2",
+        ],
+        "",
+    );
     assert!(ok);
     assert!(stderr.contains("no clones"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -564,9 +659,21 @@ fn clones_reports_nothing_when_all_distinct() {
 fn near_clones_infers_a_pattern() {
     let dir = scratch_dir("near1");
     std::fs::write(dir.join("a.ml"), "f(scale(x, 2))\ng(scale(x, 3))\n").unwrap();
-    let (ok, stdout, _) = run(&["clones", dir.join("a.ml").to_str().unwrap(), "--near", "--min-size", "3"], "");
+    let (ok, stdout, _) = run(
+        &[
+            "clones",
+            dir.join("a.ml").to_str().unwrap(),
+            "--near",
+            "--min-size",
+            "3",
+        ],
+        "",
+    );
     assert!(ok);
-    assert!(stdout.contains("(scale x ,m0)"), "inferred pattern: {stdout}");
+    assert!(
+        stdout.contains("(scale x ,m0)"),
+        "inferred pattern: {stdout}"
+    );
     assert!(stdout.contains("2 occurrences"), "{stdout}");
     assert!(stdout.contains("1 hole"), "{stdout}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -576,7 +683,17 @@ fn near_clones_infers_a_pattern() {
 fn near_clones_json_reports_pattern_and_holes() {
     let dir = scratch_dir("near2");
     std::fs::write(dir.join("a.sexp"), "(do (k a 1) (k b 2))\n").unwrap();
-    let (ok, stdout, _) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--near", "--min-size", "3", "--json"], "");
+    let (ok, stdout, _) = run(
+        &[
+            "clones",
+            dir.join("a.sexp").to_str().unwrap(),
+            "--near",
+            "--min-size",
+            "3",
+            "--json",
+        ],
+        "",
+    );
     assert!(ok);
     let s = stdout.trim();
     assert!(s.contains("\"pattern\":\"(k ,m0 ,m1)\""), "{s}");
@@ -588,7 +705,16 @@ fn near_clones_json_reports_pattern_and_holes() {
 fn near_clones_none_when_shapes_differ() {
     let dir = scratch_dir("near3");
     std::fs::write(dir.join("a.sexp"), "(do (f a b) (g c))\n").unwrap();
-    let (ok, _out, stderr) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--near", "--min-size", "3"], "");
+    let (ok, _out, stderr) = run(
+        &[
+            "clones",
+            dir.join("a.sexp").to_str().unwrap(),
+            "--near",
+            "--min-size",
+            "3",
+        ],
+        "",
+    );
     assert!(ok);
     assert!(stderr.contains("no near-clones"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -598,7 +724,15 @@ fn near_clones_none_when_shapes_differ() {
 fn near_clone_pattern_feeds_back_into_rewrite() {
     // The closing loop: the inferred pattern re-matches (and rewrites) the very sites it came from.
     let (ok, stdout, _) = run(
-        &["rewrite", "(scale x ,m0)", "(scaled x ,m0)", "--from", "ml", "--to", "ml"],
+        &[
+            "rewrite",
+            "(scale x ,m0)",
+            "(scaled x ,m0)",
+            "--from",
+            "ml",
+            "--to",
+            "ml",
+        ],
         "g(scale(x, 2), scale(x, 7))",
     );
     assert!(ok);
@@ -614,10 +748,23 @@ fn directory_walk_skips_non_source_files_even_with_from() {
     std::fs::write(dir.join("a.sexp"), "(f a)\n").unwrap();
     std::fs::write(dir.join("README.md"), "# not source )(][\n").unwrap();
     std::fs::write(dir.join(".gitignore"), "target\n").unwrap();
-    let (ok, stdout, stderr) = run(&["query", "(f ,@_)", dir.to_str().unwrap(), "--from", "sexpr", "--count"], "");
+    let (ok, stdout, stderr) = run(
+        &[
+            "query",
+            "(f ,@_)",
+            dir.to_str().unwrap(),
+            "--from",
+            "sexpr",
+            "--count",
+        ],
+        "",
+    );
     assert!(ok, "no crash on the README: {stderr}");
     assert_eq!(stdout.trim(), "1", "only the .sexp counted: {stdout}");
-    assert!(!stderr.contains("README"), "README silently skipped: {stderr}");
+    assert!(
+        !stderr.contains("README"),
+        "README silently skipped: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -627,7 +774,10 @@ fn directory_with_no_source_files_warns() {
     std::fs::write(dir.join("notes.txt"), "hi\n").unwrap();
     let (ok, _stdout, stderr) = run(&["query", "(f ,@_)", dir.to_str().unwrap(), "--count"], "");
     assert!(ok);
-    assert!(stderr.contains("no source files"), "warns on empty dir: {stderr}");
+    assert!(
+        stderr.contains("no source files"),
+        "warns on empty dir: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -639,8 +789,14 @@ fn one_broken_file_in_a_dir_is_skipped_not_fatal() {
     std::fs::write(dir.join("good2.sexp"), "(f b)\n").unwrap();
     let (ok, stdout, stderr) = run(&["query", "(f ,@_)", dir.to_str().unwrap(), "--count"], "");
     assert!(ok, "the sweep survives one broken file");
-    assert!(stderr.contains("skipping") && stderr.contains("broken.sexp"), "{stderr}");
-    assert!(stdout.contains("total: 2"), "both good files counted: {stdout}");
+    assert!(
+        stderr.contains("skipping") && stderr.contains("broken.sexp"),
+        "{stderr}"
+    );
+    assert!(
+        stdout.contains("total: 2"),
+        "both good files counted: {stdout}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -648,9 +804,20 @@ fn one_broken_file_in_a_dir_is_skipped_not_fatal() {
 fn a_single_broken_file_is_still_a_hard_error() {
     let dir = scratch_dir("uxhard");
     std::fs::write(dir.join("broken.sexp"), "(f a\n").unwrap();
-    let (ok, _stdout, stderr) = run(&["query", "(f ,@_)", dir.join("broken.sexp").to_str().unwrap(), "--count"], "");
+    let (ok, _stdout, stderr) = run(
+        &[
+            "query",
+            "(f ,@_)",
+            dir.join("broken.sexp").to_str().unwrap(),
+            "--count",
+        ],
+        "",
+    );
     assert!(!ok, "single broken target fails");
-    assert!(!stderr.contains("skipping"), "not a skip — a hard error: {stderr}");
+    assert!(
+        !stderr.contains("skipping"),
+        "not a skip — a hard error: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -660,7 +827,17 @@ fn named_file_still_honors_from() {
     let dir = scratch_dir("uxnamed");
     let f = dir.join("prog.txt"); // .txt has no inferred format
     std::fs::write(&f, "(f a b)\n").unwrap();
-    let (ok, stdout, _) = run(&["query", "(f ,@_)", f.to_str().unwrap(), "--from", "sexpr", "--count"], "");
+    let (ok, stdout, _) = run(
+        &[
+            "query",
+            "(f ,@_)",
+            f.to_str().unwrap(),
+            "--from",
+            "sexpr",
+            "--count",
+        ],
+        "",
+    );
     assert!(ok);
     assert_eq!(stdout.trim(), "1", "named .txt read as sexpr: {stdout}");
     let _ = std::fs::remove_dir_all(&dir);

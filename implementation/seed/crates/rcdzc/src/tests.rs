@@ -3005,7 +3005,10 @@ mod stage1 {
         let db = Db::load(parse(src));
         // Every def is its own entry (distinct occurrences), regardless of name.
         let occs: std::collections::HashSet<_> = db.defs.iter().filter_map(|d| d.body).collect();
-        assert_eq!(occs.len(), db.defs.iter().filter(|d| d.body.is_some()).count());
+        assert_eq!(
+            occs.len(),
+            db.defs.iter().filter(|d| d.body.is_some()).count()
+        );
         // The name index resolves each name to a real, distinct def; `main` sums them → 3.
         assert!(db.def_by_name("a").is_some());
         assert!(db.def_by_name("b").is_some());

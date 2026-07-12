@@ -40,13 +40,20 @@ pub(crate) fn run(paths: &Paths, save: bool) {
 
     if save {
         save_baseline(paths, &measured);
-        println!("xtask bench: wrote baseline ({} ops) → {}", measured.len(), baseline_path(paths).display());
+        println!(
+            "xtask bench: wrote baseline ({} ops) → {}",
+            measured.len(),
+            baseline_path(paths).display()
+        );
         return;
     }
 
     let baseline = load_baseline(paths);
     println!("\nruntime allocation benchmark (allocs per op-batch; lower is better)\n");
-    println!("  {:<28} {:>10} {:>10} {:>10}", "op", "current", "baseline", "delta");
+    println!(
+        "  {:<28} {:>10} {:>10} {:>10}",
+        "op", "current", "baseline", "delta"
+    );
     println!("  {}", "─".repeat(60));
 
     let mut regressed = Vec::new();
@@ -66,22 +73,34 @@ pub(crate) fn run(paths: &Paths, save: bool) {
                 };
                 println!("  {name:<28} {current:>10} {base:>10} {delta:>+10}{mark}");
             }
-            None => println!("  {name:<28} {current:>10} {:>10} {:>10}  (new — not in baseline)", "-", "-"),
+            None => println!(
+                "  {name:<28} {current:>10} {:>10} {:>10}  (new — not in baseline)",
+                "-", "-"
+            ),
         }
     }
     // A baseline op that vanished from the measurement is worth flagging (renamed/removed workload).
     for name in baseline.keys() {
         if !measured.contains_key(name) {
-            println!("  {name:<28} {:>10} {:>10}   (dropped from the benchmark)", "-", baseline[name]);
+            println!(
+                "  {name:<28} {:>10} {:>10}   (dropped from the benchmark)",
+                "-", baseline[name]
+            );
         }
     }
 
     println!();
     if !improved.is_empty() {
-        println!("  {} op(s) improved — run `cargo xtask bench --save` to record the new floor.", improved.len());
+        println!(
+            "  {} op(s) improved — run `cargo xtask bench --save` to record the new floor.",
+            improved.len()
+        );
     }
     if regressed.is_empty() {
-        println!("bench: no regressions vs baseline ({} ops tracked)", measured.len());
+        println!(
+            "bench: no regressions vs baseline ({} ops tracked)",
+            measured.len()
+        );
     } else {
         eprintln!("bench: {} REGRESSION(S) vs baseline:", regressed.len());
         for (name, base, current) in &regressed {
@@ -153,7 +172,10 @@ fn load_baseline(paths: &Paths) -> BTreeMap<String, u64> {
     let path = baseline_path(paths);
     let mut out = BTreeMap::new();
     let Ok(text) = std::fs::read_to_string(&path) else {
-        eprintln!("xtask bench: no baseline at {} — run `cargo xtask bench --save` first.", path.display());
+        eprintln!(
+            "xtask bench: no baseline at {} — run `cargo xtask bench --save` first.",
+            path.display()
+        );
         std::process::exit(1);
     };
     for line in text.lines() {

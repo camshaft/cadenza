@@ -1282,7 +1282,10 @@ fn roundtrip_all_parallel(tools: &Tools, records: Vec<CorpusRecord>) -> Vec<Roun
                             true
                         }
                     };
-                    *slots[i].lock().unwrap() = Some(RoundtripCase { counted_ok, failures });
+                    *slots[i].lock().unwrap() = Some(RoundtripCase {
+                        counted_ok,
+                        failures,
+                    });
                 }
             });
         }
@@ -1290,7 +1293,11 @@ fn roundtrip_all_parallel(tools: &Tools, records: Vec<CorpusRecord>) -> Vec<Roun
 
     slots
         .into_iter()
-        .map(|slot| slot.into_inner().unwrap().expect("every case round-tripped"))
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap()
+                .expect("every case round-tripped")
+        })
         .collect()
 }
 

@@ -381,13 +381,21 @@ fn load_target(
 /// (e.g. treat every `.cdz` as sexpr), NOT which files are included — so pointing at a dir can never
 /// try to parse a README. (An explicitly-NAMED file always honors `--from`, since the user asked for
 /// it; that path is in `collect_targets`, not here.) Unreadable entries warn and are skipped.
-fn collect_dir(dir: &std::path::Path, from: Option<Fmt>, out: &mut Vec<TargetSpec>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading dir {}: {e}", dir.display()))?;
+fn collect_dir(
+    dir: &std::path::Path,
+    from: Option<Fmt>,
+    out: &mut Vec<TargetSpec>,
+) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("reading dir {}: {e}", dir.display()))?;
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("cdz-syntax: skipping unreadable entry in {}: {e}", dir.display());
+                eprintln!(
+                    "cdz-syntax: skipping unreadable entry in {}: {e}",
+                    dir.display()
+                );
                 continue;
             }
         };
@@ -474,8 +482,10 @@ fn run_diff(args: &DiffArgs) -> Result<(), String> {
     let from_b = resolve_from(args.from, Some(&args.file_b))?;
     let input_a = read_input(Some(&args.file_a))?;
     let input_b = read_input(Some(&args.file_b))?;
-    let (a, errs_a) = query::driver::load(&input_a, from_a).map_err(|e| format!("{}: {e}", args.file_a))?;
-    let (b, errs_b) = query::driver::load(&input_b, from_b).map_err(|e| format!("{}: {e}", args.file_b))?;
+    let (a, errs_a) =
+        query::driver::load(&input_a, from_a).map_err(|e| format!("{}: {e}", args.file_a))?;
+    let (b, errs_b) =
+        query::driver::load(&input_b, from_b).map_err(|e| format!("{}: {e}", args.file_b))?;
     report_input_errors(Some(&args.file_a), &errs_a);
     report_input_errors(Some(&args.file_b), &errs_b);
 
@@ -525,8 +535,10 @@ fn run_clones(args: &ClonesArgs) -> Result<(), String> {
         })
         .collect();
     // label → source text, for line:col rendering.
-    let src_map: std::collections::HashMap<String, String> =
-        loaded.iter().map(|l| (l.label.clone(), l.src.clone())).collect();
+    let src_map: std::collections::HashMap<String, String> = loaded
+        .iter()
+        .map(|l| (l.label.clone(), l.src.clone()))
+        .collect();
 
     if args.near {
         // Near-clones: same shape, differing leaves — report the inferred `,mK` pattern per class.
@@ -587,7 +599,8 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
         let lbl = label(&spec.path);
 
         if args.json {
-            let (j, had_error) = query::driver::lint_json(&set, &target, &src, spec.path.as_deref());
+            let (j, had_error) =
+                query::driver::lint_json(&set, &target, &src, spec.path.as_deref());
             // `j` is a per-file array; collect its elements for one flat array at the end.
             let inner = j.trim_start_matches('[').trim_end_matches(']');
             if !inner.is_empty() {
@@ -659,7 +672,12 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
         };
 
         let outcome = match query::driver::apply_rewrite(
-            &rules, strategy, &target, to, args.width, args.fixpoint,
+            &rules,
+            strategy,
+            &target,
+            to,
+            args.width,
+            args.fixpoint,
         ) {
             Ok(o) => o,
             // A rewrite that fails its validated-transaction check on one file of many warns and
@@ -711,7 +729,11 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
 
         // Default: print the rewritten program to stdout, count to stderr.
         if multi {
-            eprintln!("cdz-syntax: {}: rewrote {} site(s)", label(&spec.path), outcome.count);
+            eprintln!(
+                "cdz-syntax: {}: rewrote {} site(s)",
+                label(&spec.path),
+                outcome.count
+            );
             println!("=== {} ===", label(&spec.path));
         } else {
             eprintln!("cdz-syntax: rewrote {} site(s)", outcome.count);

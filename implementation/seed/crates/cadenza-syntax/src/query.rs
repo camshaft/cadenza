@@ -64,9 +64,10 @@ impl Tree {
     pub fn from_arena(a: &Arenas, id: StructId) -> Tree {
         match a.get(id) {
             Struct::Atom(l) => Tree::Atom(a.leaf(*l).clone(), Some(id)),
-            Struct::List(items) => {
-                Tree::List(items.iter().map(|&c| Tree::from_arena(a, c)).collect(), Some(id))
-            }
+            Struct::List(items) => Tree::List(
+                items.iter().map(|&c| Tree::from_arena(a, c)).collect(),
+                Some(id),
+            ),
         }
     }
 
@@ -287,7 +288,8 @@ impl Pattern {
     /// Rejects a list with more than one splice among its direct children (ambiguous run boundary),
     /// a splice used outside list-child position, and an unknown/ill-formed guard.
     pub fn compile(src: &str) -> Result<Pattern, PatternError> {
-        let arena = sexpr::read(src).map_err(|e| PatternError(format!("pattern parse: {}", e.0)))?;
+        let arena =
+            sexpr::read(src).map_err(|e| PatternError(format!("pattern parse: {}", e.0)))?;
         let pat = compile_pat(&Tree::of(&arena))?;
         Ok(Pattern { pat })
     }
@@ -354,11 +356,13 @@ fn compile_meta(payload: &Tree) -> Result<Pat, PatternError> {
     }
     // Guarded `,(name guard…)`.
     if let Tree::List(items, _) = payload {
-        let name = items
-            .first()
-            .and_then(|t| t.as_name())
-            .ok_or_else(|| PatternError("a guarded metavariable needs a name: `,(name guard…)`".into()))?;
-        let guards = items[1..].iter().map(compile_guard).collect::<Result<_, _>>()?;
+        let name = items.first().and_then(|t| t.as_name()).ok_or_else(|| {
+            PatternError("a guarded metavariable needs a name: `,(name guard…)`".into())
+        })?;
+        let guards = items[1..]
+            .iter()
+            .map(compile_guard)
+            .collect::<Result<_, _>>()?;
         return Ok(Pat::Meta {
             name: name.to_string(),
             guards,
@@ -402,15 +406,12 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
                 Ok(Guard::Matches(Box::new(compile_pat(sub)?)))
             }
             Some("not") => {
-                let inner = items
-                    .get(1)
-                    .ok_or_else(|| PatternError("`not` needs a guard: `(not is-literal)`".into()))?;
+                let inner = items.get(1).ok_or_else(|| {
+                    PatternError("`not` needs a guard: `(not is-literal)`".into())
+                })?;
                 Ok(Guard::Not(Box::new(compile_guard(inner)?)))
             }
-            _ => Err(PatternError(format!(
-                "ill-formed guard `{}`",
-                t.to_sexpr()
-            ))),
+            _ => Err(PatternError(format!("ill-formed guard `{}`", t.to_sexpr()))),
         }
     } else {
         Err(PatternError(format!("ill-formed guard `{}`", t.to_sexpr())))
@@ -468,9 +469,7 @@ fn head_name(t: &Tree) -> Option<&str> {
 /// Match a compiled pattern child-sequence against a subject child-sequence, honoring at most one
 /// splice.
 fn match_seq(pitems: &[Pat], sitems: &[Tree], binds: &mut Bindings) -> bool {
-    let splice_at = pitems
-        .iter()
-        .position(|c| matches!(c, Pat::Splice { .. }));
+    let splice_at = pitems.iter().position(|c| matches!(c, Pat::Splice { .. }));
     match splice_at {
         None => {
             pitems.len() == sitems.len()
@@ -715,12 +714,12 @@ impl Rule {
             Tree::List(items, _) if items.first().and_then(|h| h.as_name()) == Some("rule") => {
                 match items.as_slice() {
                     [_, p, tmpl] => Ok(Rule {
-                        pattern: Pattern { pat: compile_pat(p)? },
+                        pattern: Pattern {
+                            pat: compile_pat(p)?,
+                        },
                         template: Template { tree: tmpl.clone() },
                     }),
-                    _ => Err(PatternError(
-                        "a rule is `(rule PATTERN TEMPLATE)`".into(),
-                    )),
+                    _ => Err(PatternError("a rule is `(rule PATTERN TEMPLATE)`".into())),
                 }
             }
             _ => Err(PatternError("expected a `(rule …)` form".into())),
@@ -753,7 +752,8 @@ impl RuleSet {
     /// Compile a rule set from s-expression text: a sequence of `(rule PATTERN TEMPLATE)` forms
     /// (whitespace/`;`-comment separated, the same surface `sexpr::read_all` reads).
     pub fn compile(src: &str) -> Result<RuleSet, PatternError> {
-        let arena = sexpr::read_all(src).map_err(|e| PatternError(format!("rules parse: {}", e.0)))?;
+        let arena =
+            sexpr::read_all(src).map_err(|e| PatternError(format!("rules parse: {}", e.0)))?;
         // read_all wraps the forms in a synthetic `(do form…)`; the rules are its tail.
         let tree = Tree::of(&arena);
         let forms = match &tree {
@@ -762,7 +762,10 @@ impl RuleSet {
             }
             _ => std::slice::from_ref(&tree),
         };
-        let rules = forms.iter().map(Rule::compile_form).collect::<Result<_, _>>()?;
+        let rules = forms
+            .iter()
+            .map(Rule::compile_form)
+            .collect::<Result<_, _>>()?;
         Ok(RuleSet::new(rules))
     }
 
@@ -934,7 +937,8 @@ pub mod driver {
     pub fn load(input: &[u8], from: Format) -> Result<(Target, Vec<String>), String> {
         match from {
             Format::Ml => {
-                let text = std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
+                let text =
+                    std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
                 let parsed = parser::read_ml(text);
                 let errors = parsed
                     .errors
@@ -951,14 +955,17 @@ pub mod driver {
                 ))
             }
             Format::Sexpr => {
-                let text = std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
+                let text =
+                    std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
                 // Mirror the ML parser's root convention: a SINGLE top-level form stays bare, so it
                 // round-trips through the ML printer (which renders a root single-element `(do X)` as
                 // bare `X`). Only multiple forms wrap in `(do …)`. `read` succeeds iff there's exactly
                 // one form (it errors on trailing input); fall back to `read_all` for several.
                 let arena = match sexpr::read(text) {
                     Ok(a) => a,
-                    Err(_) => sexpr::read_all(text).map_err(|e| format!("s-expr parse: {}", e.0))?,
+                    Err(_) => {
+                        sexpr::read_all(text).map_err(|e| format!("s-expr parse: {}", e.0))?
+                    }
                 };
                 Ok((
                     Target {
@@ -979,9 +986,10 @@ pub mod driver {
                     Vec::new(),
                 ))
             }
-            Format::Debug | Format::Flat => {
-                Err(format!("`{}` is an output-only format, not an input", from.name()))
-            }
+            Format::Debug | Format::Flat => Err(format!(
+                "`{}` is an output-only format, not an input",
+                from.name()
+            )),
         }
     }
 
@@ -1084,7 +1092,12 @@ pub mod driver {
     }
 
     /// A single query match rendered for machine consumption.
-    pub fn matches_json(pattern: &Pattern, query: &Query, target: &Target, file: Option<&str>) -> String {
+    pub fn matches_json(
+        pattern: &Pattern,
+        query: &Query,
+        target: &Target,
+        file: Option<&str>,
+    ) -> String {
         let matches = search_with(pattern, query, &target.tree, target.spans.as_ref());
         let mut arr = json::Array::new();
         for m in &matches {
@@ -1093,7 +1106,10 @@ pub mod driver {
                 obj.string("file", f);
             }
             match m.span {
-                Some(s) => obj.raw("span", &format!("{{\"start\":{},\"end\":{}}}", s.start, s.end)),
+                Some(s) => obj.raw(
+                    "span",
+                    &format!("{{\"start\":{},\"end\":{}}}", s.start, s.end),
+                ),
                 None => obj.raw("span", "null"),
             }
             obj.string("matched", &m.node.to_sexpr());
@@ -1138,7 +1154,9 @@ pub mod driver {
         for c in &changes {
             let p = treediff::path_str(&c.path);
             let line = match &c.kind {
-                treediff::ChangeKind::Replace { old, new } => format!("{p}: replace {old} => {new}"),
+                treediff::ChangeKind::Replace { old, new } => {
+                    format!("{p}: replace {old} => {new}")
+                }
                 treediff::ChangeKind::Add { new } => format!("{p}: add {new}"),
                 treediff::ChangeKind::Remove { old } => format!("{p}: remove {old}"),
             };
@@ -1260,7 +1278,10 @@ pub mod driver {
 
     /// Format a clone site's location `LABEL:line:col` (or `LABEL:?:?` when no span). `sources` maps a
     /// file label to its source text, for the line:col computation.
-    fn site_loc(site: &clones::CloneSite, sources: &std::collections::HashMap<String, String>) -> String {
+    fn site_loc(
+        site: &clones::CloneSite,
+        sources: &std::collections::HashMap<String, String>,
+    ) -> String {
         let label = site.file.as_deref().unwrap_or("(stdin)");
         match site.span {
             Some(s) => match sources.get(label) {
@@ -1617,7 +1638,7 @@ pub mod diff {
 /// shows edited nodes, each addressed by a path (the child-index route from the root). It answers
 /// "what did a rewrite/edit actually change to the tree?" independent of formatting.
 pub mod treediff {
-    use super::{tree_eq, Tree};
+    use super::{Tree, tree_eq};
 
     /// One structural change between the old and new trees.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1718,7 +1739,9 @@ pub mod treediff {
                     p.push(pos);
                     out.push(Change {
                         path: p,
-                        kind: ChangeKind::Remove { old: a[i].to_sexpr() },
+                        kind: ChangeKind::Remove {
+                            old: a[i].to_sexpr(),
+                        },
                     });
                 }
                 Align::Ins(j) => {
@@ -1726,7 +1749,9 @@ pub mod treediff {
                     p.push(j);
                     out.push(Change {
                         path: p,
-                        kind: ChangeKind::Add { new: b[j].to_sexpr() },
+                        kind: ChangeKind::Add {
+                            new: b[j].to_sexpr(),
+                        },
                     });
                     pos = j + 1;
                 }
@@ -1786,7 +1811,10 @@ pub mod treediff {
         if path.is_empty() {
             "<root>".to_string()
         } else {
-            path.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(".")
+            path.iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(".")
         }
     }
 }
@@ -1796,7 +1824,7 @@ pub mod treediff {
 /// a Semgrep-lite structural checker / CI gate: it exits non-zero when any `error`-severity rule
 /// fires. Purely syntactic (no scope/type), like the rest of this layer.
 pub mod lint {
-    use super::{compile_pat, search_with, Pattern, PatternError, Query, Span, SpanTable, Tree};
+    use super::{Pattern, PatternError, Query, Span, SpanTable, Tree, compile_pat, search_with};
 
     /// A diagnostic's severity. `error` is the only one that fails a run (non-zero exit); `warning`
     /// and `info` are reported but do not fail. `warning` is the default when a rule omits it.
@@ -1849,12 +1877,11 @@ pub mod lint {
                 _ => {
                     return Err(PatternError(
                         "a lint rule is `(lint PATTERN \"message\" [severity])`".into(),
-                    ))
+                    ));
                 }
             };
-            let message = as_str_leaf(message).ok_or_else(|| {
-                PatternError("a lint rule's message must be a \"string\"".into())
-            })?;
+            let message = as_str_leaf(message)
+                .ok_or_else(|| PatternError("a lint rule's message must be a \"string\"".into()))?;
             let severity = match sev_tree {
                 None => Severity::Warning,
                 Some(s) => {
@@ -1866,7 +1893,9 @@ pub mod lint {
                 }
             };
             Ok(LintRule {
-                pattern: Pattern { pat: compile_pat(pat_tree)? },
+                pattern: Pattern {
+                    pat: compile_pat(pat_tree)?,
+                },
                 message: message.to_string(),
                 severity,
             })
@@ -2089,7 +2118,7 @@ pub mod hash {
 /// `rewrite`. It is the engine behind near-clone (Type-2) detection.
 pub mod antiunify {
     use super::hash::hash_tree;
-    use super::{tree_eq, Tree};
+    use super::{Tree, tree_eq};
     use crate::ast::Leaf;
     use std::collections::HashMap;
 
@@ -2239,7 +2268,7 @@ pub mod antiunify {
 pub mod clones {
     use super::antiunify::{anti_unify, render_pattern};
     use super::hash::{hash_tree, node_size, shape_hash};
-    use super::{tree_eq, Tree};
+    use super::{Tree, tree_eq};
     use crate::span::Span;
     use crate::spans::SpanTable;
     use std::collections::HashMap;
@@ -2270,7 +2299,11 @@ pub mod clones {
     }
 
     /// Find clone classes in a single `subject`. Convenience wrapper over [`find_clones_multi`].
-    pub fn find_clones(subject: &Tree, min_size: usize, spans: Option<&SpanTable>) -> Vec<CloneClass> {
+    pub fn find_clones(
+        subject: &Tree,
+        min_size: usize,
+        spans: Option<&SpanTable>,
+    ) -> Vec<CloneClass> {
         find_clones_multi(
             &[Source {
                 tree: subject,
@@ -2323,7 +2356,9 @@ pub mod clones {
                                 CloneSite {
                                     file: src.file.clone(),
                                     node: (*t).clone(),
-                                    span: t.origin().and_then(|id| src.spans.and_then(|s| s.get(id))),
+                                    span: t
+                                        .origin()
+                                        .and_then(|id| src.spans.and_then(|s| s.get(id))),
                                 }
                             })
                             .collect(),
@@ -2647,7 +2682,11 @@ mod tests {
         // `(+ ,(x is-literal) ,y)` — the first operand must be a literal.
         let lit = pat("(+ ,(x is-literal) ,y)");
         assert_eq!(count(&lit, &subj("(+ 1 a)")), 1);
-        assert_eq!(count(&lit, &subj("(+ a 1)")), 0, "a is a name, not a literal");
+        assert_eq!(
+            count(&lit, &subj("(+ a 1)")),
+            0,
+            "a is a name, not a literal"
+        );
         // is-name is the complement for atoms.
         let nm = pat("(+ ,(x is-name) ,y)");
         assert_eq!(count(&nm, &subj("(+ a 1)")), 1);
@@ -2768,7 +2807,10 @@ mod tests {
         let q = Query::new().not_has(pat("(raise ,_)"));
         let m = search_with(&pat("(fn ,@_)"), &q, &s, None);
         assert_eq!(m.len(), 1);
-        assert!(m[0].node.to_sexpr().contains("return"), "the fn without raise");
+        assert!(
+            m[0].node.to_sexpr().contains("return"),
+            "the fn without raise"
+        );
     }
 
     #[test]
@@ -2890,7 +2932,11 @@ mod tests {
         let arena = r.tree.to_arena();
         let ml = crate::printer::print(&arena, 100);
         let reparsed = parser::read_ml(&ml);
-        assert!(reparsed.ok(), "rewrite result re-parses: {:?}", reparsed.errors);
+        assert!(
+            reparsed.ok(),
+            "rewrite result re-parses: {:?}",
+            reparsed.errors
+        );
         assert!(
             reparsed.arenas.structurally_eq(&arena),
             "ML round-trip of the rewrite is structurally stable"
@@ -2997,7 +3043,11 @@ mod tests {
             let q = Query::new().inside(pat("(danger ,@_)"));
             let report = driver::report_matches(&pat("x"), &q, &target);
             // only the x under (danger …) — one line.
-            assert_eq!(report.lines().filter(|l| l.contains(": x")).count(), 1, "{report}");
+            assert_eq!(
+                report.lines().filter(|l| l.contains(": x")).count(),
+                1,
+                "{report}"
+            );
         }
 
         #[test]
@@ -3024,9 +3074,15 @@ mod tests {
         fn apply_rewrite_can_emit_sexpr() {
             let (target, _) = driver::load(b"(g (* a 1) (* b 1))", Format::Sexpr).unwrap();
             let rules = RuleSet::new(vec![Rule::new(pat("(* ,x 1)"), tmpl(",x"))]);
-            let out =
-                driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Sexpr, 100, false)
-                    .unwrap();
+            let out = driver::apply_rewrite(
+                &rules,
+                Strategy::BottomUp,
+                &target,
+                Format::Sexpr,
+                100,
+                false,
+            )
+            .unwrap();
             assert_eq!(out.count, 2);
             assert_eq!(out.output.trim(), "(g a b)");
         }
@@ -3035,9 +3091,15 @@ mod tests {
         fn apply_rewrite_runs_a_multi_rule_set() {
             let (target, _) = driver::load(b"(f (+ a 0) (* b 1))", Format::Sexpr).unwrap();
             let rules = RuleSet::compile("(rule (+ ,x 0) ,x) (rule (* ,x 1) ,x)").unwrap();
-            let out =
-                driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Sexpr, 100, false)
-                    .unwrap();
+            let out = driver::apply_rewrite(
+                &rules,
+                Strategy::BottomUp,
+                &target,
+                Format::Sexpr,
+                100,
+                false,
+            )
+            .unwrap();
             assert_eq!(out.count, 2);
             assert_eq!(out.output.trim(), "(f a b)");
         }
@@ -3057,13 +3119,19 @@ mod tests {
             assert!(j.contains("\"file\":\"in.ml\""), "{j}");
             assert!(j.contains("\"span\":{\"start\":"), "{j}");
             assert!(j.contains("\"matched\":\"(f a b)\""), "{j}");
-            assert!(j.contains("\"x\":\"a\"") && j.contains("\"y\":\"b\""), "{j}");
+            assert!(
+                j.contains("\"x\":\"a\"") && j.contains("\"y\":\"b\""),
+                "{j}"
+            );
         }
 
         #[test]
         fn matches_json_no_match_is_empty_array() {
             let (target, _) = driver::load(b"(g x)", Format::Sexpr).unwrap();
-            assert_eq!(driver::matches_json(&pat("(f ,x)"), &Query::new(), &target, None), "[]");
+            assert_eq!(
+                driver::matches_json(&pat("(f ,x)"), &Query::new(), &target, None),
+                "[]"
+            );
         }
 
         #[test]
@@ -3077,7 +3145,10 @@ mod tests {
         #[test]
         fn project_target_is_the_before_side() {
             let (target, _) = driver::load(b"(+ x 0)", Format::Sexpr).unwrap();
-            assert_eq!(driver::project_target(&target, Format::Sexpr, 100).unwrap(), "(+ x 0)");
+            assert_eq!(
+                driver::project_target(&target, Format::Sexpr, 100).unwrap(),
+                "(+ x 0)"
+            );
         }
 
         #[test]
@@ -3093,9 +3164,10 @@ mod tests {
         #[test]
         fn lint_report_renders_location_severity_message_and_flags_error() {
             let (target, _) = driver::load(b"g(deprecated())", Format::Ml).unwrap();
-            let set =
-                crate::query::lint::LintSet::compile("(lint (deprecated ,@_) \"no\" error)").unwrap();
-            let (report, had_error) = driver::lint_report(&set, &target, "g(deprecated())", "in.ml");
+            let set = crate::query::lint::LintSet::compile("(lint (deprecated ,@_) \"no\" error)")
+                .unwrap();
+            let (report, had_error) =
+                driver::lint_report(&set, &target, "g(deprecated())", "in.ml");
             assert!(had_error, "an error-severity rule fired");
             assert!(report.contains("in.ml:1:"), "has location: {report}");
             assert!(report.contains("error: no"), "severity+message: {report}");
@@ -3181,7 +3253,10 @@ mod tests {
             assert_eq!(cs[0].path, vec![2]);
             assert_eq!(
                 cs[0].kind,
-                ChangeKind::Replace { old: "b".into(), new: "c".into() }
+                ChangeKind::Replace {
+                    old: "b".into(),
+                    new: "c".into()
+                }
             );
         }
 
@@ -3226,7 +3301,10 @@ mod tests {
             assert_eq!(cs.len(), 1);
             assert_eq!(
                 cs[0].kind,
-                ChangeKind::Replace { old: "x".into(), new: "(f y)".into() }
+                ChangeKind::Replace {
+                    old: "x".into(),
+                    new: "(f y)".into()
+                }
             );
         }
 
@@ -3257,8 +3335,7 @@ mod tests {
 
         #[test]
         fn compile_reads_pattern_message_and_severity() {
-            let set =
-                LintSet::compile("(lint (deprecated ,@_) \"do not use\" error)").unwrap();
+            let set = LintSet::compile("(lint (deprecated ,@_) \"do not use\" error)").unwrap();
             assert_eq!(set.rules.len(), 1);
             assert_eq!(set.rules[0].message, "do not use");
             assert_eq!(set.rules[0].severity, Severity::Error);
@@ -3277,10 +3354,9 @@ mod tests {
 
         #[test]
         fn multiple_rules_run_in_order() {
-            let set = LintSet::compile(
-                "(lint (a ,@_) \"msg-a\" warning)\n(lint (b ,@_) \"msg-b\" info)",
-            )
-            .unwrap();
+            let set =
+                LintSet::compile("(lint (a ,@_) \"msg-a\" warning)\n(lint (b ,@_) \"msg-b\" info)")
+                    .unwrap();
             let diags = lint::run(&set, &subj("(do (a 1) (b 2))"), None);
             assert_eq!(diags.len(), 2);
             assert_eq!(diags[0].message, "msg-a");
@@ -3302,7 +3378,8 @@ mod tests {
         #[test]
         fn lint_rules_use_the_full_pattern_language() {
             // guards work in a lint pattern too: flag `(+ ,x 0)` only where 0 is literal.
-            let set = LintSet::compile("(lint (+ ,x ,(z is-literal)) \"maybe redundant\")").unwrap();
+            let set =
+                LintSet::compile("(lint (+ ,x ,(z is-literal)) \"maybe redundant\")").unwrap();
             let diags = lint::run(&set, &subj("(do (+ a 0) (+ b c))"), None);
             assert_eq!(diags.len(), 1, "{diags:?}");
         }
@@ -3359,17 +3436,26 @@ mod tests {
         fn shape_hash_ignores_operand_leaves() {
             use crate::query::hash::shape_hash;
             // same skeleton, different operands → same shape.
-            assert_eq!(shape_hash(&subj("(scale x 2)")), shape_hash(&subj("(scale y 3)")));
+            assert_eq!(
+                shape_hash(&subj("(scale x 2)")),
+                shape_hash(&subj("(scale y 3)"))
+            );
         }
 
         #[test]
         fn shape_hash_keeps_head_and_structure() {
             use crate::query::hash::shape_hash;
             // different head → different shape.
-            assert_ne!(shape_hash(&subj("(scale x 2)")), shape_hash(&subj("(shift x 2)")));
+            assert_ne!(
+                shape_hash(&subj("(scale x 2)")),
+                shape_hash(&subj("(shift x 2)"))
+            );
             // different arity / nesting → different shape.
             assert_ne!(shape_hash(&subj("(f a b)")), shape_hash(&subj("(f a)")));
-            assert_ne!(shape_hash(&subj("(f a b)")), shape_hash(&subj("(f a (g b))")));
+            assert_ne!(
+                shape_hash(&subj("(f a b)")),
+                shape_hash(&subj("(f a (g b))"))
+            );
         }
     }
 
@@ -3434,7 +3520,7 @@ mod tests {
     mod antiunify_tests {
         use super::subj;
         use crate::query::antiunify::{anti_unify, render_pattern};
-        use crate::query::{count, Pattern, Tree};
+        use crate::query::{Pattern, Tree, count};
 
         /// The count of holes (distinct metavars) in a generalization.
         fn hole_count(g: &crate::query::antiunify::Generalization) -> usize {
@@ -3507,7 +3593,11 @@ mod tests {
         fn the_emitted_pattern_matches_every_instance() {
             // The round-trip that makes this the inverse of the matcher: anti-unify → the pattern,
             // compiled, matches each original instance.
-            let insts = [subj("(scale x 2)"), subj("(scale x 3)"), subj("(scale x 9)")];
+            let insts = [
+                subj("(scale x 2)"),
+                subj("(scale x 3)"),
+                subj("(scale x 9)"),
+            ];
             let refs: Vec<&Tree> = insts.iter().collect();
             let g = anti_unify(&refs);
             let pat = Pattern::compile(&render_pattern(&g.pattern)).expect("valid pattern");
