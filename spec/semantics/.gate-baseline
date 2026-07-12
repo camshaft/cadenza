@@ -43,6 +43,7 @@ pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a checked result is consumed by matching its Option at run time
+pass	a closure captures the binding in scope where it was created
 pass	a comparison-predicate function returns its boolean result
 pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
@@ -109,6 +110,8 @@ pass	a function open over a record's extra fields accepts any record with the us
 pass	a function returning None or a nested Some infers its compound result shape
 pass	a function returning a boolean predicate result
 pass	a function returns a heap sub-node selected by a match arm
+pass	a function stored in a record field is called after extraction
+pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose name is capitalized is called, not treated as a constructor
 pass	a function-typed parameter annotation is not silently discarded in the body
@@ -261,13 +264,17 @@ pass	a record with a runtime field is returned as a program result
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
+pass	a recursive emitter dispatches on a sum's variants to build bytes per node
+pass	a recursive fold of a cons-list to bytes is the whole program result
 pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
 pass	a recursive function that threads a tuple accumulator returns it
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
+pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive user sum type is built at run time and renders its variant names
+pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a reference to an unbound name is rejected before running
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a right shift by a floating-point count does not silently promote
@@ -433,6 +440,8 @@ pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	an unimported sibling definition is not in scope
 pass	an unquote of an expression with an unbound name is rejected, not quoted
+pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
+pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	arithmetic right shift
@@ -697,7 +706,6 @@ todo	a char order agrees with its scalar value
 todo	a checked conversion of a negative value into an unsigned type traps
 todo	a checked integer conversion that does not fit traps
 todo	a checked integer conversion that fits succeeds
-todo	a closure captures the binding in scope where it was created
 todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
 todo	a constructor pattern nested under Some matches a runtime list element
@@ -720,8 +728,6 @@ todo	a fixpoint that re-seeds a fresh list each round via a helper returns a lis
 todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
-todo	a function stored in a record field is called after extraction
-todo	a function stored in a tuple element is called after extraction
 todo	a function whose body always diverges has result type Never
 todo	a handler accumulates into a list and a read-out operation reads it back
 todo	a header of packed nibbles and a length-prefixed body round-trips
@@ -802,20 +808,16 @@ todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
 todo	a reader literal carries a qualified name with a dot
 todo	a recognized pragma with a malformed argument list is rejected
-todo	a recursive emitter dispatches on a sum's variants to build bytes per node
-todo	a recursive fold of a cons-list to bytes is the whole program result
 todo	a recursive function counts down through a stateful effect and bails at zero
 todo	a recursive function sums a range it walks by performing a fresh-index effect
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a recursive function threads two nested handlers' states at once
-todo	a recursive lower from a sum to Bytes assembles its output in match arms
 todo	a recursive reader decodes a CBOR application tree and evaluates it by head index
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
 todo	a recursive sum consumer whose arguments are recursive sum producers compiles
 todo	a recursive sum type works with pattern matching
 todo	a recursively-built binary tree renders its full runtime structure
-todo	a recursively-built byte sequence assembles its bytes at run time
 todo	a recursively-built linked list renders its full runtime spine
 todo	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 todo	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
@@ -911,8 +913,6 @@ todo	an unproductive self-recursion is declined, not a compiler crash
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unrecognized pragma key is rejected rather than ignored
 todo	an unrecognized string escape is rejected
-todo	an unsigned LEB128 encoder emits a single byte below the continuation threshold
-todo	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 todo	an unsigned pattern segment reads the same byte as a non-negative integer
 todo	an unusual in-range width is a first-class type
 todo	an unusual-width value that overflows its computed range traps

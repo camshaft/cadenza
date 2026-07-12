@@ -764,6 +764,8 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::sync::Arc<[StructId]>, S
     match resolved_of(db, id) {
         Resolved::Lambda { params, body } => Some((params, body)),
         Resolved::Ref { value } => lambda_of(db, value),
+        // A type annotation is transparent to the value — `(: (fn …) (-> A B))` is the lambda.
+        Resolved::Annot { expr, .. } => lambda_of(db, expr),
         Resolved::Apply { head, args } => {
             // Reduce the inner application to a value, then see if THAT is a lambda. This reduction is
             // itself a β-reduction, so run it UNDER THE DEPTH GUARD: a self-referential nullary call
@@ -775,6 +777,48 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::sync::Arc<[StructId]>, S
             let g = guard.db();
             let reduced = apply_lambda(g, head, &args).ok().flatten()?;
             lambda_of(g, reduced)
+        }
+        // A lambda produced by a `let` BODY, capturing the let's bindings — `(let ((y 3)) (fn (x) (+ x
+        // y)))`. The lambda ESCAPES the let (it is bound elsewhere and applied later), so its captured
+        // bindings must be INLINED into the body BEFORE it is returned: β-reduction copies a returned
+        // lambda's body and re-parents it at the application site, so a captured name left as a bare
+        // reference would re-resolve against the APPLICATION site's scope (a `(let ((y 100)) …)` there
+        // would wrongly shadow the captured `y=3`). Substituting the let's bindings closes the lambda
+        // over their values first, so capture is by the CREATION scope (`core-semantics.md` §A Function
+        // Value Captures The Bindings In Scope Where It Is Created). Runs under the depth guard (a
+        // binding init could itself apply a lambda). A binding whose value is a runtime computation
+        // still substitutes its (opaque) core; the corpus capture cases are all constant.
+        Resolved::Let { bindings, body } => {
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
+            for (_name_occ, init) in &bindings {
+                // Pin each binding's meaning at its definition site before the body copy re-parents it
+                // (the same reason `apply_lambda` resolves each argument subtree first).
+                crate::resolve::resolve_subtree(g, *init);
+                // A `let`-bound reference resolves to `Ref { value: <init occurrence> }` (the binding's
+                // VALUE, per `last_binder_named` returning `kv[1]`), so `beta_reduce`'s transitive-ref
+                // walk keys on the INIT occurrence, not the binder name. Map it to itself: the walk
+                // returns the init occurrence directly (not a fresh copy), which resolves to the same
+                // captured value regardless of the scope the copied body lands in — closing the lambda
+                // over the creation-site binding.
+                arg_of.insert(*init, *init);
+            }
+            let reduced = beta_reduce(g, body, &arg_of);
+            lambda_of(g, reduced)
+        }
+        // A lambda stored in a RECORD field and projected — `(. (record (f (fn …))) f)`. Reduce the
+        // member access to the field's value, then that value to a lambda.
+        Resolved::Member { operand, key } => match member_value(db, operand, &key) {
+            Member::Field(v) => lambda_of(db, v),
+            _ => None,
+        },
+        // A lambda stored in a TUPLE element and projected — `(. (tuple (fn …) 9) 0)`. Reduce the tuple
+        // to its element occurrences, index the projected one, and reduce THAT to a lambda.
+        Resolved::Proj { operand, index } => {
+            let elems = reduce_to_tuple_elems(db, operand)?;
+            let elem = *elems.get(index)?;
+            lambda_of(db, elem)
         }
         _ => None,
     }

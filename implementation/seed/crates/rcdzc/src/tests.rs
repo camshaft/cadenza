@@ -8906,6 +8906,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_stored_or_captured_lambda_applies_through_the_fold() {
+        // `core-semantics.md` §A Function Is A First-Class Value — a function stored in a data
+        // structure is extractable and callable, and a function value captures its CREATION scope.
+        // The fold reduces THROUGH a projection / a `let` body to reach the lambda, so these all fold
+        // to a scalar with no runtime function surviving.
+        // Stored in a tuple element, projected, applied: `((. (tuple (fn (x) (+ x 1)) 9) 0) 5)` = 6.
+        assert_eq!(run_main("((. (tuple (fn (x) (+ x 1)) 9) 0) 5)"), 6);
+        // Stored in a record field, projected, applied.
+        assert_eq!(run_main("((. (record (f (fn (x) (+ x 1)))) f) 5)"), 6);
+        // Captured over a `let` binding, applied immediately: `((let ((y 3)) (fn (x) (+ x y))) 4)` = 7.
+        assert_eq!(run_main("((let ((y 3)) (fn (x) (+ x y))) 4)"), 7);
+        // Capture is by the CREATION scope, NOT the application scope — a `y=100` shadow at the call
+        // site must NOT be observed; the captured `y=3` wins (`core-semantics.md` §A Function Value
+        // Captures The Bindings In Scope Where It Is Created).
+        assert_eq!(
+            run_main("(let ((add-y (let ((y 3)) (fn (x) (+ x y))))) (let ((y 100)) (add-y 4)))"),
+            7
+        );
+    }
+
+    #[test]
     fn a_higher_order_function_folds() {
         // `(let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))` = 7 — a function passed as
         // an argument, applied twice; the whole thing β-reduces to `(+ (+ 5 1) 1)` = 7.
