@@ -298,7 +298,27 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let slice_op = list_op_record(ast, "str-slice", slice_ty);
     let slice_key = push_atom(ast, Leaf::Name("slice".to_string()));
     children.push(push_list(ast, vec![slice_key, slice_op]));
+    // `to-bytes : String → Bytes` — the UTF-8 encoding of the string's scalars (the compiler encodes
+    // export names as UTF-8 for wasm sections). A constant string FOLDS to a constant `Bytes` of its
+    // UTF-8 bytes; consumed by `Bytes.len`/`Bytes.at`. Monomorphic (no type param).
+    let to_bytes_ty = string_to_bytes_type(ast);
+    let to_bytes_op = list_op_record(ast, "str-to-bytes", to_bytes_ty);
+    let to_bytes_key = push_atom(ast, Leaf::Name("to-bytes".to_string()));
+    children.push(push_list(ast, vec![to_bytes_key, to_bytes_op]));
     push_list(ast, children)
+}
+
+/// The type `(fn () (-> String Bytes))` for `String.to-bytes` — the UTF-8 encoding. A zero-param `fn`
+/// wrapper (monomorphic; the wrapper makes `scheme_of` read a SCHEME not a bare type-value, as the other
+/// String ops do). The `String` param is `(intrinsic "String")` (→ `Ty::String`), the result `(intrinsic
+/// bytes-ty)` (→ `Ty::Bytes`) — both the ground type-values directly, no scope lookup.
+fn string_to_bytes_type(ast: &mut Arenas) -> StructId {
+    let string = intrinsic_node(ast, "String");
+    let bytes = intrinsic_node(ast, "bytes-ty");
+    let body = arrow_type(ast, string, bytes); // (-> String Bytes)
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The type `(-> Bytes (-> Int64 (Option Int64)))` for `Bytes.at` — the FALLIBLE indexed read: take a
