@@ -33,7 +33,7 @@ use crate::core::Core;
 use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::infer::type_of;
-use crate::layout::{ExportPlan, Layout};
+use crate::layout::Layout;
 use crate::lower::core_of;
 use crate::resolved::Prim;
 use crate::ty::{IntTy, Sign, Ty, Width};
@@ -44,17 +44,18 @@ use std::collections::HashMap;
 /// binder up here. Populated with the parameters at the export, and extended with each `let` binding.
 type Env = HashMap<StructId, String>;
 
-/// Render the body of an export as the Rust expression that is the function's return value. Builds the
-/// initial environment from the export's parameters (each binder → its emitted name), then renders the
-/// body core. The result is a single expression (the function's tail expression), indented one level.
+/// Render a function body as the Rust expression that is its return value. Builds the initial
+/// environment from the function's parameters (each binder → its emitted name), then renders the body
+/// core. The result is a single expression (the function's tail expression), indented one level. Shared
+/// by the export and non-export function paths (both pass their `(binder, type)` parameter list).
 pub fn emit_body(
     db: &mut Db,
     body: StructId,
-    e: &ExportPlan,
+    params: &[(StructId, Ty)],
     layout: &Layout,
 ) -> Result<String, Reject> {
     let mut env: Env = HashMap::new();
-    for (i, (binder, _)) in e.params.iter().enumerate() {
+    for (i, (binder, _)) in params.iter().enumerate() {
         env.insert(*binder, super::param_name(db, *binder, i));
     }
     let expr = emit(db, body, &env, layout)?;
@@ -197,22 +198,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
             let o = emit(db, operand, env, layout)?;
             Ok(format!("(!{o})"))
         }
-        // A runtime call → `callee(args…)`. The callee is a reachable definition (`layout` added it);
-        // it is emitted as its own `fn` — but the scalar slice emits only the EXPORTS as functions, so
-        // a call to a non-export reachable callee has no emitted `fn` to name yet. Decline that until
-        // the multi-function increment; a call to an export renders by that export's verbatim name.
+        // A runtime call → `callee(args…)`. The callee is a reachable definition every backend emits
+        // (`layout::compute` closed the reachable set over `Core::Call`), rendered as its own `fn` (a
+        // `pub fn` for an export, a private `fn` otherwise) — so a call names it by its source name,
+        // whether or not it is exported. Each argument is GROUNDED to the callee's corresponding
+        // parameter width: a bare literal arg (`(f 1)`) defaults to Int64 on its own, so a narrow
+        // parameter would otherwise get an `i64` literal (the same width mismatch the operand fix
+        // addressed) — read the callee's param types and ground each literal arg to its position's type.
         Core::Call { callee, args } => {
-            let name = layout
-                .export_plan(callee)
-                .map(|p| p.name.clone())
-                .ok_or_else(|| {
-                    Reject::decline(
-                        "call to a non-exported function is not yet rendered by the Rust backend",
-                    )
-                })?;
+            let name = db.defs[callee].name.clone();
+            if name.is_empty() {
+                return Err(Reject::decline("call to an unnamed definition"));
+            }
+            let param_tys = crate::layout::def_params(db, callee);
             let mut rendered = Vec::new();
-            for &a in &args {
-                rendered.push(emit(db, a, env, layout)?);
+            for (i, &a) in args.iter().enumerate() {
+                // Ground a literal arg to the callee's param type at this position; a non-literal arg,
+                // or a position past the known params (arity is checked upstream), emits as-is.
+                match param_tys.get(i).map(|(_, t)| t) {
+                    Some(Ty::Int(it)) => rendered.push(emit_grounded(db, a, *it, env, layout)?),
+                    _ => rendered.push(emit(db, a, env, layout)?),
+                }
             }
             Ok(format!(
                 "{}({})",

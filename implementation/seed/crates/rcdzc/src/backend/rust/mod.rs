@@ -42,11 +42,25 @@ use crate::layout::Layout;
 /// Emit a Rust-source artifact for the program in `db` under the boundary `layout`. Produces one
 /// `pub fn` per export (verbatim name, native scalar signature), reading the shared columns on demand.
 /// Declines — attributed to this target — for a construct the scalar slice does not yet render.
+///
+/// Emits EVERY reachable definition (`layout.order`), not just the exports: an export becomes a
+/// `pub fn` (its verbatim name crosses the crate boundary), a reachable NON-export callee — a recursive
+/// helper, a mutual-recursion partner — becomes a private `fn`. A `Core::Call` to such a callee then
+/// renders as an ordinary Rust call of its emitted `fn`. Reachability is the SAME target-neutral set the
+/// wasm backend emits (`layout::compute` closes it over `Core::Call` callees), so the two backends emit
+/// the same functions; only the rendering differs. Recursion needs no special handling — a Rust `fn`
+/// calls itself directly (native stack), so the wasm backend's tail-call-to-loop transform is simply
+/// unnecessary here.
 pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let mut out = String::new();
     out.push_str(PREAMBLE);
-    for e in &layout.exports {
-        let f = emit_export(db, e, layout)?;
+    for &def in &layout.order {
+        let f = match layout.export_plan(def) {
+            // An exported definition — a `pub fn` under its verbatim boundary name.
+            Some(e) => emit_export(db, e, layout)?,
+            // A reachable non-export callee (reached via a runtime `Core::Call`) — a private `fn`.
+            None => emit_fn(db, def, layout)?,
+        };
         out.push('\n');
         out.push_str(&f);
     }
@@ -63,52 +77,74 @@ const PREAMBLE: &str = "\
 #![allow(non_snake_case, unused_parens, clippy::all)]
 ";
 
-/// Emit one exported definition as a `pub fn`. The signature is the [`ExportPlan`]'s verbatim name,
-/// its solved parameter types, and its solved result type — the target-neutral boundary already
-/// computed above the seam. The body is the export's core rendered as a Rust expression.
+/// Emit one exported definition as a `pub fn` — its verbatim boundary name, solved parameter types,
+/// and solved result type, from the target-neutral [`ExportPlan`] computed above the seam.
 fn emit_export(
     db: &mut Db,
     e: &crate::layout::ExportPlan,
     layout: &Layout,
 ) -> Result<String, Reject> {
-    // Each parameter renders as `<name>: <rust-type>`. The name is the parameter's source spelling
-    // (read off its binder occurrence, seen through a `(: a T)` annotation); the type is the native
-    // Rust type its solved Cadenza type maps to. A parameter type with no native mapping (an
-    // unresolved/ambiguous or not-yet-supported type) declines — the same boundary the layout draws.
-    let mut params = String::new();
-    for (i, (binder, ty)) in e.params.iter().enumerate() {
+    emit_signature(db, &e.name, true, &e.params, &e.result, e.body, layout)
+}
+
+/// Emit a reachable NON-export definition as a private `fn` — a recursive helper or a mutual-recursion
+/// partner a `Core::Call` names. Its name is the source name; its parameters come from
+/// [`crate::layout::def_params`] (core types, no boundary-representability constraint — an internal
+/// callee never crosses the crate edge); its result type is the body's solved type.
+fn emit_fn(db: &mut Db, def: usize, layout: &Layout) -> Result<String, Reject> {
+    let name = db.defs[def].name.clone();
+    let body = db.defs[def]
+        .body
+        .ok_or_else(|| Reject::decline(format!("definition `{name}` has no body")))?;
+    let params = crate::layout::def_params(db, def);
+    let result = crate::infer::type_of(db, body);
+    emit_signature(db, &name, false, &params, &result, body, layout)
+}
+
+/// Emit a function definition (shared by the export and non-export paths): `[pub] fn <name>(<params>)
+/// -> <ret> { <body> }`. Each parameter renders as `<name>: <rust-type>`; a parameter type with no
+/// native mapping (an unresolved/ambiguous or not-yet-supported type) declines. The result type maps
+/// the same way (unit → `()`; a compound declines in the scalar slice). The body is the core of `body`
+/// rendered as a Rust expression, with the parameters in scope by their emitted names.
+fn emit_signature(
+    db: &mut Db,
+    name: &str,
+    public: bool,
+    params: &[(crate::ast::StructId, crate::ty::Ty)],
+    result: &crate::ty::Ty,
+    body: crate::ast::StructId,
+    layout: &Layout,
+) -> Result<String, Reject> {
+    let mut param_src = String::new();
+    for (i, (binder, ty)) in params.iter().enumerate() {
         if i > 0 {
-            params.push_str(", ");
+            param_src.push_str(", ");
         }
-        let name = param_name(db, *binder, i);
+        let pname = param_name(db, *binder, i);
         let rty = types::rust_type(ty).ok_or_else(|| {
             Reject::decline(format!(
-                "export `{}`: parameter type {} has no native Rust representation",
-                e.name,
+                "`{name}`: parameter type {} has no native Rust representation",
                 ty.render_name()
             ))
         })?;
-        params.push_str(&format!("{name}: {rty}"));
+        param_src.push_str(&format!("{pname}: {rty}"));
     }
-
-    // The result type. Unit renders as Rust's `()`; every other type maps as usual (a compound result
-    // declines in the scalar slice, exactly as it does at the wasm boundary).
-    let ret = types::rust_type(&e.result).ok_or_else(|| {
+    let ret = types::rust_type(result).ok_or_else(|| {
         Reject::decline(format!(
-            "export `{}`: result type {} has no native Rust representation",
-            e.name,
-            e.result.render_name()
+            "`{name}`: result type {} has no native Rust representation",
+            result.render_name()
         ))
     })?;
-
-    // The body: the core of the export's body occurrence, rendered as a Rust expression. Parameters
-    // are in scope by their emitted names (a `Core::Param` reads the name). Selection reads the core +
-    // type columns on demand, so a fault deep in the body surfaces here as a decline.
-    let body = expr::emit_body(db, e.body, e, layout)?;
-
+    // Render the body against the parameter environment. Selection reads the core + type columns on
+    // demand, so a fault deep in the body surfaces here as a decline.
+    let body_src = expr::emit_body(db, body, params, layout)?;
+    let vis = if public { "pub " } else { "" };
+    // The function NAME is sanitized to a valid Rust identifier (`sum-to` → `sum_to`) — the SAME
+    // mapping a `Core::Call` uses at the call site, so the declaration and every call agree. (A `-` is
+    // the idiomatic Cadenza word separator but not a Rust ident char.)
+    let ident = sanitize_ident(name);
     Ok(format!(
-        "pub fn {name}({params}) -> {ret} {{\n{body}\n}}\n",
-        name = e.name,
+        "{vis}fn {ident}({param_src}) -> {ret} {{\n{body_src}\n}}\n"
     ))
 }
 

@@ -148,6 +148,41 @@ fn a_compound_result_declines_attributed_to_this_target() {
     );
 }
 
+#[test]
+fn a_recursive_export_emits_a_self_calling_fn() {
+    // A recursive def becomes a `Core::Call` (non-recursive calls inline), so it emits a `pub fn` that
+    // calls itself by its SANITIZED name (`sum-to` → `sum_to`, matching the call site).
+    let rs = compile_rust(
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export sum-to))",
+    );
+    assert!(
+        rs.contains("pub fn sum_to(n: i64) -> i64"),
+        "signature:\n{rs}"
+    );
+    assert!(rs.contains("sum_to("), "self-call by sanitized name:\n{rs}");
+    assert!(!rs.contains("sum-to"), "no unsanitized `-` name:\n{rs}");
+}
+
+#[test]
+fn mutual_recursion_emits_a_pub_fn_and_a_private_fn() {
+    // `even` (exported) → `pub fn`; `odd` (reachable non-export callee) → private `fn`. Both are
+    // emitted (reachability closes over `Core::Call`), and each calls the other by name.
+    let rs = compile_rust(
+        "(module m (def (even (: n Int64)) (if (= n 0) true (odd (+ n -1)))) \
+                    (def (odd (: n Int64)) (if (= n 0) false (even (+ n -1)))) (export even))",
+    );
+    assert!(rs.contains("pub fn even(n: i64) -> bool"), "export:\n{rs}");
+    assert!(
+        rs.contains("fn odd(n: i64) -> bool"),
+        "private callee:\n{rs}"
+    );
+    assert!(!rs.contains("pub fn odd"), "odd must NOT be pub:\n{rs}");
+    assert!(
+        rs.contains("odd(") && rs.contains("even("),
+        "cross-calls:\n{rs}"
+    );
+}
+
 // ── the rustc round-trip (behavior oracle) ───────────────────────────────────────────────────────
 
 /// Compile the emitted Rust `module` plus a generated `main` that calls `export`(`args`) and prints
@@ -235,6 +270,45 @@ fn rustc_roundtrip_short_circuit_and() {
         assert_eq!(out, "true");
     }
     if let Some(out) = rustc_run(&rs, "between(1, 5, 3)") {
+        assert_eq!(out, "false");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_recursion() {
+    // A recursive `fn` calls itself on the native stack — no tail-call transform needed for
+    // correctness. sum-to(5) = 15, fac(5) = 120 (match base case), fib(10) = 55 (double recursion).
+    let sumto = compile_rust(
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export sum-to))",
+    );
+    if let Some(out) = rustc_run(&sumto, "sum_to(5)") {
+        assert_eq!(out, "15");
+    }
+    let fac = compile_rust(
+        "(module m (def (fac (: n Int64)) (match n (0 1) (k (* k (fac (+ k -1)))))) (export fac))",
+    );
+    if let Some(out) = rustc_run(&fac, "fac(5)") {
+        assert_eq!(out, "120");
+    }
+    let fib = compile_rust(
+        "(module m (def (fib (: n Int64)) (match n (0 0) (1 1) (k (+ (fib (+ k -1)) (fib (+ k -2)))))) (export fib))",
+    );
+    if let Some(out) = rustc_run(&fib, "fib(10)") {
+        assert_eq!(out, "55");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_mutual_recursion() {
+    // `even` (pub) and `odd` (private) cross-call — both emitted, both run. even(10)=true, even(7)=false.
+    let rs = compile_rust(
+        "(module m (def (even (: n Int64)) (if (= n 0) true (odd (+ n -1)))) \
+                    (def (odd (: n Int64)) (if (= n 0) false (even (+ n -1)))) (export even))",
+    );
+    if let Some(out) = rustc_run(&rs, "even(10)") {
+        assert_eq!(out, "true");
+    }
+    if let Some(out) = rustc_run(&rs, "even(7)") {
         assert_eq!(out, "false");
     }
 }

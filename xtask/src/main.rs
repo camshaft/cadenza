@@ -419,7 +419,10 @@ fn guide_wasm(paths: &Paths, store: Option<PathBuf>) {
     {
         let _pushed = sh.push_dir(&guide);
         // The stage script reads an optional CADENZA_STORE to locate the pinned runtime.
-        if let Err(e) = cmd!(sh, "node {script}").env("CADENZA_STORE", &store_str).run() {
+        if let Err(e) = cmd!(sh, "node {script}")
+            .env("CADENZA_STORE", &store_str)
+            .run()
+        {
             eprintln!("staging failed: {e}\n(is node ≥20.19 on PATH?)");
             std::process::exit(1);
         }
@@ -748,9 +751,13 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>) -> Ran {
         }
     };
 
-    // A per-program temp dir (keyed by a content hash so parallel gate workers do not collide, and a
-    // re-run reuses it). Write the module + a driver `main` that prints the export's result.
-    let key = fnv1a(program);
+    // A per-TRIAL temp dir, keyed by a content hash of the program AND its call expression. The key
+    // MUST include the call: one program is driven by several trials (a `(call …)` case runs the same
+    // export with different args) and the gate grades trials IN PARALLEL — keying on the program alone
+    // would point every trial at the SAME `prog.rs`/`prog`, so one worker recompiles `prog` while
+    // another execs it (a write-vs-exec race → "text file busy" / permission-denied, the flake this
+    // fixes). Distinct call expressions get distinct dirs, so parallel trials never touch one path.
+    let key = fnv1a(&format!("{program}\u{0}{call_expr}"));
     let dir = std::env::temp_dir().join(format!("rcdzc-gate-rust-{key:016x}"));
     let _ = std::fs::create_dir_all(&dir);
     let src = dir.join("prog.rs");
@@ -790,10 +797,17 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>) -> Ran {
     if !compiled.status.success() {
         return Ran::BadArtifact(first_line(&compiled.stderr));
     }
-    // Run it. A panic (Cadenza trap) exits non-zero → `Ran::Trap`; a clean run prints the value.
+    // Run it. A panic (Cadenza trap) exits non-zero → `Ran::Trap`; a clean run prints the value. Retry
+    // once on a LAUNCH error: freshly-written-then-executed binaries can transiently report "text file
+    // busy" / permission-denied on some kernels if a writer handle to the file is still closing — a
+    // race, not a defect in the artifact. (Per-trial dirs already avoid cross-trial collisions; this
+    // guards the within-trial write→exec window.)
     let run = match Command::new(&bin).output() {
         Ok(o) => o,
-        Err(e) => return Ran::BadArtifact(format!("compiled prog failed to launch: {e}")),
+        Err(_) => match Command::new(&bin).output() {
+            Ok(o) => o,
+            Err(e) => return Ran::BadArtifact(format!("compiled prog failed to launch: {e}")),
+        },
     };
     if run.status.success() {
         Ran::Value(String::from_utf8_lossy(&run.stdout).trim().to_string())
