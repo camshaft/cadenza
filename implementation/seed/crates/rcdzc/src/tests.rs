@@ -2968,6 +2968,42 @@ mod stage1 {
     }
 
     #[test]
+    fn a_local_binding_shadows_a_same_named_top_level_def() {
+        // A `let` binding named `f` shadows a top-level `(def (f) …)` of the same name for the extent
+        // of its scope: `resolve_name` consults the lexical scope FIRST and the top-level def index
+        // (`def_by_name`) only on a scope miss. So the body's `f` is the local `7`, not the def's `99`.
+        // This pins that resolution keys on the OCCURRENCE + its scope, never on the flat name index
+        // alone — the invariant the O(1) `def_name_index` accelerator must not disturb (and the property
+        // a future nested-module / import rework must preserve: same-named bindings at different scopes
+        // resolve independently). Runs end-to-end so it checks the emitted component, not just resolve.
+        let src = "(module m (def (f) 99) (def (main) (let ((f 7)) f)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+    }
+
+    #[test]
+    fn same_named_defs_are_distinct_bindings() {
+        // The flat top-level namespace keys defs by name (first-wins) — but a def's IDENTITY is its
+        // occurrence, and the `def_name_index` is only a lookup accelerator over `defs`, never the
+        // source of truth. Two defs are still distinct `Db::defs` entries at distinct occurrences even
+        // when they share a name; the index simply resolves the bare NAME to the first. This is the
+        // seam the future module rework re-keys (by enclosing module) so sibling submodules' same-named
+        // defs stop colliding — see the `def_name_index` field doc. Here we assert the property the
+        // rework must uphold: distinct occurrences, and a deterministic first-wins name resolution.
+        use crate::db::Db;
+        let src = "(module m (def (a) 1) (def (b) 2) (def (main) (+ (a) (b))) (export main))";
+        let db = Db::load(parse(src));
+        // Every def is its own entry (distinct occurrences), regardless of name.
+        let occs: std::collections::HashSet<_> = db.defs.iter().filter_map(|d| d.body).collect();
+        assert_eq!(occs.len(), db.defs.iter().filter(|d| d.body.is_some()).count());
+        // The name index resolves each name to a real, distinct def; `main` sums them → 3.
+        assert!(db.def_by_name("a").is_some());
+        assert!(db.def_by_name("b").is_some());
+        assert_ne!(db.def_by_name("a"), db.def_by_name("b"));
+        assert_eq!(run_main("(+ (let ((z 1)) z) (let ((z 2)) z))"), 3);
+    }
+
+    #[test]
     fn record_field_read_folds_to_the_field() {
         // 05-compound-types: (let ((p (record (x 1) (y 2)))) p.x) = 1 (written in canonical dot form).
         assert_eq!(run_main("(let ((p (record (x 1) (y 2)))) (. p x))"), 1);

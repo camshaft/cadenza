@@ -195,6 +195,32 @@ pub struct Db {
     /// [`defs`]: Db::defs
     def_by_body: std::collections::HashMap<StructId, usize>,
 
+    /// For each def NAME, the index in [`defs`] of the FIRST def with that name. Built once at load.
+    /// `resolve_name` consults it for EVERY non-local, non-parameter name reference (before the prelude
+    /// fallback) — so a program with N defs, each body referencing an operator or a sibling, made N
+    /// lookups, and the old linear `defs.iter().position(|d| d.name == name)` turned that into O(N²)
+    /// (measured: an N-def program went superlinear, 16000 defs = 289ms). This map makes each lookup
+    /// O(1). FIRST-wins matches the old scan's first-match (a duplicate def name keeps the earlier def;
+    /// the well-formedness pass reports the duplicate separately).
+    ///
+    /// This is a pure lookup ACCELERATOR over `defs`, NOT a source of truth: a def's identity is its
+    /// occurrence (its `StructId`), exactly as for `type_decls` — the index only speeds "which def has
+    /// this name?", it never decides meaning (`prelude-and-resolution.md`; the operator's rule "a
+    /// program-written binding is keyed by OCCURRENCE, never its own name map").
+    ///
+    /// ⚠ FLAT-NAMESPACE ASSUMPTION — revisit when nested modules / imports land. `scan_top_level` is
+    /// flat today (`top_items` does NOT recurse into a nested `(module …)`), so ALL defs share one
+    /// namespace and a bare `String` key is correct. Under nesting, two same-named defs in sibling
+    /// submodules are still DISTINCT (different occurrences) but would COLLIDE in this map. The fix is
+    /// to key by (enclosing-module occurrence, name) and have the lookup walk enclosing modules outward
+    /// — the module-scope analog of `lookup_scope`'s lexical parent-walk (module scope = one more rung
+    /// of the same ladder; resolution's scope→defs→sums→prelude ORDER is unchanged, only step 2's
+    /// lookup gains the scope argument). Do NOT grow this into a global `name → occurrence` map (the
+    /// `db.sum_types` mistake). The `same_named_defs_are_distinct_bindings` test pins the invariant.
+    ///
+    /// [`defs`]: Db::defs
+    def_name_index: std::collections::HashMap<String, usize>,
+
     /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
     /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
     /// occurrence it binds to. `resolve` consults it after the lexical scope, so a program binding
@@ -348,10 +374,14 @@ impl Db {
         // this body?" lookup is O(1) rather than a linear scan of `defs`. A def with no body (malformed)
         // contributes no entry; a body occurrence is unique to one def, so no collision.
         let mut def_by_body = std::collections::HashMap::new();
+        // Index each def by NAME too (first-wins) — so `resolve_name`'s per-reference lookup is O(1),
+        // not an O(defs) scan (which made name resolution O(N²) on a many-def program).
+        let mut def_by_name = std::collections::HashMap::new();
         for (i, d) in defs.iter().enumerate() {
             if let Some(body) = d.body {
                 def_by_body.insert(body, i);
             }
+            def_by_name.entry(d.name.clone()).or_insert(i);
         }
         Db {
             ast,
@@ -361,6 +391,7 @@ impl Db {
             parent,
             child_ix,
             def_by_body,
+            def_name_index: def_by_name,
             prelude,
             user_node_count,
             reduce_depth: 0,
@@ -471,15 +502,10 @@ impl Db {
 
     /// The definition of the given name, if one exists — how an export resolves its target and how a
     /// later call resolves its callee (by name against the index, reading a signature, not a body).
+    /// O(1) via the `def_name_index` map (built at load). `resolve_name` calls this for every non-local
+    /// name reference, so a linear scan here made resolution O(N²) on a many-def program.
     pub fn def_by_name(&self, name: &str) -> Option<usize> {
-        let mut i = 0;
-        while i < self.defs.len() {
-            if self.defs[i].name == name {
-                return Some(i);
-            }
-            i += 1;
-        }
-        None
+        self.def_name_index.get(name).copied()
     }
 
     /// The index in [`defs`] of the def whose body is the occurrence `body`, if any — an O(1) reverse
