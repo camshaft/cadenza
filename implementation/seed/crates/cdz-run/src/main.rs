@@ -75,10 +75,21 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         None => None,
     };
 
+    // Cache the COMPILED runtime artifact in the store dir (unless the runtime came from a `--runtime`
+    // override, which is a debugging path we don't cache). Compiling the runtime is ~75ms and it is
+    // byte-identical across heap programs, so caching turns every-run recompiles into one compile +
+    // fast deserializes. See `cdz_run::RunOpts::runtime_cache_dir`.
+    let runtime_cache_dir = if runtime.is_some() && cli.runtime.is_none() {
+        Some(cli.store.clone().unwrap_or_else(default_store))
+    } else {
+        None
+    };
+
     let opts = cdz_run::RunOpts {
         export: cli.call.clone(),
         args: cli.args.clone(),
         runtime,
+        runtime_cache_dir,
     };
 
     match cdz_run::run(&component_bytes, &opts)? {

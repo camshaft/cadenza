@@ -776,6 +776,7 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
         export: Some("pair-sum".to_string()),
         args: vec!["100".to_string(), "50".to_string()],
         runtime: Some(runtime),
+        runtime_cache_dir: None,
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(s, "150", "narrow heap round-trip"),
@@ -818,6 +819,7 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
         export: Some("main".to_string()),
         args: vec!["41".to_string()],
         runtime: Some(runtime),
+        runtime_cache_dir: None,
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -858,6 +860,7 @@ fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
         export: Some("main".to_string()),
         args: vec!["41".to_string()],
         runtime: Some(runtime),
+        runtime_cache_dir: None,
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -921,6 +924,7 @@ fn a_recursive_runtime_tuple_escapes_to_the_host() {
         export: None, // a resource-escape program exports no bare func — the host takes the escape path
         args: vec![],
         runtime: Some(runtime),
+        runtime_cache_dir: None,
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -956,6 +960,7 @@ fn a_recursive_runtime_record_escapes_to_the_host() {
         export: None,
         args: vec![],
         runtime: Some(runtime),
+        runtime_cache_dir: None,
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -989,6 +994,7 @@ fn a_nested_runtime_tuple_escapes_to_the_host() {
         export: None,
         args: vec![],
         runtime: Some(runtime),
+        runtime_cache_dir: None,
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -1023,6 +1029,7 @@ fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
         export: None,
         args: vec![],
         runtime: Some(runtime),
+        runtime_cache_dir: None,
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -1054,6 +1061,7 @@ fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
         export: None,
         args: vec![],
         runtime: Some(runtime),
+        runtime_cache_dir: None,
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -4672,6 +4680,7 @@ mod stage1 {
                 export: Some("pick".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "generic pick {arg}"),
@@ -4700,6 +4709,7 @@ mod stage1 {
             export: None,
             args: vec![],
             runtime: Some(runtime),
+            runtime_cache_dir: None,
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -4762,6 +4772,7 @@ mod stage1 {
                 export: Some("pick".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "prelude pick {arg}"),
@@ -5013,6 +5024,7 @@ mod stage1 {
             export: None,
             args: vec![],
             runtime: Some(runtime),
+            runtime_cache_dir: None,
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -5040,6 +5052,7 @@ mod stage1 {
             export: None,
             args: vec![],
             runtime: Some(runtime),
+            runtime_cache_dir: None,
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -5120,6 +5133,7 @@ mod stage1 {
                 export: Some("pick".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
@@ -5163,6 +5177,7 @@ mod stage1 {
                 export: Some("build".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
@@ -6853,6 +6868,7 @@ mod r2_runtime_resource {
             export: None, // no bare func export → the host takes the resource-escape path
             args: vec![],
             runtime: Some(runtime),
+            runtime_cache_dir: None,
         };
         match cdz_run::run(&comp, &opts).expect("run composed") {
             cdz_run::Outcome::Value(s) => Some(s),

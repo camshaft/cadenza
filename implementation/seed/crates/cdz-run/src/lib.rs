@@ -26,6 +26,72 @@ fn engine() -> Engine {
     Engine::new(&cfg).unwrap_or_default()
 }
 
+/// Load the value-heap runtime as a `Component`, reusing a CACHED compiled artifact when possible.
+///
+/// JIT-compiling the ~67KB runtime component is ~75ms, and it is BYTE-IDENTICAL for every heap program
+/// (fixed by its content hash), yet `cdz-run` spawns fresh per program — so the gate recompiled the
+/// SAME runtime hundreds of times. With `opts.runtime_cache_dir` set, the first run compiles + writes
+/// `<dir>/<hash>-<wt>.cwasm` (wasmtime version fingerprint `<wt>` in the name), and every later run
+/// `deserialize`s that (~0.25ms — a ~300× drop on runtime composition).
+///
+/// Safety: `Component::deserialize` is `unsafe` because arbitrary bytes could be malformed, but it
+/// VALIDATES its own header (engine config + wasmtime version) and returns `Err` on any mismatch rather
+/// than misbehaving — so a stale/incompatible `.cwasm` is REJECTED, not misread. We additionally key
+/// the filename on the wasmtime version and only ever read a file THIS binary itself wrote, and any
+/// `deserialize` error falls straight through to a fresh `Component::new`. So the cache can only make a
+/// run faster, never change what it does.
+fn load_runtime_component(
+    engine: &Engine,
+    runtime_bytes: &[u8],
+    hash: &str,
+    opts: &RunOpts,
+) -> Result<Component> {
+    let Some(dir) = opts.runtime_cache_dir.as_deref() else {
+        // No cache configured — compile directly.
+        return Component::new(engine, runtime_bytes)
+            .map_err(|e| anyhow!("value-heap runtime component invalid: {e}"));
+    };
+    // `<hash>-<wasmtime-version>.cwasm`: the runtime's content address pins the SOURCE, the version pins
+    // the COMPILER, so a cache file is only ever consulted for the exact runtime+wasmtime it was made
+    // for. (`hash` is empty only for an unpinned import, which errors earlier; guard anyway.)
+    let cache_path = (!hash.is_empty()).then(|| {
+        dir.join(format!(
+            "{hash}-wt{}.cwasm",
+            env!("CARGO_PKG_VERSION_MAJOR") // cdz-run's own version — bumps if we change wasmtime deps
+        ))
+    });
+
+    // Fast path: a cached artifact that deserializes cleanly.
+    if let Some(path) = &cache_path
+        && let Ok(bytes) = std::fs::read(path)
+    {
+        // SAFETY: bytes were produced by THIS binary's `Component::serialize` (below) for this exact
+        // engine config + wasmtime version; `deserialize` re-checks that header and errs on mismatch,
+        // so a corrupt/foreign file is rejected here rather than trusted.
+        match unsafe { Component::deserialize(engine, &bytes) } {
+            Ok(c) => return Ok(c),
+            Err(_) => { /* stale/incompatible — fall through to recompile + rewrite */ }
+        }
+    }
+
+    // Slow path: compile once, then persist the compiled artifact for next time (best-effort — a write
+    // failure just means the next run recompiles, never an error).
+    let component = Component::new(engine, runtime_bytes)
+        .map_err(|e| anyhow!("value-heap runtime component invalid: {e}"))?;
+    if let Some(path) = &cache_path
+        && let Ok(serialized) = component.serialize()
+    {
+        // Write to a temp sibling then rename, so a concurrent reader never sees a half-written file
+        // (the gate runs cdz-run in parallel). A collision on the temp name is harmless — last writer
+        // wins and the content is identical.
+        let tmp = path.with_extension(format!("cwasm.tmp.{}", std::process::id()));
+        if std::fs::write(&tmp, &serialized).is_ok() {
+            let _ = std::fs::rename(&tmp, path); // ignore: a lost race just recompiles next time
+        }
+    }
+    Ok(component)
+}
+
 mod render;
 pub use render::render_val;
 
@@ -70,6 +136,14 @@ pub struct RunOpts {
     /// responsible for having fetched the runtime whose content address matches, and for binding it
     /// under the component's exact import name.
     pub runtime: Option<Vec<u8>>,
+    /// Directory to cache the COMPILED runtime artifact in (normally the content-addressed store). JIT-
+    /// compiling the 67KB runtime component is ~75ms and it is BYTE-IDENTICAL across every heap program
+    /// — so, when set, `compose_runtime` writes `<dir>/<hash>.cwasm` on the first compile and
+    /// `deserialize`s it (~0.25ms) on every later run. `None` disables the cache (always JIT). The
+    /// cache is keyed by the runtime's content hash AND a wasmtime-version fingerprint in the filename,
+    /// and a `deserialize` failure falls back to a fresh compile — so a version/config mismatch can
+    /// never load an incompatible artifact.
+    pub runtime_cache_dir: Option<std::path::PathBuf>,
 }
 
 /// Validate `component_bytes` as a well-formed component — the cheap structural check before a run.
@@ -205,8 +279,7 @@ fn compose_runtime(
             req.hash
         )
     })?;
-    let runtime = Component::new(engine, runtime_bytes)
-        .map_err(|e| anyhow!("value-heap runtime component invalid: {e}"))?;
+    let runtime = load_runtime_component(engine, runtime_bytes, &req.hash, opts)?;
 
     // Discover the heap functions the runtime exports (name-by-name), off its component type. The
     // runtime component exports the interface under its plain, un-pinned name `cadenza:runtime/heap`.
