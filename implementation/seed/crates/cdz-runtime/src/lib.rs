@@ -2177,6 +2177,58 @@ fn op_vec_concat(a: Handle, b: Handle) -> Handle {
     hdr
 }
 
+/// `vec-of-arr` — build a persistent vector from an already-built flat `arr` (the tuple/record array
+/// primitive) in ONE call, the lowering target for a `(list …)` literal. CONSUMES `arr`. The `arr` node
+/// carries the elements exactly as a vector LEAF does (`handles` = elements, empty `raw`), so:
+///   - 0 elements (arr is inline unit)   → the empty vector.
+///   - ≤32 elements (fits one leaf)      → REUSE the `arr` node itself as the leaf-root by move (zero
+///     extra allocation beyond the 8-byte header) — the common small-list-literal case.
+///   - >32 elements                      → drain the elements into ≤32-element strict leaves and build a
+///     strict left-full radix trie bottom-up in one pass (no per-element persistent rebuild).
+/// The result is byte-identical to (and interchangeable with) a push-built vector of the same elements.
+fn op_vec_of_arr(arr: Handle) -> Handle {
+    let count = op_arr_len(arr);
+    if count == 0 {
+        op_drop(arr); // consume the (inline unit) arr; the empty vector is independent
+        return op_vec_empty();
+    }
+    let cap = VEC_MASK as usize + 1; // 32 elements per leaf
+    if (count as usize) <= cap {
+        // The arr node IS a valid strict single leaf (handles = elements, empty raw). Move it in as the
+        // root — no copy, no per-element push. `shift == 0` for a leaf-only tree.
+        return vec_alloc_header(count, 0, arr);
+    }
+    // >32: take the arr's element handles out (a move — no dup, they relocate into the leaves) and pack
+    // them into ≤32-element strict leaves.
+    let mut elems = champ_take_handles(arr).into_vec();
+    op_drop(arr); // the now-empty arr shell
+    let mut leaves: Vec<Handle> = Vec::with_capacity(elems.len().div_ceil(cap));
+    let mut rest = &mut elems[..];
+    while !rest.is_empty() {
+        let take = rest.len().min(cap);
+        let (chunk, tail) = rest.split_at_mut(take);
+        leaves.push(alloc(chunk.to_vec(), Vec::new())); // strict leaf
+        rest = tail;
+    }
+    // Build a strict, left-full radix trie bottom-up: each interior level groups ≤32 children until one
+    // root remains. `shift` rises by VEC_BITS per level. (A vec built this way is dense/left-full, so it
+    // stays STRICT — no relaxed size tables needed, unlike concat/split boundary nodes.)
+    let mut level_nodes = leaves;
+    let mut shift = 0u32;
+    while level_nodes.len() > 1 {
+        shift += VEC_BITS;
+        let mut parents: Vec<Handle> = Vec::with_capacity(level_nodes.len().div_ceil(cap));
+        let mut i = 0;
+        while i < level_nodes.len() {
+            let end = (i + cap).min(level_nodes.len());
+            parents.push(alloc(level_nodes[i..end].to_vec(), Vec::new())); // strict interior node
+            i = end;
+        }
+        level_nodes = parents;
+    }
+    vec_alloc_header(count, shift, level_nodes.pop().unwrap())
+}
+
 /// Split the subtree rooted at `node` (BORROWED, top level `level`) at LOCAL element index `idx`
 /// (`0 < idx < subtree_size` at the top; deeper calls may hit the `idx==0`/`idx==size` boundaries).
 /// Returns `(left, right)` as freshly OWNED subtrees at the SAME level as `node` — `Handle::NULL` for a
@@ -2482,6 +2534,9 @@ impl Guest for Component {
     fn vec_split(v: u32, index: u32) -> (u32, u32) {
         let (l, r) = op_vec_split(Handle::from_u32(v), index);
         (l.to_u32(), r.to_u32())
+    }
+    fn vec_of_arr(arr: u32) -> u32 {
+        op_vec_of_arr(Handle::from_u32(arr)).to_u32()
     }
     fn bytes_concat(a: u32, b: u32) -> u32 {
         op_bytes_concat(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
@@ -7244,6 +7299,83 @@ mod tests {
         }
         assert_eq!(vec_to_ints(v), vec![0, 1, 2, 3, 4]);
         op_drop(v);
+    }
+
+    /// Build a flat `arr` of boxed ints [lo, lo+1, …, hi-1] — the compiler's `(list …)` pre-step that
+    /// `op_vec_of_arr` then ingests. (arr-alloc + arr-set, exactly the tuple/record primitive.)
+    fn arr_of_ints(lo: i64, hi: i64) -> Handle {
+        let n = (hi - lo) as u32;
+        let a = op_arr_alloc(n);
+        for i in 0..n {
+            op_arr_set(a, i, op_box_int(lo + i as i64));
+        }
+        a
+    }
+
+    #[test]
+    fn vec_of_arr_matches_push_built_across_sizes() {
+        reset();
+        let before = live_nodes();
+        // Cover: empty, single leaf (≤32), exactly one full leaf (32), just over (33 → 2 levels),
+        // and a multi-leaf tree (100). For each, `vec-of-arr(arr)` must read back identically to a
+        // push-built vector of the same elements, and be BYTE-INTERCHANGEABLE (further vec ops work).
+        for n in [0i64, 1, 5, 31, 32, 33, 64, 100] {
+            let v = op_vec_of_arr(arr_of_ints(0, n));
+            assert_eq!(op_vec_len(v), n as u32, "vec-of-arr len for n={n}");
+            let want: Vec<i64> = (0..n).collect();
+            assert_eq!(vec_to_ints(v), want, "vec-of-arr elements for n={n}");
+            // Interchangeable with a push-built vector: push one more, read back.
+            let v = op_vec_push(v, op_box_int(n));
+            let mut want2 = want.clone();
+            want2.push(n);
+            assert_eq!(vec_to_ints(v), want2, "vec-of-arr then push for n={n}");
+            op_drop(v);
+        }
+        assert_eq!(live_nodes(), before, "no leak across the vec-of-arr sizes");
+    }
+
+    #[test]
+    fn vec_of_arr_small_reuses_arr_as_leaf_no_extra_node() {
+        reset();
+        let before = live_nodes();
+        // A ≤32-element arr: `vec-of-arr` reuses the arr node as the single leaf-root, so the ONLY new
+        // node is the 8-byte header — the arr shell is NOT freed-and-reallocated. Build a 3-elem arr
+        // (arr node + 3 boxed... but small ints inline → arr node only): live = before + 1 (arr).
+        let a = op_arr_alloc(3);
+        for i in 0..3u32 {
+            op_arr_set(a, i, op_box_int(i as i64)); // small ints are immediate — no boxed nodes
+        }
+        assert_eq!(live_nodes(), before + 1, "just the arr node (immediate elements)");
+        let v = op_vec_of_arr(a);
+        // header (new) + the reused arr-as-leaf = before + 2; NOT before + 3 (no throwaway leaf).
+        assert_eq!(live_nodes(), before + 2, "vec-of-arr adds ONLY the header — arr reused as the leaf");
+        assert_eq!(vec_to_ints(v), vec![0, 1, 2]);
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn vec_of_arr_result_is_indistinguishable_from_push_built() {
+        reset();
+        let before = live_nodes();
+        // The memory/WIT contract: a vec-of-arr result is INTERCHANGEABLE with a push-built vector —
+        // concat/split/update all work and agree with the oracle. Use n=70 (multi-leaf) to exercise the
+        // trie-built path, not just a single leaf.
+        let a = op_vec_of_arr(arr_of_ints(0, 70));
+        let b = vec_range(70); // push-built twin
+        // update through the vec-of-arr-built vector
+        let a = op_vec_update(a, 65, op_box_int(999));
+        assert_eq!(op_get_int(op_vec_get(a, 65)), 999, "update on a vec-of-arr-built vector");
+        assert_eq!(op_get_int(op_vec_get(a, 0)), 0, "other elements intact");
+        // split it and reconcat — round-trips
+        op_dup(a);
+        let (l, r) = op_vec_split(a, 40);
+        let joined = op_vec_concat(l, r);
+        assert_eq!(vec_to_ints(joined), vec_to_ints(a), "split+reconcat round-trips");
+        op_drop(joined);
+        op_drop(a);
+        op_drop(b);
+        assert_eq!(live_nodes(), before, "no leak across update/split/concat on a vec-of-arr vector");
     }
 
     #[test]

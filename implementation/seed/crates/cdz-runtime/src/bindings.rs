@@ -556,6 +556,13 @@ pub mod exports {
                     let result0 = T::set_difference(arg0 as u32, arg1 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_vec_of_arr_cabi<T: Guest>(arg0: i32) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::vec_of_arr(arg0 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -829,6 +836,19 @@ pub mod exports {
                     fn set_intersection(a: u32, b: u32) -> u32;
                     /// 58 — elements in a AND b (consumes both)
                     fn set_difference(a: u32, b: u32) -> u32;
+                    /// 59 — elements in a but NOT b (consumes both)
+                    /// ── Bulk vector construct (index 60) — build a persistent vector from an already-built flat `arr`
+                    ///    (the tuple/record array primitive) in ONE call, the lowering target for a `(list e0 … e{N-1})`
+                    ///    literal: the compiler emits `arr-alloc N` + N× `arr-set` (which it already does trivially) then a
+                    ///    single `vec-of-arr`, instead of `vec-empty` + N× `vec-push` (N persistent-trie CONSTRUCTORS, each
+                    ///    consuming+rebuilding the whole vector). Ownership (value-heap-runtime.md §Constructors Consume And
+                    ///    Accessors Borrow): a CONSTRUCTOR — CONSUMES `arr` and produces a NEW owned vector holding the
+                    ///    same elements in order; the result is INDISTINGUISHABLE from a push-built vector by
+                    ///    `vec-len`/`vec-get` and valid for further `vec-push`/`vec-update`/`vec-concat`/`vec-split`.
+                    ///    Zero-copy for the common case: a ≤32-element list fits ONE trie leaf, so the arr node IS that
+                    ///    leaf (reused by move — only the 8-byte header node is allocated); a larger list fills the trie in
+                    ///    one pass. `arr-len 0` (the empty array is inline unit) yields the empty vector.
+                    fn vec_of_arr(arr: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1043,7 +1063,11 @@ pub mod exports {
                         "cadenza:runtime/heap#set-difference")] unsafe extern "C" fn
                         export_set_difference(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_set_difference_cabi::<$ty > (arg0,
-                        arg1) } } };
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#vec-of-arr")] unsafe extern "C" fn
+                        export_vec_of_arr(arg0 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_vec_of_arr_cabi::<$ty > (arg0) } }
+                        };
                     };
                 }
                 #[doc(hidden)]
@@ -1235,9 +1259,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1582] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xb0\x0b\x01A\x02\x01\
-A\x02\x01Bc\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1597] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xbf\x0b\x01A\x02\x01\
+A\x02\x01Bd\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
 \x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\x06h\
 andley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\x01\x04\
 \x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\0\x09\
@@ -1269,10 +1293,10 @@ y\x04\0\x0aset-insert\x01\"\x01@\x02\x01sy\x04elemy\0\x7f\x04\0\x0cset-contains\
 t-iter\x01$\x04\0\x0dset-iter-next\x01!\x04\0\x0dset-iter-elem\x01!\x04\0\x0cliv\
 e-objects\x01\x18\x04\0\x0avec-concat\x01\x1d\x01o\x02yy\x01@\x02\x01vy\x05index\
 y\0%\x04\0\x09vec-split\x01&\x04\0\x09set-union\x01\x1d\x04\0\x10set-intersectio\
-n\x01\x1d\x04\0\x0eset-difference\x01\x1d\x04\0\x14cadenza:runtime/heap\x05\0\x04\
-\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09produ\
-cers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x06\
-0.41.0";
+n\x01\x1d\x04\0\x0eset-difference\x01\x1d\x04\0\x0avec-of-arr\x01\x09\x04\0\x14c\
+adenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07\
+runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.22\
+7.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
