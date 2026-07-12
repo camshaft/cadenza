@@ -199,15 +199,21 @@ fn emit_signature(
     // mapping a `Core::Call` uses at the call site, so the declaration and every call agree. (A `-` is
     // the idiomatic Cadenza word separator but not a Rust ident char.)
     let ident = sanitize_ident(name);
+    // A machine-readable note of the fn's CADENZA result type — its `render_name` (e.g. `Int64`,
+    // `(Tuple Int64 Bool)`, `(Record (a Int64) (b Int64))`). The Rust return type erases the structural
+    // detail a boundary render needs (field NAMES, `Tuple`-vs-`Record` distinction), so a consumer that
+    // must reproduce the value's canonical text form — the corpus gate — reads it from here. Inert to
+    // rustc (a `//` comment); present on every emitted fn, keyed by ident so a caller finds the right one.
+    let ret_note = format!("// cdz-return[{ident}]: {}\n", result.render_name());
     if mode.is_async() {
         // `async fn <name><E: CdzEnv>(env: &mut E, …) -> <ret> { env.consume(1).await; <body> }` — the
         // per-call fuel charge + cooperative-yield point at entry. `<E: CdzEnv>` is the host's env type.
         Ok(format!(
-            "{vis}async fn {ident}<E: CdzEnv>({param_src}) -> {ret} {{\n    env.consume(1).await;\n{body_src}\n}}\n"
+            "{ret_note}{vis}async fn {ident}<E: CdzEnv>({param_src}) -> {ret} {{\n    env.consume(1).await;\n{body_src}\n}}\n"
         ))
     } else {
         Ok(format!(
-            "{vis}fn {ident}({param_src}) -> {ret} {{\n{body_src}\n}}\n"
+            "{ret_note}{vis}fn {ident}({param_src}) -> {ret} {{\n{body_src}\n}}\n"
         ))
     }
 }

@@ -33,20 +33,37 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // comma to distinguish it from a parenthesized type). An element with no native mapping declines
         // the whole tuple. (The empty tuple `Ty::Tuple([])` is distinct from `Unit` upstream, but has no
         // element to map — render it as `()`, Rust's unit/empty-tuple type.)
-        Ty::Tuple(elems) => {
-            if elems.is_empty() {
-                return Some("()".to_string());
-            }
-            let mut parts = Vec::with_capacity(elems.len());
-            for e in elems.iter() {
-                parts.push(rust_type(e)?);
-            }
-            let trailing = if parts.len() == 1 { "," } else { "" };
-            Some(format!("({}{trailing})", parts.join(", ")))
-        }
-        // Records, sums, functions, and type/erased values have no native mapping yet.
+        Ty::Tuple(elems) => tuple_type(elems.iter()),
+        // A RECORD is structural (anonymous) in Cadenza and at run time IS a positional array in
+        // sorted-field-name order (a record field read is a `Core::Proj` at the field's sorted index —
+        // the SAME machinery a tuple uses). So it maps to the SAME Rust tuple as a tuple of its fields'
+        // types IN SORTED KEY ORDER: `(record (b Bool) (a Int64))` → `(i64, bool)` (a before b). The
+        // `BTreeMap` already iterates sorted, so this is just the tuple mapping over its values. Field
+        // NAMES are compile-time-only (they became sorted positions) — the emitted `.rs` reads fields
+        // positionally (`r.0`); the names re-appear only in the boundary render (`(record (a …) …)`).
+        // (When Cadenza gains NOMINAL records, THAT is when a named Rust struct becomes the right
+        // emission — the name will come from the language, not be synthesized.)
+        Ty::Record(fields) => tuple_type(fields.values()),
+        // Sums, functions, and type/erased values have no native mapping yet.
         _ => None,
     }
+}
+
+/// The Rust tuple type for a sequence of element types — `(T0, T1, …)`, each mapped recursively; a
+/// 1-element tuple is `(T,)` (Rust needs the trailing comma to distinguish it from a parenthesized
+/// type); an empty one is `()`. `None` if any element has no native mapping. Shared by `Ty::Tuple` and
+/// `Ty::Record` (a record IS a tuple of its fields' types in sorted-key order — the `BTreeMap`'s
+/// `.values()` iterate sorted, so passing them here gives the right positional order).
+fn tuple_type<'a>(elems: impl Iterator<Item = &'a Ty>) -> Option<String> {
+    let mut parts = Vec::new();
+    for e in elems {
+        parts.push(rust_type(e)?);
+    }
+    if parts.is_empty() {
+        return Some("()".to_string());
+    }
+    let trailing = if parts.len() == 1 { "," } else { "" };
+    Some(format!("({}{trailing})", parts.join(", ")))
 }
 
 /// The native Rust integer type for an integer of a given signedness and (grounded) width, or `None`

@@ -623,9 +623,26 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let trailing = if parts.len() == 1 { "," } else { "" };
             Ok(format!("({}{trailing})", parts.join(", ")))
         }
-        // A runtime tuple PROJECTION `(. t i)` → Rust's tuple field access `(<operand>).index`. The
-        // index is within the tuple's static arity (checked before selection), so it is always a valid
-        // Rust field. Parenthesize the operand so a compound operand expression binds correctly.
+        // A runtime RECORD → a Rust tuple literal in SORTED FIELD-NAME order — the SAME representation
+        // as a tuple (a record is structural/anonymous; at run time it IS a positional array in sorted
+        // key order). The `fields` `BTreeMap` iterates sorted, so its VALUES in order are the tuple
+        // elements; the field names are compile-time-only (they became positions), re-appearing only in
+        // the boundary render. A field read is a `Core::Proj` at the sorted index (handled below), so
+        // this only builds. (Nominal records → a named Rust struct is a future refinement.)
+        Core::Record { fields } => {
+            let mut parts = Vec::with_capacity(fields.len());
+            // `fields` (a `BTreeMap`) iterates in sorted key order — its values in order are the tuple
+            // elements, matching the sorted-field positions `Ty::Record`/`Core::Proj` use.
+            for &v in fields.values() {
+                parts.push(emit(db, v, env, ctx)?);
+            }
+            let trailing = if parts.len() == 1 { "," } else { "" };
+            Ok(format!("({}{trailing})", parts.join(", ")))
+        }
+        // A runtime tuple/record PROJECTION `(. t i)` → Rust's tuple field access `(<operand>).index`.
+        // The index is within the operand's static arity (checked before selection — for a record it is
+        // the field's SORTED index, matching the `Core::Record` element order above), so it is always a
+        // valid Rust field. Parenthesize the operand so a compound operand expression binds correctly.
         Core::Proj { operand, index } => {
             let t = emit(db, operand, env, ctx)?;
             Ok(format!("({t}).{index}"))
@@ -633,9 +650,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // A poison reaching selection is a fault the collector surfaces before emission; reaching here
         // is a decline rather than emitted code (same as the wasm backend).
         Core::Poison(reject) => Err(reject),
-        // Records, sums, and lists are not in this slice yet — decline, attributed to this target.
-        Core::Record { .. }
-        | Core::SumNew { .. }
+        // Sums and lists are not in this slice yet — decline, attributed to this target.
+        Core::SumNew { .. }
         | Core::MatchSum { .. }
         | Core::SumPayload { .. }
         | Core::ListNew { .. }

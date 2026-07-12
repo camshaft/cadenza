@@ -794,9 +794,11 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // `Display`, so the driver evaluates the call for its (absent) value and prints `unit` directly. A
     // scalar/bool export prints via `Display` (`42`, `true`), exactly as cdz-run renders it. The return
     // type is read off the emitted `pub fn …(-> <ty>)` signature, so the one driver stays type-agnostic.
-    // The export's RETURN type, read off the emitted signature — drives how the result is rendered to
-    // cdz-run's text form (a scalar via `{}`, `()` → the token `unit`, a tuple → `(tuple …)`).
-    let ret_ty = export_return_type(&module, &export);
+    // The export's CADENZA result type, read off the `// cdz-return[<ident>]: <type>` note the backend
+    // emits (its `render_name`) — drives how the result is rendered to cdz-run's text form. The Cadenza
+    // type (not the Rust type) is used because it carries what a boundary render needs: field NAMES and
+    // the `Tuple`-vs-`Record` distinction the Rust tuple `(T0,T1)` erases.
+    let ret_ty = cdz_return_type(&module, &export);
     // The driver's `fn main` calls the export and prints the result the way cdz-run renders it. In ASYNC
     // mode the export is an `async fn` taking `&mut impl CdzEnv` first, so the driver supplies a no-limit
     // gas `Env` + a minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer
@@ -944,48 +946,45 @@ fn rust_ident(name: &str) -> String {
     s
 }
 
-/// Whether the export `name`'s emitted signature returns unit (`-> ()`) — read off the `pub fn <name>(
-/// …) -> <ty> {` line in the emitted module. A unit return has no `Display`, so the driver prints the
-/// `unit` token directly rather than through `{}`. Matches by the exact `pub fn <name>(` prefix so a
-/// different export's signature is not misread.
-/// The exported fn's RETURN type as its emitted Rust type string (e.g. `i64`, `bool`, `()`, `(i64,
-/// i64)`), or `None` if the signature can't be found. Read off the `pub fn <name>(` (sync) or
-/// `pub async fn <name>(`/`<` (async, with a `<E: CdzEnv>` generic) signature line. The gate uses it to
-/// render the result to cdz-run's text form.
-fn export_return_type(module: &str, name: &str) -> Option<String> {
-    let sync = format!("pub fn {name}(");
-    let async_paren = format!("pub async fn {name}(");
-    let async_gen = format!("pub async fn {name}<");
+/// The export `name`'s CADENZA result type, read off the `// cdz-return[<ident>]: <type>` note the
+/// backend emits before each fn (the type's `render_name`, e.g. `Int64`, `(Tuple Int64 Bool)`, `(Record
+/// (a Int64) (b Int64))`). `None` if no matching note is found. The gate renders the result to cdz-run's
+/// text form from THIS (the Cadenza type keeps field names + the Tuple/Record distinction the Rust type
+/// erases). `name` is the export's SANITIZED ident, matching the note's `[<ident>]` tag.
+fn cdz_return_type(module: &str, name: &str) -> Option<String> {
+    let prefix = format!("// cdz-return[{name}]:");
     for line in module.lines() {
         let t = line.trim_start();
-        if t.starts_with(&sync) || t.starts_with(&async_paren) || t.starts_with(&async_gen) {
-            // The return type is between `-> ` and the opening ` {`.
-            let arrow = t.split_once("-> ")?;
-            return Some(arrow.1.trim_end().trim_end_matches('{').trim().to_string());
+        if let Some(rest) = t.strip_prefix(&prefix) {
+            return Some(rest.trim().to_string());
         }
     }
     None
 }
 
-/// A Rust EXPRESSION that renders the driver's result binding `__r` (of Rust type `ty`) to cdz-run's
-/// canonical text form — the value the gate grades against. Type-directed and recursive:
-///  - `()` → the token `unit`;
-///  - a tuple `(T0, T1, …)` → `(tuple <r.0> <r.1> …)`, each element rendered as its own type (so a
-///    nested tuple / a tuple of scalars composes);
-///  - any scalar → `{}` (an integer/bool `Display`s exactly as cdz-run prints it).
+/// A Rust EXPRESSION that renders the driver's result binding `__r` (whose CADENZA type is `ty`, in
+/// `render_name` form) to cdz-run's canonical text form — the value the gate grades against. Type-
+/// directed and recursive over the Cadenza type:
+///  - `Unit` → the token `unit`;
+///  - `(Tuple T0 T1 …)` → `(tuple <r.0> <r.1> …)`;
+///  - `(Record (a T0) (b T1) …)` → `(record (a <r.0>) (b <r.1>) …)` — the fields are already in sorted
+///    order (both the type's render and the emitted Rust tuple order them the same), so element `i`
+///    reads `.i`;
+///  - any scalar (`Int64`, `Bool`, …) → `{}` (an integer/bool `Display`s exactly as cdz-run prints it).
 fn cdz_render_expr(ty: &str) -> String {
     cdz_render_at(ty, "__r")
 }
 
 /// The recursive worker for [`cdz_render_expr`]: `path` is the Rust access path to the value being
-/// rendered (starts at `__r`, descends `.0`/`.1`… into tuple elements).
+/// rendered (starts at `__r`, descends `.0`/`.1`… into tuple/record elements — a record IS a positional
+/// tuple in sorted-field order, so its `i`th field is `.i`).
 fn cdz_render_at(ty: &str, path: &str) -> String {
     let ty = ty.trim();
-    if ty == "()" {
+    if ty == "Unit" {
         return "\"unit\".to_string()".to_string();
     }
-    if let Some(elems) = parse_tuple_type(ty) {
-        // `(tuple <e0> <e1> …)` — a `format!` with one `{}` per element, each recursively rendered.
+    // `(Tuple T0 T1 …)` → `(tuple …)`.
+    if let Some(elems) = parse_head_type(ty, "Tuple") {
         let placeholders = vec!["{}"; elems.len()].join(" ");
         let args: Vec<String> = elems
             .iter()
@@ -994,44 +993,79 @@ fn cdz_render_at(ty: &str, path: &str) -> String {
             .collect();
         return format!("format!(\"(tuple {placeholders})\", {})", args.join(", "));
     }
+    // `(record (a T0) (b T1) …)` → `(record (a …) (b …) …)`. Each element is a `(name Type)` pair; the
+    // fields are in sorted order (matching the emitted tuple), so field `i` reads `.i`. (`Ty::render_name`
+    // writes the record head LOWERCASE — `(record …)` — vs the tuple's capital `(Tuple …)`.)
+    if let Some(fields) = parse_head_type(ty, "record") {
+        // Each field renders as `(<name> <value>)` — the name is a literal, the value is `.i` rendered
+        // as its own type. The `format!` gets one `({} {})` group per field, args = name, value, ….
+        let mut args = Vec::with_capacity(fields.len() * 2);
+        for (i, field) in fields.iter().enumerate() {
+            // `field` is `(name Type)` — strip its OUTER parens (exactly one each; `trim_end_matches(')')`
+            // would wrongly eat a nested type's close paren, e.g. `(y (Tuple Int64 Int64))`), then split
+            // the leading name from the rest.
+            let f = field.trim();
+            let inner = f
+                .strip_prefix('(')
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or(f)
+                .trim();
+            let (fname, fty) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
+            args.push(format!("\"{}\"", fname.trim()));
+            args.push(cdz_render_at(fty.trim(), &format!("({path}).{i}")));
+        }
+        let groups = vec!["({} {})"; fields.len()].join(" ");
+        return format!("format!(\"(record {groups})\", {})", args.join(", "));
+    }
     // A scalar: Display it.
     format!("format!(\"{{}}\", {path})")
 }
 
-/// Split a Rust tuple TYPE `(T0, T1, …)` into its element type strings, or `None` if `ty` is not a
-/// tuple. Respects nesting — a comma inside a nested `(…)` does not split. A `()` (empty) is NOT a tuple
-/// here (handled as unit by the caller); a 1-tuple `(T,)` yields `[T]`.
-fn parse_tuple_type(ty: &str) -> Option<Vec<String>> {
-    let inner = ty.strip_prefix('(')?.strip_suffix(')')?;
-    if inner.trim().is_empty() {
-        return None; // `()` — unit, not a tuple
+/// Split a `render_name` head-applied type `(<Head> A B …)` into its argument strings, or `None` if `ty`
+/// is not `(<Head> …)`. Respects nesting — a space or paren inside a nested `(…)` group does not split.
+/// Used to destructure `(Tuple T0 T1)` and `(Record (a T0) (b T1))`.
+fn parse_head_type(ty: &str, head: &str) -> Option<Vec<String>> {
+    let inner = ty.strip_prefix('(')?.strip_suffix(')')?.trim();
+    let rest = inner.strip_prefix(head)?;
+    // `head` must be a whole token (so `(Tuple …)` doesn't match a hypothetical `(TupleX …)`).
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
     }
-    let mut elems = Vec::new();
+    Some(split_top_level(rest.trim()))
+}
+
+/// Split a string into top-level whitespace-separated groups, treating a balanced `(…)` as one group.
+/// `"a (Tuple Int64 Bool) c"` → `["a", "(Tuple Int64 Bool)", "c"]`.
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
     let mut depth = 0i32;
-    let mut start = 0usize;
-    let bytes = inner.as_bytes();
+    let mut start: Option<usize> = None;
+    let bytes = s.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
         match b {
-            b'(' | b'[' | b'<' => depth += 1,
-            b')' | b']' | b'>' => depth -= 1,
-            b',' if depth == 0 => {
-                let seg = inner[start..i].trim();
-                if !seg.is_empty() {
-                    elems.push(seg.to_string());
+            b'(' => {
+                if depth == 0 && start.is_none() {
+                    start = Some(i);
                 }
-                start = i + 1;
+                depth += 1;
             }
-            _ => {}
+            b')' => depth -= 1,
+            _ if b.is_ascii_whitespace() && depth == 0 => {
+                if let Some(st) = start.take() {
+                    out.push(s[st..i].to_string());
+                }
+            }
+            _ => {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
         }
     }
-    let last = inner[start..].trim();
-    if !last.is_empty() {
-        elems.push(last.to_string());
+    if let Some(st) = start {
+        out.push(s[st..].to_string());
     }
-    // A single element with a trailing comma (`(T,)`) parsed to one elem — that IS a 1-tuple. A single
-    // element WITHOUT a comma (`(T)`) is a parenthesized type, not a tuple — but the backend never emits
-    // that (it writes `(T,)` for a 1-tuple), so treat any `elems` we found as a tuple.
-    Some(elems)
+    out
 }
 
 /// A tiny FNV-1a hash of a string → a stable per-program key for the temp compile dir (no dependency;

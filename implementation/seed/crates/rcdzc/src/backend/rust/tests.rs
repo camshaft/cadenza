@@ -137,16 +137,51 @@ fn an_if_emits_a_rust_if_expression() {
 }
 
 #[test]
-fn a_record_result_declines_attributed_to_this_target() {
-    // A record-returning export has no native rep yet (tuples do, records don't) — declines cleanly.
-    let src = "(module m (def (f (: n Int64)) (if (= n 0) (record (a n) (b 7)) (f (+ n -1)))) \
-                          (def (main) (f 3)) (export main))";
-    let err = try_compile_rust(src).expect_err("a record result must decline");
+fn a_list_result_declines_attributed_to_this_target() {
+    // A list-returning export has no native rep yet (tuples/records do, lists don't) — declines cleanly.
+    let src = "(module m (def (main) (list 1 2 3)) (export main))";
+    let err = try_compile_rust(src).expect_err("a list result must decline");
     assert!(
         err.iter()
             .any(|m| m.contains("compound") || m.contains("native Rust")),
         "decline message: {err:?}"
     );
+}
+
+#[test]
+fn a_runtime_record_emits_a_sorted_field_tuple() {
+    // A record that survives to runtime → a Rust tuple in SORTED field-name order (a record is
+    // structural; at run time it IS a positional array in sorted key order). Field read → `.index`.
+    // Fields declared OUT of order still emit sorted: `(record (b n) (a 7))` → `((7), n)` (a before b).
+    let rs = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (record (b n) (a 7)) (f (+ n -1)))) \
+                    (def (main) (f 1)) (export main))",
+    );
+    assert!(rs.contains("-> (i64, i64)"), "record → tuple type:\n{rs}");
+    // a=7 first (sorted), b=n second — the declared order (b, a) is re-sorted.
+    assert!(
+        rs.contains("((7u64 as i64), __p0)"),
+        "sorted-field literal:\n{rs}"
+    );
+
+    // A record field read is a projection at the field's SORTED index.
+    let proj =
+        compile_rust("(module m (def (g (: r (Record (a Int64) (b Int64)))) (. r b)) (export g))");
+    assert!(
+        proj.contains("(r).1"),
+        "field `b` is sorted index 1:\n{proj}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_record_builds_and_projects() {
+    // A record crosses rustc end-to-end: a field read at the sorted index, and a returned record renders
+    // (via the gate's type-directed path elsewhere). Here: `(. r a)` on `(Record (a) (b))` reads `.0`.
+    let proj =
+        compile_rust("(module m (def (g (: r (Record (a Int64) (b Int64)))) (. r a)) (export g))");
+    if let Some(out) = rustc_run(&proj, "g((5, 9))") {
+        assert_eq!(out, "5"); // field `a` = sorted index 0
+    }
 }
 
 #[test]
