@@ -248,6 +248,7 @@ todo	a constructor whose payload is a constructor keeps the outer variant tag
 todo	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 todo	a curried function can be partially applied
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
+todo	a decimal token trailing letters is a malformed literal, not an unbound name
 todo	a declaration in a do block shadows an outer binding
 todo	a deep chain of runtime-list let-bindings compiles and returns the final length
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
@@ -416,6 +417,8 @@ todo	a quote-pattern match with no catch-all is non-exhaustive
 todo	a quoted compound form equals the same AST built by the Ast.List constructor
 todo	a quoted integer equals the same node built by the Ast.Int constructor
 todo	a quoted name equals the same node built by the Ast.Name constructor
+todo	a radix literal with a bad digit is a malformed literal, not an unbound name
+todo	a radix literal with an empty body is a malformed literal, not an unbound name
 todo	a rational is normalized to lowest terms on construction
 todo	a rational operation does not silently promote an integer operand
 todo	a rational with numerator and denominator both negative normalizes to positive
@@ -620,6 +623,7 @@ todo	an integer width above the 64-bit ceiling is rejected
 todo	an integer width from runtime data is rejected, keeping widths non-dependent
 todo	an internally ill-typed unselected match arm body is a type error
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
+todo	an octal-prefixed token is a malformed literal, not an unbound name
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an operation on mismatched types is rejected at compile time

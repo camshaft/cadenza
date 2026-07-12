@@ -239,6 +239,21 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 3. Off the end of the lookup — the name is unbound. This is a REJECTION (the program is
     // ill-formed), not a decline: the unbound-name rule is unconditional (`core-semantics.md`
     // §Binding Is Lexical).
+    //
+    // BUT a DIGIT-LED token is a NUMBER, never an identifier (an identifier may not start with a
+    // digit). The reader classifies a numeric token that fails to parse — `0o17` (octal is not a
+    // supported radix), `0x`/`0b` (empty radix body), `0xGG`/`0b12` (bad radix digit), `123abc`
+    // (digits then letters) — as a bare `Leaf::Name` (the reader is minimal; the well-formedness call
+    // is made here). Reporting such a token as "unbound name" (CDZ0101) is the misleading diagnostic
+    // 01-literals.sexp explicitly forbids: it is a MALFORMED LITERAL, a well-formedness rejection
+    // (CDZ0201), not a reference to a name. So a digit-led unbound name is Malformed, not Unbound.
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, "digit-led token is a MALFORMED literal (CDZ0201)");
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("malformed numeric literal `{name}`"),
+        ));
+    }
     trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
     Resolved::Poison(Reject::coded(
         Code::Unbound,

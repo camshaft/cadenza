@@ -110,6 +110,43 @@
   (input    9223372036854775808)
   (error    CDZ0201))
 
+; The out-of-range case above is one shape of a digit-led token that fails to parse; the RADIX and
+; FORMAT malformations are the others, and they classify the same way — a MALFORMED LITERAL (CDZ0201),
+; never an `unbound name` (CDZ0101). A digit-led token is a number: an unsupported radix (`0o…` —
+; only `0x`/`0b` are radices), an empty radix body (`0x`, `0b`), a bad radix digit (`0xGG`, `0b12`), or
+; a decimal token trailing letters (`123abc`) all fail the numeric parse, and the reader classifies
+; them as bare names — but the well-formedness call rejects a digit-led name as a malformed literal,
+; not a reference to a name. These pin the radix/format siblings of the out-of-range case above.
+
+(case "an octal-prefixed token is a malformed literal, not an unbound name"
+  (doc    "`0o17` is digit-led, so it is a numeric token — but octal is not a supported radix (only
+           `0x`/`0b`), so it fails to parse and is a MALFORMED literal (CDZ0201), never `unbound name`
+           (CDZ0101). A digit-led token is a number; the reader classifying it as a name does not make
+           it an identifier.")
+  (input  0o17)
+  (error  CDZ0201))
+
+(case "a radix literal with an empty body is a malformed literal, not an unbound name"
+  (doc    "`0x` has the hexadecimal prefix but no digits — a malformed radix literal (CDZ0201), not an
+           `unbound name`. The prefix commits the token to being a number; with no body it is a
+           well-formedness rejection.")
+  (input  0x)
+  (error  CDZ0201))
+
+(case "a radix literal with a bad digit is a malformed literal, not an unbound name"
+  (doc    "`0xGG` is `0x`-prefixed but `G` is not a hexadecimal digit — a malformed hex literal
+           (CDZ0201). A digit-led radix token with an out-of-alphabet digit is a malformed number, not
+           a name.")
+  (input  0xGG)
+  (error  CDZ0201))
+
+(case "a decimal token trailing letters is a malformed literal, not an unbound name"
+  (doc    "`123abc` is digit-led with trailing letters — an identifier may not start with a digit, so
+           this is a malformed numeric token (CDZ0201), not an identifier `123abc`. Reporting it as
+           `unbound name` (CDZ0101) is the misleading diagnostic this boundary forbids.")
+  (input  123abc)
+  (error  CDZ0201))
+
 (case "an underscore-prefixed function parameter binds its argument"
   (doc    "A parameter named `_1` is an identifier, so `(def (f _1) (+ _1 1))` binds the argument to
            `_1`; f(41) = 42. If the reader misclassified `_1` as the integer 1, the parameter list

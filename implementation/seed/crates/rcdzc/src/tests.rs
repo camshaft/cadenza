@@ -2413,6 +2413,26 @@ mod stage1 {
     }
 
     #[test]
+    fn a_malformed_digit_led_token_is_a_malformed_literal_not_an_unbound_name() {
+        // A digit-led token that fails numeric parsing (`0o17` octal, `0x`/`0b` empty radix body,
+        // `0xGG` bad hex digit, `123abc` digits-then-letters) is a MALFORMED LITERAL (CDZ0201), NOT an
+        // "unbound name" (CDZ0101) — a digit-led token is a number, never an identifier
+        // (01-literals.sexp). The reader classifies it as a bare name; the well-formedness call is made
+        // at resolution.
+        for tok in ["0o17", "0x", "0xGG", "0b12", "123abc"] {
+            let msg = expect_decline(tok);
+            assert!(
+                msg.contains("malformed numeric literal"),
+                "digit-led `{tok}` must be a malformed literal, got: {msg}"
+            );
+        }
+        // A real (non-digit-led) unbound name is STILL an unbound name, not misclassified.
+        assert!(expect_decline("frobnicate").contains("unbound name"));
+        // A well-formed literal is unaffected.
+        assert_eq!(run_main("0x2A"), 42);
+    }
+
+    #[test]
     fn if_condition_must_be_bool() {
         // A non-boolean condition is a type error (CDZ0203) — `(if 5 1 2)` has an Int64 condition.
         let msg = expect_decline("(if 5 1 2)");
