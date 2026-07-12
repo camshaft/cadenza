@@ -95,14 +95,14 @@ pub fn emit(
         // variant with a non-renderable payload — falls through to decline below).
         if let crate::ty::Ty::Sum { .. } = &e.result {
             if let Some(sum_tpl) = crate::lower::sum_form_template(db, &e.result) {
-                return emit_runtime_sum_resource(db, layout, e.def, &sum_tpl);
+                return emit_runtime_sum_resource(db, layout, e.def, &sum_tpl, spans);
             }
         } else if let Some(tpl) = crate::lower::runtime_value_form_template(&e.result) {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is
             // built on the heap) crosses through the SAME resource shape, but its `encode()` WALKS the
             // live handle rather than baking constant bytes (R2). Build the value-form TEMPLATE for the
             // result type; if it has one, route through `assemble_runtime_resource`.
-            return emit_runtime_resource(db, layout, e.def, &tpl);
+            return emit_runtime_resource(db, layout, e.def, &tpl, spans);
         }
     }
 
@@ -188,15 +188,9 @@ pub fn emit(
     // DEBUG (Mode E, D2): append the `.debug_*` DWARF custom sections to the embedded core module, so a
     // debugger can STEP through Cadenza source. Function-granularity: one line row + one subprogram DIE
     // per emitted function, its code-offset range from `code_ranges` (D1b) and its source line from the
-    // `spans` side-table (D1a). Absolute code offsets = the code-section payload base + the range's
-    // payload-relative start. Inert + strippable, exactly like the `name` section — appended after the
-    // executed sections, so `debug = None` is byte-identical to today and `wasm-tools strip` recovers it.
-    if let Some(span_data) = spans
-        && let Some(code_base) = dwarf::code_section_payload_base(&core)
-    {
-        let dwarf_funcs = dwarf_funcs_for(db, layout, &funcs, &imports, code_base, span_data);
-        core.extend_from_slice(&dwarf::debug_sections(&span_data.module_path, &dwarf_funcs));
-    }
+    // `spans` side-table (D1a). Inert + strippable — appended after the executed sections, so `debug =
+    // None` is byte-identical to today and `wasm-tools strip` recovers it. (`name` rode in `core_module`.)
+    append_debug_sections(db, layout, &funcs, &imports, spans, &mut core);
 
     // A lean component paired with a DETACHED DWARF sidecar (Mode S, `Emit(Wasm)` + `Emit(Dwarf)` in one
     // run) carries an `external_debug_info` custom section naming the sidecar, so a debugger auto-loads
@@ -276,6 +270,29 @@ pub fn emit(
     // ABI-agnostic; the ABI identity lives in the generated `runtime_abi` table.
     let import_name = runtime_import_name();
     Ok(envelope::assemble(&core, &boundary, &imports, &import_name))
+}
+
+/// Append the `.debug_*` DWARF custom sections to an already-serialized core module `core`, when a
+/// `spans` side-table is present (a debug build). Shared by the ordinary multi-export path and the
+/// runtime resource-escape path: both lay the user function bodies FIRST in the code section, so
+/// `code_ranges(funcs)` gives their correct payload-relative offsets and `code_section_payload_base`
+/// walks the real bytes for the base — regardless of how many synthesized funcs (a resource walker's
+/// `make`/`t-encode`) trail them. Inert + strippable (appended after the executed sections); a `None`
+/// `spans` or a core with no code section leaves `core` untouched (byte-identical to a no-debug build).
+fn append_debug_sections(
+    db: &Db,
+    layout: &Layout,
+    funcs: &[SelectedFunc],
+    imports: &[&runtime_abi::RtOp],
+    spans: Option<&crate::spans::SpanData>,
+    core: &mut Vec<u8>,
+) {
+    if let Some(span_data) = spans
+        && let Some(code_base) = dwarf::code_section_payload_base(core)
+    {
+        let dwarf_funcs = dwarf_funcs_for(db, layout, funcs, imports, code_base, span_data);
+        core.extend_from_slice(&dwarf::debug_sections(&span_data.module_path, &dwarf_funcs));
+    }
 }
 
 /// Build the per-function DWARF descriptors for a module (shared by Mode E — embedded — and Mode S —
@@ -418,6 +435,7 @@ fn emit_runtime_resource(
     layout: &Layout,
     export_def: usize,
     tpl: &crate::lower::ValueFormTemplate,
+    spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
     // Ops the reachable bodies emit (construction: arr-alloc/arr-set/box-*), PLUS the ops the walker
     // `t-encode` calls (arr-get + get-int/get-bool per template leaf). The walker ops are added here
@@ -476,8 +494,14 @@ fn emit_runtime_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
 
-    let main_core = serialize::runtime_resource_core_module(&funcs, &imports, export_abs, tpl)
+    let mut main_core = serialize::runtime_resource_core_module(&funcs, &imports, export_abs, tpl)
         .map_err(Reject::decline)?;
+    // DEBUG: a compound-returning program is debuggable too. The user function bodies lead the escape
+    // core's code section (the synthesized `make`/`t-encode`/`cabi_realloc` follow), so `code_ranges`
+    // over `funcs` gives their correct payload-relative offsets and `code_section_payload_base` walks
+    // the real bytes for the base — the same D2/D3 append as the ordinary path. `name` + `.debug_*`
+    // ride in, inert + strippable. The synthesized walker funcs have no `src_body`, so they get no row.
+    append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     // The RUNTIME escape uses the drop-calling dtor (releases the live rc handle), NOT the constant-path
     // stub — its handle is a genuine heap allocation the host must reclaim.
     let dtor_core = serialize::resource_dtor_module_with_drop();
@@ -500,6 +524,7 @@ fn emit_runtime_sum_resource(
     layout: &Layout,
     export_def: usize,
     tpl: &crate::lower::SumFormTemplate,
+    spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
     // Ops the reachable bodies emit (construction: sum-new/arr-alloc/box-*), PLUS the ops the sum walker
     // calls: `sum-disc` (always), `sum-payload` (to reach a variant's payload), `arr-get` (a
@@ -561,13 +586,16 @@ fn emit_runtime_sum_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping sum export is not in the emission order"))?;
 
-    let main_core = serialize::runtime_resource_core_module_form(
+    let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::Sum(tpl),
     )
     .map_err(Reject::decline)?;
+    // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
+    // sections attribute correctly; the synthesized sum walker funcs have no `src_body` and get no row.
+    append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
     Ok(envelope::assemble_runtime_resource(
