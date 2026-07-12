@@ -328,6 +328,16 @@ pub struct Db {
     /// `recursive`/`callee_edges` (a pure fact keyed by node identity).
     pub(crate) scheme_cache: crate::fxhash::FxHashMap<StructId, Option<crate::ty::Scheme>>,
 
+    /// Memo for the wasm backend's `mutual_loop_group(self_def)` — the tail-recursive SCC a def compiles
+    /// its shared loop over. `select_function_of` computes it for EVERY def, and the computation is a
+    /// double BFS over tail-callees (forward-reach + reach-back-to-self per member), so N mutually
+    /// tail-recursive same-signature defs cost O(N²) EACH → O(N³) over the group (measured: 200 mutual
+    /// defs = 687ms, ~O(N³), with O(N²)-size wasm). The group is a pure function of the call graph +
+    /// signatures (fixed), keyed by the def's own index (the ordering is `self_def`-first, so it differs
+    /// per member — cache each member's own view). Caching collapses the per-def recompute; a def not in
+    /// any loop caches an empty vec. Keyed by def index (a `usize` into `defs`).
+    pub(crate) mutual_loop_cache: crate::fxhash::FxHashMap<usize, Vec<usize>>,
+
     /// Reusable SCRATCH buffers for the recursion walk (`eval::is_recursive`) — the visited set and the
     /// worklist of its iterative call-graph DFS. Held here (not allocated per call) so the walk churns
     /// no ephemeral collections: `is_recursive` takes them out (`mem::take`), CLEARS them, uses them,
@@ -491,6 +501,7 @@ impl Db {
             recursive: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
+            mutual_loop_cache: crate::fxhash::FxHashMap::default(),
             rec_visited: crate::fxhash::FxHashSet::default(),
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),

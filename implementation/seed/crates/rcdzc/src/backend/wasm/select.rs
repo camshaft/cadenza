@@ -682,7 +682,52 @@ fn sig_valtypes(db: &mut Db, d: usize) -> Option<Vec<ValType>> {
 /// non-tail call must stay a real call; a differing signature can't share the frame). Deterministic:
 /// members are returned with `self_def` first, the rest in ascending def order, so the emitted `which`
 /// discriminants are stable across runs.
+///
+/// MEMOIZED across a whole GROUP: `select_function_of` calls this for EVERY def, and the body is a
+/// double BFS over the tail-call graph (forward reach + a reach-back-to-self per member), so a group of
+/// N mutually tail-recursive same-signature defs cost O(N²) per def → O(N³) over the group (measured:
+/// 200 mutual defs = 687ms before this). Every member of one SCC produces the SAME member SET (differing
+/// only in the `self_def`-first ordering), so the expensive set is computed ONCE and cached by the
+/// group's canonical representative (its minimum member index) — the N members of a group then share
+/// that one computation, and each derives its self-first order cheaply. Keying by `self_def` directly
+/// would MISS (each def is queried once), so the cache keys on the SORTED set's min element.
 fn mutual_loop_group(db: &mut Db, self_def: usize) -> Vec<usize> {
+    let sorted = mutual_loop_members_sorted(db, self_def);
+    // Reorder to this member's view: `self_def` first (it enters the loop at its own discriminant), the
+    // rest ascending. `sorted` is already ascending, so this is a cheap rotate of `self_def` to front.
+    if sorted.len() <= 1 {
+        return sorted; // a plain self-loop (or empty) needs no reorder
+    }
+    let mut members = Vec::with_capacity(sorted.len());
+    members.push(self_def);
+    members.extend(sorted.iter().copied().filter(|&d| d != self_def));
+    members
+}
+
+/// The SORTED member set of `self_def`'s tail-recursive SCC (ascending; empty if not a loop). Cached
+/// PER MEMBER: since every member of one group produces the SAME sorted set, the first member to be
+/// queried computes it (the O(N²) BFS) and then caches it for EVERY member of the group at once — so
+/// the other N-1 members hit the cache and never recompute. That collapses the group's total cost from
+/// O(N³) to O(N²) (one compute) + O(N) lookups. A non-loop def caches its own empty set.
+fn mutual_loop_members_sorted(db: &mut Db, self_def: usize) -> Vec<usize> {
+    if let Some(cached) = db.mutual_loop_cache.get(&self_def) {
+        return cached.clone();
+    }
+    let sorted = mutual_loop_group_uncached(db, self_def);
+    // Cache for EVERY member of the discovered group (they all share this set) — so a co-member queried
+    // later is an O(1) hit, not another O(N²) BFS. A non-loop def (empty set) caches just itself.
+    if sorted.is_empty() {
+        db.mutual_loop_cache.insert(self_def, Vec::new());
+    } else {
+        for &m in &sorted {
+            db.mutual_loop_cache.insert(m, sorted.clone());
+        }
+    }
+    sorted
+}
+
+/// The uncached core — computes the SORTED SCC member set (ascending), see [`mutual_loop_group`] docs.
+fn mutual_loop_group_uncached(db: &mut Db, self_def: usize) -> Vec<usize> {
     let Some(self_sig) = sig_valtypes(db, self_def) else {
         return Vec::new();
     };

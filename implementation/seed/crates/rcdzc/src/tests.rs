@@ -2770,6 +2770,29 @@ mod recursion {
     }
 
     #[test]
+    fn a_three_member_mutual_tail_cycle_shares_one_loop() {
+        // A 3-CYCLE mutual tail group (g0→g1→g2→g0), same signature — all three compile into shared
+        // loops over the SAME member set {g0,g1,g2}. This exercises the `mutual_loop_group` memo that
+        // computes the group's member set ONCE and caches it for every member (the fix for the O(N³)
+        // per-def recompute of N mutually-recursive functions): the cached set must be the SAME for each
+        // member (only the self-first ordering differs), so all three dispatch correctly. `(g0 n)`
+        // counts down through the 3-cycle to 0. n=9 → 9 hops → returns 0 at g0's base (9 % 3 == 0).
+        use wasmtime::component::Val;
+        let c = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (g0 (: k Int64)) (if (< k 1) k (g1 (- k 1)))) \
+               (def (g1 (: k Int64)) (if (< k 1) k (g2 (- k 1)))) \
+               (def (g2 (: k Int64)) (if (< k 1) k (g0 (- k 1)))) \
+               (def (main (: n Int64)) (g0 n)) (export main))",
+        )))
+        .expect("compile");
+        // Counts down to 0 regardless of which member the last hop lands on — the cycle always reaches
+        // some member's `(< k 1)` base at k=0 and returns 0. A million iterations run in O(1) stack.
+        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(1_000_002)]), 0);
+        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(0)]), 0);
+    }
+
+    #[test]
     fn a_match_based_tail_recursion_loops_in_constant_stack() {
         use wasmtime::component::Val;
         // The base case via a MATCH (idiomatic) — `(match n (0 acc) (_ (f (- n 1) (+ acc 1))))`. The
