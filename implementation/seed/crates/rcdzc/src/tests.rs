@@ -10546,4 +10546,162 @@ mod debug_info {
             "no source function name in the dump:\n{stdout}"
         );
     }
+
+    // ── Mode S: the detached `dwarf` sidecar artifact (§9.2) ───────────────────────────────────────
+
+    /// Compile `src` with the given request list + the `spans` input, returning the full output.
+    fn compile_debug(src: &str, requests: &[Request]) -> crate::abi::CompileOutput {
+        let (arenas, span_data) = parse_spanned(src);
+        compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&arenas)),
+                Artifact::new(spans::KIND_SPANS, "m", spans::encode(&span_data)),
+                Artifact::new(sidecar::KIND_SIDECAR, "d", sidecar::encode(requests)),
+            ],
+            &[],
+        )
+    }
+
+    #[test]
+    fn an_emit_dwarf_request_produces_a_dwarf_artifact_not_a_component() {
+        // A lone `Emit(Dwarf)` yields a `dwarf` artifact and NO component — the detached sidecar mode.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        assert!(
+            out.artifact("dwarf").is_some(),
+            "an Emit(Dwarf) request must produce a `dwarf` artifact"
+        );
+        assert!(
+            out.artifact("component").is_none(),
+            "a lone Emit(Dwarf) must NOT produce a component"
+        );
+    }
+
+    #[test]
+    fn wasm_and_dwarf_compose_into_two_artifacts() {
+        // Requesting both a plain component AND a detached dwarf yields both — the "lean component + its
+        // detached DWARF" shape.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile_debug(
+            src,
+            &[Request::Emit(Target::Wasm), Request::Emit(Target::Dwarf)],
+        );
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        assert!(
+            out.artifact("component").is_some(),
+            "the runnable component"
+        );
+        assert!(out.artifact("dwarf").is_some(), "the detached DWARF");
+    }
+
+    #[test]
+    fn the_dwarf_sidecar_parses_under_llvm_dwarfdump() {
+        // The sidecar module is ALREADY a bare core module (no component wrapper), so llvm-dwarfdump
+        // reads it directly. It must show the same compile unit + subprograms as the embedded form.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-sidecar-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write dwarf sidecar");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--all")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "dwarfdump failed: {stderr}\n{stdout}"
+        );
+        assert!(
+            !stdout.to_lowercase().contains("error:") && !stderr.to_lowercase().contains("error:"),
+            "dwarfdump reported an error:\n{stdout}\n{stderr}"
+        );
+        assert!(stdout.contains("DW_TAG_compile_unit"), "no CU:\n{stdout}");
+        assert!(
+            stdout.contains("DW_TAG_subprogram"),
+            "no subprogram:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("countdown") || stdout.contains("main"),
+            "no fn name:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn the_sidecar_code_offsets_match_the_embedded_ones() {
+        // The load-bearing invariant: a detached DWARF's code addresses must reference the RUNNABLE
+        // component's code section identically to the embedded form — otherwise a debugger would map to
+        // the wrong instruction. Compare the subprogram low_pc/high_pc reported by dwarfdump for the
+        // embedded component vs the sidecar; they must be identical. Skips if llvm-dwarfdump is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        // Embedded: extract the core module from the WasmDebug component.
+        let embedded_component = component_of(src, Target::WasmDebug);
+        let embedded_core = core_module_of(&embedded_component).expect("core module");
+        // Sidecar: the standalone dwarf module.
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let sidecar_mod = out.artifact("dwarf").expect("dwarf").to_vec();
+
+        // Dump each and pull the ordered list of (low_pc, high_pc) from the subprogram DIEs.
+        let pcs = |bytes: &[u8], tag: &str| -> Option<Vec<(String, String)>> {
+            let dir = std::env::temp_dir();
+            let path = dir.join(format!("cdz-cmp-{}-{tag}.wasm", std::process::id()));
+            std::fs::File::create(&path)
+                .and_then(|mut f| f.write_all(bytes))
+                .ok()?;
+            let o = Command::new("llvm-dwarfdump")
+                .arg("--debug-info")
+                .arg(&path)
+                .output()
+                .ok()?;
+            let _ = std::fs::remove_file(&path);
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            let mut lows: Vec<String> = Vec::new();
+            let mut highs: Vec<String> = Vec::new();
+            for line in s.lines() {
+                let t = line.trim();
+                if let Some(v) = t.strip_prefix("DW_AT_low_pc") {
+                    lows.push(v.trim().to_string());
+                } else if let Some(v) = t.strip_prefix("DW_AT_high_pc") {
+                    highs.push(v.trim().to_string());
+                }
+            }
+            Some(lows.into_iter().zip(highs).collect())
+        };
+
+        let (Some(emb), Some(side)) = (pcs(&embedded_core, "emb"), pcs(&sidecar_mod, "side"))
+        else {
+            eprintln!("llvm-dwarfdump not found; skipping offset-match check");
+            return;
+        };
+        assert!(!emb.is_empty(), "the embedded DWARF had no pc ranges");
+        assert_eq!(
+            emb, side,
+            "the sidecar's code offsets must match the embedded component's exactly"
+        );
+    }
 }

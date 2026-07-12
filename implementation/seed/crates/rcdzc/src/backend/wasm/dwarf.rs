@@ -177,6 +177,18 @@ fn read_uleb(bytes: &[u8], mut pos: usize) -> Option<(u64, usize)> {
     }
 }
 
+/// Wrap the `.debug_*` custom `sections` in a STANDALONE bare core wasm module (Mode S — the sidecar
+/// `dwarf` artifact). Just the 8-byte core header (`\0asm` + version 1) followed by the custom sections
+/// — no type/func/code sections, so it defines nothing executable; it exists only to carry the DWARF a
+/// debugger loads alongside the runnable component (the `external_debug_info` target). `wasm-tools` and
+/// `llvm-dwarfdump` parse it exactly as they parse the embedded core's sections.
+pub fn standalone_dwarf_module(sections: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + sections.len());
+    out.extend_from_slice(crate::backend::wasm::wasm_abi::CORE_MAGIC);
+    out.extend_from_slice(sections);
+    out
+}
+
 /// A wasm CUSTOM section (id 0): its contents are `<name-len-uleb><name-bytes><payload>`.
 fn custom_section(name: &str, payload: &[u8]) -> Vec<u8> {
     let mut contents = Vec::new();

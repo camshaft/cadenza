@@ -193,24 +193,7 @@ pub fn emit(
     if let Some(span_data) = spans
         && let Some(code_base) = dwarf::code_section_payload_base(&core)
     {
-        // `funcs`, `ranges`, and `layout.order` are all in the SAME emission order and 1:1, so zip
-        // them: each function's def (→ source name), its code-offset range (D1b), and the body span
-        // (→ line, D1a). A synthesized function (no `src_body`) is skipped — no misleading row.
-        let ranges = serialize::code_ranges(&funcs, &imports);
-        let mut dwarf_funcs = Vec::new();
-        for ((f, r), &def) in funcs.iter().zip(&ranges).zip(&layout.order) {
-            let Some(src) = f.src_body else { continue };
-            let line = span_data
-                .range(src)
-                .map(|(s, _)| span_data.line_at(s))
-                .unwrap_or(1);
-            dwarf_funcs.push(dwarf::DwarfFunc {
-                name: db.defs[def].name.clone(),
-                low_pc: code_base + r.code_start,
-                high_pc: code_base + r.code_end,
-                line,
-            });
-        }
+        let dwarf_funcs = dwarf_funcs_for(db, layout, &funcs, &imports, code_base, span_data);
         core.extend_from_slice(&dwarf::debug_sections(&span_data.module_path, &dwarf_funcs));
     }
 
@@ -285,6 +268,115 @@ pub fn emit(
     // ABI-agnostic; the ABI identity lives in the generated `runtime_abi` table.
     let import_name = runtime_import_name();
     Ok(envelope::assemble(&core, &boundary, &imports, &import_name))
+}
+
+/// Build the per-function DWARF descriptors for a module (shared by Mode E — embedded — and Mode S —
+/// the sidecar `dwarf` file). `funcs`, `code_ranges(funcs, imports)`, and `layout.order` are all in the
+/// SAME emission order and 1:1, so zip them: each function's def (→ source name), its code-offset range
+/// (D1b), and the body span (→ line, D1a). `code_base` makes the range's payload-relative offsets
+/// ABSOLUTE. A synthesized function (no `src_body`) is skipped — no misleading row. Because Mode E
+/// appends debug sections AFTER the code section (inert), the code offsets are identical whether the
+/// DWARF rides embedded or in a sidecar file, so both modes share this exact computation.
+fn dwarf_funcs_for(
+    db: &Db,
+    layout: &Layout,
+    funcs: &[SelectedFunc],
+    imports: &[&runtime_abi::RtOp],
+    code_base: u32,
+    span_data: &crate::spans::SpanData,
+) -> Vec<dwarf::DwarfFunc> {
+    let ranges = serialize::code_ranges(funcs, imports);
+    let mut out = Vec::new();
+    for ((f, r), &def) in funcs.iter().zip(&ranges).zip(&layout.order) {
+        let Some(src) = f.src_body else { continue };
+        let line = span_data
+            .range(src)
+            .map(|(s, _)| span_data.line_at(s))
+            .unwrap_or(1);
+        out.push(dwarf::DwarfFunc {
+            name: db.defs[def].name.clone(),
+            low_pc: code_base + r.code_start,
+            high_pc: code_base + r.code_end,
+            line,
+        });
+    }
+    out
+}
+
+/// Emit a standalone DWARF SIDECAR module (Mode S of `DESIGN-debug-info-rcdzc.md` §9.2) — a
+/// `kind == "dwarf"` artifact separate from the runnable component. It is a minimal core wasm module
+/// carrying ONLY the four `.debug_*` custom sections; the runnable component (emitted separately by a
+/// sibling `Emit(WasmDebug)` or `Emit(Wasm)` request) stays lean, and a debugger loads this file
+/// alongside it. Because Mode E appends its debug sections AFTER the code section (inert), a function's
+/// code offset is the same whether DWARF is embedded or here — so this reuses the exact same
+/// `core_module` + `code_ranges` + `code_section_payload_base` computation, then wraps the sections in
+/// a bare module header instead of appending them to the runnable core.
+///
+/// Requires `spans` (guaranteed present by `compile`'s §9.4 check for a `needs_spans()` target). The
+/// resource-escape shapes decline here for now (same scope as Mode E) — their code offsets come from a
+/// different core layout, a later increment.
+pub fn emit_dwarf(
+    db: &mut Db,
+    layout: &Layout,
+    span_data: &crate::spans::SpanData,
+) -> Result<Vec<u8>, Reject> {
+    // A nullary-compound resource escape has a different core layout; the sidecar-DWARF path does not
+    // model it yet (parallel to Mode E's scope). Decline cleanly rather than emit offsets into the wrong
+    // core.
+    if let [e] = &layout.exports[..]
+        && e.params.is_empty()
+        && matches!(
+            e.result,
+            crate::ty::Ty::Tuple(_)
+                | crate::ty::Ty::Record(_)
+                | crate::ty::Ty::Sum { .. }
+                | crate::ty::Ty::List(_)
+                | crate::ty::Ty::Bytes
+        )
+    {
+        return Err(Reject::decline(
+            "a DWARF sidecar for a compound-returning export is not yet supported",
+        ));
+    }
+
+    // Recompute the exact core the runnable component embeds (imports + selection + serialize), so the
+    // code offsets this DWARF references match that component byte-for-byte. Mirrors `emit`'s ordinary
+    // multi-export path.
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+    let layout = layout.with_import_base(imports.len() as u32);
+    let layout = &layout;
+    let mut funcs: Vec<SelectedFunc> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        let params = match layout.export_plan(def) {
+            Some(e) => e.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
+    }
+    // The code-section base is where the RUNNABLE component's core module lays its code payload — the
+    // undecorated core (no debug sections; the sidecar's addresses reference the runnable's code, which
+    // carries no embedded debug). Serialize it just to measure that base.
+    let core = serialize::core_module(&funcs, &imports, layout, None).map_err(Reject::decline)?;
+    let code_base = dwarf::code_section_payload_base(&core)
+        .ok_or_else(|| Reject::decline("the core module has no code section to reference"))?;
+
+    let dwarf_funcs = dwarf_funcs_for(db, layout, &funcs, &imports, code_base, span_data);
+    let sections = dwarf::debug_sections(&span_data.module_path, &dwarf_funcs);
+    Ok(dwarf::standalone_dwarf_module(&sections))
 }
 
 /// Emit the COMBINED runtime-import + resource escape component (R2) for a single nullary export

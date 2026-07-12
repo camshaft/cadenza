@@ -93,8 +93,13 @@ mod tag {
     /// `DESIGN-debug-info-rcdzc.md`) — a `Target::WasmDebug`. The additive tag that enables debug output
     /// as a sidecar request, not a `--debug` flag: a driver puts this in the request list (and supplies
     /// the `spans` input for the DWARF increments) rather than passing a build flag. Its artifact is a
-    /// `component`, decorated and strippable (§5). (Mode S — a separate `dwarf` file — is a later tag.)
+    /// `component`, decorated and strippable (§5). (Mode S — a separate `dwarf` file — is `EMIT_DWARF`.)
     pub const EMIT_WASM_DEBUG: u8 = 0x03;
+    /// Emit a DETACHED DWARF sidecar (Mode S of `DESIGN-debug-info-rcdzc.md` §9.2) — a `Target::Dwarf`,
+    /// a separate `kind == "dwarf"` artifact carrying only the `.debug_*` sections. The second
+    /// enablement mode; like `EMIT_WASM_DEBUG` it needs the `spans` input. A run can request both (a
+    /// lean component + its detached DWARF) or either alone.
+    pub const EMIT_DWARF: u8 = 0x04;
     pub const QUERY_TYPE_OF: u8 = 0x10;
     pub const QUERY_USES_OF: u8 = 0x11;
     pub const QUERY_TYPE_AT: u8 = 0x12;
@@ -122,6 +127,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
     match r.byte()? {
         tag::EMIT_WASM => Some(Request::Emit(crate::backend::Target::Wasm)),
         tag::EMIT_WASM_DEBUG => Some(Request::Emit(crate::backend::Target::WasmDebug)),
+        tag::EMIT_DWARF => Some(Request::Emit(crate::backend::Target::Dwarf)),
         tag::EMIT_RUST => Some(Request::Emit(crate::backend::Target::Rust)),
         tag::EMIT_RUST_ASYNC => Some(Request::Emit(crate::backend::Target::RustAsync)),
         tag::QUERY_TYPE_OF => Some(Request::Query(Query::TypeOf {
@@ -152,6 +158,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
     match req {
         Request::Emit(crate::backend::Target::Wasm) => out.push(tag::EMIT_WASM),
         Request::Emit(crate::backend::Target::WasmDebug) => out.push(tag::EMIT_WASM_DEBUG),
+        Request::Emit(crate::backend::Target::Dwarf) => out.push(tag::EMIT_DWARF),
         Request::Emit(crate::backend::Target::Rust) => out.push(tag::EMIT_RUST),
         Request::Emit(crate::backend::Target::RustAsync) => out.push(tag::EMIT_RUST_ASYNC),
         Request::Query(Query::TypeOf { name }) => {
