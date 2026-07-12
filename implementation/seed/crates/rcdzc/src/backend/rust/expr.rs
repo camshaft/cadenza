@@ -698,7 +698,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // payload at `path`: `match <scrut> { <Enum>::<V>(p) => <walk path into p>, _ => unreachable!() }`.
         // Control is already in the matched arm (the disc was checked), so the `_` arm is unreachable.
         // Scrutinees here are pure (a param/local), so re-matching is cheap and observably identical.
-        Core::SumPayload { scrutinee, path } => emit_sum_payload(db, id, scrutinee, &path, env, ctx),
+        Core::SumPayload { scrutinee, path } => {
+            emit_sum_payload(db, id, scrutinee, &path, env, ctx)
+        }
         Core::ListNew { .. }
         | Core::ListLen { .. }
         | Core::ListPush { .. }

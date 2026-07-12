@@ -632,16 +632,17 @@ fn a_generic_user_sum_emits_a_generic_enum() {
         rs.contains("pub enum Box<T0> { Wrap(T0) }"),
         "generic enum decl:\n{rs}"
     );
-    assert!(rs.contains("unwrap(b: Box<i64>)"), "instantiated use:\n{rs}");
+    assert!(
+        rs.contains("unwrap(b: Box<i64>)"),
+        "instantiated use:\n{rs}"
+    );
 }
 
 #[test]
 fn the_builtin_option_maps_to_rusts_own_and_emits_no_enum() {
     // The built-in `Option` maps to Rust's OWN `Option` — no synthetic `enum Option { … }` is emitted
     // (that would shadow std's). Construction uses `Some(..)`/`None`, which resolve to std's.
-    let rs = compile_rust(
-        "(module m (def (wrap (: n Int64)) (Some n)) (export wrap))",
-    );
+    let rs = compile_rust("(module m (def (wrap (: n Int64)) (Some n)) (export wrap))");
     assert!(
         !rs.contains("enum Option"),
         "must not emit a synthetic Option enum:\n{rs}"
@@ -661,7 +662,8 @@ fn a_recursive_sum_declines_the_whole_function() {
     )
     .expect_err("a recursive sum must decline");
     assert!(
-        err.iter().any(|d| d.contains("recursive") || d.contains("no emitted Rust enum")),
+        err.iter()
+            .any(|d| d.contains("recursive") || d.contains("no emitted Rust enum")),
         "decline reason should cite the recursive/unrepresentable sum: {err:?}"
     );
 }
@@ -752,7 +754,10 @@ fn async_env_type_param_does_not_collide_with_a_user_sum_named_e() {
     );
     assert!(rs.contains("pub enum E {"), "user enum E emitted:\n{rs}");
     assert!(rs.contains("<__CdzE: CdzEnv>"), "reserved env param:\n{rs}");
-    assert!(!rs.contains("<E: CdzEnv>"), "no bare-E param collision:\n{rs}");
+    assert!(
+        !rs.contains("<E: CdzEnv>"),
+        "no bare-E param collision:\n{rs}"
+    );
     // It compiles (the enum `E` and the env param no longer collide).
     let driver = r#"
 struct M;

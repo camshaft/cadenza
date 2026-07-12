@@ -974,7 +974,10 @@ fn cdz_return_type(module: &str, name: &str) -> Option<String> {
 ///    order (both the type's render and the emitted Rust tuple order them the same), so element `i`
 ///    reads `.i`;
 ///  - any scalar (`Int64`, `Bool`, …) → `{}` (an integer/bool `Display`s exactly as cdz-run prints it).
-fn cdz_render_expr(ty: &str, sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>) -> String {
+fn cdz_render_expr(
+    ty: &str,
+    sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+) -> String {
     cdz_render_at(ty, "__r", sums)
 }
 
