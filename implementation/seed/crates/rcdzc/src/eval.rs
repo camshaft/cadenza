@@ -688,6 +688,28 @@ pub fn variant_payload_type(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> 
     }
 }
 
+/// The DECLARATION OCCURRENCE of the sum type the variant constructor at `id` belongs to — the identity
+/// by which sum types are compared (`ty.rs` §Two sums are the SAME type iff their `decl` and `args`
+/// agree). A variant constructor's `(meta t)` scheme is `(-> payload Sum)` for a payload variant or the
+/// bare `Sum` for a nullary one; either way the OWNING sum is the constructor's RESULT type, so read the
+/// arrow's result (or the bare type) and return its `Ty::Sum { decl }`. `None` if `id` is not a variant
+/// constructor or its result is not a sum. This is what a sum-MATCH uses to verify each arm's pattern
+/// constructor belongs to the SCRUTINEE's sum (a `Some` pattern over a `T` scrutinee is a type error),
+/// the pattern analogue of the `(meta variant)` discriminant [`variant_disc_of`] reads.
+pub fn variant_owner_decl(db: &mut Db, id: StructId) -> Option<crate::ast::StructId> {
+    let mut fresh = Fresh::new();
+    let scheme = scheme_of(db, id, &mut fresh)?;
+    // A payload variant `(-> payload Sum)` → the result; a nullary variant's scheme is the bare `Sum`.
+    let result = match scheme.ty {
+        Ty::Fn(_, result) => *result,
+        other => other,
+    };
+    match result {
+        Ty::Sum { decl, .. } => Some(decl),
+        _ => None,
+    }
+}
+
 /// Project a meta-channel field named `key` from the record value at `id`, following a `Ref` to the
 /// record. Returns the field's value occurrence, or `None` if the value is not a record or has no such
 /// field. The one generic projection, restricted to the `meta` namespace.

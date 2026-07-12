@@ -1513,6 +1513,67 @@
                           ((None _)       -1))) (export main)))
   (output (: 7 Int64)))
 
+; --- A match arm's pattern is TYPE-CHECKED against the scrutinee's sum type ---------------------
+; type-system.md §The Structural Types Are Record, Sum, Function, Tuple, And List + §sum identity is by
+; DECLARATION OCCURRENCE (`Option Int64` ≠ `Option Bool`; two distinct `(type …)` decls are distinct
+; types even when they share a variant name). A match arm's CONSTRUCTOR pattern names a variant, and that
+; variant MUST belong to the SCRUTINEE's sum — matching a `T` value against a `Some`/`U.A` pattern is a
+; type error (a `T` value has no `Some` variant), rejected CDZ0203 exactly as a `(: 5 Bool)` annotation
+; or a mismatched `if` branch is. Without the check the arm binds the payload under the WRONG variant's
+; type — a type-confusion that returns a wrong value, or (when the payload widths differ, e.g. an Int64
+; read as a Bool) emits an INVALID WASM component. The nested cases above pin that matching correctly
+; crosses sum boundaries at DIFFERENT levels; these pin that a pattern from a foreign sum at the SAME
+; level is rejected. The bare-nullary path is already sound (a bare name is looked up in the scrutinee
+; sum's own declaration, so a foreign `None` binds as a plain binder); the gap was the compound ctor.
+
+(case "a match on a value of one sum type rejects a pattern from a different sum type"
+  (doc    "`(type T (A Int64))` and a value `(T.A 5)` of type T, matched against `Option` patterns `((Some
+           x) x) ((None) 0)`. `Some`/`None` are variants of `Option`, NOT of `T`, so this is a type
+           mismatch — a `T` value has no `Some` variant — and the compiler MUST reject it (CDZ0203). A
+           generation without the check ACCEPTED it, binding `x` to T's payload through the `Some` arm and
+           returning 5 — a type-confusion (T's bytes read under Option's payload type). Sum identity is by
+           declaration occurrence, so the pattern's constructor must belong to the scrutinee's sum.")
+  (input  (do
+            (type T (A Int64))
+            (def (main) (match (T.A 5) ((Some x) x) ((None) 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a cross-type variant pattern whose payload width differs is rejected, not miscompiled"
+  (doc    "The sharper witness: `(type T (A Int64))` and `(type U (A Bool))` share the variant name `A`
+           but are distinct sums with distinct payload widths. Matching a `T` value against `U`'s pattern
+           `(U.A x)` and using `x` in `(if x …)` would bind T's Int64 bytes as a Bool — an i64 value in an
+           i32 slot — which a generation without the type check emitted as an INVALID WASM component
+           `cdz-run` refuses to load. The pattern's constructor `U.A` belongs to `U`, not the scrutinee's
+           `T`, so it is rejected CDZ0203 before any bytes are emitted — decline/reject, never miscompile.")
+  (input  (do
+            (type T (A Int64))
+            (type U (A Bool))
+            (def (main) (match (T.A 5) ((U.A x) (if x 1 0)))) (export main)))
+  (error  CDZ0203))
+
+(case "a runtime scrutinee of one sum type rejects a foreign sum's pattern"
+  (doc    "The runtime (emitted-path) companion: a parameter `t : T` matched against `Option` patterns.
+           Even where the scrutinee is not a compile-time-constant sum, the arm's constructor must belong
+           to the scrutinee's sum — a generation without the check bound the payload under Option's type
+           on the emitted path too (accepted → 9). Rejected CDZ0203, so the unsoundness is closed for a
+           runtime scrutinee as well as a constant one.")
+  (input  (do
+            (type T (A Int64))
+            (def (f (: t T)) (match t ((Some x) x) ((None) 0)))
+            (def (main) (f (T.A 9))) (export main)))
+  (error  CDZ0203))
+
+(case "a same-type sum match is accepted and binds the payload (the control)"
+  (doc    "The control pinning the rejects above are CROSS-TYPE patterns, not sum matching in general: a
+           value `(T.A 5)` matched against its OWN type's pattern `(T.A x)` binds `x` to the payload 5 and
+           returns it. Triangulates that the sum-match machinery works; the gap the finding closed was the
+           missing scrutinee-type-vs-pattern-constructor-type check on a compound variant pattern.")
+  (input  (do
+            (type T (A Int64))
+            (def (main) (match (T.A 5) ((T.A x) x))) (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
 ; --- A constructor pattern NESTED INSIDE A TUPLE ELEMENT of a payload --------------------------
 ; The nested-payload cases above bind a constructor DIRECTLY under a constructor (`(W.Wrap (N.L v))`).
 ; A distinct shape a compiler / proof kernel hits is a constructor pattern nested inside a TUPLE

@@ -46,6 +46,7 @@ pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant tuple is returned as a program result
 pass	a correctly-annotated function parameter is accepted
+pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function-type annotation checks its inner result type against the argument
 pass	a decimal integer literal
@@ -107,6 +108,7 @@ pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
+pass	a match on a value of one sum type rejects a pattern from a different sum type
 pass	a match takes another match's result as its scrutinee
 pass	a match whose only arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
@@ -188,6 +190,7 @@ pass	a runtime record whose field is a runtime tuple escapes to the host
 pass	a runtime remainder takes the dividend's sign
 pass	a runtime right shift by the bit width or more traps
 pass	a runtime scrutinee matching no arm traps
+pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
 pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime subtraction that overflows traps
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
@@ -198,6 +201,7 @@ pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
+pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch

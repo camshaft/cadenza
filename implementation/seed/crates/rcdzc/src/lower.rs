@@ -776,6 +776,26 @@ fn pattern_constraints(
             "a sum match pattern head is not a variant constructor",
         ));
     };
+    // TYPE-CHECK the pattern's constructor against the SCRUTINEE's sum type: the variant must belong to
+    // the sum being matched, not merely be SOME sum's variant with the right name. A `Some`/`U.A` pattern
+    // over a `T` scrutinee resolves to a valid discriminant of Option/U, but that variant is not T's — a
+    // type confusion that would bind the payload under the wrong type (a wrong VALUE, or an INVALID WASM
+    // component when the payload widths differ). Sum identity is by DECLARATION OCCURRENCE (`ty.rs`
+    // §Two sums are the SAME type iff their `decl` agree), so compare the pattern ctor's owning `decl`
+    // against the scrutinee `ty`'s `decl` — a mismatch is CDZ0203, the same type error `(: 5 Bool)` gets.
+    // (A bare nullary-variant name took the `variant_disc_by_name` path above, which is already scoped to
+    // this sum's declaration, so only a COMPOUND ctor pattern reaches here needing the check.)
+    if let crate::ty::Ty::Sum { decl: scrut_decl, .. } = ty
+        && crate::eval::variant_owner_decl(db, head) != Some(*scrut_decl)
+    {
+        return Err(Reject::coded(
+            Code::TypeMismatch,
+            format!(
+                "this variant pattern is not a variant of the matched type {}",
+                ty.render_name()
+            ),
+        ));
+    }
     let mut out = vec![(path.clone(), disc)];
     // Recurse into the payload. A single-payload variant `(Some p)` descends into `p` at `path +
     // [Payload]`; the payload's TYPE is the variant's payload type at this instantiation, so a nested
