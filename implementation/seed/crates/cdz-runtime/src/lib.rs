@@ -2679,6 +2679,32 @@ fn champ_become_hdr(node: Handle, handles: Vec<Handle>, datamap: u32, nodemap: u
     node
 }
 
+/// `mem::take` a uniquely-owned (`rc == 1`) node's handle vector out (a pointer swap, no clone),
+/// leaving it transiently empty. The caller reinstalls a handle vector via `champ_become_hdr` before
+/// returning, so no other reference observes the empty state (single-threaded). Moving a `Handle` out
+/// touches no refcount (`Copy`, no `Drop`). SAFETY: caller verified `node_rc(node) == 1`.
+fn champ_take_handles(node: Handle) -> Vec<Handle> {
+    match unsafe { node.0.as_mut() } {
+        Some(n) => std::mem::take(&mut n.handles),
+        None => Vec::new(),
+    }
+}
+
+/// Write a single child slot AND patch the `size` header field of a uniquely-owned (`rc == 1`) CHAMP
+/// node IN PLACE — the zero-allocation path for a remove whose subnode kept its arity (only one child
+/// pointer changes and the subtree count drops by one; datamap/nodemap are unchanged). SAFETY: caller
+/// verified `node_rc(node) == 1` and `slot < handles.len()`, `raw.len() == CHAMP_HEADER_SIZE`.
+fn champ_set_child_and_size_inplace(node: Handle, slot: usize, child: Handle, size: u32) {
+    if let Some(n) = unsafe { node.0.as_mut() } {
+        if let Some(h) = n.handles.get_mut(slot) {
+            *h = child;
+        }
+        if n.raw.len() >= CHAMP_HEADER_SIZE {
+            n.raw[8..12].copy_from_slice(&size.to_le_bytes());
+        }
+    }
+}
+
 /// FBIP variant of `champ_insert_node`. `mine` ⇒ reuse `node`'s shell in place; `!mine` ⇒ delegate to
 /// the path-copying `champ_insert_node` verbatim. Bounded recursion (≤ `CHAMP_LEVELS`). CONSUMES
 /// `node` and `entry` (`entry[0]` = key, len = `stride`). See the safety note above.
@@ -3028,25 +3054,25 @@ fn champ_remove_fbip(
     if !mine {
         return champ_remove_node(node, key, hash, level, stride); // shared: proven copy path
     }
-    let (datamap, nodemap, size, handles) =
-        with_node(node, (0u32, 0u32, 0u32, Vec::<Handle>::new()), |n| {
-            (
-                champ_datamap(&n.raw),
-                champ_nodemap(&n.raw),
-                champ_size(&n.raw),
-                n.handles.clone(),
-            )
-        });
+    // ALLOCATION-LAZY: read the header + INDIVIDUAL slots (borrows, no Vec) to decide absent-vs-present,
+    // and only `mem::take` the handle vector in the branches that actually rebuild a node. Every ABSENT
+    // path and the common non-collapse DESCEND then allocate NOTHING (the old code cloned the whole
+    // handle vector at every level up front). `node` is rc==1 (caller-gated), so an in-place slot write
+    // and a deferred take are both safe — no other reference observes the node.
+    let (datamap, nodemap, size, arity) = with_node(node, (0u32, 0u32, 0u32, 0usize), |n| {
+        (champ_datamap(&n.raw), champ_nodemap(&n.raw), champ_size(&n.raw), n.handles.len())
+    });
 
     // Empty node or collision node.
     if datamap == 0 && nodemap == 0 {
-        if handles.is_empty() {
+        if arity == 0 {
             return (node, false); // empty — absent
         }
+        // Collision node: scan entry keys by BORROW (champ_handle_at), no clone, to find a match.
         let mut found = None;
         let mut idx = 0;
-        while idx < handles.len() {
-            if champ_eq(handles[idx], key) {
+        while idx < arity {
+            if champ_eq(champ_handle_at(node, idx), key) {
                 found = Some(idx);
                 break;
             }
@@ -3054,10 +3080,12 @@ fn champ_remove_fbip(
         }
         let j = match found {
             Some(j) => j,
-            None => return (node, false), // absent — unchanged
+            None => return (node, false), // absent — unchanged, zero alloc
         };
-        let entries_after = (handles.len() / stride - 1) as u32;
-        let mut new_handles = Vec::with_capacity(handles.len() - stride);
+        // Present: NOW take the vector and rebuild without the removed entry.
+        let handles = champ_take_handles(node);
+        let entries_after = (arity / stride - 1) as u32;
+        let mut new_handles = Vec::with_capacity(arity - stride);
         for (i2, &h) in handles.iter().enumerate() {
             if i2 >= j && i2 < j + stride {
                 op_drop(h); // removed entry columns: release the node's reference
@@ -3065,10 +3093,7 @@ fn champ_remove_fbip(
                 new_handles.push(h); // carried, no dup
             }
         }
-        return (
-            champ_become_hdr(node, new_handles, 0, 0, entries_after),
-            true,
-        );
+        return (champ_become_hdr(node, new_handles, 0, 0, entries_after), true);
     }
 
     let dcount = data_count(datamap) as usize;
@@ -3079,11 +3104,13 @@ fn champ_remove_fbip(
 
     if datamap & bit != 0 {
         let eidx = entry_index_for_slot(datamap, i) as usize;
-        if !champ_eq(handles[stride * eidx], key) {
-            return (node, false); // different key occupies the slot — absent
+        if !champ_eq(champ_handle_at(node, stride * eidx), key) {
+            return (node, false); // different key occupies the slot — absent, zero alloc
         }
+        // Present: take the vector and rebuild without the removed entry (keeping the subnodes).
+        let handles = champ_take_handles(node);
         let new_datamap = datamap & !bit;
-        let mut new_handles = Vec::with_capacity(handles.len() - stride);
+        let mut new_handles = Vec::with_capacity(arity - stride);
         for e in 0..dcount {
             if e == eidx {
                 for t in 0..stride {
@@ -3106,13 +3133,13 @@ fn champ_remove_fbip(
 
     if nodemap & bit != 0 {
         let sidx = subnode_index_for_slot(nodemap, i) as usize;
-        let child = handles[subbase + sidx];
+        let child = champ_handle_at(node, subbase + sidx); // borrow the child slot, no clone
         let child_mine = node_rc(child) == 1;
         let (new_child, removed) = champ_remove_fbip(child, key, hash, level + 1, stride, child_mine);
         if !removed {
             // Unchanged: `new_child == child` (in-place path) or an untouched shared handle (copy path
             // returns the input on absent). Either way the node's reference is intact; nothing to undo.
-            return (node, false);
+            return (node, false); // zero alloc
         }
         if let Some(centry) = collapse_candidate(new_child, stride) {
             // COLLAPSE: inline the child's single entry into this node at slot i. Dup the entry cols
@@ -3121,10 +3148,11 @@ fn champ_remove_fbip(
                 op_dup(h);
             }
             op_drop(new_child); // frees the collapsed child; entry cols survive via our dups
+            let handles = champ_take_handles(node);
             let new_datamap = datamap | bit;
             let new_nodemap = nodemap & !bit;
             let new_eidx = entry_index_for_slot(new_datamap, i) as usize;
-            let mut new_handles = Vec::with_capacity(handles.len());
+            let mut new_handles = Vec::with_capacity(arity);
             for e in 0..dcount {
                 for t in 0..stride {
                     new_handles.push(handles[stride * e + t]); // carried, no dup
@@ -3145,16 +3173,12 @@ fn champ_remove_fbip(
             );
         }
         // Subnode still holds ≥2 entries: keep it, swap in the rebuilt child (== child if in-place).
-        // Arity unchanged — mutate the one child slot in the owned `handles` and reinstall, rather than
-        // rebuilding a fresh Vec. `handles` is this call's own clone; the recursion consumed the old
-        // child reference at this slot, so overwriting it with `new_child` is correct (a no-op when the
-        // child was refit in place, i.e. `new_child == child`).
-        let mut handles = handles;
-        handles[subbase + sidx] = new_child;
-        return (
-            champ_become_hdr(node, handles, datamap, nodemap, size - 1),
-            true,
-        );
+        // Arity unchanged, so DON'T take/rebuild — write the one child slot and patch the size field
+        // directly into `node`'s live storage (rc==1). The recursion consumed the old child reference
+        // at this slot; overwriting it with `new_child` is a no-op when the child was refit in place
+        // (`new_child == child`) and installs the fresh node otherwise. ZERO allocation.
+        champ_set_child_and_size_inplace(node, subbase + sidx, new_child, size - 1);
+        return (node, true);
     }
 
     (node, false) // empty slot — absent
@@ -3783,9 +3807,9 @@ mod tests {
     /// including transient Vecs freed immediately, which the `live-objects` node counter does NOT see —
     /// so it catches a future change that reintroduces the per-spine-node `new_handles`/`champ_header`
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
-    /// after the champ_become_hdr + in-place-slot work (insert 3907, remove 5207, iterate 5248, push
-    /// 197, get 0); they are UPPER BOUNDS so ordinary noise never trips them but a regression to the
-    /// old 6779/8397 does.
+    /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove work (insert 3907, remove
+    /// 2953, iterate 5248, push 197, get 0); they are UPPER BOUNDS so ordinary noise never trips them
+    /// but a regression toward the old 6779/8397 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -3839,7 +3863,7 @@ mod tests {
             }
         });
         println!("ALLOC map_remove x{N}: {remove}");
-        assert!(remove <= 6500, "unique map_remove x{N} allocs {remove} exceeds ceiling 6500 (was 8397 before champ_become_hdr + in-place slot)");
+        assert!(remove <= 3500, "unique map_remove x{N} allocs {remove} exceeds ceiling 3500 (was 8397, then 5207 after champ_become_hdr, now ~2953 after allocation-lazy champ_remove_fbip)");
         op_drop(m2);
 
         // (D) vec push (unique, FBIP) — the in-place RRB reference: near-zero amortized.
@@ -7018,6 +7042,86 @@ mod tests {
         assert_eq!(mlookup_int(m, 2), Some(20));
         op_drop(m);
         assert_eq!(live_nodes(), before);
+    }
+
+    #[test]
+    fn map_remove_inplace_descend_no_collapse_is_canonical() {
+        reset();
+        let before = live_nodes();
+        // Guards the allocation-lazy champ_remove_fbip: the NON-COLLAPSE descend path now writes the
+        // rebuilt child slot + patches the size header IN PLACE (champ_set_child_and_size_inplace),
+        // and every ABSENT check reads slots by borrow with NO handle-vector clone. Build a subnode
+        // holding THREE entries that share low-5 hash bits (so removing one leaves ≥2 → the subnode is
+        // kept, not collapsed), and verify: (1) the FBIP in-place result is byte-identical (champ_eq +
+        // champ_hash) to the copy-path build of the same final contents; (2) all survivors present, the
+        // removed key absent; (3) an absent-key remove in the same shape is a true no-op; (4) no leak.
+        //
+        // low5_split_pair gives two low-5 colliders; a third same-low-5 key makes the level-1 subnode
+        // hold 3 entries. Search for it the same way low5_split_pair does. `hash_of` boxes, hashes, and
+        // drops a probe so nothing leaks during the search.
+        let hash_of = |x: i64| -> u32 {
+            let k = op_box_int(x);
+            let h = champ_hash(k);
+            op_drop(k);
+            h
+        };
+        let (a, b) = low5_split_pair();
+        let (ha, hb) = (hash_of(a), hash_of(b));
+        let low = ha & 0x1f;
+        let mut c = None;
+        let mut v = 0i64;
+        while v < 200_000 {
+            if v != a && v != b {
+                let h = hash_of(v);
+                if h & 0x1f == low && h != ha && h != hb {
+                    c = Some(v);
+                    break;
+                }
+            }
+            v += 1;
+        }
+        let c = c.expect("a third key sharing the low-5 bits");
+
+        // Build {a,b,c, plus two ordinary keys} the FBIP (unique) way, then remove `b` (a deep, non-
+        // collapsing removal since {a,c} keep the subnode at ≥2 entries).
+        let build_then_remove_b = |shared: bool| -> Handle {
+            let mut m = op_map_empty();
+            for &(k, val) in &[(a, 1i64), (b, 2), (c, 3), (7i64, 70), (8, 80)] {
+                if shared {
+                    op_dup(m);
+                    let old = m;
+                    m = minsert_int(m, k, val);
+                    op_drop(old);
+                } else {
+                    m = minsert_int(m, k, val);
+                }
+            }
+            if shared {
+                op_dup(m);
+                let old = m;
+                m = mremove_int(m, b);
+                op_drop(old);
+            } else {
+                m = mremove_int(m, b); // unique → the in-place descend path
+            }
+            m
+        };
+        let fbip = build_then_remove_b(false);
+        let copy = build_then_remove_b(true);
+        assert!(champ_eq(fbip, copy), "in-place-descend remove == copy-path remove (canonical)");
+        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert_eq!(op_map_size(fbip), 4, "one of five entries removed");
+        assert_eq!(mlookup_int(fbip, b), None, "removed key absent");
+        for &(k, val) in &[(a, 1i64), (c, 3), (7i64, 70), (8, 80)] {
+            assert_eq!(mlookup_int(fbip, k), Some(val), "survivor key {k} intact");
+        }
+        // Absent-key remove on this shape is a true no-op (zero alloc path), value preserved.
+        let fbip = mremove_int(fbip, 999_999);
+        assert_eq!(op_map_size(fbip), 4, "absent remove leaves size");
+        assert_eq!(mlookup_int(fbip, a), Some(1));
+        op_drop(fbip);
+        op_drop(copy);
+        assert_eq!(live_nodes(), before, "no leak across the in-place-descend removes");
     }
 
     #[test]
