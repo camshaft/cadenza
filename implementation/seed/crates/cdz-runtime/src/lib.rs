@@ -5177,6 +5177,39 @@ mod tests {
         assert!(nlookup <= 5500, "nested-compound-key lookup x{N} allocs {nlookup} exceeds ceiling 5500 (probe arr nodes only; the general-walk hash worklists are thread-local-reused, allocation-free)");
         op_drop(nm);
 
+        // (H3) map lookup by a heap-backed STRING key (the JSON-object / dictionary shape: keys are
+        // multi-byte strings whose raw is a Heap `Vec<u8>`, not an inline immediate). A string key is
+        // arity-0, so champ_hash takes the arity-0 fast path (FNV over the leaf's raw, NO worklist) and
+        // a slot-hit champ_eq compares raw bytes with NO worklist — so the LOOKUP itself allocates
+        // nothing; the only per-iteration allocation is the probe string leaf. The probe key bytes are
+        // pre-built ONCE outside the measured closure (a `Vec<Vec<u8>>`) so the counting allocator does
+        // NOT charge `format!`'s buffer-growth to the lookup — inside the loop we build exactly one
+        // string leaf per probe (`op_str_new` on a cloned byte string) and look it up.
+        let skeys: Vec<Vec<u8>> = (0..N).map(|k| format!("key-{k:0>11}").into_bytes()).collect();
+        let mut sm = op_map_empty();
+        for bytes in &skeys {
+            let key = op_str_new(String::from_utf8(bytes.clone()).unwrap());
+            sm = op_map_insert(sm, key, op_box_int(0));
+        }
+        let slookup = measure(&mut || {
+            for bytes in &skeys {
+                // `bytes.clone()` = the probe's key bytes (1 alloc, unavoidable — a probe needs bytes);
+                // `String::from_utf8` reuses that buffer; `op_str_new`'s `into_bytes` reuses it again, so
+                // the runtime adds only the leaf's node Box. = 2 allocs/probe, NONE from the lookup.
+                let probe = op_str_new(String::from_utf8(bytes.clone()).unwrap());
+                let _ = op_map_lookup(sm, probe);
+                op_drop(probe);
+            }
+        });
+        println!("ALLOC map_lookup_stringkey x{N}: {slookup}");
+        // Each iteration allocates ONLY the probe string leaf: the cloned key-bytes Vec + the node Box (the
+        // 16-byte string exceeds the 12-byte inline cap, so the raw stays Heap = the cloned Vec, reused via
+        // `into_bytes` — no extra raw alloc). = 2 allocs/op. The arity-0 champ_hash fast path and the
+        // no-worklist champ_eq byte compare add NOTHING to the lookup. ~2000 for N=1000 = 2/lookup (probe
+        // bytes + node). A regression to an allocating hash/eq walk for string keys would exceed this.
+        assert!(slookup <= 2200, "string-key lookup x{N} allocs {slookup} exceeds ceiling 2200 (probe string leaf only: cloned key bytes + node Box; arity-0 hash + no-worklist eq add nothing to the lookup)");
+        op_drop(sm);
+
         // (I) sum construction (Option/Result-shaped: disc in raw + payload handle) x1000. With the
         // inline `Raw`, the 4-byte disc no longer allocates a heap Vec — a sum node is now the node Box
         // + its 1-element handles Vec = 2 allocs/op (was 3: + the disc Vec). Guards the inline-raw win
@@ -5304,6 +5337,52 @@ mod tests {
         println!("SETSCALE compound-union (small={n_small} into big={n_big})  {union_ns:6.1} ns/elem-walked");
         op_drop(big);
         op_drop(small);
+    }
+
+    /// CPU-scaling PROBE (diagnostic, not a gate) for the STRING-KEYED map shape (JSON-object /
+    /// dictionary): keys are multi-byte heap strings, so every insert/lookup pays a byte-serial FNV
+    /// over the whole key plus a byte compare on a slot hit. Times build + lookup at growing key
+    /// LENGTH to reveal whether the cost is dominated by the FNV walk (scales with key bytes) or the
+    /// trie descent (scales with map size). Run under `perf` to attribute the hot region. Never
+    /// profiled before — the existing probes all use int/tuple/nested keys.
+    #[test]
+    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    fn string_key_map_cpu_scaling_probe() {
+        // Pre-build all key byte strings ONCE so the timed loops measure the runtime, not `format!`.
+        let make_keys = |n: usize, len: usize| -> Vec<Vec<u8>> {
+            (0..n)
+                .map(|k| {
+                    let mut s = format!("key-{k}");
+                    while s.len() < len {
+                        s.push('x');
+                    }
+                    s.into_bytes()
+                })
+                .collect()
+        };
+        let n = 8000usize;
+        for &len in &[8usize, 24, 64, 256] {
+            let keys = make_keys(n, len);
+            // Build the map.
+            let mut m = op_map_empty();
+            for bytes in &keys {
+                let key = op_str_new(String::from_utf8(bytes.clone()).unwrap());
+                m = op_map_insert(m, key, op_box_int(0));
+            }
+            // Time repeated full-map lookup (every key hit). reps scaled so total work is comparable.
+            let reps = (2_000_000 / n).max(1);
+            let t = std::time::Instant::now();
+            for _ in 0..reps {
+                for bytes in &keys {
+                    let probe = op_str_new(String::from_utf8(bytes.clone()).unwrap());
+                    let _ = op_map_lookup(m, probe);
+                    op_drop(probe);
+                }
+            }
+            let ns = t.elapsed().as_nanos() as f64 / (reps as f64 * n as f64);
+            println!("STRKEY len={len:>4}  lookup {ns:6.1} ns/op  (n={n})");
+            op_drop(m);
+        }
     }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type
