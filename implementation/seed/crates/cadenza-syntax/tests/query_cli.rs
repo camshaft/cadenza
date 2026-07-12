@@ -504,3 +504,56 @@ fn lint_with_no_rules_is_an_error() {
     assert!(!ok);
     assert!(stderr.contains("no lint rules"), "reason: {stderr}");
 }
+
+// ---- clone detection (the `clones` subcommand) ----
+
+#[test]
+fn clones_finds_a_duplicated_subtree_across_files() {
+    let dir = scratch_dir("clone1");
+    std::fs::write(dir.join("a.ml"), "f(validate(config, strict))\n").unwrap();
+    std::fs::write(dir.join("b.ml"), "g(validate(config, strict))\n").unwrap();
+    let (ok, stdout, _) = run(&["clones", dir.to_str().unwrap(), "--min-size", "3"], "");
+    assert!(ok);
+    assert!(stdout.contains("(validate config strict)"), "{stdout}");
+    assert!(stdout.contains("2 occurrences"), "{stdout}");
+    assert!(stdout.contains("a.ml:") && stdout.contains("b.ml:"), "cross-file: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn clones_min_size_filters_trivial() {
+    let dir = scratch_dir("clone2");
+    // `x` recurs but is tiny; a big min-size finds nothing.
+    std::fs::write(dir.join("a.sexp"), "(f x x x)\n").unwrap();
+    let (ok, stderr) = {
+        let (ok, _out, err) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--min-size", "5"], "");
+        (ok, err)
+    };
+    assert!(ok);
+    assert!(stderr.contains("no clones"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn clones_json_is_wellformed() {
+    let dir = scratch_dir("clone3");
+    std::fs::write(dir.join("a.sexp"), "(do (k a b) (k a b))\n").unwrap();
+    let (ok, stdout, _) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--min-size", "3", "--json"], "");
+    assert!(ok);
+    let s = stdout.trim();
+    assert!(s.starts_with('[') && s.ends_with(']'), "array: {s}");
+    assert!(s.contains("\"exemplar\":\"(k a b)\""), "{s}");
+    assert!(s.contains("\"size\":4"), "{s}");
+    assert!(s.contains("\"sites\":["), "{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn clones_reports_nothing_when_all_distinct() {
+    let dir = scratch_dir("clone4");
+    std::fs::write(dir.join("a.sexp"), "(do (f a) (g b) (h c))\n").unwrap();
+    let (ok, _out, stderr) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--min-size", "2"], "");
+    assert!(ok);
+    assert!(stderr.contains("no clones"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

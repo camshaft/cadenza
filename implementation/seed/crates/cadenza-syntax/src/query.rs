@@ -1257,6 +1257,84 @@ pub mod driver {
         }
         (arr.finish(), lint::has_error(&diags))
     }
+
+    /// Format a clone site's location `LABEL:line:col` (or `LABEL:?:?` when no span). `sources` maps a
+    /// file label to its source text, for the line:col computation.
+    fn site_loc(site: &clones::CloneSite, sources: &std::collections::HashMap<String, String>) -> String {
+        let label = site.file.as_deref().unwrap_or("(stdin)");
+        match site.span {
+            Some(s) => match sources.get(label) {
+                Some(src) => {
+                    let (l, c) = line_col(src, s.start);
+                    format!("{label}:{l}:{c}")
+                }
+                None => format!("{label}:byte {}", s.start),
+            },
+            None => format!("{label}:?:?"),
+        }
+    }
+
+    /// Render clone classes as human-readable text: a header per class (occurrence count + node size
+    /// + exemplar) then one indented `LABEL:line:col` per site. `sources` maps file label → text.
+    pub fn clones_report(
+        classes: &[clones::CloneClass],
+        sources: &std::collections::HashMap<String, String>,
+    ) -> String {
+        let mut out = String::new();
+        for (i, cls) in classes.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "clone: {} occurrences, {} nodes: {}\n",
+                cls.sites.len(),
+                cls.size,
+                cls.exemplar
+            ));
+            for site in &cls.sites {
+                out.push_str(&format!("  {}\n", site_loc(site, sources)));
+            }
+        }
+        out
+    }
+
+    /// Render clone classes as JSON: `[{exemplar, size, sites:[{file?, line?, col?}]}]`.
+    pub fn clones_json(
+        classes: &[clones::CloneClass],
+        sources: &std::collections::HashMap<String, String>,
+    ) -> String {
+        let mut arr = json::Array::new();
+        for cls in classes {
+            let mut obj = json::Object::new();
+            obj.string("exemplar", &cls.exemplar);
+            obj.raw("size", &cls.size.to_string());
+            let mut sites = json::Array::new();
+            for site in &cls.sites {
+                let mut so = json::Object::new();
+                if let Some(f) = &site.file {
+                    so.string("file", f);
+                }
+                let lc = site.span.and_then(|s| {
+                    let label = site.file.as_deref().unwrap_or("(stdin)");
+                    sources.get(label).map(|src| line_col(src, s.start))
+                });
+                match lc {
+                    Some((l, c)) => {
+                        so.raw("line", &l.to_string());
+                        so.raw("col", &c.to_string());
+                    }
+                    None => {
+                        so.raw("line", "null");
+                        so.raw("col", "null");
+                    }
+                }
+                sites.raw(&so.finish());
+            }
+            obj.raw("sites", &sites.finish());
+            arr.raw(&obj.finish());
+        }
+        arr.finish()
+    }
 }
 
 /// A minimal, dependency-free JSON string builder — just what the `--json` output needs (objects,
@@ -1796,6 +1874,253 @@ pub mod lint {
             Tree::Atom(super::Leaf::Str(s), _) => Some(s),
             _ => None,
         }
+    }
+}
+
+/// A MERKLE content hash over the tree: a `u64` per node computed bottom-up, so structurally-equal
+/// subtrees get the same hash wherever they appear (identity by content, not position — the git /
+/// Unison move). It is the substrate for O(1) subtree-equality filtering, stable content-derived node
+/// ids (the design doc's §8 open question), and clone detection.
+///
+/// Hashing matches [`super::tree_eq`] exactly, so `hash(a) == hash(b)` whenever `tree_eq(a, b)`:
+/// - a leaf hashes its VALUE AS WRITTEN — an `Int` includes its radix (`42` and `0x2A` differ, as
+///   they do under `tree_eq`); names hash their text (NO α-equivalence — `(let ((x …)) x)` and
+///   `(let ((y …)) y)` differ, since binding/scope is the compiler's domain, not this layer's).
+/// - a list hashes a tag plus its children's hashes in order.
+///
+/// The hash is TRUNCATED to 64 bits, so a collision is possible; every equality *decision* built on
+/// it (clone classes) re-verifies with `tree_eq`. The hash is a fast filter, never the final word.
+pub mod hash {
+    use super::Tree;
+    use crate::ast::{Leaf, Radix};
+    use sha2::{Digest, Sha256};
+
+    // Domain-separation tags, so an atom can never collide with a list and leaf kinds stay distinct.
+    const TAG_LIST: u8 = 0x00;
+    const TAG_INT: u8 = 0x01;
+    const TAG_FLOAT: u8 = 0x02;
+    const TAG_STR: u8 = 0x03;
+    const TAG_BOOL: u8 = 0x04;
+    const TAG_NAME: u8 = 0x05;
+
+    /// The 64-bit content hash of `t` (first 8 bytes of the SHA-256 Merkle digest, big-endian).
+    pub fn hash_tree(t: &Tree) -> u64 {
+        let d = digest(t);
+        u64::from_be_bytes(d[..8].try_into().expect("sha256 is 32 bytes"))
+    }
+
+    /// The full 32-byte digest of `t` (used internally; `hash_tree` truncates it).
+    fn digest(t: &Tree) -> [u8; 32] {
+        let mut h = Sha256::new();
+        match t {
+            Tree::Atom(leaf, _) => hash_leaf(&mut h, leaf),
+            Tree::List(items, _) => {
+                h.update([TAG_LIST]);
+                // Length-prefix so `(a (b c))` and `(a b c)` can't alias via child boundaries.
+                h.update((items.len() as u64).to_be_bytes());
+                for c in items {
+                    h.update(digest(c));
+                }
+            }
+        }
+        h.finalize().into()
+    }
+
+    fn hash_leaf(h: &mut Sha256, leaf: &Leaf) {
+        match leaf {
+            Leaf::Int { value, radix } => {
+                h.update([TAG_INT, radix_byte(*radix)]);
+                let bytes = value.to_signed_bytes_le();
+                h.update((bytes.len() as u64).to_be_bytes());
+                h.update(&bytes);
+            }
+            Leaf::Float(d) => {
+                h.update([TAG_FLOAT, d.negative as u8]);
+                h.update(d.exponent.to_be_bytes());
+                let sig = d.significand.to_signed_bytes_le();
+                h.update((sig.len() as u64).to_be_bytes());
+                h.update(&sig);
+            }
+            Leaf::Str(s) => update_bytes(h, TAG_STR, s.as_bytes()),
+            Leaf::Bool(b) => h.update([TAG_BOOL, *b as u8]),
+            Leaf::Name(n) => update_bytes(h, TAG_NAME, n.as_bytes()),
+        }
+    }
+
+    fn update_bytes(h: &mut Sha256, tag: u8, bytes: &[u8]) {
+        h.update([tag]);
+        h.update((bytes.len() as u64).to_be_bytes());
+        h.update(bytes);
+    }
+
+    fn radix_byte(r: Radix) -> u8 {
+        match r {
+            Radix::Dec => 0,
+            Radix::Hex => 1,
+            Radix::Bin => 2,
+        }
+    }
+
+    /// The number of nodes in `t` (atoms + lists) — the "size" used as a clone floor and to rank
+    /// clone classes.
+    pub fn node_size(t: &Tree) -> usize {
+        match t {
+            Tree::Atom(_, _) => 1,
+            Tree::List(items, _) => 1 + items.iter().map(node_size).sum::<usize>(),
+        }
+    }
+}
+
+/// Exact CLONE DETECTION: find subtrees that recur verbatim across a program (or a codebase). Groups
+/// every subtree by its content [`hash`] and reports each class of ≥2 structurally-identical members
+/// — the copy-paste an agent would extract into a shared definition. Purely structural (no
+/// α-equivalence / semantics — that is the compiler's domain).
+pub mod clones {
+    use super::hash::{hash_tree, node_size};
+    use super::{tree_eq, Tree};
+    use crate::span::Span;
+    use crate::spans::SpanTable;
+    use std::collections::HashMap;
+
+    /// One occurrence of a cloned subtree.
+    #[derive(Clone, Debug)]
+    pub struct CloneSite {
+        /// The source this occurrence came from (a file path / `(stdin)`), if the caller supplied one.
+        pub file: Option<String>,
+        pub node: Tree,
+        pub span: Option<Span>,
+    }
+
+    /// A class of ≥2 structurally-identical subtrees. `exemplar` is one member's rendered s-expr;
+    /// `size` is its node count; `sites` are all the occurrences (≥2).
+    #[derive(Clone, Debug)]
+    pub struct CloneClass {
+        pub exemplar: String,
+        pub size: usize,
+        pub sites: Vec<CloneSite>,
+    }
+
+    /// One source to scan for clones: its tree, an optional span table, and an optional file label.
+    pub struct Source<'a> {
+        pub tree: &'a Tree,
+        pub spans: Option<&'a SpanTable>,
+        pub file: Option<String>,
+    }
+
+    /// Find clone classes in a single `subject`. Convenience wrapper over [`find_clones_multi`].
+    pub fn find_clones(subject: &Tree, min_size: usize, spans: Option<&SpanTable>) -> Vec<CloneClass> {
+        find_clones_multi(
+            &[Source {
+                tree: subject,
+                spans,
+                file: None,
+            }],
+            min_size,
+        )
+    }
+
+    /// Find clone classes ACROSS all `sources` whose subtree has at least `min_size` nodes — clones
+    /// may span files. A class is a set of subtrees with equal content hash AND (verified) `tree_eq`
+    /// (the hash is a fast filter; `tree_eq` is the collision-safe decision).
+    ///
+    /// Only MAXIMAL clones are reported: once a cloned subtree is found, its inner clones are NOT
+    /// reported separately (the walk stops descending), so `(f (g x))` recurring reports the whole
+    /// `(f (g x))`, not also its `(g x)`/`x` parts. (Consequence: a subtree that recurs BOTH inside a
+    /// larger clone and standalone reports only its maximal occurrences — the larger clone is the more
+    /// useful signal.)
+    ///
+    /// Classes are returned largest-first (subtree size, then occurrence count) — biggest duplication
+    /// first.
+    pub fn find_clones_multi(sources: &[Source], min_size: usize) -> Vec<CloneClass> {
+        // Pass 1: frequency of every subtree hash across ALL sources.
+        let mut freq: HashMap<u64, usize> = HashMap::new();
+        for src in sources {
+            count(src.tree, min_size, &mut freq);
+        }
+        // Pass 2 (top-down, maximal): record each maximal recurring subtree, tagged with its source.
+        let mut occ: Vec<(usize, &Tree)> = Vec::new();
+        for (si, src) in sources.iter().enumerate() {
+            collect_maximal(src.tree, si, min_size, &freq, &mut occ);
+        }
+        // Group by hash, verify each bucket by `tree_eq`, keep classes with ≥2 members.
+        let mut by_hash: HashMap<u64, Vec<(usize, &Tree)>> = HashMap::new();
+        for (si, t) in occ {
+            by_hash.entry(hash_tree(t)).or_default().push((si, t));
+        }
+        let mut out: Vec<CloneClass> = Vec::new();
+        for group in by_hash.values() {
+            for members in split_by_eq(group) {
+                if members.len() >= 2 {
+                    out.push(CloneClass {
+                        exemplar: members[0].1.to_sexpr(),
+                        size: node_size(members[0].1),
+                        sites: members
+                            .iter()
+                            .map(|(si, t)| {
+                                let src = &sources[*si];
+                                CloneSite {
+                                    file: src.file.clone(),
+                                    node: (*t).clone(),
+                                    span: t.origin().and_then(|id| src.spans.and_then(|s| s.get(id))),
+                                }
+                            })
+                            .collect(),
+                    });
+                }
+            }
+        }
+        // Largest subtree first; ties → more occurrences, then exemplar text (deterministic).
+        out.sort_by(|a, b| {
+            b.size
+                .cmp(&a.size)
+                .then(b.sites.len().cmp(&a.sites.len()))
+                .then(a.exemplar.cmp(&b.exemplar))
+        });
+        out
+    }
+
+    /// Pass 1: tally each subtree hash (size ≥ `min_size`).
+    fn count(node: &Tree, min_size: usize, freq: &mut HashMap<u64, usize>) {
+        if node_size(node) >= min_size {
+            *freq.entry(hash_tree(node)).or_insert(0) += 1;
+        }
+        if let Tree::List(items, _) = node {
+            for c in items {
+                count(c, min_size, freq);
+            }
+        }
+    }
+
+    /// Pass 2: record maximal clone occurrences (tagged with source index `si`). A node whose hash
+    /// recurs (`freq ≥ 2`) is recorded and NOT descended into; otherwise descend into children.
+    fn collect_maximal<'t>(
+        node: &'t Tree,
+        si: usize,
+        min_size: usize,
+        freq: &HashMap<u64, usize>,
+        occ: &mut Vec<(usize, &'t Tree)>,
+    ) {
+        if node_size(node) >= min_size && freq.get(&hash_tree(node)).copied().unwrap_or(0) >= 2 {
+            occ.push((si, node));
+            return; // maximal: don't report clones nested inside this one
+        }
+        if let Tree::List(items, _) = node {
+            for c in items {
+                collect_maximal(c, si, min_size, freq, occ);
+            }
+        }
+    }
+
+    /// Partition a hash-bucket into verified-equal sub-groups (a collision splits into >1 group).
+    fn split_by_eq<'t>(group: &[(usize, &'t Tree)]) -> Vec<Vec<(usize, &'t Tree)>> {
+        let mut groups: Vec<Vec<(usize, &'t Tree)>> = Vec::new();
+        for &(si, t) in group {
+            match groups.iter_mut().find(|g| tree_eq(g[0].1, t)) {
+                Some(g) => g.push((si, t)),
+                None => groups.push(vec![(si, t)]),
+            }
+        }
+        groups
     }
 }
 
@@ -2593,6 +2918,112 @@ mod tests {
             let set = LintSet::compile("(lint (+ ,x ,(z is-literal)) \"maybe redundant\")").unwrap();
             let diags = lint::run(&set, &subj("(do (+ a 0) (+ b c))"), None);
             assert_eq!(diags.len(), 1, "{diags:?}");
+        }
+    }
+
+    mod hash_tests {
+        use super::subj;
+        use crate::query::hash::{hash_tree, node_size};
+
+        #[test]
+        fn equal_subtrees_hash_equal_regardless_of_position() {
+            // the two `(g x)` occurrences are structurally equal → equal hash.
+            let s = subj("(f (g x) (g x))");
+            let (a, b) = match &s {
+                crate::query::Tree::List(items, _) => (&items[1], &items[2]),
+                _ => panic!(),
+            };
+            assert_eq!(hash_tree(a), hash_tree(b));
+        }
+
+        #[test]
+        fn different_subtrees_hash_differently() {
+            assert_ne!(hash_tree(&subj("(g x)")), hash_tree(&subj("(g y)")));
+            assert_ne!(hash_tree(&subj("(+ a b)")), hash_tree(&subj("(- a b)")));
+        }
+
+        #[test]
+        fn radix_is_part_of_the_hash_matching_tree_eq() {
+            // `42` and `0x2A` are distinct leaves under tree_eq, so their hashes differ too.
+            assert_ne!(hash_tree(&subj("42")), hash_tree(&subj("0x2A")));
+        }
+
+        #[test]
+        fn no_alpha_equivalence() {
+            // binding is the compiler's domain; `x` vs `y` differ structurally, hence by hash.
+            assert_ne!(
+                hash_tree(&subj("(let ((x 1)) x)")),
+                hash_tree(&subj("(let ((y 1)) y)"))
+            );
+        }
+
+        #[test]
+        fn atom_and_list_do_not_collide() {
+            assert_ne!(hash_tree(&subj("x")), hash_tree(&subj("(x)")));
+        }
+
+        #[test]
+        fn node_size_counts_all_nodes() {
+            assert_eq!(node_size(&subj("x")), 1);
+            assert_eq!(node_size(&subj("(f a b)")), 4); // f, a, b, + the list
+        }
+    }
+
+    mod clone_tests {
+        use super::subj;
+        use crate::query::clones::find_clones;
+
+        #[test]
+        fn finds_a_repeated_subtree() {
+            // `(g x)` occurs twice.
+            let s = subj("(f (g x) (h (g x)))");
+            let classes = find_clones(&s, 2, None);
+            assert_eq!(classes.len(), 1, "{classes:?}");
+            assert_eq!(classes[0].exemplar, "(g x)");
+            assert_eq!(classes[0].sites.len(), 2);
+        }
+
+        #[test]
+        fn min_size_filters_out_trivial_clones() {
+            // `x` recurs but is a single node; min_size 2 drops it.
+            let s = subj("(f x x x)");
+            assert!(find_clones(&s, 2, None).is_empty());
+            // min_size 1 would catch it (one class of the atom `x`).
+            let small = find_clones(&s, 1, None);
+            assert_eq!(small.len(), 1);
+            assert_eq!(small[0].sites.len(), 3);
+        }
+
+        #[test]
+        fn reports_maximal_clones_only() {
+            // `(a (b c))` recurs; report the whole thing, NOT also its inner `(b c)`.
+            let s = subj("(list (a (b c)) (a (b c)))");
+            let classes = find_clones(&s, 2, None);
+            assert_eq!(classes.len(), 1, "only the maximal clone: {classes:?}");
+            assert_eq!(classes[0].exemplar, "(a (b c))");
+        }
+
+        #[test]
+        fn ranks_largest_first() {
+            // a big clone `(big p q r)` (twice) and a small `(m n)` (twice); big ranks first.
+            let s = subj("(prog (big p q r) (big p q r) (m n) (m n))");
+            let classes = find_clones(&s, 2, None);
+            assert_eq!(classes.len(), 2);
+            assert!(classes[0].size > classes[1].size, "{classes:?}");
+            assert_eq!(classes[0].exemplar, "(big p q r)");
+        }
+
+        #[test]
+        fn no_clones_when_all_distinct() {
+            assert!(find_clones(&subj("(f (g a) (h b))"), 2, None).is_empty());
+        }
+
+        #[test]
+        fn three_occurrences_are_one_class_of_three() {
+            let s = subj("(do (k v) (k v) (k v))");
+            let classes = find_clones(&s, 2, None);
+            assert_eq!(classes.len(), 1);
+            assert_eq!(classes[0].sites.len(), 3);
         }
     }
 }

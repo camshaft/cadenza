@@ -100,6 +100,7 @@ cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--wid
 cdz-syntax rewrite --rules FILE     [FILE|DIR…] …same flags…
 cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]     # structural (subtree) diff
 cdz-syntax lint    [FILE|DIR…] --rules FILE | --rule '(lint …)' [--from FMT] [--json]
+cdz-syntax clones  [FILE|DIR…] [--min-size N] [--from FMT] [--json]   # duplicated subtrees
 ```
 
 `--from`/`--to` are inferred from each FILE extension (`.cdz`/`.ml` → ml, `.sexp` → sexpr, `.bin` →
@@ -164,6 +165,13 @@ $ cdz-syntax lint src/ --rules house.lint
 src/a.ml:2:3: error: deprecated call — replace it
 $ echo $?
 1
+
+# CLONES: find duplicated subtrees (copy-paste) within/across files
+$ cdz-syntax clones src/ --min-size 4
+clone: 3 occurrences, 4 nodes: (validate config strict)
+  src/a.ml:1:11
+  src/a.ml:2:11
+  src/b.ml:1:11
 ```
 
 - **query** prints each match as `byte START-END: <matched s-expr>` (the span comes from the parser's
@@ -190,6 +198,15 @@ $ echo $?
   diagnostic fired** — a structural-checker CI gate — while `warning`/`info` report without failing.
   Lint patterns use the full pattern language (guards, splices). It's a Semgrep-lite for the AST,
   built on the same matcher.
+- **clones** finds duplicated subtrees (copy-paste) within and ACROSS files — the refactoring signal
+  for "extract a shared def". Each subtree gets a **Merkle content hash** (structurally-equal subtrees
+  hash the same wherever they appear); a clone class is a hash bucket with ≥2 members, verified with
+  `tree_eq` (the hash is a fast filter, not the decision — 64-bit, so collisions are possible and
+  checked). `--min-size N` (node-count floor) drops trivial duplication; only **maximal** clones are
+  reported (the whole `(f (g x))`, not also its parts). Output ranks biggest-first: `clone: N
+  occurrences, M nodes: <exemplar>` + a `LABEL:line:col` per site, or `--json`
+  `[{exemplar, size, sites:[{file?, line, col}]}]`. Purely structural — no α-equivalence (that's the
+  compiler's domain).
 
 Because the parser is a recovering parser, `query` works over **broken input** too: it reports the
 recoverable parse error on stderr and still runs the query over the recovered tree — the "total query
@@ -212,6 +229,12 @@ over incomplete source" the tooling capability calls for.
 - **Lint** runs each rule (a pattern + message + severity) over a program; every match is a
   diagnostic. It is a thin layer on the matcher (`search_with`) + a byte-span→`(line, col)` map. The
   only new "signal" is the exit-code contract: any `error`-severity diagnostic fails the run.
+- **Content hash** is a bottom-up Merkle `u64` per node (SHA-256 truncated), hashing the leaf AS
+  WRITTEN (radix-sensitive; names as-is, no α-equivalence) so `hash(a) == hash(b)` exactly when
+  `tree_eq(a, b)`. It's a fast subtree-equality filter and a stable content-derived id. **Clone
+  detection** = frequency-count subtree hashes, record maximal recurring subtrees top-down, then
+  bucket-by-hash and verify each class with `tree_eq` (collision-safe). Cross-file via
+  `find_clones_multi` over a `[Source]`.
 
 ## Library API (`cadenza_syntax::query`)
 
@@ -257,6 +280,14 @@ query::driver::line_col(src, byte) -> (usize, usize)                       // 1-
 query::driver::lint_report(&LintSet, &Target, src, label) -> (String, bool /*had_error*/)
 query::driver::lint_json(&LintSet, &Target, src, file) -> (String, bool)
 
+// content hash + clone detection
+query::hash::hash_tree(&Tree) -> u64          // bottom-up Merkle hash; == iff tree_eq
+query::hash::node_size(&Tree) -> usize
+query::clones::find_clones(&Tree, min_size, Option<&SpanTable>) -> Vec<CloneClass>   // { exemplar, size, sites }
+query::clones::find_clones_multi(&[Source], min_size) -> Vec<CloneClass>             // cross-file (Source { tree, spans, file })
+query::driver::clones_report(&[CloneClass], &HashMap<label,src>) -> String
+query::driver::clones_json(&[CloneClass], &HashMap<label,src>) -> String
+
 // small dependency-free helpers (no serde)
 query::json::{quote, Object, Array}     // JSON string builder
 query::diff::unified(old, new, old_label, new_label) -> String   // LCS-based unified LINE diff, 3 lines context
@@ -286,23 +317,28 @@ prototype's `Tree` matcher is the executable spec for what those combinators mus
   links `rcdzc`.
 - **Addressed edits by stable id** (`insert`/`replace`/`delete`/`move` by node path/content-id) — the
   `content-addressed-nodes` structural-interface layer, above these primitives. (Pattern-driven
-  replace/apply/preview across files IS here now — via `rewrite --write`/`--diff`/`--json`.)
+  replace/apply/preview across files IS here now — via `rewrite --write`/`--diff`/`--json`; and the
+  content hash `query::hash::hash_tree` — added for clone detection — is exactly the content-derived
+  node id that layer needs, so the substrate now exists.)
 - **Type-checking the rewrite result** — the prototype validates *well-formedness* (re-parse +
   round-trip); full type validation is Rung 3.
 
 ## Tests
 
-- `query` module unit tests (80): matching (metavars, consistency, variadic + anchoring, wildcard),
+- `query` module unit tests (100): matching (metavars, consistency, variadic + anchoring, wildcard),
   **guards** (each predicate, `matches`/`not`, conjunction, consistency interaction, compile-time
   rejection), **relational context** (inside/has/not-*, strict-descendant, composition), **multi-rule
   sets + strategy** (first-match-wins, rule-file compile, bottom-up vs top-down, fixpoint), the
   **json** writer + **diff** engine, **tree-diff** (leaf/nested change, head-replace, add/remove,
   atom↔list, multiple changes), **lint** (severity parse/default, compile, run, multi-rule order,
-  bad message/severity, full pattern language) + `line_col` + the driver's JSON/`project_target`.
-- `tests/query_cli.rs` (34): the built binary driven over stdin AND over temp files/dirs — query/
+  bad message/severity, full pattern language), **content hash** (positional-invariant, radix
+  sensitivity, no α-equivalence, atom≠list, node_size) + **clones** (repeated subtree, min-size floor,
+  maximal-only, ranking, 3-way class) + `line_col` + the driver's JSON/`project_target`.
+- `tests/query_cli.rs` (38): the built binary driven over stdin AND over temp files/dirs — query/
   count/rewrite, guards, relational flags, `--rules`, `--top-down`, **multi-file & directory walk**,
   **`--json`** (query + rewrite), **`--diff`** (preview, file untouched), **`--write`** (in-place,
   no-op skip, stdin-rejected, mutually-exclusive-with-diff), **`diff` subcommand** (changed subtree +
   path, JSON, identical), **`lint` subcommand** (location+severity, error→exit 1, warning→exit 0,
-  clean→exit 0, JSON, rules-file over a dir, no-rules error), cross-surface, broken-input recovery,
-  bad-pattern / unknown-guard rejection.
+  clean→exit 0, JSON, rules-file over a dir, no-rules error), **`clones` subcommand** (cross-file
+  duplicate, min-size floor, JSON, all-distinct), cross-surface, broken-input recovery, bad-pattern /
+  unknown-guard rejection.

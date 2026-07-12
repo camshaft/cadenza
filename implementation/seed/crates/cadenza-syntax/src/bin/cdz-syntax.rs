@@ -9,6 +9,7 @@
 //! cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--diff|--write|--json]
 //! cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]
 //! cdz-syntax lint    [FILE|DIR…]      --rules FILE | --rule '(lint …)' [--from FMT] [--json]
+//! cdz-syntax clones  [FILE|DIR…]      [--min-size N] [--from FMT] [--json]
 //! ```
 //!
 //! `--from`/`--to` are inferred from the FILE extension when omitted (`.cdz`/`.ml` → ml,
@@ -23,6 +24,7 @@
 //! crate that touches the filesystem/stdio.
 
 use cadenza_syntax::convert::{self, Format, Options};
+use cadenza_syntax::query::clones;
 use cadenza_syntax::query::lint::LintSet;
 use cadenza_syntax::query::{self, Pattern, Query, Rule, RuleSet, Strategy, Template};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -51,6 +53,27 @@ enum Cmd {
     Diff(DiffArgs),
     /// Flag structural anti-patterns from a lint-rule set; exits non-zero on any `error` diagnostic.
     Lint(LintArgs),
+    /// Find duplicated subtrees (clones) within/across programs — copy-paste to factor out.
+    Clones(ClonesArgs),
+}
+
+#[derive(Args)]
+struct ClonesArgs {
+    /// Input files or directories (recursed by extension). Omit (or use `-`) to read stdin. Clones
+    /// may span files.
+    files: Vec<String>,
+
+    /// Minimum subtree size (node count) to consider a clone — filters out trivial duplication.
+    #[arg(long, default_value_t = 3)]
+    min_size: usize,
+
+    /// Input format. Inferred from each FILE's extension when omitted; required when reading stdin.
+    #[arg(short, long, value_enum)]
+    from: Option<Fmt>,
+
+    /// Emit clone classes as JSON (`[{exemplar, size, sites:[{file?, line, col}]}]`).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -241,6 +264,7 @@ fn main() -> ExitCode {
         Cmd::Query(args) => run_query(&args),
         Cmd::Rewrite(args) => run_rewrite(&args),
         Cmd::Diff(args) => run_diff(&args),
+        Cmd::Clones(args) => run_clones(&args),
         Cmd::Lint(_) => unreachable!("handled above"),
     };
     match result {
@@ -426,6 +450,58 @@ fn run_diff(args: &DiffArgs) -> Result<(), String> {
         let report = query::driver::changes_report(&a.tree, &b.tree);
         if report.is_empty() {
             eprintln!("cdz-syntax: no structural changes");
+        } else {
+            print!("{report}");
+        }
+    }
+    Ok(())
+}
+
+/// Find duplicated subtrees across the targets (clones may span files), printing clone classes or
+/// JSON. A loaded target's tree/spans/source-text is held for the duration so detection can borrow it.
+fn run_clones(args: &ClonesArgs) -> Result<(), String> {
+    let targets = collect_targets(&args.files, args.from)?;
+
+    // Load every target, keeping (label, Target, source-text) alive so `clones::Source` can borrow.
+    struct Loaded {
+        label: String,
+        target: query::driver::Target,
+        src: String,
+    }
+    let mut loaded: Vec<Loaded> = Vec::new();
+    for spec in &targets {
+        let input = read_input(spec.path.as_deref())?;
+        let src = String::from_utf8_lossy(&input).into_owned();
+        let (target, errors) =
+            query::driver::load(&input, spec.format).map_err(|e| with_path(&spec.path, &e))?;
+        report_input_errors(spec.path.as_deref(), &errors);
+        loaded.push(Loaded {
+            label: label(&spec.path),
+            target,
+            src,
+        });
+    }
+
+    let sources: Vec<clones::Source> = loaded
+        .iter()
+        .map(|l| clones::Source {
+            tree: &l.target.tree,
+            spans: l.target.spans.as_ref(),
+            file: Some(l.label.clone()),
+        })
+        .collect();
+    let classes = clones::find_clones_multi(&sources, args.min_size);
+
+    // label → source text, for line:col rendering.
+    let src_map: std::collections::HashMap<String, String> =
+        loaded.iter().map(|l| (l.label.clone(), l.src.clone())).collect();
+
+    if args.json {
+        println!("{}", query::driver::clones_json(&classes, &src_map));
+    } else {
+        let report = query::driver::clones_report(&classes, &src_map);
+        if report.is_empty() {
+            eprintln!("cdz-syntax: no clones (min-size {})", args.min_size);
         } else {
             print!("{report}");
         }
