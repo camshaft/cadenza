@@ -6695,6 +6695,34 @@ mod stage1 {
                 "(module m (def (main) (if (= (Some (Some 1)) (Some (Some 1))) 1 0)) (export main))",
                 1,
             ),
+            // Bytes structural equality (10-bytes.sexp): two constant byte sequences compare equal iff
+            // the same bytes in the same order — the byte companion of the tuple/list arm. A `Bytes.concat`
+            // and a `Bytes.compact` already fold to a constant `Core::BytesOf`, so their `=` witnesses fold
+            // here too.
+            (
+                "(module m (def (main) (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 30))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 99))) 1 0)) (export main))",
+                0,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.of (list 1 2)) (Bytes.of (list 1 2 3))) 1 0)) (export main))",
+                0,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.of (list)) (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) (Bytes.of (list 1 2 3 4))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))) 1 0)) (export main))",
+                1,
+            ),
         ] {
             assert_eq!(
                 run_returns::<i64>(
