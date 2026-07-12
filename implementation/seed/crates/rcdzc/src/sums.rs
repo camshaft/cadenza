@@ -50,8 +50,13 @@ use crate::prelude::{meta_field, push_atom, push_list};
 /// declaration with an empty name (malformed `(type)`) still gets a record but binds no name.
 pub fn synthesize(ast: &mut Arenas, decls: &mut [TypeDecl]) {
     for decl in decls.iter_mut() {
-        let record = sum_record(ast, decl);
+        let (record, ctors) = sum_record(ast, decl);
         decl.synth = Some(record);
+        // Cache each variant's constructor occurrence (built just above) on the variant, so a later
+        // per-arm ctor lookup is O(1) rather than an O(V) name-scan of the record's variant fields.
+        for (variant, ctor) in decl.variants.iter_mut().zip(ctors) {
+            variant.ctor = Some(ctor);
+        }
     }
 }
 
@@ -122,9 +127,13 @@ fn type_form(ast: &mut Arenas, name: &str, variants: &[(&str, &[&str])]) -> Stru
 /// declaration occurrence, so `(Option Int64)` in type position APPLIES the sum constructor to build
 /// `Ty::Sum { decl, args: [Int64] }` — the same "a type ctor's `(meta apply)` builds a type" model as
 /// `Int`/`Tuple`. A monomorphic sum needs no `(meta apply)` (it is never applied in type position).
-fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
+///
+/// Returns the record occurrence AND, in declaration order, each variant's constructor occurrence — so
+/// `synthesize` can cache them on the variants (an O(1) later ctor lookup instead of a name-scan).
+fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     let mut children = vec![head];
+    let mut ctors = Vec::with_capacity(decl.variants.len());
 
     // `(meta t)` — the sum type-value, so `Option` used in type position reduces to `Ty::Sum` (with no
     // args — the base, un-applied form; a generic instantiation goes through `(meta apply)` below).
@@ -156,10 +165,11 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
     // variant's INDEX in declaration order is its DISCRIMINANT (`value-heap-runtime.md` §Sum).
     for (disc, variant) in decl.variants.iter().enumerate() {
         let ctor = variant_ctor(ast, decl, variant, disc as u32);
+        ctors.push(ctor);
         let k = push_atom(ast, Leaf::Name(variant.name.clone()));
         children.push(push_list(ast, vec![k, ctor]));
     }
-    push_list(ast, children)
+    (push_list(ast, children), ctors)
 }
 
 /// A variant constructor record. It carries THREE meta channels — the SAME shape an operator record

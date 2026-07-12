@@ -73,6 +73,13 @@ pub struct Variant {
     /// are the user-written type expressions after the name in `(name payload…)`; the sum-record
     /// synthesis copies them into each constructor's arrow type `(-> payload… Sum)`.
     pub payloads: Vec<StructId>,
+    /// The synthesized CONSTRUCTOR record occurrence — the `ctor` node `sums::synthesize` builds for this
+    /// variant (the value of the variant's field in the sum record). `None` until `synthesize` runs;
+    /// `Some` once the `Db` exists. Cached here so a per-arm ctor lookup is O(1) instead of re-scanning
+    /// the sum record's variant fields by name (`variant_ctor_field`) — that scan was O(V) per match arm,
+    /// so a match over a V-variant sum was O(V²). This is the identical `StructId` `variant_ctor_field`
+    /// would return; it is captured at build time where it is already in hand.
+    pub ctor: Option<StructId>,
 }
 
 /// A `(type NAME variant…)` sum-type declaration scanned from the top level. Each variant is a
@@ -1073,7 +1080,9 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
                 name: vname.to_string(),
                 name_occ,
                 payloads,
+                ctor: None,
             });
+            // (`ctor` is filled by `sums::synthesize` once the record is built.)
         }
     }
     // Collect the IMPLICIT type parameters: a free LOWERCASE name in any payload, in first-appearance

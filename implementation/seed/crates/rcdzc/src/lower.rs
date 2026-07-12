@@ -710,6 +710,7 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
 /// and the arm's body. An empty constraint set is a catch-all (a bare binder / `_` top-level pattern) —
 /// it matches regardless of any discriminant. Constraints are ordered outer-to-inner (a shorter path
 /// first), which is the order the tree tests them.
+#[derive(Clone)]
 struct MatchRow {
     constraints: Vec<(Vec<crate::core::PathStep>, u32)>,
     body: StructId,
@@ -929,31 +930,61 @@ fn build_tree(
             ));
         }
     };
-    // The discriminants tested at `switch_path`, in first-appearance (source) order — fixes the arm order.
+    // Partition the matrix by the disc each row tests at `switch_path` in ONE pass (was one O(N) scan per
+    // arm via `specialize` → O(N²) over N arms; the `tested.contains` loop was O(N²) too). Each row either
+    // tests `switch_path` with some disc `d` (it belongs ONLY to arm `d`, with that now-satisfied
+    // constraint dropped) or does NOT test it (a DEFAULT row — it flows into EVERY arm AND the default
+    // arm, unchanged). Rows keep their source index so an arm's sub-matrix preserves source order (arm
+    // priority = first-matching-row) when disc rows and default rows interleave.
     let mut tested: Vec<u32> = Vec::new();
-    for row in rows {
-        if let Some((_, d)) = row.constraints.iter().find(|(p, _)| *p == switch_path)
-            && !tested.contains(d)
-        {
-            tested.push(*d);
+    let mut disc_rows: crate::fxhash::FxHashMap<u32, Vec<(usize, MatchRow)>> = Default::default();
+    let mut default_rows: Vec<(usize, MatchRow)> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        match row.constraints.iter().find(|(p, _)| *p == switch_path) {
+            Some((_, d)) => {
+                let d = *d;
+                let bucket = disc_rows.entry(d).or_insert_with(|| {
+                    tested.push(d);
+                    Vec::new()
+                });
+                bucket.push((
+                    i,
+                    MatchRow {
+                        // Drop the now-satisfied `switch_path` constraint (control is in this arm).
+                        constraints: row
+                            .constraints
+                            .iter()
+                            .filter(|(p, _)| *p != switch_path)
+                            .cloned()
+                            .collect(),
+                        body: row.body,
+                    },
+                ));
+            }
+            None => default_rows.push((
+                i,
+                MatchRow {
+                    constraints: row.constraints.clone(),
+                    body: row.body,
+                },
+            )),
         }
     }
-    // A DEFAULT here is a row that does NOT constrain `switch_path` (matches any disc) — it covers the
-    // untested variants. Exhaustiveness: every variant tested, or a default present (else CDZ0210).
-    let has_default = rows
-        .iter()
-        .any(|r| !r.constraints.iter().any(|(p, _)| *p == switch_path));
+    // Exhaustiveness: every variant tested, or a default present (else CDZ0210).
+    let has_default = !default_rows.is_empty();
     if !has_default && tested.len() < variant_count {
         return Err(Reject::coded(
             Code::NonExhaustive,
             "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
         ));
     }
-    // One arm per tested discriminant, then the default arm (if any). Each arm specializes the matrix and
-    // recurses under a `path_types` extended with THIS variant's payload type at `switch_path+[Payload]`.
+    // One arm per tested discriminant, then the default arm (if any). Each arm's sub-matrix merges its
+    // disc rows with the default rows by source index (both already ascending), recursing under a
+    // `path_types` extended with THIS variant's payload type at `switch_path+[Payload]`.
     let mut sum_arms: Vec<crate::core::SumArm> = Vec::new();
     for &d in &tested {
-        let sub_rows = specialize(rows, &switch_path, Some(d));
+        let own = disc_rows.remove(&d).unwrap_or_default();
+        let sub_rows = merge_rows(own, &default_rows);
         let child_types = extend_path_types(db, path_types, &switch_path, &sub_ty, decl, d);
         let cont = build_tree(db, scrutinee, &sub_rows, &child_types)?;
         sum_arms.push(crate::core::SumArm {
@@ -962,9 +993,9 @@ fn build_tree(
         });
     }
     if has_default {
-        let sub_rows = specialize(rows, &switch_path, None);
         // The default arm switches on nothing new at `switch_path` — its rows only reach paths they
         // already constrain (all in `path_types`), so no extension is needed.
+        let sub_rows: Vec<MatchRow> = default_rows.into_iter().map(|(_, r)| r).collect();
         let cont = build_tree(db, scrutinee, &sub_rows, path_types)?;
         sum_arms.push(crate::core::SumArm { disc: None, cont });
     }
@@ -1003,16 +1034,12 @@ fn extend_path_types(
     // The variant's constructor occurrence — via the synthesized sum record's variant field, which
     // carries the `(meta t)` scheme `payload_ty_at_instantiation` reads. (The declaration name occurrence
     // does not resolve to a scheme; the synthesized ctor field does.)
+    // The variant's constructor occurrence — cached on the variant at synthesis time (O(1)), rather than
+    // re-scanning the sum record's variant fields by name per arm (that was O(V) per arm → O(V²) overall).
     let ctor = db
         .type_decl_by_occ(decl)
-        .and_then(|t| {
-            t.variants
-                .get(disc as usize)
-                .map(|v| (t.synth, v.name.clone()))
-        })
-        .and_then(|(synth, vname)| {
-            synth.and_then(|rec| crate::sums::variant_ctor_field(&db.ast, rec, &vname))
-        });
+        .and_then(|t| t.variants.get(disc as usize))
+        .and_then(|v| v.ctor);
     if let Some(ctor) = ctor
         && let Some(payload_ty) = crate::infer::payload_ty_at_instantiation(db, ctor, sub_ty)
     {
@@ -1048,40 +1075,26 @@ fn path_cmp(a: &[crate::core::PathStep], b: &[crate::core::PathStep]) -> std::cm
     a.len().cmp(&b.len())
 }
 
-/// Specialize the matrix to the arm switching on `switch_path == disc` (or the DEFAULT arm, `disc:
-/// None`). A row is KEPT if either it constrains `switch_path` with THIS disc (drop that constraint — now
-/// satisfied by control being in this arm) or it does NOT constrain `switch_path` at all (it matches any
-/// disc, so it flows into every arm INCLUDING the default). A row constraining `switch_path` with a
-/// DIFFERENT disc is excluded. For the default arm (`disc: None`), only rows that don't constrain
-/// `switch_path` survive. Row ORDER is preserved (arm priority is source order).
-fn specialize(
-    rows: &[MatchRow],
-    switch_path: &[crate::core::PathStep],
-    disc: Option<u32>,
-) -> Vec<MatchRow> {
-    let mut out = Vec::new();
-    for row in rows {
-        let here = row.constraints.iter().find(|(p, _)| p == switch_path);
-        match (here, disc) {
-            // Row tests this path with the arm's disc — keep it, minus the now-satisfied constraint.
-            (Some((_, d)), Some(target)) if *d == target => {
-                out.push(MatchRow {
-                    constraints: row
-                        .constraints
-                        .iter()
-                        .filter(|(p, _)| p != switch_path)
-                        .cloned()
-                        .collect(),
-                    body: row.body,
-                });
+/// Merge an arm's OWN disc rows with the shared DEFAULT rows into one sub-matrix, preserving SOURCE order
+/// (arm priority = first-matching-row). Both inputs are `(source_index, row)` already ascending by index
+/// (the partition in `build_tree` pushed them in row order), so this is a linear two-way merge — no sort.
+/// A default row is cloned into each arm it flows into; `own` rows are moved (each belongs to one arm).
+fn merge_rows(own: Vec<(usize, MatchRow)>, defaults: &[(usize, MatchRow)]) -> Vec<MatchRow> {
+    let mut out = Vec::with_capacity(own.len() + defaults.len());
+    let mut oi = own.into_iter().peekable();
+    let mut di = defaults.iter().peekable();
+    loop {
+        match (oi.peek(), di.peek()) {
+            (Some((oidx, _)), Some((didx, _))) => {
+                if oidx <= didx {
+                    out.push(oi.next().unwrap().1);
+                } else {
+                    out.push(di.next().unwrap().1.clone());
+                }
             }
-            // Row tests this path with a DIFFERENT disc — excluded from this arm.
-            (Some(_), _) => {}
-            // Row does not test this path — flows into every arm (variant arms AND the default).
-            (None, _) => out.push(MatchRow {
-                constraints: row.constraints.clone(),
-                body: row.body,
-            }),
+            (Some(_), None) => out.push(oi.next().unwrap().1),
+            (None, Some(_)) => out.push(di.next().unwrap().1.clone()),
+            (None, None) => break,
         }
     }
     out
