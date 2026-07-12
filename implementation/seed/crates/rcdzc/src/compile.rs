@@ -158,7 +158,7 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // kind (`build-tool-interface.md`).
     let mut artifacts = query_artifacts;
     for &target in &emit_targets {
-        match backend::emit(target, &mut db, &layout) {
+        match backend::emit(target, &mut db, &layout, span_data.as_ref()) {
             Ok(bytes) => artifacts.push(Artifact::new(
                 target.artifact_kind(),
                 program_name(&db),

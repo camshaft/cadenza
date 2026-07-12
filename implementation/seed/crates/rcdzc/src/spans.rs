@@ -44,6 +44,12 @@ pub struct SpanData {
     pub module_path: String,
     /// `(start, len)` byte ranges, indexed positionally by `StructId`.
     pub spans: Vec<(u32, u32)>,
+    /// The module's source TEXT — carried so line/col can be derived from a byte offset at emit time (a
+    /// DWARF `.debug_line` row needs `(line, col)`, but the front-end records byte-offset spans). The
+    /// design's §2.1a sub-decision, resolved in favour of the artifact carrying the text (self-contained
+    /// — the backend needs no filesystem access, keeping the compile a pure function of its inputs).
+    /// Empty when the producer omits it (then line derivation falls back to line 1).
+    pub source: String,
 }
 
 impl SpanData {
@@ -54,6 +60,21 @@ impl SpanData {
     pub fn range(&self, id: StructId) -> Option<(u32, u32)> {
         let &(start, len) = self.spans.get(id.0 as usize)?;
         Some((start, start.saturating_add(len)))
+    }
+
+    /// The 1-based source LINE a byte offset falls on — a one-pass newline count over `source` up to
+    /// `byte_off` (design §2.1a: "a one-pass newline index over the module's source text"). Falls back
+    /// to line 1 when the source text is absent or the offset is past its end (total — never panics).
+    /// Line/col derivation lives here so both a DWARF line row and a diagnostic can share it.
+    pub fn line_at(&self, byte_off: u32) -> u32 {
+        if self.source.is_empty() {
+            return 1;
+        }
+        let end = (byte_off as usize).min(self.source.len());
+        1 + self.source.as_bytes()[..end]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count() as u32
     }
 }
 
@@ -72,11 +93,19 @@ pub fn decode(bytes: &[u8]) -> Option<SpanData> {
         let len = u32::try_from(r.read_varu64()?).ok()?;
         spans.push((start, len));
     }
+    // The source text (length-prefixed UTF-8), for line/col derivation. Follows the span table.
+    let src_len = r.read_var_len()?;
+    let src_bytes = r.take(src_len)?;
+    let source = String::from_utf8(src_bytes.to_vec()).ok()?;
     // A trailing garbage byte is a malformed table — reject rather than silently accept a prefix.
     if !r.at_end() {
         return None;
     }
-    Some(SpanData { module_path, spans })
+    Some(SpanData {
+        module_path,
+        spans,
+        source,
+    })
 }
 
 /// Encode a span side-table to its wire bytes — the counterpart to [`decode`], used by a driver (and
@@ -90,6 +119,8 @@ pub fn encode(data: &SpanData) -> Vec<u8> {
         leb128::write_u64(&mut out, start as u64);
         leb128::write_u64(&mut out, len as u64);
     }
+    leb128::write_u64(&mut out, data.source.len() as u64);
+    out.extend_from_slice(data.source.as_bytes());
     out
 }
 
@@ -102,6 +133,7 @@ mod tests {
         let data = SpanData {
             module_path: "src/main.cdz".to_string(),
             spans: vec![(0, 5), (6, 1), (8, 42), (100, 0)],
+            source: "(module m\n  (def (main) 42))".to_string(),
         };
         assert_eq!(decode(&encode(&data)), Some(data));
     }
@@ -111,6 +143,7 @@ mod tests {
         let data = SpanData {
             module_path: String::new(),
             spans: vec![],
+            source: String::new(),
         };
         assert_eq!(decode(&encode(&data)), Some(data));
     }
@@ -120,6 +153,7 @@ mod tests {
         let data = SpanData {
             module_path: "m".to_string(),
             spans: vec![(10, 3), (20, 0)],
+            ..Default::default()
         };
         assert_eq!(data.range(StructId(0)), Some((10, 13)));
         assert_eq!(data.range(StructId(1)), Some((20, 20)));
@@ -128,11 +162,28 @@ mod tests {
     }
 
     #[test]
+    fn line_at_counts_newlines() {
+        let data = SpanData {
+            source: "aaa\nbbb\nccc".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(data.line_at(0), 1); // in "aaa"
+        assert_eq!(data.line_at(3), 1); // the '\n' itself is still line 1
+        assert_eq!(data.line_at(4), 2); // first byte of "bbb"
+        assert_eq!(data.line_at(8), 3); // first byte of "ccc"
+        assert_eq!(data.line_at(999), 3); // past the end clamps, no panic
+        // With no source text, everything is line 1 (the fallback).
+        let empty = SpanData::default();
+        assert_eq!(empty.line_at(42), 1);
+    }
+
+    #[test]
     fn truncated_is_none_not_panic() {
         // A span count of 2 but only one span present.
         let mut bytes = encode(&SpanData {
             module_path: "m".to_string(),
             spans: vec![(1, 1)],
+            ..Default::default()
         });
         // The count byte sits right after the 1-byte path length + 1 path byte.
         bytes[2] = 2; // claim two spans
@@ -144,6 +195,7 @@ mod tests {
         let mut bytes = encode(&SpanData {
             module_path: "m".to_string(),
             spans: vec![(1, 1)],
+            ..Default::default()
         });
         bytes.push(0x00); // an extra byte past the declared table
         assert_eq!(decode(&bytes), None);

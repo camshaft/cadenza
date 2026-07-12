@@ -11,6 +11,7 @@
 //! Multi-export: every `(export …)` in the layout is emitted, each by its signature ABI, under its
 //! verbatim name — no single hard-coded entry.
 
+pub mod dwarf;
 pub mod encode;
 pub mod envelope;
 pub mod lir;
@@ -42,13 +43,19 @@ use crate::layout::Layout;
 /// Emit a WebAssembly component for the program in `db` under the boundary `layout`. Selects each
 /// definition in the layout's emission order, serializes the core module, and assembles the envelope.
 ///
-/// `debug` (Mode E of `DESIGN-debug-info-rcdzc.md`) appends the wasm `name` custom section to the
-/// embedded core module — inert and strippable, so a debug component stripped of custom sections is
-/// byte-identical to the `debug = false` component (§5). `debug = false` is byte-for-byte today's
-/// output. D0 covers the ordinary multi-export path; the resource-escape shapes (a nullary compound
-/// export) are still emitted undecorated (their synthesized `make`/`t-encode` funcs get names in a
-/// later increment) — passing `debug` through them changes nothing yet.
-pub fn emit(db: &mut Db, layout: &Layout, debug: bool) -> Result<Vec<u8>, Reject> {
+/// `spans` (Mode E of `DESIGN-debug-info-rcdzc.md`) — when `Some`, appends the wasm `name` (D0) + the
+/// `.debug_*` DWARF (D2) custom sections to the embedded core module, drawing source positions from the
+/// side-table. Inert and strippable, so a debug component stripped of custom sections is byte-identical
+/// to the `None` component (§5). `None` is byte-for-byte today's output. D0/D2 cover the ordinary
+/// multi-export path; the resource-escape shapes (a nullary compound export) are still emitted
+/// undecorated (their synthesized `make`/`t-encode` funcs get debug info in a later increment) —
+/// passing `spans` through them changes nothing yet.
+pub fn emit(
+    db: &mut Db,
+    layout: &Layout,
+    spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    let debug = spans.is_some();
     // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
     // nullary export returning a COMPOUND crosses as a component-model resource whose `encode() ->
     // list<u8>` yields the canonical binary value form. For a fully-CONSTANT compound (R1) the value is
@@ -174,8 +181,38 @@ pub fn emit(db: &mut Db, layout: &Layout, debug: bool) -> Result<Vec<u8>, Reject
     });
 
     // Serialize the embedded core module (multi-export core module, functions in emission order).
-    let core = serialize::core_module(&funcs, &imports, layout, debug_info.as_ref())
+    let mut core = serialize::core_module(&funcs, &imports, layout, debug_info.as_ref())
         .map_err(Reject::decline)?;
+
+    // DEBUG (Mode E, D2): append the `.debug_*` DWARF custom sections to the embedded core module, so a
+    // debugger can STEP through Cadenza source. Function-granularity: one line row + one subprogram DIE
+    // per emitted function, its code-offset range from `code_ranges` (D1b) and its source line from the
+    // `spans` side-table (D1a). Absolute code offsets = the code-section payload base + the range's
+    // payload-relative start. Inert + strippable, exactly like the `name` section — appended after the
+    // executed sections, so `debug = None` is byte-identical to today and `wasm-tools strip` recovers it.
+    if let Some(span_data) = spans
+        && let Some(code_base) = dwarf::code_section_payload_base(&core)
+    {
+        // `funcs`, `ranges`, and `layout.order` are all in the SAME emission order and 1:1, so zip
+        // them: each function's def (→ source name), its code-offset range (D1b), and the body span
+        // (→ line, D1a). A synthesized function (no `src_body`) is skipped — no misleading row.
+        let ranges = serialize::code_ranges(&funcs, &imports);
+        let mut dwarf_funcs = Vec::new();
+        for ((f, r), &def) in funcs.iter().zip(&ranges).zip(&layout.order) {
+            let Some(src) = f.src_body else { continue };
+            let line = span_data
+                .range(src)
+                .map(|(s, _)| span_data.line_at(s))
+                .unwrap_or(1);
+            dwarf_funcs.push(dwarf::DwarfFunc {
+                name: db.defs[def].name.clone(),
+                low_pc: code_base + r.code_start,
+                high_pc: code_base + r.code_end,
+                line,
+            });
+        }
+        core.extend_from_slice(&dwarf::debug_sections(&span_data.module_path, &dwarf_funcs));
+    }
 
     // Build the component-boundary export list (each export's parameter + result valtypes) and
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).

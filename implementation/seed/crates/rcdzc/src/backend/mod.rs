@@ -73,11 +73,21 @@ impl Target {
 }
 
 /// Emit the artifact for `target` from the program in `db` under `layout`. The seam: dispatch to the
-/// chosen backend, each a producer of the artifact column over the same upstream columns.
-pub fn emit(target: Target, db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
+/// chosen backend, each a producer of the artifact column over the same upstream columns. `spans` is
+/// the decoded source side-table (`DESIGN-debug-info-rcdzc.md` §2.1a), present when a debug target
+/// drives the compile — the wasm backend reads it to emit the `name` + DWARF sections; other targets
+/// ignore it.
+pub fn emit(
+    target: Target,
+    db: &mut Db,
+    layout: &Layout,
+    spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
     let result = match target {
-        Target::Wasm => wasm::emit(db, layout, false),
-        Target::WasmDebug => wasm::emit(db, layout, true),
+        Target::Wasm => wasm::emit(db, layout, None),
+        // A debug component draws its `name` + DWARF sections from the span side-table. `compile`
+        // guarantees `spans` is present for a `needs_spans()` target (else it declined, §9.4).
+        Target::WasmDebug => wasm::emit(db, layout, spans),
         Target::Rust => rust::emit(db, layout, rust::Mode::Sync),
         Target::RustAsync => rust::emit(db, layout, rust::Mode::Async),
     };

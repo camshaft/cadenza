@@ -4979,9 +4979,7 @@ mod match_engine {
         use wasmtime::component::Val;
         let n = 300;
         let arms: String = (0..n).map(|i| format!("({i} {}) ", i * 2)).collect();
-        let src = format!(
-            "(module m (def (f (: k Int64)) (match k {arms}(_ -1))) (export f))"
-        );
+        let src = format!("(module m (def (f (: k Int64)) (match k {arms}(_ -1))) (export f))");
         let bytes = component(&src);
         // A value in the middle of the chain, the last arm, and out-of-range (the wildcard default).
         assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]), 0);
@@ -10077,37 +10075,41 @@ mod debug_info {
     /// The parsed `name` section: the optional module name and the `(func_index, name)` pairs.
     type NameSection = (Option<String>, Vec<(u32, String)>);
 
-    /// Extract the embedded core module's `name`-section function names from a component's bytes, using
-    /// `wasmparser` (a dev-only validator, never in the compile path). Returns `(module_name,
-    /// [(func_index, name)])`; `None` if there is no `name` section.
-    fn name_section_of(component: &[u8]) -> Option<NameSection> {
+    /// The embedded core module's bytes, extracted from a component wrapper via `wasmparser` (a dev-only
+    /// validator, never in the compile path) — the blob that carries the `name` + `.debug_*` sections.
+    fn core_module_of(component: &[u8]) -> Option<Vec<u8>> {
         use wasmparser::{Chunk, Parser, Payload};
-        // Find the embedded core module: the component is a wrapper; a `ModuleSection` payload gives the
-        // byte range of the core module, which itself carries the `name` custom section.
         let mut parser = Parser::new(0);
         let mut offset = 0usize;
-        let mut core: Option<&[u8]> = None;
         let mut buf = component;
         loop {
             match parser.parse(buf, true).expect("parse component") {
-                Chunk::NeedMoreData(_) => break,
+                Chunk::NeedMoreData(_) => return None,
                 Chunk::Parsed { consumed, payload } => {
                     if let Payload::ModuleSection {
                         unchecked_range, ..
                     } = &payload
                     {
-                        core = Some(&component[unchecked_range.start..unchecked_range.end]);
-                        break;
+                        return Some(
+                            component[unchecked_range.start..unchecked_range.end].to_vec(),
+                        );
                     }
                     offset += consumed;
                     buf = &component[offset..];
                     if let Payload::End(_) = payload {
-                        break;
+                        return None;
                     }
                 }
             }
         }
-        let core = core?;
+    }
+
+    /// Extract the embedded core module's `name`-section function names from a component's bytes.
+    /// Returns `(module_name, [(func_index, name)])`; `None` if there is no `name` section.
+    fn name_section_of(component: &[u8]) -> Option<NameSection> {
+        use wasmparser::{Parser, Payload};
+        let core = core_module_of(component)?;
+        let core = core.as_slice();
         // Now parse the core module for its `name` custom section.
         let mut module_name = None;
         let mut func_names = Vec::new();
@@ -10431,6 +10433,117 @@ mod debug_info {
         assert!(
             core.windows(concat.len()).any(|w| w == concat.as_slice()),
             "the emitted core module must contain both code entries consecutively"
+        );
+    }
+
+    // ── D2: the .debug_* DWARF sections (§2.3) ─────────────────────────────────────────────────────
+
+    /// The names of the custom sections in a component's embedded core module (in order).
+    fn custom_section_names(component: &[u8]) -> Vec<String> {
+        use wasmparser::{Parser, Payload};
+        let core = core_module_of(component).expect("embedded core module");
+        let mut names = Vec::new();
+        for payload in Parser::new(0).parse_all(&core) {
+            if let Payload::CustomSection(reader) = payload.expect("parse core") {
+                names.push(reader.name().to_string());
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn a_debug_component_carries_the_dwarf_sections() {
+        // A debug component's embedded core module carries the four `.debug_*` custom sections (plus the
+        // D0 `name` section) — the sections a debugger reads to step through source.
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        let debug = component_of(src, Target::WasmDebug);
+        let names = custom_section_names(&debug);
+        for want in [
+            "name",
+            ".debug_abbrev",
+            ".debug_info",
+            ".debug_str",
+            ".debug_line",
+        ] {
+            assert!(
+                names.iter().any(|n| n == want),
+                "missing custom section `{want}`; found {names:?}"
+            );
+        }
+        // A plain component has none of them.
+        let plain = component_of(src, Target::Wasm);
+        assert!(
+            custom_section_names(&plain)
+                .iter()
+                .all(|n| !n.starts_with(".debug")),
+            "a plain component must carry no `.debug_*` sections"
+        );
+    }
+
+    #[test]
+    fn the_dwarf_parses_under_llvm_dwarfdump() {
+        // The correctness ORACLE (§6): the hand-rolled DWARF must parse cleanly under `llvm-dwarfdump`.
+        // We extract the embedded core module (dwarfdump rejects a component's version number) and dump
+        // it; the output must name our compile unit + a subprogram, and report NO parse error. Skips if
+        // `llvm-dwarfdump` is not installed.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        let debug = component_of(src, Target::WasmDebug);
+        let core = core_module_of(&debug).expect("embedded core module");
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-dwarf-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&core))
+            .expect("write core module");
+
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--all")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found on PATH; skipping DWARF-validity check");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "llvm-dwarfdump failed: {stderr}\n{stdout}"
+        );
+        // The dump must NOT report a parse error, and must name our compile unit + a subprogram.
+        assert!(
+            !stdout.to_lowercase().contains("error:") && !stderr.to_lowercase().contains("error:"),
+            "llvm-dwarfdump reported an error:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("DW_TAG_compile_unit"),
+            "no compile unit in the dump:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DW_TAG_subprogram"),
+            "no subprogram in the dump:\n{stdout}"
+        );
+        // The producer + a function name must round-trip through .debug_str.
+        assert!(
+            stdout.contains("cadenza-rcdzc"),
+            "producer string missing:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("countdown") || stdout.contains("main"),
+            "no source function name in the dump:\n{stdout}"
         );
     }
 }
