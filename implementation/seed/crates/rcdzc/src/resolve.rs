@@ -105,14 +105,20 @@ pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
 /// how any node inside it resolves — the "arguments resolve in the caller's scope" invariant
 /// `apply_lambda` documents, made robust to the re-parenting `push_list` performs.
 pub fn resolve_subtree(db: &mut Db, id: StructId) {
-    resolved_of(db, id);
-    let children = match db.ast.get(id) {
-        Struct::List(children) => children.clone(),
-        Struct::Atom(_) => return,
-    };
-    for c in children {
-        resolve_subtree(db, c);
+    // Already fully walked? The walk is idempotent (a subtree, once resolved, stays resolved), so a
+    // repeat is pure waste. `apply_lambda` re-pins the same/overlapping argument subtrees across a
+    // chain of applications; without this guard the re-walk was O(N^2) on a shared-tuple projection
+    // chain (`(+ (. t 0) (+ (. t 1) ...))`). See `Db::resolved_subtrees`.
+    if db.resolved_subtrees.contains(&id) {
+        return;
     }
+    resolved_of(db, id);
+    if let Struct::List(children) = db.ast.get(id) {
+        for c in children.clone() {
+            resolve_subtree(db, c);
+        }
+    }
+    db.resolved_subtrees.insert(id);
 }
 
 /// Classify one AST occurrence into its resolved form. Reads the AST + the parent index (for scope);

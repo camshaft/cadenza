@@ -345,7 +345,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // case here. (A type constructor like `(Int 64)` reduces to its module the same way.)
                 Some(prim) => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: constructor prim");
-                    match crate::eval::reduce_ctor(db, prim, &args) {
+                    match crate::eval::reduce_ctor(db, prim, id, &args) {
                         Ok(built) => core_of(db, built),
                         Err(msg) => {
                             trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: constructor declined");

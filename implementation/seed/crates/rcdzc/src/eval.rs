@@ -733,7 +733,7 @@ fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId> {
             if prim.is_arith() {
                 return None;
             }
-            let built = reduce_ctor(g, prim, &args).ok()?;
+            let built = reduce_ctor(g, prim, id, &args).ok()?;
             reduce_to_record_id(g, built)
         }
         // A member projection whose result is itself a record (a nested record chain).
@@ -838,7 +838,7 @@ pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::sync::Arc
             if prim.is_arith() {
                 return None;
             }
-            let built = reduce_ctor(g, prim, &args).ok()?;
+            let built = reduce_ctor(g, prim, id, &args).ok()?;
             reduce_to_tuple_elems(g, built)
         }
         _ => None,
@@ -863,7 +863,17 @@ pub fn prim_of(db: &mut Db, id: StructId) -> Option<Prim> {
 /// `Int`/`UInt` require a single constant WIDTH argument and build the integer module for it. `->`
 /// requires two type arguments and builds a function type-value. A wrong arity or a non-constant width
 /// is a reject.
-pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructId, String> {
+///
+/// `origin` is the occurrence being reduced (the `(tuple …)`/`(record …)` application node) — a
+/// STABLE, UNIQUE per-construction-site identity `push_list` assigns freshly. The value-constructor
+/// build-once cache keys on it (see the `TupleNew`/`RecordNew` arm); the type-constructor arms key on
+/// their argument VALUES and ignore it.
+pub fn reduce_ctor(
+    db: &mut Db,
+    prim: Prim,
+    origin: StructId,
+    args: &[StructId],
+) -> Result<StructId, String> {
     match prim {
         Prim::IntCtor | Prim::UIntCtor => {
             let signed = matches!(prim, Prim::IntCtor);
@@ -968,6 +978,29 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
         // β-reduction pins a call argument before splicing it; the later re-parent then cannot change
         // how any node inside an arg resolves.
         Prim::TupleNew | Prim::RecordNew => {
+            // Build once per construction site. The built node is `(head-str arg…)` over the EXACT SAME
+            // arg occurrences, so it is a pure function of the SITE being reduced — the same source
+            // application demanded repeatedly (a `let`-bound tuple projected field-by-field: `(+ (. t 0)
+            // (+ (. t 1) …))` re-reduces `t` at EVERY projection) must return the ONE built node, not
+            // rebuild the whole N-element tuple each time. Without this the fold was O(N²): N projections
+            // × an O(N) `push_list` rebuild (the shared-tuple projection chain).
+            //
+            // The key is O(1): the prim plus `origin` — the StructId of the application being reduced,
+            // which `push_list` assigns FRESH per occurrence. NOT the argument ids: β-reduction SHARES a
+            // constant-atom occurrence (`copy_structural` returns the original id for a literal), so in a
+            // NESTED `(tuple n (tuple n n))` the outer and inner tuples share the same first-arg `n`
+            // occurrence — keying on an argument would collide the inner build onto the outer and recurse
+            // without end (a stack overflow). Keying on all N arg ids instead would re-introduce the
+            // O(N²) as an O(N) key HASH per projection. `origin` is unique and O(1); it mirrors the
+            // `Int`/`UInt` build-once cache (which keys on the width value, likewise unique per module).
+            let key = crate::db::BuildKey {
+                prim,
+                args: vec![origin.0 as i64],
+            };
+            if let Some(cached) = db.cached_build(&key) {
+                trace!(target: "rcdzc::eval", node = cached.0, "ctor (tuple/record value): build-cache hit");
+                return Ok(cached);
+            }
             for &a in args {
                 crate::resolve::resolve_subtree(db, a);
             }
@@ -978,7 +1011,9 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
             });
             let mut children = vec![head];
             children.extend_from_slice(args);
-            Ok(db.push_list(children))
+            let built = db.push_list(children);
+            db.cache_build(key, built);
+            Ok(built)
         }
         _ => Err("not a type constructor".to_string()),
     }
@@ -1050,7 +1085,7 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
                 let built = reduce_sum_ctor(db, head, &args)?;
                 return typeval_of(db, built);
             }
-            let built = reduce_ctor(db, prim, &args).ok()?;
+            let built = reduce_ctor(db, prim, id, &args).ok()?;
             typeval_of(db, built)
         }
         _ => None,

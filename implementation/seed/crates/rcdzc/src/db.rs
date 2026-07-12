@@ -339,6 +339,17 @@ pub struct Db {
     /// reading it at each reference keeps the two ends of one binding in agreement.
     pub(crate) kept_bindings: crate::fxhash::FxHashSet<StructId>,
 
+    /// The set of subtree roots [`crate::resolve::resolve_subtree`] has ALREADY fully walked. That
+    /// function eagerly resolves every node under a root to PIN an argument's meaning before
+    /// β-reduction re-parents it; `apply_lambda` calls it on each argument at EVERY application. The
+    /// per-node `resolved_of` is memoized, but the WALK itself (descend + clone children + recurse)
+    /// was not — so re-pinning the same (or an overlapping, growing) subtree across a chain of
+    /// applications re-walked it O(depth) times, O(N²) on a shared-tuple projection chain
+    /// (`(+ (. t 0) (+ (. t 1) …))`). Recording a fully-walked root here makes `resolve_subtree`
+    /// idempotent-cheap: a second call on an already-walked root returns immediately. A pure function
+    /// of the fixed AST (a subtree, once resolved, stays resolved), like the other memos.
+    pub(crate) resolved_subtrees: crate::fxhash::FxHashSet<StructId>,
+
     /// The number of structure nodes in the DECODED PROGRAM — the count before the prelude and any
     /// evaluator-synthesized nodes were appended. A `StructId` below this is a genuine user-program
     /// node the front-end's span table is keyed by; a `StructId` at or above it is a PRELUDE node (a
@@ -437,6 +448,7 @@ impl Db {
             rec_visited: crate::fxhash::FxHashSet::default(),
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),
+            resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
             solving_params: crate::fxhash::FxHashSet::default(),

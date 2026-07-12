@@ -985,6 +985,40 @@ fn a_nested_runtime_tuple_escapes_to_the_host() {
     }
 }
 
+/// A NESTED CONSTANT tuple whose inner and outer levels SHARE an element occurrence must fold and
+/// escape as the right value — the regression guard for the value-constructor build-once cache. A
+/// non-recursive `(f 2)` inlines by β-reduction, which SHARES a constant-atom occurrence
+/// (`copy_structural` returns the original id for a literal), so in `(tuple n (tuple n n))` the outer
+/// and inner tuples reduce over the SAME `2` occurrences. An earlier build-once cache keyed on an
+/// ARGUMENT id collided the inner build onto the outer and recursed without end (a stack overflow);
+/// keying on the construction-site occurrence (`origin`) is collision-free. Pins the fold-and-escape
+/// of a shared-occurrence nested compound.
+#[test]
+fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
+    use crate::testkit::parse;
+    // `(f 2)` is NON-recursive → inlines; β-reduction shares the `2` occurrence across both tuple
+    // levels — exactly the shape the build-once cache must not collide.
+    let src = "(module m (def (f n) (tuple n (tuple n n))) \
+                 (def (main) (f 2)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[R2] runtime wasm not found; skipping shared-occurrence nested escape");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "(: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))",
+            "a shared-occurrence nested constant tuple must escape as its true value form"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("shared-occurrence nested tuple escape trapped: {t}"),
+    }
+}
+
 /// R2 NESTED (heterogeneous): a runtime RECORD whose field is a runtime TUPLE — the type-directed
 /// walker recurses record→tuple, each sub-shape rendered by its own head. Pins the nested handle path
 /// across a record boundary.
@@ -5167,15 +5201,17 @@ mod stage1 {
             value: crate::ast::IntValue::from_i64(64),
             radix: crate::ast::Radix::Dec,
         });
-        let a = reduce_ctor(&mut db, p, &[w64]).expect("build");
-        let b = reduce_ctor(&mut db, p, &[w64]).expect("build");
+        // `Int`/`UInt` key their build-once cache on the WIDTH value, not the `origin` occurrence, so
+        // any StructId serves as origin here (the width atom itself).
+        let a = reduce_ctor(&mut db, p, w64, &[w64]).expect("build");
+        let b = reduce_ctor(&mut db, p, w64, &[w64]).expect("build");
         assert_eq!(a, b, "the same width must reduce to the same module node");
         // A different width is a different module.
         let w8 = db.push_atom(crate::ast::Leaf::Int {
             value: crate::ast::IntValue::from_i64(8),
             radix: crate::ast::Radix::Dec,
         });
-        let c = reduce_ctor(&mut db, p, &[w8]).expect("build");
+        let c = reduce_ctor(&mut db, p, w8, &[w8]).expect("build");
         assert_ne!(a, c, "different widths are different modules");
     }
 }
