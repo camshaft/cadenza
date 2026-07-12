@@ -1335,6 +1335,77 @@ pub mod driver {
         }
         arr.finish()
     }
+
+    /// A JSON site object `{file?, line, col}` for a clone/near-clone site.
+    fn site_json(
+        site: &clones::CloneSite,
+        sources: &std::collections::HashMap<String, String>,
+    ) -> String {
+        let mut so = json::Object::new();
+        if let Some(f) = &site.file {
+            so.string("file", f);
+        }
+        let lc = site.span.and_then(|s| {
+            let label = site.file.as_deref().unwrap_or("(stdin)");
+            sources.get(label).map(|src| line_col(src, s.start))
+        });
+        match lc {
+            Some((l, c)) => {
+                so.raw("line", &l.to_string());
+                so.raw("col", &c.to_string());
+            }
+            None => {
+                so.raw("line", "null");
+                so.raw("col", "null");
+            }
+        }
+        so.finish()
+    }
+
+    /// Render near-clone classes as human text: a header per class (occurrences + hole count + the
+    /// inferred `,mK` pattern) then one indented `LABEL:line:col` per site.
+    pub fn near_clones_report(
+        classes: &[clones::NearCloneClass],
+        sources: &std::collections::HashMap<String, String>,
+    ) -> String {
+        let mut out = String::new();
+        for (i, cls) in classes.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "near-clone: {} occurrences, {} hole(s): {}\n",
+                cls.sites.len(),
+                cls.hole_count,
+                cls.pattern
+            ));
+            for site in &cls.sites {
+                out.push_str(&format!("  {}\n", site_loc(site, sources)));
+            }
+        }
+        out
+    }
+
+    /// Render near-clone classes as JSON: `[{pattern, size, holes, sites:[{file?, line, col}]}]`.
+    pub fn near_clones_json(
+        classes: &[clones::NearCloneClass],
+        sources: &std::collections::HashMap<String, String>,
+    ) -> String {
+        let mut arr = json::Array::new();
+        for cls in classes {
+            let mut obj = json::Object::new();
+            obj.string("pattern", &cls.pattern);
+            obj.raw("size", &cls.size.to_string());
+            obj.raw("holes", &cls.hole_count.to_string());
+            let mut sites = json::Array::new();
+            for site in &cls.sites {
+                sites.raw(&site_json(site, sources));
+            }
+            obj.raw("sites", &sites.finish());
+            arr.raw(&obj.finish());
+        }
+        arr.finish()
+    }
 }
 
 /// A minimal, dependency-free JSON string builder — just what the `--json` output needs (objects,
@@ -1969,6 +2040,196 @@ pub mod hash {
             Tree::List(items, _) => 1 + items.iter().map(node_size).sum::<usize>(),
         }
     }
+
+    // ---- shape hash (for NEAR-clone bucketing) ----
+
+    const TAG_HOLE: u8 = 0x10;
+    const TAG_HEAD: u8 = 0x11;
+
+    /// The 64-bit SHAPE hash of `t`: like [`hash_tree`], but every LEAF is a hole EXCEPT a list's head
+    /// name (its first child, when a name). So it buckets subtrees that share a skeleton of constructs
+    /// and differ only in their operands — the candidate set for near-clone (Type-2) detection.
+    /// `(scale x 2)` and `(scale y 3)` share a shape (`(scale _ _)`); `(scale …)` and `(shift …)` do
+    /// not (different head).
+    pub fn shape_hash(t: &Tree) -> u64 {
+        let d = shape_digest(t);
+        u64::from_be_bytes(d[..8].try_into().expect("sha256 is 32 bytes"))
+    }
+
+    fn shape_digest(t: &Tree) -> [u8; 32] {
+        let mut h = Sha256::new();
+        match t {
+            // A standalone atom carries no shape — it is a hole. (A head name is hashed by its parent
+            // list below, so it never reaches here as a standalone atom.)
+            Tree::Atom(_, _) => h.update([TAG_HOLE]),
+            Tree::List(items, _) => {
+                h.update([TAG_LIST]);
+                h.update((items.len() as u64).to_be_bytes());
+                for (i, child) in items.iter().enumerate() {
+                    match (i, child) {
+                        // Preserve the head name so `(+ …)` and `(* …)` stay distinct shapes.
+                        (0, Tree::Atom(Leaf::Name(n), _)) => {
+                            h.update([TAG_HEAD]);
+                            h.update((n.len() as u64).to_be_bytes());
+                            h.update(n.as_bytes());
+                        }
+                        _ => h.update(shape_digest(child)),
+                    }
+                }
+            }
+        }
+        h.finalize().into()
+    }
+}
+
+/// ANTI-UNIFICATION — the inverse of the matcher. Given a set of concrete subtrees, compute their
+/// least-general generalization: a pattern that matches them all, with a fresh metavariable wherever
+/// they differ. Where [`crate::query`] matching goes pattern → instances, this goes instances →
+/// pattern, so its output is a `,x`-metavariable pattern feedable straight back into `search`/
+/// `rewrite`. It is the engine behind near-clone (Type-2) detection.
+pub mod antiunify {
+    use super::hash::hash_tree;
+    use super::{tree_eq, Tree};
+    use crate::ast::Leaf;
+    use std::collections::HashMap;
+
+    /// The result of anti-unifying N instances.
+    #[derive(Clone, Debug)]
+    pub struct Generalization {
+        /// The pattern tree: the shared skeleton with `(unquote mK)` holes where instances differ.
+        pub pattern: Tree,
+        /// For each hole `mK` (index = K), the subtree each instance had there — `holes[k][i]` is
+        /// instance `i`'s subtree at hole `k`. All inner vecs have length = number of instances.
+        pub holes: Vec<Vec<Tree>>,
+    }
+
+    /// Anti-unify `instances` (≥1). Recurses positionally: equal sub-parts stay literal; a divergence
+    /// becomes a hole. Holes are SHARED — two positions whose per-instance subtrees are element-wise
+    /// equal get the SAME metavariable (so the emitted pattern's repeated-metavar consistency exactly
+    /// re-captures the instances). With one instance, the result is that instance with no holes.
+    pub fn anti_unify(instances: &[&Tree]) -> Generalization {
+        assert!(!instances.is_empty(), "anti_unify needs ≥1 instance");
+        // A hole is keyed by the vector of content hashes of its per-instance subtrees, so identical
+        // difference-columns collapse to one metavariable.
+        let mut holes: Vec<Vec<Tree>> = Vec::new();
+        let mut by_key: HashMap<Vec<u64>, usize> = HashMap::new();
+        let pattern = build(instances, &mut holes, &mut by_key);
+        Generalization { pattern, holes }
+    }
+
+    /// Recursively generalize the `i`-th slice of instances at one position.
+    fn build(
+        instances: &[&Tree],
+        holes: &mut Vec<Vec<Tree>>,
+        by_key: &mut HashMap<Vec<u64>, usize>,
+    ) -> Tree {
+        let first = instances[0];
+        // All equal ⇒ keep the literal subtree (no hole).
+        if instances[1..].iter().all(|t| tree_eq(first, t)) {
+            return strip(first);
+        }
+        // Same list head + same arity across ALL instances ⇒ recurse position-wise.
+        if let Some(arity) = common_list_shape(instances) {
+            let mut kids = Vec::with_capacity(arity);
+            for k in 0..arity {
+                let col: Vec<&Tree> = instances.iter().map(|t| child(t, k)).collect();
+                kids.push(build(&col, holes, by_key));
+            }
+            return Tree::List(kids, None);
+        }
+        // Otherwise a divergence ⇒ a (possibly shared) hole.
+        let key: Vec<u64> = instances.iter().map(|t| hash_tree(t)).collect();
+        let idx = *by_key.entry(key).or_insert_with(|| {
+            let idx = holes.len();
+            holes.push(instances.iter().map(|t| strip(t)).collect());
+            idx
+        });
+        metavar(idx)
+    }
+
+    /// If every instance is a list with the SAME head name and SAME arity, that arity; else `None`.
+    fn common_list_shape(instances: &[&Tree]) -> Option<usize> {
+        let (head0, arity0) = list_head_arity(instances[0])?;
+        for t in &instances[1..] {
+            let (h, a) = list_head_arity(t)?;
+            if h != head0 || a != arity0 {
+                return None;
+            }
+        }
+        Some(arity0)
+    }
+
+    fn list_head_arity(t: &Tree) -> Option<(Option<&str>, usize)> {
+        match t {
+            Tree::List(items, _) => Some((items.first().and_then(as_name), items.len())),
+            _ => None,
+        }
+    }
+
+    fn as_name(t: &Tree) -> Option<&str> {
+        match t {
+            Tree::Atom(Leaf::Name(n), _) => Some(n),
+            _ => None,
+        }
+    }
+
+    fn child(t: &Tree, k: usize) -> &Tree {
+        match t {
+            Tree::List(items, _) => &items[k],
+            _ => unreachable!("child() only called on lists of known arity"),
+        }
+    }
+
+    /// A metavariable name for hole `idx`: `m0`, `m1`, … (bound by convention; the head is a name).
+    pub fn metavar_name(idx: usize) -> String {
+        format!("m{idx}")
+    }
+
+    /// A `(unquote mK)` metavariable node.
+    fn metavar(idx: usize) -> Tree {
+        Tree::List(
+            vec![
+                Tree::Atom(Leaf::Name("unquote".into()), None),
+                Tree::Atom(Leaf::Name(metavar_name(idx)), None),
+            ],
+            None,
+        )
+    }
+
+    /// Deep-copy `t` dropping provenance (the pattern is a fresh synthetic tree).
+    fn strip(t: &Tree) -> Tree {
+        match t {
+            Tree::Atom(l, _) => Tree::Atom(l.clone(), None),
+            Tree::List(items, _) => Tree::List(items.iter().map(strip).collect(), None),
+        }
+    }
+
+    /// Render a generalization's pattern as readable s-expression text with `,mK` sugar for holes
+    /// (instead of the explicit `(unquote mK)`), so it reads as — and is — a pattern for `rewrite`.
+    pub fn render_pattern(t: &Tree) -> String {
+        // A hole `(unquote mK)` prints as `,mK`; everything else prints normally via a fresh arena.
+        if let Some(name) = as_metavar_name(t) {
+            return format!(",{name}");
+        }
+        match t {
+            Tree::Atom(_, _) => t.to_sexpr(),
+            Tree::List(items, _) => {
+                let parts: Vec<String> = items.iter().map(render_pattern).collect();
+                format!("({})", parts.join(" "))
+            }
+        }
+    }
+
+    /// If `t` is a `(unquote NAME)` hole, its NAME.
+    fn as_metavar_name(t: &Tree) -> Option<&str> {
+        match t {
+            Tree::List(items, _) => match items.as_slice() {
+                [h, n] if as_name(h) == Some("unquote") => as_name(n),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 /// Exact CLONE DETECTION: find subtrees that recur verbatim across a program (or a codebase). Groups
@@ -1976,7 +2237,8 @@ pub mod hash {
 /// — the copy-paste an agent would extract into a shared definition. Purely structural (no
 /// α-equivalence / semantics — that is the compiler's domain).
 pub mod clones {
-    use super::hash::{hash_tree, node_size};
+    use super::antiunify::{anti_unify, render_pattern};
+    use super::hash::{hash_tree, node_size, shape_hash};
     use super::{tree_eq, Tree};
     use crate::span::Span;
     use crate::spans::SpanTable;
@@ -2121,6 +2383,131 @@ pub mod clones {
             }
         }
         groups
+    }
+
+    // ---- near-clone (Type-2) detection via anti-unification ----
+
+    /// A class of ≥2 subtrees that share a SHAPE but differ in some leaves. The inferred `pattern`
+    /// (its `,mK`-metavariable form) matches every member; `holes[k]` is the per-site subtree at hole
+    /// `k` (so `holes[k].len() == sites.len()`).
+    #[derive(Clone, Debug)]
+    pub struct NearCloneClass {
+        /// The anti-unified pattern, rendered with `,mK` sugar — feedable straight into `rewrite`.
+        pub pattern: String,
+        /// Node count of the pattern skeleton (holes count as one node each) — the ranking size.
+        pub size: usize,
+        /// Number of holes (distinct metavariables) — how much the sites differ.
+        pub hole_count: usize,
+        pub sites: Vec<CloneSite>,
+    }
+
+    /// Find near-clone classes across `sources`: subtrees that share a skeleton (same [`shape_hash`])
+    /// and generalize — via [`anti_unify`] — to a pattern with ≥1 hole. Only classes with ≥2 members,
+    /// ≥1 hole (a 0-hole class is an EXACT clone, reported by [`find_clones_multi`] instead), and a
+    /// skeleton of ≥ `min_size` nodes are kept. Maximal (top-down, don't descend into a reported
+    /// near-clone). Ranked largest-first, then more occurrences.
+    ///
+    /// The emitted `pattern` is the inverse of the matcher: it re-matches every member, so it can be
+    /// handed to `rewrite` to factor the sites into one call.
+    pub fn find_near_clones(sources: &[Source], min_size: usize) -> Vec<NearCloneClass> {
+        // Pass 1: shape-hash frequency across all sources.
+        let mut freq: HashMap<u64, usize> = HashMap::new();
+        for src in sources {
+            shape_count(src.tree, min_size, &mut freq);
+        }
+        // Pass 2 (top-down, maximal): record subtrees whose SHAPE recurs.
+        let mut occ: Vec<(usize, &Tree)> = Vec::new();
+        for (si, src) in sources.iter().enumerate() {
+            shape_collect_maximal(src.tree, si, min_size, &freq, &mut occ);
+        }
+        // Bucket by shape hash; each bucket is one candidate near-clone class.
+        let mut by_shape: HashMap<u64, Vec<(usize, &Tree)>> = HashMap::new();
+        for (si, t) in occ {
+            by_shape.entry(shape_hash(t)).or_default().push((si, t));
+        }
+        let mut out: Vec<NearCloneClass> = Vec::new();
+        for members in by_shape.values() {
+            if members.len() < 2 {
+                continue;
+            }
+            let trees: Vec<&Tree> = members.iter().map(|(_, t)| *t).collect();
+            let g = anti_unify(&trees);
+            // A 0-hole generalization means the members are exactly equal — that's an EXACT clone,
+            // not a near-clone; skip it (find_clones reports those).
+            if g.holes.is_empty() {
+                continue;
+            }
+            out.push(NearCloneClass {
+                pattern: render_pattern(&g.pattern),
+                size: node_size(&g.pattern),
+                hole_count: g.holes.len(),
+                sites: members
+                    .iter()
+                    .map(|(si, t)| {
+                        let src = &sources[*si];
+                        CloneSite {
+                            file: src.file.clone(),
+                            node: (*t).clone(),
+                            span: t.origin().and_then(|id| src.spans.and_then(|s| s.get(id))),
+                        }
+                    })
+                    .collect(),
+            });
+        }
+        out.sort_by(|a, b| {
+            b.size
+                .cmp(&a.size)
+                .then(b.sites.len().cmp(&a.sites.len()))
+                .then(a.pattern.cmp(&b.pattern))
+        });
+        out
+    }
+
+    /// Single-source near-clone convenience wrapper.
+    pub fn find_near_clones_one(
+        subject: &Tree,
+        min_size: usize,
+        spans: Option<&SpanTable>,
+    ) -> Vec<NearCloneClass> {
+        find_near_clones(
+            &[Source {
+                tree: subject,
+                spans,
+                file: None,
+            }],
+            min_size,
+        )
+    }
+
+    /// Pass 1 for near-clones: tally each subtree SHAPE hash (size ≥ `min_size`).
+    fn shape_count(node: &Tree, min_size: usize, freq: &mut HashMap<u64, usize>) {
+        if node_size(node) >= min_size {
+            *freq.entry(shape_hash(node)).or_insert(0) += 1;
+        }
+        if let Tree::List(items, _) = node {
+            for c in items {
+                shape_count(c, min_size, freq);
+            }
+        }
+    }
+
+    /// Pass 2 for near-clones: record maximal subtrees whose shape recurs; don't descend into them.
+    fn shape_collect_maximal<'t>(
+        node: &'t Tree,
+        si: usize,
+        min_size: usize,
+        freq: &HashMap<u64, usize>,
+        occ: &mut Vec<(usize, &'t Tree)>,
+    ) {
+        if node_size(node) >= min_size && freq.get(&shape_hash(node)).copied().unwrap_or(0) >= 2 {
+            occ.push((si, node));
+            return;
+        }
+        if let Tree::List(items, _) = node {
+            for c in items {
+                shape_collect_maximal(c, si, min_size, freq, occ);
+            }
+        }
     }
 }
 
@@ -2967,6 +3354,23 @@ mod tests {
             assert_eq!(node_size(&subj("x")), 1);
             assert_eq!(node_size(&subj("(f a b)")), 4); // f, a, b, + the list
         }
+
+        #[test]
+        fn shape_hash_ignores_operand_leaves() {
+            use crate::query::hash::shape_hash;
+            // same skeleton, different operands → same shape.
+            assert_eq!(shape_hash(&subj("(scale x 2)")), shape_hash(&subj("(scale y 3)")));
+        }
+
+        #[test]
+        fn shape_hash_keeps_head_and_structure() {
+            use crate::query::hash::shape_hash;
+            // different head → different shape.
+            assert_ne!(shape_hash(&subj("(scale x 2)")), shape_hash(&subj("(shift x 2)")));
+            // different arity / nesting → different shape.
+            assert_ne!(shape_hash(&subj("(f a b)")), shape_hash(&subj("(f a)")));
+            assert_ne!(shape_hash(&subj("(f a b)")), shape_hash(&subj("(f a (g b))")));
+        }
     }
 
     mod clone_tests {
@@ -3024,6 +3428,104 @@ mod tests {
             let classes = find_clones(&s, 2, None);
             assert_eq!(classes.len(), 1);
             assert_eq!(classes[0].sites.len(), 3);
+        }
+    }
+
+    mod antiunify_tests {
+        use super::subj;
+        use crate::query::antiunify::{anti_unify, render_pattern};
+        use crate::query::{count, Pattern, Tree};
+
+        /// The count of holes (distinct metavars) in a generalization.
+        fn hole_count(g: &crate::query::antiunify::Generalization) -> usize {
+            g.holes.len()
+        }
+
+        #[test]
+        fn generalizes_a_differing_operand_to_one_hole() {
+            let a = subj("(scale x 2)");
+            let b = subj("(scale x 3)");
+            let g = anti_unify(&[&a, &b]);
+            // shared `(scale x _)` with one hole for the last operand.
+            assert_eq!(render_pattern(&g.pattern), "(scale x ,m0)");
+            assert_eq!(hole_count(&g), 1);
+            assert_eq!(g.holes[0].len(), 2); // one column entry per instance
+            assert_eq!(g.holes[0][0].to_sexpr(), "2");
+            assert_eq!(g.holes[0][1].to_sexpr(), "3");
+        }
+
+        #[test]
+        fn two_differing_positions_are_two_holes() {
+            let a = subj("(f 1 2)");
+            let b = subj("(f 3 4)");
+            let g = anti_unify(&[&a, &b]);
+            assert_eq!(render_pattern(&g.pattern), "(f ,m0 ,m1)");
+            assert_eq!(hole_count(&g), 2);
+        }
+
+        #[test]
+        fn identical_columns_share_a_hole() {
+            // both operands differ by the SAME per-instance values → one shared metavar.
+            let a = subj("(pair k k)");
+            let b = subj("(pair j j)");
+            let g = anti_unify(&[&a, &b]);
+            // column0 = [k, j], column1 = [k, j] → same key → shared `,m0`.
+            assert_eq!(render_pattern(&g.pattern), "(pair ,m0 ,m0)");
+            assert_eq!(hole_count(&g), 1);
+        }
+
+        #[test]
+        fn recurses_into_nested_structure() {
+            let a = subj("(let ((x 1)) (+ x 1))");
+            let b = subj("(let ((x 2)) (+ x 2))");
+            let g = anti_unify(&[&a, &b]);
+            // 1↔2 appears in two positions with the SAME column [1,2] → shared hole.
+            assert_eq!(render_pattern(&g.pattern), "(let ((x ,m0)) (+ x ,m0))");
+            assert_eq!(hole_count(&g), 1);
+        }
+
+        #[test]
+        fn differing_head_generalizes_the_whole_node() {
+            // different heads can't align positionally → the whole thing is one hole.
+            let a = subj("(f a)");
+            let b = subj("(g a)");
+            let g = anti_unify(&[&a, &b]);
+            assert_eq!(render_pattern(&g.pattern), ",m0");
+            assert_eq!(hole_count(&g), 1);
+        }
+
+        #[test]
+        fn identical_instances_have_no_holes() {
+            let a = subj("(f a b)");
+            let b = subj("(f a b)");
+            let g = anti_unify(&[&a, &b]);
+            assert_eq!(hole_count(&g), 0);
+            assert_eq!(render_pattern(&g.pattern), "(f a b)");
+        }
+
+        #[test]
+        fn the_emitted_pattern_matches_every_instance() {
+            // The round-trip that makes this the inverse of the matcher: anti-unify → the pattern,
+            // compiled, matches each original instance.
+            let insts = [subj("(scale x 2)"), subj("(scale x 3)"), subj("(scale x 9)")];
+            let refs: Vec<&Tree> = insts.iter().collect();
+            let g = anti_unify(&refs);
+            let pat = Pattern::compile(&render_pattern(&g.pattern)).expect("valid pattern");
+            for inst in &insts {
+                assert_eq!(count(&pat, inst), 1, "pattern matches {}", inst.to_sexpr());
+            }
+        }
+
+        #[test]
+        fn shared_hole_pattern_enforces_consistency() {
+            // `(pair ,m0 ,m0)` must match `(pair k k)` but NOT `(pair k j)` — the shared metavar is a
+            // real consistency constraint, exactly as in the matcher.
+            let a = subj("(pair k k)");
+            let b = subj("(pair j j)");
+            let g = anti_unify(&[&a, &b]);
+            let pat = Pattern::compile(&render_pattern(&g.pattern)).unwrap();
+            assert_eq!(count(&pat, &subj("(pair q q)")), 1);
+            assert_eq!(count(&pat, &subj("(pair q r)")), 0);
         }
     }
 }

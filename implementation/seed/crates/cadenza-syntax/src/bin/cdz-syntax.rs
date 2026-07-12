@@ -9,7 +9,7 @@
 //! cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--diff|--write|--json]
 //! cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]
 //! cdz-syntax lint    [FILE|DIR…]      --rules FILE | --rule '(lint …)' [--from FMT] [--json]
-//! cdz-syntax clones  [FILE|DIR…]      [--min-size N] [--from FMT] [--json]
+//! cdz-syntax clones  [FILE|DIR…]      [--min-size N] [--near] [--from FMT] [--json]
 //! ```
 //!
 //! `--from`/`--to` are inferred from the FILE extension when omitted (`.cdz`/`.ml` → ml,
@@ -68,11 +68,16 @@ struct ClonesArgs {
     #[arg(long, default_value_t = 3)]
     min_size: usize,
 
+    /// Find NEAR-clones (same shape, differing leaves) instead of exact clones. Reports the inferred
+    /// `,mK`-metavariable pattern that matches every site — feedable into `rewrite`.
+    #[arg(long)]
+    near: bool,
+
     /// Input format. Inferred from each FILE's extension when omitted; required when reading stdin.
     #[arg(short, long, value_enum)]
     from: Option<Fmt>,
 
-    /// Emit clone classes as JSON (`[{exemplar, size, sites:[{file?, line, col}]}]`).
+    /// Emit classes as JSON (exact: `[{exemplar, size, sites}]`; near: `[{pattern, size, holes, sites}]`).
     #[arg(long)]
     json: bool,
 }
@@ -491,20 +496,34 @@ fn run_clones(args: &ClonesArgs) -> Result<(), String> {
             file: Some(l.label.clone()),
         })
         .collect();
-    let classes = clones::find_clones_multi(&sources, args.min_size);
-
     // label → source text, for line:col rendering.
     let src_map: std::collections::HashMap<String, String> =
         loaded.iter().map(|l| (l.label.clone(), l.src.clone())).collect();
 
-    if args.json {
-        println!("{}", query::driver::clones_json(&classes, &src_map));
-    } else {
-        let report = query::driver::clones_report(&classes, &src_map);
-        if report.is_empty() {
-            eprintln!("cdz-syntax: no clones (min-size {})", args.min_size);
+    if args.near {
+        // Near-clones: same shape, differing leaves — report the inferred `,mK` pattern per class.
+        let classes = clones::find_near_clones(&sources, args.min_size);
+        if args.json {
+            println!("{}", query::driver::near_clones_json(&classes, &src_map));
         } else {
-            print!("{report}");
+            let report = query::driver::near_clones_report(&classes, &src_map);
+            if report.is_empty() {
+                eprintln!("cdz-syntax: no near-clones (min-size {})", args.min_size);
+            } else {
+                print!("{report}");
+            }
+        }
+    } else {
+        let classes = clones::find_clones_multi(&sources, args.min_size);
+        if args.json {
+            println!("{}", query::driver::clones_json(&classes, &src_map));
+        } else {
+            let report = query::driver::clones_report(&classes, &src_map);
+            if report.is_empty() {
+                eprintln!("cdz-syntax: no clones (min-size {})", args.min_size);
+            } else {
+                print!("{report}");
+            }
         }
     }
     Ok(())

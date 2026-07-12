@@ -557,3 +557,50 @@ fn clones_reports_nothing_when_all_distinct() {
     assert!(stderr.contains("no clones"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- near-clone detection (`clones --near`) ----
+
+#[test]
+fn near_clones_infers_a_pattern() {
+    let dir = scratch_dir("near1");
+    std::fs::write(dir.join("a.ml"), "f(scale(x, 2))\ng(scale(x, 3))\n").unwrap();
+    let (ok, stdout, _) = run(&["clones", dir.join("a.ml").to_str().unwrap(), "--near", "--min-size", "3"], "");
+    assert!(ok);
+    assert!(stdout.contains("(scale x ,m0)"), "inferred pattern: {stdout}");
+    assert!(stdout.contains("2 occurrences"), "{stdout}");
+    assert!(stdout.contains("1 hole"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn near_clones_json_reports_pattern_and_holes() {
+    let dir = scratch_dir("near2");
+    std::fs::write(dir.join("a.sexp"), "(do (k a 1) (k b 2))\n").unwrap();
+    let (ok, stdout, _) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--near", "--min-size", "3", "--json"], "");
+    assert!(ok);
+    let s = stdout.trim();
+    assert!(s.contains("\"pattern\":\"(k ,m0 ,m1)\""), "{s}");
+    assert!(s.contains("\"holes\":2"), "{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn near_clones_none_when_shapes_differ() {
+    let dir = scratch_dir("near3");
+    std::fs::write(dir.join("a.sexp"), "(do (f a b) (g c))\n").unwrap();
+    let (ok, _out, stderr) = run(&["clones", dir.join("a.sexp").to_str().unwrap(), "--near", "--min-size", "3"], "");
+    assert!(ok);
+    assert!(stderr.contains("no near-clones"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn near_clone_pattern_feeds_back_into_rewrite() {
+    // The closing loop: the inferred pattern re-matches (and rewrites) the very sites it came from.
+    let (ok, stdout, _) = run(
+        &["rewrite", "(scale x ,m0)", "(scaled x ,m0)", "--from", "ml", "--to", "ml"],
+        "g(scale(x, 2), scale(x, 7))",
+    );
+    assert!(ok);
+    assert_eq!(stdout.trim(), "g(scaled(x, 2), scaled(x, 7))");
+}

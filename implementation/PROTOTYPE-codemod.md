@@ -100,7 +100,7 @@ cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--wid
 cdz-syntax rewrite --rules FILE     [FILE|DIR…] …same flags…
 cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]     # structural (subtree) diff
 cdz-syntax lint    [FILE|DIR…] --rules FILE | --rule '(lint …)' [--from FMT] [--json]
-cdz-syntax clones  [FILE|DIR…] [--min-size N] [--from FMT] [--json]   # duplicated subtrees
+cdz-syntax clones  [FILE|DIR…] [--min-size N] [--near] [--from FMT] [--json]   # duplicated subtrees
 ```
 
 `--from`/`--to` are inferred from each FILE extension (`.cdz`/`.ml` → ml, `.sexp` → sexpr, `.bin` →
@@ -172,6 +172,13 @@ clone: 3 occurrences, 4 nodes: (validate config strict)
   src/a.ml:1:11
   src/a.ml:2:11
   src/b.ml:1:11
+
+# NEAR-CLONES: same shape, differing leaves — INFERS the generalizing pattern (feed into rewrite)
+$ cdz-syntax clones src/ --near --min-size 3
+near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
+  src/a.ml:1:11
+  src/b.ml:1:11
+  src/c.ml:1:11
 ```
 
 - **query** prints each match as `byte START-END: <matched s-expr>` (the span comes from the parser's
@@ -207,6 +214,14 @@ clone: 3 occurrences, 4 nodes: (validate config strict)
   occurrences, M nodes: <exemplar>` + a `LABEL:line:col` per site, or `--json`
   `[{exemplar, size, sites:[{file?, line, col}]}]`. Purely structural — no α-equivalence (that's the
   compiler's domain).
+- **clones `--near`** finds NEAR-clones (Type-2): subtrees that share a *shape* but differ in leaves
+  — "these N call sites differ only in a constant". It buckets by a **shape hash** (leaves-as-holes,
+  head names + structure preserved), then **anti-unifies** each bucket: the inverse of the matcher —
+  given the instances, it INFERS the least-general-generalization pattern with a fresh `,mK`
+  metavariable wherever they differ (shared when two positions vary together). The reported pattern
+  (`near-clone: N occurrences, H hole(s): (scale x ,m0)`) *is* a `rewrite` pattern — it re-matches
+  every site — so a near-clone report feeds straight back into `cdz-syntax rewrite` to factor the
+  duplication into one call. `--json` → `[{pattern, size, holes, sites}]`.
 
 Because the parser is a recovering parser, `query` works over **broken input** too: it reports the
 recoverable parse error on stderr and still runs the query over the recovered tree — the "total query
@@ -235,6 +250,12 @@ over incomplete source" the tooling capability calls for.
   detection** = frequency-count subtree hashes, record maximal recurring subtrees top-down, then
   bucket-by-hash and verify each class with `tree_eq` (collision-safe). Cross-file via
   `find_clones_multi` over a `[Source]`.
+- **Anti-unification** (`query::antiunify`) is the inverse of matching: `anti_unify(&[&Tree])` returns
+  the least-general generalization — recurse positionally through same-head/same-arity lists, emit a
+  `,mK` hole on a divergence, and SHARE holes keyed by the (per-instance) difference column so a
+  repeated metavar exactly re-captures the instances. **Near-clone detection** buckets by a **shape
+  hash** (leaves-as-holes, structure + head preserved) then anti-unifies each bucket, keeping classes
+  with ≥2 members and ≥1 hole. The emitted pattern round-trips: it compiles and re-matches every site.
 
 ## Library API (`cadenza_syntax::query`)
 
@@ -282,11 +303,19 @@ query::driver::lint_json(&LintSet, &Target, src, file) -> (String, bool)
 
 // content hash + clone detection
 query::hash::hash_tree(&Tree) -> u64          // bottom-up Merkle hash; == iff tree_eq
+query::hash::shape_hash(&Tree) -> u64         // leaves-as-holes (near-clone bucketing)
 query::hash::node_size(&Tree) -> usize
 query::clones::find_clones(&Tree, min_size, Option<&SpanTable>) -> Vec<CloneClass>   // { exemplar, size, sites }
 query::clones::find_clones_multi(&[Source], min_size) -> Vec<CloneClass>             // cross-file (Source { tree, spans, file })
 query::driver::clones_report(&[CloneClass], &HashMap<label,src>) -> String
 query::driver::clones_json(&[CloneClass], &HashMap<label,src>) -> String
+
+// anti-unification + near-clone (Type-2) detection
+query::antiunify::anti_unify(&[&Tree]) -> Generalization    // { pattern: Tree with (unquote mK) holes, holes: Vec<Vec<Tree>> }
+query::antiunify::render_pattern(&Tree) -> String           // the ,mK sugar (a `rewrite` pattern)
+query::clones::find_near_clones(&[Source], min_size) -> Vec<NearCloneClass>   // { pattern, size, hole_count, sites }
+query::clones::find_near_clones_one(&Tree, min_size, Option<&SpanTable>) -> Vec<NearCloneClass>
+query::driver::near_clones_report / near_clones_json (&[NearCloneClass], &HashMap<label,src>) -> String
 
 // small dependency-free helpers (no serde)
 query::json::{quote, Object, Array}     // JSON string builder
@@ -325,20 +354,23 @@ prototype's `Tree` matcher is the executable spec for what those combinators mus
 
 ## Tests
 
-- `query` module unit tests (100): matching (metavars, consistency, variadic + anchoring, wildcard),
+- `query` module unit tests (110): matching (metavars, consistency, variadic + anchoring, wildcard),
   **guards** (each predicate, `matches`/`not`, conjunction, consistency interaction, compile-time
   rejection), **relational context** (inside/has/not-*, strict-descendant, composition), **multi-rule
   sets + strategy** (first-match-wins, rule-file compile, bottom-up vs top-down, fixpoint), the
   **json** writer + **diff** engine, **tree-diff** (leaf/nested change, head-replace, add/remove,
   atom↔list, multiple changes), **lint** (severity parse/default, compile, run, multi-rule order,
-  bad message/severity, full pattern language), **content hash** (positional-invariant, radix
-  sensitivity, no α-equivalence, atom≠list, node_size) + **clones** (repeated subtree, min-size floor,
-  maximal-only, ranking, 3-way class) + `line_col` + the driver's JSON/`project_target`.
-- `tests/query_cli.rs` (38): the built binary driven over stdin AND over temp files/dirs — query/
+  bad message/severity, full pattern language), **content + shape hash** (positional-invariant, radix
+  sensitivity, no α-equivalence, atom≠list, node_size; shape ignores operands / keeps head+arity),
+  **clones** (repeated subtree, min-size floor, maximal-only, ranking, 3-way class), **anti-unify**
+  (one/two holes, shared column, nested recursion, differing head, identical=no-holes, emitted-pattern
+  re-matches-all, shared-hole consistency) + `line_col` + the driver's JSON/`project_target`.
+- `tests/query_cli.rs` (42): the built binary driven over stdin AND over temp files/dirs — query/
   count/rewrite, guards, relational flags, `--rules`, `--top-down`, **multi-file & directory walk**,
   **`--json`** (query + rewrite), **`--diff`** (preview, file untouched), **`--write`** (in-place,
   no-op skip, stdin-rejected, mutually-exclusive-with-diff), **`diff` subcommand** (changed subtree +
   path, JSON, identical), **`lint` subcommand** (location+severity, error→exit 1, warning→exit 0,
   clean→exit 0, JSON, rules-file over a dir, no-rules error), **`clones` subcommand** (cross-file
-  duplicate, min-size floor, JSON, all-distinct), cross-surface, broken-input recovery, bad-pattern /
-  unknown-guard rejection.
+  duplicate, min-size floor, JSON, all-distinct), **`clones --near`** (inferred pattern, JSON holes,
+  none-when-shapes-differ, pattern-feeds-back-into-rewrite), cross-surface, broken-input recovery,
+  bad-pattern / unknown-guard rejection.

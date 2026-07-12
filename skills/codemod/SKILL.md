@@ -6,12 +6,13 @@ description: >-
   code by SHAPE rather than text — structural search-and-replace, a rename/peephole/wrap refactor,
   a multi-rule simplifier pass, running a codemod across files/directories (apply in place, diff
   preview, or JSON), structurally diffing two programs (which subtrees changed), finding duplicated
-  subtrees (clone detection), counting occurrences of a form, extracting spans of matching nodes, or
-  building on the query/Tree matcher API. Covers the `,x`/`,@xs` pattern language, structural guards
-  (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`), multi-rule sets +
-  traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff` (structural tree-diff) and
-  `clones` (content-hash duplicate detection) subcommands, `lint` mode (anti-pattern checker / CI
-  gate), the CLI, the library API, and the self-hosted sidecar map.
+  subtrees (exact or near-clone / anti-unification), counting occurrences of a form, extracting spans
+  of matching nodes, or building on the query/Tree matcher API. Covers the `,x`/`,@xs` pattern
+  language, structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context
+  (`inside`/`has`), multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the
+  `diff` (structural tree-diff) and `clones` (content-hash duplicate + `--near` anti-unification)
+  subcommands, `lint` mode (anti-pattern checker / CI gate), the CLI, the library API, and the
+  self-hosted sidecar map.
 ---
 
 # Structural query & rewrite (codemod) for Cadenza
@@ -111,6 +112,11 @@ clone: 3 occurrences, 4 nodes: (validate config strict)
   src/a.ml:1:11
   src/a.ml:2:11
   src/b.ml:1:11
+
+# NEAR-CLONES: same shape, differing leaves — INFERS the pattern (feed straight into rewrite)
+$ cdz-syntax clones src/ --near --min-size 3
+near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
+  src/a.ml:1:11 …
 ```
 
 - **Multiple FILEs and directories** are accepted (a DIR is recursed by extension); with no FILE,
@@ -142,6 +148,12 @@ clone: 3 occurrences, 4 nodes: (validate config strict)
   (node-count floor, default 3) drops trivial dupes; only maximal clones are reported, ranked
   biggest-first. Output: `clone: N occurrences, M nodes: <exemplar>` + `LABEL:line:col` per site, or
   `--json`. Purely structural (no α-equivalence).
+- `clones --near` finds **near-clones** (Type-2): subtrees sharing a shape but differing in leaves.
+  It buckets by a shape hash then **anti-unifies** — the inverse of matching — INFERRING the pattern
+  with `,mK` holes where sites differ (shared when positions vary together). Output:
+  `near-clone: N occurrences, H hole(s): (scale x ,m0)`. That pattern *is* a `rewrite` pattern — it
+  re-matches every site — so a near-clone report **feeds straight back into `cdz-syntax rewrite`** to
+  factor the duplication into one call.
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
@@ -201,6 +213,11 @@ let gate  = lint::has_error(&diags);                // true → CI should fail
 let h       = query::hash::hash_tree(&tree);        // u64 Merkle hash; == iff tree_eq (fast eq filter)
 let classes = query::clones::find_clones(&tree, 3, Some(&spans));   // Vec<CloneClass { exemplar, size, sites }>
 // cross-file: query::clones::find_clones_multi(&[Source { tree, spans, file }], min_size)
+
+// anti-unification (inverse of matching) + near-clone detection
+let g = query::antiunify::anti_unify(&[&a, &b]);              // Generalization { pattern, holes }
+let p = query::antiunify::render_pattern(&g.pattern);        // ",mK"-sugar pattern → feed to Pattern::compile
+let near = query::clones::find_near_clones_one(&tree, 3, Some(&spans));  // Vec<NearCloneClass { pattern, size, hole_count, sites }>
 ```
 
 Multi-file / `--write` / directory-walk plumbing lives in the CLI (the bin), not the library — the
