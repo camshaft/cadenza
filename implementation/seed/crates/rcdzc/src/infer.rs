@@ -747,6 +747,20 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
 }
 
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
+    // CASE-OF-CASE (matches `lower`): a head that reduces to a runtime `if` — `((if c a b) args…)` —
+    // types as the `if` of the two branch applications. Each branch's lambda applies (β-reduces) to a
+    // concrete result type, so the application's type is that (`Int64`), NOT `Ty::Fn` (the naive type
+    // of the `if`, which would then have no machine representation at the boundary). Type each branch
+    // applied to the same args and JOIN — an `if`'s two branches must agree, so either branch's type is
+    // the result; take the then-branch's (the else must unify with it, checked at the `if`'s own node).
+    if let Some((_cond, then_head, else_head)) = crate::eval::reduce_to_if(db, head) {
+        let then_ty = apply_type(db, then_head, args);
+        if !matches!(then_ty, Ty::Any) {
+            return then_ty;
+        }
+        // The then-branch didn't determine a type (recursive/undetermined); fall back to the else.
+        return apply_type(db, else_head, args);
+    }
     // A LAMBDA head β-reduces; the application's type is the reduced body's type. The reduction runs
     // under the recursion guard (keyed by the lambda body), so a recursive call declines to `Any`
     // rather than diverging — matching lowering. (For C's corpus every function call folds this way;

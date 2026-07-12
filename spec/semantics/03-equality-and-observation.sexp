@@ -349,7 +349,7 @@
            Order Is Observed Through A Three-Way Comparison). Pins the Less arm of the three-way result.")
   (needs  ordering)
   (input  (compare 1 2))
-  (output (: (Ordering.Less unit) Ordering)))
+  (output (: (Less unit) Ordering)))
 
 (case "comparing equal values yields Equal"
   (doc    "`(compare 2 2)` is `(Ordering.Equal unit)` — the middle variant, distinct from both Less and
@@ -357,7 +357,7 @@
            collapsing it into one of the strict relations.")
   (needs  ordering)
   (input  (compare 2 2))
-  (output (: (Ordering.Equal unit) Ordering)))
+  (output (: (Equal unit) Ordering)))
 
 (case "comparing a greater value to a lesser yields Greater"
   (doc    "`(compare 3 2)` is `(Ordering.Greater unit)` — the Greater variant. Together with the Less and
@@ -365,7 +365,7 @@
            discriminated by the value relation.")
   (needs  ordering)
   (input  (compare 3 2))
-  (output (: (Ordering.Greater unit) Ordering)))
+  (output (: (Greater unit) Ordering)))
 
 (case "the three-way comparison is deconstructed by an exhaustive match"
   (doc    "An Ordering value is an ordinary closed sum, so it is matched with the uniform `(Ctor _)`
@@ -397,7 +397,7 @@
            three-way comparison is offered by every type with a total order, not only the numeric types.")
   (needs  ordering)
   (input  (compare "a" "b"))
-  (output (: (Ordering.Less unit) Ordering)))
+  (output (: (Less unit) Ordering)))
 
 (case "a program that makes a host call has that call in its observable behavior"
   (doc    "Witnesses core-semantics.md #Host Calls Are Ordered And Part Of Observable Behavior.

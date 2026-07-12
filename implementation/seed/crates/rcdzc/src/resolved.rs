@@ -90,6 +90,12 @@ pub enum Prim {
     Le,
     Ge,
     Eq,
+    /// `compare` — the THREE-WAY comparison `∀a. a → a → Ordering` (core-semantics.md §A Total Order Is
+    /// Observed Through A Three-Way Comparison). The primitive `<`/`>`/`=` agree with; its result is the
+    /// built-in `Ordering` sum (Less=0/Equal=1/Greater=2). A constant SCALAR/string pair FOLDS to the
+    /// matching `Ordering` variant (a `Core::SumNew` at the Ordering discs, like `List.at` builds Option);
+    /// a compound or runtime operand declines (as the comparison prims do).
+    Compare,
     /// The TRUNCATING integer conversion `T.wrap : ∀(w,s). Int^s_w → T` — keeps the low `N` bits of the
     /// source's two's-complement value and interprets them at the TARGET width `N` and signedness. The
     /// source is a fully-polymorphic integer (any width/sign, via the operator record's type-lambda); the
@@ -283,6 +289,7 @@ impl Prim {
             "<=" => Some(Prim::Le),
             ">=" => Some(Prim::Ge),
             "=" => Some(Prim::Eq),
+            "compare" => Some(Prim::Compare),
             "wrap" => Some(Prim::Wrap),
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),

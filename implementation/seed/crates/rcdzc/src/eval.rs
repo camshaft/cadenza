@@ -304,6 +304,18 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     {
         return arg;
     }
+    // A CAPTURED FREE VARIABLE — a name occurrence already RESOLVE-PINNED (`resolve_subtree` fixed its
+    // meaning). This is a spliced captured ARGUMENT that survived into a residual (partially-applied)
+    // lambda: `((sub n) 3)` curries to `(fn (b) (- n b))`, where `n` is the caller's pinned occurrence;
+    // the residual's later full application β-reduces `(- n b)` and reaches `n` here. `n`'s binding is
+    // OUTSIDE this body (the caller's param/`let`), so it must be PRESERVED — SHARE the pinned occurrence
+    // (keeping its memoized resolution) rather than make a fresh copy that would re-resolve against the
+    // residual's scope, where the captured name is unbound (the CDZ0101 the partial-application copy hit).
+    // A body-internal `let`-local is NEVER pinned (it resolves lazily, after the copy), so it still falls
+    // to `copy_structural` below and correctly re-resolves against the copied scope.
+    if db.ast.as_name(body).is_some() && db.resolved_subtrees.contains(&body) {
+        return body;
+    }
     // Otherwise structurally copy. A CONSTANT atom (int/bool/float/string leaf) is self-contained — it
     // resolves to its own value regardless of scope, so SHARE it (cheap, no re-resolution needed). A
     // NAME atom, though, resolves by a SCOPE WALK: if it names a binding INSIDE this body (a `let`-local
@@ -1129,6 +1141,17 @@ pub fn reduce_to_if(db: &mut Db, id: StructId) -> Option<(StructId, StructId, St
             }
         }
         Resolved::Annot { expr, .. } => reduce_to_if(db, expr),
+        // An application whose (non-recursive) callee returns an `if` — `(choose b)` where `choose`'s
+        // body is `(if b (fn …) (fn …))`. β-reduce the call to its `if` result, then reduce THAT. This
+        // is what lets a runtime-branch-selected function `((choose b) 5)` reach the case-of-case
+        // rewrite (the head `(choose b)` reduces to the `if`). Runs under the depth guard so a recursive
+        // callee (which can't reduce to a normal form) yields `None` rather than diverging.
+        Resolved::Apply { head, args } => {
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let reduced = apply_lambda(g, head, &args).ok().flatten()?;
+            reduce_to_if(g, reduced)
+        }
         _ => None,
     }
 }
