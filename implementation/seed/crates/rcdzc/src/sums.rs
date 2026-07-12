@@ -55,6 +55,67 @@ pub fn synthesize(ast: &mut Arenas, decls: &mut [TypeDecl]) {
     }
 }
 
+/// Build the BUILT-IN sum declarations — generic `Option` and `Result` — as ordinary `(type …)` arena
+/// forms, scanned into [`TypeDecl`]s (exactly like a user declaration). Appends the declaration nodes to
+/// `ast` and returns the decls; `Db::load` appends them to `db.type_decls` so `synthesize` builds their
+/// records, and binds the names (`Option`/`Some`/`None`, `Result`/`Ok`/`Err`) in the prelude map. A
+/// program uses bare `Some`/`None`/`Ok`/`Err` — the corpus surface — without declaring them; a user
+/// `(type Option …)` shadows (top-level `type_decls` resolve before the prelude). Making these ordinary
+/// declarations (not a bespoke built-in shape) keeps the ONE sum mechanism — nothing about Option is
+/// privileged (`reference-compiler.md` §Nothing Is Privileged By Name).
+pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
+    // `(type Option (Some a) None)`.
+    let option = type_form(ast, "Option", &[("Some", &["a"]), ("None", &[])]);
+    // `(type Result (Ok a) (Err e))`.
+    let result = type_form(ast, "Result", &[("Ok", &["a"]), ("Err", &["e"])]);
+    [option, result]
+        .into_iter()
+        .filter_map(|item| crate::db::scan_type_decl(ast, item))
+        .collect()
+}
+
+/// The occurrence of the variant-constructor field named `vname` inside a synthesized sum `record` —
+/// so the prelude map can bind a BARE variant name (`Some`) to its constructor. The record is `(record
+/// ((meta t) …) [(meta apply) …] [(meta sum-decl) …] (Some <ctor>) (None <ctor>)…)`; a variant field is
+/// a 2-element `(name <ctor>)` list whose name matches `vname`. `None` if not found (e.g. a meta field).
+pub fn variant_ctor_field(ast: &Arenas, record: StructId, vname: &str) -> Option<StructId> {
+    let Struct::List(children) = ast.get(record) else {
+        return None;
+    };
+    for &field in children.iter().skip(1) {
+        if let Struct::List(pair) = ast.get(field)
+            && pair.len() == 2
+            && ast.as_name(pair[0]) == Some(vname)
+        {
+            return Some(pair[1]);
+        }
+    }
+    None
+}
+
+/// Build a `(type NAME (V pay…)…)` declaration form in the arena and return its occurrence. Each
+/// variant is `(vname payload-name…)` (a payload is a bare type-parameter name — lowercase, so the scan
+/// reads it as an implicit generic). A nullary variant (`&[]` payloads) is a bare `vname`.
+fn type_form(ast: &mut Arenas, name: &str, variants: &[(&str, &[&str])]) -> StructId {
+    let head = push_atom(ast, Leaf::Name("type".to_string()));
+    let name_occ = push_atom(ast, Leaf::Name(name.to_string()));
+    let mut children = vec![head, name_occ];
+    for (vname, payloads) in variants {
+        if payloads.is_empty() {
+            // Nullary variant — a bare name.
+            children.push(push_atom(ast, Leaf::Name(vname.to_string())));
+        } else {
+            // `(vname payload…)`.
+            let mut vlist = vec![push_atom(ast, Leaf::Name(vname.to_string()))];
+            for p in *payloads {
+                vlist.push(push_atom(ast, Leaf::Name(p.to_string())));
+            }
+            children.push(push_list(ast, vlist));
+        }
+    }
+    push_list(ast, children)
+}
+
 /// Build one sum's record: `(record ((meta t) <sum-typeval>) (<variant> <ctor>)…)`. The `(meta t)` is
 /// the sum's own type-value; each variant is a field to its constructor record. A GENERIC sum (with
 /// type params) ALSO gets `(meta apply)` = the `sum-ctor` intrinsic + `(meta sum-decl)` = its

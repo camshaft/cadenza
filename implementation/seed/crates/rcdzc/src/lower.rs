@@ -592,28 +592,39 @@ enum SumPattern {
 }
 
 /// Classify a sum-match pattern. A bare NAME (`_` or a binder) is `Wild`. A variant pattern is either a
-/// bare member `(. Sum V)` (nullary) or an application `((. Sum V) binder)` — its head resolves to a
-/// variant constructor, whose `(meta variant)` gives the discriminant. Anything else is unsupported.
+/// bare member `(. Sum V)` / bare variant name (nullary) or an application `((. Sum V) binder)` / `(Some
+/// binder)` — its head resolves to a variant constructor, whose `(meta variant)` gives the discriminant.
+/// A variant pattern whose payload argument is NOT a bare binder/wildcard — a NESTED pattern `(Some
+/// (tuple a b c))` or `(Some (Some x))` — is `NotSupported` (the flat matcher binds a single payload; a
+/// nested destructure needs the decision-tree matcher). Declining a nested pattern rather than ignoring
+/// it is what makes `(Some (tuple a b c))` against a 2-tuple payload a rejection, not a silent match.
 fn classify_sum_pattern(db: &mut Db, pat: StructId) -> SumPattern {
     // A bare name — wildcard or binder — always matches.
     if db.ast.as_name(pat).is_some() {
         return SumPattern::Wild;
     }
-    // A variant pattern's discriminant: read the pattern HEAD (the member `(. Sum V)`) — for an
-    // application `((. Sum V) binder)` the head is the first child; for a bare member the pattern IS the
-    // head. `variant_disc_of` on the reduced head record gives the discriminant.
-    let head = match db.ast.get(pat) {
-        crate::ast::Struct::List(children) => {
-            // An application `(head arg…)` — the variant ctor is the head. (A bare `(. Sum V)` is also a
-            // List with head `.`; distinguish by whether the FIRST child is the `.` grammar name.)
-            match children.first().copied() {
-                Some(first) if db.ast.as_name(first) == Some(".") => pat, // the whole `(. Sum V)`
-                Some(first) => first,                                     // application head
-                None => return SumPattern::NotSupported,
-            }
-        }
+    // A variant pattern's discriminant: read the pattern HEAD (the member `(. Sum V)` or a bare variant
+    // name). For an application `(head arg…)` the head is the first child; for a bare member the pattern
+    // IS the head. `variant_disc_of` on the reduced head record gives the discriminant.
+    let (head, args): (StructId, &[StructId]) = match db.ast.get(pat) {
+        crate::ast::Struct::List(children) => match children.first().copied() {
+            // A bare member `(. Sum V)` — the whole pattern is the ctor, no payload args.
+            Some(first) if db.ast.as_name(first) == Some(".") => (pat, &[]),
+            // An application `(head arg…)` — the ctor is the head, the rest are payload patterns.
+            Some(first) => (first, &children[1..]),
+            None => return SumPattern::NotSupported,
+        },
         crate::ast::Struct::Atom(_) => return SumPattern::NotSupported,
     };
+    // Each payload pattern this increment binds must be a bare binder/wildcard (a single scalar/handle
+    // payload); a NESTED pattern (`(tuple a b c)`, `(Some x)`) is a destructure the flat matcher does not
+    // check — decline so it is not silently matched (the decision-tree matcher handles nesting).
+    let args: Vec<StructId> = args.to_vec();
+    for &arg in &args {
+        if db.ast.as_name(arg).is_none() {
+            return SumPattern::NotSupported;
+        }
+    }
     match crate::eval::variant_disc_of(db, head) {
         Some(disc) => SumPattern::Variant(disc),
         None => SumPattern::NotSupported,

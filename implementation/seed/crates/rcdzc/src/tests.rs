@@ -4340,6 +4340,102 @@ mod stage1 {
     }
 
     #[test]
+    fn bare_prelude_option_needs_no_declaration() {
+        // `Option`/`Some`/`None` are BUILT IN (prelude sums), so a program uses bare `Some`/`None` with
+        // NO `(type Option …)` — the corpus surface. `(Some 5)` infers `Option Int64`; a bare `None` is
+        // an `Option` at an unconstrained payload (a var until something fixes it).
+        use crate::db::Db;
+        use crate::infer::type_of;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let ast = parse("(module m (def (s) (Some 5)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let s_body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "s")
+            .and_then(|d| d.body)
+            .expect("s");
+        match type_of(&mut db, s_body) {
+            Ty::Sum { name, args, .. } => {
+                assert_eq!(name, "Option", "bare Some builds the prelude Option");
+                assert_eq!(
+                    args[0].render_name(),
+                    "Int64",
+                    "(Some 5) infers Option Int64"
+                );
+            }
+            other => panic!("expected Ty::Sum Option, got {}", other.render_name()),
+        }
+    }
+
+    #[test]
+    fn bare_prelude_option_matches_and_runs() {
+        // The prelude Option built + matched with BARE `Some`/`None` (no declaration), composed + run.
+        // `(pick n)` → `(Some n)` / `None`, matched `(Some x) → x`, `None → -1`. `pick 7`→7, `pick 0`→-1.
+        use crate::testkit::parse;
+        let src = "(module m \
+                     (def (pick (: n Int64)) \
+                        (match (if (> n 0) (Some n) None) ((Some x) x) (None -1))) \
+                     (export pick))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile prelude-option match");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed prelude-option run");
+            return;
+        };
+        for (arg, want) in [("7", "7"), ("0", "-1")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("pick".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "prelude pick {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("composed prelude-option run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_user_type_shadows_a_prelude_sum_name() {
+        // A user `(type Option …)` SHADOWS the built-in Option — top-level `type_decls` resolve before
+        // the prelude. So `Option` in a program that declares it is the USER sum (its own declaration
+        // occurrence), distinct from the prelude one. Pins that the built-ins do not privilege the name.
+        use crate::db::Db;
+        use crate::eval::typeval_of;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let ast = parse("(module m (type Option (Only Int64) Nope) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        // The USER Option is found first (first-wins), and it has the user's variants (Only/Nope), not
+        // the prelude's (Some/None).
+        let occ = db.type_decl_by_name("Option").expect("Option");
+        let user_occ = db
+            .type_decls
+            .iter()
+            .find(|t| t.name == "Option")
+            .unwrap()
+            .occ;
+        assert_eq!(
+            occ,
+            db.type_decls
+                .iter()
+                .find(|t| t.name == "Option")
+                .unwrap()
+                .synth
+                .unwrap()
+        );
+        let ty = typeval_of(&mut db, occ).expect("Option is a type");
+        match ty {
+            Ty::Sum { decl, .. } => {
+                assert_eq!(decl, user_occ, "the user Option shadows the prelude one")
+            }
+            other => panic!("expected Ty::Sum, got {}", other.render_name()),
+        }
+    }
+
+    #[test]
     fn a_variant_constructor_is_a_member_typed_as_a_function_to_the_sum() {
         // `Option.Some` is ORDINARY member access on the sum record (the `Int64.max` path), reaching a
         // variant-constructor record whose `(meta t)` is `(-> Int64 Option)`. So `Some` types as a

@@ -369,13 +369,40 @@ impl Db {
         // Install the prelude as ordinary AST nodes FIRST, so its records get `StructId`s (after the
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
-        let prelude = crate::prelude::install(&mut ast);
+        let mut prelude = crate::prelude::install(&mut ast);
         let (defs, exports, mut type_decls) = scan_top_level(&ast);
+        // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
+        // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
+        // corpus surface). They scan exactly like a user declaration; a user `(type Option …)` shadows
+        // (top-level `type_decls` resolve before the prelude). Appended AFTER the user scan so a user
+        // declaration takes priority in `type_decl_by_name` (first-wins).
+        let prelude_sum_count = {
+            let ps = crate::sums::prelude_decls(&mut ast);
+            let n = ps.len();
+            type_decls.extend(ps);
+            n
+        };
         // Synthesize each `(type …)` sum as a record (fields = variants), appending its nodes to the
         // arena and recording each on its `TypeDecl.synth` — AFTER the scan (it reads `type_decls`) and
         // BEFORE the parent index (which must index the synthesized nodes so a name inside a synthesized
         // ctor type resolves by the scope walk).
         crate::sums::synthesize(&mut ast, &mut type_decls);
+        // Bind the built-in sums' names in the PRELUDE map (the last-consulted lookup): the sum name to
+        // its record (a type constructor / type-value), each variant name BARE to its ctor field. So a
+        // reference to `Some`/`None`/`Ok`/`Err`/`Option`/`Result` resolves through the ordinary
+        // scope→def→prelude order — a user binding of the same name shadows.
+        for decl in type_decls.iter().skip(type_decls.len() - prelude_sum_count) {
+            if let Some(record) = decl.synth {
+                prelude.entry(decl.name.clone()).or_insert(record);
+                for variant in &decl.variants {
+                    if let Some(field) =
+                        crate::sums::variant_ctor_field(&ast, record, &variant.name)
+                    {
+                        prelude.entry(variant.name.clone()).or_insert(field);
+                    }
+                }
+            }
+        }
         let (parent, child_ix) = parent_index(&ast);
         // Index each def by its body occurrence — the reverse of `defs[i].body`, so a "which def owns
         // this body?" lookup is O(1) rather than a linear scan of `defs`. A def with no body (malformed)
@@ -599,52 +626,10 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
                 def: None,
                 occ: item,
             });
-        } else if let Some(tail) = ast.as_form(item, "type") {
-            // `(type NAME variant…)`: the name, then each variant as a `(vname payload-type…)` list or
-            // a bare nullary name. Record each variant's declared name + its NAME occurrence (a bare
-            // atom, or the head of a payload list) so a duplicate can be anchored + reported.
-            let name = tail
-                .first()
-                .and_then(|&s| ast.as_name(s))
-                .unwrap_or("")
-                .to_string();
-            let mut variants = Vec::new();
-            for &v in tail.iter().skip(1) {
-                let (name_occ, payloads) = match ast.get(v) {
-                    // A bare nullary variant name — no payloads.
-                    Struct::Atom(_) => (v, Vec::new()),
-                    // `(vname payload…)` — the variant name is the list head; the rest are payload
-                    // type occurrences in declaration order.
-                    Struct::List(children) => match children.first() {
-                        Some(&head) => (head, children.iter().skip(1).copied().collect()),
-                        None => continue,
-                    },
-                };
-                if let Some(vname) = ast.as_name(name_occ) {
-                    variants.push(Variant {
-                        name: vname.to_string(),
-                        name_occ,
-                        payloads,
-                    });
-                }
-            }
-            // Collect the IMPLICIT type parameters: a free LOWERCASE name in any payload, in
-            // first-appearance order across the variants (`(type Option (Some a) None)` → `["a"]`). A
-            // Capitalized name is a type (`Int64`, `Option`), not a parameter.
-            let mut params: Vec<String> = Vec::new();
-            for variant in &variants {
-                for &p in &variant.payloads {
-                    collect_type_params(ast, p, &mut params);
-                }
-            }
-            types.push(TypeDecl {
-                name,
-                occ: item,
-                params,
-                variants,
-                // Filled by `sums::synthesize` after the scan; the scan only locates declarations.
-                synth: None,
-            });
+        } else if ast.as_form(item, "type").is_some()
+            && let Some(decl) = scan_type_decl(ast, item)
+        {
+            types.push(decl);
         }
     }
 
@@ -664,6 +649,55 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
     }
 
     (defs, exports, types)
+}
+
+/// Scan a `(type NAME variant…)` declaration at `item` into a [`TypeDecl`] — the name, each variant
+/// (its name occurrence + payload type occurrences), and the implicit type parameters (free lowercase
+/// payload names, first-appearance order). `synth` is left `None` (filled by `sums::synthesize`).
+/// Returns `None` if `item` is not a `(type …)` form. Shared by the top-level scan and the built-in
+/// prelude-sum synthesis, so a prelude `Option`/`Result` declaration scans exactly like a user one.
+pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
+    let tail = ast.as_form(item, "type")?;
+    let name = tail
+        .first()
+        .and_then(|&s| ast.as_name(s))
+        .unwrap_or("")
+        .to_string();
+    let mut variants = Vec::new();
+    for &v in tail.iter().skip(1) {
+        let (name_occ, payloads) = match ast.get(v) {
+            // A bare nullary variant name — no payloads.
+            Struct::Atom(_) => (v, Vec::new()),
+            // `(vname payload…)` — the variant name is the list head; the rest are payload type
+            // occurrences in declaration order.
+            Struct::List(children) => match children.first() {
+                Some(&head) => (head, children.iter().skip(1).copied().collect()),
+                None => continue,
+            },
+        };
+        if let Some(vname) = ast.as_name(name_occ) {
+            variants.push(Variant {
+                name: vname.to_string(),
+                name_occ,
+                payloads,
+            });
+        }
+    }
+    // Collect the IMPLICIT type parameters: a free LOWERCASE name in any payload, in first-appearance
+    // order across the variants (`(type Option (Some a) None)` → `["a"]`). A Capitalized name is a type.
+    let mut params: Vec<String> = Vec::new();
+    for variant in &variants {
+        for &p in &variant.payloads {
+            collect_type_params(ast, p, &mut params);
+        }
+    }
+    Some(TypeDecl {
+        name,
+        occ: item,
+        params,
+        variants,
+        synth: None,
+    })
 }
 
 /// Collect the IMPLICIT type parameters mentioned in a payload type expression at `occ`, appending each

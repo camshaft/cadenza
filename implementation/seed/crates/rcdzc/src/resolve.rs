@@ -447,9 +447,14 @@ fn match_arm_variant_binds(
         return None;
     }
     let variant_head = app[0];
-    // The head must be a `(. …)` member access (the variant constructor); a non-member head is not a
-    // variant pattern.
-    db.ast.as_form(variant_head, ".")?;
+    // The head is the variant CONSTRUCTOR — either a `(. Sum V)` member access (`Option.Some`) OR a
+    // bare variant NAME (`Some`, a prelude or in-scope ctor). Both are valid pattern heads; a head that
+    // is neither (a bare-literal head, an arbitrary form) is not a variant pattern.
+    let head_ok =
+        db.ast.as_form(variant_head, ".").is_some() || db.ast.as_name(variant_head).is_some();
+    if !head_ok {
+        return None;
+    }
     // The argument must be the bare binder `name` (not a literal, not `_`).
     let arg_name = db.ast.as_name(app[1])?;
     if arg_name != name || arg_name == "_" {
