@@ -58,10 +58,17 @@ const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
 /// out-of-bounds `index` traps).
 const OP_VEC_UPDATE: &str = "vec-update";
+/// `vec-get(v, index) -> handle` — the element at `index`, BORROWED (rc unchanged; the list still owns
+/// it). An out-of-bounds index TRAPS, so `List.at` bounds-checks BEFORE calling it.
+const OP_VEC_GET: &str = "vec-get";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
 const OP_DROP: &str = "drop";
+/// `dup(handle)` — increment a heap handle's refcount (the Perceus retain). Emitted where a construct
+/// takes ownership of a handle it only BORROWED — `List.at` `dup`s the `vec-get` element before the
+/// `Some` payload consumes it, so the list keeps its own reference.
+const OP_DUP: &str = "dup";
 
 /// Whether a solved type is a HEAP VALUE — one held as an owned runtime handle that the Perceus
 /// contract reclaims (a tuple, record, sum, or list). A scalar (integer/bool/unit) owns no heap cell,
@@ -341,11 +348,17 @@ pub fn collect_used_ops(
             collect_used_ops(db, index, out);
             collect_used_ops(db, elem, out);
         }
-        // A RUNTIME `List.at` (list/index not both constant) declines at emit in this increment — only
-        // the constant FOLD is realized (it lowers to a `SumNew`, handled above). Descend for the
-        // operands' own ops; the runtime bounds-checked `vec-get` path (with the Perceus `dup` for the
-        // borrowed element) is the next increment.
+        // A RUNTIME `List.at` reads the length (`vec-len`) for the bounds test and, in bounds, the
+        // element (`vec-get`, which BORROWS → `dup` before the `Some` consumes it), then builds
+        // `Some`/`None` (`sum-new`, with `arr-alloc(0)` for `None`'s unit payload). The element stays
+        // BOXED (the handle `vec-get` returns feeds `sum-new` directly; a downstream match unboxes it),
+        // so no `box-*`/`get-*` here — mirrors the `emit` arm's op choices exactly.
         Core::ListAt { list, index, .. } => {
+            out.insert(OP_VEC_LEN);
+            out.insert(OP_VEC_GET);
+            out.insert(OP_DUP);
+            out.insert(OP_SUM_NEW);
+            out.insert(OP_ARR_ALLOC);
             collect_used_ops(db, list, out);
             collect_used_ops(db, index, out);
         }
@@ -1332,6 +1345,16 @@ fn emit(
     layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
+    // A node MATERIALIZED into a scratch slot reads back as a `local.get`, not a recomputation. A
+    // sum-match evaluates a non-reusable scrutinee ONCE into a slot (`emit_sum_match_arms`) and records
+    // `(scrutinee-id → slot)` here, so every per-probe / per-payload re-reference of the scrutinee reads
+    // the slot instead of rebuilding the value (which for a `List.at`/call scrutinee would both recompute
+    // AND collide with arm-body scratch — an invalid module). Keyed by the node's OWN occurrence, distinct
+    // from the binder-keyed `Param`/`LocalRef` entries, so this never shadows a binding.
+    if let Some(&slot) = slots.get(&id) {
+        out.push(Lir::LocalGet(slot));
+        return Ok(());
+    }
     match core_of(db, id) {
         Core::ConstInt(v) => {
             // Ground the literal to the machine width its solved type fixes. The constant must FIT the
@@ -1579,13 +1602,74 @@ fn emit(
             out.push(Lir::CallImport(OP_SUM_NEW)); // → [sum-handle]
             Ok(())
         }
-        // A RUNTIME `List.at` — only the constant fold is realized in this increment (it lowers to a
-        // `SumNew`, never reaching here). The bounds-checked runtime `vec-get` (with the Perceus `dup`
-        // for the borrowed element it feeds into `Some`) is the next increment; decline cleanly for now
-        // so a runtime-list index is an honest decline, not a miscompile.
-        Core::ListAt { .. } => Err(Reject::decline(
-            "List.at on a runtime list is not yet emitted (constant fold only)",
-        )),
+        // A RUNTIME `List.at(list, index)` — the bounds-checked fallible read. Evaluate the list handle
+        // and the Int64 index ONCE into scratch slots (each is read more than once: the list for
+        // `vec-len` AND `vec-get`; the index for the low/high bounds tests AND `vec-get`). Then test
+        // `0 <= index < vec-len(list)` (an i64 compare — the u32 length is extended to i64, and the
+        // signed index's low side catches a NEGATIVE index without it wrapping to a huge unsigned
+        // offset), and emit `if in-bounds (Some <element>) else None`:
+        //  - IN BOUNDS: `vec-get(list, wrap(index))` yields the element handle BORROWED (rc unchanged);
+        //    `dup` it (the `Some` payload CONSUMES its handle, but the list still owns the element —
+        //    value-heap-runtime.md §Constructors Consume And Accessors Borrow), then `sum-new(disc_some,
+        //    handle)`. The element stays BOXED (a downstream match unboxes it), so no box/unbox here.
+        //  - OUT OF BOUNDS: `sum-new(disc_none, arr-alloc(0))` — the nullary `None` (unit payload).
+        // Leaves the Option's u32 handle on the stack.
+        Core::ListAt {
+            list,
+            index,
+            disc_some,
+            disc_none,
+        } => {
+            // Three scratch slots above `base`: the list handle (i32), the index (i64), and — in the
+            // in-bounds arm — the borrowed element handle (i32). The operand recursions float above all
+            // three so they never clobber a live slot.
+            let list_slot = base;
+            let index_slot = base + 1;
+            let elem_slot = base + 2;
+            if elem_slot + 1 > *high {
+                *high = elem_slot + 1;
+            }
+            scratch_ty.insert(list_slot, ValType::I32);
+            scratch_ty.insert(index_slot, ValType::I64);
+            scratch_ty.insert(elem_slot, ValType::I32);
+            emit(db, list, slots, base + 3, high, scratch_ty, layout, out)?; // [list]
+            out.push(Lir::LocalSet(list_slot));
+            emit(db, index, slots, base + 3, high, scratch_ty, layout, out)?; // [index:i64]
+            out.push(Lir::LocalSet(index_slot));
+            // in_bounds = (index >= 0) & (index < len), all in i64.
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64GeS); // [index >= 0]
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::LocalGet(list_slot));
+            out.push(Lir::CallImport(OP_VEC_LEN)); // [.., index, len:i32]
+            out.push(Lir::I64ExtendI32U); // [.., index, len:i64]
+            out.push(Lir::I64LtS); // [index >= 0, index < len]
+            out.push(Lir::I32And); // [in_bounds]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Some(element). `vec-get` yields the element handle BORROWED; `dup` retains it (rc++)
+            // so the `Some` payload can own a reference while the list keeps its own. `dup(handle)`
+            // RETURNS NOTHING (it pops the handle and increments its count), so the handle is stashed in
+            // a scratch slot: `tee` (store + keep a copy for `dup`), `dup` (consume that copy, rc++), then
+            // `get` it back as the payload under `disc_some` for `sum-new`.
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(list_slot));
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::I32WrapI64); // [disc_some, list, index:i32] — vec-get takes a u32
+            out.push(Lir::CallImport(OP_VEC_GET)); // [disc_some, elem-handle] (borrowed)
+            out.push(Lir::LocalTee(elem_slot)); // [disc_some, elem], elem_slot = elem
+            out.push(Lir::CallImport(OP_DUP)); // pops elem, rc++ → [disc_some]
+            out.push(Lir::LocalGet(elem_slot)); // [disc_some, elem] (the retained handle)
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None: the unit payload is an empty array.
+            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
+            Ok(())
+        }
         // A runtime PROJECTION `(. t i)` — read element `i` off the operand's array handle and UNBOX it
         // to its scalar: `<operand handle> ; i32.const i ; arr-get ; get-<T>`. The result type (this
         // node's solved type) chooses the unbox op.
@@ -1736,9 +1820,54 @@ fn emit(
                 Ty::Int(rit) => Some(rit),
                 _ => None,
             };
+            // A REUSABLE scrutinee (a param/local already in a slot) is re-read cheaply per probe. A
+            // NON-reusable one (a `List.at`, a call, an `if` — anything computed) must be evaluated ONCE:
+            // re-emitting it per probe/payload would recompute the value (rebuilding a list, re-running a
+            // call) AND its own scratch would clash with the arm bodies' scratch at the shared `base`,
+            // producing an invalid module. Materialize it into a fresh i32 slot (a sum is a heap handle)
+            // and record `(scrutinee → slot)` so every re-reference reads the slot (top of `emit`).
+            let (arms_slots, arms_base) = if reusable_handle_src(db, scrutinee, slots) {
+                (slots.clone(), base)
+            } else {
+                // Reserve slot `base` for the scrutinee (an i32 heap handle). Emit its value above that
+                // (floor `base + 1`), which may claim its OWN transient scratch (a `List.at` types slots
+                // for the list/index/element). Those slots carry a FIXED type, so the arm bodies must NOT
+                // reuse them at a different width — start the arm scratch ABOVE the high-water the
+                // scrutinee emit reached (`*high`), not at `base + 1`, or an i32 scrutinee-scratch slot
+                // would clash with an i64 arm temp (an invalid module).
+                let slot = base;
+                if slot + 1 > *high {
+                    *high = slot + 1;
+                }
+                scratch_ty.insert(slot, ValType::I32);
+                emit(
+                    db,
+                    scrutinee,
+                    slots,
+                    base + 1,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?;
+                out.push(Lir::LocalSet(slot));
+                let mut m = slots.clone();
+                m.insert(scrutinee, slot);
+                (m, (*high).max(base + 1))
+            };
             emit_sum_match_arms(
-                db, scrutinee, &path, &arms, result_it, block_ty, slots, base, high, scratch_ty,
-                layout, out,
+                db,
+                scrutinee,
+                &path,
+                &arms,
+                result_it,
+                block_ty,
+                &arms_slots,
+                arms_base,
+                high,
+                scratch_ty,
+                layout,
+                out,
             )
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
@@ -2103,6 +2232,17 @@ fn block_scalar_slot(db: &mut Db, scrutinee: StructId) -> Option<ValType> {
 /// (re-`local.get` is free) or a compile-time constant (re-materialized inline). `None` for a computed
 /// scrutinee, which the caller evaluates once into a scratch slot. (A constant scrutinee normally folds
 /// away in `lower` before reaching a runtime match, but handling it keeps the source uniform.)
+/// Whether a HEAP-HANDLE scrutinee (a sum) can be re-read per match probe WITHOUT re-evaluation — a
+/// parameter or `let`-binding already living in a slot. Anything computed (a `List.at`, a call, an `if`,
+/// a fresh construction) is NOT reusable: re-emitting it would recompute the value and its scratch would
+/// clash with the arm bodies', so `emit`'s `MatchSum` materializes it into a dedicated slot first.
+fn reusable_handle_src(db: &mut Db, scrutinee: StructId, slots: &HashMap<StructId, u32>) -> bool {
+    match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => slots.contains_key(&binder),
+        _ => false,
+    }
+}
+
 fn reusable_scalar_src(
     db: &mut Db,
     scrutinee: StructId,

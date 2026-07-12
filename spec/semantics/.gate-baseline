@@ -208,6 +208,7 @@ pass	a recursive predicate with the self-call in the then branch is a Bool condi
 pass	a reference to an unbound name is rejected before running
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a right shift by the bit width or more traps rather than masking
+pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
@@ -656,7 +657,6 @@ todo	a returned runtime string with a multi-byte scalar renders the scalar verba
 todo	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 todo	a right shift by a floating-point count does not silently promote
 todo	a run's result is a deterministic function of a host call's recorded response
-todo	a runtime Option carrying a user sum is matched by a nested constructor pattern
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string bound from a sum payload compares equal to a string parameter
 todo	a runtime string compared against a literal folds against the literal side

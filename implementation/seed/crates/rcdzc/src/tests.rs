@@ -3427,6 +3427,81 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_list_index_reads_the_element_through_vec_get() {
+        // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
+        // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0
+        // 3 (list)` = `[0 1 2]`; `(match (List.at xs 1) ((Some x) x) ((None _) -1))` reads index 1 → `Some
+        // 1` → 1. Exercises the emitted bounds check + `vec-get` + `dup` + `sum-new(Some)`, then the
+        // match's `sum-disc`/`sum-payload` unwrap — the full runtime fallible-read round-trip.
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((xs (build 0 3 (list)))) \
+                 (match ((. List at) xs 1) ((Some x) x) ((None _) -1)))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "1", "runtime List.at in bounds reads the element");
+    }
+
+    #[test]
+    fn a_runtime_list_index_out_of_bounds_takes_the_none_arm() {
+        // The absent side of the runtime path: indexing a runtime-built list PAST its end yields `None`
+        // (never traps, never reads garbage). `build 0 3 (list)` = `[0 1 2]` (length 3); `(List.at xs 9)`
+        // is out of bounds, so the match takes the `None` arm → -1. Pins the runtime bounds check's high
+        // side (`index < vec-len`) and the `None` construction. (The negative side is exercised by the
+        // constant fold; a runtime negative index takes the same `index >= 0` guard.)
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((xs (build 0 3 (list)))) \
+                 (match ((. List at) xs 9) ((Some x) x) ((None _) -1)))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "-1", "runtime List.at out of bounds → None");
+    }
+
+    #[test]
+    fn a_runtime_list_at_result_is_matched_by_a_nested_constructor_pattern() {
+        // The reader idiom: a fallible access yields an `Option` whose `Some` payload is a USER sum, and a
+        // NESTED pattern deconstructs both in one arm. `(List.at (List.push (list) (N.L 7)) 0)` is a
+        // runtime `(Some (N.L 7))`; `(Some (N.L v))` binds v=7. This is the decision-tree matcher over a
+        // NON-REUSABLE (computed) `List.at` scrutinee — which is materialized ONCE into a scratch slot
+        // (else re-emitting the `List.at` per probe both rebuilds the list AND collides the list/index
+        // scratch with the arm bodies' temps at the shared floor, an invalid module). Pins that fix + the
+        // built-in `Option` carrying a user sum through the runtime nested matcher (corpus §'a runtime
+        // Option carrying a user sum is matched by a nested constructor pattern').
+        let Some(out) = run_on_heap(
+            "(module m (type N (L Int64) (P Int64)) \
+               (def (main) (match ((. List at) ((. List push) (list) (N.L 7)) 0) \
+                             ((Some (N.L v)) v) ((Some (N.P v)) (+ v 100)) ((None _) -1))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "7",
+            "nested match over a runtime List.at Some(user-sum)"
+        );
+    }
+
+    // NOTE: the self-hosting arg-walk idiom (corpus §'a list built by a recursive push-loop is then
+    // iterated by index') — `(def (sum-at xs i n) … (match (List.at xs i) …))` — is NOT yet compilable,
+    // but the block is the runtime `List.at` EMIT: it is an orthogonal INFERENCE gap. When the list is a
+    // FUNCTION PARAMETER (`xs`), its element type stays an unsolved `?0` (the concrete `List Int64` at
+    // the call site does not flow into the parameter's element), so the match binder `x` is `?0` and the
+    // add over it declines "projecting a tuple element of type ?0". The runtime read itself works when
+    // the list's element type is known (the two cases above index a locally-built `List Int64`); the
+    // parameter-element propagation is a separate increment (the "runtime list's element type flows
+    // through" gap the increment-2 note records).
+
+    #[test]
     fn a_constant_scrutinee_folds_to_the_selected_arm() {
         // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).
         assert_eq!(
