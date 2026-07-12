@@ -71,6 +71,7 @@ pass	a field is projected from a record returned by a let-bound function
 pass	a field read follows the record's SORTED field order, not its written order
 pass	a float in integer-width position is rejected
 pass	a function applied to an argument
+pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result

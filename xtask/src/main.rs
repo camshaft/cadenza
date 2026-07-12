@@ -849,17 +849,37 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     if !compiled.status.success() {
         return Ran::BadArtifact(first_line(&compiled.stderr));
     }
-    // Run it. A panic (Cadenza trap) exits non-zero → `Ran::Trap`; a clean run prints the value. Retry
-    // once on a LAUNCH error: freshly-written-then-executed binaries can transiently report "text file
-    // busy" / permission-denied on some kernels if a writer handle to the file is still closing — a
-    // race, not a defect in the artifact. (Per-trial dirs already avoid cross-trial collisions; this
-    // guards the within-trial write→exec window.)
-    let run = match Command::new(&bin).output() {
-        Ok(o) => o,
-        Err(_) => match Command::new(&bin).output() {
-            Ok(o) => o,
-            Err(e) => return Ran::BadArtifact(format!("compiled prog failed to launch: {e}")),
-        },
+    // Run it. A panic (Cadenza trap) exits non-zero → `Ran::Trap`; a clean run prints the value. Retry a
+    // few times on a LAUNCH error: a freshly-compiled binary can transiently report "text file busy" /
+    // permission-denied on Linux while the writer handle (rustc/its linker) is still closing — a race,
+    // not a defect in the artifact. Under the gate's heavy parallelism this window can outlast a single
+    // retry, so back off briefly and retry a handful of times before giving up. (A GENUINELY unrunnable
+    // binary fails every attempt, so this never hides a real problem.)
+    let run = loop {
+        let mut last_err = None;
+        let mut got = None;
+        for attempt in 0..8 {
+            match Command::new(&bin).output() {
+                Ok(o) => {
+                    got = Some(o);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    // A short escalating backoff to let the writer handle close.
+                    std::thread::sleep(std::time::Duration::from_millis(2 * (attempt + 1)));
+                }
+            }
+        }
+        match got {
+            Some(o) => break o,
+            None => {
+                return Ran::BadArtifact(format!(
+                    "compiled prog failed to launch: {}",
+                    last_err.expect("a launch error after all retries failed")
+                ));
+            }
+        }
     };
     if run.status.success() {
         Ran::Value(String::from_utf8_lossy(&run.stdout).trim().to_string())

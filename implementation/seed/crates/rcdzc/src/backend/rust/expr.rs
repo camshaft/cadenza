@@ -46,31 +46,45 @@ use std::collections::HashMap;
 type Env = HashMap<StructId, String>;
 
 /// The rendering context threaded through every `emit` — the emission [`Mode`] (sync vs async/gas) and,
-/// when the function being emitted is SELF-TAIL-RECURSIVE, the [`SelfLoop`] describing how a tail self-
-/// call iterates in place. A struct (not a bare `Mode`) so these ride along without widening every
-/// helper's argument list; the callee-name/param lookups a `Core::Call` needs read `db` directly, so the
-/// boundary `Layout` is not needed here (the caller passes it only to `emit_body`).
+/// when the function being emitted is compiled as a tail `loop`, the [`LoopGroup`] describing how a tail
+/// call to a group member iterates in place. A struct (not a bare `Mode`) so these ride along without
+/// widening every helper's argument list; the callee-name/param lookups a `Core::Call` needs read `db`
+/// directly, so the boundary `Layout` is not needed here (the caller passes it only to `emit_body`).
 #[derive(Clone)]
 pub struct Ctx<'a> {
     pub mode: Mode,
-    /// `Some` iff the function being emitted is compiled as a `loop` (it makes a self-tail-call). A
-    /// self-tail-call then reassigns the parameter locals + `continue`s instead of recursing; every
-    /// other tail position `break`s its value out of the loop. `None` = an ordinary body (no loop).
-    pub self_loop: Option<&'a SelfLoop>,
+    /// `Some` iff the function being emitted is compiled as a `loop` (it tail-calls into its own tail-
+    /// recursion group). A tail call to a group member reassigns the shared parameter locals (+ the
+    /// `which` state, for a mutual group) and `continue`s instead of recursing; every other tail
+    /// position `break`s its value out of the loop. `None` = an ordinary body (no loop).
+    pub loop_group: Option<&'a LoopGroup>,
 }
 
-/// Describes a self-tail-recursive function compiled as a `loop`: the `db.defs` index that a tail
-/// `Core::Call` recognizes as "itself", and the parameter identifiers (in signature order) a self-call
-/// reassigns. The parameters are emitted as `let mut`; a tail self-call `f(a0, a1)` becomes
-/// `{ let (t0, t1) = (a0, a1); p0 = t0; p1 = t1; continue }` — a PARALLEL move (all args computed into
-/// temps before any param is overwritten, so an arg reading an old param value is correct).
-pub struct SelfLoop {
-    pub def: usize,
-    pub param_names: Vec<String>,
-    /// The function's result integer type, if it returns an integer — a bare-literal tail leaf (`break
-    /// 0`) is grounded to it so every `break` in the loop yields the SAME Rust type (a `loop` requires
-    /// all its `break` values agree). `None` for a non-integer result (Bool/unit — no width to reconcile).
+/// Describes a tail-recursion group compiled as a shared `loop`. A group of ONE member is plain self-
+/// tail-recursion; a group of MANY same-signature members that tail-call each other (a mutual-recursion
+/// SCC) share ONE loop dispatched by a `which` state variable. Each member's body renders with its own
+/// parameter binders mapped to the SHARED positional locals `__p0, __p1, …` (members may name their
+/// params differently but share the signature), and a tail call to member `k` sets `which = k` +
+/// reassigns the shared locals + `continue`s (a PARALLEL move: all args into temps before any store, so
+/// an arg reading an old param value is correct).
+pub struct LoopGroup {
+    /// The group's members (`db.defs` indices). `members[0]` is the function being emitted — it enters
+    /// the loop at `which = 0` (its own body runs first). A tail `Core::Call` to `members[k]` iterates
+    /// with `which = k`. A single-member group is a self-loop (no `which` needed, but harmless).
+    pub members: Vec<usize>,
+    /// The shared parameter identifiers `__p0…__pN` (one per signature position). Emitted `let mut` and
+    /// reassigned each iteration; a member body's own param names map to these.
+    pub shared_params: Vec<String>,
+    /// The group's result integer type, if integer — a bare-literal tail leaf (`break 0`) is grounded to
+    /// it so every `break` yields the SAME Rust type (a `loop` requires all `break` values agree). `None`
+    /// for a non-integer result (Bool/unit). All members share the signature, so one result type serves.
     pub result_it: Option<IntTy>,
+}
+
+impl LoopGroup {
+    fn is_mutual(&self) -> bool {
+        self.members.len() > 1
+    }
 }
 
 /// Render a function body as the Rust expression that is its return value. Builds the initial
@@ -87,55 +101,244 @@ pub fn emit_body(
     _layout: &Layout,
     mode: Mode,
 ) -> Result<String, Reject> {
-    let mut env: Env = HashMap::new();
-    let mut param_names = Vec::new();
-    for (i, (binder, _)) in params.iter().enumerate() {
-        let name = super::param_name(db, *binder, i);
-        env.insert(*binder, name.clone());
-        param_names.push(name);
+    // The tail-recursion group this function belongs to, compiled as a shared `loop` (§keeps deep tail
+    // recursion bounded — vital in async, where a `Box::pin` poll-chain would otherwise be as deep as
+    // the recursion). Empty = no loop (an ordinary body). One member = self-recursion; many = a mutual
+    // SCC dispatched by a `which` state.
+    let members = if params.is_empty() {
+        Vec::new()
+    } else {
+        loop_group(db, self_def)
+    };
+    if !members.is_empty() {
+        return emit_loop_body(db, params, self_def, &members, mode);
     }
-    // If the body makes a self-tail-call, compile it as a `loop`: a tail self-call reassigns the params
-    // and `continue`s; every other tail position `break`s its value. This is what keeps deep tail
-    // recursion bounded — vital in async mode, where the `Box::pin` poll-chain would otherwise be as
-    // deep as the recursion (a 1M-deep tail loop overflows the executor's poll stack).
-    if !params.is_empty() && body_self_loops(db, body, self_def) {
-        let result_it = match type_of(db, body) {
-            Ty::Int(it) => Some(it),
-            _ => None,
-        };
-        let sl = SelfLoop {
-            def: self_def,
-            param_names,
-            result_it,
-        };
-        let ctx = Ctx {
-            mode,
-            self_loop: Some(&sl),
-        };
-        let body_src = emit_tail(db, body, &env, &ctx)?;
-        return Ok(format!("    loop {{\n        {body_src}\n    }}"));
+    // No loop: render the body directly.
+    let mut env: Env = HashMap::new();
+    for (i, (binder, _)) in params.iter().enumerate() {
+        env.insert(*binder, super::param_name(db, *binder, i));
     }
     let ctx = Ctx {
         mode,
-        self_loop: None,
+        loop_group: None,
     };
     let expr = emit(db, body, &env, &ctx)?;
     Ok(format!("    {expr}"))
 }
 
-/// Whether the body at `id` makes a tail call to `self_def` through the tail positions the loop
-/// transform handles — the body itself, an `if`'s branches, a `let`'s body, or a `match`'s arm bodies.
-/// A call in a NON-tail position (an operand) is NOT a tail call. Mirrors [`emit_tail`]'s propagation so
-/// detection and emission agree. (A `match` GUARD is a predicate, not a tail position — not considered.)
-/// `pub(super)` so `emit_signature` reads the SAME predicate to decide whether to declare params `mut`.
-pub(super) fn body_self_loops(db: &mut Db, id: StructId, self_def: usize) -> bool {
-    match core_of(db, id) {
-        Core::Call { callee, .. } => callee == self_def,
-        Core::If { then_, else_, .. } => {
-            body_self_loops(db, then_, self_def) || body_self_loops(db, else_, self_def)
+/// Emit a tail-recursion group's shared `loop` for the member being defined (`self_def`, which is
+/// `members[0]`). The shared positional locals `__p0…` are initialized from this member's params; for a
+/// MUTUAL group a `which` state selects the member body each iteration (this member enters at `which =
+/// 0`). Each member's body renders in TAIL position with ITS param binders mapped to the shared locals.
+fn emit_loop_body(
+    db: &mut Db,
+    params: &[(StructId, Ty)],
+    self_def: usize,
+    members: &[usize],
+    mode: Mode,
+) -> Result<String, Reject> {
+    let shared_params: Vec<String> = (0..params.len()).map(|i| format!("__p{i}")).collect();
+    let result_it = match type_of(db, db.defs[self_def].body.unwrap()) {
+        Ty::Int(it) => Some(it),
+        _ => None,
+    };
+    let group = LoopGroup {
+        members: members.to_vec(),
+        shared_params: shared_params.clone(),
+        result_it,
+    };
+    let ctx = Ctx {
+        mode,
+        loop_group: Some(&group),
+    };
+    // Initialize the shared locals from THIS member's params (its param name → `__pi`), then the body.
+    let mut init = String::new();
+    for (i, (binder, _)) in params.iter().enumerate() {
+        let pname = super::param_name(db, *binder, i);
+        init.push_str(&format!("let mut __p{i} = {pname}; "));
+    }
+    if group.is_mutual() {
+        // A mutual group dispatches on `which` (this member enters at 0 = its own body). The dispatch is
+        // an if-chain over the members; each member body renders in tail position with its params mapped.
+        let mut dispatch = String::new();
+        for (k, &m) in members.iter().enumerate() {
+            let body = db.defs[m]
+                .body
+                .ok_or_else(|| Reject::decline("a loop member has no body"))?;
+            let env = member_env(db, m, &shared_params);
+            let b = emit_tail(db, body, &env, &ctx)?;
+            if k == 0 {
+                dispatch.push_str(&format!("if which == 0 {{ {b} }}"));
+            } else if k + 1 < members.len() {
+                dispatch.push_str(&format!(" else if which == {k} {{ {b} }}"));
+            } else {
+                // Last member: the unconditional `else` (reached by elimination).
+                dispatch.push_str(&format!(" else {{ {b} }}"));
+            }
         }
-        Core::Let { body, .. } => body_self_loops(db, body, self_def),
-        Core::Match { arms, .. } => arms.iter().any(|a| body_self_loops(db, a.body, self_def)),
+        Ok(format!(
+            "    let mut which: u32 = 0; {init}\n    loop {{\n        {dispatch}\n    }}"
+        ))
+    } else {
+        // A single-member self-loop: no `which`, just this member's body in tail position.
+        let env = member_env(db, self_def, &shared_params);
+        let body = db.defs[self_def].body.unwrap();
+        let b = emit_tail(db, body, &env, &ctx)?;
+        Ok(format!("    {init}\n    loop {{\n        {b}\n    }}"))
+    }
+}
+
+/// The rendering environment for loop member `m`: its own parameter binders mapped to the SHARED
+/// positional locals `__p0…` (members may name their params differently but share the signature by
+/// position). So a reference to member `m`'s parameter `i` reads `__pi`.
+fn member_env(db: &mut Db, m: usize, shared_params: &[String]) -> Env {
+    let mut env: Env = HashMap::new();
+    let mparams = crate::layout::def_params(db, m);
+    for (i, (binder, _)) in mparams.iter().enumerate() {
+        if let Some(name) = shared_params.get(i) {
+            env.insert(*binder, name.clone());
+        }
+    }
+    env
+}
+
+/// Whether the function `self_def` is compiled as a tail `loop` (it belongs to a non-empty tail-
+/// recursion group). `pub(super)` so `emit_signature` reads the SAME predicate to decide whether to
+/// declare params `mut` (a looped function reassigns its params). Agrees with `emit_body` by calling the
+/// same `loop_group`.
+pub(super) fn body_loops(db: &mut Db, self_def: usize) -> bool {
+    !loop_group(db, self_def).is_empty()
+}
+
+/// The tail-recursion group `self_def` belongs to — the members compiled into ONE shared `loop`, with
+/// `self_def` FIRST (it enters the loop at its own `which = 0`). Empty = no loop. Mirrors the wasm
+/// backend's `mutual_loop_group`:
+///  - forward tail-reachability from `self_def`, staying within SAME-SIGNATURE defs (a differently-typed
+///    tail callee can't share the loop's positional locals);
+///  - keep only members that tail-reach BACK to `self_def` (the genuine SCC) — a one-way tail callee is
+///    not part of the cycle and stays an ordinary (boxed) call;
+///  - a single member is a loop ONLY if it actually self-tail-calls; else no loop (empty).
+///
+/// Members are `self_def` then the rest ascending, so the `which` discriminants are stable. Discriminants
+/// are LOCAL to each member's own emitted loop (control never crosses between two members' loops — each
+/// is a complete copy of the group), so `self`-first differing per member is fine.
+fn loop_group(db: &mut Db, self_def: usize) -> Vec<usize> {
+    let Some(self_sig) = sig_types(db, self_def) else {
+        return Vec::new();
+    };
+    // Forward tail-reachability within the same signature.
+    let mut reach: Vec<usize> = vec![self_def];
+    let mut i = 0;
+    while i < reach.len() {
+        let d = reach[i];
+        i += 1;
+        if let Some(body) = db.defs[d].body {
+            let mut callees = Vec::new();
+            tail_callees(db, body, &mut callees);
+            for c in callees {
+                if !reach.contains(&c) && sig_types(db, c).as_deref() == Some(&self_sig) {
+                    reach.push(c);
+                }
+            }
+        }
+    }
+    // Keep the SCC: members that tail-reach back to `self_def` (plus `self_def` itself).
+    let mut members: Vec<usize> = reach
+        .iter()
+        .copied()
+        .filter(|&d| d == self_def || tail_reaches(db, d, self_def, &reach))
+        .collect();
+    members.sort_unstable();
+    members.retain(|&d| d != self_def);
+    members.insert(0, self_def);
+    if members.len() == 1 {
+        // A lone member loops only if it self-tail-calls.
+        let body = match db.defs[self_def].body {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+        if body_has_tail_call_to(db, body, &members) {
+            return members;
+        }
+        return Vec::new();
+    }
+    members
+}
+
+/// The signature of `def` as its parameter + result RUST types (the string forms), or `None` if any
+/// type has no native mapping. Two defs share a loop only if these agree — they reassign the SAME shared
+/// positional locals, so the widths must match position-for-position (and the result type must match so
+/// every member's `break` yields one type).
+fn sig_types(db: &mut Db, def: usize) -> Option<Vec<&'static str>> {
+    let params = crate::layout::def_params(db, def);
+    let body = db.defs[def].body?;
+    let mut sig = Vec::new();
+    for (_, ty) in &params {
+        sig.push(types::rust_type(ty)?);
+    }
+    // A sentinel separates params from result so `(u8)->u16` ≠ `(u8,u16)->()` etc.
+    sig.push("->");
+    sig.push(types::rust_type(&type_of(db, body))?);
+    Some(sig)
+}
+
+/// The defs called in TAIL position from the body at `id` (an `if` branch, a `let` body, a `match` arm)
+/// — the tail-recursion edges. A call in a NON-tail position (an operand) is NOT an edge. Mirrors
+/// [`emit_tail`]'s propagation so the group and the emission agree.
+fn tail_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
+    match core_of(db, id) {
+        Core::Call { callee, .. } if !out.contains(&callee) => out.push(callee),
+        Core::Call { .. } => {}
+        Core::If { then_, else_, .. } => {
+            tail_callees(db, then_, out);
+            tail_callees(db, else_, out);
+        }
+        Core::Let { body, .. } => tail_callees(db, body, out),
+        Core::Match { arms, .. } => {
+            for a in arms {
+                tail_callees(db, a.body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether `from` tail-reaches `target` staying within `within` (a transitive closure over the tail
+/// edges) — used to keep only the genuine SCC members (those that tail-cycle back to `self_def`).
+fn tail_reaches(db: &mut Db, from: usize, target: usize, within: &[usize]) -> bool {
+    let mut seen: Vec<usize> = vec![from];
+    let mut i = 0;
+    while i < seen.len() {
+        let d = seen[i];
+        i += 1;
+        if let Some(body) = db.defs[d].body {
+            let mut callees = Vec::new();
+            tail_callees(db, body, &mut callees);
+            for c in callees {
+                if c == target {
+                    return true;
+                }
+                if within.contains(&c) && !seen.contains(&c) {
+                    seen.push(c);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Whether the body at `id` makes a tail call to ANY member of `members` (the loop's iteration edge). A
+/// call in a NON-tail position is not an edge. Mirrors [`emit_tail`]'s propagation.
+fn body_has_tail_call_to(db: &mut Db, id: StructId, members: &[usize]) -> bool {
+    match core_of(db, id) {
+        Core::Call { callee, .. } => members.contains(&callee),
+        Core::If { then_, else_, .. } => {
+            body_has_tail_call_to(db, then_, members) || body_has_tail_call_to(db, else_, members)
+        }
+        Core::Let { body, .. } => body_has_tail_call_to(db, body, members),
+        Core::Match { arms, .. } => arms
+            .iter()
+            .any(|a| body_has_tail_call_to(db, a.body, members)),
         _ => false,
     }
 }
@@ -172,14 +375,15 @@ fn emit_grounded(
 ///
 /// Returns a Rust STATEMENT/expression usable as the loop body. Only called when `ctx.self_loop` is set.
 fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Reject> {
-    let sl = ctx
-        .self_loop
-        .expect("emit_tail is only called inside a self-loop");
+    let group = ctx
+        .loop_group
+        .expect("emit_tail is only called inside a loop group");
     match core_of(db, id) {
-        // A tail call. A SELF-call iterates the loop (reassign params + continue); any OTHER call is not
-        // a self-recursion edge, so it is an ordinary (boxed, in async) call whose result breaks the loop.
-        Core::Call { callee, args } if callee == sl.def => {
-            // Ground each arg to the callee's (== our own) param width, exactly as the ordinary call arm.
+        // A tail call to a GROUP MEMBER iterates the loop: reassign the shared positional locals (+ the
+        // `which` state, for a mutual group) and `continue`. A tail call to a NON-member is not a loop
+        // edge — it falls to the `break <value>` leaf below (an ordinary boxed/awaited call in async).
+        Core::Call { callee, args } if group.members.contains(&callee) => {
+            // Ground each arg to the callee's param width, exactly as the ordinary call arm.
             let param_tys = crate::layout::def_params(db, callee);
             let mut rendered = Vec::new();
             for (i, &a) in args.iter().enumerate() {
@@ -188,22 +392,32 @@ fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, 
                     _ => rendered.push(emit(db, a, env, ctx)?),
                 }
             }
-            if rendered.len() != sl.param_names.len() {
-                return Err(Reject::decline("self-tail-call arity mismatch"));
+            if rendered.len() != group.shared_params.len() {
+                return Err(Reject::decline("tail-call arity mismatch"));
             }
-            // Parallel move: bind all new values into temps, THEN assign each param — so an arg that
-            // reads an old param value (`f(n-1, acc+n)`) sees the pre-iteration params. `continue` jumps
-            // to the loop top, where (in async mode) `env.consume(1).await` runs again.
+            // Parallel move: bind all new values into temps, THEN assign each shared local — so an arg
+            // that reads an old param value (`f(n-1, acc+n)`) sees the pre-iteration locals. For a mutual
+            // group, also set `which` to the callee's member index (which member body runs next).
             let temps: Vec<String> = (0..rendered.len()).map(|i| format!("__t{i}")).collect();
-            let binds = format!("let ({}) = ({});", temps.join(", "), rendered.join(", "));
-            let moves = sl
-                .param_names
+            let binds = if rendered.is_empty() {
+                String::new()
+            } else {
+                format!("let ({},) = ({},); ", temps.join(", "), rendered.join(", "))
+            };
+            let moves = group
+                .shared_params
                 .iter()
                 .zip(&temps)
                 .map(|(p, t)| format!("{p} = {t};"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            Ok(format!("{{ {binds} {moves} continue; }}"))
+            let set_which = if group.is_mutual() {
+                let k = group.members.iter().position(|&m| m == callee).unwrap();
+                format!("which = {k}; ")
+            } else {
+                String::new()
+            };
+            Ok(format!("{{ {binds}{set_which}{moves} continue; }}"))
         }
         // An `if` in tail position: both branches are tail; the condition is an ordinary value.
         Core::If { cond, then_, else_ } => {
@@ -233,7 +447,7 @@ fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, 
         // Any other tail leaf: its value is the loop's result — `break` it out. A bare-literal leaf is
         // grounded to the function's result width so every `break` in the loop yields the same type.
         _ => {
-            let v = match sl.result_it {
+            let v = match group.result_it {
                 Some(it) => emit_grounded(db, id, it, env, ctx)?,
                 None => emit(db, id, env, ctx)?,
             };

@@ -161,7 +161,7 @@ fn emit_signature(
     // Whether this function is compiled as a `loop` (it self-tail-calls). A looped function REASSIGNS
     // its parameter locals each iteration, so they are declared `mut`. Detected once here and again in
     // `emit_body` (both read the same predicate), so the signature's `mut` and the body's loop agree.
-    let loops = !params.is_empty() && expr::body_self_loops(db, body, def);
+    let loops = !params.is_empty() && expr::body_loops(db, def);
     let mut param_src = String::new();
     // In async/gas mode, the FIRST parameter is the caller-supplied gas/yield env, threaded into every
     // call. It precedes the source parameters; the source params keep their positions after it.

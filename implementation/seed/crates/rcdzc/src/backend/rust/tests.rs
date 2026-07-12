@@ -164,23 +164,48 @@ fn a_recursive_export_emits_a_self_calling_fn() {
 }
 
 #[test]
-fn mutual_recursion_emits_a_pub_fn_and_a_private_fn() {
-    // `even` (exported) → `pub fn`; `odd` (reachable non-export callee) → private `fn`. Both are
-    // emitted (reachability closes over `Core::Call`), and each calls the other by name.
+fn mutual_tail_recursion_compiles_to_a_shared_dispatch_loop() {
+    // `even`/`odd` are a same-signature mutual-tail-recursion SCC → each emits a SHARED `which`-dispatch
+    // loop (no cross-calls, no Box::pin): a tail call to the other member sets `which` + shared locals +
+    // continues. `even` is `pub fn` (exported), `odd` a private `fn` (reachable member); both loop.
     let rs = compile_rust(
         "(module m (def (even (: n Int64)) (if (= n 0) true (odd (+ n -1)))) \
                     (def (odd (: n Int64)) (if (= n 0) false (even (+ n -1)))) (export even))",
     );
-    assert!(rs.contains("pub fn even(n: i64) -> bool"), "export:\n{rs}");
     assert!(
-        rs.contains("fn odd(n: i64) -> bool"),
-        "private callee:\n{rs}"
+        rs.contains("pub fn even(mut n: i64) -> bool"),
+        "export:\n{rs}"
+    );
+    assert!(
+        rs.contains("fn odd(mut n: i64) -> bool"),
+        "private member:\n{rs}"
     );
     assert!(!rs.contains("pub fn odd"), "odd must NOT be pub:\n{rs}");
+    // The loop dispatches on `which` and iterates via `continue` — no residual cross-call, no boxing.
+    assert!(rs.contains("which == 0"), "which-dispatch:\n{rs}");
     assert!(
-        rs.contains("odd(") && rs.contains("even("),
-        "cross-calls:\n{rs}"
+        rs.contains("which = 1;") && rs.contains("continue;"),
+        "iterates:\n{rs}"
     );
+    assert!(!rs.contains("Box::pin"), "no boxing (sync):\n{rs}");
+    // Neither member CALLS the other any more (only `pub fn even(`/`fn odd(` declaration heads remain).
+    assert_eq!(rs.matches("odd(").count(), 1, "no call to odd:\n{rs}");
+    assert_eq!(rs.matches("even(").count(), 1, "no call to even:\n{rs}");
+}
+
+#[test]
+fn rustc_roundtrip_mutual_tail_loop_runs_deep() {
+    // The shared loop must run deep mutual recursion in bounded stack — even(2_000_000) = true.
+    let rs = compile_rust(
+        "(module m (def (even (: n Int64)) (if (= n 0) true (odd (+ n -1)))) \
+                    (def (odd (: n Int64)) (if (= n 0) false (even (+ n -1)))) (export even))",
+    );
+    if let Some(out) = rustc_run(&rs, "even(2000000)") {
+        assert_eq!(out, "true");
+    }
+    if let Some(out) = rustc_run(&rs, "even(7)") {
+        assert_eq!(out, "false");
+    }
 }
 
 #[test]
@@ -196,9 +221,14 @@ fn self_tail_recursion_compiles_to_a_loop() {
         "mut params:\n{rs}"
     );
     assert!(rs.contains("loop {"), "loop:\n{rs}");
-    assert!(rs.contains("break acc;"), "base case breaks:\n{rs}");
+    // The body runs over the shared positional locals `__p0`/`__p1` (initialized from the params); the
+    // base case `break`s the accumulator local, the recursive case parallel-moves + `continue`s.
     assert!(
-        rs.contains("continue;") && rs.contains("let (__t0, __t1)"),
+        rs.contains("break __p1;"),
+        "base case breaks the accumulator:\n{rs}"
+    );
+    assert!(
+        rs.contains("continue;") && rs.contains("let (__t0, __t1,)"),
         "parallel-move + continue:\n{rs}"
     );
     // The tail self-call became the reassignment+continue, not a recursive call — no `Box::pin`, and no
@@ -254,6 +284,18 @@ fn main() { println!("{}", block_on(prog::main(&mut GateEnv, 1000000))); }
 
 // ── the rustc round-trip (behavior oracle) ───────────────────────────────────────────────────────
 
+/// A stable per-(module, driver) key for the round-trip temp dir — an FNV-1a hash of both strings.
+/// Distinct programs get distinct dirs so parallel round-trip tests never share a `prog` binary (which
+/// would race write-vs-exec). No clock/rng needed; the hash is deterministic.
+fn test_key(a: &str, b: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for byte in a.bytes().chain([0u8]).chain(b.bytes()) {
+        h ^= byte as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 /// Compile the emitted Rust `module` plus a generated `main` that calls `export`(`args`) and prints
 /// the result, run it under the ambient `rustc`, and return the printed line. Returns `None` if
 /// `rustc` is not available (the test then skips its assertion rather than failing).
@@ -262,23 +304,33 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
     if Command::new("rustc").arg("--version").output().is_err() {
         return None; // no rustc — skip the round-trip.
     }
-    // A unique temp dir per call, seeded by the call text length + module length (no clock/rng in the
-    // core; the test bin may use the filesystem — it is the host boundary).
-    let dir = std::env::temp_dir().join(format!("rcdzc-rust-rt-{}-{}", module.len(), call.len()));
+    // A unique temp dir per (module, call), keyed by a content hash — tests run in PARALLEL, and two
+    // that compile a same-length module (e.g. two even/odd programs) would collide on one `prog` binary
+    // and race write-vs-exec ("text file busy"). The content hash keeps distinct programs on distinct
+    // paths. (No clock/rng in the core; the test bin may use the filesystem — it is the host boundary.)
+    let dir = std::env::temp_dir().join(format!("rcdzc-rust-rt-{:016x}", test_key(module, call)));
     let _ = std::fs::create_dir_all(&dir);
     let src_path = dir.join("prog.rs");
     let bin_path = dir.join("prog");
     let full = format!("{module}\nfn main() {{ println!(\"{{}}\", {call}); }}\n");
     std::fs::write(&src_path, full).expect("write rust source");
-    let status = Command::new("rustc")
-        .arg("-O")
-        .arg("--edition")
-        .arg("2021")
-        .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
-        .output()
-        .expect("run rustc");
+    // Compile with a retry: many round-trip tests run in PARALLEL, each shelling `rustc`→`cc`, and the
+    // linker can transiently fail under that concurrency ("linking with cc failed") — an environment
+    // race, not a defect in the emitted source. Retry once before treating a non-zero status as a real
+    // compile error (a genuine miscompile fails both attempts, so this never hides one).
+    let compile = || {
+        Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&src_path)
+            .arg("-o")
+            .arg(&bin_path)
+            .output()
+            .expect("run rustc")
+    };
+    let mut status = compile();
+    if !status.status.success() {
+        status = compile();
+    }
     assert!(
         status.status.success(),
         "emitted Rust did not compile:\n{}\n--- source ---\n{module}",
@@ -303,7 +355,7 @@ fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
         return None;
     }
     let dir =
-        std::env::temp_dir().join(format!("rcdzc-rust-drv-{}-{}", module.len(), driver.len()));
+        std::env::temp_dir().join(format!("rcdzc-rust-drv-{:016x}", test_key(module, driver)));
     let _ = std::fs::create_dir_all(&dir);
     let src_path = dir.join("prog.rs");
     let bin_path = dir.join("prog");
@@ -448,16 +500,13 @@ fn rustc_roundtrip_recursion() {
 
 #[test]
 fn rustc_roundtrip_mutual_recursion() {
-    // `even` (pub) and `odd` (private) cross-call — both emitted, both run. even(10)=true, even(7)=false.
+    // even(10)=true. (Deeper mutual + even(7) are covered by `rustc_roundtrip_mutual_tail_loop_runs_deep`.)
     let rs = compile_rust(
         "(module m (def (even (: n Int64)) (if (= n 0) true (odd (+ n -1)))) \
                     (def (odd (: n Int64)) (if (= n 0) false (even (+ n -1)))) (export even))",
     );
     if let Some(out) = rustc_run(&rs, "even(10)") {
         assert_eq!(out, "true");
-    }
-    if let Some(out) = rustc_run(&rs, "even(7)") {
-        assert_eq!(out, "false");
     }
 }
 
