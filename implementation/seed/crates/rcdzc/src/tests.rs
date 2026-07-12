@@ -10499,8 +10499,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_RESOLVE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
-        Request,
+        self, KIND_DIAGNOSTICS, KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES,
+        Query, Request,
     };
     use crate::testkit::parse;
 
@@ -10905,6 +10905,83 @@ mod sidecar_driven {
         );
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_RESOLVE).as_deref(), Some(""));
+    }
+
+    /// Parse `src`, resolve `offset` to a node, run `ScopeAt`, and return the `(name, type)` bindings.
+    fn scope_bindings(src: &str, offset: usize) -> Vec<(String, String)> {
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let node = spans.node_at_offset(offset).expect("a node at the offset");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::ScopeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        artifact_text(&out, KIND_SCOPE)
+            .expect("a scope artifact")
+            .lines()
+            .map(|l| {
+                let mut c = l.split('\t');
+                (c.next().unwrap().to_string(), c.next().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_scope_at_query_lists_let_bindings_and_params_with_types() {
+        // Inside `body`, both the parameter `p` (Int64) and the let-binding `q` (Int64) are visible.
+        let src = "(module m (def (f (: p Int64)) (let ((q (: 5 Int64))) (+ p q))) (export main))";
+        // Offset at the `(+ p q)` body.
+        let off = src.find("(+ p q)").expect("the body");
+        let scope = scope_bindings(src, off);
+        // `p` and `q` are both in scope, both Int64.
+        assert!(
+            scope.iter().any(|(n, t)| n == "p" && t == "Int64"),
+            "param p:Int64 in scope: {scope:?}"
+        );
+        assert!(
+            scope.iter().any(|(n, t)| n == "q" && t == "Int64"),
+            "let-binding q:Int64 in scope: {scope:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_at_query_at_the_top_level_is_empty() {
+        // At a top-level def body with no enclosing binder, no local bindings are in scope.
+        let src = "(module m (def (main) 42) (export main))";
+        let off = src.find("42").expect("the literal");
+        assert!(
+            scope_bindings(src, off).is_empty(),
+            "top level has no local scope"
+        );
+    }
+
+    #[test]
+    fn a_scope_at_query_respects_sequential_let_scope() {
+        // In `(let ((a 1) (b (+ a 1))) …)`, the initializer of `b` sees `a` but NOT `b` itself.
+        let src = "(module m (def (main) (let ((a (: 1 Int64)) (b (+ a 1))) b)) (export main))";
+        // Offset inside `b`'s initializer `(+ a 1)`.
+        let off = src.find("(+ a 1)").expect("b's initializer");
+        let scope = scope_bindings(src, off);
+        assert!(
+            scope.iter().any(|(n, _)| n == "a"),
+            "a is visible in b's init: {scope:?}"
+        );
+        assert!(
+            !scope.iter().any(|(n, _)| n == "b"),
+            "b is NOT visible in its own init: {scope:?}"
+        );
     }
 }
 

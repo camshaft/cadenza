@@ -29,7 +29,7 @@
 //! request as a one-byte TAG followed by its operands. A malformed request list is a DECLINE (a
 //! diagnostic), never a panic or a silent drop — reject-don't-miscompile at the tool edge.
 
-use crate::ast::StructId;
+use crate::ast::{Struct, StructId};
 use crate::db::Db;
 use crate::leb128::{self, Reader};
 use crate::resolved::Resolved;
@@ -51,6 +51,9 @@ pub const KIND_DIAGNOSTICS: &str = "diagnostics";
 
 /// The output artifact kind for a `ResolveOf` query result — the defining occurrence's node id.
 pub const KIND_RESOLVE: &str = "resolve";
+
+/// The output artifact kind for a `ScopeAt` query result — the bindings visible at a node.
+pub const KIND_SCOPE: &str = "scope";
 
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
@@ -105,6 +108,16 @@ pub enum Query {
     /// <TAB>message` (node-id-keyed like `UsesOf` — the consumer maps the node to a source range). Total:
     /// a clean program yields the empty result.
     Diagnostics,
+    /// The BINDINGS VISIBLE at a node, by its `StructId` — "variable scope tracking" (the operator's
+    /// original motivating example). Walks the lexical scope (`db.parent_of`, the same substrate
+    /// `resolve::lookup_scope` uses) collecting every binder in scope: a `let`'s bindings visible from
+    /// the point (earlier bindings from a later initializer; all from the body), an enclosing `fn`/`def`'s
+    /// parameters, a match-arm binder. Answered as one binding per line, `name<TAB>type<TAB>binder-node-id`
+    /// (the type read from the binder's `infer::type_of`; node-id-keyed like the others). INNERMOST wins:
+    /// a shadowed name appears once, bound to the nearest enclosing binder. Total: at the top level (no
+    /// enclosing binder) the result is empty. This is the query an editor's autocomplete / scope panel
+    /// rides on.
+    ScopeAt { node: u32 },
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -128,6 +141,7 @@ mod tag {
     pub const QUERY_TYPE_AT: u8 = 0x12;
     pub const QUERY_DIAGNOSTICS: u8 = 0x13;
     pub const QUERY_RESOLVE_OF: u8 = 0x14;
+    pub const QUERY_SCOPE_AT: u8 = 0x15;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -168,6 +182,9 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::QUERY_RESOLVE_OF => Some(Request::Query(Query::ResolveOf {
             node: u32::try_from(r.read_varu64()?).ok()?,
         })),
+        tag::QUERY_SCOPE_AT => Some(Request::Query(Query::ScopeAt {
+            node: u32::try_from(r.read_varu64()?).ok()?,
+        })),
         _ => None,
     }
 }
@@ -205,6 +222,10 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::Query(Query::Diagnostics) => out.push(tag::QUERY_DIAGNOSTICS),
         Request::Query(Query::ResolveOf { node }) => {
             out.push(tag::QUERY_RESOLVE_OF);
+            leb128::write_u64(out, *node as u64);
+        }
+        Request::Query(Query::ScopeAt { node }) => {
+            out.push(tag::QUERY_SCOPE_AT);
             leb128::write_u64(out, *node as u64);
         }
     }
@@ -321,7 +342,167 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::ScopeAt { node } => {
+            // Every binding visible at the node, INNERMOST-first, one per line as
+            // `name<TAB>type<TAB>binder-node-id`. Collected by the scope walk, then each binder typed.
+            let binders = scope_at(db, crate::ast::StructId(*node));
+            let mut text = String::new();
+            for (name, binder) in binders {
+                let ty = crate::infer::type_of(db, binder).render_name();
+                text.push_str(&format!("{name}\t{ty}\t{}\n", binder.0));
+            }
+            QueryResult {
+                kind: KIND_SCOPE,
+                name: node.to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
     }
+}
+
+/// The bindings visible at `node`, innermost-first, deduplicated by name (a shadowed name keeps the
+/// nearest enclosing binder). Walks parents (the same `parent_of` substrate `resolve::lookup_scope`
+/// uses), and at each enclosing form collects the binders it introduces AS SEEN from the child we
+/// ascended through:
+///  - a `let` ascended from its BODY → all its bindings; ascended from a bindings-list PAIR → the
+///    bindings strictly before that pair (sequential scope: an initializer sees earlier bindings);
+///  - a `fn`/`def` ascended from its BODY → its parameters (`db.scope_binders_of`);
+///  - a match ARM ascended from its body, whose pattern is a bare binder → that binder (binds the
+///    scrutinee for the arm).
+///
+/// Returns `(name, binder-name-occurrence)` pairs; the caller types each binder. A non-user or unknown
+/// node yields the empty scope (total).
+fn scope_at(db: &Db, node: StructId) -> Vec<(String, StructId)> {
+    let mut out: Vec<(String, StructId)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !db.is_user_node(node) {
+        return out;
+    }
+    // Ascend parent by parent; `from` is the child we came up through (its position in a `let`
+    // bindings-list decides which bindings are visible).
+    let mut from = node;
+    let mut cursor = db.parent_of(node);
+    while let Some(form) = cursor {
+        let mut add = |name: &str, occ: StructId, out: &mut Vec<(String, StructId)>| {
+            // Innermost wins: only the first sighting of a name (nearest enclosing binder) is kept.
+            if seen.insert(name.to_string()) {
+                out.push((name.to_string(), occ));
+            }
+        };
+        match db.ast.head_name(form) {
+            // `let` ascended from the BODY → every binding; ascended from a pair (handled below via
+            // the bindings-list form) is a different shape.
+            Some("let") => {
+                if let Some(tail) = db.ast.as_form(form, "let") {
+                    let bindings_occ = tail.first().copied();
+                    let body_occ = tail.get(1).copied();
+                    if Some(from) == body_occ
+                        && let Some(bindings_occ) = bindings_occ
+                    {
+                        collect_let_bindings(db, bindings_occ, None, &mut |n, occ| {
+                            add(n, occ, &mut out)
+                        });
+                    }
+                }
+            }
+            // `fn`/`def` ascended from the BODY → its parameters (the precomputed binder index).
+            Some("fn") | Some("def") => {
+                let tail = db
+                    .ast
+                    .as_form(form, "fn")
+                    .or_else(|| db.ast.as_form(form, "def"));
+                let body_occ = tail.and_then(|t| t.get(1).copied());
+                if Some(from) == body_occ {
+                    // Sorted for determinism (the index is a hash map).
+                    let mut params: Vec<(String, StructId)> = db
+                        .scope_binders_of(form)
+                        .map(|(n, occ)| (n.to_string(), occ))
+                        .collect();
+                    params.sort();
+                    for (n, occ) in params {
+                        add(&n, occ, &mut out);
+                    }
+                }
+            }
+            _ => {
+                // A let's BINDINGS-LIST (a headless list of pairs) ascended from a pair → the bindings
+                // strictly before that pair are visible (an initializer sees the earlier ones).
+                if let_of_bindings_list(db, form) {
+                    collect_let_bindings(db, form, Some(from), &mut |n, occ| add(n, occ, &mut out));
+                }
+                // A match ARM `(pattern body)` ascended from `body`, pattern a bare binder → it binds.
+                if let Some((n, occ)) = match_arm_binder(db, form, from) {
+                    add(&n, occ, &mut out);
+                }
+            }
+        }
+        from = form;
+        cursor = db.parent_of(form);
+    }
+    out
+}
+
+/// Collect a let bindings-list's `(name init)` pairs as `(name, name-occurrence)`, calling `add` for
+/// each. When `stop_before` is `Some(pair)`, only the pairs STRICTLY BEFORE it (sequential scope);
+/// `None` = all. Later-bound names naturally shadow earlier ones because `add`'s caller keeps the FIRST
+/// sighting — so we emit in REVERSE (last binding first) to make the innermost/last win.
+fn collect_let_bindings(
+    db: &Db,
+    bindings_occ: StructId,
+    stop_before: Option<StructId>,
+    add: &mut dyn FnMut(&str, StructId),
+) {
+    let Struct::List(pairs) = db.ast.get(bindings_occ) else {
+        return;
+    };
+    let end = match stop_before {
+        None => pairs.len(),
+        Some(from) => db.child_ix_of(from).min(pairs.len()),
+    };
+    for &pair in pairs[..end].iter().rev() {
+        if let Struct::List(kv) = db.ast.get(pair)
+            && kv.len() == 2
+            && let Some(name) = db.ast.as_name(kv[0])
+        {
+            // The binder's TYPE is its initializer's type — key the binding on the init occurrence
+            // (what a `Resolved::Ref` to this name points at), so `type_of` gives the bound value's type.
+            add(name, kv[1]);
+        }
+    }
+}
+
+/// Whether `form` is a `let`'s bindings-list (its parent is a `let` and `form` is that let's first
+/// tail element). Mirrors `resolve::let_of_bindings_list` but returns a bool.
+fn let_of_bindings_list(db: &Db, form: StructId) -> bool {
+    db.parent_of(form)
+        .and_then(|p| {
+            db.ast
+                .as_form(p, "let")
+                .map(|t| t.first().copied() == Some(form))
+        })
+        .unwrap_or(false)
+}
+
+/// If `form` is a match ARM `(pattern body)`, ascended from `body`, whose `pattern` is a bare BINDER
+/// name (not a literal, not the wildcard `_`), return that binder `(name, name-occurrence)`. The binder
+/// binds the scrutinee for the arm; its type is the scrutinee's, so key on the scrutinee occurrence.
+fn match_arm_binder(db: &Db, form: StructId, from: StructId) -> Option<(String, StructId)> {
+    let Struct::List(arm) = db.ast.get(form) else {
+        return None;
+    };
+    if arm.len() != 2 || Some(from) != arm.get(1).copied() {
+        return None;
+    }
+    let pattern = arm[0];
+    let name = db.ast.as_name(pattern)?;
+    if name == "_" {
+        return None;
+    }
+    // The parent must be a `(match …)` for this to be a match arm (not any 2-element list).
+    let parent = db.parent_of(form)?;
+    let scrutinee = db.ast.as_form(parent, "match")?.first().copied()?;
+    // The binder's value is the scrutinee — type/flow through it — so key the binding there.
+    Some((name.to_string(), scrutinee))
 }
 
 /// The occurrences that RESOLVE to the top-level definition or sum type named `name`, in ascending id
@@ -413,6 +594,7 @@ mod tests {
             Request::Query(Query::TypeAt { node: 42 }),
             Request::Query(Query::Diagnostics),
             Request::Query(Query::ResolveOf { node: 7 }),
+            Request::Query(Query::ScopeAt { node: 9 }),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }

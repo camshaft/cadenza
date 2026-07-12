@@ -1163,3 +1163,41 @@ fn def_on_a_non_reference_reports_no_definition() {
     assert!(stderr.contains("no definition"), "clear message: {stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- `cdz scope FILE OFFSET` — variable scope tracking (Query::ScopeAt) ----
+
+#[test]
+fn scope_lists_the_visible_bindings_with_types() {
+    let dir = scratch_dir("scope_vis");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (f (: p Int64)) (let ((q (: 5 Int64))) (+ p q))) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let off = src.find("(+ p q)").unwrap();
+    let (ok, stdout, _) = run(&["scope", f.to_str().unwrap(), &off.to_string()], "");
+    assert!(ok);
+    // Both the param `p` and the let-binding `q` are in scope, both Int64, at a file:line:col.
+    assert!(stdout.contains("p : Int64"), "param p in scope: {stdout}");
+    assert!(
+        stdout.contains("q : Int64"),
+        "let-binding q in scope: {stdout}"
+    );
+    assert!(stdout.contains("prog.sexp:"), "with locations: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn scope_at_top_level_is_empty() {
+    let dir = scratch_dir("scope_top");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (main) 42) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let off = src.find("42").unwrap();
+    let (ok, stdout, _) = run(&["scope", f.to_str().unwrap(), &off.to_string()], "");
+    assert!(ok, "no local scope is not an error");
+    assert_eq!(
+        stdout.trim(),
+        "",
+        "no local bindings at the top level: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
