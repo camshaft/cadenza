@@ -4665,11 +4665,29 @@ mod stage1 {
         let src = "(module m (def (pair (: n Int64)) (tuple n 1)) (export pair))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a parameterized compound-return export declines");
+        // The message names the ACTUAL trigger — a NULLARY-only resource escape, and this export takes a
+        // parameter — NOT the misleading "multi-export boundary" (there is one export). See the emit-side
+        // diagnosis in `backend::wasm::emit`.
         assert!(
-            err.message.contains("value heap")
-                || err.message.contains("renderer")
-                || err.message.contains("boundary"),
-            "got: {}",
+            err.message.contains("NULLARY export") && err.message.contains("takes a parameter"),
+            "the parameterized-compound decline must name the nullary-export trigger, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_multi_export_compound_return_declines_with_the_multi_export_diagnosis() {
+        // The OTHER compound-return trigger: a program with MULTIPLE exports, one returning a compound.
+        // The resource-escape path takes only a SINGLE nullary compound export, so a multi-export program
+        // declines — and here the message DOES name "multiple exports" (the trigger that actually
+        // applies), distinct from the single-parameterized-export diagnosis above. Pins the two triggers
+        // are diagnosed separately, not conflated into one misleading phrase.
+        let src = "(module m (def (main) (tuple 5 6)) (def (other) 7) (export main) (export other))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a multi-export compound return declines");
+        assert!(
+            err.message.contains("multiple exports"),
+            "a multi-export compound return must name the multi-export trigger, got: {}",
             err.message
         );
     }

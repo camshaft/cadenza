@@ -131,12 +131,33 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
 
     // Build the component-boundary export list (each export's parameter + result valtypes) and
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).
+    let multi_export = layout.exports.len() > 1;
     let mut boundary: Vec<BoundaryExport> = Vec::new();
     for e in &layout.exports {
         // The export's RESULT crosses as a `BoundaryResult`: unit → None, a scalar → its primitive
         // byte. A COMPOUND host-return does not cross on THIS multi-export path — the single nullary
-        // export case took the resource-escape shape above; a compound reaching here (a multi-export or
-        // parameterized export) declines, carried by `export_result`.
+        // export case took the resource-escape shape above; a compound reaching here declines. The two
+        // triggers are DISTINCT and the diagnosis names the actual one (the generic `export_result`
+        // message can only say "multi-export", which misdiagnoses a single PARAMETERIZED export — the
+        // resource-escape path covers only a NULLARY compound export, so a single export that takes a
+        // parameter also declines here). Report the trigger that applies, using the context known here.
+        if matches!(
+            e.result,
+            crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) | crate::ty::Ty::Sum { .. }
+        ) {
+            let why = if multi_export {
+                "a compound result crosses the host boundary only as the single export's result (this program has multiple exports)"
+            } else {
+                // A single export reached here (the nullary-single case escaped above), so it is
+                // parameterized — the resource-escape path covers only a NULLARY compound export.
+                "a compound result escapes to the host as a resource only from a NULLARY export; this export takes a parameter (a parameterized compound return is not yet supported)"
+            };
+            return Err(Reject::decline(format!(
+                "returning a {} from `{}`: {why}",
+                e.result.render_name(),
+                e.name
+            )));
+        }
         let result = serialize::export_result(&e.result).map_err(Reject::decline)?;
         // Each parameter's COMPONENT-boundary valtype (distinct from the core valtype — a signed 64
         // integer is `s64` at the boundary, `i64` in the core). A parameter is a scalar (a `list<u8>`
