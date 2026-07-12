@@ -81,6 +81,25 @@ impl From<TargetArg> for Target {
     }
 }
 
+impl CompileArgs {
+    /// The raw input specs (`path` / `name=path` / `kind:name=path`) — read by a wrapping driver (the
+    /// `cdz` bin) that may pre-process SOURCE-file inputs into artifacts before compiling.
+    pub fn input_specs(&self) -> &[String] {
+        &self.inputs
+    }
+
+    /// The explicit backend targets requested on the command line (empty when none was given — the
+    /// caller applies the default, see [`run_prepared`]).
+    pub fn targets(&self) -> Vec<Target> {
+        self.target.iter().map(|&t| t.into()).collect()
+    }
+
+    /// Where output is written (`-o`), if given.
+    pub fn out_path(&self) -> Option<PathBuf> {
+        self.out.clone()
+    }
+}
+
 /// Parse the whole `rcdzc` CLI from `std::env::args` and run it — the standalone bin's `main`.
 pub fn parse_and_run() -> ExitCode {
     run(CompileArgs::parse(), "rcdzc")
@@ -143,17 +162,28 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
         inputs.push(Artifact::new(parsed.kind, parsed.name, bytes));
     }
 
-    // Compile to the requested targets. `--target` is explicit; with none given the default is `wasm`
-    // — UNLESS a `sidecar` input is present, in which case the request list drives what is produced
-    // (its Emit requests name the targets), so injecting a default `wasm` would force a component even
-    // for a query-only sidecar. A sidecar caller who also wants wasm asks for it (an Emit request, or
-    // an explicit `--target wasm`); the two compose (`compile` unions `targets` with the sidecar's Emit
-    // requests).
+    run_prepared(inputs, &cli.targets(), cli.out, prog)
+}
+
+/// Compile a set of ALREADY-BUILT input artifacts to the requested targets and write the outputs — the
+/// host boundary's compile+report+write tail, exposed so a wrapping driver (the `cdz` bin) can
+/// pre-build artifacts from SOURCE files (parsing them in-process with its front-end, injecting the
+/// `ast` + `spans` artifacts) and reuse the identical output-writing behavior. `targets` is the
+/// explicit `--target` list (empty ⇒ apply the default here). `out` is the `-o` destination.
+pub fn run_prepared(
+    inputs: Vec<Artifact>,
+    targets: &[Target],
+    out: Option<PathBuf>,
+    prog: &str,
+) -> ExitCode {
+    // Apply the target default here (so both `run` and an external driver get the same rule): explicit
+    // targets win; else `[Wasm]` UNLESS a `sidecar` input drives the run (then its Emit requests name
+    // the targets, and a default `wasm` would force an unwanted component for a query-only sidecar).
     let has_sidecar = inputs
         .iter()
         .any(|a| a.kind == crate::sidecar::KIND_SIDECAR);
-    let targets: Vec<Target> = if !cli.target.is_empty() {
-        cli.target.iter().map(|&t| t.into()).collect()
+    let targets: Vec<Target> = if !targets.is_empty() {
+        targets.to_vec()
     } else if has_sidecar {
         Vec::new()
     } else {
@@ -163,6 +193,8 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
     // guard, so pathologically deep input DECLINES (the guard trips) rather than overflowing the
     // native stack and aborting — the `decline-don't-crash` contract, made independent of whatever
     // stack the ambient thread happens to have. See `rcdzc::host`.
+    let out_dest = out;
+    let cli_out = &out_dest;
     let out = crate::run_with_compiler_stack(|| compile(&inputs, &targets));
 
     // Report diagnostics (stderr).
@@ -186,7 +218,7 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
     // `-o -`: write the single produced artifact's bytes to stdout (so the bin composes in a pipe:
     // `… | rcdzc - -o - | cdz-run`). Only meaningful for a single artifact — a multi-artifact build
     // has no one stream to write, so that is an error rather than an ambiguous concatenation.
-    if cli.out.as_deref().map(|p| p.as_os_str()) == Some(std::ffi::OsStr::new("-")) {
+    if cli_out.as_deref().map(|p| p.as_os_str()) == Some(std::ffi::OsStr::new("-")) {
         match out.artifacts.as_slice() {
             [art] => {
                 if let Err(e) = std::io::Write::write_all(&mut std::io::stdout(), &art.bytes) {
@@ -212,7 +244,7 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
 
     // Decide whether `-o` names an exact output FILE (single artifact, not an existing directory) or
     // a DIRECTORY to write each `<name>.<ext>` into.
-    let single_file_out: Option<&PathBuf> = match (&cli.out, out.artifacts.as_slice()) {
+    let single_file_out: Option<&PathBuf> = match (cli_out, out.artifacts.as_slice()) {
         (Some(p), [_one]) if !p.is_dir() => Some(p),
         _ => None,
     };
@@ -224,7 +256,7 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
             Some(file) => file.clone(),
             // Otherwise: `<outdir>/<name>.<ext>`, outdir defaulting to the current directory.
             None => {
-                let dir = cli.out.clone().unwrap_or_else(|| PathBuf::from("."));
+                let dir = cli_out.clone().unwrap_or_else(|| PathBuf::from("."));
                 dir.join(format!("{}.{}", art.name, ext_for_kind(&art.kind)))
             }
         };

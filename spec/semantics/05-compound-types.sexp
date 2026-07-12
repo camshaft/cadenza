@@ -367,6 +367,21 @@
   (call   main (: true Bool))
   (output (: 2 Int64)))
 
+(case "reading a member from an if-of-records resolves each branch's field by its own sorted order"
+  (doc    "`(. (if b (record (a 1) (b 2)) (record (b 4) (a 3))) a)` reads field `a` from a record chosen by
+           the runtime Bool. The two branch records list their fields in DIFFERENT textual order — `(a b)`
+           vs `(b a)` — but a record's heap layout is its fields in SORTED-KEY order, so `a` is slot 0 in
+           BOTH. A compiler that sinks the member read into each branch — `(if b <a-of-first> <a-of-second>)`
+           — must resolve `a` to each branch's OWN sorted index, not carry one branch's slot to the other:
+           with `b` = false the second record `(record (b 4) (a 3))` is selected and `a` is 3, not 4 (which
+           would be reading slot 0 = `b` had the write order leaked). Pins that member-read-into-if-of-records
+           keeps the per-branch sorted-index resolution the sorted-order case above requires.")
+  (input  (do
+            (def (main (: b Bool)) (. (if b (record (a 1) (b 2)) (record (b 4) (a 3))) a))
+            (export main)))
+  (call   main (: false Bool))
+  (output (: 3 Int64)))
+
 (case "projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling"
   (doc    "`(. (if b (tuple 5 6) (tuple (/ 1 x) 8)) 0)` projects element 0 of a tuple chosen by the runtime
            Bool `b`. With `b` = true the FIRST tuple is selected, so the result is 5; the SECOND tuple's
