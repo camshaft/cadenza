@@ -4661,6 +4661,27 @@ mod match_engine {
     }
 
     #[test]
+    fn a_false_variant_guard_shields_a_trapping_body() {
+        // The variant-guard short-circuit (core-semantics.md §Boolean Connectives Short-Circuit applied to
+        // a guarded arm): a guarded arm's BODY is evaluated only when the guard HOLDS. `(guard (Some x) (>
+        // x 0)) (/ 10 x)` over `(Some 0)` must NOT trap on `(/ 10 0)` — the guard `0 > 0` is false, so the
+        // arm is skipped and the match takes `(Some y) -1`. A generation that folded the guarded body
+        // regardless of the guard raised a SPURIOUS CDZ0304 (a compile-time div-by-zero for an arm that
+        // never runs). `build_tree` folds the constant guard FIRST and skips the body when it is false.
+        let src = "(module m (def (main) \
+                     (match (Some 0) ((guard (Some x) (> x 0)) (/ 10 x)) ((Some y) -1) (None -2))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                "main"
+            ),
+            -1,
+            "a false variant guard shields its trapping body (no spurious CDZ0304)"
+        );
+    }
+
+    #[test]
     fn chained_guards_of_the_same_variant_fall_through_in_order() {
         // Two guarded `Some` arms then a plain `(Some z)`: each guard is tried in source order, falling
         // through to the next on failure. `f(Some 50)` → first guard `>10` → 100; `f(Some 5)` → second

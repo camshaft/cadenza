@@ -1071,6 +1071,20 @@
             (def (main (: n Int64)) (f (Some n))) (export main)))
   (error  CDZ0210))
 
+(case "a false variant guard shields its arm's trapping body"
+  (doc    "A guarded arm's body runs only when the guard holds (core-semantics.md #Boolean Connectives
+           Short-Circuit, applied to a guard): `(Some x) if x > 0` over `(Some 0)` must NOT evaluate its
+           body `(/ 10 x)` — the guard `0 > 0` is false, so the arm is skipped and the match falls through
+           to `(Some y) -1`. The division by the zero payload never happens. A generation that folds a
+           guarded body regardless of its guard raises a spurious compile-time divide-by-zero (CDZ0304)
+           for an arm that never runs; the fold must evaluate the guard FIRST and skip the body when it is
+           false. The variant-guard sibling of the scalar shielding cases above.")
+  (input  (match (Some 0)
+            ((guard (Some x) (> x 0)) (/ 10 x))
+            ((Some y) -1)
+            ((None) -2)))
+  (output (: -1 Int64)))
+
 ; --- A match must cover every value of the scrutinee's type ------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected: "A match whose patterns do not cover
 ; every value of the scrutinee's type MUST be a compile-time error." A Bool has exactly two

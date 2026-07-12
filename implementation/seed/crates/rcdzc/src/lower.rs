@@ -1140,6 +1140,19 @@ fn build_tree(
             // A GUARDED leaf: `if guard then body else <fall-through over the remaining rows>`.
             let cond = row.guard.expect("matched the guarded arm");
             let body = row.body;
+            // FOLD the guard when it is a compile-time-constant bool (a constant scrutinee makes its
+            // payload binders constant, so `(> x 0)` over `x = 0` folds to `false`). A true guard SELECTS
+            // the body directly; a false guard SKIPS to the fall-through tree — WITHOUT lowering the body.
+            // This shields a body that would TRAP when folded (`(/ 10 x)` at `x = 0` → CDZ0304) from being
+            // evaluated when its guard is false: the guard short-circuits the body exactly as `and`/`or`
+            // and `if` shield an untaken branch (core-semantics.md §Boolean Connectives Short-Circuit).
+            // Without this fold, a false-guarded arm's trapping body raised a SPURIOUS CDZ0304 for an arm
+            // that never runs. A guard reading a RUNTIME value does not fold → the runtime `Guarded` cont.
+            match core_of(db, cond) {
+                Core::ConstBool(true) => return Ok(crate::core::SumCont::Leaf(body)),
+                Core::ConstBool(false) => return build_tree(db, scrutinee, &rows[1..], path_types),
+                _ => {}
+            }
             let els = build_tree(db, scrutinee, &rows[1..], path_types)?;
             return Ok(crate::core::SumCont::Guarded {
                 cond,

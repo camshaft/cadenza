@@ -6,6 +6,7 @@ pass	String.scalar-len of a string selected by a runtime match
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
+pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a Result built by an if with the Err branch first type-checks
@@ -80,6 +81,7 @@ pass	a division whose divisor folds to zero still traps
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a failing guard falls through to a later arm
+pass	a false variant guard shields its arm's trapping body
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
 pass	a field is projected from a record returned across a call boundary
 pass	a field is projected from a record returned by a function
@@ -103,6 +105,7 @@ pass	a function whose name is capitalized is called, not treated as a constructo
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
@@ -220,6 +223,7 @@ pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
+pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive function folds a linked list of runtime-determined length
@@ -394,6 +398,9 @@ pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
 pass	greater-than-or-equal
 pass	hexadecimal, binary, and decimal spellings of one value are equal
+pass	indexing a byte sequence out of bounds yields None
+pass	indexing a byte sequence returns Some of the byte at that position
+pass	indexing a byte sequence with a negative index yields None
 pass	indexing a list bound from a sum payload yields the element
 pass	indexing a list in bounds yields Some of the element
 pass	indexing a list out of bounds yields None
@@ -409,6 +416,8 @@ pass	less-than-or-equal
 pass	match on a Result returned by a fallible function
 pass	match on a function-returned sum takes the other variant at runtime
 pass	match on a sum value returned by a function selects the runtime variant
+pass	matching a runtime Bytes.at Option binds the byte in the Some arm
+pass	matching a runtime Bytes.at Option takes the None arm past the end
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
 pass	member access of a field the record does not have is a type error
@@ -512,7 +521,6 @@ todo	Qty.value recovers the underlying numeric value, discarding the unit
 todo	Result propagates errors without trapping
 todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
-todo	a CBOR atom decodes each scalar major type to its value
 todo	a CBOR head decodes its major type and big-endian argument from the input bytes
 todo	a CBOR reader walks a variable-length array using its decoded length as the element count
 todo	a CBOR skip steps over a tagged item to the value it wraps
@@ -578,7 +586,6 @@ todo	a function deriving a velocity from a distance and a time
 todo	a function stored in a record field is called after extraction
 todo	a function stored in a tuple element is called after extraction
 todo	a function whose body always diverges has result type Never
-todo	a generic unwrap helper consumes a fallible Bytes.at result
 todo	a handler accumulates into a list and a read-out operation reads it back
 todo	a handler arm for an operation the effect does not declare is rejected
 todo	a handler folds a counter across the operations it discharges
@@ -676,7 +683,6 @@ todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
 todo	a reader literal carries a qualified name with a dot
 todo	a recognized pragma with a malformed argument list is rejected
-todo	a recursive byte walk sums a runtime sequence via Bytes.at and match
 todo	a recursive emitter dispatches on a sum's variants to build bytes per node
 todo	a recursive fold of a cons-list to bytes is the whole program result
 todo	a recursive function counts down through a stateful effect and bails at zero
@@ -906,9 +912,6 @@ todo	greater-than of an integer and a float is rejected
 todo	greater-than-or-equal of an integer and a float is rejected
 todo	host calls are observed in the order they were made
 todo	identical negative zeros nested in a tuple compare equal
-todo	indexing a byte sequence out of bounds yields None
-todo	indexing a byte sequence returns Some of the byte at that position
-todo	indexing a byte sequence with a negative index yields None
 todo	indexing a runtime string past its last scalar yields None
 todo	indexing a slice is relative to the slice's start
 todo	inserting a key already present replaces its value, not the size
@@ -925,8 +928,6 @@ todo	lists are equal by elements in order
 todo	looking up an absent key yields None
 todo	map equality is independent of insertion order
 todo	matching a lookup from a computed-key map literal selects the present-value arm
-todo	matching a runtime Bytes.at Option binds the byte in the Some arm
-todo	matching a runtime Bytes.at Option takes the None arm past the end
 todo	matching falls through to else when no literal matches
 todo	matching on a sliced string selects the literal arm
 todo	matching on a string produced by an expression

@@ -188,8 +188,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // A sum match: the binding escapes if it escapes the scrutinee or the root continuation (a leaf
         // body, a guarded arm, or a switch's arms — recursed via `cont_binding_escapes`).
         Core::MatchSum { scrutinee, root } => {
-            binding_escapes(db, scrutinee, binder, false)
-                || cont_binding_escapes(db, &root, binder)
+            binding_escapes(db, scrutinee, binder, false) || cont_binding_escapes(db, &root, binder)
         }
         // A sum-payload read BORROWS the scrutinee (`sum-payload` reads without consuming), like a
         // projection operand — so a `LocalRef` reached through it does not escape.
