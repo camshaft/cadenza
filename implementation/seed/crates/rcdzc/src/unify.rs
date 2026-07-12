@@ -53,9 +53,15 @@ impl Subst {
                     .collect(),
             )),
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
-            // A sum carries no type variables (its identity is its `decl`; its shape lives in
-            // `db.type_decls`), so the substitution leaves it unchanged — like the ground types.
-            Ty::Sum { .. } | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
+            // A sum's identity is its `decl`, but a GENERIC instantiation carries type ARGS that may hold
+            // unsolved variables (a deferred payload — `Option ?0`), so substitute into each arg. A
+            // monomorphic sum has empty args, so this is a cheap clone of the name/decl.
+            Ty::Sum { decl, name, args } => Ty::Sum {
+                decl: *decl,
+                name: name.clone(),
+                args: args.iter().map(|t| self.apply(t)).collect(),
+            },
+            Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
         }
     }
 
@@ -141,19 +147,29 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             }
             Ok(())
         }
-        // Two sums unify iff they are the SAME declaration — a sum's identity is its declaration
-        // OCCURRENCE (`type-system.md` §158/§160), NOT its name, so `decl == decl` is the whole test
-        // (two `(type Foo …)` declared separately are DISTINCT types even with the same name). A sum
-        // carries no type variables, so there is nothing to recurse into — matching how `Subst::apply`
-        // leaves `Ty::Sum` unchanged and `agrees_with` compares sums by `decl`. Without this arm two
-        // identical sums fell through to `mismatch`, so annotating a parameter with its own sum type
-        // (`(def (f (: x N)) …)` applied to an `N`) was rejected with "cannot unify N with N".
-        (Ty::Sum { decl: da, .. }, Ty::Sum { decl: db, .. }) => {
-            if da == db {
-                Ok(())
-            } else {
-                Err(mismatch(&a, &b))
+        // Two sums unify iff they are the SAME declaration AND their type ARGS unify pairwise — a sum's
+        // identity is its declaration OCCURRENCE (`type-system.md` §158/§160), NOT its name (two `(type
+        // Foo …)` declared separately are DISTINCT types even with the same name), together with its
+        // instantiation: `Option Int64` and `Option Bool` share a declaration but their args conflict, so
+        // they do NOT unify (§the head agrees but the payload does not). A monomorphic sum has empty args
+        // on both sides, so this reduces to the decl check (the case a sibling added so annotating a
+        // parameter with its own monomorphic sum type is not rejected "cannot unify N with N"). Unifying
+        // the args also SOLVES a deferred payload (a generic instantiation against a concrete one).
+        (
+            Ty::Sum {
+                decl: da, args: aa, ..
+            },
+            Ty::Sum {
+                decl: db, args: ab, ..
+            },
+        ) => {
+            if da != db || aa.len() != ab.len() {
+                return Err(mismatch(&a, &b));
             }
+            for (x, y) in aa.iter().zip(ab.iter()) {
+                unify(subst, x, y)?;
+            }
+            Ok(())
         }
         _ => Err(mismatch(&a, &b)),
     }
@@ -234,9 +250,10 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::Fn(p, r) => occurs(subst, v, &p) || occurs(subst, v, &r),
         Ty::Record(fields) => fields.values().any(|ft| occurs(subst, v, ft)),
         Ty::Tuple(elems) => elems.iter().any(|ft| occurs(subst, v, ft)),
-        // A sum carries no inner type variables (its shape lives in `db.type_decls`), so no variable
-        // occurs in it — like the ground types.
-        Ty::Sum { .. } | Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
+        // A GENERIC sum's type ARGS may hold a variable (a deferred payload) — check each. A monomorphic
+        // sum has empty args, so no variable occurs in it (like the ground types).
+        Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
     }
 }
 
@@ -329,8 +346,17 @@ fn rename(
                 .map(|t| rename(t, ty_map, width_map, sign_map))
                 .collect(),
         ),
-        // A sum carries no bound variables (its shape lives in `db.type_decls`); nothing to rename.
-        Ty::Sum { .. } | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
+        // A GENERIC sum scheme's type ARGS may hold bound variables (a `(fn (a) … (Option a))` variant
+        // ctor scheme) — rename each. A monomorphic sum has empty args; nothing to rename.
+        Ty::Sum { decl, name, args } => Ty::Sum {
+            decl: *decl,
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|t| rename(t, ty_map, width_map, sign_map))
+                .collect(),
+        },
+        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 

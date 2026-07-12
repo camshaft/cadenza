@@ -89,6 +89,13 @@ pub struct TypeDecl {
     /// this occurrence and NOT the name, two `(type Foo …)` declared separately are DISTINCT types even
     /// with the same name — the property no name-keyed map could preserve.
     pub occ: StructId,
+    /// The sum's TYPE PARAMETERS, in first-appearance order — the IMPLICIT generics
+    /// (`type-system.md §Generics Are Type-Valued Parameters`). A free LOWERCASE name in any variant
+    /// payload is a type parameter (types are Capitalized — `Int64`, `Option`; a lowercase payload name
+    /// is a variable, as the prelude operator type-lambdas already use lowercase `a`). Empty for a
+    /// MONOMORPHIC sum (`(type Sign Neg Zero Pos)`). `(type Option (Some a) None)` has `params: ["a"]`;
+    /// `(type Result (Ok a) (Err b))` has `["a", "b"]`. Order fixes the positional `Ty::Sum::args`.
+    pub params: Vec<String>,
     /// The variants in declaration order — each position's index is its discriminant.
     pub variants: Vec<Variant>,
     /// The SYNTHESIZED record occurrence — the record (`crate::sums`) whose `(meta t)` is this sum's
@@ -621,9 +628,19 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
                     });
                 }
             }
+            // Collect the IMPLICIT type parameters: a free LOWERCASE name in any payload, in
+            // first-appearance order across the variants (`(type Option (Some a) None)` → `["a"]`). A
+            // Capitalized name is a type (`Int64`, `Option`), not a parameter.
+            let mut params: Vec<String> = Vec::new();
+            for variant in &variants {
+                for &p in &variant.payloads {
+                    collect_type_params(ast, p, &mut params);
+                }
+            }
             types.push(TypeDecl {
                 name,
                 occ: item,
+                params,
                 variants,
                 // Filled by `sums::synthesize` after the scan; the scan only locates declarations.
                 synth: None,
@@ -647,6 +664,33 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
     }
 
     (defs, exports, types)
+}
+
+/// Collect the IMPLICIT type parameters mentioned in a payload type expression at `occ`, appending each
+/// new one to `params` in first-appearance order. A parameter is a free LOWERCASE name (types are
+/// Capitalized — `Int64`, `Bool`, `Option` — so a lowercase name in type position is a type variable,
+/// the same convention the prelude's operator type-lambdas use with `a`). Descends a type application
+/// `(Option a)` / `(Tuple a b)` into its arguments. A duplicate is not re-added (a `HashSet`-like
+/// linear check keeps the small param list ordered by first appearance).
+fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
+    match ast.get(occ) {
+        Struct::Atom(_) => {
+            if let Some(n) = ast.as_name(occ)
+                && n.starts_with(|c: char| c.is_ascii_lowercase())
+                && !params.iter().any(|p| p == n)
+            {
+                params.push(n.to_string());
+            }
+        }
+        // A type application `(Head arg…)` — descend into every child (the head of a nested application
+        // may itself be a name, but a Capitalized head is a type constructor, not a parameter; the
+        // lowercase filter above handles that). This reaches a parameter nested in `(Option a)`.
+        Struct::List(children) => {
+            for &c in children {
+                collect_type_params(ast, c, params);
+            }
+        }
+    }
 }
 
 /// The top-level item occurrences: the tail of `(module NAME …)` (past the name), the tail of

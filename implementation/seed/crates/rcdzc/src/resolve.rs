@@ -692,10 +692,11 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             }
             Some(Ty::Tuple(elems.into()))
         }
-        // A sum type-value: `(Sum <name> <decl>)` — the dual of `eval::encode_ty`'s `Sum` arm (and of
-        // the shape `sums::synthesize` builds for a sum record's `(meta t)`). The nominal name is for
-        // rendering; the declaration occurrence (an integer literal) is the identity, so two sums are
-        // the same type iff their `decl` matches (module A's `Foo` ≠ module B's `Foo`).
+        // A sum type-value: `(Sum <name> <decl> arg…)` — the dual of `eval::encode_ty`'s `Sum` arm (and
+        // of the shape `sums::synthesize` builds for a sum record's `(meta t)`). The nominal name is for
+        // rendering; the declaration occurrence (an integer literal) is the identity; the type ARGS
+        // follow (empty for a monomorphic sum). Two sums are the same type iff their `decl` AND `args`
+        // match (module A's `Foo` ≠ module B's `Foo`; `Option Int64` ≠ `Option Bool`).
         "Sum" => {
             let tail = db.ast.as_form(node, "Sum")?;
             let name = db.ast.as_name(*tail.first()?)?.to_string();
@@ -708,9 +709,14 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 },
                 _ => return None,
             };
+            let mut args = Vec::new();
+            for &a in tail.iter().skip(2) {
+                args.push(decode_ty(db, a)?);
+            }
             Some(Ty::Sum {
                 decl: StructId(decl),
                 name,
+                args,
             })
         }
         // A record type-value: `(Record (name T)…)` — each `(name T)` a field pair. The head is

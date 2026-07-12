@@ -4134,8 +4134,12 @@ mod stage1 {
         let occ = db.type_decl_by_name("Option").expect("Option bound");
         let ty = typeval_of(&mut db, occ).expect("Option is a type");
         match ty {
-            Ty::Sum { name, decl } => {
+            Ty::Sum { name, decl, args } => {
                 assert_eq!(name, "Option");
+                assert!(
+                    args.is_empty(),
+                    "a bare monomorphic-shaped sum has no type args"
+                );
                 // The identity is the declaration occurrence recorded in the scan.
                 let decl_occ = db
                     .type_decls
@@ -4146,6 +4150,73 @@ mod stage1 {
                 assert_eq!(decl, decl_occ);
             }
             other => panic!("expected Ty::Sum, got {}", other.render_name()),
+        }
+    }
+
+    #[test]
+    fn a_generic_sum_monomorphizes_at_a_concrete_instantiation() {
+        // A GENERIC sum `(type Option (Some a) None)` has an implicit type parameter `a` (a free
+        // lowercase name in a payload). `(Option Int64)` in type position APPLIES the sum constructor,
+        // monomorphizing to `Ty::Sum { args: [Int64] }`; `(Option Bool)` to `[Bool]`. The two are
+        // DISTINCT types (`type-system.md §the head Option agrees but the payload does not`), and each
+        // renders as `(Option Int64)` / `(Option Bool)`. This is the "generics are type-valued
+        // parameters" model — no new mechanism, the ctor's `(meta apply)` builds the type.
+        use crate::db::Db;
+        use crate::eval::typeval_of;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        // Parse a program that USES `(Option Int64)` and `(Option Bool)` in annotations, and reach those
+        // type occurrences to reduce them.
+        let ast = parse(
+            "(module m (type Option (Some a) None) \
+               (def (i (: x (Option Int64))) x) \
+               (def (b (: y (Option Bool))) y) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        // The declaration recorded its implicit param `a`.
+        let decl = db.type_decls.iter().find(|t| t.name == "Option").unwrap();
+        assert_eq!(
+            decl.params,
+            vec!["a".to_string()],
+            "implicit param a scanned"
+        );
+        // Locate the `(Option Int64)` type occurrence — the annotation type of `i`'s parameter. Rather
+        // than dig the AST, build the type expression directly: `Option` applied to `Int64`.
+        // (Reaching it via the annotation is fiddly; instead confirm the two instantiations differ by
+        // reducing `Option` bare then comparing rendered instantiations produced by the escape/infer
+        // path in the run tests below. Here we assert the SCAN + the type identity via encode/decode.)
+        let opt_int = Ty::Sum {
+            decl: decl.occ,
+            name: "Option".to_string(),
+            args: vec![Ty::int64()],
+        };
+        let opt_bool = Ty::Sum {
+            decl: decl.occ,
+            name: "Option".to_string(),
+            args: vec![Ty::Bool],
+        };
+        assert!(
+            !opt_int.agrees_with(&opt_bool),
+            "Option Int64 ≠ Option Bool"
+        );
+        assert!(opt_int.agrees_with(&opt_int));
+        assert_eq!(opt_int.render_name(), "(Option Int64)");
+        assert_eq!(opt_bool.render_name(), "(Option Bool)");
+        // The generic sum record IS applyable in type position (has `(meta apply)` = sum-ctor), so
+        // `typeval_of` of a `(Option Int64)` application reduces to the monomorphized `Ty::Sum`.
+        let option_rec = db.type_decl_by_name("Option").expect("Option bound");
+        let int64 = db.push_name("Int64");
+        let app = db.push_list(vec![option_rec, int64]);
+        match typeval_of(&mut db, app) {
+            Some(Ty::Sum { args, .. }) => {
+                assert_eq!(args.len(), 1);
+                assert_eq!(args[0].render_name(), "Int64", "Option applied to Int64");
+            }
+            other => panic!(
+                "expected (Option Int64) to reduce to Ty::Sum, got {:?}",
+                other.map(|t| t.render_name())
+            ),
         }
     }
 

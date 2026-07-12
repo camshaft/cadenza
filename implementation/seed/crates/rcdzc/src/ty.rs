@@ -168,9 +168,19 @@ pub enum Ty {
     /// payload map mentioning the sum itself would be an infinite type). The runtime representation is
     /// the heap sum handle (`sum-new`/`sum-disc`/`sum-payload`); the nominal tag is compile-time only
     /// (`§156` — it "adds nothing to the value's runtime representation").
+    ///
+    /// `args` are the sum's TYPE ARGUMENTS — the concrete types its (implicit) type parameters are
+    /// instantiated at (`type-system.md §Generics Are Type-Valued Parameters`). A MONOMORPHIC sum
+    /// (`(type Sign Neg Zero Pos)` — no free type variable in any payload) has `args: []`. A GENERIC sum
+    /// `(type Option (Some a) None)` at a concrete instantiation carries them: `Option Int64` is `Sum {
+    /// decl: <Option>, name: "Option", args: [Int64] }`. Two sums are the SAME type iff their `decl` AND
+    /// their `args` agree, so `Option Int64 ≠ Option Bool` (same declaration, different instantiation) —
+    /// the payload-type discrimination `type-system.md §the head Option agrees but the payload does not`
+    /// requires. Args are positional, in the parameters' first-appearance order.
     Sum {
         decl: crate::ast::StructId,
         name: String,
+        args: Vec<Ty>,
     },
     /// A function type `param → result`, curried (a multi-parameter operation is nested `Fn`s). What
     /// an operator's (and later a function's) `Meta.t` denotes; an application unifies the argument
@@ -248,12 +258,21 @@ impl Ty {
             (Ty::Tuple(a), Ty::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(ta, tb)| ta.agrees_with(tb))
             }
-            // Two sums agree iff their DECLARATIONS match — a sum's identity is its fully-qualified
-            // name, realized as the declaration occurrence (`type-system.md §160`: two nominal types
-            // are distinct whenever their FQNs differ, even with identical structure AND identical local
-            // name). Comparing `decl` (not `name`) is what makes module A's `Foo` and module B's `Foo`
-            // distinct. No structural descent (same `decl` ⇒ same declaration ⇒ same shape).
-            (Ty::Sum { decl: a, .. }, Ty::Sum { decl: b, .. }) => a == b,
+            // Two sums agree iff their DECLARATIONS match AND their type ARGS agree pairwise — a sum's
+            // identity is its declaration (`type-system.md §160`: distinct FQNs ⇒ distinct types, so
+            // module A's `Foo` ≠ module B's `Foo`) TOGETHER WITH its instantiation (`Option Int64 ≠
+            // Option Bool` — same declaration, different type argument; §the head agrees but the payload
+            // does not). A monomorphic sum has empty `args` on both sides, so this reduces to the decl
+            // check. A deferred arg (an as-yet-unsolved payload) is compatible via the recursive
+            // `agrees_with`.
+            (
+                Ty::Sum {
+                    decl: a, args: aa, ..
+                },
+                Ty::Sum {
+                    decl: b, args: ab, ..
+                },
+            ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
             _ => false,
         }
     }
@@ -334,11 +353,23 @@ impl Ty {
                 s.push(')');
                 s
             }
-            // A sum renders as its NOMINAL NAME — its identity is that name (`type-system.md §158`), and
-            // the observed value's annotation is the declared type (`(: (Some 5) Option)`). The variant
-            // set is not part of the rendered type name (a match/constructor reads it from
-            // `db.type_decls`); the name alone identifies the type.
-            Ty::Sum { name, .. } => name.clone(),
+            // A sum renders as its NOMINAL NAME, applied to its type ARGS when generic: a monomorphic
+            // sum (`args: []`) is the bare name (`(: (Neg unit) Sign)`); a generic sum is `(Name arg…)`
+            // — `(: (Some 5) (Option Int64))` (`type-system.md §158`; the corpus form). The variant set
+            // is not part of the rendered type (a match reads it from `db.type_decls`).
+            Ty::Sum { name, args, .. } => {
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    let mut s = format!("({name}");
+                    for a in args {
+                        s.push(' ');
+                        s.push_str(&a.render_name());
+                    }
+                    s.push(')');
+                    s
+                }
+            }
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
             Ty::Type => "Type".to_string(),
             Ty::Var(n) => format!("?{n}"),

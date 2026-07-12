@@ -56,14 +56,39 @@ pub fn synthesize(ast: &mut Arenas, decls: &mut [TypeDecl]) {
 }
 
 /// Build one sum's record: `(record ((meta t) <sum-typeval>) (<variant> <ctor>)…)`. The `(meta t)` is
-/// the sum's own type-value; each variant is a field to its constructor record.
+/// the sum's own type-value; each variant is a field to its constructor record. A GENERIC sum (with
+/// type params) ALSO gets `(meta apply)` = the `sum-ctor` intrinsic + `(meta sum-decl)` = its
+/// declaration occurrence, so `(Option Int64)` in type position APPLIES the sum constructor to build
+/// `Ty::Sum { decl, args: [Int64] }` — the same "a type ctor's `(meta apply)` builds a type" model as
+/// `Int`/`Tuple`. A monomorphic sum needs no `(meta apply)` (it is never applied in type position).
 fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
     let head = push_atom(ast, Leaf::Name("record".to_string()));
     let mut children = vec![head];
 
-    // `(meta t)` — the sum type-value, so `Option` used in type position reduces to `Ty::Sum`.
+    // `(meta t)` — the sum type-value, so `Option` used in type position reduces to `Ty::Sum` (with no
+    // args — the base, un-applied form; a generic instantiation goes through `(meta apply)` below).
     let sum_ty = sum_typeval(ast, decl);
     children.push(meta_field(ast, "t", sum_ty));
+
+    // A GENERIC sum is applyable in type position: `(meta apply)` = the shared `sum-ctor` intrinsic,
+    // `(meta sum-decl)` = this declaration's occurrence (read at reduction to build `Ty::Sum{decl,args}`
+    // — the analogue of a variant ctor's `(meta variant)` disc).
+    if !decl.params.is_empty() {
+        let builder = {
+            let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
+            let who = push_atom(ast, Leaf::Name("sum-ctor".to_string()));
+            push_list(ast, vec![ih, who])
+        };
+        children.push(meta_field(ast, "apply", builder));
+        let decl_node = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(decl.occ.0 as i64),
+                radix: Radix::Dec,
+            },
+        );
+        children.push(meta_field(ast, "sum-decl", decl_node));
+    }
 
     // One field per variant, its value the constructor record. `decl.variants` carries each variant's
     // payload TYPE occurrences (from the scan), so the constructor's arrow type reads them directly. The

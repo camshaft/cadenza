@@ -920,6 +920,33 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
     }
 }
 
+/// Reduce a GENERIC SUM type-constructor application `(Option Int64)` to its built sum type-value node
+/// `(typeval (Sum NAME <decl> arg…))`. `head` is the applied sum record (`Option`), carrying the owning
+/// declaration on its `(meta sum-decl)` channel; `args` are the type arguments, each reduced to a `Ty`.
+/// The built `Ty::Sum { decl, name, args }` is encoded back to an arena `(typeval …)` node so it flows
+/// through the ordinary type path. `None` if the head has no `(meta sum-decl)` (not a generic sum), an
+/// arg is not a type, or the declaration is unknown. (The analogue of `reduce_ctor` for `TupleCtor`, but
+/// keyed on the head's metadata rather than the prim alone — one prim serves every generic sum.)
+pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option<StructId> {
+    let decl_field = project_meta(db, head, "sum-decl")?;
+    let decl = match resolved_of(db, decl_field) {
+        Resolved::Int(v) => crate::ast::StructId(v.to_i64().and_then(|n| u32::try_from(n).ok())?),
+        _ => return None,
+    };
+    let name = db.type_decl_by_occ(decl)?.name.clone();
+    let mut arg_tys = Vec::with_capacity(args.len());
+    for &a in args {
+        arg_tys.push(typeval_of(db, a)?);
+    }
+    let sum = crate::ty::Ty::Sum {
+        decl,
+        name,
+        args: arg_tys,
+    };
+    trace!(target: "rcdzc::eval", ty = %sum.render_name(), "ctor (Sum): built generic sum type-value");
+    Some(encode_typeval(db, &sum))
+}
+
 /// The type-VALUE the node at `id` reduces to, if any — a ground type (`Bool`/`Unit` via `(meta t)`),
 /// a `(typeval …)` built node, or a type-constructor application reduced. This is how a type
 /// expression yields a `Ty`. Returns `None` if the node is not a type.
@@ -952,6 +979,12 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
             let prim = meta_apply_of(db, head)?;
             if prim.is_arith() {
                 return None;
+            }
+            // A GENERIC SUM application `(Option Int64)` — build `Ty::Sum{decl,args}` from the head's
+            // `(meta sum-decl)` + the applied type args (keyed on the head's metadata, not the prim).
+            if prim == Prim::SumCtor {
+                let built = reduce_sum_ctor(db, head, &args)?;
+                return typeval_of(db, built);
             }
             let built = reduce_ctor(db, prim, &args).ok()?;
             typeval_of(db, built)
@@ -1058,18 +1091,24 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             }
             db.push_list(items)
         }
-        // A sum type-value: `(Sum <name> <decl>)` — the nominal name (for rendering) and the
-        // declaration occurrence (the identity, encoded as an integer literal so it round-trips through
-        // the arena wire form). Round-trips with `resolve::decode_ty`'s `"Sum"` arm. This is the shape
-        // `sums::synthesize` also builds by hand for a sum record's `(meta t)`, so the two must agree.
-        Ty::Sum { decl, name } => {
+        // A sum type-value: `(Sum <name> <decl> arg…)` — the nominal name (for rendering), the
+        // declaration occurrence (the identity, an integer literal so it round-trips), and the type ARGS
+        // (empty for a monomorphic sum). Round-trips with `resolve::decode_ty`'s `"Sum"` arm. This is the
+        // shape `sums::synthesize` also builds for a sum record's `(meta t)`, so the two must agree.
+        Ty::Sum { decl, name, args } => {
             let head = db.push_name("Sum");
             let nm = db.push_name(name);
             let d = db.push_atom(Leaf::Int {
                 value: IntValue::from_i64(decl.0 as i64),
                 radix: crate::ast::Radix::Dec,
             });
-            db.push_list(vec![head, nm, d])
+            // `(Sum NAME <decl> arg…)` — the type ARGS follow, so a generic instantiation round-trips
+            // (a monomorphic sum encodes no args, byte-identical to before).
+            let mut items = vec![head, nm, d];
+            for a in args {
+                items.push(encode_ty(db, a));
+            }
+            db.push_list(items)
         }
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),

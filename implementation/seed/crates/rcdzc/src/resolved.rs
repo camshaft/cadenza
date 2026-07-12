@@ -125,6 +125,13 @@ pub enum Prim {
     /// width, reading the target off the solved type). A NULLARY variant used bare is this prim applied
     /// to no arguments. The result is the owning sum type, read off the ctor's `(meta t)`.
     SumNew,
+    /// A generic SUM TYPE CONSTRUCTOR — the `(meta apply)` of a GENERIC sum record (`crate::sums`).
+    /// Applying it in TYPE position (`(Option Int64)`) builds the type-value `Ty::Sum { decl, args }`:
+    /// the owning declaration is read off the record's `(meta sum-decl)` channel, the args are the
+    /// applied type-values. One prim serves every generic sum (the decl is metadata, like `SumNew`'s
+    /// discriminant), so `Option`/`Result`/… need no per-type prim — the same "type constructor's
+    /// `(meta apply)` builds a type" model as `Int`/`Tuple`/`->`.
+    SumCtor,
 }
 
 impl Prim {
@@ -157,6 +164,7 @@ impl Prim {
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
             "sum-new" => Some(Prim::SumNew),
+            "sum-ctor" => Some(Prim::SumCtor),
             _ => None,
         }
     }

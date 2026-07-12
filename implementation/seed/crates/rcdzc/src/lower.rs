@@ -946,7 +946,10 @@ pub struct SumFormTemplate {
 /// `None` — the escape declines. Needs `db` to read the variant names + payload types from
 /// `db.type_decls` (found by the sum's `decl` occurrence).
 pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTemplate> {
-    let crate::ty::Ty::Sum { decl, name } = ty else {
+    // NOTE: a GENERIC sum's escape needs its `args` to substitute each variant's payload type variable
+    // before templating — a later increment. For now the monomorphic sum (empty args) escapes; a
+    // generic instantiation reaches here only once its payload types are concrete.
+    let crate::ty::Ty::Sum { decl, name, .. } = ty else {
         return None;
     };
     // Recover the variant set from the declaration occurrence (the nominal identity).
@@ -1525,7 +1528,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::RecordCtor
         | Prim::BoolTy
         | Prim::UnitTy
-        | Prim::SumNew => {
+        | Prim::SumNew
+        | Prim::SumCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -1745,6 +1749,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
         Prim::SumNew => "sum-new",
+        Prim::SumCtor => "sum-ctor",
     }
 }
 
