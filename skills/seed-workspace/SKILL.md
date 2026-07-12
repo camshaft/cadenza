@@ -43,6 +43,7 @@ Run from anywhere in the repo (`cargo xtask` resolves the workspace root itself)
 | `cargo xtask check` | omnibus health check: build + test + clippy + wasm-runtime + gate |
 | `cargo xtask roundtrip [FILE.sexp…]` | every corpus program must round-trip through the syntax surfaces |
 | `cargo xtask fmt [--check] <file…>` | format program files through the printer |
+| `cargo xtask bench [--save]` | runtime **allocation benchmark**: gross heap allocs per hot op, diffed against the committed `spec/bench/.alloc-baseline` (regression ⇒ non-zero exit); `--save` records the baseline |
 
 Global `--profile <name>` picks the cargo profile the pipeline tools are built under. It defaults to
 **`release-debug`** (optimized — so the ~900-case gate is fast). Pass `--profile dev` for a quick
@@ -87,6 +88,18 @@ cargo xtask gate --check    # fail ONLY if a case that used to pass now doesn't 
 ```
 Refresh the baseline (`--save`) after the compiler gains real ground, so "newly passing" doesn't
 grow unbounded. `check` uses `--check` automatically when a baseline exists.
+
+**Track runtime allocation performance** against the committed baseline (`spec/bench/.alloc-baseline`):
+```
+cargo xtask bench           # measure hot-op heap allocs; fail if any op REGRESSED past baseline+2%
+cargo xtask bench --save    # record the current counts as the new baseline (after an improvement)
+```
+Allocation COUNT — not wall-clock — is the tracked metric: it is identical native↔wasm and
+deterministic, so it's a stable regression signal (wall-clock on the native build would measure the
+system allocator, not the shipped talc/wasm path). The measurements come from the
+`hot_op_allocation_ceilings` test in `cdz-runtime` (one source of truth, shared with its in-crate
+allocation-ceiling asserts). After landing a runtime allocation win, run `--save` to record the new
+floor; a later change that pushes an op back up fails the bench.
 
 **Inspect a binary AST:**
 ```

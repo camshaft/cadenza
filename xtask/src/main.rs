@@ -140,6 +140,15 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// Run the runtime allocation benchmark (gross heap allocs per hot op) and diff against the
+    /// committed baseline `spec/bench/.alloc-baseline`. Allocation count — not wall-clock — is the
+    /// tracked metric: it is identical native↔wasm and deterministic, so it catches an allocation
+    /// regression the way `gate --check` catches a behavior one. Exits non-zero on a regression.
+    Bench {
+        /// Record the current counts as the committed baseline, then exit.
+        #[arg(long)]
+        save: bool,
+    },
 }
 
 fn main() {
@@ -174,9 +183,11 @@ fn main() {
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
+        Cmd::Bench { save } => bench::run(&paths, save),
     }
 }
 
+mod bench;
 mod codegen;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
