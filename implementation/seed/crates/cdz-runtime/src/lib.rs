@@ -2169,6 +2169,31 @@ fn champ_hash(root: Handle) -> u32 {
     if is_immediate(root) || with_node(root, 0usize, |n| n.handles.len()) == 0 {
         return champ_node_raw_hash(root);
     }
+    // Shallow-compound fast path — a 1-level compound KEY (a small tuple/record whose children are all
+    // arity-0 leaves/immediates; the common compound-key shape). Its hash is the node's own raw fold
+    // followed by each child's `champ_node_raw_hash` (each child is arity-0, so its own hash needs no
+    // recursion). The general walk folds children in the order they sit on `results`, which — because
+    // children are pushed in index order then popped LIFO — is REVERSE index order; reproduce that here.
+    // Allocates NOTHING (vs the two worklist Vecs below). Falls through to the iterative walk only for a
+    // genuinely NESTED compound (a child that is itself a compound).
+    if let Some(hash) = with_node(root, None, |n| {
+        if n.handles.iter().all(|&c| is_immediate(c) || with_node(c, 0usize, |cn| cn.handles.len()) == 0) {
+            let mut acc = FNV_OFFSET;
+            for &b in &n.raw {
+                acc = fnv_step(acc, b);
+            }
+            for &c in n.handles.iter().rev() {
+                for b in champ_node_raw_hash(c).to_le_bytes() {
+                    acc = fnv_step(acc, b);
+                }
+            }
+            Some(acc)
+        } else {
+            None // a nested child — use the general iterative walk
+        }
+    }) {
+        return hash;
+    }
     // Two-phase task: Visit expands a node's children; Combine folds this node's raw + the child
     // hashes now sitting on `results`. Children are pushed Visit-first so their Combine completes
     // before their parent's — a standard single-stack iterative post-order.
@@ -4032,9 +4057,10 @@ mod tests {
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
     /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance +
-    /// in-place remove-drain + inline-Slots cursor + in-place SPLIT work (insert 1084, remove 954,
-    /// iterate 3, push 197, get 0, lookup 0; set union 595 / ∩ 482 / ∖ 491); they are UPPER BOUNDS so
-    /// ordinary noise never trips them but a regression toward the old 6779/8397/5248/1000 does.
+    /// in-place remove-drain + inline-Slots cursor + in-place SPLIT + shallow-compound-hash work
+    /// (insert 1084, remove 954, iterate 3, push 197, get 0, lookup 0, tuplekey-lookup 3000=probe-only;
+    /// set union 595 / ∩ 482 / ∖ 491); they are UPPER BOUNDS so ordinary noise never trips them but a
+    /// regression toward the old 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -4169,6 +4195,34 @@ mod tests {
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
+
+        // (H) map lookup by a SHALLOW-COMPOUND key (a 2-tuple) — a pure read whose only allocation
+        // would be the probe tuple + champ_hash's worklist. Guards the shallow-compound champ_hash fast
+        // path: hashing a 1-level compound key must NOT allocate the two worklist Vecs (only the probe
+        // tuple node itself remains). Build a map of 2-tuple keys, then look each up with a fresh tuple.
+        let ctuple = |a: i64, b: i64| -> Handle {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, op_box_int(a));
+            op_arr_set(t, 1, op_box_int(b));
+            t
+        };
+        let mut cm = op_map_empty();
+        for k in 0..N {
+            cm = op_map_insert(cm, ctuple(k, k + 1), op_box_int(k));
+        }
+        let clookup = measure(&mut || {
+            for k in 0..N {
+                let probe = ctuple(k, k + 1);
+                let _ = op_map_lookup(cm, probe);
+                op_drop(probe);
+            }
+        });
+        println!("ALLOC map_lookup_tuplekey x{N}: {clookup}");
+        // Each iteration allocates ONLY the probe tuple (arr node = handles Vec + node Box + raw Vec,
+        // ~2-3); the shallow-compound hash fast path adds NO worklist. A regression to the general walk
+        // would add ~2 more per lookup. Ceiling leaves headroom for the intrinsic probe-tuple cost.
+        assert!(clookup <= 4000, "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 4000 (probe tuple only; champ_hash fast path adds no worklist)");
+        op_drop(cm);
     }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type
@@ -6942,6 +6996,47 @@ mod tests {
         op_drop(nested); // frees arr + sum + their children transitively
         op_drop(kv);
         assert_eq!(live_nodes(), before, "reference-hash test reclaimed all nodes");
+    }
+
+    #[test]
+    fn map_keyed_by_shallow_compound_roundtrips_and_dedups() {
+        reset();
+        let before = live_nodes();
+        // Exercises the shallow-compound champ_hash fast path via its real use: a map keyed by small
+        // 2-tuples `(a, b)`. Insert distinct tuple keys, look them up, then re-insert an EQUAL-BUT-
+        // DISTINCT-POINTER tuple key and confirm it OVERWRITES (deduped by structural hash+eq, not by
+        // pointer) — which only works if the fast path hashes structurally-equal tuples identically.
+        let tuple = |a: i64, b: i64| -> Handle {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, op_box_int(a));
+            op_arr_set(t, 1, op_box_int(b));
+            t
+        };
+        let mut m = op_map_empty();
+        for &(a, b, v) in &[(1i64, 2i64, 10i64), (3, 4, 20), (1, 9, 30), (5, 5, 40)] {
+            m = op_map_insert(m, tuple(a, b), op_box_int(v));
+        }
+        assert_eq!(op_map_size(m), 4, "four distinct tuple keys");
+        // Look up by a FRESH tuple with the same contents — must hit (structural key match).
+        for &(a, b, v) in &[(1i64, 2i64, 10i64), (3, 4, 20), (1, 9, 30), (5, 5, 40)] {
+            let probe = tuple(a, b);
+            let got = op_map_lookup(m, probe);
+            assert_ne!(got, Handle::NULL, "tuple key ({a},{b}) found via a fresh, equal probe");
+            assert_eq!(op_get_int(got), v, "tuple key ({a},{b}) maps to {v}");
+            op_drop(probe);
+        }
+        // Overwrite (1,2) via a fresh equal key — size stays 4, value updates (dedup by hash+eq).
+        m = op_map_insert(m, tuple(1, 2), op_box_int(999));
+        assert_eq!(op_map_size(m), 4, "equal tuple key overwrote, did not add");
+        let probe = tuple(1, 2);
+        assert_eq!(op_get_int(op_map_lookup(m, probe)), 999, "value overwritten");
+        op_drop(probe);
+        // A miss on an absent tuple.
+        let miss = tuple(7, 7);
+        assert_eq!(op_map_lookup(m, miss), Handle::NULL, "absent tuple key misses");
+        op_drop(miss);
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
     }
 
     #[test]

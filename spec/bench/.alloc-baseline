@@ -4,6 +4,7 @@
 1084	map_insert x1000
 3	map_iterate x1000
 0	map_lookup x1000
+3000	map_lookup_tuplekey x1000
 954	map_remove x1000
 491	set_difference x1000
 482	set_intersection x1000
