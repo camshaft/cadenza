@@ -6,8 +6,8 @@
 `Node`. It does not pick a single implementation blindly; it lays out four families, folds in an
 adversarial critique of each (defects kept, not laundered), and lands on a phased recommendation.
 
-This is a survey with a recommendation, in the spirit of `DESIGN-champ-map.md` and
-`DESIGN-rope-bytes.md`: it captures the *reasoning* behind each fork, not just the winning shape.
+This is a survey with a recommendation: it captures the *reasoning* behind each fork, not just the
+winning shape.
 
 ---
 

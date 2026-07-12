@@ -24,17 +24,23 @@
 //! byte-identical (`handles` length 2). The runtime cannot tell those apart — and never needs to,
 //! because Cadenza has no type erasure: the COMPILER holds the exact static type at every use site
 //! and only ever emits `get-int` where the type says Int. `rc + handles.len() + raw.len()` is the
-//! irreducible per-node state; storing type identity would be a tag, and we store none.
+//! irreducible per-node state; storing type identity would be a tag, and we store none:
+//!
+//= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
+//# The value-heap runtime MUST NOT hold a value's TYPE as a per-value tag, so that — because the language has no type erasure and the compiler therefore knows a value's static type at every use site — the runtime stores only structure and data (a product's elements, a sum's variant discriminant, a leaf's payload) and never a type identity a reader would dispatch on.
 //!
 //! Because the heap is acyclic (values immutable, recursion via code not heap back-edges) a
-//! reference-count discipline is a COMPLETE reclamation strategy — no tracing/cycle collector.
+//! reference-count discipline is a COMPLETE reclamation strategy — no tracing/cycle collector:
+//!
+//= spec/capabilities/memory-and-resource-model.md#the-value-heap-is-acyclic
+//# The heap of values a program forms at runtime MUST be acyclic, because a value's contents are fixed when it is created and no operation mutates an existing value to refer to a value created later.
 //!
 //! # Three decouplings (all load-bearing — keep them)
 //! - **Tagless.** No per-object type tag (see above). The typed WIT functions (`box-int`,
 //!   `arr-alloc`, …) are typed ENTRY POINTS, not stored metadata: `box-int` and `bytes-alloc`
 //!   produce physically same-shaped nodes differing only in content.
-//! - **Core is `Handle`-typed, not `u32`-typed.** Every operation, and Phases D (RC) and E
-//!   (persistent collections), are written and tested against the internal `Handle` (a node
+//! - **Core is `Handle`-typed, not `u32`-typed.** Every operation — including RC and the persistent
+//!   collections — is written and tested against the internal `Handle` (a node
 //!   pointer). The `u32` public handle is a lossless narrowing that exists ONLY at the WIT `Guest`
 //!   boundary (`Handle::to_u32`/`from_u32`, wasm32 only — pointers are 32-bit there). RC and
 //!   CHAMP/RRB are thus developed and unit-tested natively without touching wasm or `u32`.
@@ -117,8 +123,10 @@ impl Handle {
 // the wasm32 build (alignment ≥4 holds on a native pointer and a wasm32 `u32` alike), which is why
 // the native suite exercises the shipped representation and `to_u32`/`from_u32` need no change.
 //
-// PHASE 1a: the helpers and every deref-site guard exist, but NO producer yet returns an immediate,
-// so every `is_immediate` arm below is INERT on the real pointers/NULL the suite creates.
+// LIVE: `op_box_int` returns an immediate for an in-window fixnum, `op_box_bool` always inlines, and
+// `op_arr_alloc(0)` returns the inline unit — so an `is_immediate` handle really flows through the ops,
+// and every deref-site guard is exercised. The guards stay INERT only for cross-kind ops where an
+// immediate can never legitimately appear (an immediate is never a bytes/map/sum value).
 //
 // Encoding (tag = low 2 bits of `Handle.0`):
 //   00  pointer or NULL (unchanged)
@@ -260,7 +268,7 @@ fn with_raw_arity<T>(h: Handle, f: impl FnOnce(&[u8], usize) -> T) -> T {
 
 // Count of nodes currently allocated and not yet freed. Compiled under the native test suite AND the
 // `debug-counters` wasm feature: the native suite asserts exact reclamation and BOUNDED PEAK HEAP
-// across iterations (the Phase-D acceptance probe), and a wasm leak-check harness reads it via the
+// across iterations (the leak / peak-heap acceptance probe), and a wasm leak-check harness reads it via the
 // `live-objects` export after a run to prove the compiler's Perceus dup/drop discipline balances
 // (assert 0). In the DEFAULT (shipped) build neither the counter nor its updates exist — the runtime
 // is zero-cost and byte-stable, and `live-objects` returns 0.
@@ -285,8 +293,8 @@ fn live_object_count() -> u32 {
 }
 
 /// Allocate a node (refcount 1) from `handles` + `raw` and return its handle. Uses the global
-/// allocator (talc on wasm) — the core never names it, so Phase D.2 can swap in a size-classed
-/// free-list here alone.
+/// allocator (talc on wasm) — the core never names it, so a size-classed free-list could be swapped
+/// in here alone.
 fn alloc(handles: Vec<Handle>, raw: Vec<u8>) -> Handle {
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() + 1));
@@ -466,8 +474,8 @@ fn op_bytes_set(buf: Handle, index: u32, value: u32) -> Handle {
 }
 /// `bytes-get` — the logical byte at `index`. A leaf reads `raw` directly (O(1)); a rope node
 /// (slice/concat) is FLATTENED to a leaf in place on this first full-read, then read (see
-/// `bytes_flatten` and DESIGN-rope-bytes.md §4.1 — this is what keeps the compiler's `0..len` emit
-/// loop O(n) instead of O(n²) on a deep concat chain). OOB into a valid buffer traps; null is benign.
+/// `bytes_flatten` — this is what keeps the compiler's `0..len` emit loop O(n) instead of O(n²) on a
+/// deep concat chain). OOB into a valid buffer traps; null is benign.
 fn op_bytes_get(buf: Handle, index: u32) -> u32 {
     if is_immediate(buf) {
         return 0; // cross-kind totality: a bytes buffer is never itself an immediate
@@ -512,11 +520,12 @@ fn op_bytes_len(buf: Handle) -> u32 {
     })
 }
 
-// ─── Bytes rope: O(1) concat/slice over shared leaves, flatten-on-read (Phase E) ─────────
+// ─── Bytes rope: O(1) concat/slice over shared leaves, flatten-on-read ────────────────────
 // A Bytes value is a rope of shared slices/concats bottoming out in leaves, so `bytes-concat` and
-// `bytes-slice` are O(1) and copy no bytes until observed — killing the O(n²) copy cascade the
-// self-hosting compiler would otherwise hit assembling a module by concatenating sections
-// (DESIGN-rope-bytes.md / RUNTIME-REQUESTS Request 1). Same tagless trick as the persistent vector:
+// `bytes-slice` are O(1) and copy no bytes until observed — killing the O(n²) copy cascade a compiler
+// would otherwise hit assembling a module by concatenating sections (deferred materialization behind
+// the observable bytes, value-heap-runtime.md §Deferred Materialization Is Permitted Behind The
+// Observable Bytes). Same tagless trick as the persistent vector:
 // no new `Node` field, children in `handles`, so the existing iterative `op_drop` reclaims a rope
 // and a shared leaf survives until its last owner drops — zero new RC machinery. Ownership follows
 // the `arr-set` convention: concat/slice/compact CONSUME their Bytes operands (stored in `handles`
@@ -737,11 +746,12 @@ fn op_map_len(m: Handle) -> u32 {
     with_node(m, 0, |n| (n.handles.len() / 2) as u32)
 }
 
-// ─── Reference-count calling convention (Perceus) — Phase D, LIVE ───────────────────────
+// ─── Reference-count calling convention (Perceus) ───────────────────────────────────────
 // Written as `Handle`-typed core ops so the whole RC discipline is developed and tested natively,
-// against real node pointers, before the `u32` wasm boundary ever sees it. The compiler does not
-// yet emit `dup`/`drop` calls (himport::{DUP,DROP} have no call sites), so shipped-program behavior
-// is unchanged; when the compiler wires the precise Perceus call sites, reclamation is already here.
+// against real node pointers, before the `u32` wasm boundary ever sees it. The compiler emits `drop`
+// where a heap value is released (a dead heap binding, and the resource destructor), so a compound's
+// storage is reclaimed; it does NOT yet emit `dup` (the current escape/return paths transfer ownership
+// rather than share), so `dup`'s call sites arrive when a construct first shares a handle.
 
 /// `dup` — a new reference to `h` is being retained: increment its refcount. Null is a no-op.
 fn op_dup(h: Handle) {
@@ -766,7 +776,12 @@ fn node_rc(h: Handle) -> u32 {
 }
 
 /// `drop` — a reference to `h` is being released: decrement its refcount, and at zero free the node
-/// and release the references it owned (which may cascade).
+/// and release the references it owned (which may cascade). The compiler emits the `drop` call at a
+/// source-determined point (the value's last use), so reclamation is deterministic, not a background
+/// collector's choice:
+///
+//= spec/capabilities/memory-and-resource-model.md#cleanup-is-source-determined
+//# The point at which a value's storage is released MUST be a deterministic function of the source.
 ///
 /// Fast paths, cheapest first: a **shared** node (`rc > 1`) is a bare decrement — no scan, no
 /// reclamation. A **leaf** (empty `handles`) costs no worklist allocation: `mem::take` of an empty
@@ -818,12 +833,17 @@ fn op_drop(root: Handle) {
     }
 }
 
-// ─── Reuse / FBIP (Perceus reset + reuse-aware constructors) — Phase D.2, LIVE ──────────
+// ─── Reuse / FBIP (Perceus reset + reuse-aware constructors) ──────────────────────────────
 // The in-place-update win: when a unique value is consumed and a value is rebuilt in the same
 // breath (List.map, a functional record/cons rebuild), reuse the dying node's shell for the new
 // one instead of free→malloc. Frame-limited by construction (research P3/P4): reuse fires ONLY on a
 // UNIQUE node (`rc == 1`), so a reused cell is memory that was already live and about to die — peak
-// heap cannot grow. The three ops form a two-step protocol the compiler emits:
+// heap cannot grow, and because no other reference observes the difference the reuse is invisible:
+//
+//= spec/capabilities/memory-and-resource-model.md#reuse-is-not-observable
+//# When the compiler reuses a value's storage in place because no other reference to that value can observe the difference, that reuse MUST NOT change the program's observable behavior, so that reusing storage is a transparent optimization rather than a mutation of a value.
+//
+// The three ops form a two-step protocol the compiler emits:
 //
 //   token = reset(old);                        // old unique → emptied shell as a token; else null
 //   new   = arr-alloc-reuse(len, token);       // token non-null → refit that shell; else fresh
@@ -924,10 +944,10 @@ fn op_sum_new_reuse(disc: u32, payload: Handle, token: Handle) -> Handle {
     }
 }
 
-// ─── Persistent vector — a 32-way radix trie (Phase E) ──────────────────────────────────
+// ─── Persistent vector — a 32-way radix trie ──────────────────────────────────────────────
 // A persistent (immutable, structurally-shared) growable sequence, laid out as a Bagwell/Clojure
 // 32-way radix trie over the SAME tagless `Node`. No new node field and no change to the free
-// cascade — exactly the rope's trick (DESIGN-rope-bytes.md §3): a vector's nodes are ordinary
+// cascade — exactly the bytes rope's trick: a vector's nodes are ordinary
 // `Node`s whose children live in `handles`, so structural sharing is just `rc > 1` on a shared
 // subtree and the existing iterative `op_drop` reclaims a whole trie transitively. Tagless dispatch
 // keeps this from colliding with tuples/lists: the compiler only ever calls `vec-*` on a value whose
@@ -943,7 +963,7 @@ fn op_sum_new_reuse(disc: u32, payload: Handle, token: Handle) -> Handle {
 //   Elements are dense (indices `0..count`), so the trie is "left-full": every branch is full except
 //   the rightmost path, and index `i`'s path is its base-32 digits (`(i >> level) & MASK`).
 //
-// # Ownership (matches DESIGN-rc-calling-convention.md §1)
+// # Ownership (value-heap-runtime.md §Constructors Consume And Accessors Borrow)
 // `vec-empty` produces a new owned vector. `vec-push`/`vec-update` are CONSTRUCTORS: they **consume**
 // the input vector `v` and the element, and produce a new owned vector — the old version is untouched
 // (persistence), so a caller keeping both versions `dup`s `v` before the call (§3.1). Path-copying
@@ -956,9 +976,10 @@ fn op_sum_new_reuse(disc: u32, payload: Handle, token: Handle) -> Handle {
 // O(log₃₂ N) index / update / push, sharing all-but-one root→leaf path per update and all-but-the
 // rightmost spine per push. Trie height is ≤ 7 for any `u32` count (32⁷ > 2³²), so the trie descent
 // recurses at most 7 deep — bounded, unlike the free cascade (which stays iterative in `op_drop` for
-// deep UNIQUE structures). Deferred optimizations, all with an IDENTICAL observable contract (so they
-// need no WIT change): a Clojure-style *tail* for amortized-O(1) push, FBIP reuse of a unique `v`'s
-// spine (DESIGN-rc-calling-convention.md §8), and RRB relaxed nodes for O(log N) concat/split.
+// deep UNIQUE structures). FBIP reuse of a unique `v`'s spine (`vec_push_fbip`) and RRB relaxed nodes
+// for O(log N) concat/split (`op_vec_concat`/`op_vec_split`, `vec_is_relaxed`) are implemented. One
+// optimization remains DEFERRED, with an identical observable contract (so it needs no WIT change): a
+// Clojure-style *tail* for amortized-O(1) push.
 
 /// Radix branching bits: 32-way (2⁵) fan-out, the Bagwell/Clojure default.
 const VEC_BITS: u32 = 5;
@@ -2000,7 +2021,7 @@ bindings::export!(Component with_types_in bindings);
 
 // ─── CHAMP (Compressed Hash-Array Mapped Prefix trie) shared node core ───────────────────
 // The tag-free foundation shared by the persistent map AND set: header/bitmap/slot helpers plus
-// structural hash and eq. Later units build map/set insert/lookup/remove/iter on top of these.
+// structural hash and eq. The map/set insert/lookup/remove/iter ops are built on top of these.
 //
 // Node layout (mirrors the vector radix trie's tag-free discipline, §DESIGN):
 //   raw     = [datamap:u32 LE][nodemap:u32 LE][size:u32 LE]   (12 bytes)
@@ -2314,9 +2335,10 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
 // by data size), the insert split recursion is bounded to ≤7 frames — categorically unlike the
 // free cascade, so recursion here is stack-safe. Lookup is an explicit iterative descent.
 //
-// v1 is ALWAYS-PATH-COPY (fully immutable/persistent): every node on the modified path is rebuilt
-// and its retained children are `op_dup`'d, so structural sharing across versions is exact. The
-// rc==1 in-place FBIP fast path is DEFERRED (see handoff) — correctness first.
+// A SHARED spine is path-copied (fully immutable/persistent): every node on the modified path is
+// rebuilt and its retained children are `op_dup`'d, so structural sharing across versions is exact. A
+// UNIQUELY-OWNED spine (`rc == 1`) instead refits in place via `champ_insert_fbip`'s `mine` gate — the
+// FBIP fast path — since no other reference can observe the mutation.
 
 /// Number of 5-bit trie levels over a 32-bit hash (levels 0..=6; level 6 consumes the top 2 bits).
 /// At or beyond this depth the hash is exhausted and colliding keys share a collision node.
@@ -2941,7 +2963,8 @@ fn op_map_insert(m: Handle, key: Handle, val: Handle) -> Handle {
 //     its child result on the bounded post-order return path (≤ `CHAMP_LEVELS` frames, stack-safe).
 //   • Removing the map's final entry yields EXACTLY the canonical empty (`op_map_empty()` shape).
 // A subnode is only ever collapsed when it holds a single ENTRY — a subnode of ≥2 entries can't be
-// inlined and stays put, matching what insert would have produced. Always path-copy (FBIP deferred).
+// inlined and stays put, matching what insert would have produced. Like insert, a uniquely-owned
+// spine refits in place (`champ_remove_fbip`'s `mine` gate); a shared spine path-copies.
 //
 // NOTE: the ROOT is never collapsed to an inline entry — a one-entry map is a root node with one
 // inline entry (datamap has one bit), which is exactly what insert produces. Collapse only lifts a
@@ -3283,8 +3306,9 @@ fn op_map_remove(m: Handle, key: Handle) -> Handle {
 //
 // STRIDE-PARAMETERIZED so the set (stride 1) reuses these verbatim: `champ_descend_leftmost`,
 // `champ_advance`, and `champ_cursor_current` take `stride` (2 for map k/v, 1 for set elems).
-// FBIP is DEFERRED: `op_map_iter_next` always builds a FRESH cursor (path-copy), which makes forked
-// cursors independent by construction (it never writes through the consumed cursor's frames/raw).
+// A uniquely-owned cursor (`node_rc == 1`) advances IN PLACE via `champ_cursor_next_fbip`; a shared
+// cursor path-copies a fresh independent one (never writing through the consumed cursor's frames/raw),
+// so forked cursors stay independent by construction.
 
 const CURSOR_LIVE: u32 = 0;
 const CURSOR_EXHAUSTED: u32 = 1;
@@ -3784,8 +3808,8 @@ fn op_set_iter_elem(cur: Handle) -> Handle {
 // operand's elements with a cursor (BORROWS) and build the result with `op_set_insert` (a CONSTRUCTOR
 // that CONSUMES its accumulator + element — and is FBIP-fast on a uniquely-owned accumulator, so a
 // fresh empty or a consumed operand refits in place with no per-insert node churn). A recursive
-// CHAMP node-merge (structural union of subtrees, sharing whole shared subnodes) is the eventual
-// O(min) form (DESIGN-champ-map.md) — DEFERRED; this is O(n·log) but correct and canonical.
+// CHAMP node-merge (structural union of subtrees, sharing whole shared subnodes) would be the
+// O(min) form — DEFERRED as an optimization; this is O(n·log) but correct and canonical.
 //
 // Canonicality: `op_set_insert` places every element in the canonical CHAMP position (sorted collision
 // nodes, compacted layout), so a set built by folding inserts is byte-identical (`champ_eq`/
@@ -4216,7 +4240,7 @@ mod tests {
         alloc(Vec::new(), (v as u64).to_le_bytes().to_vec())
     }
 
-    // ── Inline tagged-immediate helpers (Phase 1a: helpers + guards; no producer yet) ─────
+    // ── Inline tagged-immediate helpers (producers: op_box_int fixnum / op_box_bool / op_arr_alloc(0)) ─────
 
     #[test]
     fn imm_encoding_roundtrip() {
@@ -4916,7 +4940,7 @@ mod tests {
         );
     }
 
-    // ── Phase-D readiness: every node is born with refcount 1 ─────────────────────────────────
+    // ── Birth refcount: every node is born with refcount 1 ────────────────────────────────────
 
     #[test]
     fn node_born_with_refcount_one() {
@@ -4994,7 +5018,7 @@ mod tests {
         let _ = op_map_key(m, 5);
     }
 
-    // ── Phase D: Perceus reference counting ───────────────────────────────────────────────────
+    // ── Perceus reference counting ────────────────────────────────────────────────────────────
 
     /// Current count of live (allocated, not-yet-freed) nodes on this test thread. Tests measure
     /// DELTAS against a baseline captured at their start.
@@ -5105,7 +5129,7 @@ mod tests {
     fn peak_heap_is_bounded_across_iterations() {
         reset();
         let baseline = live_nodes();
-        // The Phase-D acceptance probe (handoff §6): a loop that builds many compounds and drops
+        // The peak-heap acceptance probe: a loop that builds many compounds and drops
         // each before the next runs with BOUNDED peak heap — live nodes return to baseline every
         // iteration, so the high-water mark does not grow with the iteration count.
         let mut peak = baseline;
@@ -5127,8 +5151,8 @@ mod tests {
     }
 
     // ── RC calling convention: the emitted-sequence mirror ────────────────────────────────────
-    // Each test SIMULATES the exact dup/drop sequence the compiler must emit for a pattern (per
-    // DESIGN-rc-calling-convention.md) and asserts, via LIVE_NODES, both properties the convention
+    // Each test SIMULATES the exact dup/drop sequence the compiler must emit for a pattern and
+    // asserts, via LIVE_NODES, both properties the convention
     // guarantees: NO LEAK (heap returns to baseline) and NO EARLY FREE (kept values stay intact
     // until their last owner). These are the reference behaviors the compiler's emission reproduces;
     // a failing test would mean the primitives cannot support the prescribed convention.
@@ -5261,7 +5285,7 @@ mod tests {
         assert_eq!(live_nodes(), before, "dead binding fully reclaimed");
     }
 
-    // ── Phase D.2: reuse / FBIP ────────────────────────────────────────────────────────────────
+    // ── Reuse / FBIP ───────────────────────────────────────────────────────────────────────────
     // `reset` + the `*-reuse` constructors give in-place update on unique data. The tests assert
     // the two load-bearing properties: (1) reuse is IN PLACE — the rebuilt node is the SAME
     // allocation (address identity + zero net LIVE_NODES growth), the whole point over free→malloc;
@@ -5454,7 +5478,7 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
-    // ── Phase E: persistent vector (32-way radix trie) ─────────────────────────────────────────
+    // ── Persistent vector (32-way radix trie) ──────────────────────────────────────────────────
     // The two load-bearing properties, mirrored from the rope/RC suites: (1) the OBSERVABLE contract
     // — push/get/update/len denote a dense immutable sequence, and old versions are unchanged by an
     // operation on a new one (PERSISTENCE); (2) RESOURCE behavior — path-copying shares subtrees
@@ -6135,7 +6159,7 @@ mod tests {
     #[test]
     fn vec_peak_heap_bounded_across_build_drop_iterations() {
         reset();
-        // The Phase-D/E acceptance probe (mirrors peak_heap_is_bounded_across_iterations): a loop that
+        // The peak-heap acceptance probe (mirrors peak_heap_is_bounded_across_iterations): a loop that
         // builds a whole vector and drops it each iteration returns to baseline every time, so peak
         // heap is one vector's working set — it does NOT grow with the iteration count.
         let baseline = live_nodes();
@@ -6409,8 +6433,8 @@ mod tests {
         assert_eq!(live_nodes(), baseline, "chain fully reclaims");
     }
 
-    // ── Phase E: Bytes rope (O(1) concat/slice over shared leaves) ─────────────────────────────
-    // Two load-bearing property groups, mirroring the rope design doc (DESIGN-rope-bytes.md §6/§7):
+    // ── Bytes rope (O(1) concat/slice over shared leaves) ─────────────────────────────────────
+    // Two load-bearing property groups:
     // (1) the OBSERVABLE contract — concat/slice/compact denote the same Bytes a copy would, by
     // `bytes-len`/`bytes-get`/logical-equality, and are associative-by-content; (2) the RESOURCE win
     // — concat/slice allocate ONE node (no byte copy), a deep concat chain reads out in O(total) not
@@ -6551,7 +6575,7 @@ mod tests {
     #[test]
     fn rope_get_flattens_in_place_and_is_unobservable() {
         reset();
-        // The O(n²) guard (DESIGN-rope-bytes.md §4.1): a right-leaning concat chain of depth ~N must
+        // The O(n²) guard: a right-leaning concat chain of depth ~N must
         // read out correctly, and after the first full read the node is a LEAF (flattened), so a
         // second pass reads the same bytes. Flatten is content-preserving ⇒ unobservable.
         let mut rope = bytes_leaf(&[0]);

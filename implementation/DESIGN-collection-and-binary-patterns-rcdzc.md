@@ -3,7 +3,7 @@
 **Author:** design pass (compiler). **Audience:** the implementer picking up rcdzc collection/binary
 matching, + future me.
 **Status:** proposal / handoff — **nothing landed**. Written ahead of implementation in the house style of
-`DESIGN-binding-patterns-rcdzc.md`, `DESIGN-effects-rcdzc.md`, and `DESIGN-rope-bytes.md`: it states the
+`DESIGN-binding-patterns-rcdzc.md` and `DESIGN-effects-rcdzc.md`: it states the
 target, the accept/decline boundary, the shared mechanism, the runtime-primitive audit, the pass-by-pass
 edits with line anchors, and the subtleties.
 
@@ -394,8 +394,9 @@ decision tree's default edge is the mandatory catch-all. Set (if spec'd): `set-c
 against the segment (trap "binary value does not fit segment" if out of range / negative-into-unsigned /
 bit-field too wide — `:436`/`:444`/`:453`), then emit its bytes. The simplest lowering reuses the existing
 `bytes-alloc`+`bytes-set` unroll (like `emit_bytes_of`, `select.rs:971`) for the fixed prefix and
-`bytes-concat` (29) to splice `(bytes b)` / dependent bodies — O(1) concat, and the rope design
-(`DESIGN-rope-bytes.md`) keeps it cheap. Const-folds to the literal `Bytes` when all segment values are
+`bytes-concat` (29) to splice `(bytes b)` / dependent bodies — O(1) concat, and the rope-backed Bytes
+representation (cdz-runtime, `value-heap-runtime.md` §Deferred Materialization Is Permitted Behind The
+Observable Bytes) keeps it cheap. Const-folds to the literal `Bytes` when all segment values are
 constant (the construction corpus cases assert exact `Bytes.of` equalities, `:40`–`:113`). **One segment
 table, two directions** — the `Segment` structure parsed in §5.1 drives both build and match, exactly the
 `(Some x)`-builds/`(Some n)`-matches duality the spec leans on.
@@ -491,7 +492,8 @@ special case per type — the spec's explicit intent (`16-binary-matching.sexp:2
 - **The scrutinee is opaque — probe, never peek.** Every observation is a runtime op; no pattern reads a
   list's internal cells or a Bytes' storage (core-semantics.md:141; the tagless-heap rule). A slice/rope
   Bytes and a flat Bytes must match identically — they do, because `bytes-get`/`bytes-len` are the only
-  observations (the rope design guarantees this, `DESIGN-rope-bytes.md` §6).
+  observations (the rope-backed Bytes representation guarantees this — see the "Bytes rope" section of
+  cdz-runtime's `lib.rs`; memory-and-resource-model.md §Sharing Is Not Observable).
 - **`bin` whole-scrutinee accounting** — an arm that leaves bytes unconsumed and has no trailing
   `(bytes rest)` does **not** match (a length-close probe, not a trap). Forgetting the close probe silently
   accepts short/long inputs (`16-binary-matching.sexp:195`/`:198` are the tripwires).
@@ -529,6 +531,6 @@ Related: `spec/semantics/16-binary-matching.sexp` (39 cases, the binary contract
 `spec/capabilities/core-semantics.md` §*A List Is Deconstructed…* (:131) / §*Matching Is Exhaustive…* (:111);
 `spec/semantics/05-compound-types.sexp` (:996 list, :3010 map); `spec/semantics/02-binding-and-control.sexp`
 (:706 string, :1132 first-match order); `DESIGN-binding-patterns-rcdzc.md` (the sibling pattern doc + CDZ0102);
-`DESIGN-rope-bytes.md` (the O(1) slice/concat matching relies on); `options/diagnostics-schema/coded-span-record.md`
-(:69 CDZ0220).
+cdz-runtime's rope-backed Bytes (the "Bytes rope" section of `lib.rs` — the O(1) slice/concat matching
+relies on); `options/diagnostics-schema/coded-span-record.md` (:69 CDZ0220).
 ```

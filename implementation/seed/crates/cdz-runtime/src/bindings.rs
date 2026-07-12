@@ -624,9 +624,10 @@ pub mod exports {
                     /// 17
                     fn str_get(handle: u32) -> _rt::String;
                     /// 18
-                    /// ── Reference-count calling convention (Perceus, indices 19–20). No-ops in Phase B/C; Phase D
-                    ///    makes `drop` decrement-and-maybe-reclaim and `dup` increment. Emitting the calls now fixes
-                    ///    the call sites so Phase D needs no re-emit. ──
+                    /// ── Reference-count calling convention (Perceus, indices 19–20). LIVE: `drop` decrements the
+                    ///    refcount and, at zero, frees the node and cascades into the handles it owned; `dup` increments.
+                    ///    The compiler emits `drop` where a heap value is released (a dead binding, the resource dtor);
+                    ///    it emits `dup` once a construct first shares a handle. ──
                     fn dup(handle: u32) -> ();
                     /// 19
                     fn drop(handle: u32) -> ();
@@ -685,7 +686,7 @@ pub mod exports {
                     ///    a pure runtime concern (see lib.rs § "Persistent vector"): these five signatures are the frozen
                     ///    contract; a later switch to a tail-optimized trie or an RRB tree keeps them byte-identical.
                     ///
-                    ///    Ownership (DESIGN-rc-calling-convention.md §1): `vec-empty` produces a new owned list.
+                    ///    Ownership (value-heap-runtime.md §Constructors Consume And Accessors Borrow): `vec-empty` produces a new owned list.
                     ///    `vec-push`/`vec-update` are CONSTRUCTORS — they CONSUME the input list and the element and
                     ///    produce a NEW owned list; the old version is untouched (persistence), so a caller keeping
                     ///    both versions `dup`s the input first. `vec-get` BORROWS (rc unchanged; the list still owns
@@ -704,8 +705,8 @@ pub mod exports {
                     /// ── Bytes rope (indices 34–36) — O(1) concat/slice over SHARED byte leaves. A Bytes value becomes
                     ///    a rope: a tree of concat/slice nodes bottoming out in the existing byte leaves (13–16), so
                     ///    `bytes-concat`/`bytes-slice` allocate one node and copy NO bytes — killing the O(n²) copy
-                    ///    cascade the self-hosting compiler hits assembling a wasm module by concatenating encoded
-                    ///    sections (DESIGN-rope-bytes.md / RUNTIME-REQUESTS Request 1). The representation is a pure
+                    ///    cascade a compiler hits assembling a wasm module by concatenating encoded sections
+                    ///    (value-heap-runtime.md §Deferred Materialization Is Permitted Behind The Observable Bytes). The representation is a pure
                     ///    runtime concern: it reuses the existing tagless node (`handles.len()` ∈ {0,1,2} selects
                     ///    leaf/slice/concat — see lib.rs § "Bytes rope"), so 13–16 are byte-unchanged and a rope is
                     ///    INDISTINGUISHABLE from a flat buffer by `bytes-len`/`bytes-get`/equality (a rope node
@@ -713,7 +714,7 @@ pub mod exports {
                     ///    #Sharing Is Not Observable). A later balancing/tail change keeps these three signatures
                     ///    byte-identical.
                     ///
-                    ///    Ownership (DESIGN-rc-calling-convention.md §1): all three are CONSTRUCTORS — they CONSUME
+                    ///    Ownership (value-heap-runtime.md §Constructors Consume And Accessors Borrow): all three are CONSTRUCTORS — they CONSUME
                     ///    their Bytes operand(s) (stored in the new node's `handles` without dup, like `arr-set`) and
                     ///    produce a NEW owned Bytes; a caller keeping an operand `dup`s it first. `bytes-concat` is the
                     ///    bytes of `a` then `b` (empty is the identity). `bytes-slice(buf, start, len)` is `len` bytes
@@ -799,7 +800,7 @@ pub mod exports {
                     ///    the tagless node's `raw`, one entry per child), so the radix↔RRB distinction is an INTERNAL
                     ///    representation concern: a concatenated vector is INDISTINGUISHABLE from a push-built one by
                     ///    `vec-len`/`vec-get` (and remains valid for further `vec-push`/`vec-update`). Ownership
-                    ///    (DESIGN-rc-calling-convention.md §1): a CONSTRUCTOR — CONSUMES both operands and produces a NEW
+                    ///    (value-heap-runtime.md §Constructors Consume And Accessors Borrow): a CONSTRUCTOR — CONSUMES both operands and produces a NEW
                     ///    owned vector (a caller keeping either version `dup`s it first). An empty operand is the identity
                     ///    (`concat(empty, b) == b`, `concat(a, empty) == a`).
                     fn vec_concat(a: u32, b: u32) -> u32;
@@ -809,7 +810,7 @@ pub mod exports {
                     ///    Trimming the boundary spine marks the affected interior nodes RELAXED (a per-child cumulative
                     ///    size table in `raw`), so both halves are valid persistent vectors indistinguishable from
                     ///    push-built ones by `vec-len`/`vec-get` and remain valid for further push/update/concat.
-                    ///    Ownership (DESIGN-rc-calling-convention.md §1): a CONSTRUCTOR — CONSUMES `v` and produces TWO
+                    ///    Ownership (value-heap-runtime.md §Constructors Consume And Accessors Borrow): a CONSTRUCTOR — CONSUMES `v` and produces TWO
                     ///    new owned vectors (a caller keeping `v` `dup`s it first). Boundary: `index == 0` → `(empty, v)`,
                     ///    `index >= len` → `(v, empty)`. The pair crosses as a WIT `tuple<u32, u32>` (flattened to two
                     ///    return values by the component ABI).
@@ -817,9 +818,9 @@ pub mod exports {
                     /// 56 — (left, right) at index (consumes v)
                     /// ── Set algebra (CHAMP, indices 57–59) — structural union / intersection / difference over the
                     ///    persistent set. Correctness-first over insert+contains+iterate (a recursive CHAMP node-merge
-                    ///    sharing whole shared subnodes is the eventual O(min) form, DESIGN-champ-map.md — deferred); the
+                    ///    sharing whole shared subnodes would be the O(min) form — deferred as an optimization); the
                     ///    result is CANONICAL by construction (built via `set-insert`, so byte-identical `champ_eq`/
-                    ///    `champ_hash` regardless of build order). Ownership (DESIGN-rc-calling-convention.md §1): all
+                    ///    `champ_hash` regardless of build order). Ownership (value-heap-runtime.md §Constructors Consume And Accessors Borrow): all
                     ///    three are CONSTRUCTORS — they CONSUME both operands and produce a NEW owned set (a caller
                     ///    keeping an operand `dup`s it first). Identities: `union(empty,b)=b`, `union(a,empty)=a`,
                     ///    `intersection(_,empty)=empty`, `difference(a,empty)=a`, `difference(empty,_)=empty`.
