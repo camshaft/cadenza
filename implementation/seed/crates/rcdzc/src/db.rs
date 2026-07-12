@@ -59,6 +59,20 @@ pub struct Export {
     pub occ: StructId,
 }
 
+/// A `(type NAME variant…)` sum-type declaration scanned from the top level. Each variant is a
+/// `(name payload-type…)` list or a bare nullary name; a sum's variant names are a fixed SET (like a
+/// record's fields), so a duplicate is ill-formed (CDZ0201). Stage: the declaration is scanned + its
+/// variant set validated here; construction/projection/match over the sum are later sub-increments.
+#[derive(Clone, PartialEq, Debug)]
+pub struct TypeDecl {
+    /// The type's name (`T` in `(type T …)`).
+    pub name: String,
+    /// The declaration occurrence, for a diagnostic to anchor to.
+    pub occ: StructId,
+    /// Each variant's `(name, name-occurrence)` in declaration order — the discriminant is the index.
+    pub variants: Vec<(String, StructId)>,
+}
+
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
 /// (a call whose callee transitively references itself declines before any inlining — see
 /// `eval::is_recursive`), so this only guards a non-recursive fold that nests unexpectedly deep. Kept
@@ -122,6 +136,9 @@ pub struct Db {
     pub defs: Vec<Def>,
     /// The requested exports, from the scan.
     pub exports: Vec<Export>,
+    /// The top-level `(type …)` sum declarations, from the scan (their variant sets validated at
+    /// well-formedness time — a duplicate variant name is CDZ0201).
+    pub type_decls: Vec<TypeDecl>,
 
     /// For each `StructId`, the `List` occurrence that holds it as a child, or `None` for the root.
     /// The structure arena is NOT deduplicated, so every occurrence has exactly one parent — this is
@@ -253,12 +270,13 @@ impl Db {
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
         let prelude = crate::prelude::install(&mut ast);
-        let (defs, exports) = scan_top_level(&ast);
+        let (defs, exports, type_decls) = scan_top_level(&ast);
         let parent = parent_index(&ast);
         Db {
             ast,
             defs,
             exports,
+            type_decls,
             parent,
             prelude,
             user_node_count,
@@ -384,11 +402,13 @@ fn parent_index(ast: &Arenas) -> Vec<Option<StructId>> {
     parent
 }
 
-/// The one cheap top-level scan: gather the definitions and export requests from the top form only,
-/// without entering any body. Recognizes `(module NAME item…)`, a bare `(do item…)`, or a lone item.
-fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>) {
+/// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
+/// from the top form only, without entering any body. Recognizes `(module NAME item…)`, a bare
+/// `(do item…)`, or a lone item.
+fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
     let mut defs: Vec<Def> = Vec::new();
     let mut exports: Vec<Export> = Vec::new();
+    let mut types: Vec<TypeDecl> = Vec::new();
 
     for item in top_items(ast) {
         if let Some(tail) = ast.as_form(item, "def") {
@@ -416,6 +436,35 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>) {
                 def: None,
                 occ: item,
             });
+        } else if let Some(tail) = ast.as_form(item, "type") {
+            // `(type NAME variant…)`: the name, then each variant as a `(vname payload-type…)` list or
+            // a bare nullary name. Record each variant's declared name + its NAME occurrence (a bare
+            // atom, or the head of a payload list) so a duplicate can be anchored + reported.
+            let name = tail
+                .first()
+                .and_then(|&s| ast.as_name(s))
+                .unwrap_or("")
+                .to_string();
+            let mut variants = Vec::new();
+            for &v in tail.iter().skip(1) {
+                let name_occ = match ast.get(v) {
+                    // A bare nullary variant name.
+                    Struct::Atom(_) => v,
+                    // `(vname payload…)` — the variant name is the list head.
+                    Struct::List(children) => match children.first() {
+                        Some(&head) => head,
+                        None => continue,
+                    },
+                };
+                if let Some(vname) = ast.as_name(name_occ) {
+                    variants.push((vname.to_string(), name_occ));
+                }
+            }
+            types.push(TypeDecl {
+                name,
+                occ: item,
+                variants,
+            });
         }
     }
 
@@ -428,7 +477,7 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>) {
         i += 1;
     }
 
-    (defs, exports)
+    (defs, exports, types)
 }
 
 /// The top-level item occurrences: the tail of `(module NAME …)` (past the name), the tail of

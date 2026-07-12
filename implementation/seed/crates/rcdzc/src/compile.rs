@@ -186,6 +186,31 @@ fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // DUPLICATE VARIANT. A sum type `(type T (A …) (A …))` declares its variant NAMES as a fixed SET
+    // (core-semantics.md #The Structural Types Are Record, Tuple, And Sum: a sum's shape is its variant
+    // names with their payload types), so naming a variant twice is the SAME duplicate-member
+    // ill-formedness a record with a duplicate field, a module with a duplicate definition, and a
+    // duplicate export are rejected for (CDZ0201) — the fourth closed name-set. Each variant after the
+    // first with a given name (WITHIN one type declaration) is reported, anchored at its name
+    // occurrence. (Two different types may reuse a variant name — the set is per-declaration.)
+    for ty in &db.type_decls {
+        let mut seen_variants: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (vname, name_occ) in &ty.variants {
+            if !seen_variants.insert(vname.as_str()) {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "variant `{vname}` is declared more than once in sum `{}` (a sum has a \
+                             fixed set of variant names)",
+                            ty.name
+                        ),
+                    )
+                    .at(*name_occ),
+                );
+            }
+        }
+    }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
     let bodies: Vec<(StructId, bool)> = db

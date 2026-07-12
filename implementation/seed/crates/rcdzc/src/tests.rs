@@ -822,7 +822,10 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
-            assert_eq!(s, "41", "runtime-record field `a` reads sorted slot 0 = the argument")
+            assert_eq!(
+                s, "41",
+                "runtime-record field `a` reads sorted slot 0 = the argument"
+            )
         }
         cdz_run::Outcome::Trap(t) => panic!("runtime-record field read trapped (miscompile?): {t}"),
     }
@@ -3656,6 +3659,42 @@ mod stage1 {
                 "a"
             ),
             42
+        );
+    }
+
+    #[test]
+    fn a_duplicate_sum_variant_is_rejected() {
+        // 05-compound-types §a sum declaring a variant name twice: `(type T (A Int64) (A Bool))` names
+        // the variant `A` twice — a sum's variant names are a fixed SET (the fourth closed name-set
+        // beside record fields, module definitions, and exports), so it is CDZ0201, the same
+        // duplicate-member ill-formedness. Rejected, not silently registered as two `A`s.
+        let src = "(module m (type T (A Int64) (A Bool)) (def (main) 1) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a duplicate sum variant must reject")
+            .message;
+        assert!(msg.contains("more than once"), "got: {msg}");
+        // DISTINCT variant names in one sum are fine — the type decl is scanned + validated but does not
+        // block an otherwise-valid program (the sum's construction/use is a later increment).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (type T (A Int64) (B Bool)) (def (main) 1) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            1
+        );
+        // Two DIFFERENT types may REUSE a variant name — the set is per-declaration, not global.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (type T (A Int64)) (type U (A Bool)) (def (main) 1) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            1
         );
     }
 
