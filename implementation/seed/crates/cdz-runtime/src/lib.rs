@@ -1515,11 +1515,23 @@ fn vec_push_child_inplace(node: Handle, child: Handle) {
 }
 
 /// In-place set an rc==1 vector HEADER's `[count][shift]` raw. SAFETY: caller verified rc == 1.
+///
+/// A header's raw is ALWAYS exactly 8 bytes (`vec_alloc_header` builds it inline), so PATCH the two
+/// u32s in place via `as_mut_slice` rather than `clear()` + two capacity-checked `extend_from_slice`
+/// calls. This runs on EVERY `op_vec_push`/`op_vec_update` on a unique vector (the hot FBIP path) and
+/// showed up as `vec_set_header_inplace` + `Raw::extend_from_slice` in the vec profile. The defensive
+/// branch (a header somehow not 8 bytes — never in correct operation) rebuilds via clear+extend.
 fn vec_set_header_inplace(v: Handle, count: u32, shift: u32) {
     if let Some(n) = unsafe { v.0.as_mut() } {
-        n.raw.clear();
-        n.raw.extend_from_slice(&count.to_le_bytes());
-        n.raw.extend_from_slice(&shift.to_le_bytes());
+        if n.raw.len() == 8 {
+            let r = n.raw.as_mut_slice();
+            r[0..4].copy_from_slice(&count.to_le_bytes());
+            r[4..8].copy_from_slice(&shift.to_le_bytes());
+        } else {
+            n.raw.clear();
+            n.raw.extend_from_slice(&count.to_le_bytes());
+            n.raw.extend_from_slice(&shift.to_le_bytes());
+        }
     }
 }
 
@@ -4781,6 +4793,7 @@ mod tests {
         println!("ALLOC tuple2_build x{N}: {tbuild}");
         assert!(tbuild <= 2200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
     }
+
 
 
     /// CPU-scaling PROBE (diagnostic, not a regression gate): times set ∩/∖ at growing N to reveal
