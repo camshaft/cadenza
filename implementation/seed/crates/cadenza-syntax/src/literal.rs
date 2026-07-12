@@ -35,6 +35,16 @@ pub fn classify_word_nonname(text: &str) -> Option<Leaf> {
         "false" => return Some(Leaf::Bool(false)),
         _ => {}
     }
+    // FAST PATH: a number literal ALWAYS begins with `[0-9+-]` — `parse_int`/`parse_float` both strip a
+    // leading `+`/`-` and then require the body to start with an ASCII digit (`0x`/`0b` start with `0`).
+    // So a token whose first byte is anything else (a letter, `_`, `.`, a sigil) cannot be a number, and
+    // the two parse attempts below would just scan it and fail. Identifiers/keywords are the vast
+    // majority of tokens, so this guard skips ~all of the per-name number-parsing (parse_int + parse_float
+    // were ~9% of front-end parse time). A token that IS a number still takes the full path unchanged.
+    match text.as_bytes().first() {
+        Some(b'0'..=b'9' | b'+' | b'-') => {}
+        _ => return None,
+    }
     if let Some((value, radix)) = parse_int(text) {
         return Some(Leaf::Int { value, radix });
     }
