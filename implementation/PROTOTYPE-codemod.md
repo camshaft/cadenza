@@ -99,6 +99,7 @@ cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--wid
                    [--fixpoint] [--top-down] [--diff | --write | --json]
 cdz-syntax rewrite --rules FILE     [FILE|DIR…] …same flags…
 cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]     # structural (subtree) diff
+cdz-syntax lint    [FILE|DIR…] --rules FILE | --rule '(lint …)' [--from FMT] [--json]
 ```
 
 `--from`/`--to` are inferred from each FILE extension (`.cdz`/`.ml` → ml, `.sexp` → sexpr, `.bin` →
@@ -154,6 +155,15 @@ cdz-syntax: src/a.ml: rewrote 1 site(s)
 # STRUCTURAL diff of two programs — which subtrees changed (not text lines)
 $ cdz-syntax diff before.ml after.ml
 1: replace (+ a 0) => a
+
+# LINT: flag anti-patterns from a rule set; exits non-zero on any `error` (a CI gate)
+$ cat house.lint
+(lint (deprecated ,@_) "deprecated call — replace it" error)
+(lint (. (. ,_ ,_) ,_)  "deep member chain"           warning)
+$ cdz-syntax lint src/ --rules house.lint
+src/a.ml:2:3: error: deprecated call — replace it
+$ echo $?
+1
 ```
 
 - **query** prints each match as `byte START-END: <matched s-expr>` (the span comes from the parser's
@@ -173,6 +183,13 @@ $ cdz-syntax diff before.ml after.ml
   *tree* diff: two same-head lists recurse positionally (a changed operand is one point-change, not a
   whole-form replace); differing arity aligns children by LCS (add/remove); a changed head or an
   atom↔list is a whole-node replace. Formatting-independent — it sees nodes, not lines.
+- **lint** flags structural anti-patterns from a rule set — `(lint PATTERN "message" [severity])`
+  forms (`--rules FILE` and/or inline `--rule '(lint …)'`), severity ∈ `error`/`warning`/`info`
+  (default `warning`). Every match is a diagnostic `FILE:line:col: SEVERITY: message` (or `--json`
+  `[{file?, line, col, severity, message, matched}]`). It **exits non-zero iff any `error`-severity
+  diagnostic fired** — a structural-checker CI gate — while `warning`/`info` report without failing.
+  Lint patterns use the full pattern language (guards, splices). It's a Semgrep-lite for the AST,
+  built on the same matcher.
 
 Because the parser is a recovering parser, `query` works over **broken input** too: it reports the
 recoverable parse error on stderr and still runs the query over the recovered tree — the "total query
@@ -192,6 +209,9 @@ over incomplete source" the tooling capability calls for.
   point-change at its path, not a whole-form replace), aligns unequal-arity children by LCS over
   structural equality (add/remove), and replaces a whole node on a changed head or atom↔list mismatch
   — so the change set reads like the edit, independent of layout.
+- **Lint** runs each rule (a pattern + message + severity) over a program; every match is a
+  diagnostic. It is a thin layer on the matcher (`search_with`) + a byte-span→`(line, col)` map. The
+  only new "signal" is the exit-code contract: any `error`-severity diagnostic fails the run.
 
 ## Library API (`cadenza_syntax::query`)
 
@@ -229,6 +249,14 @@ query::driver::changes_json(&Tree, &Tree)   -> String     // [{path, kind, old?,
 query::treediff::diff(&Tree, &Tree) -> Vec<Change>        // Change { path: Vec<usize>, kind: Replace|Add|Remove }
 query::treediff::path_str(&[usize]) -> String             // "2.0" (or "<root>")
 
+// structural lint (a pattern + message + severity; error-severity fails a run)
+query::lint::LintSet::compile(&str) -> Result<LintSet, PatternError>   // "(lint PAT \"msg\" [severity]) …"
+query::lint::run(&LintSet, &Tree, Option<&SpanTable>) -> Vec<Diagnostic>   // { message, severity, span, matched }
+query::lint::has_error(&[Diagnostic]) -> bool
+query::driver::line_col(src, byte) -> (usize, usize)                       // 1-based line:col
+query::driver::lint_report(&LintSet, &Target, src, label) -> (String, bool /*had_error*/)
+query::driver::lint_json(&LintSet, &Target, src, file) -> (String, bool)
+
 // small dependency-free helpers (no serde)
 query::json::{quote, Object, Array}     // JSON string builder
 query::diff::unified(old, new, old_label, new_label) -> String   // LCS-based unified LINE diff, 3 lines context
@@ -264,14 +292,17 @@ prototype's `Tree` matcher is the executable spec for what those combinators mus
 
 ## Tests
 
-- `query` module unit tests (70): matching (metavars, consistency, variadic + anchoring, wildcard),
+- `query` module unit tests (80): matching (metavars, consistency, variadic + anchoring, wildcard),
   **guards** (each predicate, `matches`/`not`, conjunction, consistency interaction, compile-time
   rejection), **relational context** (inside/has/not-*, strict-descendant, composition), **multi-rule
   sets + strategy** (first-match-wins, rule-file compile, bottom-up vs top-down, fixpoint), the
   **json** writer + **diff** engine, **tree-diff** (leaf/nested change, head-replace, add/remove,
-  atom↔list, multiple changes), the driver's JSON/`project_target`.
-- `tests/query_cli.rs` (28): the built binary driven over stdin AND over temp files/dirs — query/
+  atom↔list, multiple changes), **lint** (severity parse/default, compile, run, multi-rule order,
+  bad message/severity, full pattern language) + `line_col` + the driver's JSON/`project_target`.
+- `tests/query_cli.rs` (34): the built binary driven over stdin AND over temp files/dirs — query/
   count/rewrite, guards, relational flags, `--rules`, `--top-down`, **multi-file & directory walk**,
   **`--json`** (query + rewrite), **`--diff`** (preview, file untouched), **`--write`** (in-place,
   no-op skip, stdin-rejected, mutually-exclusive-with-diff), **`diff` subcommand** (changed subtree +
-  path, JSON, identical), cross-surface, broken-input recovery, bad-pattern / unknown-guard rejection.
+  path, JSON, identical), **`lint` subcommand** (location+severity, error→exit 1, warning→exit 0,
+  clean→exit 0, JSON, rules-file over a dir, no-rules error), cross-surface, broken-input recovery,
+  bad-pattern / unknown-guard rejection.

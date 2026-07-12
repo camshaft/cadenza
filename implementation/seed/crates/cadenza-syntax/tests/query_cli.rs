@@ -400,3 +400,107 @@ fn diff_identical_reports_no_change() {
     assert!(stderr.contains("no structural changes"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- lint mode (the `lint` subcommand) ----
+
+#[test]
+fn lint_flags_a_matching_pattern_with_location_and_severity() {
+    let dir = scratch_dir("lint1");
+    std::fs::write(dir.join("code.ml"), "g(x)\nf(deprecated())\n").unwrap();
+    let (ok, stdout, _) = run(
+        &[
+            "lint",
+            dir.join("code.ml").to_str().unwrap(),
+            "--rule",
+            "(lint (deprecated ,@_) \"do not use\" error)",
+        ],
+        "",
+    );
+    assert!(!ok, "an error-severity diagnostic exits non-zero");
+    assert!(stdout.contains("code.ml:2:"), "location on line 2: {stdout}");
+    assert!(stdout.contains("error: do not use"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lint_warning_only_exits_zero() {
+    let dir = scratch_dir("lint2");
+    std::fs::write(dir.join("code.sexp"), "(deprecated x)\n").unwrap();
+    let (ok, stdout, _) = run(
+        &[
+            "lint",
+            dir.join("code.sexp").to_str().unwrap(),
+            "--rule",
+            "(lint (deprecated ,@_) \"avoid\" warning)",
+        ],
+        "",
+    );
+    assert!(ok, "a warning does not fail the run");
+    assert!(stdout.contains("warning: avoid"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lint_clean_file_exits_zero_with_no_output() {
+    let dir = scratch_dir("lint3");
+    std::fs::write(dir.join("code.sexp"), "(fine x)\n").unwrap();
+    let (ok, stdout, _) = run(
+        &[
+            "lint",
+            dir.join("code.sexp").to_str().unwrap(),
+            "--rule",
+            "(lint (deprecated ,@_) \"avoid\" error)",
+        ],
+        "",
+    );
+    assert!(ok);
+    assert!(stdout.trim().is_empty(), "no diagnostics: {stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lint_json_is_wellformed() {
+    let dir = scratch_dir("lint4");
+    std::fs::write(dir.join("code.ml"), "f(deprecated())\n").unwrap();
+    let (ok, stdout, _) = run(
+        &[
+            "lint",
+            dir.join("code.ml").to_str().unwrap(),
+            "--rule",
+            "(lint (deprecated ,@_) \"do not use\" error)",
+            "--json",
+        ],
+        "",
+    );
+    assert!(!ok);
+    let s = stdout.trim();
+    assert!(s.starts_with('[') && s.ends_with(']'), "array: {s}");
+    assert!(s.contains("\"severity\":\"error\""), "{s}");
+    assert!(s.contains("\"message\":\"do not use\""), "{s}");
+    assert!(s.contains("\"line\":1"), "{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lint_from_a_rules_file_over_a_directory() {
+    let dir = scratch_dir("lint5");
+    std::fs::write(dir.join("a.ml"), "f(deprecated())\n").unwrap();
+    std::fs::write(dir.join("b.ml"), "g(ok())\n").unwrap();
+    let rules = dir.join("r.lint");
+    std::fs::write(&rules, "(lint (deprecated ,@_) \"no\" error)\n").unwrap();
+    let (ok, stdout, _) = run(
+        &["lint", dir.to_str().unwrap(), "--rules", rules.to_str().unwrap()],
+        "",
+    );
+    assert!(!ok, "error found in a.ml");
+    assert!(stdout.contains("a.ml:"), "flags a.ml: {stdout}");
+    assert!(!stdout.contains("b.ml:"), "b.ml is clean: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lint_with_no_rules_is_an_error() {
+    let (ok, _, stderr) = run(&["lint", "--from", "sexpr"], "(f a)");
+    assert!(!ok);
+    assert!(stderr.contains("no lint rules"), "reason: {stderr}");
+}

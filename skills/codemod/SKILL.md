@@ -9,7 +9,8 @@ description: >-
   of a form, extracting spans of matching nodes, or building on the query/Tree matcher API. Covers the
   `,x`/`,@xs` pattern language, structural guards (`is-literal`/`head-is`/`matches`/`not`), relational
   context (`inside`/`has`), multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`,
-  the `diff` (structural tree-diff) subcommand, the CLI, the library API, and the self-hosted sidecar map.
+  the `diff` (structural tree-diff) subcommand, `lint` mode (structural anti-pattern checker / CI
+  gate), the CLI, the library API, and the self-hosted sidecar map.
 ---
 
 # Structural query & rewrite (codemod) for Cadenza
@@ -98,6 +99,10 @@ $ cdz-syntax rewrite '(+ ,x 0)' ',x' src/ --write
 # STRUCTURAL diff of two programs — which subtrees changed (not text lines)
 $ cdz-syntax diff before.ml after.ml
 1: replace (+ a 0) => a
+
+# LINT: flag anti-patterns; exits non-zero on any `error` (a CI gate)
+$ cdz-syntax lint src/ --rule '(lint (deprecated ,@_) "avoid" error)'
+src/a.ml:2:3: error: avoid
 ```
 
 - **Multiple FILEs and directories** are accepted (a DIR is recursed by extension); with no FILE,
@@ -118,6 +123,11 @@ $ cdz-syntax diff before.ml after.ml
   `[{path, kind, old?, new?}]`. Same-head lists recurse positionally (a changed operand is one
   point-change), differing arity aligns by LCS. Use it to review what a rewrite/edit changed to the
   tree, independent of formatting. (Distinct from `rewrite --diff`, which is a line-based unified diff.)
+- `lint [FILE|DIR…] --rules FILE | --rule '(lint …)'` flags structural anti-patterns. A rule is
+  `(lint PATTERN "message" [severity])`, severity ∈ `error`/`warning`/`info` (default `warning`),
+  patterns use the full language (guards/splices). Each match → `FILE:line:col: SEVERITY: message`
+  (or `--json`). **Exits non-zero iff any `error`-severity diagnostic fired** — a CI gate; warnings
+  don't fail. Semgrep-lite for the AST.
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
@@ -166,6 +176,12 @@ let d = query::diff::unified(&before, &outcome.output, "a/a.ml", "b/a.ml");   //
 let changes = query::treediff::diff(&tree_a, &tree_b);  // Vec<Change { path: Vec<usize>, kind }>
 let human   = query::driver::changes_report(&tree_a, &tree_b);   // "PATH: replace OLD => NEW" …
 let cjson   = query::driver::changes_json(&tree_a, &tree_b);     // [{path, kind, old?, new?}]
+
+// structural lint (pattern + message + severity; error-severity fails a run)
+use query::lint::{self, LintSet};
+let set   = LintSet::compile("(lint (deprecated ,@_) \"avoid\" error)")?;
+let diags = lint::run(&set, &tree, Some(&spans));   // Vec<Diagnostic { message, severity, span, matched }>
+let gate  = lint::has_error(&diags);                // true → CI should fail
 ```
 
 Multi-file / `--write` / directory-walk plumbing lives in the CLI (the bin), not the library — the

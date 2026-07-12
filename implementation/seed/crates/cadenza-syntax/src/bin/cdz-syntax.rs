@@ -8,6 +8,7 @@
 //! cdz-syntax query   PATTERN          [FILE|DIR…] [--from FMT] [--count] [--json]
 //! cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--diff|--write|--json]
 //! cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]
+//! cdz-syntax lint    [FILE|DIR…]      --rules FILE | --rule '(lint …)' [--from FMT] [--json]
 //! ```
 //!
 //! `--from`/`--to` are inferred from the FILE extension when omitted (`.cdz`/`.ml` → ml,
@@ -22,6 +23,7 @@
 //! crate that touches the filesystem/stdio.
 
 use cadenza_syntax::convert::{self, Format, Options};
+use cadenza_syntax::query::lint::LintSet;
 use cadenza_syntax::query::{self, Pattern, Query, Rule, RuleSet, Strategy, Template};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::io::{Read, Write};
@@ -47,6 +49,31 @@ enum Cmd {
     Rewrite(RewriteArgs),
     /// Structurally diff two programs: report which SUBTREES changed (not text lines).
     Diff(DiffArgs),
+    /// Flag structural anti-patterns from a lint-rule set; exits non-zero on any `error` diagnostic.
+    Lint(LintArgs),
+}
+
+#[derive(Args)]
+struct LintArgs {
+    /// Input files or directories (recursed by extension). Omit (or use `-`) to read stdin.
+    files: Vec<String>,
+
+    /// A file of `(lint PATTERN "message" [severity])` forms.
+    #[arg(long)]
+    rules: Option<String>,
+
+    /// An inline lint rule, e.g. `--rule '(lint (deprecated ,@_) "avoid" error)'` (repeatable).
+    /// Combined with any `--rules` file.
+    #[arg(long)]
+    rule: Vec<String>,
+
+    /// Input format. Inferred from each FILE's extension when omitted; required when reading stdin.
+    #[arg(short, long, value_enum)]
+    from: Option<Fmt>,
+
+    /// Emit diagnostics as JSON (`[{file?, line, col, severity, message, matched}]`).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -197,11 +224,24 @@ impl From<Fmt> for Format {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // `lint` has a third outcome: it can run cleanly yet find `error` diagnostics, which must exit
+    // non-zero (the CI gate) WITHOUT printing a tool-level error. So it returns `Ok(had_error)`.
+    if let Cmd::Lint(args) = &cli.command {
+        return match run_lint(args) {
+            Ok(false) => ExitCode::SUCCESS,
+            Ok(true) => ExitCode::FAILURE, // error-severity diagnostics found
+            Err(msg) => {
+                eprintln!("cdz-syntax: {msg}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let result = match cli.command {
         Cmd::Convert(args) => run_convert(&args),
         Cmd::Query(args) => run_query(&args),
         Cmd::Rewrite(args) => run_rewrite(&args),
         Cmd::Diff(args) => run_diff(&args),
+        Cmd::Lint(_) => unreachable!("handled above"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -391,6 +431,58 @@ fn run_diff(args: &DiffArgs) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Lint the targets against a rule set, printing diagnostics (or JSON). Returns whether any
+/// `error`-severity diagnostic fired (the caller maps `true` → non-zero exit, the CI gate).
+fn run_lint(args: &LintArgs) -> Result<bool, String> {
+    // Assemble the rule set from --rules FILE and/or inline --rule forms.
+    let mut set = LintSet::default();
+    if let Some(path) = &args.rules {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+        set.rules
+            .extend(LintSet::compile(&text).map_err(|e| e.to_string())?.rules);
+    }
+    for r in &args.rule {
+        set.rules
+            .extend(LintSet::compile(r).map_err(|e| e.to_string())?.rules);
+    }
+    if set.rules.is_empty() {
+        return Err("no lint rules — pass --rules FILE and/or --rule '(lint …)'".into());
+    }
+
+    let targets = collect_targets(&args.files, args.from)?;
+    let mut any_error = false;
+    let mut json_objs: Vec<String> = Vec::new();
+
+    for spec in &targets {
+        let input = read_input(spec.path.as_deref())?;
+        // line:col needs the source text; text surfaces decode as UTF-8, binary has no source lines.
+        let src = String::from_utf8_lossy(&input).into_owned();
+        let (target, errors) =
+            query::driver::load(&input, spec.format).map_err(|e| with_path(&spec.path, &e))?;
+        report_input_errors(spec.path.as_deref(), &errors);
+        let lbl = label(&spec.path);
+
+        if args.json {
+            let (j, had_error) = query::driver::lint_json(&set, &target, &src, spec.path.as_deref());
+            // `j` is a per-file array; collect its elements for one flat array at the end.
+            let inner = j.trim_start_matches('[').trim_end_matches(']');
+            if !inner.is_empty() {
+                json_objs.push(inner.to_string());
+            }
+            any_error |= had_error;
+        } else {
+            let (report, had_error) = query::driver::lint_report(&set, &target, &src, &lbl);
+            print!("{report}");
+            any_error |= had_error;
+        }
+    }
+
+    if args.json {
+        println!("[{}]", json_objs.join(","));
+    }
+    Ok(any_error)
 }
 
 /// Rewrite the targets: apply the rule (or rule set) under the chosen strategy, validated, then

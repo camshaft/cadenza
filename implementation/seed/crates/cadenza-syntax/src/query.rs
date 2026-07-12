@@ -1178,6 +1178,85 @@ pub mod driver {
         }
         arr.finish()
     }
+
+    /// Convert a byte offset into `src` to a 1-based `(line, column)`. Column is counted in bytes from
+    /// the line start (good enough for ASCII source and monotonic for UTF-8). A byte past the end
+    /// clamps to the last position.
+    pub fn line_col(src: &str, byte: usize) -> (usize, usize) {
+        let byte = byte.min(src.len());
+        let mut line = 1usize;
+        let mut col = 1usize;
+        for (i, ch) in src.char_indices() {
+            if i >= byte {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    /// Run `lints` over `target`, rendering diagnostics one per line as
+    /// `LABEL:line:col: SEVERITY: message` (LABEL is the file path or `(stdin)`; line:col from `src`
+    /// when a span is known, else `?:?`). Returns `(report, had_error)` — `had_error` is the CI signal.
+    pub fn lint_report(
+        lints: &lint::LintSet,
+        target: &Target,
+        src: &str,
+        label: &str,
+    ) -> (String, bool) {
+        let diags = lint::run(lints, &target.tree, target.spans.as_ref());
+        let mut out = String::new();
+        for d in &diags {
+            let loc = match d.span {
+                Some(s) => {
+                    let (l, c) = line_col(src, s.start);
+                    format!("{label}:{l}:{c}")
+                }
+                None => format!("{label}:?:?"),
+            };
+            out.push_str(&format!("{loc}: {}: {}\n", d.severity.as_str(), d.message));
+        }
+        (out, lint::has_error(&diags))
+    }
+
+    /// Run `lints` over `target`, rendering diagnostics as JSON
+    /// `[{file?, line?, col?, severity, message, matched}]`. Returns `(json, had_error)`.
+    pub fn lint_json(
+        lints: &lint::LintSet,
+        target: &Target,
+        src: &str,
+        file: Option<&str>,
+    ) -> (String, bool) {
+        let diags = lint::run(lints, &target.tree, target.spans.as_ref());
+        let mut arr = json::Array::new();
+        for d in &diags {
+            let mut obj = json::Object::new();
+            if let Some(f) = file {
+                obj.string("file", f);
+            }
+            match d.span {
+                Some(s) => {
+                    let (l, c) = line_col(src, s.start);
+                    obj.raw("line", &l.to_string());
+                    obj.raw("col", &c.to_string());
+                }
+                None => {
+                    obj.raw("line", "null");
+                    obj.raw("col", "null");
+                }
+            }
+            obj.string("severity", d.severity.as_str());
+            obj.string("message", &d.message);
+            obj.string("matched", &d.matched);
+            arr.raw(&obj.finish());
+        }
+        (arr.finish(), lint::has_error(&diags))
+    }
 }
 
 /// A minimal, dependency-free JSON string builder — just what the `--json` output needs (objects,
@@ -1559,6 +1638,163 @@ pub mod treediff {
             "<root>".to_string()
         } else {
             path.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(".")
+        }
+    }
+}
+
+/// Structural LINTING — flag anti-patterns by shape rather than fix them. A lint rule is a pattern
+/// plus a message and a severity; every match becomes a diagnostic. Batched over a codebase, this is
+/// a Semgrep-lite structural checker / CI gate: it exits non-zero when any `error`-severity rule
+/// fires. Purely syntactic (no scope/type), like the rest of this layer.
+pub mod lint {
+    use super::{compile_pat, search_with, Pattern, PatternError, Query, Span, SpanTable, Tree};
+
+    /// A diagnostic's severity. `error` is the only one that fails a run (non-zero exit); `warning`
+    /// and `info` are reported but do not fail. `warning` is the default when a rule omits it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Severity {
+        Error,
+        Warning,
+        Info,
+    }
+
+    impl Severity {
+        /// Parse a severity name; `None` for an unknown one.
+        pub fn parse(s: &str) -> Option<Severity> {
+            match s {
+                "error" => Some(Severity::Error),
+                "warning" | "warn" => Some(Severity::Warning),
+                "info" | "note" => Some(Severity::Info),
+                _ => None,
+            }
+        }
+
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Severity::Error => "error",
+                Severity::Warning => "warning",
+                Severity::Info => "info",
+            }
+        }
+    }
+
+    /// One lint rule: match `pattern`, and every match reports `message` at `severity`.
+    #[derive(Clone, Debug)]
+    pub struct LintRule {
+        pub pattern: Pattern,
+        pub message: String,
+        pub severity: Severity,
+    }
+
+    impl LintRule {
+        /// Compile a rule from a `(lint PATTERN "message" [severity])` s-expression form. Severity
+        /// defaults to `warning` when omitted; an unknown severity name is rejected.
+        pub fn compile_form(t: &Tree) -> Result<LintRule, PatternError> {
+            let items = match t {
+                Tree::List(items, _) if head_is(items, "lint") => items,
+                _ => return Err(PatternError("expected a `(lint …)` form".into())),
+            };
+            let (pat_tree, message, sev_tree) = match items.as_slice() {
+                [_, p, msg] => (p, msg, None),
+                [_, p, msg, sev] => (p, msg, Some(sev)),
+                _ => {
+                    return Err(PatternError(
+                        "a lint rule is `(lint PATTERN \"message\" [severity])`".into(),
+                    ))
+                }
+            };
+            let message = as_str_leaf(message).ok_or_else(|| {
+                PatternError("a lint rule's message must be a \"string\"".into())
+            })?;
+            let severity = match sev_tree {
+                None => Severity::Warning,
+                Some(s) => {
+                    let name = s
+                        .as_name()
+                        .ok_or_else(|| PatternError("severity must be a bare name".into()))?;
+                    Severity::parse(name)
+                        .ok_or_else(|| PatternError(format!("unknown severity `{name}`")))?
+                }
+            };
+            Ok(LintRule {
+                pattern: Pattern { pat: compile_pat(pat_tree)? },
+                message: message.to_string(),
+                severity,
+            })
+        }
+    }
+
+    /// A set of lint rules, run together over a program.
+    #[derive(Clone, Debug, Default)]
+    pub struct LintSet {
+        pub rules: Vec<LintRule>,
+    }
+
+    impl LintSet {
+        pub fn new(rules: Vec<LintRule>) -> LintSet {
+            LintSet { rules }
+        }
+
+        /// Compile a lint set from s-expression text: a sequence of `(lint …)` forms.
+        pub fn compile(src: &str) -> Result<LintSet, PatternError> {
+            let arena = super::sexpr::read_all(src)
+                .map_err(|e| PatternError(format!("lint rules parse: {}", e.0)))?;
+            let tree = Tree::of(&arena);
+            let forms = match &tree {
+                Tree::List(items, _) if head_is(items, "do") => &items[1..],
+                _ => std::slice::from_ref(&tree),
+            };
+            let rules = forms
+                .iter()
+                .map(LintRule::compile_form)
+                .collect::<Result<_, _>>()?;
+            Ok(LintSet::new(rules))
+        }
+    }
+
+    /// One reported diagnostic: the rule's message + severity, and the matched node's span (if the
+    /// subject carried one). Rules are applied in order; within a rule, matches are pre-order.
+    #[derive(Clone, Debug)]
+    pub struct Diagnostic {
+        pub message: String,
+        pub severity: Severity,
+        pub span: Option<Span>,
+        /// The matched node rendered as s-expression (for context in output).
+        pub matched: String,
+    }
+
+    /// Run every lint rule over `subject`, collecting diagnostics. Rules run in order; each rule's
+    /// matches are reported in pre-order. `spans` (if any) attaches a source span to each diagnostic.
+    pub fn run(set: &LintSet, subject: &Tree, spans: Option<&SpanTable>) -> Vec<Diagnostic> {
+        let empty = Query::default();
+        let mut out = Vec::new();
+        for rule in &set.rules {
+            for m in search_with(&rule.pattern, &empty, subject, spans) {
+                out.push(Diagnostic {
+                    message: rule.message.clone(),
+                    severity: rule.severity,
+                    span: m.span,
+                    matched: m.node.to_sexpr(),
+                });
+            }
+        }
+        out
+    }
+
+    /// True if any diagnostic is `error`-severity — the signal a CI gate exits non-zero on.
+    pub fn has_error(diags: &[Diagnostic]) -> bool {
+        diags.iter().any(|d| d.severity == Severity::Error)
+    }
+
+    fn head_is(items: &[Tree], name: &str) -> bool {
+        items.first().and_then(|h| h.as_name()) == Some(name)
+    }
+
+    /// If `t` is a string-literal atom, its contents.
+    fn as_str_leaf(t: &Tree) -> Option<&str> {
+        match t {
+            Tree::Atom(super::Leaf::Str(s), _) => Some(s),
+            _ => None,
         }
     }
 }
@@ -2131,6 +2367,40 @@ mod tests {
             let (target, _) = driver::load(b"(+ x 0)", Format::Sexpr).unwrap();
             assert_eq!(driver::project_target(&target, Format::Sexpr, 100).unwrap(), "(+ x 0)");
         }
+
+        #[test]
+        fn line_col_maps_a_byte_offset() {
+            let src = "abc\ndef\nghi";
+            assert_eq!(driver::line_col(src, 0), (1, 1)); // 'a'
+            assert_eq!(driver::line_col(src, 2), (1, 3)); // 'c'
+            assert_eq!(driver::line_col(src, 4), (2, 1)); // 'd' (after first \n)
+            assert_eq!(driver::line_col(src, 9), (3, 2)); // 'h'
+            assert_eq!(driver::line_col(src, 9999), (3, 4)); // clamps past end
+        }
+
+        #[test]
+        fn lint_report_renders_location_severity_message_and_flags_error() {
+            let (target, _) = driver::load(b"g(deprecated())", Format::Ml).unwrap();
+            let set =
+                crate::query::lint::LintSet::compile("(lint (deprecated ,@_) \"no\" error)").unwrap();
+            let (report, had_error) = driver::lint_report(&set, &target, "g(deprecated())", "in.ml");
+            assert!(had_error, "an error-severity rule fired");
+            assert!(report.contains("in.ml:1:"), "has location: {report}");
+            assert!(report.contains("error: no"), "severity+message: {report}");
+        }
+
+        #[test]
+        fn lint_json_is_wellformed_and_warning_is_not_an_error() {
+            let (target, _) = driver::load(b"(deprecated x)", Format::Sexpr).unwrap();
+            let set =
+                crate::query::lint::LintSet::compile("(lint (deprecated ,@_) \"avoid\" warning)")
+                    .unwrap();
+            let (j, had_error) = driver::lint_json(&set, &target, "(deprecated x)", Some("a.sexp"));
+            assert!(!had_error, "warning is not an error");
+            assert!(j.contains("\"severity\":\"warning\""), "{j}");
+            assert!(j.contains("\"message\":\"avoid\""), "{j}");
+            assert!(j.contains("\"file\":\"a.sexp\""), "{j}");
+        }
     }
 
     // ---- json + diff helpers ----
@@ -2255,6 +2525,74 @@ mod tests {
             assert_eq!(cs.len(), 2, "{cs:?}");
             assert_eq!(cs[0].path, vec![1]);
             assert_eq!(cs[1].path, vec![2]);
+        }
+    }
+
+    mod lint_tests {
+        use super::subj;
+        use crate::query::lint::{self, LintSet, Severity};
+
+        #[test]
+        fn severity_parses_and_defaults_to_warning() {
+            assert_eq!(Severity::parse("error"), Some(Severity::Error));
+            assert_eq!(Severity::parse("warn"), Some(Severity::Warning));
+            assert_eq!(Severity::parse("note"), Some(Severity::Info));
+            assert_eq!(Severity::parse("bogus"), None);
+            // a rule with no severity defaults to warning.
+            let set = LintSet::compile("(lint (todo ,@_) \"has a todo\")").unwrap();
+            assert_eq!(set.rules[0].severity, Severity::Warning);
+        }
+
+        #[test]
+        fn compile_reads_pattern_message_and_severity() {
+            let set =
+                LintSet::compile("(lint (deprecated ,@_) \"do not use\" error)").unwrap();
+            assert_eq!(set.rules.len(), 1);
+            assert_eq!(set.rules[0].message, "do not use");
+            assert_eq!(set.rules[0].severity, Severity::Error);
+        }
+
+        #[test]
+        fn run_reports_a_diagnostic_per_match() {
+            let set = LintSet::compile("(lint (deprecated ,@_) \"do not use\" error)").unwrap();
+            let s = subj("(do (deprecated a) (ok b) (deprecated c))");
+            let diags = lint::run(&set, &s, None);
+            assert_eq!(diags.len(), 2, "{diags:?}");
+            assert!(diags.iter().all(|d| d.severity == Severity::Error));
+            assert_eq!(diags[0].message, "do not use");
+            assert!(lint::has_error(&diags));
+        }
+
+        #[test]
+        fn multiple_rules_run_in_order() {
+            let set = LintSet::compile(
+                "(lint (a ,@_) \"msg-a\" warning)\n(lint (b ,@_) \"msg-b\" info)",
+            )
+            .unwrap();
+            let diags = lint::run(&set, &subj("(do (a 1) (b 2))"), None);
+            assert_eq!(diags.len(), 2);
+            assert_eq!(diags[0].message, "msg-a");
+            assert_eq!(diags[1].message, "msg-b");
+            assert!(!lint::has_error(&diags), "no error-severity rule fired");
+        }
+
+        #[test]
+        fn a_non_string_message_is_rejected() {
+            assert!(LintSet::compile("(lint (x) notastring)").is_err());
+        }
+
+        #[test]
+        fn an_unknown_severity_is_rejected() {
+            let e = LintSet::compile("(lint (x) \"m\" loud)").unwrap_err();
+            assert!(e.0.contains("unknown severity"), "got {e}");
+        }
+
+        #[test]
+        fn lint_rules_use_the_full_pattern_language() {
+            // guards work in a lint pattern too: flag `(+ ,x 0)` only where 0 is literal.
+            let set = LintSet::compile("(lint (+ ,x ,(z is-literal)) \"maybe redundant\")").unwrap();
+            let diags = lint::run(&set, &subj("(do (+ a 0) (+ b c))"), None);
+            assert_eq!(diags.len(), 1, "{diags:?}");
         }
     }
 }
