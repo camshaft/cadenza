@@ -332,9 +332,10 @@ pub fn select_function(
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each
     // scratch slot's VALUE TYPE (i32 for a ≤32-bit op, i64 otherwise) — a slot must be DECLARED at the
-    // type it is `local.set` with, or wasm rejects the module. (Within one body a given slot is only ever
-    // used at one width — arithmetic preserves type and `if` branches must agree, and width conversions
-    // are not built yet — so there is one type per slot; the map records it rather than assuming i64.)
+    // type it is `local.set` with, or wasm rejects the module. (A given scratch slot is used at one
+    // width within one op's guarded sequence: arithmetic preserves type and a width conversion `emit_wrap`
+    // moves through the value stack rather than stashing across widths — so the map records the slot's
+    // type rather than assuming i64.)
     let base = param_vts.len() as u32;
     let mut high = base;
     let mut scratch_ty: HashMap<u32, ValType> = HashMap::new();
