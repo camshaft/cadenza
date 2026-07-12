@@ -105,6 +105,8 @@ pass	a function whose name is capitalized is called, not treated as a constructo
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a generic sum with a type parameter inside a record payload constructs and projects
+pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order

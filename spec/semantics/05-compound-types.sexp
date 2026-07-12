@@ -2796,6 +2796,35 @@
   (input  (do (type E (A Int64) (B Int64)) (def (main) (E.B 7)) (export main)))
   (output (: (B 7) E)))
 
+(case "a generic sum with a type parameter inside a tuple payload constructs and destructures"
+  (doc    "A GENERIC sum whose variant carries a TUPLE payload MENTIONING the type parameter — `(type Box
+           (B (Tuple a Int64)) N)`, so `B : ∀a. (Tuple a Int64) → Box a`. `(Box.B (tuple 7 8))` instantiates
+           `a = Int64` and constructs; the `(Box.B (tuple x y))` arm destructures the tuple payload, `x + y`
+           = 15. Pins that a type parameter nested in a TUPLE payload is threaded through the variant
+           constructor's scheme (not only a bare `(B a)`, `(B (List a))`, or `(B (Option a))` payload): a
+           compiler that reduced a generic ctor's type-lambda for scalar/list/sum payloads but not a
+           tuple/record one read `B`'s payload as unresolvable and misjudged `B` NULLARY, rejecting the
+           construction (CDZ0201).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Box (B (Tuple a Int64)) N)
+            (def (main) (match (Box.B (tuple 7 8)) ((Box.B (tuple x y)) (+ x y)) (Box.N 0)))
+            (export main)))
+  (output (: 15 Int64)))
+
+(case "a generic sum with a type parameter inside a record payload constructs and projects"
+  (doc    "The record companion: `(type Box (B (Record (val a))) N)` — a generic sum whose variant carries
+           a RECORD payload whose field type is the parameter. `(Box.B (record (val 7)))` instantiates `a =
+           Int64`; the `(Box.B r)` arm binds the record payload and `(. r val)` projects 7. Pins that a
+           type parameter inside a RECORD field type is threaded through the constructor scheme (the field
+           NAME `val` stays a label), the record sibling of the tuple-payload case above.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Box (B (Record (val a))) N)
+            (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0)))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a program's unary variant reusing a prelude nullary variant name is unary"
   (doc    "A program declares `(type Expr (Lit Int64) (Neg Expr))` whose `Neg` variant carries a
            payload — reusing the NAME of the prelude `(type Sign Neg Zero Pos)`'s NULLARY `Neg`.

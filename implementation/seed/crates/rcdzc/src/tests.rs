@@ -4661,6 +4661,35 @@ mod match_engine {
     }
 
     #[test]
+    fn a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary() {
+        // REGRESSION: a GENERIC sum whose variant carries a TUPLE or RECORD payload MENTIONING a type
+        // parameter — `(type Box (B (Tuple a Int64)) N)` / `(type Box (B (Record (val a))) N)` — must
+        // construct, not be misread as NULLARY. `type_in_env` (which reduces a generic variant ctor's
+        // `(meta t)` type-lambda to its scheme) handled `Int`/`Fn`/`List`/`Sum`/`UInt` compound payloads
+        // but had NO `Tuple`/`Record` arm, so a param nested in a tuple/record payload made the ctor arrow
+        // unreadable → `variant_payload_type` = None → `B` looked NULLARY → CDZ0201 on the construction.
+        // A bare/`List a`/`Option a` payload worked (those arms existed); the gap was tuple + record.
+        // Fixed by adding `TupleCtor`/`RecordCtor` arms to `type_in_env` (reduce each element/field type
+        // under the env). The bug was a compile-time REJECT (the ctor looked nullary → CDZ0201), so
+        // COMPILING the construction is the precise guard; the runs are exercised by the corpus cases "a
+        // generic sum with a type parameter inside a tuple/record payload …" (which link the runtime).
+        let tup = "(module m (type Box (B (Tuple a Int64)) N) \
+                     (def (main) (match (Box.B (tuple 7 8)) ((Box.B (tuple x y)) (+ x y)) (Box.N 0))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(tup))).is_ok(),
+            "a generic sum with a type param in a TUPLE payload must compile — not reject B as nullary"
+        );
+        let rec = "(module m (type Box (B (Record (val a))) N) \
+                     (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(rec))).is_ok(),
+            "a generic sum with a type param in a RECORD payload must compile — not reject B as nullary"
+        );
+    }
+
+    #[test]
     fn a_false_variant_guard_shields_a_trapping_body() {
         // The variant-guard short-circuit (core-semantics.md §Boolean Connectives Short-Circuit applied to
         // a guarded arm): a guarded arm's BODY is evaluated only when the guard HOLDS. `(guard (Some x) (>
