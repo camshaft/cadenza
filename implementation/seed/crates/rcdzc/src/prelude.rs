@@ -20,9 +20,11 @@
 //! branch anywhere. An unimplemented built-in is a capability the compiler lacks (a decline), reached
 //! by exactly the mechanism a program record uses.
 //!
-//! Stage-1 scope: `Int64`'s `max`/`min` are realized as folding constants (the most-witnessed scalar
-//! built-in); its arithmetic/conversion operations — which need the checked-arith machinery — are
-//! present as `unrealized` fields, so referencing one declines cleanly rather than reading as unbound.
+//! What is realized on an integer-width module: `max`/`min` (folding bound constants), `wrap` (the
+//! truncating conversion). What remains an `unrealized` field, declining cleanly rather than reading
+//! as unbound: `of` (the checked conversion — it returns `Option<T>`, so it waits on sum types) and
+//! `checked-*`/`wrapping-*`. The binary arithmetic and comparison operators (`+ - * / …`, `< = …`)
+//! are realized as top-level prelude operators, not module fields.
 
 use crate::ast::{Arenas, IntValue, Leaf, LeafId, Radix, Struct, StructId};
 use std::collections::BTreeMap;
