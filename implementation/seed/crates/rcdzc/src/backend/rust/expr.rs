@@ -1119,6 +1119,11 @@ fn emit_sum_match(
                 "a bare-leaf sum match is not yet rendered by the Rust backend",
             ));
         }
+        crate::core::SumCont::LitTest { .. } => {
+            return Err(Reject::decline(
+                "a literal-payload sum pattern is not yet rendered by the Rust backend",
+            ));
+        }
     };
     let _ = path;
     let scrut = emit(db, scrutinee, env, ctx)?;
@@ -1135,6 +1140,11 @@ fn emit_sum_match(
             crate::core::SumCont::Guarded { .. } => {
                 return Err(Reject::decline(
                     "a guarded sum-match arm is not yet rendered by the Rust backend",
+                ));
+            }
+            crate::core::SumCont::LitTest { .. } => {
+                return Err(Reject::decline(
+                    "a literal-payload sum pattern is not yet rendered by the Rust backend",
                 ));
             }
         };

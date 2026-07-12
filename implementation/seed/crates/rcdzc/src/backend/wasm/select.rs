@@ -235,6 +235,10 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
         crate::core::SumCont::Guarded { body, els, .. } => {
             binding_escapes(db, *body, binder, false) || cont_binding_escapes(db, els, binder)
         }
+        // A literal test's binder can escape through either continuation (the `path` walk only reads).
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            cont_binding_escapes(db, then_, binder) || cont_binding_escapes(db, els, binder)
+        }
         crate::core::SumCont::Switch { arms, .. } => arms
             .iter()
             .any(|a| cont_binding_escapes(db, &a.cont, binder)),
@@ -607,6 +611,28 @@ fn collect_cont_ops(
         crate::core::SumCont::Guarded { cond, body, els } => {
             collect_used_ops(db, *cond, out);
             collect_used_ops(db, *body, out);
+            collect_cont_ops(db, els, out);
+        }
+        // A literal test walks its `path` (sum-payload/arr-get) then reads the leaf scalar to compare it;
+        // an Int probe reads `get-int`, a Bool probe `get-bool`. Then both continuations' ops.
+        crate::core::SumCont::LitTest {
+            path,
+            probe,
+            then_,
+            els,
+        } => {
+            for step in path {
+                match step {
+                    crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
+                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                };
+            }
+            match probe {
+                crate::core::Probe::Int(_) => out.insert(OP_GET_INT),
+                crate::core::Probe::Bool(_) => out.insert(OP_GET_BOOL),
+                crate::core::Probe::Wild => false,
+            };
+            collect_cont_ops(db, then_, out);
             collect_cont_ops(db, els, out);
         }
         crate::core::SumCont::Switch { path, arms } => {
@@ -3220,6 +3246,60 @@ fn emit_sum_cont(
             } else {
                 emit(db, *body, slots, base, high, scratch_ty, layout, out)?;
             }
+            out.push(Lir::Else);
+            emit_sum_cont(
+                db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+            )?;
+            out.push(Lir::End);
+            Ok(())
+        }
+        // A LITERAL TEST: `if (<sub-value at path> == literal) then <then_> else <els>`. Walk the `path`
+        // from the scrutinee handle (`sum-payload`/`arr-get`, exactly as `Core::SumPayload` does), read the
+        // leaf scalar (`get-int` → i64 / `get-bool` → i32), compare against the literal, and branch. Both
+        // continuations recurse through `emit_sum_cont` and yield the match's result type (`block_ty`). The
+        // `then_` typically ends in the arm body; `els` is the same-variant fall-through (the binding arm).
+        // The read mirrors `SumPayload`'s walk + unbox; the compare mirrors `emit_probe_chain`'s Int/Bool
+        // probe. A narrow-int payload's `get-int` yields the normalized i64, so an i64 compare against the
+        // literal's i64 bits is exact (the pattern literal is in range or the arm is ill-typed and rejected
+        // earlier).
+        crate::core::SumCont::LitTest {
+            path,
+            probe,
+            then_,
+            els,
+        } => {
+            // Push the scrutinee handle and walk to the leaf's boxed handle.
+            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+            for step in path {
+                match step {
+                    crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
+                    crate::core::PathStep::Elem(i) => {
+                        out.push(Lir::ConstI32(*i as i32));
+                        out.push(Lir::CallImport(OP_ARR_GET));
+                    }
+                }
+            }
+            // Read the leaf scalar and compare against the literal.
+            match probe {
+                crate::core::Probe::Int(v) => {
+                    out.push(Lir::CallImport(OP_GET_INT)); // [i64]
+                    out.push(Lir::ConstI64(v.to_i64_bits()));
+                    out.push(Lir::I64Eq); // [bool]
+                }
+                crate::core::Probe::Bool(b) => {
+                    out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]
+                    out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
+                    out.push(Lir::I32Eq); // [bool]
+                }
+                crate::core::Probe::Wild => {
+                    return Err(Reject::decline("a wildcard literal test is a compiler bug"));
+                }
+            }
+            out.push(Lir::If(block_ty));
+            emit_sum_cont(
+                db, scrutinee, then_, result_it, block_ty, slots, base, high, scratch_ty, layout,
+                out,
+            )?;
             out.push(Lir::Else);
             emit_sum_cont(
                 db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,

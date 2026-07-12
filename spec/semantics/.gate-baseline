@@ -27,6 +27,7 @@ pass	a boolean function result bound by let is still a boolean
 pass	a boolean in integer-width position is rejected
 pass	a boolean is greater-than-or-equal to itself
 pass	a boolean is less-than-or-equal to itself
+pass	a boolean literal inside a constructor pattern refines the match
 pass	a boolean literal pattern against an integer scrutinee is a type error
 pass	a boolean literal pattern matches a runtime scrutinee
 pass	a boolean parameter forwarded to a conditional result
@@ -143,6 +144,9 @@ pass	a list chosen by a runtime if is length-measured without emitting invalid w
 pass	a list mixing integer and boolean elements is a type error
 pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
+pass	a literal inside a NESTED constructor pattern refines the match
+pass	a literal inside a constructor pattern matches a runtime payload
+pass	a literal inside an Ok pattern refines a Result match
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match binder over a narrow scrutinee returns the bound value
@@ -201,6 +205,7 @@ pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-first field is projected from a record returned across a call boundary
+pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary function called from another function's body
@@ -646,7 +651,6 @@ todo	a list of tuples with different arities is a type error
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
-todo	a literal inside a constructor pattern matches a runtime payload
 todo	a literal inside a tuple pattern matches a runtime element
 todo	a literal segment before a binder dispatches then reads the payload
 todo	a literal segment matches a magic-number header by equality
@@ -691,7 +695,6 @@ todo	a nominal record compared to a plain record of the same shape is a type err
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a non-final unsized bytes segment is ill-formed
-todo	a non-matching literal inside a constructor pattern binds the runtime payload
 todo	a nullary constructor is a single-arity function taking unit
 todo	a one-element tuple pattern against a two-tuple is a type error
 todo	a pattern that binds the same name across nested sub-patterns is rejected

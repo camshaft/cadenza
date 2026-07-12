@@ -325,6 +325,11 @@ fn collect_cont_callees(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<
             collect_call_callees(db, *body, out);
             collect_cont_callees(db, els, out);
         }
+        // A literal test reaches callees through both continuations (the `path` walk has no calls).
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_cont_callees(db, then_, out);
+            collect_cont_callees(db, els, out);
+        }
         crate::core::SumCont::Switch { arms, .. } => {
             for arm in arms {
                 collect_cont_callees(db, &arm.cont, out);

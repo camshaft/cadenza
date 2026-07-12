@@ -113,6 +113,24 @@ pub enum SumCont {
         body: StructId,
         els: Box<SumCont>,
     },
+    /// A LITERAL-PAYLOAD test — a variant pattern whose payload (or a deeper sub-value) is a LITERAL
+    /// rather than a binder: `(Some 0)` matches `Some` carrying EXACTLY `0` (`core-semantics.md §Pattern
+    /// Matching`: "nested patterns can combine constructors and literals … the literal refines the
+    /// match"). The sub-value at `path` (from the ROOT scrutinee, `sum-payload`/`arr-get` steps) is read
+    /// and compared against the literal `probe`; on a match, control proceeds to `then_`; on a MISMATCH it
+    /// FALLS THROUGH to `els` — the continuation built from the REMAINING rows (a later arm of the same
+    /// variant, typically the binding arm `(Some k)`), exactly as [`Guarded`] threads a false guard's
+    /// `else`. A literal test does NOT count toward exhaustiveness (it may not match — it needs an
+    /// unguarded/binder fall-through of the same variant), the same rule guards follow. Distinct from a
+    /// discriminant [`Switch`] (which tests `sum-disc`); this tests a scalar VALUE at a payload leaf, so
+    /// the payload's variant is already fixed by an enclosing switch. `then_`/`els` are continuations
+    /// (so several literal tests on one arm nest, and the matched body is itself a `Leaf`/`LitTest`).
+    LitTest {
+        path: Vec<PathStep>,
+        probe: Probe,
+        then_: Box<SumCont>,
+        els: Box<SumCont>,
+    },
     /// A nested switch on the sub-value at `path` (from the ROOT scrutinee) — try each arm's disc, else
     /// the default arm. `path` is the full path from the scrutinee (not relative to the parent switch),
     /// so the backend walks it from the scrutinee handle uniformly at every depth.

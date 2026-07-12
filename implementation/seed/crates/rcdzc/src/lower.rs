@@ -917,9 +917,11 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             _ => (pat, None),
         };
-        match pattern_constraints(db, inner_pat, &scrut_ty, Vec::new()) {
+        let mut lit_tests = Vec::new();
+        match pattern_constraints(db, inner_pat, &scrut_ty, Vec::new(), &mut lit_tests) {
             Ok(constraints) => rows.push(MatchRow {
                 constraints,
+                lit_tests,
                 body,
                 guard,
             }),
@@ -951,6 +953,11 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
 #[derive(Clone)]
 struct MatchRow {
     constraints: Vec<(Vec<crate::core::PathStep>, u32)>,
+    /// LITERAL tests the arm imposes on payload sub-values: each `(path, probe)` requires the scalar at
+    /// `path` to equal the literal. A `(Some 0)` pattern adds `([Payload], Int(0))`. Like a guard, a
+    /// literal test does NOT count toward exhaustiveness (it may not match — it needs a same-variant
+    /// binder/wildcard fall-through), and it is gated once the discriminant constraints are satisfied.
+    lit_tests: Vec<(Vec<crate::core::PathStep>, crate::core::Probe)>,
     body: StructId,
     /// A match-arm GUARD `(guard <pattern> <cond>)` — the boolean `<cond>` the arm additionally requires.
     /// `None` for an unguarded arm. Once every discriminant constraint is satisfied (the row reaches a
@@ -972,6 +979,7 @@ fn pattern_constraints(
     pat: StructId,
     ty: &crate::ty::Ty,
     path: Vec<crate::core::PathStep>,
+    lit_tests: &mut Vec<(Vec<crate::core::PathStep>, crate::core::Probe)>,
 ) -> Result<Vec<(Vec<crate::core::PathStep>, u32)>, Reject> {
     // A GUARDED pattern `(guard <inner-pattern> <cond>)` contributes the INNER pattern's discriminant
     // constraints (the guard itself is not a discriminant test — it is carried on the `MatchRow` by
@@ -984,7 +992,27 @@ fn pattern_constraints(
                 "a guarded pattern must be (guard <pattern> <cond>)",
             ));
         }
-        return pattern_constraints(db, g[0], ty, path);
+        return pattern_constraints(db, g[0], ty, path, lit_tests);
+    }
+    // A LITERAL payload sub-pattern — an integer or boolean atom, NOT a name. `(Some 0)` matches `Some`
+    // carrying exactly `0`: the literal refines the match (`core-semantics.md §Pattern Matching`, "nested
+    // patterns can combine constructors and literals"). It imposes NO discriminant constraint (a scalar
+    // has no variant tag); it adds a LITERAL TEST `(path, probe)` — the sub-value at `path` must EQUAL
+    // the literal — gated (like a guard) once the enclosing discriminant is satisfied, with a same-variant
+    // fall-through for the non-matching case. The literal's TYPE must agree with the sub-value's type
+    // (`(Some true)` over an `Option Int64` is CDZ0203, the ordinary literal-vs-scalar mismatch); we
+    // record the probe here and let the arm-body type-check catch a mismatch (a bool probe on an int slot
+    // would be an invalid emit, but the type checker rejects the ill-typed arm first).
+    match crate::resolve::resolved_of(db, pat) {
+        crate::resolved::Resolved::Int(v) => {
+            lit_tests.push((path, crate::core::Probe::Int(v)));
+            return Ok(Vec::new());
+        }
+        crate::resolved::Resolved::Bool(b) => {
+            lit_tests.push((path, crate::core::Probe::Bool(b)));
+            return Ok(Vec::new());
+        }
+        _ => {}
     }
     // A bare NAME: either a NULLARY VARIANT of this sum (`None`) or a binder/wildcard. Resolve it against
     // the sum's variant set — a name that IS a variant contributes that discriminant (no payload to
@@ -1023,7 +1051,13 @@ fn pattern_constraints(
                 for (i, &elem) in elems.iter().enumerate() {
                     let mut deeper = path.clone();
                     deeper.push(crate::core::PathStep::Elem(i));
-                    out.extend(pattern_constraints(db, elem, &crate::ty::Ty::Any, deeper)?);
+                    out.extend(pattern_constraints(
+                        db,
+                        elem,
+                        &crate::ty::Ty::Any,
+                        deeper,
+                        lit_tests,
+                    )?);
                 }
                 return Ok(out);
             }
@@ -1042,7 +1076,13 @@ fn pattern_constraints(
         for (i, &elem) in elems.iter().enumerate() {
             let mut deeper = path.clone();
             deeper.push(crate::core::PathStep::Elem(i));
-            out.extend(pattern_constraints(db, elem, &elem_tys[i], deeper)?);
+            out.extend(pattern_constraints(
+                db,
+                elem,
+                &elem_tys[i],
+                deeper,
+                lit_tests,
+            )?);
         }
         return Ok(out);
     }
@@ -1098,7 +1138,7 @@ fn pattern_constraints(
                 .unwrap_or(crate::ty::Ty::Any);
             let mut deeper = path;
             deeper.push(crate::core::PathStep::Payload);
-            let sub = pattern_constraints(db, args[0], &payload_ty, deeper)?;
+            let sub = pattern_constraints(db, args[0], &payload_ty, deeper, lit_tests)?;
             out.extend(sub);
         }
         // A MULTI-PAYLOAD variant pattern `(Cons h t)` is sugar for the single-tuple-payload form `(Cons
@@ -1145,7 +1185,7 @@ fn pattern_constraints(
             for (i, (&arg, elem_ty)) in args.iter().zip(elem_tys.iter()).enumerate() {
                 let mut deeper = payload_path.clone();
                 deeper.push(crate::core::PathStep::Elem(i));
-                let sub = pattern_constraints(db, arg, elem_ty, deeper)?;
+                let sub = pattern_constraints(db, arg, elem_ty, deeper, lit_tests)?;
                 out.extend(sub);
             }
         }
@@ -1209,6 +1249,56 @@ fn build_tree(
                 Code::NonExhaustive,
                 "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
             ));
+        }
+        // A row whose discriminant constraints are all satisfied but that still carries LITERAL TESTS is
+        // at a leaf gated by those tests: `(Some 0)` reaches here (after the `Some` switch) with a pending
+        // `([Payload], Int(0))`. Emit a `LitTest` — test the sub-value at `path` against the literal; on a
+        // match, CONTINUE with that test dropped (further lit-tests / the guard / the body); on a MISMATCH,
+        // FALL THROUGH to the remaining rows (the same-variant binding arm `(Some k)`), exactly as a guard
+        // threads its `else`. A literal test does NOT count toward exhaustiveness — the fall-through must
+        // cover the variant. FOLD when the tested sub-value is a compile-time constant (a constant
+        // scrutinee): a matching literal drops the test, a non-matching one skips to the fall-through
+        // WITHOUT emitting the body — the constant-match half of corpus "nested patterns with literals".
+        Some(row) if row.constraints.is_empty() && !row.lit_tests.is_empty() => {
+            let (lit_path, probe) = row.lit_tests[0].clone();
+            // The row with this first literal test consumed (its other tests / guard / body remain).
+            let mut matched_row = row.clone();
+            matched_row.lit_tests.remove(0);
+            let mut matched_rows = vec![matched_row];
+            matched_rows.extend_from_slice(&rows[1..]);
+            // FOLD against a constant sub-value.
+            if let Some(c) = const_at_path(db, scrutinee, &lit_path) {
+                let hit = match (&probe, &c) {
+                    (crate::core::Probe::Int(v), Core::ConstInt(cv)) => v.eq_value(cv),
+                    (crate::core::Probe::Bool(b), Core::ConstBool(cb)) => b == cb,
+                    // A non-constant / type-mismatched sub-value can't fold — emit the runtime test.
+                    _ => {
+                        return build_lit_test(
+                            db,
+                            scrutinee,
+                            lit_path,
+                            probe,
+                            &matched_rows,
+                            &rows[1..],
+                            path_types,
+                        );
+                    }
+                };
+                if hit {
+                    return build_tree(db, scrutinee, &matched_rows, path_types);
+                } else {
+                    return build_tree(db, scrutinee, &rows[1..], path_types);
+                }
+            }
+            return build_lit_test(
+                db,
+                scrutinee,
+                lit_path,
+                probe,
+                &matched_rows,
+                &rows[1..],
+                path_types,
+            );
         }
         Some(row) if row.constraints.is_empty() && row.guard.is_none() => {
             return Ok(crate::core::SumCont::Leaf(row.body));
@@ -1284,6 +1374,7 @@ fn build_tree(
                             .filter(|(p, _)| *p != switch_path)
                             .cloned()
                             .collect(),
+                        lit_tests: row.lit_tests.clone(),
                         body: row.body,
                         guard: row.guard,
                     },
@@ -1293,13 +1384,27 @@ fn build_tree(
                 i,
                 MatchRow {
                     constraints: row.constraints.clone(),
+                    lit_tests: row.lit_tests.clone(),
                     body: row.body,
                     guard: row.guard,
                 },
             )),
         }
     }
-    // Exhaustiveness: every variant tested, or a default present (else CDZ0210).
+    // The switched sub-value's STATICALLY-KNOWN discriminant, if any — a `SumNew` core at `switch_path`
+    // has a fixed disc EVEN when its payload is a runtime value (`(Some n)` is `SumNew{Some, [n]}`: the
+    // `Some` tag is known, only `n` is runtime). It drives the FOLD below (pick the known arm, no runtime
+    // switch). It does NOT relax exhaustiveness: `core-semantics.md §Matching Is Exhaustive Or Rejected`
+    // (corpus 02 "a sum match missing a variant is non-exhaustive EVEN when the scrutinee is the covered
+    // one") makes exhaustiveness a property of the ARM SET against the TYPE's variant set, never of which
+    // variant the scrutinee holds — a value-driven shortcut that skips the check because the constant hit
+    // a present arm is exactly what that case forbids.
+    let known_disc = match const_at_path(db, scrutinee, &switch_path) {
+        Some(Core::SumNew { disc, .. }) => Some(disc),
+        _ => None,
+    };
+    // Exhaustiveness: every variant tested, or a default (wildcard/binder) present — else CDZ0210. Against
+    // the TYPE's variant set, independent of `known_disc` (see above).
     let has_default = !default_rows.is_empty();
     if !has_default && tested.len() < variant_count {
         return Err(Reject::coded(
@@ -1328,13 +1433,14 @@ fn build_tree(
         let cont = build_tree(db, scrutinee, &sub_rows, path_types)?;
         sum_arms.push(crate::core::SumArm { disc: None, cont });
     }
-    // FOLD when the switched sub-value is a compile-time-constant `SumNew`: pick the matching arm's
-    // continuation directly (no runtime switch). A partly-constant scrutinee folds each constant level and
-    // leaves the runtime remainder as a nested switch (the inner `build_tree` already declined to fold).
-    if let Some(Core::SumNew { disc, .. }) = const_at_path(db, scrutinee, &switch_path) {
+    // FOLD when the switched sub-value's discriminant is STATICALLY KNOWN (a `SumNew` core — its tag is
+    // fixed even if its payload is runtime): pick the matching arm's continuation directly, no runtime
+    // disc switch. `(match (Some n) …)` folds to the `Some` arm (whose body may still test the runtime
+    // payload `n` via a `LitTest`). A scrutinee whose disc is NOT known keeps the runtime `Switch`.
+    if let Some(disc) = known_disc {
         for arm in &sum_arms {
             if arm.disc.is_none() || arm.disc == Some(disc) {
-                trace!(target: "rcdzc::fold", "sum match folds to a selected arm (constant sub-value)");
+                trace!(target: "rcdzc::fold", "sum match folds to a selected arm (known discriminant)");
                 return Ok(arm.cont.clone());
             }
         }
@@ -1343,6 +1449,31 @@ fn build_tree(
     Ok(crate::core::SumCont::Switch {
         path: switch_path,
         arms: sum_arms,
+    })
+}
+
+/// Build a runtime `SumCont::LitTest` node: test the sub-value at `lit_path` against `probe`; on a match
+/// continue with `matched_rows` (this arm with the test consumed, then the rest of the sub-matrix), on a
+/// mismatch fall through to `else_rows`. Both sub-trees are compiled by `build_tree`. Split out of
+/// `build_tree` so the constant-fold path (a matching/non-matching constant sub-value) and the runtime
+/// path share one construction; the `then_`/`els` recursion is what lets several literal tests on one arm
+/// nest and a fall-through reach the same-variant binding arm.
+fn build_lit_test(
+    db: &mut Db,
+    scrutinee: StructId,
+    lit_path: Vec<crate::core::PathStep>,
+    probe: crate::core::Probe,
+    matched_rows: &[MatchRow],
+    else_rows: &[MatchRow],
+    path_types: &PathTypes,
+) -> Result<crate::core::SumCont, Reject> {
+    let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;
+    let els = build_tree(db, scrutinee, else_rows, path_types)?;
+    Ok(crate::core::SumCont::LitTest {
+        path: lit_path,
+        probe,
+        then_: Box::new(then_),
+        els: Box::new(els),
     })
 }
 
