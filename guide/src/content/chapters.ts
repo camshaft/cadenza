@@ -26,6 +26,13 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Welcome.tsx")),
   },
   {
+    slug: "philosophy",
+    title: "Why Cadenza is the way it is",
+    blurb: "The core tenets underneath the language.",
+    section: "Getting started",
+    Component: lazy(() => import("./chapters/Philosophy.tsx")),
+  },
+  {
     slug: "basics",
     title: "Values & functions",
     blurb: "Literals, bindings, functions, and type inference.",

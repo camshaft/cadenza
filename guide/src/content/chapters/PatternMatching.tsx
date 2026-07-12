@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Why } from "../../components/Why.tsx";
 
 export default function PatternMatching() {
   return (
@@ -47,6 +48,15 @@ export default function PatternMatching() {
         The <C>(Some x)</C> arm <em>binds</em> the payload to <C>x</C>. Swap <C>(Some 7)</C> for{" "}
         <C>(None unit)</C> in the code above and Run to take the other arm — it returns <C>0</C>.
       </P>
+
+      <Why tenet="match is patterns, not predicates">
+        Many languages let a branch head be any boolean test. Cadenza deliberately doesn't: a{" "}
+        <C>match</C> arm is always a <em>pattern</em>. Why refuse the more flexible option? Because a
+        head that could be an arbitrary predicate quietly demotes the real question —{" "}
+        <em>"did you handle every variant?"</em> — down to <em>"is there an else?"</em>. Keeping arms as
+        patterns is what lets the compiler check exhaustiveness against the type. Value conditions still
+        have a home; it's just <C>if</C>, not <C>match</C>.
+      </Why>
     </article>
   );
 }

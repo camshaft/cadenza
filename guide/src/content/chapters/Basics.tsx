@@ -1,6 +1,7 @@
 import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
+import { Why } from "../../components/Why.tsx";
 
 export default function Basics() {
   return (
@@ -28,6 +29,14 @@ export default function Basics() {
       </P>
       <Runnable source={`(let ((adder (fn (n) (fn (x) (+ x n)))))
   ((adder 3) 10))`} />
+
+      <Why tenet="Uniformity over special cases">
+        Underneath, every function takes exactly <em>one</em> argument and returns one value — a
+        two-argument function is sugar for a function returning a function (that's why{" "}
+        <C>adder</C> above works so naturally). Cadenza leans on this kind of uniformity everywhere:
+        fewer special cases means fewer places for the compiler — and your mental model — to disagree
+        with itself.
+      </Why>
 
       <H2>Higher-order functions</H2>
       <P>

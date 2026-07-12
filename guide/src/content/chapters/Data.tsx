@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Why } from "../../components/Why.tsx";
 
 export default function Data() {
   return (
@@ -29,6 +30,15 @@ export default function Data() {
 
       <P>Return the whole record to see its structural type:</P>
       <Runnable source={`(record (x 1) (y 2))`} />
+
+      <Why tenet="Everything is a record">
+        Records aren't just one data type among many — they're the mechanism the whole language is
+        built from. A module is a record of its exports; a built-in like <C>List</C> is a record of its
+        operations; a sum type is a record of its constructors. Because the special things are ordinary
+        values reached the ordinary way, the compiler needs just <em>one</em> lookup rule instead of
+        dozens of special cases — and a name you define simply shadows a built-in of the same name,
+        with no magic.
+      </Why>
 
       <H2>Functions inside data</H2>
       <P>
