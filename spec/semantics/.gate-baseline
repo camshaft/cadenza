@@ -17,6 +17,7 @@ pass	a conditional selects the false branch when the condition is false
 pass	a conditional's condition may itself be a conditional
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant tuple is returned as a program result
+pass	a correctly-annotated function parameter is accepted
 pass	a decimal integer literal
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
@@ -29,6 +30,7 @@ pass	a function is returned as a result
 pass	a function returning a boolean predicate result
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument
 pass	a helper sums two fields of a record parameter
@@ -291,6 +293,7 @@ todo	a constructor pattern nested under Some matches a runtime list element
 todo	a constructor whose payload is a constructor keeps the outer variant tag
 todo	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 todo	a curried function can be partially applied
+todo	a curried function-type annotation checks its inner result type against the argument
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a decimal token trailing letters is a malformed literal, not an unbound name
 todo	a declaration in a do block shadows an outer binding
@@ -333,6 +336,8 @@ todo	a function returns a heap sub-node selected by a match arm
 todo	a function stored in a record field is called after extraction
 todo	a function stored in a tuple element is called after extraction
 todo	a function whose body always diverges has result type Never
+todo	a function-typed parameter annotation is not silently discarded in the body
+todo	a function-typed parameter annotation's result type is checked against the argument
 todo	a generic unwrap helper consumes a fallible Bytes.at result
 todo	a guard sees the names its pattern binds and arms are tried in order
 todo	a guarded arm is selected when its guard holds

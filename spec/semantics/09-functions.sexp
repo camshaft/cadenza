@@ -838,6 +838,63 @@
   (input  (do (def (f x) (+ x x)) (def (main) (f true)) (export main)))
   (error  CDZ0203))
 
+; --- A FUNCTION-TYPED parameter annotation is checked against the passed function, RESULT included -
+; The higher-order analogue of the scalar arg-vs-param checks above. A parameter annotated with a
+; function type `(-> A B)` constrains the ARGUMENT to a function of that type — parameter AND result
+; (type-system.md §Annotations Constrain, Never Contradict). Passing an `A -> B'` function whose result
+; `B'` disagrees with the annotated `B` is a type error, and the check must descend through NESTED
+; arrows (a curried `(-> A (-> C D))` checks the inner result too). A passed lambda is typed as its own
+; arrow type — a bare parameter contributes `Any` (so it unifies with any expected parameter type, no
+; over-rejection), only a definite RESULT disagreement faults. The scalar-vs-function mismatch (`(f 5)`
+; to a function parameter) is already caught; this closes the function-vs-function deep-result hole.
+
+(case "a function-typed parameter annotation's result type is checked against the argument"
+  (doc    "`(def (f (: g (-> Int64 Bool))) (g 41))` declares `g` as `Int64 -> Bool`, but `(f (fn (x) (+
+           x 1)))` passes an `Int64 -> Int64` function — the RESULT types disagree (Bool vs Int64), a
+           type error (CDZ0203). The annotation must not be silently dropped: the passed lambda is typed
+           as its arrow type `Int64 -> Int64` and unified against the declared `Int64 -> Bool`, so the
+           result mismatch faults. The higher-order analogue of the scalar `(f 5)`-to-a-Bool-parameter
+           rejection above.")
+  (input  (do (def (f (: g (-> Int64 Bool))) (g 41)) (def (main) (f (fn (x) (+ x 1)))) (export main)))
+  (error  CDZ0203))
+
+(case "a function-typed parameter annotation is not silently discarded in the body"
+  (doc    "The witness that the annotation CONSTRAINS the body, not merely the call: `(def (f (: g (->
+           Int64 Bool))) (+ (g 41) 1))` — if `g`'s result were the annotated Bool, `(+ (g 41) 1)` would
+           be `(+ Bool 1)` and reject. It must reject (CDZ0203): `g`'s result is fixed to Bool by the
+           annotation, so using it as an integer operand contradicts. A generation that dropped the
+           annotation typed `(g 41)` as the actual Int64 and computed 43 — the annotation having no
+           effect. Pins that the fn-type annotation governs `g`'s result type throughout the body.")
+  (input  (do (def (f (: g (-> Int64 Bool))) (+ (g 41) 1)) (def (main) (f (fn (x) (+ x 1)))) (export main)))
+  (error  CDZ0203))
+
+(case "a curried function-type annotation checks its inner result type against the argument"
+  (doc    "The annotation check descends through NESTED arrows: `(def (f (: g (-> Int64 (-> Int64
+           Bool)))) ((g 1) 2))` annotates `g` as `Int64 -> Int64 -> Bool`, but `(fn (a) (fn (b) (+ a
+           b)))` is `Int64 -> Int64 -> Int64` — the INNER result types disagree (Bool vs Int64). Must
+           reject (CDZ0203). The function-type unification is structural, so a mismatch at any arrow
+           depth is caught, not only the outermost result.")
+  (input  (do (def (f (: g (-> Int64 (-> Int64 Bool)))) ((g 1) 2)) (def (main) (f (fn (a) (fn (b) (+ a b))))) (export main)))
+  (error  CDZ0203))
+
+(case "a correctly-annotated function parameter is accepted"
+  (doc    "The passing boundary: `(def (f (: g (-> Int64 Int64))) (g 41))` with the matching `Int64 ->
+           Int64` function `(fn (x) (+ x 1))` yields 42. Pins that a CORRECT function-type annotation is
+           accepted — the fix REJECTS a mismatched annotation without over-rejecting a matching one. A
+           bare-param lambda's parameter type is `Any`, so it unifies with the declared `Int64`
+           parameter freely; only a result disagreement faults, and here there is none.")
+  (input  (do (def (f (: g (-> Int64 Int64))) (g 41)) (def (main) (f (fn (x) (+ x 1)))) (export main)))
+  (output (: 42 Int64)))
+
+(case "a function-typed parameter with a matching Bool-returning argument is accepted"
+  (doc    "A matching non-Int result: `(def (f (: g (-> Int64 Bool))) (g 41))` applied to `(fn (x) (< x
+           5))` — an `Int64 -> Bool` function that agrees with the annotation — yields `(< 41 5)` =
+           false. Complements the rejection cases: when the passed function's result type MATCHES the
+           annotated one, the program is accepted and runs, confirming the check is a genuine agreement
+           test, not a blanket rejection of function-typed parameters.")
+  (input  (do (def (f (: g (-> Int64 Bool))) (g 41)) (def (main) (f (fn (x) (< x 5)))) (export main)))
+  (output (: false Bool)))
+
 ; --- Runtime arguments to the entrypoint: (call <export> <arg>…) --------------------------------
 ; Every case above calls a parameterized function with CONSTANT arguments, so the compiler folds the
 ; whole program to a value at compile time — a real strength (a compile-provable trap fails the build),

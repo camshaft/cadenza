@@ -174,10 +174,23 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             .unwrap_or(Ty::Any),
         // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value
         // (a `(typeval …)` node, OR a value the evaluator reduces to a type) types as `Type`; this is
-        // what makes a type first-class (it can be passed, returned, checked). A compile-time lambda
-        // is not a scalar value → `Any`.
+        // what makes a type first-class (it can be passed, returned, checked).
         Resolved::TypeVal(_) => Ty::Type,
-        Resolved::Lambda { .. } => Ty::Any,
+        // A lambda's type is its function type `param → … → result` — each parameter's type (its
+        // annotation, or `Any` for a bare param) curried onto the body's type. Typing a lambda as its
+        // arrow type (rather than the opaque `Any` it used to be) is what lets a HIGHER-ORDER call
+        // check the passed function against a `(-> A B)` parameter annotation: unifying the argument's
+        // `Fn(A', B')` against the declared `Fn(A, B)` catches a RESULT-type mismatch (`(-> Int Bool)`
+        // vs an `Int → Int` lambda) — structurally, so a nested/curried arrow is checked all the way
+        // down. A bare-param lambda contributes `Any` in its parameter slot, so it still unifies with
+        // any expected parameter type (no over-rejection); only a definite result disagreement faults.
+        Resolved::Lambda { params, body } => {
+            let result = type_of(db, body);
+            params.iter().rev().fold(result, |acc, &p| {
+                let pt = type_of(db, crate::eval::param_name_occ(db, p));
+                Ty::Fn(Box::new(pt), Box::new(acc))
+            })
+        }
     }
 }
 

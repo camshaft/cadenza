@@ -3624,6 +3624,68 @@ mod stage1 {
         );
     }
 
+    #[test]
+    fn a_function_typed_parameter_annotation_is_checked_against_the_argument() {
+        // The HIGHER-ORDER analogue of the scalar arg-vs-param check: a parameter annotated with a
+        // FUNCTION type `(-> A B)` must be checked against the passed function's type — RESULT included.
+        // A lambda argument used to type as `Any` (so unifying `Fn(Int,Bool)` against it trivially
+        // succeeded and the annotation was silently dropped); now a lambda types as its own arrow type,
+        // so a result mismatch is caught. Each of these MUST reject (CDZ0203), never run to a value.
+        let must_reject = |src: &str| {
+            compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a mismatched function-type annotation must reject")
+                .code
+        };
+        // Outermost result mismatch: (-> Int64 Bool) annotation, an Int64 -> Int64 argument.
+        assert_eq!(
+            must_reject(
+                "(module m (def (f (: g (-> Int64 Bool))) (g 41)) \
+                   (def (main) (f (fn (x) (+ x 1)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
+        // The annotation constrains the BODY too: (+ (g 41) 1) with g's result fixed to Bool rejects.
+        assert_eq!(
+            must_reject(
+                "(module m (def (f (: g (-> Int64 Bool))) (+ (g 41) 1)) \
+                   (def (main) (f (fn (x) (+ x 1)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
+        // NESTED arrow: the inner result of a curried (-> Int64 (-> Int64 Bool)) is checked too.
+        assert_eq!(
+            must_reject(
+                "(module m (def (f (: g (-> Int64 (-> Int64 Bool)))) ((g 1) 2)) \
+                   (def (main) (f (fn (a) (fn (b) (+ a b))))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
+        // No over-rejection: a MATCHING function-type annotation compiles and runs.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (f (: g (-> Int64 Int64))) (g 41)) \
+                       (def (main) (f (fn (x) (+ x 1)))) (export main))"
+                )))
+                .expect("a matching function-type annotation compiles"),
+                "main"
+            ),
+            42
+        );
+        // A matching Bool-returning argument is accepted and runs: (< 41 5) = false.
+        assert!(!run_returns::<bool>(
+            &compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: g (-> Int64 Bool))) (g 41)) \
+                   (def (main) (f (fn (x) (< x 5)))) (export main))"
+            )))
+            .expect("a matching Bool-returning fn argument compiles"),
+            "main"
+        ));
+    }
+
     // ── first-class types: `(Int W)` builds a width-specialized MODULE via the one Meta.apply path ──
 
     #[test]

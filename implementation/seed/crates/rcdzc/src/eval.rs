@@ -358,7 +358,7 @@ pub fn apply_lambda(
 /// or the occurrence itself for a bare parameter. This is the identity a body reference to the
 /// parameter resolves to (via resolve's `binder_in`), so β-substitution keys on it. Mirrors resolve's
 /// `param_name` on the evaluator side (a param occurrence is either a name atom or a `(: name T)` list).
-fn param_name_occ(db: &Db, param: StructId) -> StructId {
+pub(crate) fn param_name_occ(db: &Db, param: StructId) -> StructId {
     if db.ast.as_name(param).is_some() {
         return param;
     }
