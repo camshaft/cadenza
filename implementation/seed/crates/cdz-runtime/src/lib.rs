@@ -793,15 +793,17 @@ fn op_bytes_slice(buf: Handle, start: u32, len: u32) -> Handle {
     if let Some((parent, off1)) = collapse {
         op_dup(parent);
         op_drop(buf);
-        let mut raw = Vec::with_capacity(8);
-        raw.extend_from_slice(&(off1 + start).to_le_bytes());
-        raw.extend_from_slice(&len.to_le_bytes());
-        return alloc(vec![parent], raw);
+        return alloc_raw(vec![parent], slice_raw(off1 + start, len)); // slice-of-slice: inline [off,len]
     }
-    let mut raw = Vec::with_capacity(8);
-    raw.extend_from_slice(&start.to_le_bytes());
-    raw.extend_from_slice(&len.to_le_bytes());
-    alloc(vec![buf], raw)
+    alloc_raw(vec![buf], slice_raw(start, len)) // slice node: inline [off,len], no transient Vec
+}
+
+/// The 8-byte `[off][len]` raw header of a bytes SLICE node, built INLINE (no transient heap Vec).
+fn slice_raw(off: u32, len: u32) -> Raw {
+    let mut buf = [0u8; INLINE_RAW_CAP];
+    buf[0..4].copy_from_slice(&off.to_le_bytes());
+    buf[4..8].copy_from_slice(&len.to_le_bytes());
+    Raw::Inline { len: 8, buf }
 }
 
 /// `bytes-compact(buf)` — a Bytes equal to `buf` by content whose storage is INDEPENDENT of any
@@ -4504,6 +4506,29 @@ mod tests {
         });
         println!("ALLOC sum_new x{N}: {sum}");
         assert!(sum <= 2200, "sum_new x{N} allocs {sum} exceeds ceiling 2200 (node Box + handles Vec; the disc is inline — was 3/op with a heap disc Vec)");
+
+        // (J) bytes SLICE x1000 — a rope slice node over a shared leaf: 1 handle (the parent buf) +
+        // the 8-byte `[off,len]` raw. With the inline `Raw` the `[off,len]` header no longer allocates
+        // a transient heap Vec (`slice_raw` builds it inline), so a slice node is the node Box + its
+        // 1-element handles Vec = 2 allocs/op (was 3: + the [off,len] Vec). Guards the inline-raw win
+        // for the O(1)-no-copy bytes rope. The leaf is built + retained OUTSIDE the loop so we measure
+        // only the slice node, not the leaf's construction.
+        let leaf = {
+            let b = op_bytes_alloc(16);
+            for i in 0..16u32 {
+                op_bytes_set(b, i, i);
+            }
+            b
+        };
+        let slice = measure(&mut || {
+            for _ in 0..N {
+                op_dup(leaf); // slice consumes a ref to its parent; keep the leaf alive across the batch
+                op_drop(op_bytes_slice(leaf, 2, 8));
+            }
+        });
+        println!("ALLOC bytes_slice x{N}: {slice}");
+        assert!(slice <= 2200, "bytes_slice x{N} allocs {slice} exceeds ceiling 2200 (node Box + 1-elem handles Vec; the [off,len] raw is inline — was 3/op with a heap raw Vec)");
+        op_drop(leaf);
     }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type

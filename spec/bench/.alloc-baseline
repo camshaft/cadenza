@@ -1,6 +1,7 @@
 # runtime allocation baseline — gross heap allocs per op-batch (count\tname).
 # Source: the `hot_op_allocation_ceilings` test in cdz-runtime. Regenerate with
 # `cargo xtask bench --save`; check with `cargo xtask bench`. Lower is better.
+2000	bytes_slice x1000
 766	map_insert x1000
 3	map_iterate x1000
 0	map_lookup x1000
