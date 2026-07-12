@@ -41,7 +41,7 @@
 ; types", and #Structural Values Are Comparable Only When Their Shapes Match speaks of a sum's "variant
 ; SET"; #A Match Is Exhaustive Against The Sum Type's Variant Set checks exhaustiveness against that set.
 ; For the variant set to be well-defined, the variant names must be distinct, so a sum declaring the same
-; variant name twice — `(type T (A Int64 | A Bool))` — is ill-formed and MUST be rejected (CDZ0201), the
+; variant name twice — `(type T (A Int64) (A Bool))` — is ill-formed and MUST be rejected (CDZ0201), the
 ; same duplicate-member ill-formedness a record with a duplicate field (`(record (a 1) (a 2))` above), a
 ; module with a duplicate definition (11-modules.sexp), and an effect declaring an operation twice
 ; (14-effects-and-handlers.sexp) are rejected for. A compiler that registers each variant without checking
@@ -51,7 +51,7 @@
 ; requires. A generation that does not yet detect a duplicate variant name declines rather than binding one.
 
 (case "a sum declaring a variant name twice is a type error"
-  (doc    "`(type T (A Int64 | A Bool))` declares the variant `A` twice — but a sum's variant names are a
+  (doc    "`(type T (A Int64) (A Bool))` declares the variant `A` twice — but a sum's variant names are a
            SET (type-system.md #The Structural Types Are Record, Tuple, And Sum: a sum's shape is its
            variant names with their payload types; #A Match Is Exhaustive Against The Sum Type's Variant
            Set), so declaring `A` twice makes the variant set ill-defined and MUST be rejected (CDZ0201),
@@ -1217,7 +1217,7 @@
            a persistent tree, not a cons list), matching by elements the way ML/Rust do, not by exposing
            an internal cell structure. Every list-consuming pass a compiler writes — a module's def list,
            a call's argument list, a block's statements — is this fold; without it each must hand-roll a
-           `(type FList (FNil | FCons …))` cons-sum that duplicates the sequence type the language already
+           `(type FList FNil (FCons …))` cons-sum that duplicates the sequence type the language already
            has (see the `IntList` fold above, which stands in precisely because the built-in `list` cannot
            yet be matched). The spec addition (`core-semantics.md` §Pattern Matching, list deconstruction)
            and the STATIC/const-fold lowering have landed; this RUNTIME form — `sum` recurses over its
@@ -2432,8 +2432,8 @@
   (error     CDZ0201))
 
 (case "a program's unary variant reusing a prelude nullary variant name is unary"
-  (doc    "A program declares `(type Expr (Lit Int64 | Neg Expr))` whose `Neg` variant carries a
-           payload — reusing the NAME of the prelude `(type Sign (Neg | Zero | Pos))`'s NULLARY `Neg`.
+  (doc    "A program declares `(type Expr (Lit Int64) (Neg Expr))` whose `Neg` variant carries a
+           payload — reusing the NAME of the prelude `(type Sign Neg Zero Pos)`'s NULLARY `Neg`.
            The program's declaration governs its own `Expr.Neg`: it is UNARY, so `(Expr.Neg (Expr.Lit
            5))` is well-typed (not a nullary-variant-carries-a-payload error), and a recursive fold over
            it computes — `depth` of a singly-negated literal is 1. Pins that a program `(type …)`
@@ -2557,7 +2557,7 @@
 (case "a sum type is declared with named variants"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable Constructed And Deconstructed (1st
            sentence): a program declares a sum type as a set of named variants. Syntax TBD
-           (options/sum-type-declaration/); this case uses (type Color (Red | Green | Blue)) to
+           (options/sum-type-declaration/); this case uses (type Color Red Green Blue) to
            declare Color with three nullary constructors. Each constructor is single-arity taking
            Unit per the uniform constructor requirement. The constructors bind in a Color record:
            Color.Red, Color.Green, Color.Blue. Applying the nullary constructor `(Color.Red unit)`
@@ -2573,7 +2573,7 @@
 
 (case "a sum type variant can carry data"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable Constructed And Deconstructed (1st
-           sentence: 'each optionally carrying data'). Syntax (type Result (Ok Int64 | Err))
+           sentence: 'each optionally carrying data'). Syntax (type Result (Ok Int64) Err)
            declares Result where Ok carries an Int64 and Err carries Unit (nullary). Both are
            single-arity: Ok takes Int64, Err takes Unit. Constructors: Result.Ok, Result.Err.")
   (needs  sum-type-declaration)
@@ -2585,7 +2585,7 @@
 (case "sum type constructors are in scope after declaration"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable: declaring a sum type binds its
            constructors in the enclosing scope as members of a record named after the type.
-           After (type Status (Ready | Waiting)), both Status.Ready and Status.Waiting are
+           After (type Status Ready Waiting), both Status.Ready and Status.Waiting are
            Constructor values accessible via member access.")
   (needs  sum-type-declaration)
   (input  (do
@@ -2598,7 +2598,7 @@
 (case "a sum type can mix nullary and payload-carrying variants"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable and the uniform constructor
            requirement: a sum can have both nullary (take Unit) and payload-carrying (take data)
-           constructors. (type Maybe (Just Int64 | Nothing)) declares Maybe where Just takes
+           constructors. (type Maybe (Just Int64) Nothing) declares Maybe where Just takes
            Int64 and Nothing takes Unit — both single-arity, uniformly handled.")
   (needs  sum-type-declaration)
   (input  (do
@@ -2787,7 +2787,7 @@
 
 (case "a recursive sum type works with pattern matching"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable: sum types can be recursive — a variant
-           can carry the type itself. (type IntList (Cons (Tuple Int64 IntList) | Nil)) is a linked list.
+           can carry the type itself. (type IntList (Cons (Tuple Int64 IntList)) Nil) is a linked list.
            Pattern matching deconstructs recursively. This is critical: the AST is a recursive sum type.")
   (needs  sum-type-declaration)
   (input  (do

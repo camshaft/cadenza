@@ -125,7 +125,7 @@
 ; scrutinee of a `match`. A sum's shape is "its variant names with their payload types" (type-system.md
 ; #The Structural Types Are Record, Tuple, And Sum), and "a value of a sum type MUST be constructed
 ; through one of its variants" (§A Value Of A Sum Type Is Constructed Through A Variant), so constructing
-; `(I true)` under `(type N (I Int64 | J Int64))` — where `I`'s payload type is Int64 and `true` is Bool
+; `(I true)` under `(type N (I Int64) (J Int64))` — where `I`'s payload type is Int64 and `true` is Bool
 ; — is ill-typed and MUST be rejected (CDZ0201), no matter the surrounding context. The seed rejects it
 ; in EVERY position — bare `(I true)`, let-bound `(let ((n (I true))) n)`, as a function argument, when
 ; annotated `(: (I true) N)`, and over-applied `(I 5 6)` — EXCEPT when the constructor is the direct
@@ -138,7 +138,7 @@
 ; not carried to the match-scrutinee position). A generation that checks the scrutinee's payload declines
 ; the ill-typed program rather than running it and returning a Bool where an Int64 is required.
 (case "a variant with a wrong-type payload as a direct match scrutinee is a type error"
-  (doc    "`(match (I true) ((I x) x) ((J y) y))` under `(type N (I Int64 | J Int64))` matches a
+  (doc    "`(match (I true) ((I x) x) ((J y) y))` under `(type N (I Int64) (J Int64))` matches a
            constructor `(I true)` whose payload `true` is Bool where `I`'s declared payload type is Int64
            — ill-typed exactly as the bare `(I true)` is (rejected in every other position: bare,
            let-bound, as an argument, annotated, over-applied). MUST be rejected (CDZ0201). Pins that the
