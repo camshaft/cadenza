@@ -1129,6 +1129,55 @@ pub mod driver {
         obj.string("rewritten", rewritten);
         obj.finish()
     }
+
+    /// Render a structural tree-diff (`a` → `b`) as human-readable lines, one change per line:
+    /// `PATH: replace OLD => NEW` / `PATH: add NEW` / `PATH: remove OLD`. Empty when identical.
+    pub fn changes_report(a: &Tree, b: &Tree) -> String {
+        let changes = treediff::diff(a, b);
+        let mut out = String::new();
+        for c in &changes {
+            let p = treediff::path_str(&c.path);
+            let line = match &c.kind {
+                treediff::ChangeKind::Replace { old, new } => format!("{p}: replace {old} => {new}"),
+                treediff::ChangeKind::Add { new } => format!("{p}: add {new}"),
+                treediff::ChangeKind::Remove { old } => format!("{p}: remove {old}"),
+            };
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Render a structural tree-diff as JSON: `[{path:[…], kind, old?, new?}]`.
+    pub fn changes_json(a: &Tree, b: &Tree) -> String {
+        let changes = treediff::diff(a, b);
+        let mut arr = json::Array::new();
+        for c in &changes {
+            let mut obj = json::Object::new();
+            let mut path = json::Array::new();
+            for i in &c.path {
+                path.raw(&i.to_string());
+            }
+            obj.raw("path", &path.finish());
+            match &c.kind {
+                treediff::ChangeKind::Replace { old, new } => {
+                    obj.string("kind", "replace");
+                    obj.string("old", old);
+                    obj.string("new", new);
+                }
+                treediff::ChangeKind::Add { new } => {
+                    obj.string("kind", "add");
+                    obj.string("new", new);
+                }
+                treediff::ChangeKind::Remove { old } => {
+                    obj.string("kind", "remove");
+                    obj.string("old", old);
+                }
+            }
+            arr.raw(&obj.finish());
+        }
+        arr.finish()
+    }
 }
 
 /// A minimal, dependency-free JSON string builder — just what the `--json` output needs (objects,
@@ -1332,6 +1381,185 @@ pub mod diff {
             new_start + 1,
             new_count
         )
+    }
+}
+
+/// A STRUCTURAL tree diff — what SUBTREES changed between two programs, not what text lines moved.
+/// The complement of `diff` (line-based): where the unified diff shows edited source lines, this
+/// shows edited nodes, each addressed by a path (the child-index route from the root). It answers
+/// "what did a rewrite/edit actually change to the tree?" independent of formatting.
+pub mod treediff {
+    use super::{tree_eq, Tree};
+
+    /// One structural change between the old and new trees.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Change {
+        /// The child-index route from the root to the changed node. `[]` is the root; `[2, 0]` is
+        /// "child 2, then its child 0". For `Add`/`Remove` in a list, the last index is the position
+        /// within that list.
+        pub path: Vec<usize>,
+        pub kind: ChangeKind,
+    }
+
+    /// The nature of a change. `old`/`new` are rendered s-expressions (one line each).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum ChangeKind {
+        /// A node was replaced by a different node (leaf value changed, a list became an atom or vice
+        /// versa, or a list's HEAD changed so recursion can't align children meaningfully).
+        Replace { old: String, new: String },
+        /// A child node was inserted in a list (present in new, not aligned in old).
+        Add { new: String },
+        /// A child node was deleted from a list (present in old, not aligned in new).
+        Remove { old: String },
+    }
+
+    /// Structurally diff `old` → `new`, returning the changes in pre-order. Empty when the trees are
+    /// structurally equal (provenance ignored).
+    ///
+    /// Alignment rule (what makes the output read like code, not a raw insert/delete storm):
+    /// - Two lists with the SAME head name and SAME arity recurse **positionally** — a single changed
+    ///   operand is one `Replace` at that child, not "whole form replaced".
+    /// - Two lists that differ in arity (same head or not) align children by LCS over structural
+    ///   equality, yielding `Add`/`Remove` for the unmatched children and recursing into aligned pairs.
+    /// - Anything else (atom vs list, differing leaf value, differing head) is one `Replace`.
+    pub fn diff(old: &Tree, new: &Tree) -> Vec<Change> {
+        let mut out = Vec::new();
+        diff_at(old, new, &mut Vec::new(), &mut out);
+        out
+    }
+
+    fn diff_at(old: &Tree, new: &Tree, path: &mut Vec<usize>, out: &mut Vec<Change>) {
+        if tree_eq(old, new) {
+            return;
+        }
+        match (old, new) {
+            (Tree::List(a, _), Tree::List(b, _)) if same_head(a, b) => {
+                diff_children(a, b, path, out);
+            }
+            // Different shape / leaf / head: a whole-node replace.
+            _ => out.push(Change {
+                path: path.clone(),
+                kind: ChangeKind::Replace {
+                    old: old.to_sexpr(),
+                    new: new.to_sexpr(),
+                },
+            }),
+        }
+    }
+
+    /// Do two child-lists share a head name? (Both empty, or both headed by the same name atom.) A
+    /// shared head means recursing is meaningful; a changed head means the forms are different
+    /// constructs and a whole-node replace reads better.
+    fn same_head(a: &[Tree], b: &[Tree]) -> bool {
+        match (a.first(), b.first()) {
+            (None, None) => true,
+            (Some(x), Some(y)) => match (x.as_name(), y.as_name()) {
+                (Some(nx), Some(ny)) => nx == ny,
+                // Non-name heads (rare): treat as alignable so we recurse rather than replace whole.
+                _ => true,
+            },
+            _ => false,
+        }
+    }
+
+    /// Diff the children of two same-head lists. Equal arity ⇒ positional; unequal ⇒ LCS alignment.
+    fn diff_children(a: &[Tree], b: &[Tree], path: &mut Vec<usize>, out: &mut Vec<Change>) {
+        if a.len() == b.len() {
+            for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                path.push(i);
+                diff_at(x, y, path, out);
+                path.pop();
+            }
+            return;
+        }
+        // LCS over structural equality gives a stable alignment; unmatched a-children are Remove,
+        // unmatched b-children are Add, matched pairs recurse.
+        let ops = align(a, b);
+        // `pos` tracks the index within the NEW list for reporting Add/Remove positions.
+        let mut pos = 0usize;
+        for op in ops {
+            match op {
+                Align::Keep(i, j) => {
+                    path.push(j);
+                    diff_at(&a[i], &b[j], path, out);
+                    path.pop();
+                    pos = j + 1;
+                }
+                Align::Del(i) => {
+                    let mut p = path.clone();
+                    p.push(pos);
+                    out.push(Change {
+                        path: p,
+                        kind: ChangeKind::Remove { old: a[i].to_sexpr() },
+                    });
+                }
+                Align::Ins(j) => {
+                    let mut p = path.clone();
+                    p.push(j);
+                    out.push(Change {
+                        path: p,
+                        kind: ChangeKind::Add { new: b[j].to_sexpr() },
+                    });
+                    pos = j + 1;
+                }
+            }
+        }
+    }
+
+    enum Align {
+        Keep(usize, usize), // (index in a, index in b) — structurally equal, recurse for inner diffs
+        Del(usize),         // index in a
+        Ins(usize),         // index in b
+    }
+
+    /// LCS alignment of two child slices by structural equality (the same shape as the line diff, on
+    /// trees). Prefers keeping structurally-equal children aligned so Add/Remove land on the genuinely
+    /// new/old ones.
+    fn align(a: &[Tree], b: &[Tree]) -> Vec<Align> {
+        let (n, m) = (a.len(), b.len());
+        let mut dp = vec![vec![0usize; m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                dp[i][j] = if tree_eq(&a[i], &b[j]) {
+                    dp[i + 1][j + 1] + 1
+                } else {
+                    dp[i + 1][j].max(dp[i][j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        let mut ops = Vec::new();
+        while i < n && j < m {
+            if tree_eq(&a[i], &b[j]) {
+                ops.push(Align::Keep(i, j));
+                i += 1;
+                j += 1;
+            } else if dp[i + 1][j] >= dp[i][j + 1] {
+                ops.push(Align::Del(i));
+                i += 1;
+            } else {
+                ops.push(Align::Ins(j));
+                j += 1;
+            }
+        }
+        while i < n {
+            ops.push(Align::Del(i));
+            i += 1;
+        }
+        while j < m {
+            ops.push(Align::Ins(j));
+            j += 1;
+        }
+        ops
+    }
+
+    /// Render a path `[2, 0]` as `2.0` (or `<root>` for the empty path) for human output.
+    pub fn path_str(path: &[usize]) -> String {
+        if path.is_empty() {
+            "<root>".to_string()
+        } else {
+            path.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(".")
+        }
     }
 }
 
@@ -1951,6 +2179,82 @@ mod tests {
             assert!(ins.contains("+b\n"), "{ins}");
             let del = diff::unified("a\nb\nc", "a\nc", "o", "n");
             assert!(del.contains("-b\n"), "{del}");
+        }
+    }
+
+    mod treediff_tests {
+        use super::subj;
+        use crate::query::treediff::{self, ChangeKind};
+
+        #[test]
+        fn identical_trees_have_no_changes() {
+            assert!(treediff::diff(&subj("(+ a (* b c))"), &subj("(+ a (* b c))")).is_empty());
+        }
+
+        #[test]
+        fn a_changed_leaf_is_one_replace_at_its_path() {
+            // `(+ a b)` vs `(+ a c)`: one Replace at child 2, NOT a whole-form replace.
+            let cs = treediff::diff(&subj("(+ a b)"), &subj("(+ a c)"));
+            assert_eq!(cs.len(), 1, "{cs:?}");
+            assert_eq!(cs[0].path, vec![2]);
+            assert_eq!(
+                cs[0].kind,
+                ChangeKind::Replace { old: "b".into(), new: "c".into() }
+            );
+        }
+
+        #[test]
+        fn a_nested_change_reports_the_deep_path() {
+            // `(f (g x))` vs `(f (g y))`: Replace at path 1.1 (child 1's child 1).
+            let cs = treediff::diff(&subj("(f (g x))"), &subj("(f (g y))"));
+            assert_eq!(cs.len(), 1, "{cs:?}");
+            assert_eq!(cs[0].path, vec![1, 1]);
+            assert_eq!(treediff::path_str(&cs[0].path), "1.1");
+        }
+
+        #[test]
+        fn a_changed_head_replaces_the_whole_node() {
+            // Different construct (`+` → `-`): a single whole-node Replace at the root, not per-child.
+            let cs = treediff::diff(&subj("(+ a b)"), &subj("(- a b)"));
+            assert_eq!(cs.len(), 1, "{cs:?}");
+            assert_eq!(cs[0].path, Vec::<usize>::new());
+            assert!(matches!(cs[0].kind, ChangeKind::Replace { .. }));
+        }
+
+        #[test]
+        fn an_added_child_is_an_add() {
+            // `(f a b)` vs `(f a b c)`: one Add of `c` at position 3.
+            let cs = treediff::diff(&subj("(f a b)"), &subj("(f a b c)"));
+            assert_eq!(cs.len(), 1, "{cs:?}");
+            assert_eq!(cs[0].kind, ChangeKind::Add { new: "c".into() });
+            assert_eq!(cs[0].path, vec![3]);
+        }
+
+        #[test]
+        fn a_removed_child_is_a_remove() {
+            // `(f a b c)` vs `(f a c)`: `b` removed. LCS keeps a and c aligned.
+            let cs = treediff::diff(&subj("(f a b c)"), &subj("(f a c)"));
+            assert_eq!(cs.len(), 1, "{cs:?}");
+            assert_eq!(cs[0].kind, ChangeKind::Remove { old: "b".into() });
+        }
+
+        #[test]
+        fn atom_vs_list_is_a_replace() {
+            let cs = treediff::diff(&subj("x"), &subj("(f y)"));
+            assert_eq!(cs.len(), 1);
+            assert_eq!(
+                cs[0].kind,
+                ChangeKind::Replace { old: "x".into(), new: "(f y)".into() }
+            );
+        }
+
+        #[test]
+        fn several_independent_changes_are_all_reported() {
+            // two operands change: `(f (+ a 0) (+ b 0))` vs `(f a b)`.
+            let cs = treediff::diff(&subj("(f (+ a 0) (+ b 0))"), &subj("(f a b)"));
+            assert_eq!(cs.len(), 2, "{cs:?}");
+            assert_eq!(cs[0].path, vec![1]);
+            assert_eq!(cs[1].path, vec![2]);
         }
     }
 }

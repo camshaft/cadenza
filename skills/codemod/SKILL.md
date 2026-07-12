@@ -5,11 +5,11 @@ description: >-
   codemod tool (in the cadenza-syntax crate). Read this whenever the task is finding or transforming
   code by SHAPE rather than text — structural search-and-replace, a rename/peephole/wrap refactor,
   a multi-rule simplifier pass, running a codemod across files/directories (apply in place, diff
-  preview, or JSON), counting occurrences of a form, extracting spans of matching nodes, or building
-  on the query/Tree matcher API. Covers the `,x`/`,@xs` pattern language, structural guards
-  (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`), multi-rule sets +
-  traversal strategy, multi-file/`--write`/`--diff`/`--json`, the CLI, the library API, and how it
-  maps to the self-hosted sidecar.
+  preview, or JSON), structurally diffing two programs (which subtrees changed), counting occurrences
+  of a form, extracting spans of matching nodes, or building on the query/Tree matcher API. Covers the
+  `,x`/`,@xs` pattern language, structural guards (`is-literal`/`head-is`/`matches`/`not`), relational
+  context (`inside`/`has`), multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`,
+  the `diff` (structural tree-diff) subcommand, the CLI, the library API, and the self-hosted sidecar map.
 ---
 
 # Structural query & rewrite (codemod) for Cadenza
@@ -94,6 +94,10 @@ $ cdz-syntax query '(+ ,e 0)' src/ --json
 # preview a rewrite (--diff, file untouched), then apply in place across a dir (--write)
 $ cdz-syntax rewrite '(+ ,x 0)' ',x' src/a.ml --diff
 $ cdz-syntax rewrite '(+ ,x 0)' ',x' src/ --write
+
+# STRUCTURAL diff of two programs — which subtrees changed (not text lines)
+$ cdz-syntax diff before.ml after.ml
+1: replace (+ a 0) => a
 ```
 
 - **Multiple FILEs and directories** are accepted (a DIR is recursed by extension); with no FILE,
@@ -109,6 +113,11 @@ $ cdz-syntax rewrite '(+ ,x 0)' ',x' src/ --write
   changed files only), `--json` emits `{file?, count, rewritten}` (mutually exclusive with `--write`).
   Always **validates as a transaction**: the result is re-printed to ML + re-parsed; if it doesn't
   round-trip it is **rejected** (non-zero exit, nothing written) — never a half-applied edit.
+- `diff FILE-A FILE-B` is a **structural** (subtree) diff, not a line diff: it reports each changed
+  node by path — `PATH: replace OLD => NEW` / `add NEW` / `remove OLD`, or `--json`
+  `[{path, kind, old?, new?}]`. Same-head lists recurse positionally (a changed operand is one
+  point-change), differing arity aligns by LCS. Use it to review what a rewrite/edit changed to the
+  tree, independent of formatting. (Distinct from `rewrite --diff`, which is a line-based unified diff.)
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
@@ -151,7 +160,12 @@ let outcome = query::driver::apply_rewrite(&rules, Strategy::BottomUp, &target, 
 let mjson = query::driver::matches_json(&pat, &q, &target, Some("a.ml"));    // [{file?,span,matched,bindings}]
 let rjson = query::driver::rewrite_json(Some("a.ml"), outcome.count, &outcome.output);
 let before = query::driver::project_target(&target, Format::Ml, 100)?;       // "before" side of a diff
-let d = query::diff::unified(&before, &outcome.output, "a/a.ml", "b/a.ml");   // unified diff text
+let d = query::diff::unified(&before, &outcome.output, "a/a.ml", "b/a.ml");   // unified LINE diff text
+
+// structural (subtree) diff of two trees
+let changes = query::treediff::diff(&tree_a, &tree_b);  // Vec<Change { path: Vec<usize>, kind }>
+let human   = query::driver::changes_report(&tree_a, &tree_b);   // "PATH: replace OLD => NEW" …
+let cjson   = query::driver::changes_json(&tree_a, &tree_b);     // [{path, kind, old?, new?}]
 ```
 
 Multi-file / `--write` / directory-walk plumbing lives in the CLI (the bin), not the library — the

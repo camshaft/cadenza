@@ -98,6 +98,7 @@ cdz-syntax query   PATTERN [FILE|DIR…] [--from FMT] [--count] [--json]
 cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--width N]
                    [--fixpoint] [--top-down] [--diff | --write | --json]
 cdz-syntax rewrite --rules FILE     [FILE|DIR…] …same flags…
+cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]     # structural (subtree) diff
 ```
 
 `--from`/`--to` are inferred from each FILE extension (`.cdz`/`.ml` → ml, `.sexp` → sexpr, `.bin` →
@@ -149,6 +150,10 @@ $ cdz-syntax rewrite '(+ ,x 0)' ',x' src/a.ml --diff
 # apply in place across a directory (only files that change and validate are written)
 $ cdz-syntax rewrite '(+ ,x 0)' ',x' src/ --write
 cdz-syntax: src/a.ml: rewrote 1 site(s)
+
+# STRUCTURAL diff of two programs — which subtrees changed (not text lines)
+$ cdz-syntax diff before.ml after.ml
+1: replace (+ a 0) => a
 ```
 
 - **query** prints each match as `byte START-END: <matched s-expr>` (the span comes from the parser's
@@ -162,6 +167,12 @@ cdz-syntax: src/a.ml: rewrote 1 site(s)
   `{file?, count, rewritten}`. `--write` is mutually exclusive with `--diff`/`--json`. Either way it
   **validates as a transaction**: the result is re-printed to ML and re-parsed; if it does not
   round-trip, the rewrite is **rejected** (non-zero exit, nothing written) — never a half-applied edit.
+- **diff** structurally diffs two programs and reports the changed SUBTREES, each addressed by a path
+  (the child-index route from the root): `PATH: replace OLD => NEW` / `add NEW` / `remove OLD`, or
+  `--json` `[{path, kind, old?, new?}]`. Unlike `rewrite --diff` (a line-based unified diff), this is a
+  *tree* diff: two same-head lists recurse positionally (a changed operand is one point-change, not a
+  whole-form replace); differing arity aligns children by LCS (add/remove); a changed head or an
+  atom↔list is a whole-node replace. Formatting-independent — it sees nodes, not lines.
 
 Because the parser is a recovering parser, `query` works over **broken input** too: it reports the
 recoverable parse error on stderr and still runs the query over the recovered tree — the "total query
@@ -177,6 +188,10 @@ over incomplete source" the tooling capability calls for.
   *already-rewritten* form, so a rule that exposes a new match in its result is caught in the same
   pass (e.g. `(+ ,x 0) → ,x` collapses `(+ (+ x 0) 0)` fully). `--fixpoint` re-runs until stable,
   **bounded** (64 passes) to survive a rule whose output re-matches its input.
+- **Tree-diff** recurses positionally through same-head/same-arity lists (a changed operand is a
+  point-change at its path, not a whole-form replace), aligns unequal-arity children by LCS over
+  structural equality (add/remove), and replaces a whole node on a changed head or atom↔list mismatch
+  — so the change set reads like the edit, independent of layout.
 
 ## Library API (`cadenza_syntax::query`)
 
@@ -207,10 +222,16 @@ query::driver::apply_rewrite(&RuleSet, Strategy, &Target, Format, width, fixpoin
 query::driver::matches_json(&Pattern, &Query, &Target, file: Option<&str>) -> String  // [{file?,span,matched,bindings}]
 query::driver::rewrite_json(file: Option<&str>, count, rewritten) -> String           // {file?,count,rewritten}
 query::driver::project_target(&Target, Format, width) -> Result<String, String>        // the "before" side of a --diff
+query::driver::changes_report(&Tree, &Tree) -> String     // human tree-diff: "PATH: replace OLD => NEW" …
+query::driver::changes_json(&Tree, &Tree)   -> String     // [{path, kind, old?, new?}]
+
+// structural tree-diff
+query::treediff::diff(&Tree, &Tree) -> Vec<Change>        // Change { path: Vec<usize>, kind: Replace|Add|Remove }
+query::treediff::path_str(&[usize]) -> String             // "2.0" (or "<root>")
 
 // small dependency-free helpers (no serde)
 query::json::{quote, Object, Array}     // JSON string builder
-query::diff::unified(old, new, old_label, new_label) -> String   // LCS-based unified diff, 3 lines context
+query::diff::unified(old, new, old_label, new_label) -> String   // LCS-based unified LINE diff, 3 lines context
 ```
 
 ## Mapping to the self-hosted end state (Rung 3)
@@ -243,13 +264,14 @@ prototype's `Tree` matcher is the executable spec for what those combinators mus
 
 ## Tests
 
-- `query` module unit tests (62): matching (metavars, consistency, variadic + anchoring, wildcard),
+- `query` module unit tests (70): matching (metavars, consistency, variadic + anchoring, wildcard),
   **guards** (each predicate, `matches`/`not`, conjunction, consistency interaction, compile-time
   rejection), **relational context** (inside/has/not-*, strict-descendant, composition), **multi-rule
   sets + strategy** (first-match-wins, rule-file compile, bottom-up vs top-down, fixpoint), the
-  **json** writer + **diff** engine, the driver's JSON/`project_target`.
-- `tests/query_cli.rs` (25): the built binary driven over stdin AND over temp files/dirs — query/
+  **json** writer + **diff** engine, **tree-diff** (leaf/nested change, head-replace, add/remove,
+  atom↔list, multiple changes), the driver's JSON/`project_target`.
+- `tests/query_cli.rs` (28): the built binary driven over stdin AND over temp files/dirs — query/
   count/rewrite, guards, relational flags, `--rules`, `--top-down`, **multi-file & directory walk**,
   **`--json`** (query + rewrite), **`--diff`** (preview, file untouched), **`--write`** (in-place,
-  no-op skip, stdin-rejected, mutually-exclusive-with-diff), cross-surface, broken-input recovery,
-  bad-pattern / unknown-guard rejection.
+  no-op skip, stdin-rejected, mutually-exclusive-with-diff), **`diff` subcommand** (changed subtree +
+  path, JSON, identical), cross-surface, broken-input recovery, bad-pattern / unknown-guard rejection.

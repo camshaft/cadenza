@@ -351,3 +351,52 @@ fn rewrite_json_reports_file_count_and_result() {
     assert!(s.contains("\"rewritten\":\"(f a b)\""), "{s}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- structural tree-diff (the `diff` subcommand) ----
+
+#[test]
+fn diff_reports_a_changed_subtree_at_its_path() {
+    let dir = scratch_dir("diffa");
+    std::fs::write(dir.join("a.ml"), "f(a + 0, b + 0)\n").unwrap();
+    std::fs::write(dir.join("b.ml"), "f(a, b + 0)\n").unwrap();
+    let (ok, stdout, _) = run(
+        &["diff", dir.join("a.ml").to_str().unwrap(), dir.join("b.ml").to_str().unwrap()],
+        "",
+    );
+    assert!(ok);
+    // one change: child 1 replaced; the unchanged second operand is not reported.
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(stdout.contains("1: replace (+ a 0) => a"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn diff_json_is_wellformed() {
+    let dir = scratch_dir("diffj");
+    std::fs::write(dir.join("a.sexp"), "(+ a b)\n").unwrap();
+    std::fs::write(dir.join("b.sexp"), "(+ a c)\n").unwrap();
+    let (ok, stdout, _) = run(
+        &["diff", dir.join("a.sexp").to_str().unwrap(), dir.join("b.sexp").to_str().unwrap(), "--json"],
+        "",
+    );
+    assert!(ok);
+    let s = stdout.trim();
+    assert!(s.contains("\"path\":[2]"), "{s}");
+    assert!(s.contains("\"kind\":\"replace\""), "{s}");
+    assert!(s.contains("\"old\":\"b\"") && s.contains("\"new\":\"c\""), "{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn diff_identical_reports_no_change() {
+    let dir = scratch_dir("diffid");
+    std::fs::write(dir.join("a.ml"), "f(x)\n").unwrap();
+    let (ok, stdout, stderr) = run(
+        &["diff", dir.join("a.ml").to_str().unwrap(), dir.join("a.ml").to_str().unwrap()],
+        "",
+    );
+    assert!(ok);
+    assert!(stdout.trim().is_empty(), "no stdout: {stdout:?}");
+    assert!(stderr.contains("no structural changes"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

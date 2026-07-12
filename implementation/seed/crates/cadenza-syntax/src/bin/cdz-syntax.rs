@@ -5,8 +5,9 @@
 //!
 //! ```text
 //! cdz-syntax convert [--from FMT] [--to FMT] [--width N] [FILE]
-//! cdz-syntax query   PATTERN          [FILE] [--from FMT] [--count]
-//! cdz-syntax rewrite PATTERN TEMPLATE [FILE] [--from FMT] [--to FMT] [--width N] [--fixpoint]
+//! cdz-syntax query   PATTERN          [FILE|DIR…] [--from FMT] [--count] [--json]
+//! cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--diff|--write|--json]
+//! cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]
 //! ```
 //!
 //! `--from`/`--to` are inferred from the FILE extension when omitted (`.cdz`/`.ml` → ml,
@@ -44,6 +45,25 @@ enum Cmd {
     Query(QueryArgs),
     /// Structurally rewrite a program: replace every PATTERN match with TEMPLATE, validated.
     Rewrite(RewriteArgs),
+    /// Structurally diff two programs: report which SUBTREES changed (not text lines).
+    Diff(DiffArgs),
+}
+
+#[derive(Args)]
+struct DiffArgs {
+    /// The "before" program.
+    file_a: String,
+
+    /// The "after" program.
+    file_b: String,
+
+    /// Input format for both files. Inferred from each extension when omitted.
+    #[arg(short, long, value_enum)]
+    from: Option<Fmt>,
+
+    /// Emit changes as JSON (`[{path, kind, old?, new?}]`) for machine consumption.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -181,6 +201,7 @@ fn main() -> ExitCode {
         Cmd::Convert(args) => run_convert(&args),
         Cmd::Query(args) => run_query(&args),
         Cmd::Rewrite(args) => run_rewrite(&args),
+        Cmd::Diff(args) => run_diff(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -344,6 +365,30 @@ fn run_query(args: &QueryArgs) -> Result<(), String> {
         println!("total: {total}");
     } else if args.count && !multi {
         println!("{total}");
+    }
+    Ok(())
+}
+
+/// Structurally diff two programs: report which subtrees changed (not text lines).
+fn run_diff(args: &DiffArgs) -> Result<(), String> {
+    let from_a = resolve_from(args.from, Some(&args.file_a))?;
+    let from_b = resolve_from(args.from, Some(&args.file_b))?;
+    let input_a = read_input(Some(&args.file_a))?;
+    let input_b = read_input(Some(&args.file_b))?;
+    let (a, errs_a) = query::driver::load(&input_a, from_a).map_err(|e| format!("{}: {e}", args.file_a))?;
+    let (b, errs_b) = query::driver::load(&input_b, from_b).map_err(|e| format!("{}: {e}", args.file_b))?;
+    report_input_errors(Some(&args.file_a), &errs_a);
+    report_input_errors(Some(&args.file_b), &errs_b);
+
+    if args.json {
+        println!("{}", query::driver::changes_json(&a.tree, &b.tree));
+    } else {
+        let report = query::driver::changes_report(&a.tree, &b.tree);
+        if report.is_empty() {
+            eprintln!("cdz-syntax: no structural changes");
+        } else {
+            print!("{report}");
+        }
     }
     Ok(())
 }
