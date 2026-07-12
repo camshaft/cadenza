@@ -3378,16 +3378,26 @@ fn champ_cursor_take(cur: Handle) -> (u32, Vec<Handle>, Vec<u32>) {
 }
 
 /// The current entry's `(deepest_node, base_index_in_handles)` under `stride`, or None if exhausted.
-/// The projection primitive SHARED by map (key = base, val = base+1) and set (elem = base).
+/// The projection primitive SHARED by map (key = base, val = base+1) and set (elem = base). BORROWS,
+/// and allocates NOTHING: it needs only the DEEPEST frame + its slot, so it reads the last handle and
+/// the last raw u32 straight out of the cursor node — not `champ_cursor_read`, which would clone the
+/// whole frames Vec and build the whole slots Vec just to index `[depth-1]` (this is called on EVERY
+/// key/val/elem projection, so that was ~2 wasted Vec allocs per iteration step).
 #[allow(dead_code)]
 fn champ_cursor_current(cur: Handle, stride: usize) -> Option<(Handle, usize)> {
-    let (state, frames, slots) = champ_cursor_read(cur);
-    if state != CURSOR_LIVE || frames.is_empty() {
-        return None;
-    }
-    let depth = frames.len();
-    let node = frames[depth - 1];
-    let slot = slots[depth - 1];
+    // Read state, the deepest frame (last handle), and the deepest slot (last raw u32) in one borrow.
+    let (node, slot) = with_node(cur, (Handle::NULL, None::<u32>), |n| {
+        let state = read_u32_at(&n.raw, 0);
+        if state != CURSOR_LIVE || n.handles.is_empty() {
+            return (Handle::NULL, None);
+        }
+        let depth = n.handles.len();
+        let node = n.handles[depth - 1];
+        // slots live at raw[4 + 4*i]; the deepest is at i = depth-1. `slots.len() == frames.len()`.
+        let slot = read_u32_at(&n.raw, 4 + 4 * (depth - 1));
+        (node, Some(slot))
+    });
+    let slot = slot?;
     let base = with_node(node, 0usize, |n| {
         let dm = champ_datamap(&n.raw);
         let nm = champ_nodemap(&n.raw);
@@ -3441,13 +3451,15 @@ fn op_map_iter(m: Handle) -> Handle {
 /// `Copy`, no `Drop`). SAFETY: caller verified `node_rc(cur) == 1`.
 fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Vec<u32>, state: u32) -> Handle {
     if let Some(n) = unsafe { cur.0.as_mut() } {
-        let mut raw = Vec::with_capacity(4 * (1 + slots.len()));
-        raw.extend_from_slice(&state.to_le_bytes());
+        // Reuse the cursor's EXISTING `raw` allocation (clear keeps its capacity) instead of allocating
+        // a fresh Vec — the cursor is rc==1, and its raw already held a `[state]slots…` of comparable
+        // size, so the re-extend rarely reallocates. Saves one Vec allocation per advance step.
+        n.raw.clear();
+        n.raw.extend_from_slice(&state.to_le_bytes());
         for s in &slots {
-            raw.extend_from_slice(&s.to_le_bytes());
+            n.raw.extend_from_slice(&s.to_le_bytes());
         }
         n.handles = frames;
-        n.raw = raw;
     }
     cur
 }
@@ -3807,9 +3819,9 @@ mod tests {
     /// including transient Vecs freed immediately, which the `live-objects` node counter does NOT see —
     /// so it catches a future change that reintroduces the per-spine-node `new_handles`/`champ_header`
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
-    /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove work (insert 3907, remove
-    /// 2953, iterate 5248, push 197, get 0); they are UPPER BOUNDS so ordinary noise never trips them
-    /// but a regression toward the old 6779/8397 does.
+    /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor work
+    /// (insert 3907, remove 2953, iterate 2248, push 197, get 0); they are UPPER BOUNDS so ordinary
+    /// noise never trips them but a regression toward the old 6779/8397/5248 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -3847,7 +3859,7 @@ mod tests {
             op_drop(c);
         });
         println!("ALLOC map_iterate x{N}: {iterate}");
-        assert!(iterate <= 6000, "unique map_iterate x{N} allocs {iterate} exceeds ceiling 6000");
+        assert!(iterate <= 2800, "unique map_iterate x{N} allocs {iterate} exceeds ceiling 2800 (was 5248; champ_cursor_current now alloc-free + champ_become_cursor reuses raw)");
         op_drop(m);
 
         // (C) map remove (unique) — remove all N.
