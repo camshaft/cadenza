@@ -1757,6 +1757,92 @@ fn a_branchless_select_computes_the_if_value() {
     );
 }
 
+/// CONDITIONAL CONSTANT PROPAGATION on a REPEATED condition: within a branch the enclosing condition is
+/// known, so a directly-nested `if` on the SAME condition collapses to its taken arm. `(if c (if c 1 2)
+/// 3)` → `(if c 1 3)` (inner `c` is true in the then-branch, so the inner `if` takes `1`); `(if c 1 (if
+/// c 2 3))` → `(if c 1 3)` (inner `c` is false in the else-branch, takes `3`). Both then fold to a single
+/// branchless `select` on `c` with no re-test of the condition. A DIFFERENT inner condition is left
+/// intact (no collapse). Sound in a language with no mutation: a pure condition re-evaluates to the same
+/// value, so its second test is redundant.
+#[test]
+fn a_repeated_condition_in_a_nested_if_collapses() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::db::Db;
+    use wasmtime::component::Val;
+    // The Lir of `(if c (if c 1 2) 3)` must have a SINGLE reference to the condition (one `local.get 0`
+    // feeding a branchless `select`) — the inner `if`'s re-test of `c` is gone.
+    let lir = |body: &str| -> Vec<Lir> {
+        let ast = crate::testkit::parse(&format!(
+            "(module m (def (f (: c Bool)) {body}) (def (main) 0) (export main))"
+        ));
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let params: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code
+    };
+    let then_nested = lir("(if c (if c 1 2) 3)");
+    assert_eq!(
+        then_nested
+            .iter()
+            .filter(|i| matches!(i, Lir::LocalGet(0)))
+            .count(),
+        1,
+        "the inner if's re-test of c must be gone (one condition read), got: {then_nested:?}"
+    );
+    // Value parity for both nesting positions.
+    let pick = |src: &str, c: bool| -> i64 {
+        let bytes = compile_component(&crate::codec::encode(&crate::testkit::parse(src)));
+        let bytes = bytes.expect("compile");
+        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(c)])
+    };
+    let then_src = "(module m (def (f (: c Bool)) (if c (if c 1 2) 3)) (export f))";
+    assert_eq!(
+        pick(then_src, true),
+        1,
+        "then-branch inner if takes its then-arm"
+    );
+    assert_eq!(pick(then_src, false), 3);
+    let else_src = "(module m (def (f (: c Bool)) (if c 1 (if c 2 3))) (export f))";
+    assert_eq!(pick(else_src, true), 1);
+    assert_eq!(
+        pick(else_src, false),
+        3,
+        "else-branch inner if takes its else-arm"
+    );
+    // A DIFFERENT inner condition must NOT collapse — both conditions are still read at run time.
+    let diff = {
+        let src = "(module m (def (f (: c Bool) (: d Bool)) (if c (if d 1 2) 3)) (export f))";
+        let bytes =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+        (
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::Bool(true)]),
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::Bool(false)]),
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::Bool(true)]),
+        )
+    };
+    assert_eq!(
+        diff,
+        (1, 2, 3),
+        "a distinct inner condition is not collapsed and dispatches on both"
+    );
+}
+
 /// A NESTED checked op `(* (+ a b) c)` runs correctly AND still traps on overflow after the
 /// dest-threading optimization (the inner `(+ a b)` writes its result directly into the outer mul's
 /// operand slot rather than a separate scratch slot + copy). Both the value and the guards must
