@@ -224,6 +224,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 trace!(target: "rcdzc::lower", node = id.0, "if with identical branches folds to the branch (trap-free condition)");
                 core_of(db, then_)
             }
+            // BOOLEAN COERCION: `(if c true false)` is just `c` — the `if` computes the condition's own
+            // value. `c` is a `Bool` (an `if` condition must be), and it is evaluated on BOTH branches of
+            // the original, so returning it drops the `if` with no change (including any trap in `c`,
+            // which still fires — `c` is unconditionally evaluated here just as it was as the condition).
+            // (The dual `(if c false true)` is `!c`; a general boolean negation has no core/Lir op yet,
+            // so it is left as an `if` — a follow-up when `i32.eqz` is added.)
+            _ if matches!(core_of(db, then_), Core::ConstBool(true))
+                && matches!(core_of(db, else_), Core::ConstBool(false)) =>
+            {
+                trace!(target: "rcdzc::lower", node = id.0, "if c true false folds to the condition c");
+                core_of(db, cond)
+            }
             _ => Core::If { cond, then_, else_ },
         },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
@@ -2097,6 +2109,32 @@ mod tests {
         assert!(
             matches!(core_of(&mut db, body), Core::Param { .. }),
             "an if with identical branches over a trap-free condition folds to the branch"
+        );
+    }
+
+    #[test]
+    fn if_true_false_folds_to_the_condition() {
+        // `(if c true false)` is a boolean coercion no-op — it computes `c` itself. `(< a b)` is a
+        // comparison, so the body folds to `Core::Compare`, NOT a `Core::If` wrapping two ConstBools.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) true false)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let body = db.defs[db.def_by_name("f").unwrap()].body.unwrap();
+        assert!(
+            matches!(core_of(&mut db, body), Core::Compare { .. }),
+            "if c true false folds to the condition c"
+        );
+        // The dual `(if c false true)` is a negation — no core op yet, so it stays a `Core::If` (NOT
+        // mis-folded to the condition, which would invert the result).
+        let ast2 = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) false true)) (def (main) 0) (export main))",
+        );
+        let mut db2 = Db::load(ast2);
+        let body2 = db2.defs[db2.def_by_name("f").unwrap()].body.unwrap();
+        assert!(
+            matches!(core_of(&mut db2, body2), Core::If { .. }),
+            "if c false true (a negation) is not folded to the condition"
         );
     }
 

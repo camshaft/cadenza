@@ -1516,6 +1516,26 @@ fn an_exported_comparison_runs_over_runtime_args() {
     ));
 }
 
+/// `(if (< a b) true false)` is the boolean-coercion no-op — it folds to `(< a b)` and returns exactly
+/// the comparison's value. Running it confirms the fold preserves the boolean result (not inverted).
+#[test]
+fn an_if_true_false_coercion_runs_as_the_condition() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (lt (: a Int64) (: b Int64)) (if (< a b) true false)) (export lt))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(run_returns_with::<bool>(
+        &bytes,
+        "lt",
+        &[Val::S64(1), Val::S64(2)]
+    ));
+    assert!(!run_returns_with::<bool>(
+        &bytes,
+        "lt",
+        &[Val::S64(5), Val::S64(5)]
+    ));
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
