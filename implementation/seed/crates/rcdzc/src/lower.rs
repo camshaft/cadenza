@@ -528,6 +528,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
                 // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.
                 Some(Prim::BytesAt) if args.len() == 2 => lower_bytes_at(db, id, args[0], args[1]),
+                // `Bytes.concat` — append two byte sequences. FOLD a constant pair to a single
+                // `Core::BytesOf` (its bytes are the concatenation); else emit runtime `Core::BytesConcat`.
+                Some(Prim::BytesConcat) if args.len() == 2 => {
+                    lower_bytes_concat(db, args[0], args[1])
+                }
+                // `Bytes.slice` — the FALLIBLE sub-range read. FOLD a constant `Bytes.of` + constant
+                // start/len (in range → `(Some (Bytes.of <slice>))`, out → `None`), else `Core::BytesSlice`.
+                Some(Prim::BytesSlice) if args.len() == 3 => {
+                    lower_bytes_slice(db, id, args[0], args[1], args[2])
+                }
+                // `Bytes.compact` — content-equal, storage-independent. On a constant it is the identity
+                // (same bytes); a runtime value emits `Core::BytesCompact`.
+                Some(Prim::BytesCompact) if args.len() == 1 => {
+                    let operand = args[0];
+                    match core_of(db, operand) {
+                        // A constant `Bytes.of` compacts to itself (content-equal); no runtime op.
+                        c @ Core::BytesOf { .. } => c,
+                        Core::Poison(r) => Core::Poison(r),
+                        _ => Core::BytesCompact { operand },
+                    }
+                }
                 // `String.at` — the FALLIBLE scalar-indexed read. FOLD a constant string + constant index
                 // to `(Some "<char>")` in range / `None` out (by Unicode SCALAR position, not byte). A
                 // runtime string declines (the byte-rope read is a later increment).
@@ -2582,7 +2603,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrByteLen
         | Prim::StrAt
         | Prim::StringTy
-        | Prim::BytesAt => {
+        | Prim::BytesAt
+        | Prim::BytesConcat
+        | Prim::BytesSlice
+        | Prim::BytesCompact => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -2960,6 +2984,79 @@ fn lower_bytes_at(db: &mut Db, id: StructId, bytes: StructId, index: StructId) -
     }
 }
 
+/// Lower `(Bytes.concat a b)`. FOLD when BOTH operands are visible `Core::BytesOf` literals: the result
+/// is a single `Core::BytesOf` whose elements are `a`'s then `b`'s (each already a range-checked constant
+/// byte occurrence), so a constant concat bakes with no runtime op. Otherwise emit `Core::BytesConcat`. A
+/// poison operand propagates.
+fn lower_bytes_concat(db: &mut Db, lhs: StructId, rhs: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    if let (Core::BytesOf { elems: a }, Core::BytesOf { elems: b }) =
+        (core_of(db, lhs), core_of(db, rhs))
+    {
+        let mut elems = a;
+        elems.extend(b);
+        trace!(target: "rcdzc::fold", len = elems.len(), "Bytes.concat folds two constant sequences");
+        return Core::BytesOf { elems };
+    }
+    Core::BytesConcat { lhs, rhs }
+}
+
+/// Lower `(Bytes.slice bytes start len)` — the fallible sub-range read. Emits the runtime
+/// `Core::BytesSlice`, which bounds-checks (`start >= 0`, `len >= 0`, `start + len <= bytes-len`) and
+/// yields `Some(bytes-slice)` in range / `None` out — never trapping (the runtime `bytes-slice` traps on
+/// OOB, so the emit guards first). A provably-out-of-range CONSTANT slice folds to `None` here (a cheap
+/// safe fold); an in-range constant slice does NOT fold to a baked `Some(Bytes)` — its payload is a
+/// sub-sequence, which would need a synthesized `Core::BytesOf` payload occurrence — so it takes the
+/// runtime path (correct, just imports the runtime). The `Some(Bytes)` payload is a Bytes HANDLE, used
+/// directly (no box). Mirrors `lower_bytes_at`'s shape; the constant-Some fold is a later refinement.
+fn lower_bytes_slice(
+    db: &mut Db,
+    id: StructId,
+    bytes: StructId,
+    start: StructId,
+    len: StructId,
+) -> Core {
+    for op in [bytes, start, len] {
+        if let Core::Poison(r) = core_of(db, op) {
+            return Core::Poison(r);
+        }
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Bytes.slice result is not the built-in Option sum",
+        ));
+    };
+    // A provably-out-of-range CONSTANT slice folds to `None` (safe, no synthesized payload needed).
+    if let (Core::BytesOf { elems }, Core::ConstInt(s), Core::ConstInt(l)) =
+        (core_of(db, bytes), core_of(db, start), core_of(db, len))
+    {
+        let n = elems.len() as i128;
+        let in_range = match (s.to_i64(), l.to_i64()) {
+            (Some(s), Some(l)) if s >= 0 && l >= 0 => (s as i128) + (l as i128) <= n,
+            _ => false,
+        };
+        if !in_range {
+            trace!(target: "rcdzc::fold", node = id.0, "Bytes.slice folds to None (out-of-range constant)");
+            return Core::SumNew {
+                disc: disc_none,
+                payloads: Vec::new(),
+            };
+        }
+    }
+    Core::BytesSlice {
+        bytes,
+        start,
+        len,
+        disc_some,
+        disc_none,
+    }
+}
+
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 1 {
         return Core::Poison(Reject::coded(
@@ -3072,6 +3169,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrScalarLen => "str-scalar-len",
         Prim::StrByteLen => "str-byte-len",
         Prim::BytesAt => "bytes-at",
+        Prim::BytesConcat => "bytes-concat",
+        Prim::BytesSlice => "bytes-slice",
+        Prim::BytesCompact => "bytes-compact",
         Prim::StrAt => "str-at",
     }
 }

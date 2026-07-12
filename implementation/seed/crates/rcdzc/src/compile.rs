@@ -493,6 +493,18 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect_reached_poisons(db, bytes, out);
             collect_reached_poisons(db, index, out);
         }
+        Core::BytesConcat { lhs, rhs } => {
+            collect_reached_poisons(db, lhs, out);
+            collect_reached_poisons(db, rhs, out);
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            collect_reached_poisons(db, bytes, out);
+            collect_reached_poisons(db, start, out);
+            collect_reached_poisons(db, len, out);
+        }
+        Core::BytesCompact { operand } => collect_reached_poisons(db, operand, out),
         // A sum construction's payloads are all unconditionally part of the value — descend into each.
         Core::SumNew { payloads, .. } => {
             for p in payloads {

@@ -62,6 +62,13 @@ const OP_BYTES_LEN: &str = "bytes-len";
 /// `bytes-get(b, index) -> u32` — the byte at `index`, a RAW value in `0..=255` (NOT a heap handle,
 /// unlike `vec-get`), so no `dup` is needed; the caller bounds-checks (an OOB index TRAPS).
 const OP_BYTES_GET: &str = "bytes-get";
+/// `bytes-concat(a, b) -> handle` — a then b (consumes both, empty is the identity).
+const OP_BYTES_CONCAT: &str = "bytes-concat";
+/// `bytes-slice(buf, start, len) -> handle` — `len` bytes from `start` (consumes buf; `start+len >
+/// bytes-len` TRAPS, so the caller bounds-checks first and returns `None` instead).
+const OP_BYTES_SLICE: &str = "bytes-slice";
+/// `bytes-compact(buf) -> handle` — a content-equal sequence with independent storage (consumes buf).
+const OP_BYTES_COMPACT: &str = "bytes-compact";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -130,6 +137,20 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BytesAt { bytes, index, .. } => {
             binding_escapes(db, bytes, binder, true) || binding_escapes(db, index, binder, false)
         }
+        // `Bytes.concat`/`slice`/`compact` all CONSUME their bytes operand(s) into the new sequence
+        // (`bytes-concat`/`bytes-slice`/`bytes-compact` consume, per `value-heap-runtime.md §Constructors
+        // Consume`). A binding used as an operand escapes into the result. `slice`'s start/len are scalars.
+        Core::BytesConcat { lhs, rhs } => {
+            binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            binding_escapes(db, bytes, binder, false)
+                || binding_escapes(db, start, binder, false)
+                || binding_escapes(db, len, binder, false)
+        }
+        Core::BytesCompact { operand } => binding_escapes(db, operand, binder, false),
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
         // `Bytes.of`'s elements are scalar bytes (Int64 0..=255), consumed into the sequence like a list's.
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
@@ -229,9 +250,10 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     match type_of(db, id) {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
-        // A nested compound — a tuple/record, or a SUM (its `sum-new` handle) — is already a u32 handle,
-        // so it is `arr-set` into the parent array as-is, no box op.
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } => Ok(None),
+        // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), or a
+        // BYTES sequence (`bytes-*` handle) — is already a u32 handle, so it is `arr-set` into the parent
+        // array (or used as a sum payload) as-is, no box op.
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes => Ok(None),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -248,8 +270,9 @@ fn get_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     match type_of(db, id) {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
-        // A nested compound / SUM handle `arr-get` yields is used as-is — no unbox.
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } => Ok(None),
+        // A nested compound / SUM / LIST / BYTES handle `arr-get` (or `sum-payload`) yields is used
+        // as-is — no unbox.
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes => Ok(None),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -419,6 +442,29 @@ pub fn collect_used_ops(
             out.insert(OP_ARR_ALLOC);
             collect_used_ops(db, bytes, out);
             collect_used_ops(db, index, out);
+        }
+        // `Bytes.concat` = `bytes-concat`; `Bytes.compact` = `bytes-compact`; `Bytes.slice` bounds-checks
+        // via `bytes-len` then builds `Some(bytes-slice)` (a Bytes HANDLE, no box) / `None` (`arr-alloc(0)`).
+        Core::BytesConcat { lhs, rhs } => {
+            out.insert(OP_BYTES_CONCAT);
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_SLICE);
+            out.insert(OP_DROP); // the None branch drops the un-consumed bytes reference
+            out.insert(OP_SUM_NEW);
+            out.insert(OP_ARR_ALLOC);
+            collect_used_ops(db, bytes, out);
+            collect_used_ops(db, start, out);
+            collect_used_ops(db, len, out);
+        }
+        Core::BytesCompact { operand } => {
+            out.insert(OP_BYTES_COMPACT);
+            collect_used_ops(db, operand, out);
         }
         Core::If { cond, then_, else_ } => {
             collect_used_ops(db, cond, out);
@@ -1839,6 +1885,87 @@ fn emit(
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
+            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
+            Ok(())
+        }
+        // `Bytes.concat(a, b)` — emit both handles, `bytes-concat` (consumes both, returns the new one).
+        Core::BytesConcat { lhs, rhs } => {
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
+            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
+            out.push(Lir::CallImport(OP_BYTES_CONCAT)); // → [a++b]
+            Ok(())
+        }
+        // `Bytes.compact(b)` — emit the handle, `bytes-compact` (consumes it, returns a content-equal one).
+        Core::BytesCompact { operand } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [b]
+            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // → [compacted]
+            Ok(())
+        }
+        // A runtime `Bytes.slice(bytes, start, len)` — the fallible sub-range read. Bounds-check `start >=
+        // 0 && len >= 0 && start + len <= bytes-len` (all i64), then in bounds build `Some(bytes-slice(
+        // bytes, start, len))` — `bytes-slice` CONSUMES its buffer, but `bytes-len` above only BORROWED it,
+        // so `dup` the handle before the consuming slice — else `None`. The slice result is a Bytes HANDLE,
+        // the `Some` payload directly (no box, unlike `at`'s byte value). Three scratch slots (bytes i32,
+        // start i64, len i64) above `base`; operand recursions float above them.
+        Core::BytesSlice {
+            bytes,
+            start,
+            len,
+            disc_some,
+            disc_none,
+        } => {
+            let bytes_slot = base;
+            let start_slot = base + 1;
+            let len_slot = base + 2;
+            if len_slot + 1 > *high {
+                *high = len_slot + 1;
+            }
+            scratch_ty.insert(bytes_slot, ValType::I32);
+            scratch_ty.insert(start_slot, ValType::I64);
+            scratch_ty.insert(len_slot, ValType::I64);
+            emit(db, bytes, slots, base + 3, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::LocalSet(bytes_slot));
+            emit(db, start, slots, base + 3, high, scratch_ty, layout, out)?; // [start:i64]
+            out.push(Lir::LocalSet(start_slot));
+            emit(db, len, slots, base + 3, high, scratch_ty, layout, out)?; // [len:i64]
+            out.push(Lir::LocalSet(len_slot));
+            // in_bounds = (start >= 0) & (len >= 0) & (start + len <= bytes-len), all i64.
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64GeS); // [start >= 0]
+            out.push(Lir::LocalGet(len_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64GeS); // [start>=0, len>=0]
+            out.push(Lir::I32And); // [start>=0 & len>=0]
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::LocalGet(len_slot));
+            out.push(Lir::I64Add); // [.., start+len]  (no overflow: both are small non-negative here)
+            out.push(Lir::LocalGet(bytes_slot));
+            out.push(Lir::CallImport(OP_BYTES_LEN)); // [.., start+len, len:i32]
+            out.push(Lir::I64ExtendI32U); // [.., start+len, byte-count:i64]
+            out.push(Lir::I64LeS); // [.., start+len <= byte-count]
+            out.push(Lir::I32And); // [in_bounds]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Some(bytes-slice(bytes, start, len)). The operand emit produced ONE owned ref;
+            // `bytes-len` above only BORROWED it (rc unchanged), so that one ref is still live and
+            // `bytes-slice` CONSUMES it exactly — net zero, no dup, no leak.
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(bytes_slot)); // [disc_some, bytes]
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::I32WrapI64); // [disc_some, bytes, start:i32]
+            out.push(Lir::LocalGet(len_slot));
+            out.push(Lir::I32WrapI64); // [disc_some, bytes, start, len:i32]
+            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [disc_some, slice-handle] (consumes bytes)
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None. `bytes-slice` was NOT called, so the operand's one owned ref is still live —
+            // DROP it (the None path does not consume the bytes) to avoid a leak.
+            out.push(Lir::LocalGet(bytes_slot));
+            out.push(Lir::CallImport(OP_DROP)); // release the un-consumed bytes reference
             out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
             out.push(Lir::ConstI32(0));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]

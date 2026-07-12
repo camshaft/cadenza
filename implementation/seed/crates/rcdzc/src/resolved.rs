@@ -204,6 +204,17 @@ pub enum Prim {
     /// `(Some byte)` / `(None unit)`; a runtime read emits `Core::BytesAt` (a bounds-checked `bytes-get`
     /// boxed into `Some`, else `None`). The byte companion of `List.at`; monomorphic (a byte is Int64).
     BytesAt,
+    /// `Bytes.concat` — append two byte sequences `Bytes → Bytes → Bytes`. A constant pair folds to a
+    /// single `Core::BytesOf`; a runtime pair emits `Core::BytesConcat` (`bytes-concat`). Byte companion
+    /// of `List.concat`.
+    BytesConcat,
+    /// `Bytes.slice` — the FALLIBLE sub-range read `Bytes → Int64 → Int64 → (Option Bytes)`. In range
+    /// (`start >= 0`, `len >= 0`, `start + len <= bytes-len`) → `Some(bytes-slice)`, else `None` (the emit
+    /// bounds-checks first — the runtime `bytes-slice` would TRAP on OOB). Folds a constant.
+    BytesSlice,
+    /// `Bytes.compact` — `Bytes → Bytes`, a content-equal sequence with independent storage (rope
+    /// collapse). Total; a constant folds to itself, a runtime value emits `bytes-compact`.
+    BytesCompact,
     /// `String.at` — the FALLIBLE scalar-indexed read. `String → Int64 → (Option String)`: `Some` of the
     /// ONE-scalar string at that Unicode SCALAR position when in bounds (`0 <= i < scalar-len`), `None`
     /// otherwise (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping + #A String Is
@@ -260,6 +271,9 @@ impl Prim {
             "str-scalar-len" => Some(Prim::StrScalarLen),
             "str-byte-len" => Some(Prim::StrByteLen),
             "bytes-at" => Some(Prim::BytesAt),
+            "bytes-concat" => Some(Prim::BytesConcat),
+            "bytes-slice" => Some(Prim::BytesSlice),
+            "bytes-compact" => Some(Prim::BytesCompact),
             "str-at" => Some(Prim::StrAt),
             _ => None,
         }

@@ -249,6 +249,18 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, bytes, out);
             collect_call_callees(db, index, out);
         }
+        crate::core::Core::BytesConcat { lhs, rhs } => {
+            collect_call_callees(db, lhs, out);
+            collect_call_callees(db, rhs, out);
+        }
+        crate::core::Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            collect_call_callees(db, bytes, out);
+            collect_call_callees(db, start, out);
+            collect_call_callees(db, len, out);
+        }
+        crate::core::Core::BytesCompact { operand } => collect_call_callees(db, operand, out),
         crate::core::Core::Convert { operand, .. } | crate::core::Core::Not { operand } => {
             collect_call_callees(db, operand, out)
         }

@@ -223,11 +223,17 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
     let of_type = bytes_of_type(ast);
     let len_type = bytes_len_type(ast);
     let at_type = bytes_at_type(ast);
+    let concat_type = bytes_concat_type(ast);
+    let slice_type = bytes_slice_type(ast);
+    let compact_type = bytes_compact_type(ast);
     let mut children = vec![head, t_field];
     for (name, prim, ty) in [
         ("of", "bytes-of", of_type),
         ("len", "bytes-len", len_type),
         ("at", "bytes-at", at_type),
+        ("concat", "bytes-concat", concat_type),
+        ("slice", "bytes-slice", slice_type),
+        ("compact", "bytes-compact", compact_type),
     ] {
         let op = list_op_record(ast, prim, ty);
         let k = push_atom(ast, Leaf::Name(name.to_string()));
@@ -288,6 +294,43 @@ fn bytes_at_type(ast: &mut Arenas) -> StructId {
     let index_arrow = arrow_type(ast, int64_idx, option_int64); // (-> Int64 (Option Int64))
     let bytes = intrinsic_node(ast, "bytes-ty");
     arrow_type(ast, bytes, index_arrow) // (-> Bytes (-> Int64 (Option Int64)))
+}
+
+/// The type `(-> Bytes (-> Bytes Bytes))` for `Bytes.concat` — append two byte sequences. Both `Bytes`
+/// positions are `(intrinsic bytes-ty)` (a bare name would mis-resolve inside the module). The byte
+/// companion of `List.concat`.
+fn bytes_concat_type(ast: &mut Arenas) -> StructId {
+    let b_out = intrinsic_node(ast, "bytes-ty");
+    let b_rhs = intrinsic_node(ast, "bytes-ty");
+    let inner = arrow_type(ast, b_rhs, b_out); // (-> Bytes Bytes)
+    let b_lhs = intrinsic_node(ast, "bytes-ty");
+    arrow_type(ast, b_lhs, inner) // (-> Bytes (-> Bytes Bytes))
+}
+
+/// The type `(-> Bytes (-> Int64 (-> Int64 (Option Bytes))))` for `Bytes.slice` — the FALLIBLE
+/// sub-range read: take a byte sequence, a `start` and a `len` (both `Int64`), return `(Option Bytes)`
+/// (`Some` of the slice when `start`/`len` are in range and non-negative, else `None`). Monomorphic; the
+/// bytes companion of the fallible `at`, returning `Option Bytes` rather than `Option Int64`.
+fn bytes_slice_type(ast: &mut Arenas) -> StructId {
+    let option_bytes = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let bytes = intrinsic_node(ast, "bytes-ty");
+        push_list(ast, vec![option, bytes])
+    };
+    let len_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let len_arrow = arrow_type(ast, len_i, option_bytes); // (-> Int64 (Option Bytes))
+    let start_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let start_arrow = arrow_type(ast, start_i, len_arrow); // (-> Int64 (-> Int64 (Option Bytes)))
+    let bytes = intrinsic_node(ast, "bytes-ty");
+    arrow_type(ast, bytes, start_arrow) // (-> Bytes (-> Int64 (-> Int64 (Option Bytes))))
+}
+
+/// The type `(-> Bytes Bytes)` for `Bytes.compact` — return a content-equal byte sequence with
+/// independent (rope-collapsed) storage. Monomorphic; a total (never-fallible) unary op.
+fn bytes_compact_type(ast: &mut Arenas) -> StructId {
+    let b_out = intrinsic_node(ast, "bytes-ty");
+    let b_in = intrinsic_node(ast, "bytes-ty");
+    arrow_type(ast, b_in, b_out) // (-> Bytes Bytes)
 }
 
 /// The type `(-> (List Int64) Bytes)` for `Bytes.of` — a monomorphic arrow (no type parameter), taking

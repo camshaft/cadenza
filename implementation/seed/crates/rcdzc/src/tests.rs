@@ -3569,6 +3569,64 @@ mod match_engine {
     }
 
     #[test]
+    fn runtime_bytes_concat_slice_compact_under_wasmtime() {
+        // The runtime `Core::BytesConcat`/`BytesSlice`/`BytesCompact` paths (not folds): each threads a
+        // byte sequence through a fn PARAMETER so the op actually runs, and reads a SCALAR out (via
+        // `Bytes.len` / a `Bytes.at` match) so `main` returns without needing bytes escape.
+        //   - concat: `(Bytes.len (concat a b))` = |a|+|b|. `bump` forces a runtime `a` (param).
+        //   - slice:  in bounds → `(Some sub)`, its length read; out of bounds → `None` → -1.
+        //   - compact: `(Bytes.len (compact b))` = |b| (content-equal, so same length).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed bytes concat/slice/compact run");
+            return;
+        };
+        let run = |src: &str| -> String {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&component(src), &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+            }
+        };
+        // concat two runtime sequences (each built behind a fn so neither folds), measure the length.
+        assert_eq!(
+            run("(module m \
+                   (def (mk n) ((. Bytes of) (list n 20 30))) \
+                   (def (main) ((. Bytes len) ((. Bytes concat) (mk 10) (mk 40)))) (export main))"),
+            "6",
+            "concat length"
+        );
+        // slice in bounds: len 2 from start 1 of a runtime 4-byte sequence → Some(2-byte); its length = 2.
+        assert_eq!(
+            run("(module m \
+                   (def (mk n) ((. Bytes of) (list n 20 30 40))) \
+                   (def (main) (match ((. Bytes slice) (mk 10) 1 2) ((Some s) ((. Bytes len) s)) (None -1))) (export main))"),
+            "2",
+            "in-bounds slice length"
+        );
+        // slice out of bounds (start 3 + len 5 > 4) → None → -1.
+        assert_eq!(
+            run("(module m \
+                   (def (mk n) ((. Bytes of) (list n 20 30 40))) \
+                   (def (main) (match ((. Bytes slice) (mk 10) 3 5) ((Some s) ((. Bytes len) s)) (None -1))) (export main))"),
+            "-1",
+            "out-of-bounds slice → None"
+        );
+        // compact a runtime sequence, measure length (content-equal → unchanged length).
+        assert_eq!(
+            run("(module m \
+                   (def (mk n) ((. Bytes of) (list n 20 30))) \
+                   (def (main) ((. Bytes len) ((. Bytes compact) (mk 10)))) (export main))"),
+            "3",
+            "compact length"
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_compile_time_trap() {
         // A byte must be 0..=255 (collections-and-text.md). A constant element out of range is a provable
         // trap → CDZ0304 (the build fails, matching the runtime `bytes-set` guard): 256 is too large, -1 is

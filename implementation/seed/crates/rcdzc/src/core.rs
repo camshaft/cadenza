@@ -217,6 +217,25 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
+    /// `Bytes.concat` — append `lhs` and `rhs` into one byte sequence (runtime `bytes-concat`; consumes
+    /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
+    /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.
+    BytesConcat { lhs: StructId, rhs: StructId },
+    /// `Bytes.slice` — the FALLIBLE sub-range read, present when the operand is a RUNTIME value (a
+    /// constant `Bytes.of` + constant `start`/`len` FOLDS to a `SumNew` in `lower`). The backend
+    /// bounds-checks (`start >= 0 && len >= 0 && start + len <= bytes-len`), and in range builds
+    /// `Some(bytes-slice(bytes, start, len))` — the slice is a Bytes HANDLE, used as the `Some` payload
+    /// directly (no box) — else `None`. `disc_some`/`disc_none` are the built-in Option variants' discs.
+    BytesSlice {
+        bytes: StructId,
+        start: StructId,
+        len: StructId,
+        disc_some: u32,
+        disc_none: u32,
+    },
+    /// `Bytes.compact` — a content-equal byte sequence with independent storage (runtime `bytes-compact`;
+    /// consumes its operand). Present when the operand is a RUNTIME value (a constant folds to itself).
+    BytesCompact { operand: StructId },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the
