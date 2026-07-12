@@ -330,6 +330,32 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             }
         }
     }
+    // DUPLICATE EFFECT OPERATION. An effect `(effect E (op f …) (op f …))` declares its operation NAMES
+    // as a fixed SET (capabilities-and-effects.md §An Effect Declaration Names The Effect And Types Its
+    // Operations: each name is bound to ONE operation type), so naming an operation twice is the SAME
+    // duplicate-member ill-formedness a record field, a module definition, an export, and a sum variant
+    // are rejected for (CDZ0201) — the fifth closed name-set. Each operation after the first with a given
+    // name (WITHIN one effect declaration) is reported, anchored at its name occurrence. (Two different
+    // effects may reuse an operation name — the set is per-declaration, since an operation is reached
+    // through its declaring effect.)
+    for eff in &db.effect_decls {
+        let mut seen_ops: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for op in &eff.ops {
+            if !seen_ops.insert(op.name.as_str()) {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "operation `{}` is declared more than once in effect `{}` (an effect has \
+                             a fixed set of operation names)",
+                            op.name, eff.name
+                        ),
+                    )
+                    .at(op.name_occ),
+                );
+            }
+        }
+    }
     // Validate every definition's PARAMETER ANNOTATIONS — a garbage type in a `(: name T)` parameter
     // (an unbound name, a value, a malformed type application) is rejected, not silently typed `Any`.
     // The signature-side companion of the value-annotation check in `infer::collect_node`; walked here

@@ -6774,14 +6774,45 @@ mod stage1 {
 
     #[test]
     fn an_unmodeled_top_level_form_declines() {
-        // A top-level declaration the compiler does not model — `(effect …)`, `(pragma …)` — makes the
-        // whole program DECLINE (decline-don't-miscompile), NOT silently ignore it and run `main` as if
-        // it were absent. `(effect E …)` is unmodeled, so the program declines rather than compiling
-        // `(def (main) 1)` alone (which would hide the effect's ill-formedness).
-        let src = "(do (effect E (op f (-> Int64 Int64))) (def (main) 1) (export main))";
+        // A top-level declaration the compiler does not model — `(pragma …)` and any other unrecognized
+        // declaration-shaped head — makes the whole program DECLINE (decline-don't-miscompile), NOT
+        // silently ignore it and run `main` as if it were absent. `(pragma …)` is unmodeled, so the
+        // program declines rather than compiling `(def (main) 1)` alone. (`(effect …)` USED to be the
+        // example here; it is now a modeled top-level form — see `a_bare_effect_declaration_compiles`.)
+        let src = "(do (pragma strict) (def (main) 1) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a program with an unmodeled top-level form must decline"
+        );
+    }
+
+    #[test]
+    fn a_bare_effect_declaration_compiles() {
+        // An `(effect …)` declaration is a routing-agnostic contract; declaring it grants nothing and
+        // performs nothing (`capabilities-and-effects.md` §An Effect Declaration Names The Effect). So a
+        // program that declares an effect but never performs it is well-formed — `main` returns its
+        // value, the effect decl contributing no behavior (E0: the surface is recognized, not lowered).
+        let src = "(do (effect E (op f (-> Int64 Int64))) (def (main) 1) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a bare effect declaration compiles"),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_duplicate_effect_operation_is_rejected() {
+        // An effect's operations are a closed name-set (like a sum's variants), so declaring `f` twice is
+        // CDZ0201 — the fifth closed-name-set duplicate-member check (`capabilities-and-effects.md` §An
+        // Effect Declaration Names The Effect And Types Its Operations).
+        let src = "(do (effect E (op f (-> Int64 Int64)) (op f (-> Int64 Int64))) \
+                   (def (main) 1) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a duplicate effect operation must be rejected"
         );
     }
 
