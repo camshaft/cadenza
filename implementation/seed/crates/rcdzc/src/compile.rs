@@ -24,6 +24,7 @@ use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::infer::type_errors;
 use crate::layout;
+use crate::link;
 use crate::lower::core_of;
 use crate::sidecar;
 use crate::spans;
@@ -34,15 +35,22 @@ use tracing::trace;
 /// `[Wasm]` at the CLI, not here — this entry emits exactly what it is asked for.
 pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), "compile requested");
-    // Select the `ast` input artifact and decode it.
-    let ast_art = inputs.iter().find(|a| a.kind == Artifact::KIND_AST);
-    let ast_bytes = match ast_art {
-        Some(a) => &a.bytes,
-        None => return fail(vec![Reject::decline("no `ast` input artifact")]),
-    };
-    let arenas = match crate::codec::decode(ast_bytes) {
-        Some(a) => a,
-        None => return fail(vec![Reject::decline("binary AST failed to decode")]),
+    // Select the `ast` input artifact(s) and decode them into ONE arena. A single `ast` (the common
+    // case) decodes directly — byte-identical to today. TWO OR MORE `ast` artifacts (or an explicit
+    // `entry` marker) is a PACKAGE: the files are spliced into one arena under a synthesized `(do …)`
+    // root by `link()` before `Db::load` (`DESIGN-package-linking.md` §3). Everything downstream of the
+    // splice is unchanged — it sees one program in one arena.
+    let ast_arts: Vec<&Artifact> = inputs
+        .iter()
+        .filter(|a| a.kind == Artifact::KIND_AST)
+        .collect();
+    let entry_name = inputs
+        .iter()
+        .find(|a| a.kind == link::KIND_ENTRY)
+        .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+    let arenas = match link_inputs(&ast_arts, entry_name.as_deref()) {
+        Ok(a) => a,
+        Err(r) => return fail(vec![r]),
     };
 
     let mut db = Db::load(arenas);
@@ -690,6 +698,50 @@ fn dropped_trap_anchor(db: &mut Db, id: StructId) -> Option<StructId> {
 
 /// The program's name for artifact labelling — the first exported name, or "main". (A cosmetic label;
 /// the artifact's identity is its kind + bytes.)
+/// Decode the `ast` input artifact(s) into ONE arena — the front-end link step
+/// (`DESIGN-package-linking.md`). A SINGLE `ast` decodes directly, byte-identically to the pre-linking
+/// path (no synthesized-root splice, no entry needed). TWO OR MORE `ast` artifacts, OR a single `ast`
+/// accompanied by an explicit `entry` marker, is a PACKAGE: the files are spliced by `link()` under a
+/// synthesized `(do …)` root, with `entry` naming which file's exports form the component boundary.
+///
+/// A package with no named entry declines (there is no rule to pick one — reject, don't guess), except
+/// the degenerate single-file package, whose lone file IS the entry. A decode failure of any file, or
+/// an entry naming no supplied file, declines with a specific diagnostic.
+fn link_inputs(
+    ast_arts: &[&Artifact],
+    entry_name: Option<&str>,
+) -> Result<crate::ast::Arenas, Reject> {
+    match ast_arts {
+        [] => Err(Reject::decline("no `ast` input artifact")),
+        // The overwhelmingly common case: exactly one file, no package framing. Decode it as-is so a
+        // one-file program is compiled through the identical path it always was.
+        [only] if entry_name.is_none() => crate::codec::decode(&only.bytes)
+            .ok_or_else(|| Reject::decline("binary AST failed to decode")),
+        // A package: decode every file, then splice. The entry defaults to the sole file's name when
+        // exactly one file was supplied (a single-file package needs no explicit entry); otherwise the
+        // caller must name the entry.
+        _ => {
+            let mut files = Vec::with_capacity(ast_arts.len());
+            for art in ast_arts {
+                let arena = crate::codec::decode(&art.bytes).ok_or_else(|| {
+                    Reject::decline(format!("binary AST for `{}` failed to decode", art.name))
+                })?;
+                files.push((art.name.clone(), arena));
+            }
+            let entry = match entry_name {
+                Some(e) => e.to_string(),
+                None if files.len() == 1 => files[0].0.clone(),
+                None => {
+                    return Err(Reject::decline(
+                        "a multi-file package needs an `entry` input artifact naming the entry file",
+                    ));
+                }
+            };
+            Ok(crate::link::link(&files, &entry)?.arenas)
+        }
+    }
+}
+
 fn program_name(db: &Db) -> String {
     db.exports
         .first()
