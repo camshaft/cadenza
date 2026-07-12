@@ -214,6 +214,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
             // A condition that is a poison propagates (the ill-formed condition is the fault).
             Core::Poison(r) => Core::Poison(r),
+            // A runtime condition. If BOTH branches are the SAME value (`(if c x x)`, or two branches
+            // that FOLD to the same core — e.g. `(if c (+ x 0) x)` after the identity fold), the `if`
+            // computes that value regardless, so it collapses to the branch — BUT only when the
+            // condition is TRAP-FREE: the condition is still evaluated at run time, so if it could trap
+            // (a call, a checked op) that trap must be preserved (keep the `if`). A trap-free condition
+            // (a param/local, a comparison, a bitwise op) has no observable effect to keep.
+            _ if core_equiv(db, then_, else_) && is_trap_free(db, cond) => {
+                trace!(target: "rcdzc::lower", node = id.0, "if with identical branches folds to the branch (trap-free condition)");
+                core_of(db, then_)
+            }
             _ => Core::If { cond, then_, else_ },
         },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
@@ -1539,6 +1549,71 @@ fn is_trap_free(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether the nodes at `a` and `b` lower to the STRUCTURALLY IDENTICAL core — the basis for folding an
+/// `if` whose two branches are the same (`(if c x x)` → `x`). CONSERVATIVE: matches only PURE
+/// deterministic scalar cores (const / param / local-ref leaves; arithmetic / comparison / conversion /
+/// projection over recursively-equal operands), so any other core (a call, a nested `if`, a heap
+/// construct) compares unequal and the `if` is left intact. Every matched kind is a value that reads the
+/// same whichever branch produces it, so collapsing the two branches to one is behavior-preserving.
+/// (This is the `lower`-column twin of `select::core_eq`, kept here because `lower` owns the core.)
+fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
+    if a == b {
+        return true;
+    }
+    match (core_of(db, a), core_of(db, b)) {
+        (Core::ConstInt(x), Core::ConstInt(y)) => x.eq_value(&y),
+        (Core::ConstBool(x), Core::ConstBool(y)) => x == y,
+        (Core::Unit, Core::Unit) => true,
+        (Core::Param { binder: x }, Core::Param { binder: y }) => x == y,
+        (Core::LocalRef { binder: x }, Core::LocalRef { binder: y }) => x == y,
+        (
+            Core::Arith {
+                op: ox,
+                lhs: lx,
+                rhs: rx,
+            },
+            Core::Arith {
+                op: oy,
+                lhs: ly,
+                rhs: ry,
+            },
+        )
+        | (
+            Core::Compare {
+                op: ox,
+                lhs: lx,
+                rhs: rx,
+            },
+            Core::Compare {
+                op: oy,
+                lhs: ly,
+                rhs: ry,
+            },
+        ) => ox == oy && core_equiv(db, lx, ly) && core_equiv(db, rx, ry),
+        (
+            Core::Convert {
+                op: ox,
+                operand: px,
+            },
+            Core::Convert {
+                op: oy,
+                operand: py,
+            },
+        ) => ox == oy && core_equiv(db, px, py),
+        (
+            Core::Proj {
+                operand: px,
+                index: ix,
+            },
+            Core::Proj {
+                operand: py,
+                index: iy,
+            },
+        ) => ix == iy && core_equiv(db, px, py),
+        _ => false,
+    }
+}
+
 /// Fold a constant arithmetic operation with a CHECKED evaluation. Both operands are compile-time
 /// constants; if the operation's defined outcome on them is a trap (an overflow the checked default
 /// forbids, or an operand outside the machine range the fold evaluates over), the result is a poison
@@ -2006,6 +2081,39 @@ mod tests {
         assert!(
             matches!(core_of(&mut db2, body2), Core::If { .. }),
             "a const-if with an ill-formed (unbound-name) untaken branch is NOT folded away"
+        );
+    }
+
+    #[test]
+    fn an_if_with_identical_branches_folds_to_the_branch() {
+        // `(if p x x)` — both branches are the same value, so the `if` collapses to `x` (the condition
+        // `p` is a param, trap-free, so evaluating it has no effect to preserve). Result: `Core::Param`
+        // (the `x`), NOT a `Core::If`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: p Bool) (: x Int64)) (if p x x)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let body = db.defs[db.def_by_name("f").unwrap()].body.unwrap();
+        assert!(
+            matches!(core_of(&mut db, body), Core::Param { .. }),
+            "an if with identical branches over a trap-free condition folds to the branch"
+        );
+    }
+
+    #[test]
+    fn an_if_with_identical_branches_keeps_a_possibly_trapping_condition() {
+        // `(if (g x) x x)` where `g` is a RECURSIVE call (possibly-trapping) — the branches are equal,
+        // but the condition is NOT trap-free, so the `if` is KEPT to preserve the condition's evaluation
+        // (and any trap). Result stays a `Core::If`.
+        let ast = crate::testkit::parse(
+            "(module m (def (g (: n Int64)) (if (= n 0) true (g (- n 1)))) \
+               (def (f (: x Int64)) (if (g x) x x)) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let body = db.defs[db.def_by_name("f").unwrap()].body.unwrap();
+        assert!(
+            matches!(core_of(&mut db, body), Core::If { .. }),
+            "identical branches do NOT fold away a possibly-trapping condition"
         );
     }
 
