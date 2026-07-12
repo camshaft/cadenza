@@ -7243,6 +7243,43 @@ mod stage1 {
     }
 
     #[test]
+    fn a_handler_arm_for_an_undeclared_operation_is_cdz0403() {
+        // E2a: a handler arm naming an operation its effect does not declare is a closed-set violation —
+        // CDZ0403 (`capabilities-and-effects.md` §A Handler Arm Names An Operation Its Effect Declares).
+        // `Choose` declares only `pick`; an arm `((. Choose guess) …)` names `guess` — undeclared. This
+        // is CDZ0403, not the generic "record has no field" CDZ0201 the member projection alone gives.
+        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle unit (((. Choose guess) () s (resume 5 s))) ((. Choose pick)))) \
+                   (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a handler arm for an undeclared op must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0403"),
+            "expected CDZ0403 (handler arm names an undeclared op), got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_delegation_of_an_unreached_effect_is_cdz0404() {
+        // E2a: a `host` delegation naming an effect the body never reaches is latent authority — CDZ0404
+        // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). `main`
+        // delegates `log` but its body is `42` (never performs `log.emit`), so the manifest would carry a
+        // granted-but-unexercised capability — rejected.
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) 42)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a delegation of an unreached effect must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0404"),
+            "expected CDZ0404 (latent authority), got: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn a_stateful_handler_threads_its_state_across_performs() {
         // E1c-2: a handler that FOLDS state — `(resume s (+ s 1))` hands back the current state and
         // threads `s+1` forward — is reduced by the evaluation-order fold. `(Fresh.next)` reads state
