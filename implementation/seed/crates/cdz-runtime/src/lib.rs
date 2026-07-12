@@ -2686,25 +2686,38 @@ fn champ_insert_fbip(
         return champ_insert_node(node, entry, hash, level, stride); // shared: proven copy path
     }
     let key = entry[0];
-    let (datamap, nodemap, size, handles) =
-        with_node(node, (0u32, 0u32, 0u32, Vec::<Handle>::new()), |n| {
+    // Read the header + arity WITHOUT cloning `handles` (see the take below).
+    let (datamap, nodemap, size, arity) =
+        with_node(node, (0u32, 0u32, 0u32, 0usize), |n| {
             (
                 champ_datamap(&n.raw),
                 champ_nodemap(&n.raw),
                 champ_size(&n.raw),
-                n.handles.clone(),
+                n.handles.len(),
             )
         });
 
     // Empty (fresh single entry) or collision node.
     if datamap == 0 && nodemap == 0 {
-        if handles.is_empty() {
+        if arity == 0 {
             let i = level_index(hash, level);
             return champ_become(node, entry, champ_header(1 << i, 0, 1)); // entry owned, moved in
         }
-        // Collision node (full 32-bit hash clash — rare): path-copy via the proven helper.
+        // Collision node (full 32-bit hash clash — rare): path-copy via the proven helper, which
+        // `op_drop`s `node` and so needs its child references intact — clone rather than take here.
+        let handles = with_node(node, Vec::new(), |n| n.handles.clone());
         return collision_insert(node, handles, entry, stride);
     }
+
+    // Normal (bitmap) node on a UNIQUE spine: TAKE its handle vector instead of cloning it. `node` is
+    // `rc == 1` (the `mine` gate + monotone-false descent), so no other reference exists; the take is
+    // a pointer swap (zero alloc, vs the clone's O(arity) copy on every spine node, every level). Every
+    // path below rebuilds a fresh `new_handles` and `champ_become(node, …)` REINSTALLS it before this
+    // function returns, so `node` is never observed in the transient empty state (single-threaded).
+    let handles = match unsafe { node.0.as_mut() } {
+        Some(n) => std::mem::take(&mut n.handles),
+        None => Vec::new(),
+    };
 
     let dcount = data_count(datamap) as usize;
     let scount = subnode_count(nodemap) as usize;
@@ -7754,6 +7767,73 @@ mod tests {
         assert!(champ_eq(m, fresh_empty), "byte-identical to op_map_empty()");
         assert_eq!(champ_hash(m), champ_hash(fresh_empty));
         op_drop(fresh_empty);
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn champ_insert_fbip_deep_unique_spine_take_is_sound() {
+        reset();
+        let before = live_nodes();
+        // Guards the `mem::take(&mut n.handles)` that replaced the per-level `handles.clone()` in the
+        // UNIQUE insert spine of `champ_insert_fbip`. Two properties the take must not break:
+        //   (1) A deep multi-level unique spine built by FBIP inserts is byte-identical (champ_eq +
+        //       champ_hash) to the SAME map built via the copy path — the take's transient empty state
+        //       must never leak into the produced value.
+        //   (2) A version SHARED (rc>1) at the moment of a further unique insert stays byte-unchanged
+        //       — the descent must copy-path exactly the shared node it reaches, and the take on the
+        //       nodes ABOVE it (which are also shared once forked, so mine is false and no take runs)
+        //       must not disturb the snapshot.
+        // Keys that force several levels of subnode splits: share the low 5, 10, 15 hash bits.
+        let deep_keys: [i64; 6] = [
+            0,           // …00000_00000_00000
+            1 << 5,      // differs only at level 1
+            1 << 10,     // differs only at level 2
+            (1 << 5) | (1 << 10),
+            1,           // differs at level 0
+            (1 << 10) | 1,
+        ];
+        let build = |shared: bool| -> Handle {
+            let mut m = op_map_empty();
+            for (i, &k) in deep_keys.iter().enumerate() {
+                if shared {
+                    op_dup(m); // force rc>1 → copy path at every step
+                    let old = m;
+                    m = minsert_int(m, k, i as i64);
+                    op_drop(old);
+                } else {
+                    m = minsert_int(m, k, i as i64); // unique → the mem::take spine
+                }
+            }
+            m
+        };
+        let fbip = build(false);
+        let copy = build(true);
+        assert!(champ_eq(fbip, copy), "deep unique FBIP spine == copy-path build");
+        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        // Every key present with the right value in the FBIP-built map.
+        for (i, &k) in deep_keys.iter().enumerate() {
+            assert_eq!(mlookup_int(fbip, k), Some(i as i64), "key {k} present");
+        }
+        op_drop(fbip);
+        op_drop(copy);
+
+        // (2) Snapshot invariance across a further unique insert descending the shared spine.
+        let mut m = op_map_empty();
+        for (i, &k) in deep_keys.iter().enumerate() {
+            m = minsert_int(m, k, i as i64);
+        }
+        op_dup(m); // snapshot: m now rc==2 (shared)
+        let snap = m;
+        let snap_hash = champ_hash(snap);
+        // Insert a NEW key that descends the deepest shared subnode; the snapshot must be untouched.
+        m = minsert_int(m, (1 << 5) | (1 << 10) | 1, 999);
+        assert_eq!(champ_hash(snap), snap_hash, "shared snapshot unchanged after sibling insert");
+        for (i, &k) in deep_keys.iter().enumerate() {
+            assert_eq!(mlookup_int(snap, k), Some(i as i64), "snapshot key {k} intact");
+        }
+        assert_eq!(mlookup_int(m, (1 << 5) | (1 << 10) | 1), Some(999), "new key in the new version");
+        op_drop(snap);
         op_drop(m);
         assert_eq!(live_nodes(), before, "no leak");
     }
