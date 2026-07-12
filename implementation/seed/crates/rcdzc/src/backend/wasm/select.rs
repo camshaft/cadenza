@@ -3412,25 +3412,43 @@ fn emit_machine_overflow_guard(
 }
 
 /// The narrow-width range-check on an exact result in `$r`: trap unless `min_N <= r <= max_N`. A no-op
-/// at a FULL width (`N == slot bits`, where the slot extremes ARE the bounds). Emitted as two guards:
-/// `r < min_N → trap` (signed compare — the bound and value are signed slot values) and `r > max_N →
-/// trap`. For an unsigned narrow width `min_N = 0`, so the lower guard rejects a machine result that
-/// went negative in the slot (an unsigned underflow), and the upper guard rejects `> 2^N-1`.
+/// at a FULL width (`N == slot bits`, where the slot extremes ARE the bounds).
+///
+/// SIGNED width → two SIGNED guards: `r <ₛ min_N → trap` and `r >ₛ max_N → trap` (the bound and value
+/// are signed slot values; the result sits sign-extended, so a value outside `[min_N, max_N]` is caught
+/// on one side or the other).
+///
+/// UNSIGNED width → ONE UNSIGNED guard: `r >ᵤ max_N → trap`, i.e. `r >=ᵤ 2^N`. An unsigned narrow
+/// result is `0 <= true value < 2^(slot bits)` and sits zero-extended, so the ONLY way it can leave the
+/// type is by exceeding `2^N-1` — a single unsigned upper-bound test covers it. This is correct at EVERY
+/// width, including one just below the slot size (a `UInt31` sum of `2^32-2` reads as a NEGATIVE signed
+/// slot value, which the old signed `r <ₛ 0` guard caught and a signed `r >ₛ max` would MISS — the
+/// unsigned compare catches it directly). Replacing the two signed guards with one unsigned guard drops
+/// 4 instructions (a `local.get`, a `const`, a compare, an `if unreachable`) per narrow unsigned
+/// `+`/`-`/`*`, and is strictly more obviously correct than the two-signed-guard form it replaces.
 fn emit_range_check(m: Machine, sr: u32, out: &mut Vec<Lir>) {
     if !m.narrow() {
         return;
     }
     let (min_n, max_n) = m.bounds();
-    // r < min_N → trap.
-    out.push(Lir::LocalGet(sr));
-    out.push(m.konst(min_n));
-    out.push(m.lt_s());
-    out.push(Lir::IfUnreachableEnd);
-    // r > max_N → trap.
-    out.push(Lir::LocalGet(sr));
-    out.push(m.konst(max_n));
-    out.push(m.gt_s());
-    out.push(Lir::IfUnreachableEnd);
+    if m.signed {
+        // r <ₛ min_N → trap.
+        out.push(Lir::LocalGet(sr));
+        out.push(m.konst(min_n));
+        out.push(m.lt_s());
+        out.push(Lir::IfUnreachableEnd);
+        // r >ₛ max_N → trap.
+        out.push(Lir::LocalGet(sr));
+        out.push(m.konst(max_n));
+        out.push(m.gt_s());
+        out.push(Lir::IfUnreachableEnd);
+    } else {
+        // r >=ᵤ 2^N → trap (the single unsigned upper-bound test; `2^N = max_N + 1`).
+        out.push(Lir::LocalGet(sr));
+        out.push(m.konst(max_n.wrapping_add(1)));
+        out.push(m.ge_u());
+        out.push(Lir::IfUnreachableEnd);
+    }
 }
 
 /// Emit a runtime `/`/`%`. The machine `div`/`rem` traps natively on ÷0 (all widths) and, for a FULL

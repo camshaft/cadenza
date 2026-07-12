@@ -2304,6 +2304,64 @@ mod runtime_ops {
     }
 
     #[test]
+    fn unsigned_narrow_arith_uses_a_single_unsigned_range_check() {
+        // The narrow-width range-check for an UNSIGNED result is a SINGLE unsigned upper-bound guard
+        // (`r >=ᵤ 2^N → trap`), not the two signed guards (`r <ₛ 0`, `r >ₛ max`) a signed width uses:
+        // an unsigned result is never negative, and a single unsigned compare covers the only way it can
+        // leave the type (exceeding `2^N-1`). So a UInt8 `+` emits exactly ONE `i32.ge_u` against 256 and
+        // ZERO `lt_s`/`gt_s` in its range-check; the SIGNED counterpart keeps both signed guards. This
+        // pins the elision at the Lir level (the behavioral trap parity is covered by the narrow-arith
+        // run tests above/below).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let sig = db.defs[d].params.clone();
+            let params: Vec<_> = sig
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let u = select(
+            "(module m (def (f (: a UInt8) (: b UInt8)) (+ a b)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            u.iter().filter(|i| matches!(i, Lir::I32GeU)).count(),
+            1,
+            "unsigned narrow add has one unsigned upper-bound guard, got: {u:?}"
+        );
+        assert!(
+            !u.iter().any(|i| matches!(i, Lir::I32LtS | Lir::I32GtS)),
+            "unsigned narrow add has NO signed range guards, got: {u:?}"
+        );
+        // Signed keeps both signed guards (lower `lt_s` + upper `gt_s`), no unsigned range guard.
+        let s = select(
+            "(module m (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            s.iter().any(|i| matches!(i, Lir::I32LtS))
+                && s.iter().any(|i| matches!(i, Lir::I32GtS)),
+            "signed narrow add keeps both signed range guards, got: {s:?}"
+        );
+    }
+
+    #[test]
     fn runtime_narrow_multiplication_range_checks() {
         // UInt8 mul: 15*17=255 fits; 16*16=256 traps (the i32 product is exact, range-check to 255 traps).
         assert_eq!(
@@ -4733,7 +4791,10 @@ mod stage1 {
                 )],
                 &[crate::backend::Target::Wasm],
             );
-            if out.artifact(crate::backend::Target::Wasm.artifact_kind()).is_some() {
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
                 return None; // compiled — no rejection
             }
             out.diagnostics
@@ -4743,10 +4804,22 @@ mod stage1 {
         };
         // Value-annotation form: an unbound name → CDZ0101 (as in value position); a literal/compound/
         // malformed application → CDZ0203.
-        assert_eq!(code("(module m (def (main) (: 5 foo)) (export main))").as_deref(), Some("CDZ0101"));
-        assert_eq!(code("(module m (def (main) (: 5 42)) (export main))").as_deref(), Some("CDZ0203"));
-        assert_eq!(code("(module m (def (main) (: 5 (tuple 1 2))) (export main))").as_deref(), Some("CDZ0203"));
-        assert_eq!(code("(module m (def (main) (: true (Int64 Int64))) (export main))").as_deref(), Some("CDZ0203"));
+        assert_eq!(
+            code("(module m (def (main) (: 5 foo)) (export main))").as_deref(),
+            Some("CDZ0101")
+        );
+        assert_eq!(
+            code("(module m (def (main) (: 5 42)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+        assert_eq!(
+            code("(module m (def (main) (: 5 (tuple 1 2))) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+        assert_eq!(
+            code("(module m (def (main) (: true (Int64 Int64))) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
         // Parameter-annotation form (the signature-side companion): same validation.
         assert_eq!(
             code("(module m (def (f (: x foo)) x) (def (main) (f 7)) (export main))").as_deref(),
@@ -4758,17 +4831,28 @@ mod stage1 {
         );
         // NO OVER-REJECTION: a real type annotation (value AND parameter), a matching width, a generic,
         // and an arrow all still compile; a genuine type mismatch still rejects CDZ0203.
-        assert_eq!(code("(module m (def (main) (: 5 Int64)) (export main))"), None);
-        assert_eq!(code("(module m (def (main) (: 200 UInt8)) (export main))"), None);
+        assert_eq!(
+            code("(module m (def (main) (: 5 Int64)) (export main))"),
+            None
+        );
+        assert_eq!(
+            code("(module m (def (main) (: 200 UInt8)) (export main))"),
+            None
+        );
         assert_eq!(
             code("(module m (def (f (: n Int64)) (+ n 1)) (def (main) (f 5)) (export main))"),
             None
         );
         assert_eq!(
-            code("(module m (def (f (: g (-> Int64 Int64))) (g 1)) (def (main) (f (fn (x) (+ x 1)))) (export main))"),
+            code(
+                "(module m (def (f (: g (-> Int64 Int64))) (g 1)) (def (main) (f (fn (x) (+ x 1)))) (export main))"
+            ),
             None
         );
-        assert_eq!(code("(module m (def (main) (: 5 Bool)) (export main))").as_deref(), Some("CDZ0203"));
+        assert_eq!(
+            code("(module m (def (main) (: 5 Bool)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
     }
 
     // ── integer widths (I3, fold): named widths, per-width bounds, annotations, odd widths ────────
