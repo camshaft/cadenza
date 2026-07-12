@@ -259,7 +259,8 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     // explosion): the target is fixed by the module, the source by unification at the call site.
     fields.push(wrap_field(ast, signed, width));
     // Operations not yet realized — present, but their value declines when projected. `of` (the CHECKED
-    // conversion) returns `Option<T>`, so it stays unrealized until sum types land.
+    // conversion) returns `Option<T>`; sum types now exist, so what remains is wiring `.of` to build a
+    // `(Some v)` in range / `(None)` out (task #59) — until that lands it stays an unrealized field.
     for op in [
         "of",
         "checked-add",
