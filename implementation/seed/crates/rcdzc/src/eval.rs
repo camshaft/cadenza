@@ -729,6 +729,16 @@ fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId> {
             // record), matching how a too-deep β-reduction declines elsewhere.
             let mut guard = db.enter_reduction()?;
             let g = guard.db();
+            // A USER-DEF / LAMBDA head β-reduces — a field read of a call-RETURNED record
+            // `(. (mk a b) field)` folds through to the field's value, with NO heap build (the record
+            // analogue of the tuple case above). A recursive callee declines here and the projection
+            // stays a runtime `Core::Proj`/record read.
+            if lambda_body(g, head).is_some() {
+                return match apply_lambda(g, head, &args) {
+                    Ok(Some(reduced)) => reduce_to_record_id(g, reduced),
+                    _ => None,
+                };
+            }
             let prim = meta_apply_of(g, head)?;
             if prim.is_arith() {
                 return None;
@@ -834,6 +844,20 @@ pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::sync::Arc
         Resolved::Apply { head, args } => {
             let mut guard = db.enter_reduction()?;
             let g = guard.db();
+            // A USER-DEF / LAMBDA head β-reduces — inlining the (pure) call — so a projection of a
+            // call-RETURNED tuple `(. (mk a b) i)` folds straight through to the element `a`/`b`, with
+            // NO heap build. This mirrors the lambda branch `core_of`'s `Apply` arm takes when lowering
+            // the whole call, so the keep-decision (a projection-only compound folds through) and the
+            // fold agree: without this the call reduces to a `Core::Tuple` at lowering but the fold
+            // could not see through it, so each projection re-lowered the body and REBUILT the tuple
+            // (one `arr-alloc` per projection). A RECURSIVE callee declines here (`apply_lambda`'s
+            // `is_recursive` guard) and the projection stays a runtime `Core::Proj` (the heap read).
+            if lambda_body(g, head).is_some() {
+                return match apply_lambda(g, head, &args) {
+                    Ok(Some(reduced)) => reduce_to_tuple_elems(g, reduced),
+                    _ => None,
+                };
+            }
             let prim = meta_apply_of(g, head)?;
             if prim.is_arith() {
                 return None;

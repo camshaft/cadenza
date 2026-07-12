@@ -749,20 +749,24 @@ fn a_projection_only_runtime_tuple_folds_without_the_heap() {
 /// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
 /// an integer as one i64 cell, but a narrow width (UInt8) lives in an i32 slot — so a narrow element is
 /// extended i32→i64 into the heap and narrowed i64→i32 out of it. To exercise a GENUINE heap round-trip
-/// (a projection-only tuple LITERAL now folds away, no heap), the tuple comes from a CALL: `(mk a b)`
-/// returns `(tuple a b)`, which escapes the callee and is built on the heap; the caller binds the
-/// call result (a `Core::Call`, kept as a runtime binding, not a literal that folds) and projects both
-/// narrow fields. `(+ (. t 0) (. t 1))` must build, validate, and compute 100+50 = 150 through the heap.
+/// the tuple must be OPAQUE to the fold: a projection-only tuple LITERAL folds away (no heap), and a
+/// call-returned one now folds through too (the callee β-reduces — cycle 16). So the tuple comes from
+/// an `if` whose two branches DIFFER (`(tuple a b)` vs `(tuple b a)`) — `reduce_to_tuple_elems` does
+/// not see through an `if`, and the differing branches block the identical-branch collapse — so `t`
+/// stays a runtime handle and both projections are `arr-get`s. `(+ (. t 0) (. t 1))` must build,
+/// validate, and compute 100+50 = 150 through the heap (the sum is order-independent, so either branch
+/// gives 150).
 #[test]
 fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
     use crate::testkit::parse;
-    let src = "(module m (def (mk (: a UInt8) (: b UInt8)) (tuple a b)) \
+    let src = "(module m \
                  (def (pair-sum (: a UInt8) (: b UInt8)) \
-                   (let ((t (mk a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
+                   (let ((t (if (< a b) (tuple a b) (tuple b a)))) (+ (. t 0) (. t 1)))) \
+                 (export pair-sum))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
         cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a call-returned narrow tuple, projected, must build on the heap (import the runtime)"
+        "an if-selected narrow tuple, projected, must build on the heap (import the runtime)"
     );
     let Some(runtime) = find_runtime_wasm() else {
         eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
@@ -779,20 +783,28 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
     }
 }
 
-/// A FIELD read on a RUNTIME record (one returned from a call, not a compile-time-visible literal)
-/// projects like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order,
-/// so `(. rec field)` is an `arr-get` at the field's sorted index. `mk` writes its fields OUT of sorted
+/// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
+/// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
+/// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted
 /// order — `(record (z 9) (a n))` — so `a` is heap slot 0 and `z` is slot 1; projecting `a` must read
-/// the runtime argument (slot 0), not the literal 9. Earlier the member-access path folded only through
-/// a compile-time record and REJECTED a call-produced one with a self-contradictory CDZ0201 "requires a
+/// the runtime value (slot 0), not the literal 9. Earlier the member-access path folded only through a
+/// compile-time record and REJECTED a call-produced one with a self-contradictory CDZ0201 "requires a
 /// record, found (record …)"; this pins the runtime field read AND that it indexes by sorted position.
+/// To keep the record OPAQUE to the fold (a call-returned record now folds through — cycle 16), it comes
+/// from an `if` whose branches DIFFER in the `a` field (`n` vs `n+1`): `reduce_to_record_id` does not
+/// see through an `if`, so `main` selects one at run time and reads `a` off the heap.
 #[test]
 fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
     use crate::testkit::parse;
-    // `pick` returns a runtime record whose `a` field is the parameter; fields written z-before-a so the
-    // sorted layout (a=0, z=1) differs from the write order. Projecting `a` reads slot 0 = the argument.
-    let src = "(module m (def (pick n) (record (z 9) (a n))) \
-                 (def (main (: v Int64)) (. (pick v) a)) (export main))";
+    // The record's `a` field is the parameter; fields written z-before-a so the sorted layout (a=0, z=1)
+    // differs from the write order. The `if` has a RUNTIME condition `(< v 100)` (not compile-time
+    // constant, so it does not fold to a taken literal branch) and branches that DIFFER in `a` — so the
+    // record stays a runtime heap value. For v = 41 the condition is true, `a` = v, and projecting `a`
+    // reads slot 0 = the argument.
+    let src = "(module m \
+                 (def (main (: v Int64)) \
+                   (. (if (< v 100) (record (z 9) (a v)) (record (z 9) (a (+ v 1)))) a)) \
+                 (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
         cdz_run::required_runtime(&bytes).expect("valid").is_some(),
@@ -821,16 +833,18 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
 /// A bare (unannotated) parameter PROJECTED in a helper's body is UNCONSTRAINED there (typed `Any`
 /// until the def inlines) — so the projection is checked at the CALL SITE, where the argument's
 /// compound type flows in, not standalone. `(def (get-x r) (. r x))` is well-formed even though `r`'s
-/// type is unknown in the body, exactly as `(+ r 1)` on an `Any` parameter is; applied to a runtime
-/// record `(mk v)`, `r` is that record and `(. r x)` is `v`. Earlier the seed rejected the body
-/// standalone with a self-contradictory CDZ0201 "requires a record, found Any" (an `Any` operand is
-/// unconstrained, not a proven non-record) — projection was the outlier vs arithmetic, which never
-/// faulted on `Any`. Composed run: `get-x (mk 41)` = 41.
+/// type is unknown in the body, exactly as `(+ r 1)` on an `Any` parameter is; applied to a record
+/// value, `r` is that record and `(. r x)` is its `x`. Earlier the seed rejected the body standalone
+/// with a self-contradictory CDZ0201 "requires a record, found Any" (an `Any` operand is unconstrained,
+/// not a proven non-record) — projection was the outlier vs arithmetic, which never faulted on `Any`.
+/// The argument is an `if`-selected record (runtime condition, branches differing in `x`) so it stays
+/// OPAQUE to the fold (a plain `(mk v)` would fold through — cycle 16): `get-x` reads `x` off the heap
+/// at run time. For v = 41 the condition holds, so `x` = v; composed run: 41.
 #[test]
 fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
     use crate::testkit::parse;
     let src = "(module m (def (get-x r) (. r x)) (def (mk n) (record (x n) (y 2))) \
-                 (def (main (: v Int64)) (get-x (mk v))) (export main))";
+                 (def (main (: v Int64)) (get-x (if (< v 100) (mk v) (mk (+ v 1))))) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
         cdz_run::required_runtime(&bytes).expect("valid").is_some(),
