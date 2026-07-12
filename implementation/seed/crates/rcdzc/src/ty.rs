@@ -159,6 +159,13 @@ pub enum Ty {
     /// compiler keeps them separate types even though a byte is an integer. Backed at run time by the
     /// persistent rope `bytes-*` heap ops; its observable form is the byte-string literal.
     Bytes,
+    /// A STRING: an immutable sequence of Unicode text (`collections-and-text.md` §A String Is A
+    /// Sequence Of Unicode Scalar Values). One monomorphic type (no element parameter, unlike `List`) —
+    /// every string is `String`. Backed at run time by the same UTF-8 byte-rope the value heap uses for
+    /// `Bytes`; only the STATIC type differs (a `String` renders `"…"` with the closed escape set, a
+    /// `Bytes` renders `\xNN`). This increment realizes the CONSTANT string (a literal folds + equality);
+    /// runtime string ops (`concat`/`len`/`at`) + string escape arrive later.
+    String,
     /// A SUM: a value of one of a fixed set of named variants (`type-system.md` §The Structural Types
     /// Are Record, Tuple, And Sum — "a sum of named variants"). Declared by `(type NAME variant…)`,
     /// which tags it NOMINAL (`§Nominal Is An Orthogonal Modifier Over Any Structural Type`), so its
@@ -243,8 +250,8 @@ impl Ty {
             Ty::List(elem) => elem.has_free_var(),
             Ty::Record(fields) => fields.values().any(|t| t.has_free_var()),
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_free_var()),
-            // Bytes is a leaf — no inner type, so no free variable.
-            Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => false,
+            // Bytes and String are leaves — no inner type, so no free variable.
+            Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes | Ty::String => false,
         }
     }
 
@@ -311,6 +318,8 @@ impl Ty {
                     decl: b, args: ab, ..
                 },
             ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
+            // `String` is monomorphic — the one string type agrees only with itself.
+            (Ty::String, Ty::String) => true,
             _ => false,
         }
     }
@@ -394,6 +403,8 @@ impl Ty {
             }
             Ty::Bool => "Bool".to_string(),
             Ty::Unit => "Unit".to_string(),
+            // A string renders as `String` — one monomorphic type, no parameters.
+            Ty::String => "String".to_string(),
             // A record renders as `(record (name Type) …)` in canonical (sorted) field order — the
             // shape the renderer walks. The runtime holds no field names; this type does.
             Ty::Record(fields) => {

@@ -458,6 +458,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Core::Param { .. }
         | Core::ConstInt(_)
         | Core::ConstBool(_)
+        | Core::ConstStr(_)
         | Core::Unit => {}
     }
 }
@@ -563,6 +564,7 @@ fn walk_for_dead_traps(
         // Leaves and non-descending forms.
         Resolved::Int(_)
         | Resolved::Bool(_)
+        | Resolved::Str(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }

@@ -146,7 +146,9 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     resolve_name(db, id, &n)
                 }
             }
-            Leaf::Str(_) => Resolved::Poison(Reject::decline("string literals not yet supported")),
+            // A string literal — its text is already unescaped to canonical form by the reader. A
+            // `Ty::String` constant (folds to `Core::ConstStr`, escapes as its baked UTF-8 bytes).
+            Leaf::Str(s) => Resolved::Str(s.clone()),
             Leaf::Float(_) => Resolved::Poison(Reject::decline("float literals not yet supported")),
         },
         Struct::List(children) => {

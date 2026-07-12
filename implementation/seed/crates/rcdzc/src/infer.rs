@@ -71,6 +71,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // A bare integer literal is polymorphic in its width until something fixes it.
         Resolved::Int(_) => Ty::int(),
         Resolved::Bool(_) => Ty::Bool,
+        Resolved::Str(_) => Ty::String,
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
         Resolved::Ref { value } => type_of(db, value),
@@ -1462,6 +1463,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Param { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
+        | Resolved::Str(_)
         | Resolved::Unit
         | Resolved::TypeVal(_)
         | Resolved::Lambda { .. } => {}

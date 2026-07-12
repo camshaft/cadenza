@@ -185,6 +185,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // Leaves reference no binding.
         Core::ConstInt(_)
         | Core::ConstBool(_)
+        | Core::ConstStr(_)
         | Core::Unit
         | Core::Param { .. }
         | Core::Poison(_) => false,
@@ -482,9 +483,11 @@ pub fn collect_used_ops(
             }
             collect_used_ops(db, scrutinee, out);
         }
-        // Leaves and references emit no runtime op.
+        // Leaves and references emit no runtime op. (A constant string CROSSES only via the escape
+        // path's baked bytes — it emits no in-body op; a runtime string handle op arrives later.)
         Core::ConstInt(_)
         | Core::ConstBool(_)
+        | Core::ConstStr(_)
         | Core::Unit
         | Core::Param { .. }
         | Core::LocalRef { .. }
@@ -1399,6 +1402,14 @@ fn emit(
             out.push(Lir::ConstI32(if b { 1 } else { 0 }));
             Ok(())
         }
+        // A constant string reaching `emit` as an in-body VALUE has no runtime slot form yet — a string
+        // crosses only via the escape path (its bytes baked into the resource module), not through a
+        // function body. Its constant equality FOLDS in `lower` (never reaching here). So a string value
+        // used inside a body (returned to a scalar boundary, stored) declines cleanly — the runtime
+        // string handle (a byte-rope alloc) is a later increment.
+        Core::ConstStr(_) => Err(Reject::decline(
+            "a runtime string value is not yet built (only a constant string escapes / folds)",
+        )),
         Core::Unit => {
             // Unit occupies no slot and pushes nothing.
             Ok(())

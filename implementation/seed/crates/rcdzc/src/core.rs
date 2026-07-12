@@ -118,6 +118,9 @@ pub enum Core {
     ConstInt(IntValue),
     /// A boolean constant.
     ConstBool(bool),
+    /// A string constant — the canonical text of a string literal. A `Ty::String` value; escapes as its
+    /// baked UTF-8 bytes (like a constant compound). Runtime string ops are a later stage.
+    ConstStr(String),
     /// The unit value.
     Unit,
     /// A record value — a fixed set of named fields, each field's value referenced by its AST

@@ -291,6 +291,7 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // Leaves and references have no sub-calls.
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstBool(_)
+        | crate::core::Core::ConstStr(_)
         | crate::core::Core::Unit
         | crate::core::Core::Param { .. }
         | crate::core::Core::LocalRef { .. }

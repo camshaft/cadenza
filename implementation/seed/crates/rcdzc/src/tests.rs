@@ -3657,6 +3657,40 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_string_equality_folds_to_a_bool() {
+        // `= : ∀a. a → a → Bool` relates two strings by their text. A CONSTANT string equality folds at
+        // compile time (no heap): `(= "hello" "hello")` → true, `(= "hello" "world")` → false, `(= "" "")`
+        // → true (the empty string equals itself). Consumed by an `if` so `main` returns a scalar (1/0).
+        // This is the string equality the compiler needs for instruction-tag / export-name dispatch.
+        for (prog, want) in [
+            ("(= \"hello\" \"hello\")", 1),
+            ("(= \"hello\" \"world\")", 0),
+            ("(= \"\" \"\")", 1),
+        ] {
+            let src = format!("(module m (def (main) (if {prog} 1 0)) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "string equality fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recognized_string_escape_denotes_its_one_scalar_value() {
+        // A string literal's escapes are expanded by the reader before the compiler sees the text, so
+        // `"\t"` is the one-scalar string containing a tab — EQUAL to a literal tab in the source
+        // (01-literals §'a recognized string escape denotes its one scalar value'). `(= "\t" <tab>)`
+        // folds to true, pinning that the escape and the raw character are the same string value.
+        let src = "(module m (def (main) (if (= \"\\t\" \"\t\") 1 0)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(&component(src), "main"),
+            1,
+            "an escape and its literal scalar are the same string"
+        );
+    }
+
+    #[test]
     fn a_runtime_list_index_reads_the_element_through_vec_get() {
         // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
         // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0

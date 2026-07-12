@@ -63,7 +63,7 @@ impl Subst {
                 name: name.clone(),
                 args: args.iter().map(|t| self.apply(t)).collect(),
             },
-            Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => ty.clone(),
+            Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
         }
     }
 
@@ -179,6 +179,8 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             }
             Ok(())
         }
+        // `String` is monomorphic — it unifies only with itself (no element/arg to recurse on).
+        (Ty::String, Ty::String) => Ok(()),
         _ => Err(mismatch(&a, &b)),
     }
 }
@@ -263,7 +265,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
         // A list's element type may hold the variable (`List ?0`).
         Ty::List(elem) => occurs(subst, v, &elem),
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => false,
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => false,
     }
 }
 
@@ -408,7 +410,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 
@@ -493,7 +495,7 @@ fn freshen_free_go(
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
                 .collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 

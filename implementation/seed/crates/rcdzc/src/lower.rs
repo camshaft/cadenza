@@ -64,6 +64,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
     match resolved_of(db, id) {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
+        Resolved::Str(s) => Core::ConstStr(s),
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
         // computation the enclosing `let` named once — see `lower_let`), this reference reads the
@@ -1416,6 +1417,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         Resolved::SumPayload { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
+        | Resolved::Str(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }
@@ -1866,6 +1868,9 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             radix: Radix::Dec,
         })),
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
+        // A constant string bakes as its `"…"` leaf — the codec encodes it (KIND_STR: len + UTF-8
+        // bytes), and the host reader lifts it back to a string value.
+        Core::ConstStr(s) => Some(b.atom_leaf(Leaf::Str(s))),
         Core::Unit => Some(b.name("unit")),
         Core::Tuple { elems } => {
             let head = b.name("tuple");
@@ -1909,8 +1914,9 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        // A scalar's type surface is its name atom.
-        Ty::Int(_) | Ty::Bool | Ty::Unit => Some(b.name(ty.render_name())),
+        // A scalar's type surface is its name atom. `String` is a monomorphic named type too, so its
+        // surface is the bare `String` atom (`render_name`).
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String => Some(b.name(ty.render_name())),
         // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
         // STRUCTURED application `(Option Int64)` for a generic instantiation — a `(NAME arg…)` list, so
         // the args round-trip as separate nodes (not one spaced-out name atom). Matches `render_name`'s
@@ -2029,6 +2035,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         // Leaves and non-referencing forms contribute nothing.
         Resolved::Int(_)
         | Resolved::Bool(_)
+        | Resolved::Str(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }
@@ -2396,6 +2403,15 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         (Core::ConstBool(a), Core::ConstBool(b)) => {
             let r = compare_ord(op, a.cmp(&b));
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant boolean comparison");
+            Core::ConstBool(r)
+        }
+        // Two CONSTANT strings compare by their text (lexicographic by Unicode scalar values — the byte
+        // order of NFC UTF-8, which the reader already normalized to). `(= "a" "a")` → true; ordering
+        // comparisons (`<`) order by text. A constant fold, no heap: the string equality the compiler
+        // needs for tag/name dispatch.
+        (Core::ConstStr(a), Core::ConstStr(b)) => {
+            let r = compare_ord(op, a.cmp(&b));
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant string comparison");
             Core::ConstBool(r)
         }
         // Two UNIT values — there is exactly ONE unit value, so two units always compare EQUAL. Fold at

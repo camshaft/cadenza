@@ -635,6 +635,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::SumPayload { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
+        | Resolved::Str(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }

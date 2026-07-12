@@ -283,6 +283,9 @@ pub enum Resolved {
     Int(IntValue),
     /// A boolean literal.
     Bool(bool),
+    /// A string literal — its text already normalized to canonical form by the reader (escapes expanded,
+    /// NFC). A `Ty::String` constant; folds to a `Core::ConstStr` and escapes as its baked UTF-8 bytes.
+    Str(String),
     /// The unit value (`()`).
     Unit,
     /// A reference to a binding: the name at this occurrence denotes the value at `value` (the
