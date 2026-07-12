@@ -4867,6 +4867,31 @@ mod match_engine {
     }
 
     #[test]
+    fn a_large_scalar_match_beyond_the_br_table_cap_compiles_and_dispatches() {
+        // A scalar match with MORE arms than the br_table density cap (>256 int arms) is INELIGIBLE for
+        // the jump table (a dense table can hold at most 256 distinct values), so it emits the linear
+        // `if (== k)` probe cascade. The eligibility test is gated O(1) on the arm count BEFORE building
+        // the per-arm literal vector, so re-attempting the table on every recursive `rest` stays O(arms)
+        // rather than O(arms²) — this exercises that fallback path end-to-end and pins that a matched
+        // value still reaches the right arm through the long chain. 300 consecutive arms `k → k*2`.
+        use wasmtime::component::Val;
+        let n = 300;
+        let arms: String = (0..n).map(|i| format!("({i} {}) ", i * 2)).collect();
+        let src = format!(
+            "(module m (def (f (: k Int64)) (match k {arms}(_ -1))) (export f))"
+        );
+        let bytes = component(&src);
+        // A value in the middle of the chain, the last arm, and out-of-range (the wildcard default).
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]), 0);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(150)]), 300);
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(n - 1)]),
+            (n - 1) * 2
+        );
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(9999)]), -1);
+    }
+
+    #[test]
     fn a_binder_pattern_binds_the_scrutinee() {
         // A bare-name arm `k` binds the whole scrutinee for its body — the exhaustive tail (like `_`,
         // but named). `(match n (0 100) (k (+ k 1)))`: f(0)=100 (literal arm wins), f(41)=42 (k binds

@@ -2585,6 +2585,17 @@ fn try_emit_scalar_br_table(
         }
         _ => return Ok(None),
     };
+    // O(1) SIZE GATE before the O(arms) literal walk below. Eligibility requires a DENSE range
+    // (`span <= 256`, checked below) and the literals are DISTINCT (a duplicate falls back), so
+    // `count <= span <= 256`: a table can NEVER fire with more than 256 int-arms. Reject those here in
+    // O(1) instead of building an O(arms) `lits` vector that the density check would discard. This is
+    // what keeps a LARGE sparse/dense match O(arms) overall: `emit_probe_chain` re-attempts this table
+    // on every recursive `rest`, so without the gate a 6400-arm match rebuilt a shrinking O(arms) vector
+    // at each of ~6400 levels — O(arms²). (A dense SUFFIX of <=256 arms still becomes eligible and emits
+    // its table exactly as before — byte-identical; only the always-doomed long-prefix attempts are cut.)
+    if int_arms.len() > 256 {
+        return Ok(None);
+    }
     let mut lits: Vec<i64> = Vec::with_capacity(int_arms.len());
     for a in int_arms {
         match &a.probe {
