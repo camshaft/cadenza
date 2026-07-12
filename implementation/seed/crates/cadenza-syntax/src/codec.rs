@@ -3,7 +3,7 @@
 //! Wire layout (counts / ids / lengths are `VarU64` unsigned LEB128 via [`crate::leb128`]):
 //!
 //! ```text
-//! [ header:8 ]                       schema tag (TABLED — a fixed placeholder for now, see below)
+//! [ header:8 ]                       container version tag (see the versioning note below)
 //! [ leaf_count:var ]
 //!   for each leaf, in canonical order:
 //!     [ kind:1 ]
@@ -31,10 +31,16 @@
 //! bytes") is a property of CANONICAL arenas (see `canon.rs`), not of the codec: the codec faithfully
 //! serializes whatever it is handed.
 //!
-//! NOTE: the 8-byte `header` is a schema tag — eventually the truncated hash of the AST type schema,
-//! so an old reader refuses newer bytes rather than misreading them. That hash is TABLED for now; a
-//! fixed placeholder stands in so the end-to-end path works. `decode` still verifies it (wrong
-//! header -> `None`), so wiring the real hash in later is a drop-in change.
+//! VERSIONING: the 8-byte `header` carries the container encoding version, and `decode` refuses any
+//! bytes whose header it does not recognize (wrong header -> `None`) rather than misreading them:
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-versioned
+//# A reader MUST refuse a binary AST whose container encoding version it does not implement rather than misinterpret it.
+//!
+//! The current tag is a fixed `cdzast\x00\x01` (a name + a version number). A future refinement could
+//! make the version a truncated hash of the AST type schema so a schema change also bumps it, but that
+//! is an optional strengthening of the same check — the refuse-on-mismatch guarantee holds today, and
+//! swapping the tag's content is a drop-in change.
 
 use crate::ast::{Arenas, Decimal, Leaf, LeafId, Radix, Struct, StructId};
 use crate::leb128::{self, Reader};
@@ -56,9 +62,9 @@ const KIND_NAME: u8 = 10;
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
 
-/// The 8-byte schema tag. TABLED: this is a fixed placeholder until the real schema hash is wired
-/// in (it will become the truncated hash of the AST type schema, so an old reader refuses newer
-/// bytes). `decode` verifies it regardless, so swapping in the real value later is a drop-in change.
+/// The 8-byte container version tag (a name + a version number). `decode` verifies it and refuses any
+/// bytes with an unrecognized header, per ast-encoding.md §The Encoding Is Versioned (see the module
+/// header). The content could be strengthened to a schema hash later; swapping it is a drop-in change.
 const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
 
 fn int_kind(sign: Sign, radix: Radix) -> u8 {
