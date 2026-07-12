@@ -504,7 +504,62 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: heads.into(),
         });
     }
+    // Case 7: `form` is a HANDLE ARM `(op (params…) state body)`, ascended from `body`, and `name` is one
+    // of the operation PARAMETERS or the STATE binder → it binds for this arm's body. Like a lambda
+    // parameter, the binder resolves to its own occurrence (a `Param` formal) — the compile-time evaluator
+    // substitutes the perform's arguments for the params and the current state for `state` when it
+    // resolves the handler (E1c); until then a bare reference type-checks against a fresh variable. Scoped
+    // to THIS arm (an arm is reached through the handle's arms-list, so one arm's binders are invisible to
+    // another). State shadows a same-named param (last-wins), harmless in practice.
+    if let Some(binder) = handle_arm_binds(db, form, from, name) {
+        return Some(Resolved::Ref { value: binder });
+    }
     None
+}
+
+/// If `form` is a handle arm `(op (params…) state body)` ascended from its `body`, and `name` matches
+/// the state binder or one of the operation parameters, the binder's NAME occurrence — the value the
+/// name binds (an ordinary formal, resolved to a `Param` at that occurrence via `is_param_occurrence`).
+/// `None` otherwise. The state binder shadows a same-named parameter (checked first, last-wins).
+fn handle_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option<StructId> {
+    // `form` must be a 4-element arm whose 4th element (the body) is `from`, and it must actually be a
+    // handle arm (parent shape), not any incidental 4-element list.
+    let Struct::List(parts) = db.ast.get(form) else {
+        return None;
+    };
+    if parts.len() != 4 || parts[3] != from || !is_handle_arm(db, form) {
+        return None;
+    }
+    // The STATE binder (element 2) — a bare name binding the current fold state. Shadows a param.
+    if db.ast.as_name(parts[2]) == Some(name) && name != "_" {
+        return Some(parts[2]);
+    }
+    // The operation PARAMETERS (element 1) — a `(params…)` list, or `()` for a nullary operation. Last
+    // match wins (shadowing among params is harmless).
+    if let Struct::List(ps) = db.ast.get(parts[1]) {
+        for &p in ps.iter().rev() {
+            if db.ast.as_name(p) == Some(name) && name != "_" {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Whether `arm` is a HANDLE ARM — its parent is a handle's arms-list (the handle's 2nd tail element).
+/// Used by `handle_arm_binds` and `is_binding_candidate` to confirm an arm's shape from a node up.
+fn is_handle_arm(db: &Db, arm: StructId) -> bool {
+    let Some(arms_list) = db.parent_of(arm) else {
+        return false;
+    };
+    let Some(handle) = db.parent_of(arms_list) else {
+        return false;
+    };
+    // The handle is `(handle INIT ARMS BODY)`; ARMS is its 2nd tail element (index 1 of the tail).
+    db.ast
+        .as_form(handle, "handle")
+        .and_then(|t| t.get(1).copied())
+        == Some(arms_list)
 }
 
 /// If `form` is a guard `(guard <binder> <cond>)` ascended from its `<cond>`, and `<binder>` is a bare
@@ -1239,6 +1294,23 @@ fn is_param_occurrence(db: &Db, id: StructId) -> bool {
         && let Struct::List(sig) = db.ast.get(list)
     {
         return sig.first().copied() != Some(param_node);
+    }
+    // A HANDLE-ARM operation parameter: `list` is the arm's `(params…)` list — the 2nd element of a
+    // handle arm `(op (params…) state body)` — so `param_node` is one of the operation's formals. Its
+    // value is substituted by the perform's argument when the handler resolves; until then it is a formal.
+    if is_handle_arm(db, form)
+        && let Struct::List(parts) = db.ast.get(form)
+        && parts.get(1).copied() == Some(list)
+    {
+        return true;
+    }
+    // A HANDLE-ARM STATE binder sits DIRECTLY as the 3rd element of the arm (not inside a list), so
+    // `parent` (its immediate parent) is the arm itself. It is a formal like a parameter.
+    if is_handle_arm(db, parent)
+        && let Struct::List(parts) = db.ast.get(parent)
+        && parts.get(2).copied() == Some(id)
+    {
+        return true;
     }
     false
 }

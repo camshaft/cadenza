@@ -7035,6 +7035,22 @@ mod stage1 {
     }
 
     #[test]
+    fn a_handle_arm_binds_its_params_and_state_in_scope() {
+        // E1b: an arm `(op (params…) state body)` binds the operation parameters AND the state binder in
+        // the arm body — so a reference to `s` (state) in a `resume` is IN SCOPE, not an unbound-name
+        // error. Full lowering is still declined (E1c consumes the scope), so the program declines; the
+        // point is it must NOT crash and must NOT fault CDZ0101 on the arm binders. Before E1b this
+        // faulted CDZ0101 (unbound `s`); after, it declines cleanly on the not-yet-lowered handler.
+        let src = "(do (effect Fresh (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   ((. Fresh next)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a handler with state declines until E1c lowers it (but scope resolves)"
+        );
+    }
+
+    #[test]
     fn a_runtime_integer_width_is_rejected() {
         // `(def (mk n) (: 5 (UInt n)))` puts a RUNTIME value `n` (a parameter) in a width position — a
         // width must be a compile-time natural (`numeric-model.md §An Integer Type Is Indexed By A
