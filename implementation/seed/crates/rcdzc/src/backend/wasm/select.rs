@@ -3881,7 +3881,17 @@ fn emit_wrap(
         _ => {} // same slot width — nothing to move
     }
     // 3. Truncate to the target width within the target slot, when narrower than the slot.
-    if dst.narrow() {
+    //
+    // REDUNDANT-TRUNCATION ELISION: the truncation is a no-op when the SOURCE value is already a valid,
+    // identically-represented target value — i.e. the source width fits the target width AND they share
+    // signedness. Then every source value lies in `[min_dst, max_dst]` and its normalized slot bits are
+    // already the target's, so the mask (unsigned) or sign-extend (signed) changes nothing. This is the
+    // `UInt8.wrap(UInt8)` identity and a same-sign widening like `UInt16.wrap(UInt8)`. A NARROWING
+    // (`src.width > dst.width`) or a SIGN CHANGE (`Int8.wrap(UInt8)` — a `200` must become `-56` via
+    // sign-extend) genuinely reshapes the value, so it keeps the truncation. (Signedness must match: even
+    // at equal width, `Int8.wrap(UInt8)` reinterprets the top bit.)
+    let truncation_is_identity = src.width <= dst.width && src.signed == dst.signed;
+    if dst.narrow() && !truncation_is_identity {
         let slot_bits = dst.slot_bits();
         if dst.signed {
             // Sign-extend from bit N-1: `(x << (M-N)) >> (M-N)` with arithmetic (signed) shr. This both

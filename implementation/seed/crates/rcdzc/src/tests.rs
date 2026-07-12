@@ -1119,6 +1119,38 @@ fn a_parameter_inside_a_synthesized_scope_form_resolves() {
     assert_eq!(run_returns::<i8>(&bytes, "main"), -56);
 }
 
+/// A `wrap` whose SOURCE value already fits the TARGET (same signedness, source width <= target width)
+/// is the IDENTITY — the truncation mask/sign-extend is elided — and it must still compute the same
+/// value. A `UInt8.wrap` of a runtime `UInt8` is the identity (no mask); a same-sign WIDENING
+/// `UInt16.wrap` of a `UInt8` is too. A NARROWING (`UInt8.wrap` of a `UInt64`) still masks, and a SIGN
+/// CHANGE (`Int8.wrap` of a `UInt8`) still sign-extends — those genuinely reshape the value. The point
+/// is that eliding the redundant truncation does not change any observed result.
+#[test]
+fn a_wrap_whose_source_fits_the_target_is_the_identity() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // UInt8 → UInt8: identity, value preserved (incl. the top-bit value 200 and the max 255).
+    let same = "(module m (def (f (: a UInt8)) (UInt8.wrap a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(same))).expect("compile");
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U8(200)]), 200);
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U8(255)]), 255);
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U8(0)]), 0);
+    // UInt8 → UInt16: same-sign widening is also the identity (a UInt8 already fits UInt16).
+    let widen = "(module m (def (f (: a UInt8)) (UInt16.wrap a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(widen))).expect("compile");
+    assert_eq!(run_returns_with::<u16>(&b, "f", &[Val::U8(200)]), 200);
+    // UInt64 → UInt8: a NARROWING still masks (300 mod 256 = 44).
+    let narrow = "(module m (def (f (: a UInt64)) (UInt8.wrap a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(narrow))).expect("compile");
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U64(300)]), 44);
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U64(255)]), 255);
+    // UInt8 → Int8: a SIGN CHANGE still sign-extends (200 reinterpreted as -56).
+    let sign = "(module m (def (f (: a UInt8)) (Int8.wrap a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(sign))).expect("compile");
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::U8(200)]), -56);
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::U8(100)]), 100);
+}
+
 /// A reference buried under many NON-binding forms still resolves to its outer binder — the
 /// correctness guard for the lexical-scope SKIP index (`Db::scope_skip`) that hops over the non-binding
 /// spine (record/`if`/application) instead of visiting every enclosing form. A wrong skip pointer (or
