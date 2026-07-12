@@ -2905,27 +2905,34 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: us
 #[allow(dead_code)]
 fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: usize) -> Handle {
     let key = entry.key();
-    let (datamap, nodemap, size, handles) = with_node(
+    // Read only the HEADER + arity upfront — NOT a clone of `handles`. The old code cloned the whole
+    // handle vector here even on the SPLIT/EMPTY/collision branches that only ever READ it by index and
+    // build a fresh, differently-sized result — a wasted Vec alloc + O(arity) copy on every path-copied
+    // node. Now the OVERWRITE/DESCEND branches (which REUSE a full-length copy as their result) clone at
+    // their own branch, and the growth branches read via a borrow. `arity` gates the empty/collision test.
+    let (datamap, nodemap, size, arity) = with_node(
         node,
-        (0u32, 0u32, 0u32, Vec::<Handle>::new()),
+        (0u32, 0u32, 0u32, 0usize),
         |n| {
             (
                 champ_datamap(&n.raw),
                 champ_nodemap(&n.raw),
                 champ_size(&n.raw),
-                n.handles.clone(),
+                n.handles.len(),
             )
         },
     );
 
     // Empty node (fresh single entry) or collision node.
     if datamap == 0 && nodemap == 0 {
-        if handles.is_empty() {
+        if arity == 0 {
             let i = level_index(hash, level);
             let new = alloc_raw(entry.into_vec(), champ_header(1 << i, 0, 1)); // entry owned
             op_drop(node);
             return new;
         }
+        // Collision node — needs an owned copy of the entries (the helper appends + rebuilds).
+        let handles = with_node(node, Vec::new(), |n| n.handles.clone());
         return collision_insert(node, handles, entry, stride);
     }
 
@@ -2938,70 +2945,83 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
     if datamap & bit != 0 {
         let eidx = entry_index_for_slot(datamap, i) as usize;
         let base = stride * eidx;
-        let stored_key = handles[base];
+        let stored_key = champ_handle_at(node, base);
         if champ_eq(stored_key, key) {
-            // OVERWRITE: keep stored key, take incoming value columns; size unchanged.
-            let mut new_handles = Vec::with_capacity(handles.len());
-            for (idx, &h) in handles.iter().enumerate() {
+            // OVERWRITE: keep the stored key, swap in the incoming value columns; size/arity unchanged.
+            // Clone the handle vector ONCE and use it AS the result (mutate in place) rather than reading
+            // one vector and building a second — the new node needs a full-length handles Vec anyway, so
+            // the clone IS that vector. Each KEPT handle is dup'd so `new` owns its own reference; the
+            // OLD value columns (overwritten below) are released by op_drop(node).
+            let mut new_handles = with_node(node, Vec::new(), |n| n.handles.clone());
+            for (idx, slot) in new_handles.iter_mut().enumerate() {
                 if idx > base && idx < base + stride {
-                    new_handles.push(entry.col(idx - base)); // incoming value column
+                    *slot = entry.col(idx - base); // incoming value column (owned); old ptr still on node
                 } else {
-                    op_dup(h);
-                    new_handles.push(h);
+                    op_dup(*slot); // kept handle: new node needs its own reference
                 }
             }
             let new = alloc_raw(new_handles, champ_header(datamap, nodemap, size));
             op_drop(entry.key()); // incoming duplicate key unused
-            op_drop(node); // frees the old value columns if node was unique
+            op_drop(node); // frees the old value columns (and balances the dups) if node was unique
             return new;
         }
         // SPLIT: turn the inline entry + newcomer into a subnode. Build the STORED entry (dup'd, since
         // the consumed node's copy also survives via `op_drop(node)` releasing only ITS references).
-        let stored_entry = stored_entry_from(&handles, base, stride, true);
+        // Read the node's handles by BORROW (`champ_handle_at`) — no upfront clone — since the result is
+        // a fresh, differently-shaped Vec (one entry removed, one subnode added).
+        let stored_entry = with_node(node, Entry::elem(Handle::NULL), |n| {
+            stored_entry_from(&n.handles, base, stride, true)
+        });
         let h1 = champ_hash(stored_key);
         let sub = merge_two_entries(stored_entry, h1, entry, hash, level + 1);
         let new_datamap = datamap & !bit;
         let new_nodemap = nodemap | bit;
         let new_sidx = subnode_index_for_slot(new_nodemap, i) as usize;
-        let mut new_handles = Vec::with_capacity(handles.len() + 1);
-        for e in 0..dcount {
-            if e == eidx {
-                continue;
+        // Build the fresh result vector directly from a borrow of the node's handles.
+        let new_handles = with_node(node, Vec::new(), |n| {
+            let mut nh = Vec::with_capacity(n.handles.len() + 1);
+            for e in 0..dcount {
+                if e == eidx {
+                    continue;
+                }
+                for t in 0..stride {
+                    let h = n.handles[stride * e + t];
+                    op_dup(h);
+                    nh.push(h);
+                }
             }
-            for t in 0..stride {
-                let h = handles[stride * e + t];
-                op_dup(h);
-                new_handles.push(h);
+            let mut subs: Vec<Handle> = Vec::with_capacity(scount + 1);
+            for s in 0..scount {
+                let c = n.handles[subbase + s];
+                op_dup(c);
+                subs.push(c);
             }
-        }
-        let mut subs: Vec<Handle> = Vec::with_capacity(scount + 1);
-        for s in 0..scount {
-            let c = handles[subbase + s];
-            op_dup(c);
-            subs.push(c);
-        }
-        subs.insert(new_sidx, sub);
-        new_handles.extend(subs);
+            subs.insert(new_sidx, sub);
+            nh.extend(subs);
+            nh
+        });
         let new = alloc_raw(new_handles, champ_header(new_datamap, new_nodemap, size + 1));
         op_drop(node);
         return new;
     }
 
     if nodemap & bit != 0 {
-        // DESCEND into the subnode.
+        // DESCEND into the subnode. Arity is unchanged, so the result reuses a full-length copy of the
+        // node's handles — clone ONCE here (at the branch that needs it) and mutate the one child slot.
         let sidx = subnode_index_for_slot(nodemap, i) as usize;
-        let child = handles[subbase + sidx];
+        let child = champ_handle_at(node, subbase + sidx);
         let old_child_size = champ_size_of(child);
         op_dup(child);
         let new_child = champ_insert_node(child, entry, hash, level + 1, stride);
         let delta = champ_size_of(new_child) - old_child_size; // 0 (overwrite) or 1 (new key)
-        let mut new_handles = Vec::with_capacity(handles.len());
-        for (idx, &h) in handles.iter().enumerate() {
+        // Swap the one child slot to `new_child` (the recursion already consumed the old `child` ref via
+        // the op_dup above) and dup each KEPT handle so `new` owns its own references.
+        let mut new_handles = with_node(node, Vec::new(), |n| n.handles.clone());
+        for (idx, slot) in new_handles.iter_mut().enumerate() {
             if idx == subbase + sidx {
-                new_handles.push(new_child);
+                *slot = new_child; // owned; old child ref was consumed by the recursion
             } else {
-                op_dup(h);
-                new_handles.push(h);
+                op_dup(*slot); // kept handle: new node needs its own reference
             }
         }
         let new = alloc_raw(new_handles, champ_header(datamap, nodemap, size + delta));
@@ -3009,26 +3029,32 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
         return new;
     }
 
-    // EMPTY slot: place a new inline entry in canonical (ascending-bit) order.
+    // EMPTY slot: place a new inline entry in canonical (ascending-bit) order. Fresh, larger result —
+    // read the node's handles by BORROW (no upfront clone).
     let new_datamap = datamap | bit;
     let new_eidx = entry_index_for_slot(new_datamap, i) as usize;
-    let mut new_handles: Vec<Handle> = Vec::with_capacity(handles.len() + stride);
-    for e in 0..dcount {
-        for t in 0..stride {
-            let h = handles[stride * e + t];
-            op_dup(h);
-            new_handles.push(h);
+    let mut new_handles = with_node(node, Vec::new(), |n| {
+        let mut nh: Vec<Handle> = Vec::with_capacity(n.handles.len() + stride);
+        for e in 0..dcount {
+            for t in 0..stride {
+                let h = n.handles[stride * e + t];
+                op_dup(h);
+                nh.push(h);
+            }
         }
-    }
+        nh
+    });
     for (off, h) in entry.cols().iter().enumerate() {
         new_handles.insert(stride * new_eidx + off, *h); // entry columns at the entry position
     }
     let _ = entry; // consumed: columns relocated into new_handles by value (handles are Copy)
-    for s in 0..scount {
-        let c = handles[subbase + s];
-        op_dup(c);
-        new_handles.push(c);
-    }
+    with_node(node, (), |n| {
+        for s in 0..scount {
+            let c = n.handles[subbase + s];
+            op_dup(c);
+            new_handles.push(c);
+        }
+    });
     let new = alloc_raw(new_handles, champ_header(new_datamap, nodemap, size + 1));
     op_drop(node);
     new
@@ -4338,6 +4364,49 @@ mod tests {
         });
         println!("ALLOC map_insert x{N}: {insert}");
         assert!(insert <= 900, "unique map_insert x{N} allocs {insert} exceeds ceiling 900 (… → 1084 in-place SPLIT → ~766 inline champ_header raw; residual = the intrinsic subnode Box + handles Vec on a split)");
+
+        // (A2) PERSISTENT insert (OVERWRITE) into a SHARED map — the real-world functional pattern (keep
+        // the old version, derive a new one). `mkeep` is kept (rc>1) across each insert, so every insert
+        // path-copies the touched spine (root→leaf, ~log32(N) nodes) via `champ_insert_node` instead of
+        // refitting in place. Each existing key is overwritten (arity-preserving). The copy path was
+        // cutting ~2 Vec allocs per path-copied node (a throwaway upfront `handles.clone()` PLUS a
+        // separate `new_handles`); now it clones ONCE and mutates that copy → 8715→6143 (−30%). Guards
+        // that the copy path stays single-Vec-per-node; a regression to the double-alloc would ~1.4x it.
+        let mut mkeep = op_map_empty();
+        for k in 0..N {
+            mkeep = op_map_insert(mkeep, op_box_int(k), op_box_int(k));
+        }
+        let pinsert = measure(&mut || {
+            for k in 0..N {
+                op_dup(mkeep); // keep the base shared → force the path-copy branch
+                let m2 = op_map_insert(mkeep, op_box_int(k), op_box_int(k * 3));
+                op_drop(m2);
+            }
+        });
+        println!("ALLOC map_insert_shared x{N}: {pinsert}");
+        assert!(pinsert <= 6400, "shared/persistent map_insert (overwrite) x{N} allocs {pinsert} exceeds ceiling 6400 (path-copy: 1 Vec + 1 node Box per copied spine node; was 8715 with a wasted upfront handles.clone())");
+        op_drop(mkeep);
+
+        // (A3) persistent insert of a NEW key into a shared map — exercises the EMPTY-slot / SPLIT copy
+        // branches (build a persistent map while keeping the prior version), the growth half of the copy
+        // path. Base is the same N-element shared map; each iteration inserts a fresh, absent key (N+k)
+        // that lands in an empty slot or splits. The upfront `handles.clone()` was PURE WASTE on these
+        // fresh-result branches (they only read by index) — removed → 7445→6445 (−13%). Guards it stays
+        // borrow-and-build (no upfront clone) on the growth path.
+        let mut mkeep2 = op_map_empty();
+        for k in 0..N {
+            mkeep2 = op_map_insert(mkeep2, op_box_int(k), op_box_int(k));
+        }
+        let pinsert_new = measure(&mut || {
+            for k in 0..N {
+                op_dup(mkeep2);
+                let m2 = op_map_insert(mkeep2, op_box_int(N + k), op_box_int(k));
+                op_drop(m2);
+            }
+        });
+        println!("ALLOC map_insert_shared_newkey x{N}: {pinsert_new}");
+        assert!(pinsert_new <= 6700, "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6700 (path-copy growth: borrow-and-build, no upfront clone; was 7445)");
+        op_drop(mkeep2);
 
         // (B) full iteration (unique cursor walk).
         let iterate = measure(&mut || {
