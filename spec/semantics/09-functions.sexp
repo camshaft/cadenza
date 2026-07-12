@@ -644,6 +644,43 @@
             (def (main)           (bad true)) (export main)))
   (error  CDZ0203))
 
+; The case above contradicts the annotation via the BODY (`(: a Bool)` then `(+ a 1)`). The dual is a
+; contradiction via the ARGUMENT: a parameter whose annotation and body AGREE, called with an argument
+; of a conflicting type. An argument's type MUST be checked against its parameter's type at the call
+; (type-system.md §Annotations Constrain, Never Contradict; core-semantics.md — a well-typed program
+; does not go wrong). A compiler that reduces a call by substituting the argument into the body erases
+; the parameter↔argument relationship, so this check must be made at the call site, not left to the
+; reduced body — else a mistyped argument is silently accepted (and, once the mis-accepted value is
+; USED at its claimed type, miscompiled). These pin the argument side, the complement of the body side.
+
+(case "an Int argument to a Bool-annotated parameter is rejected"
+  (doc    "`(def (f (: x Bool)) x)` annotates `x` as Bool and returns it (body agrees with the
+           annotation). `(f 5)` passes an Int64 where a Bool is required — a type error (CDZ0203). The
+           argument's type is checked against the parameter's ANNOTATION at the call, not silently
+           accepted; the degenerate identity body would otherwise let the mis-accepted 5 flow back out
+           as a returned value. Distinct from the body-contradiction case above: here the annotation and
+           body agree and it is the ARGUMENT that disagrees.")
+  (input  (do (def (f (: x Bool)) x) (def (main) (f 5)) (export main)))
+  (error  CDZ0203))
+
+(case "an Int argument to a parameter used as a Bool condition is rejected"
+  (doc    "`(def (f x) (if x 1 2))` uses the unannotated `x` as a Bool condition, so `x : Bool` is
+           inferred from its use. `(f 5)` passes an Int64 — a type error (CDZ0203). Reducing the call
+           substitutes 5 into `(if x 1 2)`, giving `(if 5 1 2)` whose condition is a non-Bool — the
+           reduced body's fault is reported, so the program is rejected rather than miscompiled to an
+           invalid component. The correctly-typed `(f true)` yields 1.")
+  (input  (do (def (f x) (if x 1 2)) (def (main) (f 5)) (export main)))
+  (error  CDZ0203))
+
+(case "a Bool argument to a parameter used in integer addition is rejected"
+  (doc    "The mirror direction: `(def (f x) (+ x x))` infers `x : Int64` from the addition; `(f true)`
+           passes a Bool — a type error (CDZ0203). The reduced body `(+ true true)` faults on the
+           non-integer operand, so the call is rejected, not miscompiled. The correctly-typed `(f 5)`
+           yields 10. Pins that an argument is checked against a body-INFERRED parameter type, not only
+           an explicit annotation.")
+  (input  (do (def (f x) (+ x x)) (def (main) (f true)) (export main)))
+  (error  CDZ0203))
+
 ; --- Runtime arguments to the entrypoint: (call <export> <arg>…) --------------------------------
 ; Every case above calls a parameterized function with CONSTANT arguments, so the compiler folds the
 ; whole program to a value at compile time — a real strength (a compile-provable trap fails the build),

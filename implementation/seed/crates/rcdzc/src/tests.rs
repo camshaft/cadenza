@@ -3008,6 +3008,47 @@ mod stage1 {
         );
     }
 
+    #[test]
+    fn an_argument_conflicting_with_its_parameter_type_is_rejected_not_miscompiled() {
+        // The ARGUMENT side of parameter typing: β-reduction erases the parameter↔argument relationship
+        // (the arg is substituted into the body), so a mistyped argument must be checked at the CALL —
+        // else it is silently accepted (case A) or, once the mis-accepted value is USED at its claimed
+        // type, MISCOMPILED to an invalid component (cases B/C). Each of these MUST reject, never run to
+        // a value and never emit invalid wasm.
+        let must_reject = |src: &str| {
+            compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("mistyped argument must reject")
+                .message
+        };
+        // A: Int argument to a Bool-annotated identity parameter (would otherwise return 5).
+        must_reject("(module m (def (f (: x Bool)) x) (def (main) (f 5)) (export main))");
+        // B: Int argument to a bare parameter used as a Bool condition (would otherwise miscompile).
+        must_reject("(module m (def (f x) (if x 1 2)) (def (main) (f 5)) (export main))");
+        // C: Bool argument to a bare parameter used in integer addition (would otherwise miscompile).
+        must_reject("(module m (def (f x) (+ x x)) (def (main) (f true)) (export main))");
+        // The correctly-typed calls of the SAME functions still compile and run — no over-rejection.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (f x) (if x 1 2)) (def (main) (f true)) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            1
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (f x) (+ x x)) (def (main) (f 5)) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            10
+        );
+    }
+
     // ── first-class types: `(Int W)` builds a width-specialized MODULE via the one Meta.apply path ──
 
     #[test]

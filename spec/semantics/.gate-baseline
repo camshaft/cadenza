@@ -151,6 +151,7 @@ todo	String.scalar-len of a string selected by a runtime if
 todo	String.scalar-len of a string selected by a runtime match
 todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
+todo	a Bool argument to a parameter used in integer addition is rejected
 todo	a CBOR atom decodes each scalar major type to its value
 todo	a CBOR head decodes its major type and big-endian argument from the input bytes
 todo	a CBOR reader walks a variable-length array using its decoded length as the element count
@@ -563,6 +564,8 @@ todo	adding two quantities of the same dimension keeps that dimension
 todo	adding two units of one dimension converts to the reference unit exactly
 todo	an AST from quasiquoting a runtime value equals the same AST built by quote
 todo	an IEC binary prefix scales a unit by a power of two
+todo	an Int argument to a Bool-annotated parameter is rejected
+todo	an Int argument to a parameter used as a Bool condition is rejected
 todo	an Option carrying a Result is matched across two different sum types
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an annotated value takes a narrower integer width

@@ -627,10 +627,40 @@ fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
-    // A LAMBDA head β-reduces; its faults live in the reduced body, checked when that body is
-    // collected (it is reached from this node's core). So the scheme-based check below is only for a
-    // non-lambda head (an operator).
-    if matches!(crate::eval::apply_lambda(db, head, args), Ok(Some(_))) {
+    // A LAMBDA head β-reduces. Its faults do NOT surface on their own: the outer `collect` walks the
+    // ORIGINAL call (head + argument occurrences), never the reduced body, and β-reduction ERASES the
+    // parameter↔argument relationship (the parameter's annotation is dropped when its argument is
+    // substituted). So a mistyped argument — `(f 5)` to a `(: x Bool)` parameter, or to a bare
+    // parameter the body uses as a Bool/Int — goes unreported and the emitter later produces invalid
+    // wasm. Check the call here, at the call site, in two parts:
+    if crate::eval::lambda_body(db, head).is_some() {
+        // (1) Unify each argument against its PARAMETER's declared type. An annotated parameter
+        //     (`(: x Bool)`) has a definite type the argument must agree with; a bare parameter types
+        //     `Any` (its body-inferred type isn't a signature here) and unifies with anything, so this
+        //     catches the annotated-parameter mismatch (case A) precisely, without over-rejecting.
+        if let Some(params) = crate::eval::lambda_params_of(db, head) {
+            let mut subst = Subst::new();
+            for (&param_occ, &arg) in params.iter().zip(args.iter()) {
+                let pt = type_of(db, param_occ);
+                let at = type_of(db, arg);
+                if let Err(reject) = crate::unify::unify(&mut subst, &pt, &at) {
+                    trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter annotation (type fault)");
+                    out.push(reject);
+                }
+            }
+        }
+        // (2) Collect the REDUCED body's own faults. Substituting the concrete arguments turns a
+        //     body use of a bare parameter into a use of the actual argument value, so a use at a
+        //     conflicting type — `(if 5 1 2)`, `(+ true true)` — now faults where the unreduced
+        //     `(if x 1 2)` (x : Any) did not. This is what turns the case-B/C MISCOMPILE (invalid
+        //     wasm) into a reported rejection. Runs under the reduction guard; a recursive callee
+        //     declines the reduction (no reduced body) and is checked by its own def collection.
+        if let Some(mut guard) = db.enter_reduction() {
+            let g = guard.db();
+            if let Ok(Some(reduced)) = crate::eval::apply_lambda(g, head, args) {
+                collect(g, reduced, out);
+            }
+        }
         return;
     }
     let mut fresh = Fresh::new();

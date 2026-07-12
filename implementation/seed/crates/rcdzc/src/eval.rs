@@ -290,6 +290,16 @@ pub fn lambda_body(db: &mut Db, head: StructId) -> Option<StructId> {
     lambda_of(db, head).map(|(_, body)| body)
 }
 
+/// The PARAMETER NAME occurrences of the lambda `head` reduces to, in signature order — each the
+/// identity a body reference resolves to and the node whose `type_of` is the parameter's declared
+/// type (its annotation, or `Any` for a bare param). Used by infer to check each call argument against
+/// its parameter's type at the call site, which β-reduction alone erases (the parameter's annotation
+/// is dropped when its argument is substituted into the body).
+pub fn lambda_params_of(db: &mut Db, head: StructId) -> Option<Vec<StructId>> {
+    let (params, _) = lambda_of(db, head)?;
+    Some(params.iter().map(|&p| param_name_occ(db, p)).collect())
+}
+
 /// Is the function whose body is `body` (transitively) RECURSIVE — does the static call graph contain
 /// a cycle back to `body`? A recursive function cannot be β-reduced to a normal form at compile time
 /// (it would inline without end, and one that branches — several self-calls per body, like a CBOR tree
