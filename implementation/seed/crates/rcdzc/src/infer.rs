@@ -131,6 +131,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             Ty::Tuple(elems) => elems.get(index).cloned().unwrap_or(Ty::Any),
             _ => Ty::Any,
         },
+        // A sum-variant pattern's payload binder — its type is the variant's PAYLOAD type, read off the
+        // pattern's constructor `(. Sum V)` (whose `(meta t)` is `(-> payload Sum)`). So `(match s
+        // ((Some x) …))` types `x` as the `Some` variant's payload. `Any` if the head is not a
+        // single-payload variant constructor (a fault the match check reports).
+        Resolved::SumPayload { variant_head, .. } => {
+            crate::eval::variant_payload_type(db, variant_head).unwrap_or(Ty::Any)
+        }
         Resolved::If { cond, then_, else_ } => {
             // Reading the children's types is the backward demand: each is a lazy `type_of`.
             let _cond_ty = type_of(db, cond);
@@ -1044,9 +1051,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
         }
         // A ref's target-node fault is reported when that node is collected on its own. A bare
-        // intrinsic value and the atomic leaves have no sub-faults.
+        // intrinsic value and the atomic leaves have no sub-faults. A `SumPayload` (a variant binder's
+        // payload read) has no sub-fault of its own — the scrutinee's faults surface at the match.
         Resolved::Prim(_)
         | Resolved::Ref { .. }
+        | Resolved::SumPayload { .. }
         | Resolved::Param { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)

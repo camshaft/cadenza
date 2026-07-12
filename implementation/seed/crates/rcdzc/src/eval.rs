@@ -561,8 +561,11 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         Resolved::Annot { expr, .. } => collect_callees(db, expr, out),
         // A nested `fn` is a separate node — do NOT descend (its calls are its own edges). A bare ref,
         // a leaf, a prim, a param, a type value, a poison have no callees of THIS body.
+        // A `SumPayload` reads the scrutinee's payload; the scrutinee's own callees are collected via the
+        // enclosing match's scrutinee position, so a payload reference adds no edge of this body.
         Resolved::Lambda { .. }
         | Resolved::Ref { .. }
+        | Resolved::SumPayload { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Unit
@@ -643,6 +646,21 @@ pub fn variant_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
     let field = project_meta(db, id, "variant")?;
     match resolved_of(db, field) {
         Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok()),
+        _ => None,
+    }
+}
+
+/// The PAYLOAD type of the sum variant the value at `id` constructs — for a variant constructor
+/// `(. Sum V)` whose `(meta t)` is `(-> payload Sum)`, the arrow's parameter `payload`. Read via the
+/// ordinary `(meta t)` scheme, so it works for any single-payload variant. A NULLARY variant's type is
+/// the bare sum (no arrow) → `None` (no payload to bind). A MULTI-payload variant's type is a curried
+/// `(-> p0 (-> p1 Sum))` → the FIRST parameter here (Stage-5 binds a single scalar payload; a
+/// multi-payload destructure is a later increment, so only the one-payload arrow is meaningful).
+pub fn variant_payload_type(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
+    let mut fresh = Fresh::new();
+    let scheme = scheme_of(db, id, &mut fresh)?;
+    match scheme.ty {
+        Ty::Fn(param, _) => Some(*param),
         _ => None,
     }
 }

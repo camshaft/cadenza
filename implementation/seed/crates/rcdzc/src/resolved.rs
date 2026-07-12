@@ -288,6 +288,18 @@ pub enum Resolved {
     /// a COMPILE-TIME type error (CDZ0201), never a runtime trap (`type-system.md` §A Tuple Is Split At A
     /// Position Into A Prefix And A Suffix).
     Proj { operand: StructId, index: usize },
+    /// The PAYLOAD a sum-variant pattern's binder binds — `(match s ((Some x) x))` resolves the `x`
+    /// reference to this. `scrutinee` is the match scrutinee occurrence; `variant_head` is the pattern's
+    /// variant-constructor occurrence (`(. Sum Variant)`), which carries the variant's discriminant (for
+    /// the payload's type) via its `(meta variant)` + payload arrow. Its type is the variant's payload
+    /// type (read from the constructor's `(-> payload Sum)`); at lowering it becomes
+    /// `Core::SumPayload { scrutinee }` (a `sum-payload` read + unbox). A pattern binder is scoped to its
+    /// arm (resolve Case 6), the sum analogue of the scalar binder-binds-the-scrutinee Case 5 — but here
+    /// the binder binds the PAYLOAD, not the whole scrutinee.
+    SumPayload {
+        scrutinee: StructId,
+        variant_head: StructId,
+    },
     /// A NATIVE primitive value — what a prelude `(intrinsic …)` node resolves to (an arithmetic
     /// operation or a type constructor). The irreducible bottom a `Meta.apply` names; carried as a
     /// VALUE and reduced/lowered by the machinery that owns it, never special-cased by name

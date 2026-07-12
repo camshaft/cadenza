@@ -207,10 +207,12 @@ fn compute(db: &Db, id: StructId) -> Resolved {
 /// scope-first order means a local binding SHADOWS a top-level def or built-in of the same name. A
 /// miss is a `Poison`.
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
-    // 1. Lexical scope — nearest enclosing binder.
-    if let Some(value) = lookup_scope(db, id, name) {
-        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → lexical scope");
-        return Resolved::Ref { value };
+    // 1. Lexical scope — nearest enclosing binder. A binder yields a `Ref` to its value occurrence
+    // (a `let`/param/scalar-match binder) OR a `SumPayload` (a variant-pattern binder binds the sum's
+    // payload, not a plain occurrence) — `binder_in` returns the full resolved form.
+    if let Some(resolved) = lookup_scope(db, id, name) {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, "name → lexical scope");
+        return resolved;
     }
     // 2. The module's own top-level definitions. A nullary def denotes its body; a def WITH parameters
     // denotes a lambda `(params) body` (so a call `(f a)` applies it by the ordinary application
@@ -277,12 +279,12 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
 /// §Shadowing Is Well-Defined). A `let` binds a name for the initializers that FOLLOW it and its body;
 /// walking up from a reference, the first binder of `name` at or outside the reference's position is
 /// the one in effect.
-fn lookup_scope(db: &Db, id: StructId, name: &str) -> Option<StructId> {
+fn lookup_scope(db: &Db, id: StructId, name: &str) -> Option<Resolved> {
     let mut child = id;
     let mut cursor = db.parent_of(id);
     while let Some(form) = cursor {
-        if let Some(value) = binder_in(db, form, child, name) {
-            return Some(value);
+        if let Some(resolved) = binder_in(db, form, child, name) {
+            return Some(resolved);
         }
         child = form;
         cursor = db.parent_of(form);
@@ -300,21 +302,22 @@ fn lookup_scope(db: &Db, id: StructId, name: &str) -> Option<StructId> {
 ///
 /// A `def`'s parameters bind in its body too — Case 4 below, exactly as a `fn` body sees its own
 /// parameters (a def-with-params is no longer nullary-only).
-fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<StructId> {
+fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Resolved> {
     // Case 1: `form` is a `let`, ascended from its body → all bindings visible.
     if let Some(tail) = db.ast.as_form(form, "let") {
         let bindings_occ = tail.first().copied()?;
         let body_occ = tail.get(1).copied();
         if Some(from) == body_occ {
             // The body sees EVERY binding — no `stop_before`.
-            return last_binder_named(db, bindings_occ, name, None);
+            return last_binder_named(db, bindings_occ, name, None)
+                .map(|v| Resolved::Ref { value: v });
         }
         return None;
     }
     // Case 2: `form` is a let's BINDINGS-LIST, ascended from pair `from` → the bindings BEFORE `from`
     // are visible (an initializer sees the earlier bindings, not itself or later ones).
     if let_of_bindings_list(db, form).is_some() {
-        return last_binder_named(db, form, name, Some(from));
+        return last_binder_named(db, form, name, Some(from)).map(|v| Resolved::Ref { value: v });
     }
     // Case 3: `form` is a `(fn (params) body)`, ascended from the body → its parameters bind. A
     // parameter reference resolves to the PARAMETER occurrence itself (a formal); the evaluator
@@ -335,7 +338,7 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
                     found = Some(name_occ);
                 }
             }
-            return found;
+            return found.map(|v| Resolved::Ref { value: v });
         }
         return None;
     }
@@ -357,7 +360,7 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
                     found = Some(name_occ);
                 }
             }
-            return found;
+            return found.map(|v| Resolved::Ref { value: v });
         }
         return None;
     }
@@ -368,7 +371,17 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
     // and (at lowering) its value flow straight through, no separate slot. Scoped to THIS arm only:
     // an arm is reached from the enclosing `(match …)`, so a binder in one arm is invisible to another.
     if let Some(scrutinee) = match_arm_binds(db, form, from, name) {
-        return Some(scrutinee);
+        return Some(Resolved::Ref { value: scrutinee });
+    }
+    // Case 6: `form` is a MATCH ARM whose pattern is a VARIANT pattern `((. Sum V) binder)`, ascended
+    // from `body`, and `binder` is `name` → the binder binds the variant's PAYLOAD (not the whole
+    // scrutinee, unlike Case 5). It resolves to a `SumPayload` reading `sum-payload(scrutinee)`; its
+    // type is the variant's payload type. Scoped to this arm.
+    if let Some((scrutinee, variant_head)) = match_arm_variant_binds(db, form, from, name) {
+        return Some(Resolved::SumPayload {
+            scrutinee,
+            variant_head,
+        });
     }
     None
 }
@@ -402,6 +415,54 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
         return None; // `form` is the scrutinee position, not an arm
     }
     Some(scrutinee)
+}
+
+/// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a VARIANT
+/// pattern `((. Sum V) binder)` binding `name`, return `(scrutinee, variant_head)` — the enclosing
+/// match's scrutinee occurrence and the pattern's variant-constructor occurrence `(. Sum V)`. The
+/// binder binds the variant's PAYLOAD (via `sum-payload(scrutinee)`), so a reference resolves to a
+/// `SumPayload`. `None` otherwise. Stage-5 handles a SINGLE bare binder as the payload; a destructuring
+/// payload pattern (`(NPrim (tuple h a b))`) is a later increment.
+fn match_arm_variant_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, StructId)> {
+    // `form` = `(pattern body)`, ascended from body.
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[1] != from {
+        return None;
+    }
+    let pattern = pb[0];
+    // The pattern must be an application `(variant_head binder)`: a 2-element list whose head is a
+    // MEMBER access `(. Sum V)` (a variant constructor) and whose sole argument is the bare binder
+    // `name`. (A bare-member nullary pattern `(. Sum V)` binds nothing — not this case.)
+    let Struct::List(app) = db.ast.get(pattern) else {
+        return None;
+    };
+    if app.len() != 2 {
+        return None;
+    }
+    let variant_head = app[0];
+    // The head must be a `(. …)` member access (the variant constructor); a non-member head is not a
+    // variant pattern.
+    db.ast.as_form(variant_head, ".")?;
+    // The argument must be the bare binder `name` (not a literal, not `_`).
+    let arg_name = db.ast.as_name(app[1])?;
+    if arg_name != name || arg_name == "_" {
+        return None;
+    }
+    // `form`'s parent must be a `(match scrutinee arm…)`, with `form` an arm (not the scrutinee).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None;
+    }
+    Some((scrutinee, variant_head))
 }
 
 /// The NAME a parameter occurrence binds, and the occurrence that name lives at — seeing through a

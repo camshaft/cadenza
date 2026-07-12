@@ -4300,6 +4300,85 @@ mod stage1 {
     }
 
     #[test]
+    fn a_constant_sum_match_folds_to_the_selected_arm() {
+        // A match over a CONSTANT sum folds at compile time to the arm whose variant it is — no runtime
+        // dispatch, like a constant scalar match. `(match (Some 5) ((Some x) x) (None 0))` selects the
+        // `Some` arm and yields its payload binding `x` = 5; `(match None …)` selects the `None` arm → 0.
+        let some = "(module m (type Option (Some Int64) None) \
+                     (def (main) (match (Option.Some 5) ((Option.Some x) x) (Option.None 0))) \
+                     (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(some))).expect("compile"),
+                "main"
+            ),
+            5
+        );
+        let none = "(module m (type Option (Some Int64) None) \
+                     (def (main) (match Option.None ((Option.Some x) x) (Option.None 0))) \
+                     (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(none))).expect("compile"),
+                "main"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn a_non_exhaustive_sum_match_is_rejected() {
+        // A sum match must cover every variant or end in a wildcard (§190). `(match s ((Some x) x))` —
+        // missing the `None` arm, no wildcard — is CDZ0210 (non-exhaustive), not a runtime fallthrough.
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (f (: s Int64)) (match (Option.Some s) ((Option.Some x) x))) (export f))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a non-exhaustive sum match must reject");
+        assert!(
+            err.message.contains("non-exhaustive") || err.message.contains("cover every variant"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_runtime_sum_match_dispatches_on_the_discriminant() {
+        // The RUNTIME sum match, composed + run: a function builds a sum from a runtime param, matches
+        // it, and returns a scalar. `(pick n)` builds `(Some n)` when n>0 else `None`, then matches:
+        // `(Some x) → x`, `None → -1`. So `pick 5` → 5 (the `Some` arm reads the payload via
+        // `sum-payload`), `pick 0` → -1 (the `None` arm). Exercises `sum-disc` dispatch + `sum-payload`
+        // binding end-to-end through the composed runtime.
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (pick (: n Int64)) \
+                        (match (if (> n 0) (Option.Some n) Option.None) \
+                          ((Option.Some x) x) (Option.None -1))) \
+                     (export pick))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile sum match");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime sum match imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed sum-match run");
+            return;
+        };
+        for (arg, want) in [("5", "5"), ("0", "-1")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("pick".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("composed sum-match run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_multi_param_function() {
         // `((fn (a b) (+ a b)) 3 4)` = 7 — both params substituted.
         assert_eq!(run_main("((fn (a b) (+ a b)) 3 4)"), 7);

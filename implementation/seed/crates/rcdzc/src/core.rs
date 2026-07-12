@@ -48,6 +48,19 @@ pub enum Probe {
     Wild,
 }
 
+/// One arm of a [`Core::MatchSum`]: which variant it matches (by discriminant) and its body. A
+/// `disc: Some(k)` arm matches when `sum-disc(scrutinee) == k`; a `disc: None` arm is the wildcard/
+/// binder tail (always matches). A payload binder is not carried here — it resolves to a
+/// [`Core::SumPayload`] on its own (a reference in `body` reads the payload), so the arm needs only its
+/// discriminant probe + body occurrence.
+#[derive(Clone, PartialEq, Debug)]
+pub struct SumArm {
+    /// The variant discriminant this arm matches, or `None` for a wildcard/binder tail.
+    pub disc: Option<u32>,
+    /// The arm's body occurrence (lowered on demand).
+    pub body: StructId,
+}
+
 /// The core (A-normal) form of one node.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Core {
@@ -85,6 +98,24 @@ pub enum Core {
     /// for a one-payload variant, or a tuple handle built from the payloads for a multi-payload variant.
     /// The nominal tag is compile-time only — the runtime holds only `(disc, payload)`.
     SumNew { disc: u32, payloads: Vec<StructId> },
+    /// A MATCH over a SUM scrutinee — arms tried top-to-bottom, each a `(SumArm)`. Present only when the
+    /// scrutinee is a RUNTIME sum (a constant sum folds to the selected arm's core in `lower`, like a
+    /// scalar match). The backend probes `sum-disc(scrutinee)` against each arm's discriminant and takes
+    /// the matching arm's body; a wildcard/binder arm (`disc: None`) is the unconditional tail. Distinct
+    /// from `Match` (a scalar scrutinee, equality probes) because a sum walks the heap handle — the
+    /// discriminant, not a scalar value, drives the dispatch. A payload binder in an arm is NOT carried
+    /// here: it resolves to a `SumPayload` independently (a reference reads `sum-payload(scrutinee)`), so
+    /// an arm needs only its discriminant + body.
+    MatchSum {
+        scrutinee: StructId,
+        arms: Vec<SumArm>,
+    },
+    /// The PAYLOAD of a sum scrutinee, extracted by a variant pattern's binder. `(match s ((Some x) x))`
+    /// — the `x` reference lowers to this: `sum-payload(scrutinee)` then unbox by the payload's solved
+    /// type (`get-int`/`get-bool`, or the handle as-is for a compound payload). The disc is not needed at
+    /// run time (control is already in the matched arm); the payload type (read via `type_of`) chooses
+    /// the unbox.
+    SumPayload { scrutinee: StructId },
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
     If {
         cond: StructId,

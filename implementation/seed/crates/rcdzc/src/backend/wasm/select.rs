@@ -43,6 +43,10 @@ const OP_GET_BOOL: &str = "get-bool";
 /// handle (`value-heap-runtime.md` §Sum). The payload is: an empty array for a nullary variant, the
 /// boxed value for a one-payload variant, or a tuple handle for a multi-payload variant.
 const OP_SUM_NEW: &str = "sum-new";
+/// `sum-disc(handle) -> u32` — read a sum value's discriminant (which variant), driving a match's
+/// dispatch. `sum-payload(handle) -> u32` — the sum's payload handle, unboxed to the bound value.
+const OP_SUM_DISC: &str = "sum-disc";
+const OP_SUM_PAYLOAD: &str = "sum-payload";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
@@ -107,6 +111,16 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::SumNew { payloads, .. } => payloads
             .iter()
             .any(|&p| binding_escapes(db, p, binder, false)),
+        // A sum match: the binding escapes if it escapes the scrutinee or any arm body.
+        Core::MatchSum { scrutinee, arms } => {
+            binding_escapes(db, scrutinee, binder, false)
+                || arms
+                    .iter()
+                    .any(|a| binding_escapes(db, a.body, binder, false))
+        }
+        // A sum-payload read BORROWS the scrutinee (`sum-payload` reads without consuming), like a
+        // projection operand — so a `LocalRef` reached through it does not escape.
+        Core::SumPayload { scrutinee } => binding_escapes(db, scrutinee, binder, true),
         // Leaves reference no binding.
         Core::ConstInt(_)
         | Core::ConstBool(_)
@@ -295,6 +309,23 @@ pub fn collect_used_ops(
                     }
                 }
             }
+        }
+        // A sum match calls `sum-disc` to dispatch; the scrutinee + every arm body are emitted (any op
+        // an arm uses must be imported). A sum-payload read calls `sum-payload` + the payload's `get-*`.
+        Core::MatchSum { scrutinee, arms } => {
+            out.insert(OP_SUM_DISC);
+            collect_used_ops(db, scrutinee, out);
+            for arm in &arms {
+                collect_used_ops(db, arm.body, out);
+            }
+        }
+        Core::SumPayload { scrutinee } => {
+            out.insert(OP_SUM_PAYLOAD);
+            // The payload's unbox op, by THIS node's solved type (the bound payload's type).
+            if let Ok(Some(op)) = get_op(db, id) {
+                out.insert(op);
+            }
+            collect_used_ops(db, scrutinee, out);
         }
         // Leaves and references emit no runtime op.
         Core::ConstInt(_)
@@ -724,6 +755,20 @@ fn emit(
             }
             Ok(())
         }
+        // A sum-variant pattern's payload binder — `sum-payload(scrutinee)` then unbox by THIS node's
+        // solved type (the payload's type). Mirrors `Core::Proj`'s unbox, but the descent op is
+        // `sum-payload` (not `arr-get` + index): the payload handle is the sum's single payload cell.
+        Core::SumPayload { scrutinee } => {
+            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [sum-handle]
+            out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // → [payload-handle]
+            if let Some(op) = get_op(db, id)? {
+                out.push(Lir::CallImport(op)); // → [scalar]
+                if is_narrow_int(db, id).is_some() {
+                    out.push(Lir::I32WrapI64);
+                }
+            }
+            Ok(())
+        }
         Core::If { cond, then_, else_ } => {
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.
@@ -780,6 +825,32 @@ fn emit(
             emit_match_arms(
                 db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty,
                 layout, out,
+            )
+        }
+        // A sum MATCH → a chain of `if`s over `sum-disc(scrutinee)`. Each variant arm probes
+        // `sum-disc(scrutinee) == disc` and takes its body on a match; a wildcard/binder arm (`disc:
+        // None`) is the unconditional `else` tail. The scrutinee is a heap handle (an i32 local reload
+        // per probe, cheap). A payload binder in a body reads `sum-payload(scrutinee)` on its own
+        // (`Core::SumPayload`), so the arm dispatch needs only the disc.
+        Core::MatchSum { scrutinee, arms } => {
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "sum match result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            let result_it = match type_of(db, id) {
+                Ty::Int(rit) => Some(rit),
+                _ => None,
+            };
+            emit_sum_match_arms(
+                db, scrutinee, &arms, result_it, block_ty, slots, base, high, scratch_ty, layout,
+                out,
             )
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
@@ -1181,6 +1252,67 @@ fn emit_probe_chain(
             emit_probe_chain(
                 db, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
                 tail,
+            )?;
+            out.push(Lir::End);
+            Ok(())
+        }
+    }
+}
+
+/// Emit a SUM match arm chain: for each variant arm, `sum-disc(scrutinee) == disc`, then
+/// `if (block_ty) body else <rest>`; a wildcard/binder arm (`disc: None`) or the LAST arm (exhaustive,
+/// so redundant probe) is the unconditional tail. Mirrors `emit_match_arms_tailable` but probes the
+/// discriminant (`sum-disc` + an i32 compare) instead of a scalar equality. A bare-`ConstInt` arm body
+/// is grounded to the match's result width (`result_it`), same reconciliation the scalar arms do.
+#[allow(clippy::too_many_arguments)]
+fn emit_sum_match_arms(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[crate::core::SumArm],
+    result_it: Option<IntTy>,
+    block_ty: BlockType,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    let emit_body = |db: &mut Db,
+                     body: StructId,
+                     base: u32,
+                     high: &mut u32,
+                     scratch_ty: &mut HashMap<u32, ValType>,
+                     out: &mut Vec<Lir>|
+     -> Result<(), Reject> {
+        if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, body)) {
+            return emit_operand(db, body, rit, slots, base, high, scratch_ty, layout, out);
+        }
+        emit(db, body, slots, base, high, scratch_ty, layout, out)
+    };
+    match arms.split_first() {
+        None => Err(Reject::decline(
+            "sum match ran off the end with no covering arm",
+        )),
+        // A wildcard/binder tail, or the last arm of an exhaustive match — its probe is redundant (every
+        // earlier variant disc has been tested and this is the only one left), so emit unconditionally.
+        Some((arm, [])) => emit_body(db, arm.body, base, high, scratch_ty, out),
+        Some((arm, _)) if arm.disc.is_none() => {
+            emit_body(db, arm.body, base, high, scratch_ty, out)
+        }
+        Some((arm, rest)) => {
+            let disc = arm.disc.expect("non-None handled above");
+            // sum-disc(scrutinee) == disc.
+            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+            out.push(Lir::CallImport(OP_SUM_DISC)); // → [disc]
+            out.push(Lir::ConstI32(disc as i32));
+            out.push(Lir::I32Eq);
+            out.push(Lir::If(block_ty));
+            emit_body(db, arm.body, base, high, scratch_ty, out)?;
+            out.push(Lir::Else);
+            emit_sum_match_arms(
+                db, scrutinee, rest, result_it, block_ty, slots, base, high, scratch_ty, layout,
+                out,
             )?;
             out.push(Lir::End);
             Ok(())

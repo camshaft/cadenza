@@ -81,6 +81,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A type annotation ERASES to its expression's core — `(: e T)` runs exactly as `e` (the
         // annotation's force is entirely on inference; it has no runtime trace).
         Resolved::Annot { expr, .. } => core_of(db, expr),
+        // A sum-variant pattern's payload binder — read the scrutinee's payload. If the scrutinee is a
+        // CONSTANT sum (`Core::SumNew` with a single payload), FOLD to that payload's core directly — a
+        // constant `(match (Some 5) ((Some x) x))` yields the constant `5`, no heap build/read (the sum
+        // analogue of a constant tuple projection folding). Otherwise it is a runtime read:
+        // `sum-payload(scrutinee)` then unbox by the payload's solved type. The disc is not needed
+        // (control is already in the matched arm).
+        Resolved::SumPayload { scrutinee, .. } => match core_of(db, scrutinee) {
+            Core::SumNew { payloads, .. } if payloads.len() == 1 => core_of(db, payloads[0]),
+            _ => Core::SumPayload { scrutinee },
+        },
         // A `let` — A-NORMALIZE its bindings: a binding whose value is a runtime computation used more
         // than once is NAMED (a `Core::Let` binding, computed once, read by `LocalRef`); a single-use
         // or constant binding is copy-propagated / erased (its references follow through to its value).
@@ -359,6 +369,12 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
 /// scrutinee covered by both a `true` arm and a `false` arm needs no wildcard. A match that covers
 /// neither way is rejected (CDZ0210), not compiled to a fallthrough with no defined value.
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // A SUM scrutinee dispatches on the DISCRIMINANT, not a scalar value — a separate lowering that
+    // classifies variant patterns and produces a `Core::MatchSum`. (Detected by the scrutinee's solved
+    // type; a scalar scrutinee falls through to the scalar-probe path below.)
+    if let crate::ty::Ty::Sum { .. } = crate::infer::type_of(db, scrutinee) {
+        return lower_match_sum(db, scrutinee, arms);
+    }
     // Classify each arm's pattern into a probe + keep its body. A pattern that is not a scalar literal,
     // binder, or wildcard declines the whole match (a compound pattern needs a heap walk).
     let mut probes: Vec<(crate::core::Probe, StructId)> = Vec::new();
@@ -462,6 +478,116 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     Core::Match {
         scrutinee,
         arms: probes,
+    }
+}
+
+/// Lower a match over a SUM scrutinee — dispatch on the variant DISCRIMINANT. Each arm's pattern is
+/// classified into `(disc, body)`: a variant pattern `(Sum.V binder)` or bare `Sum.V` → `Some(k)` (its
+/// discriminant), a bare binder/`_` → `None` (the wildcard tail). Exhaustiveness (`type-system.md §A
+/// Match Is Exhaustive Against The Sum Type's Variant Set`): every variant must be covered, OR a
+/// wildcard tail present; else CDZ0210. A constant sum FOLDS to the selected arm (like a scalar match);
+/// a runtime sum emits `Core::MatchSum`. A payload binder resolves to a `SumPayload` on its own (via
+/// resolve Case 6), so the arm carries only its discriminant + body.
+fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // The sum's declaration (for its variant set + count) — from the scrutinee's `Ty::Sum { decl }`.
+    let decl = match crate::infer::type_of(db, scrutinee) {
+        crate::ty::Ty::Sum { decl, .. } => decl,
+        _ => return Core::Poison(Reject::decline("sum match scrutinee is not a sum")),
+    };
+    let variant_count = match db.type_decl_by_occ(decl) {
+        Some(t) => t.variants.len(),
+        None => return Core::Poison(Reject::decline("sum match scrutinee has no declaration")),
+    };
+    // Classify each arm: `Some(disc)` for a variant pattern, `None` for a wildcard/binder tail.
+    let mut sum_arms: Vec<crate::core::SumArm> = Vec::new();
+    let mut covered: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut has_wild = false;
+    for &(pat, body) in arms {
+        match classify_sum_pattern(db, pat) {
+            SumPattern::Variant(disc) => {
+                covered.insert(disc);
+                sum_arms.push(crate::core::SumArm {
+                    disc: Some(disc),
+                    body,
+                });
+            }
+            SumPattern::Wild => {
+                has_wild = true;
+                sum_arms.push(crate::core::SumArm { disc: None, body });
+            }
+            SumPattern::NotSupported => {
+                return Core::Poison(Reject::decline(
+                    "a sum match pattern that is not a variant or `_` is not yet supported \
+                     (a nested destructure payload arrives in a later increment)",
+                ));
+            }
+        }
+    }
+    // Exhaustiveness: a wildcard tail covers the rest, else every variant must be named (§190).
+    if !has_wild && covered.len() < variant_count {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
+        ));
+    }
+    // FOLD a constant sum: select the first arm whose discriminant matches (or a wildcard).
+    if let Core::SumNew { disc, .. } = core_of(db, scrutinee) {
+        for arm in &sum_arms {
+            if arm.disc.is_none() || arm.disc == Some(disc) {
+                trace!(target: "rcdzc::fold", "sum match folds to a selected arm (constant sum scrutinee)");
+                return core_of(db, arm.body);
+            }
+        }
+        return Core::Poison(Reject::decline(
+            "sum match: no arm matched a constant (unreachable)",
+        ));
+    }
+    if let Core::Poison(r) = core_of(db, scrutinee) {
+        return Core::Poison(r);
+    }
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = sum_arms.len(), "sum match stays runtime (sum-disc probe chain)");
+    Core::MatchSum {
+        scrutinee,
+        arms: sum_arms,
+    }
+}
+
+/// How a sum-match pattern classifies.
+enum SumPattern {
+    /// A variant pattern `(Sum.V binder)` or bare `Sum.V` — matches discriminant `k`.
+    Variant(u32),
+    /// A bare binder / wildcard `_` — always matches.
+    Wild,
+    /// A pattern this increment does not handle (a nested destructure, a literal).
+    NotSupported,
+}
+
+/// Classify a sum-match pattern. A bare NAME (`_` or a binder) is `Wild`. A variant pattern is either a
+/// bare member `(. Sum V)` (nullary) or an application `((. Sum V) binder)` — its head resolves to a
+/// variant constructor, whose `(meta variant)` gives the discriminant. Anything else is unsupported.
+fn classify_sum_pattern(db: &mut Db, pat: StructId) -> SumPattern {
+    // A bare name — wildcard or binder — always matches.
+    if db.ast.as_name(pat).is_some() {
+        return SumPattern::Wild;
+    }
+    // A variant pattern's discriminant: read the pattern HEAD (the member `(. Sum V)`) — for an
+    // application `((. Sum V) binder)` the head is the first child; for a bare member the pattern IS the
+    // head. `variant_disc_of` on the reduced head record gives the discriminant.
+    let head = match db.ast.get(pat) {
+        crate::ast::Struct::List(children) => {
+            // An application `(head arg…)` — the variant ctor is the head. (A bare `(. Sum V)` is also a
+            // List with head `.`; distinguish by whether the FIRST child is the `.` grammar name.)
+            match children.first().copied() {
+                Some(first) if db.ast.as_name(first) == Some(".") => pat, // the whole `(. Sum V)`
+                Some(first) => first,                                     // application head
+                None => return SumPattern::NotSupported,
+            }
+        }
+        crate::ast::Struct::Atom(_) => return SumPattern::NotSupported,
+    };
+    match crate::eval::variant_disc_of(db, head) {
+        Some(disc) => SumPattern::Variant(disc),
+        None => SumPattern::NotSupported,
     }
 }
 
@@ -648,7 +774,10 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
             ref_escapes_whole(db, scrutinee, init)
                 || arms.iter().any(|(_, b)| ref_escapes_whole(db, *b, init))
         }
-        Resolved::Int(_)
+        // A `SumPayload` reads a PIECE of the scrutinee (`sum-payload`), not the whole value — like a
+        // projection operand, it is not a whole-value escape of `init`.
+        Resolved::SumPayload { .. }
+        | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -1199,6 +1328,9 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             }
             n
         }
+        // A `SumPayload` reads the scrutinee at run time (`sum-payload`); if the scrutinee is `init`,
+        // that is a use of the binding.
+        Resolved::SumPayload { scrutinee, .. } => usize::from(scrutinee == init) as u32,
         // Leaves and non-referencing forms contribute nothing.
         Resolved::Int(_)
         | Resolved::Bool(_)
