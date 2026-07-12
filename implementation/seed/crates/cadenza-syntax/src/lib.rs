@@ -10,6 +10,9 @@
 
 pub mod ast;
 pub mod canon;
+/// The `cdz-syntax` command surface, factored into the library so both the standalone `cdz-syntax`
+/// bin and the unified `cdz` bin drive one implementation.
+pub mod cli;
 pub mod codec;
 pub mod convert;
 pub mod debug;

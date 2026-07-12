@@ -466,7 +466,7 @@ fn run(paths: &Paths, profile: &str, file: &Path, from: &str, store: Option<Path
 
     // Stage 2 reads AST from stage 1's stdout, writes the component to stdout.
     let mut rcdzc = Command::new(&tools.rcdzc)
-        .args(["-", "-o", "-"])
+        .args(["compile", "-", "-o", "-"])
         .stdin(Stdio::from(
             syntax.stdout.take().expect("cdz-syntax stdout"),
         ))
@@ -525,9 +525,12 @@ struct Tools {
 fn build_tools(paths: &Paths, profile: &str) -> Tools {
     let sh = Shell::new().expect("open a shell");
     sh.change_dir(&paths.repo);
+    // The front-end + compiler CLIs are now ONE binary, `cdz` (`cdz convert …` / `cdz compile …`);
+    // `cdz-corpus` and `cdz-run` stay separate (corpus normalization; wasmtime runner). Build `cdz`
+    // in place of the retired `cdz-syntax`/`rcdzc` bins.
     if let Err(e) = cmd!(
         sh,
-        "cargo build --quiet --profile {profile} -p cadenza-syntax -p cdz-corpus -p rcdzc -p cdz-run"
+        "cargo build --quiet --profile {profile} -p cdz -p cdz-corpus -p cdz-run"
     )
     .quiet()
     .run()
@@ -539,10 +542,13 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     // `target/<profile>`.
     let subdir = if profile == "dev" { "debug" } else { profile };
     let bin = paths.repo.join("target").join(subdir);
+    // `syntax` and `rcdzc` now BOTH point at `cdz`; the call sites supply the subcommand (`convert`
+    // is already the first arg at every `syntax` site; a `compile` is prepended at every `rcdzc` site).
+    let cdz = bin.join("cdz");
     Tools {
-        syntax: bin.join("cdz-syntax"),
+        syntax: cdz.clone(),
         corpus: bin.join("cdz-corpus"),
-        rcdzc: bin.join("rcdzc"),
+        rcdzc: cdz,
         run: bin.join("cdz-run"),
     }
 }
@@ -638,7 +644,7 @@ fn run_program_wasm(
 
     // Stage 2: AST → component; capture stderr so a decline carries its diagnostic.
     let rcdzc = Command::new(&tools.rcdzc)
-        .args(["-", "-o", "-"])
+        .args(["compile", "-", "-o", "-"])
         .stdin(Stdio::from(syntax.stdout.take().unwrap()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -722,7 +728,7 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
         .write_all(program.as_bytes())
         .ok();
     let rcdzc = Command::new(&tools.rcdzc)
-        .args(["-", "-o", "-", "--target", rust_target])
+        .args(["compile", "-", "-o", "-", "--target", rust_target])
         .stdin(Stdio::from(syntax.stdout.take().unwrap()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2099,7 +2105,7 @@ fn emit(paths: &Paths, profile: &str, file: &Path, from: &str, out: Option<PathB
         std::process::exit(ast.status.code().unwrap_or(1));
     }
     let mut rcdzc = Command::new(&tools.rcdzc)
-        .args(["-", "-o"])
+        .args(["compile", "-", "-o"])
         .arg(&out)
         .stdin(Stdio::piped())
         .spawn()

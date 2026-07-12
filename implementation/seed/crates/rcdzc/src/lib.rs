@@ -71,6 +71,11 @@ pub mod sidecar;
 // so `decline-don't-crash` holds in every build profile with no environment to remember.
 pub mod host;
 
+// The `rcdzc` compile command surface (arg parsing + filesystem + the trace sink), factored into the
+// library so both the standalone `rcdzc` bin and the unified `cdz` bin drive ONE implementation. Also
+// a host-boundary module — NOT ported to the self-host.
+pub mod cli;
+
 pub use abi::{Artifact, CompileOutput, Diagnostic, Severity};
 pub use backend::Target;
 pub use compile::{compile, compile_component};

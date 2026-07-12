@@ -1,4 +1,5 @@
-//! End-to-end tests for the `cdz-syntax query` / `rewrite` codemod subcommands.
+//! End-to-end tests for the `cdz query` / `rewrite` codemod subcommands (the front-end surface,
+//! now served by the unified `cdz` binary — same code as the retired `cdz-syntax`, via `cadenza_syntax::cli`).
 //!
 //! These drive the actual built binary over stdin/stdout — the integration counterpart to the
 //! `query` module's unit tests, proving the CLI wiring (arg parsing, format resolution, the
@@ -7,16 +8,16 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// Run `cdz-syntax <args…>` feeding `stdin`, returning (exit_ok, stdout, stderr).
+/// Run `cdz <args…>` feeding `stdin`, returning (exit_ok, stdout, stderr).
 fn run(args: &[&str], stdin: &str) -> (bool, String, String) {
-    let exe = env!("CARGO_BIN_EXE_cdz-syntax");
+    let exe = env!("CARGO_BIN_EXE_cdz");
     let mut child = Command::new(exe)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn cdz-syntax");
+        .expect("spawn cdz");
     child
         .stdin
         .take()

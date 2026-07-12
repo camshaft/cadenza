@@ -1,13 +1,14 @@
-//! `rcdzc` — the command-line front over the pure compiler.
+//! The `rcdzc` compile command surface, factored into the library so BOTH the standalone `rcdzc` bin
+//! and the unified `cdz` bin drive ONE implementation. The thin bins call [`parse_and_run`], or embed
+//! [`CompileArgs`] as a subcommand and call [`run`].
 //!
 //! Artifacts-in, artifacts-out: takes one or more NAMED input artifacts and a list of backend
-//! targets (default `wasm`), runs the pure [`rcdzc::compile`], and writes each produced artifact to a
+//! targets (default `wasm`), runs the pure [`crate::compile`], and writes each produced artifact to a
 //! file. Diagnostics go to stderr; a nonzero exit means at least one error diagnostic.
 //!
-//! This bin is the HOST boundary — it owns the filesystem and argument parsing, the concerns the pure
+//! This is the HOST boundary — it owns the filesystem and argument parsing, the concerns the pure
 //! core deliberately excludes so that core ports to the Cadenza self-host. It is intentionally thin:
-//! all compilation logic lives behind `rcdzc::compile`. (The eventual query-program-driven entry will
-//! replace the fixed pipeline here with a program the caller supplies; the pure core is unchanged.)
+//! all compilation logic lives behind `crate::compile`.
 //!
 //! Usage:
 //!   rcdzc <input.ast>… [--target wasm]… [-o OUT]
@@ -20,18 +21,19 @@
 //! when exactly one artifact is produced and `-o` does not name an existing directory, in which case
 //! `-o` is the exact output FILE path. With no `-o`, artifacts are written to the current directory.
 
+use crate::{Artifact, Severity, Target, compile};
 use clap::Parser;
-use rcdzc::{Artifact, Severity, Target, compile};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// Compile Cadenza binary-AST artifacts to one or more backend targets.
+/// Compile Cadenza binary-AST artifacts to one or more backend targets. `#[command(...)]` here names
+/// the standalone `rcdzc` bin; embedded as a `cdz compile` subcommand the outer bin supplies the name.
 #[derive(Parser)]
 #[command(
     name = "rcdzc",
     about = "The reference Cadenza → component compiler (artifacts in, artifacts out)."
 )]
-struct Cli {
+pub struct CompileArgs {
     /// Input artifacts: `path`, `name=path`, or `kind:name=path` (kind defaults to `ast`).
     #[arg(required = true, value_name = "INPUT")]
     inputs: Vec<String>,
@@ -70,9 +72,14 @@ impl From<TargetArg> for Target {
     }
 }
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
+/// Parse the whole `rcdzc` CLI from `std::env::args` and run it — the standalone bin's `main`.
+pub fn parse_and_run() -> ExitCode {
+    run(CompileArgs::parse(), "rcdzc")
+}
 
+/// Run one compile command, reporting tool-level errors under `prog` (the invoking binary's name).
+/// This is the host boundary: filesystem + args + the trace sink.
+pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
     // Install the trace sink at the HOST boundary (the lib core only EMITS events). Output goes to
     // stderr, filtered by `CDZ_LOG` (e.g. `CDZ_LOG=rcdzc::infer=trace` to watch only inference, or
     // `CDZ_LOG=rcdzc=trace` for every decision). With no `CDZ_LOG` set, nothing is installed and the
@@ -111,7 +118,7 @@ fn main() -> ExitCode {
         let bytes = if parsed.path.as_os_str() == "-" {
             let mut buf = Vec::new();
             if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf) {
-                eprintln!("rcdzc: cannot read stdin: {e}");
+                eprintln!("{prog}: cannot read stdin: {e}");
                 return ExitCode::FAILURE;
             }
             buf
@@ -119,7 +126,7 @@ fn main() -> ExitCode {
             match std::fs::read(&parsed.path) {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("rcdzc: cannot read {}: {e}", parsed.path.display());
+                    eprintln!("{prog}: cannot read {}: {e}", parsed.path.display());
                     return ExitCode::FAILURE;
                 }
             }
@@ -135,7 +142,7 @@ fn main() -> ExitCode {
     // requests).
     let has_sidecar = inputs
         .iter()
-        .any(|a| a.kind == rcdzc::sidecar::KIND_SIDECAR);
+        .any(|a| a.kind == crate::sidecar::KIND_SIDECAR);
     let targets: Vec<Target> = if !cli.target.is_empty() {
         cli.target.iter().map(|&t| t.into()).collect()
     } else if has_sidecar {
@@ -147,7 +154,7 @@ fn main() -> ExitCode {
     // guard, so pathologically deep input DECLINES (the guard trips) rather than overflowing the
     // native stack and aborting — the `decline-don't-crash` contract, made independent of whatever
     // stack the ambient thread happens to have. See `rcdzc::host`.
-    let out = rcdzc::run_with_compiler_stack(|| compile(&inputs, &targets));
+    let out = crate::run_with_compiler_stack(|| compile(&inputs, &targets));
 
     // Report diagnostics (stderr).
     for d in &out.diagnostics {
@@ -162,8 +169,8 @@ fn main() -> ExitCode {
             None => String::new(),
         };
         match &d.code {
-            Some(code) => eprintln!("rcdzc: {sev} [{code}]{at}: {}", d.message),
-            None => eprintln!("rcdzc: {sev}{at}: {}", d.message),
+            Some(code) => eprintln!("{prog}: {sev} [{code}]{at}: {}", d.message),
+            None => eprintln!("{prog}: {sev}{at}: {}", d.message),
         }
     }
 
@@ -174,7 +181,7 @@ fn main() -> ExitCode {
         match out.artifacts.as_slice() {
             [art] => {
                 if let Err(e) = std::io::Write::write_all(&mut std::io::stdout(), &art.bytes) {
-                    eprintln!("rcdzc: cannot write stdout: {e}");
+                    eprintln!("{prog}: cannot write stdout: {e}");
                     return ExitCode::FAILURE;
                 }
             }
@@ -213,7 +220,7 @@ fn main() -> ExitCode {
             }
         };
         if let Err(e) = std::fs::write(&path, &art.bytes) {
-            eprintln!("rcdzc: cannot write {}: {e}", path.display());
+            eprintln!("{prog}: cannot write {}: {e}", path.display());
             return ExitCode::FAILURE;
         }
         eprintln!(

@@ -1,15 +1,18 @@
-//! `cdz-syntax` — convert AND structurally query/rewrite a Cadenza program.
+//! The `cdz-syntax` command surface — convert AND structurally query/rewrite a Cadenza program —
+//! factored into the library so BOTH the standalone `cdz-syntax` bin and the unified `cdz` bin drive
+//! ONE implementation (no duplicated arg-parsing / dispatch). The thin bins call [`parse_and_run`]
+//! (whole-program) or embed [`Cmd`] as a subcommand group and call [`run`] (one command).
 //!
 //! Surfaces: `binary`, `sexpr`, `ml`, plus two output-only views of the binary AST — `debug` (an
 //! indented tree) and `flat` (the arenas dumped literally: leaf pool + structure vector + root).
 //!
 //! ```text
-//! cdz-syntax convert [--from FMT] [--to FMT] [--width N] [FILE]
-//! cdz-syntax query   PATTERN          [FILE|DIR…] [--from FMT] [--count] [--json]
-//! cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--diff|--write|--json]
-//! cdz-syntax diff    FILE-A FILE-B    [--from FMT] [--json]
-//! cdz-syntax lint    [FILE|DIR…]      --rules FILE | --rule '(lint …)' [--from FMT] [--json]
-//! cdz-syntax clones  [FILE|DIR…]      [--min-size N] [--near] [--from FMT] [--json]
+//! convert [--from FMT] [--to FMT] [--width N] [FILE]
+//! query   PATTERN          [FILE|DIR…] [--from FMT] [--count] [--json]
+//! rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--diff|--write|--json]
+//! diff    FILE-A FILE-B    [--from FMT] [--json]
+//! lint    [FILE|DIR…]      --rules FILE | --rule '(lint …)' [--from FMT] [--json]
+//! clones  [FILE|DIR…]      [--min-size N] [--near] [--from FMT] [--json]
 //! ```
 //!
 //! `--from`/`--to` are inferred from the FILE extension when omitted (`.cdz`/`.ml` → ml,
@@ -22,28 +25,32 @@
 //! is s-expression text with `,x` (bind one node) and `,@xs` (bind a run of siblings) metavariables —
 //! the same shape as the code it matches. A `rewrite` re-parses its result and rejects it if it does
 //! not round-trip through the ML surface (a validated transaction — never a half-applied edit). This
-//! bin is the only place in the crate that touches the filesystem/stdio.
+//! module is the only place in the crate that touches the filesystem/stdio.
 
-use cadenza_syntax::convert::{self, Format, Options};
-use cadenza_syntax::query::clones;
-use cadenza_syntax::query::lint::LintSet;
-use cadenza_syntax::query::{self, Pattern, Query, Rule, RuleSet, Strategy, Template};
+use crate::convert::{self, Format, Options};
+use crate::query::clones;
+use crate::query::lint::LintSet;
+use crate::query::{self, Pattern, Query, Rule, RuleSet, Strategy, Template};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
+/// The whole `cdz-syntax` CLI — the standalone bin's entry. The `cdz` bin does NOT use this; it embeds
+/// [`Cmd`] as a subcommand group instead.
 #[derive(Parser)]
 #[command(
     name = "cdz-syntax",
     about = "Convert a Cadenza program between its surfaces."
 )]
-struct Cli {
+pub struct Cli {
     #[command(subcommand)]
     command: Cmd,
 }
 
+/// The syntax subcommands — embeddable in another bin's subcommand tree (the `cdz` bin flattens these
+/// alongside the compiler's).
 #[derive(Subcommand)]
-enum Cmd {
+pub enum Cmd {
     /// Convert a program between surfaces (reads FILE or stdin, writes stdout).
     Convert(ConvertArgs),
     /// Structurally search a program for a PATTERN, printing each match (with its span) or a count.
@@ -59,7 +66,7 @@ enum Cmd {
 }
 
 #[derive(Args)]
-struct ClonesArgs {
+pub struct ClonesArgs {
     /// Input files or directories (recursed by extension). Omit (or use `-`) to read stdin. Clones
     /// may span files.
     files: Vec<String>,
@@ -83,7 +90,7 @@ struct ClonesArgs {
 }
 
 #[derive(Args)]
-struct LintArgs {
+pub struct LintArgs {
     /// Input files or directories (recursed by extension). Omit (or use `-`) to read stdin.
     files: Vec<String>,
 
@@ -106,7 +113,7 @@ struct LintArgs {
 }
 
 #[derive(Args)]
-struct DiffArgs {
+pub struct DiffArgs {
     /// The "before" program.
     file_a: String,
 
@@ -123,7 +130,7 @@ struct DiffArgs {
 }
 
 #[derive(Args)]
-struct QueryArgs {
+pub struct QueryArgs {
     /// The s-expression pattern. Metavariables: `,x` (bind a node), `,@xs` (bind a run), `,_`
     /// (wildcard), `,(x GUARD…)` (guarded, e.g. `,(x is-literal)` / `,(x (head-is +))`).
     pattern: String,
@@ -161,7 +168,7 @@ struct QueryArgs {
 }
 
 #[derive(Args)]
-struct RewriteArgs {
+pub struct RewriteArgs {
     /// The s-expression pattern to match (with `,x` / `,@xs` / guards). Omit with `--rules`.
     pattern: Option<String>,
 
@@ -220,7 +227,7 @@ struct RewriteArgs {
 }
 
 #[derive(Args)]
-struct ConvertArgs {
+pub struct ConvertArgs {
     /// Input format. Inferred from FILE's extension when omitted; required when reading stdin.
     #[arg(short, long, value_enum)]
     from: Option<Fmt>,
@@ -260,21 +267,27 @@ impl From<Fmt> for Format {
     }
 }
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
+/// Parse the whole `cdz-syntax` CLI from `std::env::args` and run it — the standalone bin's `main`.
+pub fn parse_and_run() -> ExitCode {
+    run(Cli::parse().command, "cdz-syntax")
+}
+
+/// Run one syntax command, reporting tool-level errors under `prog` (the invoking binary's name, so
+/// `cdz` and `cdz-syntax` each prefix their own diagnostics). Returns the process exit code.
+pub fn run(command: Cmd, prog: &str) -> ExitCode {
     // `lint` has a third outcome: it can run cleanly yet find `error` diagnostics, which must exit
     // non-zero (the CI gate) WITHOUT printing a tool-level error. So it returns `Ok(had_error)`.
-    if let Cmd::Lint(args) = &cli.command {
+    if let Cmd::Lint(args) = &command {
         return match run_lint(args) {
             Ok(false) => ExitCode::SUCCESS,
             Ok(true) => ExitCode::FAILURE, // error-severity diagnostics found
             Err(msg) => {
-                eprintln!("cdz-syntax: {msg}");
+                eprintln!("{prog}: {msg}");
                 ExitCode::FAILURE
             }
         };
     }
-    let result = match cli.command {
+    let result = match command {
         Cmd::Convert(args) => run_convert(&args),
         Cmd::Query(args) => run_query(&args),
         Cmd::Rewrite(args) => run_rewrite(&args),
@@ -285,7 +298,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
-            eprintln!("cdz-syntax: {msg}");
+            eprintln!("{prog}: {msg}");
             ExitCode::FAILURE
         }
     }

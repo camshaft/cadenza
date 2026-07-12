@@ -1,0 +1,25 @@
+# cdz — the unified Cadenza command-line tool.
+#
+# ONE binary over the sub-libraries: `cadenza-syntax` (front-end: convert + the structural codemod)
+# and `rcdzc` (the compiler: compile/emit + the sidecar query engine). Because it holds both libraries
+# IN ONE PROCESS, it does what neither cross-process CLI could: parse a program keeping its SpanTable,
+# drive a compiler query, and map result node ids back to `file:line:col` — and, since both libraries
+# share the byte-identical `StructId` space, combine a structural selector with a semantic (type)
+# query. This is the host boundary the frozen build-tool contract describes (reader + printer + display
+# + derivation + query, one tool); the pure `rcdzc` lib is untouched, so its self-host portability holds.
+#
+# `cdz-run` stays a SEPARATE bin: it pulls in wasmtime + the runtime store (a different concern), so it
+# is not rolled in here.
+[package]
+name = "cdz"
+version = "0.0.0"
+edition = "2024"
+
+[[bin]]
+name = "cdz"
+path = "src/main.rs"
+
+[dependencies]
+cadenza-syntax = { path = "../cadenza-syntax" }
+rcdzc = { path = "../rcdzc" }
+clap = { version = "4", features = ["derive"] }
