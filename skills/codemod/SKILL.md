@@ -11,8 +11,9 @@ description: >-
   or building on the query/Tree matcher API — OR when the task is a SEMANTIC query the shape layer
   can't answer: the type of a definition (`cdz type`), every source location that references a
   name (`cdz uses`, a span-mapped go-to-references), every well-formedness fault (`cdz check`,
-  "diagnostics as you type"), a name's definition (`cdz def`, go-to-definition), or the bindings
-  visible at a point (`cdz scope`, variable scope tracking). Covers the
+  "diagnostics as you type"), a name's definition (`cdz def`, go-to-definition), the bindings
+  visible at a point (`cdz scope`, variable scope tracking), or a module's exported interface
+  (`cdz exports`). Covers the
   `,x`/`,@xs` pattern language,
   structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`),
   multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff`
@@ -208,7 +209,7 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
-## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def` / `cdz scope`) — the compiler as oracle
+## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def` / `cdz scope` / `cdz exports`) — the compiler as oracle
 
 The codemod above is a **shape** layer: it never resolves a name or infers a type (that would
 duplicate the compiler's resolver). When you need a fact only the compiler knows, `cdz` — because it
@@ -246,7 +247,17 @@ prog.cdz:1:25
 $ cdz scope prog.cdz 54
 prog.cdz:1:41: q : Int64
 prog.cdz:1:22: p : Int64
+
+# cdz exports FILE — the module's interface: each exported name and its type, at its definition.
+$ cdz exports prog.cdz
+prog.cdz:1:17: inc : (-> Int64 Int64)
+prog.cdz:1:49: v : Int64
 ```
+
+> **Hover reads as a presentation, not a raw type** (`type-at`): a grammar keyword shows `keyword def`
+> (not `Any`); a DEFINITION shows its signature `name : (-> A B)` (not just the body's return type); a
+> reference/use shows the value's type; an untypeable node shows `unknown`; an operator no longer leaks
+> its internal `(record …)`.
 
 - **Why these are here and not codemod guards.** `type`/`uses` reach into `rcdzc` (inference,
   resolution); the structural matcher stays dependency-free. Keeping them a **separate command** (not
@@ -271,6 +282,8 @@ prog.cdz:1:22: p : Int64
   the point — sequential, so an initializer sees earlier bindings not itself, a match-arm binder),
   each with its type; INNERMOST first (a shadowed name appears once). What an editor's autocomplete /
   scope panel rides on.
+- **`exports`** drives `Query::Exports` — the module's interface: each `(export …)` name paired with
+  its def's type (signature), at the def's location. The "what does this module offer" view.
 - **Format** is inferred from the file extension (`.cdz`/`.ml`→ml, `.sexp`/`.sexpr`→sexpr), like the
   codemod subcommands.
 

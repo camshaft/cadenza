@@ -10499,8 +10499,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES,
-        Query, Request,
+        self, KIND_DIAGNOSTICS, KIND_EXPORTS, KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT,
+        KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -10806,6 +10806,84 @@ mod sidecar_driven {
         );
     }
 
+    /// Hover text for the node at `substr`'s first occurrence in `src` (the TypeAt query answer).
+    fn hover_at(src: &str, substr: &str) -> String {
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let off = src.find(substr).expect("substr in source");
+        let node = spans.node_at_offset(off).expect("a node at the offset");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::TypeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        artifact_text(&out, KIND_TYPE_AT).expect("a type-at artifact")
+    }
+
+    #[test]
+    fn hover_on_a_grammar_keyword_names_the_keyword_not_any() {
+        // A grammar keyword (`def`/`export`/`module`/`:`) is syntax, not an expression — hover names it
+        // rather than returning the misleading `Any` fallback.
+        let src = "(module m (def (main) (: 42 Int64)) (export main))";
+        assert_eq!(hover_at(src, "def"), "keyword def");
+        assert_eq!(hover_at(src, "export"), "keyword export");
+        assert_eq!(hover_at(src, "module"), "keyword module");
+        assert_eq!(hover_at(src, ": 42"), "keyword :");
+    }
+
+    #[test]
+    fn hover_on_a_definition_shows_its_signature() {
+        // Hovering a function's NAME or its `(def …)` form shows the SIGNATURE (the full arrow), not the
+        // body's return type alone. A nullary def shows `name : T`.
+        let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (g) (: 5 Int64)) (export main))";
+        // The function name and the whole def form both read as the signature.
+        assert_eq!(hover_at(src, "inc"), "inc : (-> Int64 Int64)");
+        assert_eq!(hover_at(src, "(def (inc"), "inc : (-> Int64 Int64)");
+        // A nullary def reads `name : T`.
+        assert_eq!(hover_at(src, "(g)"), "g : Int64");
+    }
+
+    #[test]
+    fn hover_on_a_reference_shows_the_value_type_not_the_signature() {
+        // A USE of a name is a value — it hovers as the value's type. (Only the DEFINITION shows the
+        // `name : sig` form; a reference to a nullary def shows the value it denotes.)
+        let src = "(module m (def (v) (: 7 Int64)) (def (main) v) (export main))";
+        // The `v` reference in `(def (main) v)` — the LAST occurrence.
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let off = src.rfind('v').expect("the v reference");
+        let node = spans.node_at_offset(off).unwrap();
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::TypeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert_eq!(artifact_text(&out, KIND_TYPE_AT).as_deref(), Some("Int64"));
+    }
+
+    #[test]
+    fn hover_on_an_operator_does_not_leak_a_record() {
+        // A prelude operator name (`+`) resolves to an internal record; hover must not leak
+        // `(record (apply …) (t …))` — it surfaces the callable arrow instead.
+        let src = "(module m (def (main) (+ 1 2)) (export main))";
+        let h = hover_at(src, "+");
+        assert!(!h.starts_with("(record"), "no record leak: {h}");
+        assert!(h.starts_with("(->"), "an arrow/callable: {h}");
+    }
+
     #[test]
     fn a_diagnostics_query_reports_faults_without_an_export() {
         // The "diagnostics as you type" primitive: an ill-typed program with NO export still yields its
@@ -10982,6 +11060,35 @@ mod sidecar_driven {
             !scope.iter().any(|(n, _)| n == "b"),
             "b is NOT visible in its own init: {scope:?}"
         );
+    }
+
+    #[test]
+    fn an_exports_query_lists_each_export_with_its_type() {
+        // The module interface: every `(export …)` clause paired with the named def's signature.
+        let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (v) (: 5 Int64)) \
+                   (export inc) (export v))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        let text = artifact_text(&out, KIND_EXPORTS).expect("an exports artifact");
+        let rows: Vec<(&str, &str)> = text
+            .lines()
+            .map(|l| {
+                let mut c = l.split('\t');
+                (c.next().unwrap(), c.next().unwrap())
+            })
+            .collect();
+        // Both exports appear with their types (a function's arrow, a value's type), in export order.
+        assert_eq!(rows[0], ("inc", "(-> Int64 Int64)"), "rows: {rows:?}");
+        assert_eq!(rows[1], ("v", "Int64"), "rows: {rows:?}");
+    }
+
+    #[test]
+    fn an_exports_query_with_no_exports_is_empty() {
+        // A module with no `(export …)` yields the empty interface (total, not an error).
+        let src = "(module m (def (main) 42))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
     }
 }
 

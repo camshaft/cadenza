@@ -55,6 +55,9 @@ pub const KIND_RESOLVE: &str = "resolve";
 /// The output artifact kind for a `ScopeAt` query result — the bindings visible at a node.
 pub const KIND_SCOPE: &str = "scope";
 
+/// The output artifact kind for an `Exports` query result — the module's exported names + types.
+pub const KIND_EXPORTS: &str = "exports";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -118,6 +121,12 @@ pub enum Query {
     /// enclosing binder) the result is empty. This is the query an editor's autocomplete / scope panel
     /// rides on.
     ScopeAt { node: u32 },
+    /// The MODULE's EXPORTS — each exported name paired with its type, one per line as
+    /// `name<TAB>type<TAB>def-name-node-id`. Reads `db.exports` (the `(export …)` clauses) and each
+    /// export's def scheme (`infer::def_scheme` → the signature). The node id is the exported def's NAME
+    /// occurrence, so a consumer can jump to it. Node-id-keyed like the others; TOTAL — a module with no
+    /// exports yields the empty result. This is the "module interface at a glance" query.
+    Exports,
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -142,6 +151,7 @@ mod tag {
     pub const QUERY_DIAGNOSTICS: u8 = 0x13;
     pub const QUERY_RESOLVE_OF: u8 = 0x14;
     pub const QUERY_SCOPE_AT: u8 = 0x15;
+    pub const QUERY_EXPORTS: u8 = 0x16;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -185,6 +195,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::QUERY_SCOPE_AT => Some(Request::Query(Query::ScopeAt {
             node: u32::try_from(r.read_varu64()?).ok()?,
         })),
+        tag::QUERY_EXPORTS => Some(Request::Query(Query::Exports)),
         _ => None,
     }
 }
@@ -228,6 +239,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
             out.push(tag::QUERY_SCOPE_AT);
             leb128::write_u64(out, *node as u64);
         }
+        Request::Query(Query::Exports) => out.push(tag::QUERY_EXPORTS),
     }
 }
 
@@ -285,14 +297,11 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         }
         Query::TypeAt { node } => {
             let id = crate::ast::StructId(*node);
-            // Total: a node id past the program is not a user node — a defined "unknown", not a crash.
-            // (The consumer resolves an offset to a node via the span table, which only holds user
-            // nodes, so a well-formed request always names a user node; this guards a malformed one.)
-            let text = if db.is_user_node(id) {
-                crate::infer::type_of(db, id).render_name()
-            } else {
-                "unknown".to_string()
-            };
+            // A HOVER answer, not just a raw type: a grammar keyword names itself, a definition shows
+            // its signature (`name : type`), an untypeable/poison node says "unknown" — never the bare
+            // fallback `Any` or a leaked internal operator record. A genuinely-typed node renders its
+            // type (a function name already renders as its arrow `(-> A B)`).
+            let text = hover_text(db, id);
             QueryResult {
                 kind: KIND_TYPE_AT,
                 name: node.to_string(),
@@ -354,6 +363,45 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             QueryResult {
                 kind: KIND_SCOPE,
                 name: node.to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
+        Query::Exports => {
+            // The module's interface: each `(export NAME)` clause paired with the named def's type
+            // (its signature, via `def_scheme`), one per line `name<TAB>type<TAB>def-name-node-id`.
+            // The node id is the exported def's NAME occurrence (sig's first child) so a consumer can
+            // jump to it; `-` when the export names no definition. Deterministic (export order).
+            let exports: Vec<(String, Option<usize>, StructId)> = db
+                .exports
+                .iter()
+                .map(|e| (e.name.clone(), e.def, e.occ))
+                .collect();
+            let mut text = String::new();
+            for (name, def, occ) in exports {
+                let (ty, name_node) = match def {
+                    Some(d) => {
+                        let ty = match crate::infer::def_scheme(db, d) {
+                            Some(scheme) => scheme.ty.render_name(),
+                            None => "unknown".to_string(),
+                        };
+                        // The def's NAME occurrence (the sig's first child), for go-to; fall back to the
+                        // export clause occurrence if the sig is malformed.
+                        let sig = db.defs[d].sig_occ;
+                        let name_node = match db.ast.get(sig) {
+                            Struct::List(kids) => kids.first().copied().unwrap_or(sig),
+                            _ => sig,
+                        };
+                        (ty, name_node.0.to_string())
+                    }
+                    // An export naming no definition — a diagnostic elsewhere; here, report it as unknown.
+                    None => ("unknown".to_string(), "-".to_string()),
+                };
+                let _ = occ;
+                text.push_str(&format!("{name}\t{ty}\t{name_node}\n"));
+            }
+            QueryResult {
+                kind: KIND_EXPORTS,
+                name: "exports".to_string(),
                 bytes: text.into_bytes(),
             }
         }
@@ -505,6 +553,120 @@ fn match_arm_binder(db: &Db, form: StructId, from: StructId) -> Option<(String, 
     Some((name.to_string(), scrutinee))
 }
 
+/// The HOVER text for a node — a presentation answer, not a raw type. In priority order:
+///  1. a non-user node (past the program, or a synthesized one with no source) → `unknown`;
+///  2. a DEFINITION the node identifies (its `(def …)` form, its signature list, or its NAME atom) →
+///     the def's SIGNATURE, `name : <type>` (a function reads as `name : (-> A B)`, a value as
+///     `name : T`) — so hovering a def shows what it defines, not its body's type alone;
+///  3. a GRAMMAR KEYWORD atom (`def`/`export`/`module`/`if`/`let`/`match`/`fn`/`:`/`and`/`or`/`not`/`.`)
+///     → `keyword <kw>` — these are syntax, not expressions, so they have no type;
+///  4. otherwise the node's solved type (`type_of` → `render_name`), with the two poor renderings
+///     cleaned up: the fallback `Any` (an untypeable/poison node) → `unknown`, and a leaked operator
+///     RECORD (`(record (apply …) (t …))`, a prelude operator value) → its callable `(t …)` field.
+fn hover_text(db: &mut Db, id: StructId) -> String {
+    if !db.is_user_node(id) {
+        return "unknown".to_string();
+    }
+    // (2) A definition the node identifies → its signature.
+    if let Some(def) = def_identified_by(db, id) {
+        let name = db.defs[def].name.clone();
+        let sig = match crate::infer::def_scheme(db, def) {
+            Some(scheme) => scheme.ty.render_name(),
+            None => "unknown".to_string(),
+        };
+        return format!("{name} : {sig}");
+    }
+    // (3) A grammar keyword atom.
+    if let Some(kw) = grammar_keyword(db, id) {
+        return format!("keyword {kw}");
+    }
+    // (4) The solved type, cleaned up.
+    let ty = crate::infer::type_of(db, id).render_name();
+    clean_hover_type(&ty)
+}
+
+/// The definition a node IDENTIFIES, if any: the def's `(def …)` form, its signature list
+/// (`(NAME param…)`), or its NAME atom (the signature's first child). Returns the `db.defs` index.
+/// Used so hovering any part of a definition's "header" shows the def's signature rather than the
+/// body's type (the form) or `Any` (the `def` keyword handled separately).
+fn def_identified_by(db: &Db, id: StructId) -> Option<usize> {
+    for (i, d) in db.defs.iter().enumerate() {
+        // The def FORM `(def sig body)` — its parent-less shape is `(def …)`; match by its signature's
+        // parent (the form) or the signature/name directly.
+        let name_occ = if let Struct::List(kids) = db.ast.get(d.sig_occ) {
+            kids.first().copied()
+        } else {
+            None
+        };
+        // The `(def …)` form is the parent of the signature occurrence.
+        let def_form = db.parent_of(d.sig_occ);
+        if id == d.sig_occ || Some(id) == name_occ || Some(id) == def_form {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// The grammar keyword this atom spells, if it is one — the syntactic heads that are NOT expressions
+/// (they head a form; they have no type). Only recognized in HEAD position (the first child of a list)
+/// or as the annotation colon, so a user value that happens to share the spelling is not mislabeled.
+fn grammar_keyword(db: &Db, id: StructId) -> Option<&'static str> {
+    const KEYWORDS: &[&str] = &[
+        "module", "def", "export", "import", "if", "let", "match", "fn", ":", "and", "or", "not",
+        ".", "type", "effect", "handle", "do",
+    ];
+    let name = db.ast.as_name(id)?;
+    let kw = KEYWORDS.iter().find(|k| **k == name)?;
+    // Confirm it's in a syntactic position: the head (first child) of its parent list. (A bare atom
+    // elsewhere with the same spelling is a value/label, not the keyword.)
+    let parent = db.parent_of(id)?;
+    if let Struct::List(kids) = db.ast.get(parent)
+        && kids.first() == Some(&id)
+    {
+        return Some(kw);
+    }
+    None
+}
+
+/// Clean up a rendered type for hover: the untypeable fallback `Any` reads as `unknown`, and a leaked
+/// prelude-operator RECORD (`(record (apply …) (t T))` — the value an operator name resolves to) reads
+/// as its callable `(t …)` field, the operator's actual scheme. Any other type passes through.
+fn clean_hover_type(ty: &str) -> String {
+    if ty == "Any" {
+        return "unknown".to_string();
+    }
+    // An operator record leaks as `(record (apply …) (t <scheme>))` — surface the `(t …)` payload.
+    if let Some(rest) = ty.strip_prefix("(record ")
+        && let Some(t_at) = rest.find("(t ")
+    {
+        // Extract the balanced parenthesized group after `(t `.
+        let after = &rest[t_at + 3..];
+        if let Some(scheme) = balanced_prefix(after) {
+            return scheme.to_string();
+        }
+    }
+    ty.to_string()
+}
+
+/// The balanced-parenthesis prefix of `s` starting mid-group: read until the paren depth (which starts
+/// at 1, accounting for the enclosing `(t …)` we're inside) returns to 0. Returns the inner text.
+fn balanced_prefix(s: &str) -> Option<&str> {
+    let mut depth = 1i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The occurrences that RESOLVE to the top-level definition or sum type named `name`, in ascending id
 /// order — the transpose of the resolution column. Walks every USER node, resolves it, and keeps those
 /// whose `Ref`/`Lambda` points at the named target's defining occurrence. The defining occurrence
@@ -595,6 +757,7 @@ mod tests {
             Request::Query(Query::Diagnostics),
             Request::Query(Query::ResolveOf { node: 7 }),
             Request::Query(Query::ScopeAt { node: 9 }),
+            Request::Query(Query::Exports),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }
