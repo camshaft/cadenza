@@ -222,6 +222,24 @@ impl Ty {
         Ty::Int(IntTy::i64())
     }
 
+    /// Whether the type contains an UNRESOLVED type variable ([`Ty::Var`]) — a payload/element/parameter
+    /// the inference solve never determined (a bare `(None)` is `Option ?0`; an empty `(list)` is `List
+    /// ?0`). Such a type has no defined serialization, so a value of it reaching the HOST BOUNDARY is a
+    /// rejection that should name the AMBIGUITY (annotate the type) rather than a boundary-SHAPE error.
+    /// (Deferred integer width/sign are NOT free variables — they ground to a default; only a `Ty::Var`
+    /// is genuinely undetermined.)
+    pub fn has_free_var(&self) -> bool {
+        match self {
+            Ty::Var(_) => true,
+            Ty::Fn(p, r) => p.has_free_var() || r.has_free_var(),
+            Ty::Tuple(elems) => elems.iter().any(|t| t.has_free_var()),
+            Ty::List(elem) => elem.has_free_var(),
+            Ty::Record(fields) => fields.values().any(|t| t.has_free_var()),
+            Ty::Sum { args, .. } => args.iter().any(|t| t.has_free_var()),
+            Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
+        }
+    }
+
     /// Whether two types are COMPATIBLE — a structural yes/no relation, distinct from [`crate::unify`]
     /// which solves variables into a substitution. This is the cheap check the passes that only need a
     /// verdict use (an annotation's declared vs inferred type, an `if`'s two branches, a match

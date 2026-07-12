@@ -73,6 +73,43 @@
   (call   main)
   (output (: 5 Int64)))
 
+; A value that ESCAPES to the host must have a FULLY DETERMINED type — a value whose payload/element
+; type is an unresolved variable (a bare `(None)` : `(Option ?0)`) has no defined serialization. Such an
+; escape is rejected for its AMBIGUOUS TYPE (CDZ0203, the type-determination fault — annotate to resolve
+; it), NOT for its export SHAPE: `(def (main) (None)) (export main)` IS a single nullary export (the
+; escape path's shape is satisfied), so a shape-restriction message would misdiagnose. The ambiguity
+; bites ONLY at an unannotated escape — a CONSUMED bare `None` (matched, or passed to a typed parameter)
+; constrains the payload and type-checks fine, and an ANNOTATED escape resolves the variable and crosses.
+
+(case "an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape"
+  (doc    "`(def (main) (None)) (export main)` returns a bare `None`, whose type is `(Option ?0)` — the
+           payload is a free variable nothing constrains, so the escaped value has no defined
+           serialization and is rejected (CDZ0203). The program IS a single nullary export, so the reject
+           must name the UNRESOLVED TYPE and the annotation fix, not an export-shape restriction (the
+           prior message wrongly said the sum 'crosses only as a single nullary export's result' — which
+           it already is). An annotated `(: (None) (Option Int64))` escapes fine, and a consumed bare
+           `None` type-checks — the ambiguity is escape-only.")
+  (input  (do (def (main) (None)) (export main)))
+  (error  CDZ0203))
+
+(case "an annotated escaped None renders its canonical nullary-variant form (the control)"
+  (doc    "The control pinning the reject above is ONLY the missing payload type: annotating the bare
+           `None` to `(Option Int64)` fully determines the type, and it escapes as the program result,
+           rendering the canonical `(None unit)` form. Same shape (a single nullary export returning a
+           sum) as the rejected case — the only difference is the annotation resolves `?0`. Pins the
+           escape path works once the payload type is known.")
+  (input  (do (def (main) (: (None) (Option Int64))) (export main)))
+  (output (: (None unit) (Option Int64))))
+
+(case "a consumed bare None type-checks without annotation (ambiguity is escape-only)"
+  (doc    "`(match (None) ((Some x) x) ((None) 42))` consumes a bare `None`: the match arms constrain the
+           payload type variable, so no annotation is needed and the None arm yields 42. Pins that the
+           unconstrained-payload rejection is specific to an unannotated ESCAPE — a consumed bare `None`
+           is fine, triangulating that the escape reject is a payload-type-ambiguity condition, not an
+           export-shape one.")
+  (input  (do (def (main) (match (None) ((Some x) x) ((None) 42))) (export main)))
+  (output (: 42 Int64)))
+
 ; The annotation-contradiction check must hold for a COMPOUND value too, not only a scalar. A tuple /
 ; sum / record / list is not a scalar type, so annotating one with a scalar type (Int64, Bool, …)
 ; contradicts the value's type and MUST be rejected (CDZ0203, type-system.md #Annotations Constrain,

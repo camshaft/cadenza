@@ -153,6 +153,24 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
             e.result,
             crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) | crate::ty::Ty::Sum { .. }
         ) {
+            // AMBIGUOUS TYPE first — a result whose payload/element type is an UNRESOLVED variable (a bare
+            // `(None)` : `Option ?0`, an empty `(list)` : `List ?0`) has no defined serialization
+            // REGARDLESS of export shape. A single NULLARY sum export with an unresolved payload reaches
+            // here (the escape guard above tried and `sum_form_template` returned `None`), so it must NOT
+            // be diagnosed as an export-shape problem — the shape is fine; the TYPE is undetermined. Report
+            // a type error naming the annotation fix (CDZ0203, the type-determination fault code), NOT the
+            // parameterized/multi-export message. `e.params.is_empty()` distinguishes it from a
+            // parameterized export (whose free var, if any, would still be a shape issue at this stage).
+            if e.result.has_free_var() && e.params.is_empty() && !multi_export {
+                return Err(Reject::coded(
+                    crate::diag::Code::TypeMismatch,
+                    format!(
+                        "the result type `{}` is not fully determined — annotate it \
+                         (e.g. `(: <expr> (Option Int64))`) so its value has a defined form",
+                        e.result.render_name()
+                    ),
+                ));
+            }
             let why = if multi_export {
                 "a compound result crosses the host boundary only as the single export's result (this program has multiple exports)"
             } else {

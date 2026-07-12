@@ -4783,6 +4783,51 @@ mod stage1 {
     }
 
     #[test]
+    fn an_escaped_value_with_an_unresolved_type_reports_an_ambiguity_not_an_export_shape_error() {
+        // A bare `(None)` returned as the program result has type `(Option ?0)` — the payload is a free
+        // variable nothing constrains, so the escaped value has no defined serialization. This is a
+        // SINGLE NULLARY sum export (the escape path's shape IS satisfied), so the reject must name the
+        // AMBIGUOUS TYPE and the annotation fix (CDZ0203), NOT the export-shape message (which would
+        // misdiagnose — the shape is fine, the type is undetermined). The prior message wrongly said the
+        // sum "crosses only as a single nullary export's result" — which it already is.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) (None)) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let err = out
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .expect("a bare escaped None with an unresolved payload declines");
+        assert_eq!(err.code.as_deref(), Some("CDZ0203"), "an ambiguous escaped type is a type fault");
+        assert!(
+            err.message.contains("not fully determined") && err.message.contains("annotate"),
+            "the message must name the unresolved type + the annotation fix, got: {}",
+            err.message
+        );
+        // CONTROLS: an ANNOTATED None escapes (the type is resolved), and a `(Some 5)` (payload
+        // constrained by its argument) escapes — the ambiguity bites ONLY an unannotated free-var escape.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (main) (: (None) (Option Int64))) (export main))"
+            )))
+            .is_ok(),
+            "an annotated None must escape"
+        );
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (main) (Some 5)) (export main))"
+            )))
+            .is_ok(),
+            "a Some with a constrained payload must escape"
+        );
+    }
+
+    #[test]
     fn tuple_branches_of_different_arity_are_a_type_error() {
         // 02-binding-and-control: `(if true (tuple 1 2) (tuple 3 4 5))` pairs a 2-tuple with a 3-tuple —
         // different types (a tuple's arity is part of its type), so the whole `if` has no single type

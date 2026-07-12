@@ -59,6 +59,7 @@ pass	a consistent annotation type-checks against the inferred type
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant tuple is returned as a program result
+pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
@@ -289,6 +290,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an absurd runtime width is rejected, not silently ignored
+pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated value takes a narrower integer width
 pass	an annotation that contradicts the value is rejected
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
@@ -300,6 +302,7 @@ pass	an element is projected from a tuple returned by a nullary function
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
+pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an inner binding shadows an outer one only within its scope
