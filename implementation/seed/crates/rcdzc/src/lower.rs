@@ -164,6 +164,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     }
                 }
             }
+            // A ZERO-ARGUMENT application `(g)` whose head is not a lambda. Applying a value to no
+            // arguments is the identity — the application IS the head value. This is how a NULLARY def
+            // is called: `(def (g) 7)` resolves `g` to its body value (so a bare `g` is 7), and `(g)`
+            // is that same value. (A nullary LAMBDA `((fn () 7))` took the β-reduce branch above, so it
+            // is already handled; only a non-lambda head reaches here.) Without this, `(g)` fell through
+            // to `meta_apply_of` — which, finding no `(meta apply)` on the scalar 7, rejected it as
+            // "value is not applyable", breaking every nullary-function call.
+            if args.is_empty() {
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: zero-argument application is its head value");
+                return core_of(db, head);
+            }
             match crate::eval::meta_apply_of(db, head) {
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");

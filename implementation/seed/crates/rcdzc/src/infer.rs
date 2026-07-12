@@ -559,6 +559,12 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return Ty::Any; // recursive with an undetermined signature — fault reported elsewhere.
     }
+    // A ZERO-ARGUMENT application `(g)` with a non-lambda head is the head value — applying to no
+    // arguments is the identity (a nullary def `(def (g) 7)` called). Its type is the head's type.
+    // Mirrors the same short-circuit in `lower`, so `(g)` types and lowers as its body value.
+    if args.is_empty() {
+        return type_of(db, head);
+    }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,

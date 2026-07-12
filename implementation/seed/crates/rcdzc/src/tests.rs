@@ -3093,6 +3093,55 @@ mod stage1 {
     }
 
     #[test]
+    fn a_nullary_function_call_invokes_it() {
+        // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
+        // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
+        // form `(g)` must be recognized as "apply to no arguments = the head value", not misread as
+        // applying the scalar 7 to zero arguments ("value is not applyable"). Composes in arithmetic
+        // and inside another function's body.
+        let run = |src: &str| {
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                "main",
+            )
+        };
+        assert_eq!(run("(module m (def (mk) 42) (def (main) (mk)) (export main))"), 42);
+        assert_eq!(run("(module m (def (g) 7) (def (main) (+ (g) 5)) (export main))"), 12);
+        assert_eq!(
+            run("(module m (def (g) 7) (def (f x) (+ x (g))) (def (main) (f 5)) (export main))"),
+            12
+        );
+        // A nullary LAMBDA applied still works (the β-reduce path, unchanged), and a bare nullary-def
+        // reference still denotes its body value.
+        assert_eq!(run("(module m (def (main) ((fn () 7))) (export main))"), 7);
+        assert_eq!(run("(module m (def (g) 7) (def (main) g) (export main))"), 7);
+    }
+
+    #[test]
+    fn a_duplicate_definition_is_rejected() {
+        // A module evaluates to a record of its definitions, and a record has a FIXED SET of field
+        // names — defining `f` twice is the same ill-formedness `(record (a 1) (a 2))` is rejected for
+        // (CDZ0201), not resolved by an implicit first-wins. (Unmasked once nullary calls work: `(f)`
+        // used to reject as "not applyable", hiding the duplicate.)
+        let src = "(module m (def (f) 1) (def (f) 2) (def (main) (f)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("duplicate definition must reject")
+            .message;
+        assert!(msg.contains("more than once"), "got: {msg}");
+        // Two DISTINCT named defs are fine — not a false duplicate.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (a) 1) (def (b) 2) (def (main) (+ (a) (b))) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            3
+        );
+    }
+
+    #[test]
     fn a_multi_param_function() {
         // `((fn (a b) (+ a b)) 3 4)` = 7 — both params substituted.
         assert_eq!(run_main("((fn (a b) (+ a b)) 3 4)"), 7);

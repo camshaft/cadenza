@@ -111,6 +111,35 @@
              (. (mk 7) v)))
   (output  (: 7 Int64)))
 
+; A NULLARY function returning a SCALAR is callable: `(def (g) <scalar>)` defines a zero-argument
+; function, and `(g)` — a zero-argument application — invokes it, yielding the scalar. Applying a value
+; to no arguments is the identity, so a nullary call reduces to the function's body (a bare reference
+; `g`, with no call, denotes that same body value). These pin the scalar case the compound-projection
+; cases below build on — a nullary call must be recognized as a CALL, not misread as applying the
+; body value to zero arguments.
+
+(case "a nullary function returning a scalar is callable"
+  (doc    "`(def (mk) 42)` is a nullary function; `(mk)` calls it and yields the scalar 42. A
+           zero-argument application invokes the function — it is not an attempt to apply the body
+           value 42 to no arguments. A bare reference `mk` (no call) denotes the same value, so `(mk)`
+           and `mk` agree; the parenthesized form is the call.")
+  (input  (do (def (mk) 42) (def (main) (mk)) (export main)))
+  (output (: 42 Int64)))
+
+(case "a nullary helper called and used in arithmetic"
+  (doc    "`(def (g) 7)` and `(def (main) (+ (g) 5))`: the nullary `g` is called and its result 7
+           added to 5, yielding 12. A nullary call composes in an ordinary expression like any other
+           call — its result is a plain value the enclosing operation consumes.")
+  (input  (do (def (g) 7) (def (main) (+ (g) 5)) (export main)))
+  (output (: 12 Int64)))
+
+(case "a nullary function called from another function's body"
+  (doc    "`(def (g) 7)`, `(def (f x) (+ x (g)))`, `(def (main) (f 5))`: `f` calls the nullary `g` in
+           its body; `(f 5)` = 5 + 7 = 12. A nullary call works inside a non-entry function body, not
+           only at the top level — the callee is reached and reduced wherever the call appears.")
+  (input  (do (def (g) 7) (def (f x) (+ x (g))) (def (main) (f 5)) (export main)))
+  (output (: 12 Int64)))
+
 ; A NULLARY function that returns a compound value must be projectable exactly as a unary one is.
 ; The cases above return a structure from a function of one parameter; a nullary function `(def (mk)
 ; <compound>)` called as `(mk)` returns the same kind of value, and projecting a field/element from

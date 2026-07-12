@@ -20,7 +20,7 @@ use crate::ast::StructId;
 use crate::backend::{self, Target};
 use crate::core::Core;
 use crate::db::Db;
-use crate::diag::Reject;
+use crate::diag::{Code, Reject};
 use crate::infer::type_errors;
 use crate::layout::{self, Layout};
 use crate::lower::core_of;
@@ -137,6 +137,32 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
 /// reachability-driven (the `layout` decides what is emitted); only well-formedness is total.
 fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
     let mut faults = Vec::new();
+    // DUPLICATE DEFINITION. A module evaluates to a record of its definitions, and a record has a FIXED
+    // SET of field names (core-semantics.md #A Record Has A Fixed Set Of Named Fields), so defining the
+    // same name twice is the same ill-formedness `(record (a 1) (a 2))` is rejected for (CDZ0201) — not
+    // resolved by an implicit first-wins precedence. Each definition after the first with a given name
+    // is reported, anchored at its signature occurrence. (Checked here, not in the scan, so the reject
+    // carries a node the diagnostic edge can map.)
+    // A def with no extractable name (an as-yet-unmodeled shape — e.g. a value definition `(def x 1)`,
+    // which the scan does not yet name) is SKIPPED here: it does not register a name, so it cannot
+    // collide. Only genuinely NAMED definitions participate in the fixed-name-set check, so two
+    // distinct un-named defs are not mistaken for a duplicate of the empty name.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let dups: Vec<(String, StructId)> = db
+        .defs
+        .iter()
+        .filter(|d| !d.name.is_empty() && !seen.insert(d.name.as_str()))
+        .map(|d| (d.name.clone(), d.sig_occ))
+        .collect();
+    for (name, sig_occ) in dups {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                format!("`{name}` is defined more than once (a module has a fixed set of names)"),
+            )
+            .at(sig_occ),
+        );
+    }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
     let bodies: Vec<(StructId, bool)> = db
