@@ -127,11 +127,21 @@ fn main() -> ExitCode {
         inputs.push(Artifact::new(parsed.kind, parsed.name, bytes));
     }
 
-    // Compile to the requested targets (default: wasm).
-    let targets: Vec<Target> = if cli.target.is_empty() {
-        vec![Target::Wasm]
-    } else {
+    // Compile to the requested targets. `--target` is explicit; with none given the default is `wasm`
+    // — UNLESS a `sidecar` input is present, in which case the request list drives what is produced
+    // (its Emit requests name the targets), so injecting a default `wasm` would force a component even
+    // for a query-only sidecar. A sidecar caller who also wants wasm asks for it (an Emit request, or
+    // an explicit `--target wasm`); the two compose (`compile` unions `targets` with the sidecar's Emit
+    // requests).
+    let has_sidecar = inputs
+        .iter()
+        .any(|a| a.kind == rcdzc::sidecar::KIND_SIDECAR);
+    let targets: Vec<Target> = if !cli.target.is_empty() {
         cli.target.iter().map(|&t| t.into()).collect()
+    } else if has_sidecar {
+        Vec::new()
+    } else {
+        vec![Target::Wasm]
     };
     // Run the compile on a worker thread with a stack sized to reach the recursive-descent depth
     // guard, so pathologically deep input DECLINES (the guard trips) rather than overflowing the
@@ -257,6 +267,10 @@ fn ext_for_kind(kind: &str) -> &str {
     match kind {
         "component" => "wasm",
         "rust" => "rs",
+        // Sidecar QUERY results are UTF-8 text (a rendered type, a newline-separated node-id list) —
+        // written with a `.txt` extension. A `sidecar` INPUT is read generically as `kind:name=path`,
+        // so no case is needed for it here (this maps only produced OUTPUT kinds).
+        "type-info" | "uses" => "txt",
         other => other,
     }
 }

@@ -62,6 +62,9 @@ pub mod backend;
 // part that ports to the Cadenza self-host). A CLI bin puts filesystem/args on top of `compile`.
 pub mod abi;
 pub mod compile;
+// The sidecar request list — the program that DRIVES a compilation (Emit an output column / Query a
+// fact column), crossing as one more kinded input artifact. Generalizes `compile`'s `targets`.
+pub mod sidecar;
 
 // The host boundary — process/thread/stack concerns the pure core excludes (NOT ported to the
 // Cadenza self-host). Runs compilation on a stack sized to reach the recursive-descent depth guard,
@@ -72,6 +75,7 @@ pub use abi::{Artifact, CompileOutput, Diagnostic, Severity};
 pub use backend::Target;
 pub use compile::{compile, compile_component};
 pub use host::run_with_compiler_stack;
+pub use sidecar::{Query, Request};
 
 // Shared test fixtures + the Stage-0 end-to-end tests (compiled only under `#[cfg(test)]`).
 #[cfg(test)]

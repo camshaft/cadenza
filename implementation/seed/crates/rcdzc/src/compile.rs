@@ -25,6 +25,7 @@ use crate::diag::{Code, Reject};
 use crate::infer::type_errors;
 use crate::layout::{self, Layout};
 use crate::lower::core_of;
+use crate::sidecar;
 use tracing::trace;
 
 /// Compile a set of kinded input artifacts to the requested targets. The `ast` input is decoded into
@@ -46,12 +47,62 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     let mut db = Db::load(arenas);
     trace!(target: "rcdzc::compile", defs = db.defs.len(), exports = db.exports.len(), "loaded program");
 
+    // Decode the optional `sidecar` request list — the program that DRIVES this compilation
+    // (`DESIGN-sidecar-api.md`). Absent (the common case) means "no requests": behavior is exactly
+    // today's, driven by `targets` alone. A present-but-MALFORMED list is a DECLINE (a diagnostic),
+    // never a panic or a silently-ignored input — reject-don't-miscompile at the tool edge
+    // (`build-tool-interface.md` §The kind of an artifact … reported as a diagnostic).
+    let requests = match inputs.iter().find(|a| a.kind == sidecar::KIND_SIDECAR) {
+        Some(a) => match sidecar::decode(&a.bytes) {
+            Some(rs) => rs,
+            None => return fail(vec![Reject::decline("malformed `sidecar` request list")]),
+        },
+        None => Vec::new(),
+    };
+    // Partition the requests: a QUERY reads a fact column (total — run now, answers even for a program
+    // that fails to emit), an EMIT materializes a backend artifact (fault-gated — joins `targets`,
+    // which IS the Emit half already). `targets` first, then the sidecar's Emit requests, in order.
+    let mut queries = Vec::new();
+    let mut emit_targets: Vec<Target> = targets.to_vec();
+    for req in &requests {
+        match req {
+            sidecar::Request::Query(q) => queries.push(q.clone()),
+            sidecar::Request::Emit(t) => emit_targets.push(*t),
+        }
+    }
+
+    // Run the QUERIES first. A fact read is TOTAL (`tooling-and-lsp.md` §An Agent Queries The Compiler
+    // For Any Static Fact) and PURE with respect to the artifact channel: it answers regardless of
+    // whether the program emits, and it never denies a component. So query artifacts ride ALONGSIDE
+    // whatever the emit path produces — including alongside the diagnostics when emit declines. (They
+    // are computed before layout so a query answers even for a program with no export, which layout
+    // would otherwise decline.) Running them first also warms the shared columns the emit path reads.
+    let query_artifacts: Vec<Artifact> = queries
+        .iter()
+        .map(|q| {
+            let r = sidecar::run_query(&mut db, q);
+            Artifact::new(r.kind, r.name, r.bytes)
+        })
+        .collect();
+
+    // QUERY-ONLY mode: the sidecar asked for facts but no artifact to build (`emit_targets` empty
+    // because neither `targets` nor an Emit request named one). There is nothing to lay out or emit —
+    // return the query answers directly, without running the (possibly-declining) layout/fault path.
+    // Guarded on `!queries.is_empty()` so a plain `compile(inputs, &[])` with no sidecar keeps today's
+    // behavior (fall through to the emit path, which runs layout as before).
+    if emit_targets.is_empty() && !queries.is_empty() {
+        return CompileOutput {
+            artifacts: query_artifacts,
+            diagnostics: Vec::new(),
+        };
+    }
+
     // Compute the boundary layout once (target-neutral). A program with no export declines.
     let layout = match layout::compute(&mut db) {
         Ok(l) => l,
         Err(r) => {
             trace!(target: "rcdzc::compile", reason = %r.message, "layout declined");
-            return fail(vec![r]);
+            return fail_with(query_artifacts, vec![r]);
         }
     };
 
@@ -63,9 +114,9 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         for f in &mut faults {
             sanitize_origin(&db, f);
         }
-        return fail(faults);
+        return fail_with(query_artifacts, faults);
     }
-    trace!(target: "rcdzc::compile", targets = targets.len(), "program clean — emitting artifacts");
+    trace!(target: "rcdzc::compile", targets = emit_targets.len(), "program clean — emitting artifacts");
 
     // WARNINGS (non-error; ride alongside the artifact). The program is clean — every REACHED provable
     // trap already faulted above — so a computation that PROVES it traps yet survives to here was
@@ -74,9 +125,11 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // Its Computation Is Observed) but almost always a defect, so warn — the build still succeeds.
     let mut diagnostics = collect_dead_trap_warnings(&mut db);
 
-    // Clean: ask each requested target's backend to fill its artifact.
-    let mut artifacts = Vec::new();
-    for &target in targets {
+    // Clean: ask each requested target's backend to fill its artifact. The query artifacts (facts
+    // read above) lead, then each emitted backend artifact — all one kinded-artifact list, selected by
+    // kind (`build-tool-interface.md`).
+    let mut artifacts = query_artifacts;
+    for &target in &emit_targets {
         match backend::emit(target, &mut db, &layout) {
             Ok(bytes) => artifacts.push(Artifact::new(
                 target.artifact_kind(),
@@ -547,8 +600,16 @@ fn program_name(db: &Db) -> String {
 
 /// A failed compilation: no artifacts, one error diagnostic per reject.
 fn fail(rejects: Vec<Reject>) -> CompileOutput {
+    fail_with(Vec::new(), rejects)
+}
+
+/// A failed emit that STILL carries any query artifacts computed before the failure. A query is a
+/// pure, total fact read that never denies an artifact (`DESIGN-sidecar-api.md`), so a `TypeOf` /
+/// `UsesOf` answer rides alongside the failure diagnostics — the caller gets the facts it asked for
+/// even for a program that does not compile. With no query artifacts this is exactly `fail`.
+fn fail_with(query_artifacts: Vec<Artifact>, rejects: Vec<Reject>) -> CompileOutput {
     CompileOutput {
-        artifacts: Vec::new(),
+        artifacts: query_artifacts,
         diagnostics: rejects.iter().map(Diagnostic::from_reject).collect(),
     }
 }

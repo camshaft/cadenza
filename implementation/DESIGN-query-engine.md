@@ -193,6 +193,15 @@ library needs generics (`select`/`map`/`rewrite` are parametric) and recursion o
 (traversing `Ast`). That is the FCT/generics workstream already in progress. So this design *motivates*
 that work — it is a concrete, high-value driver for it — rather than being indefinitely blocked by it.
 
+> **How declarative + do we need effects — resolved in a companion doc.** This design leaves open how
+> much *logic* the sidecar carries (a flat manifest vs. a branching program) and whether driving
+> compilation needs effects. [`DESIGN-sidecar-api.md`](./DESIGN-sidecar-api.md) resolves both: the
+> sidecar is one pure `drive : Ast -> List Request`, a flat manifest is the degenerate case of a
+> branching program (same interface), and effects are *not* needed because every fact — including the
+> emitted artifact — is a pure column read, so `if this-expr has this-type then …` is ordinary control
+> flow over a value. Read it for the request vocabulary (`Emit`/`Query`/`Rewrite`) and how it generalizes
+> the existing `compile(inputs, targets)` entry.
+
 ---
 
 ## 8. Open questions (for a later pass, not resolved here)

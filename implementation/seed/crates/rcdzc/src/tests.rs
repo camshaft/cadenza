@@ -8717,3 +8717,263 @@ mod bench {
         println!();
     }
 }
+
+// ── the sidecar request list: driving a compilation as Emit + Query requests ─────────────────────
+//
+// The sidecar generalizes `compile`'s `targets` into a request list crossing as one more kinded INPUT
+// artifact. These drive the WHOLE `compile()` path (not the unit codec tests in `sidecar.rs`): a
+// request list in, artifacts + diagnostics out, selected by kind. They pin the load-bearing claims of
+// `DESIGN-sidecar-api.md`: a Query is a total, pure fact read (answers even when emit fails, never
+// denies a component), an Emit request is today's `Target` reached through the list, and the no-sidecar
+// path is unchanged.
+mod sidecar_driven {
+    use crate::abi::{Artifact, Severity};
+    use crate::backend::Target;
+    use crate::compile::compile;
+    use crate::sidecar::{self, KIND_TYPE_INFO, KIND_USES, Query, Request};
+    use crate::testkit::parse;
+
+    /// Build the two input artifacts (the AST + a sidecar request list) for `src` and `requests`.
+    fn inputs(src: &str, requests: &[Request]) -> Vec<Artifact> {
+        vec![
+            Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&parse(src))),
+            Artifact::new(sidecar::KIND_SIDECAR, "drive", sidecar::encode(requests)),
+        ]
+    }
+
+    /// The text bytes of the first artifact of `kind`, as a `String`.
+    fn artifact_text(out: &crate::abi::CompileOutput, kind: &str) -> Option<String> {
+        out.artifacts
+            .iter()
+            .find(|a| a.kind == kind)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+    }
+
+    #[test]
+    fn a_type_of_query_reads_the_type_column() {
+        // A `TypeOf` request for a nullary def answers with its rendered type — the same canonical text
+        // an annotation carries — read straight from the type column.
+        let src = "(module m (def (main) (: 42 Int64)) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[Request::Query(Query::TypeOf {
+                    name: "main".into(),
+                })],
+            ),
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
+            Some("Int64")
+        );
+    }
+
+    #[test]
+    fn a_type_of_query_for_a_function_renders_its_arrow_type() {
+        // A def with a parameter denotes a function; its type is the arrow the annotation fixes.
+        let src = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
+        let out = compile(
+            &inputs(src, &[Request::Query(Query::TypeOf { name: "f".into() })]),
+            &[],
+        );
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
+            Some("(-> Int64 Int64)")
+        );
+    }
+
+    #[test]
+    fn a_type_of_query_for_an_unknown_name_is_total() {
+        // Querying a name that names no definition yields a DEFINED result, never an error — the
+        // oracle contract (a query is total over every input).
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[Request::Query(Query::TypeOf {
+                    name: "ghost".into(),
+                })],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
+            Some("no such definition `ghost`")
+        );
+    }
+
+    #[test]
+    fn a_query_answers_even_when_the_program_fails_to_emit() {
+        // The program is ill-typed (`(if 5 1 2)` — a non-Bool condition, CDZ0203), so no component is
+        // produced. But a `TypeOf` query is a PURE fact read that never denies an artifact: the answer
+        // rides ALONGSIDE the error diagnostic. This is the "branch on a fact even for a broken program"
+        // affordance — the whole reason a query is not gated on a clean emit.
+        let src = "(module m (def (g) (: 7 Int64)) (def (main) (if 5 1 2)) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[
+                    Request::Query(Query::TypeOf { name: "g".into() }),
+                    Request::Emit(Target::Wasm),
+                ],
+            ),
+            &[],
+        );
+        // Emit failed: an error diagnostic, and NO component artifact.
+        assert!(out.has_error());
+        assert!(out.artifact("component").is_none());
+        // …but the query still answered, carried past the failure.
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
+            Some("Int64")
+        );
+    }
+
+    #[test]
+    fn a_uses_of_query_finds_every_reference_and_excludes_the_definition() {
+        // `helper` is referenced twice (in `main` and in `other`); the query returns those occurrences
+        // as node indices in ascending order, and the definition itself is not a use.
+        let src = "(module m \
+                   (def (helper) 1) \
+                   (def (main) (+ helper helper)) \
+                   (def (other) helper) \
+                   (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[Request::Query(Query::UsesOf {
+                    name: "helper".into(),
+                })],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        let text = artifact_text(&out, KIND_USES).expect("a uses artifact");
+        let ids: Vec<u32> = text.lines().map(|l| l.parse().unwrap()).collect();
+        // Three references to `helper`, none of them the def's body.
+        assert_eq!(ids.len(), 3, "uses = {ids:?}");
+        assert!(
+            ids.windows(2).all(|w| w[0] < w[1]),
+            "ascending order: {ids:?}"
+        );
+        // Each reported node resolves to `helper` — spot-check via a fresh resolve.
+        let mut db = crate::db::Db::load(parse(src));
+        let helper_body = db.defs[db.def_by_name("helper").unwrap()].body.unwrap();
+        for &id in &ids {
+            match crate::resolve::resolved_of(&mut db, crate::ast::StructId(id)) {
+                crate::resolved::Resolved::Ref { value } => {
+                    assert_eq!(value, helper_body, "node {id} must reference helper")
+                }
+                other => panic!("node {id} resolved to {other:?}, not a Ref to helper"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_uses_of_query_for_an_unused_or_unknown_name_is_empty() {
+        // A name with no references (or no such definition) yields an empty list, not an error.
+        let src = "(module m (def (lonely) 1) (def (main) 42) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[Request::Query(Query::UsesOf {
+                    name: "lonely".into(),
+                })],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_USES).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn an_emit_request_is_a_target_reached_through_the_list() {
+        // An `Emit(Wasm)` request produces the component exactly as `targets: [Wasm]` does — Emit IS
+        // the generalization of a Target. Here `targets` is EMPTY; the component comes only from the
+        // sidecar request, proving the two paths are one.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(&inputs(src, &[Request::Emit(Target::Wasm)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        assert!(
+            out.artifact("component").is_some(),
+            "a component is produced"
+        );
+    }
+
+    #[test]
+    fn emit_and_query_compose_in_one_run() {
+        // A realistic driver: build the component AND ask a fact in one invocation. Both artifacts come
+        // back, selected by kind — one kinded-artifact list, not two calls.
+        let src = "(module m (def (main) (: 42 Int64)) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[
+                    Request::Emit(Target::Wasm),
+                    Request::Query(Query::TypeOf {
+                        name: "main".into(),
+                    }),
+                ],
+            ),
+            &[],
+        );
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        assert!(out.artifact("component").is_some());
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
+            Some("Int64")
+        );
+    }
+
+    #[test]
+    fn no_sidecar_input_is_todays_behavior() {
+        // The common path: no `sidecar` artifact at all. Behavior is exactly today's — `targets` drives
+        // emission, one component out, no query artifacts.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &[Artifact::new(
+                Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[Target::Wasm],
+        );
+        assert!(!out.has_error());
+        assert_eq!(out.artifacts.len(), 1, "exactly the component");
+        assert_eq!(out.artifacts[0].kind, "component");
+    }
+
+    #[test]
+    fn a_malformed_sidecar_list_declines() {
+        // A `sidecar` artifact whose bytes are not a valid request list is a DECLINE (a diagnostic),
+        // never a panic or a silent drop — reject-don't-miscompile at the tool edge.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&parse(src))),
+                Artifact::new(sidecar::KIND_SIDECAR, "drive", vec![0xff, 0xff, 0xff]),
+            ],
+            &[Target::Wasm],
+        );
+        assert!(out.has_error());
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+            .unwrap();
+        assert!(
+            d.message.contains("malformed `sidecar`"),
+            "message: {}",
+            d.message
+        );
+        // No component: the request list could not be understood, so nothing was driven.
+        assert!(out.artifact("component").is_none());
+    }
+}
