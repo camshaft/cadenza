@@ -318,6 +318,21 @@ pub struct SelectedFunc {
     /// threading the current node through the emit family. `None` for a synthesized function (an escape
     /// walker) with no single source body.
     pub src_body: Option<StructId>,
+    /// Named SCALAR locals for debug-info variable inspection (D3, `DESIGN-debug-info-rcdzc.md` §2.4) —
+    /// each a `(wasm local slot, source name, solved scalar type)`. Populated with the function's scalar
+    /// PARAMETERS (slots `0..n`, the common `print n` target). A `DW_TAG_variable` DIE emits from each so
+    /// a debugger can read the value. A compound (heap-handle) param is omitted — DWARF cannot walk the
+    /// tagless heap (§3), so only scalars appear. `let`-bindings / match binders live in dynamically-
+    /// claimed scratch slots and are a later refinement. Empty unless debug is requested.
+    pub locals: Vec<LocalVar>,
+}
+
+/// A named scalar local for debug info (D3): its wasm local slot, source name, and solved scalar type.
+#[derive(Clone, Debug)]
+pub struct LocalVar {
+    pub slot: u32,
+    pub name: String,
+    pub ty: Ty,
 }
 
 /// Select one NULLARY definition body (rooted at AST occurrence `body`) into its flat instruction
@@ -638,6 +653,11 @@ pub fn select_function_of(
     let mut slot_of: HashMap<StructId, u32> = HashMap::new();
     let mut param_vts: Vec<ValType> = Vec::new();
     let mut param_slots: Vec<u32> = Vec::new();
+    // Named SCALAR params for debug info (D3): slot `i` holds param `i`; record its source name + type
+    // when it is a scalar (int width / bool). A compound (heap-handle) param is skipped — DWARF cannot
+    // walk the tagless heap, so only scalars get a `DW_TAG_variable`. Cheap (a name lookup per param);
+    // the emit path only reads it under a debug request.
+    let mut locals: Vec<LocalVar> = Vec::new();
     for (i, (binder, ty)) in params.iter().enumerate() {
         let vt = valtype_of(ty).ok_or_else(|| {
             Reject::decline("a function parameter's type has no machine representation")
@@ -645,6 +665,15 @@ pub fn select_function_of(
         slot_of.insert(*binder, i as u32);
         param_vts.push(vt);
         param_slots.push(i as u32);
+        if matches!(ty, Ty::Int(_) | Ty::Bool)
+            && let Some(name) = db.ast.as_name(*binder)
+        {
+            locals.push(LocalVar {
+                slot: i as u32,
+                name: name.to_string(),
+                ty: ty.clone(),
+            });
+        }
     }
     let ret = type_of(db, body);
     let mut code = Vec::new();
@@ -774,6 +803,8 @@ pub fn select_function_of(
         declared,
         // The body occurrence is this function's source anchor for debug info (§2.1b).
         src_body: Some(body),
+        // Named scalar params for debug-info variable inspection (§2.4, D3).
+        locals,
     })
 }
 

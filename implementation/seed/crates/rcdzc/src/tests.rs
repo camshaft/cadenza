@@ -369,6 +369,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         code: vec![Lir::ConstI64(42)],
         declared: vec![],
         src_body: None,
+        locals: vec![],
     };
     let layout = Layout::new(
         vec![ExportPlan {
@@ -10517,6 +10518,7 @@ mod debug_info {
                 code: vec![Lir::ConstI64(7)],
                 declared: vec![],
                 src_body: Some(StructId(11)),
+                locals: vec![],
             },
             SelectedFunc {
                 params: vec![],
@@ -10524,6 +10526,7 @@ mod debug_info {
                 code: vec![Lir::ConstI64(1000), Lir::ConstI64(2), Lir::I64Add],
                 declared: vec![],
                 src_body: Some(StructId(22)),
+                locals: vec![],
             },
         ];
         // One import so the layout mirrors the oracle shape; ranges are import-independent.
@@ -10852,6 +10855,104 @@ mod debug_info {
         assert_eq!(
             emb, side,
             "the sidecar's code offsets must match the embedded component's exactly"
+        );
+    }
+
+    // ── D3: scalar variable inspection (§2.4) ──────────────────────────────────────────────────────
+
+    #[test]
+    fn scalar_params_get_formal_parameter_dies_with_locations() {
+        // D3: an exported function's scalar parameters emit `DW_TAG_formal_parameter` DIEs, each with a
+        // `DW_AT_type` (→ a base type) and a `DW_AT_location` naming the wasm local slot — so a debugger
+        // can `print` the argument. Verified via llvm-dwarfdump on the detached sidecar (a bare module).
+        use std::io::Write;
+        use std::process::Command;
+        // Two Int64 params so the fn has real scalar locals at slots 0 and 1.
+        let src = "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-d3-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump error:\n{stdout}"
+        );
+        // A base type for Int64.
+        assert!(
+            stdout.contains("DW_TAG_base_type") && stdout.contains("\"i64\""),
+            "missing the i64 base type:\n{stdout}"
+        );
+        // Both params, as formal parameters, with a type ref and a wasm-local location.
+        assert!(
+            stdout.contains("DW_TAG_formal_parameter"),
+            "no formal_parameter DIE:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("\"a\"") && stdout.contains("\"b\""),
+            "param names:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DW_OP_WASM_location"),
+            "no wasm-local location:\n{stdout}"
+        );
+        // The two params sit at consecutive local slots 0 and 1.
+        assert!(
+            stdout.contains("DW_OP_WASM_location 0x0 0x0")
+                && stdout.contains("DW_OP_WASM_location 0x0 0x1"),
+            "params must be at local slots 0 and 1:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_nullary_function_has_no_formal_parameters() {
+        // A function with no params emits a childless subprogram — no formal_parameter DIEs.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-d3n-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.contains("DW_TAG_formal_parameter"),
+            "a nullary function must have no formal parameters:\n{stdout}"
         );
     }
 }

@@ -293,11 +293,25 @@ fn dwarf_funcs_for(
             .range(src)
             .map(|(s, _)| span_data.line_at(s))
             .unwrap_or(1);
+        // Scalar locals (D3) → `DW_TAG_variable` descriptors. A local whose type has no scalar base type
+        // (a compound handle) is skipped — DWARF cannot describe the tagless heap (§3).
+        let vars = f
+            .locals
+            .iter()
+            .filter_map(|lv| {
+                dwarf::base_type_of(&lv.ty).map(|base| dwarf::DwarfVar {
+                    name: lv.name.clone(),
+                    slot: lv.slot,
+                    base,
+                })
+            })
+            .collect();
         out.push(dwarf::DwarfFunc {
             name: db.defs[def].name.clone(),
             low_pc: code_base + r.code_start,
             high_pc: code_base + r.code_end,
             line,
+            vars,
         });
     }
     out

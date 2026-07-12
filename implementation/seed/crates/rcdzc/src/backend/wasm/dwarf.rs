@@ -1,10 +1,15 @@
-//! Hand-rolled DWARF for the embedded core module — D2 of `DESIGN-debug-info-rcdzc.md`.
+//! Hand-rolled DWARF for the embedded core module — D2 (stepping) + D3 (scalar vars) of
+//! `DESIGN-debug-info-rcdzc.md`.
 //!
-//! Emits the four `.debug_*` custom sections a debugger needs to STEP through Cadenza source:
+//! Emits the four `.debug_*` custom sections a debugger needs to STEP through Cadenza source and
+//! inspect scalar locals:
 //! - `.debug_str` — the string table the DIEs reference by offset (names, producer, dir).
-//! - `.debug_abbrev` — the abbreviation table (the DIE "shapes": compile_unit, subprogram).
-//! - `.debug_info` — one `DW_TAG_compile_unit` DIE + one `DW_TAG_subprogram` per function, each with
-//!   its code-offset range (`DW_AT_low_pc`/`DW_AT_high_pc`).
+//! - `.debug_abbrev` — the abbreviation table (the DIE "shapes": compile_unit, subprogram, formal
+//!   parameter, base type).
+//! - `.debug_info` — a `DW_TAG_compile_unit` DIE whose children are one `DW_TAG_base_type` per distinct
+//!   scalar type (D3) then one `DW_TAG_subprogram` per function (its code-offset range
+//!   `DW_AT_low_pc`/`DW_AT_high_pc`, plus a `DW_TAG_formal_parameter` per scalar param with a
+//!   `DW_OP_WASM_location` local slot + a `DW_AT_type` ref — so a debugger can `print` the argument).
 //! - `.debug_line` — the line-number program mapping each function's code offset → (file, line).
 //!
 //! These are CUSTOM sections (wasm section id 0) appended to the embedded CORE MODULE — the standard
@@ -38,6 +43,8 @@ mod dw {
     // Tags.
     pub const TAG_COMPILE_UNIT: u64 = 0x11;
     pub const TAG_SUBPROGRAM: u64 = 0x2e;
+    pub const TAG_FORMAL_PARAMETER: u64 = 0x05;
+    pub const TAG_BASE_TYPE: u64 = 0x24;
     // Attributes.
     pub const AT_NAME: u64 = 0x03;
     pub const AT_LOW_PC: u64 = 0x11;
@@ -47,6 +54,10 @@ mod dw {
     pub const AT_PRODUCER: u64 = 0x25;
     pub const AT_DECL_FILE: u64 = 0x3a;
     pub const AT_DECL_LINE: u64 = 0x3b;
+    pub const AT_LOCATION: u64 = 0x02;
+    pub const AT_TYPE: u64 = 0x49;
+    pub const AT_BYTE_SIZE: u64 = 0x0b;
+    pub const AT_ENCODING: u64 = 0x3e;
     // Forms.
     pub const FORM_ADDR: u64 = 0x01;
     pub const FORM_DATA4: u64 = 0x06;
@@ -54,6 +65,15 @@ mod dw {
     pub const FORM_STRP: u64 = 0x0e; // offset into .debug_str
     pub const FORM_SEC_OFFSET: u64 = 0x17;
     pub const FORM_UDATA: u64 = 0x0f;
+    pub const FORM_REF4: u64 = 0x13; // 4-byte offset into .debug_info (a DIE reference)
+    pub const FORM_EXPRLOC: u64 = 0x18; // a uleb-length-prefixed DWARF expression
+    // Base-type encodings (`DW_ATE_*`).
+    pub const ATE_BOOLEAN: u8 = 0x02;
+    pub const ATE_SIGNED: u8 = 0x05;
+    pub const ATE_UNSIGNED: u8 = 0x07;
+    // A location expression: a value in a wasm LOCAL. `DW_OP_WASM_location 0x00 <local-idx-uleb>`
+    // (the WebAssembly-DWARF vendor extension — the way a debugger finds a wasm local's slot).
+    pub const OP_WASM_LOCATION: u8 = 0xed;
     // Children flag.
     pub const CHILDREN_YES: u8 = 0x01;
     pub const CHILDREN_NO: u8 = 0x00;
@@ -65,7 +85,10 @@ mod dw {
     pub const LNE_SET_ADDRESS: u8 = 0x02;
     // Our abbreviation codes (arbitrary, must match between .debug_abbrev and .debug_info).
     pub const ABBREV_COMPILE_UNIT: u64 = 1;
-    pub const ABBREV_SUBPROGRAM: u64 = 2;
+    pub const ABBREV_SUBPROGRAM: u64 = 2; // subprogram WITHOUT children (no scalar locals)
+    pub const ABBREV_SUBPROGRAM_KIDS: u64 = 3; // subprogram WITH children (has scalar locals)
+    pub const ABBREV_FORMAL_PARAMETER: u64 = 4;
+    pub const ABBREV_BASE_TYPE: u64 = 5;
 }
 
 /// A string table (`.debug_str`) built incrementally: `intern(s)` returns the byte offset of `s`,
@@ -85,13 +108,77 @@ impl StrTab {
 }
 
 /// A resolved function to describe: its name, code-offset range (ABSOLUTE in the core module's code
-/// section), and source line (1-based; 0 = unknown). Built by the caller from `FuncCodeRange` + the
-/// `spans` side-table + a newline index over the source (or 1 when only byte spans are known).
+/// section), source line (1-based; 0 = unknown), and its named scalar locals (D3 — a `DW_TAG_variable`
+/// each, so a debugger reads the value). Built by the caller from `FuncCodeRange` + the `spans`
+/// side-table + a newline index over the source (or 1 when only byte spans are known).
 pub struct DwarfFunc {
     pub name: String,
     pub low_pc: u32,
     pub high_pc: u32,
     pub line: u32,
+    pub vars: Vec<DwarfVar>,
+}
+
+/// A named scalar local to describe (D3): its source name, wasm local slot, and base type. Emits a
+/// `DW_TAG_formal_parameter` (params) / `DW_TAG_variable` DIE with a `DW_OP_WASM_location` pointing at
+/// the local slot and a `DW_AT_type` referencing the matching `DW_TAG_base_type`.
+pub struct DwarfVar {
+    pub name: String,
+    pub slot: u32,
+    pub base: BaseType,
+}
+
+/// A scalar base type — the (encoding, byte size) a `DW_TAG_base_type` describes. Distinct values are
+/// deduplicated into one base-type DIE each, referenced by variables via `DW_AT_type`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BaseType {
+    /// A `DW_ATE_*` encoding (signed / unsigned / boolean).
+    pub encoding: u8,
+    /// The size in bytes (1/2/4/8 for the integer widths; 1 for bool).
+    pub byte_size: u8,
+    /// A stable display name for the type (`i64`, `u8`, `bool`, …) — the base-type DIE's `DW_AT_name`.
+    pub name: &'static str,
+}
+
+/// The DWARF base type for a scalar Cadenza type — an integer width (signed/unsigned, 1/2/4/8 bytes)
+/// or `Bool`. `None` for a non-scalar (a heap-handle compound), which gets no `DW_TAG_variable` (DWARF
+/// cannot walk the tagless heap, §3). The name is a stable DWARF-facing spelling (`i64`, `u8`, `bool`).
+pub fn base_type_of(ty: &crate::ty::Ty) -> Option<BaseType> {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Bool => Some(BaseType {
+            encoding: dw::ATE_BOOLEAN,
+            byte_size: 1,
+            name: "bool",
+        }),
+        Ty::Int(it) => {
+            let signed = it.ground_signed();
+            let bits = it.ground_width();
+            let byte_size = (bits / 8).max(1) as u8;
+            let encoding = if signed {
+                dw::ATE_SIGNED
+            } else {
+                dw::ATE_UNSIGNED
+            };
+            // A stable name per (signedness, width). Unknown widths fall back to the 64-bit spelling.
+            let name = match (signed, bits) {
+                (true, 8) => "i8",
+                (true, 16) => "i16",
+                (true, 32) => "i32",
+                (true, _) => "i64",
+                (false, 8) => "u8",
+                (false, 16) => "u16",
+                (false, 32) => "u32",
+                (false, _) => "u64",
+            };
+            Some(BaseType {
+                encoding,
+                byte_size,
+                name,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Build the four `.debug_*` custom sections for `funcs`, concatenated in the order a core module wants
@@ -107,6 +194,23 @@ pub fn debug_sections(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
     // Each function name interned; keep the offsets in order.
     let fn_name_offs: Vec<u32> = funcs.iter().map(|f| str_tab.intern(&f.name)).collect();
 
+    // Collect the DISTINCT scalar base types across every function's vars, in first-seen order (so a
+    // single `DW_TAG_base_type` DIE serves every variable of that type), and intern each var's name +
+    // each base type's name. `var_name_off` is keyed by (func index, var index).
+    let mut base_types: Vec<(BaseType, u32)> = Vec::new();
+    let mut seen_bt: std::collections::HashSet<BaseType> = std::collections::HashSet::new();
+    let mut var_name_off: std::collections::HashMap<(usize, usize), u32> =
+        std::collections::HashMap::new();
+    for (fi, f) in funcs.iter().enumerate() {
+        for (vi, v) in f.vars.iter().enumerate() {
+            var_name_off.insert((fi, vi), str_tab.intern(&v.name));
+            if seen_bt.insert(v.base) {
+                let bt_name_off = str_tab.intern(v.base.name);
+                base_types.push((v.base, bt_name_off));
+            }
+        }
+    }
+
     // The whole-CU code range: low = min low_pc, high = max high_pc (0..0 when no functions).
     let cu_low = funcs.iter().map(|f| f.low_pc).min().unwrap_or(0);
     let cu_high = funcs.iter().map(|f| f.high_pc).max().unwrap_or(0);
@@ -121,6 +225,8 @@ pub fn debug_sections(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
         comp_dir_off,
         cu_low,
         cu_high,
+        &base_types,
+        &var_name_off,
     );
 
     // Append as custom sections (id 0): each is `<id=0> <uleb total-len> <name-uleb-len><name><payload>`.
@@ -198,33 +304,38 @@ fn custom_section(name: &str, payload: &[u8]) -> Vec<u8> {
     section(0, &contents)
 }
 
-/// `.debug_abbrev` — two abbreviations: 1 = compile_unit (has children), 2 = subprogram (no children).
-/// Each entry: `<code-uleb> <tag-uleb> <children-byte> ( <attr-uleb> <form-uleb> )* 0 0`. The table ends
-/// with a single 0 abbrev code.
+/// `.debug_abbrev` — the abbreviation table (the DIE "shapes"). Each entry:
+/// `<code-uleb> <tag-uleb> <children-byte> ( <attr-uleb> <form-uleb> )* 0 0`; the table ends with a
+/// single 0 abbrev code. Five abbrevs: compile_unit, subprogram (leaf), subprogram-with-children,
+/// formal_parameter/variable (D3 scalar locals), and base_type.
 fn build_abbrev() -> Vec<u8> {
     let mut b = Vec::new();
-    // Abbrev 1: DW_TAG_compile_unit, has children (the subprograms).
-    uleb128(dw::ABBREV_COMPILE_UNIT, &mut b);
-    uleb128(dw::TAG_COMPILE_UNIT, &mut b);
-    b.push(dw::CHILDREN_YES);
-    let cu_attrs = [
-        (dw::AT_PRODUCER, dw::FORM_STRP),
-        (dw::AT_NAME, dw::FORM_STRP),
-        (dw::AT_COMP_DIR, dw::FORM_STRP),
-        (dw::AT_LOW_PC, dw::FORM_ADDR),
-        (dw::AT_HIGH_PC, dw::FORM_DATA4),
-        (dw::AT_STMT_LIST, dw::FORM_SEC_OFFSET),
-    ];
-    for (at, form) in cu_attrs {
-        uleb128(at, &mut b);
-        uleb128(form, &mut b);
-    }
-    uleb128(0, &mut b);
-    uleb128(0, &mut b);
-    // Abbrev 2: DW_TAG_subprogram, no children.
-    uleb128(dw::ABBREV_SUBPROGRAM, &mut b);
-    uleb128(dw::TAG_SUBPROGRAM, &mut b);
-    b.push(dw::CHILDREN_NO);
+    let entry = |b: &mut Vec<u8>, code: u64, tag: u64, children: u8, attrs: &[(u64, u64)]| {
+        uleb128(code, b);
+        uleb128(tag, b);
+        b.push(children);
+        for &(at, form) in attrs {
+            uleb128(at, b);
+            uleb128(form, b);
+        }
+        uleb128(0, b);
+        uleb128(0, b);
+    };
+    // 1: compile_unit, has children (base types + subprograms).
+    entry(
+        &mut b,
+        dw::ABBREV_COMPILE_UNIT,
+        dw::TAG_COMPILE_UNIT,
+        dw::CHILDREN_YES,
+        &[
+            (dw::AT_PRODUCER, dw::FORM_STRP),
+            (dw::AT_NAME, dw::FORM_STRP),
+            (dw::AT_COMP_DIR, dw::FORM_STRP),
+            (dw::AT_LOW_PC, dw::FORM_ADDR),
+            (dw::AT_HIGH_PC, dw::FORM_DATA4),
+            (dw::AT_STMT_LIST, dw::FORM_SEC_OFFSET),
+        ],
+    );
     let sp_attrs = [
         (dw::AT_NAME, dw::FORM_STRP),
         (dw::AT_DECL_FILE, dw::FORM_DATA1),
@@ -232,20 +343,62 @@ fn build_abbrev() -> Vec<u8> {
         (dw::AT_LOW_PC, dw::FORM_ADDR),
         (dw::AT_HIGH_PC, dw::FORM_DATA4),
     ];
-    for (at, form) in sp_attrs {
-        uleb128(at, &mut b);
-        uleb128(form, &mut b);
-    }
-    uleb128(0, &mut b);
-    uleb128(0, &mut b);
+    // 2: subprogram WITHOUT children (a function with no scalar locals).
+    entry(
+        &mut b,
+        dw::ABBREV_SUBPROGRAM,
+        dw::TAG_SUBPROGRAM,
+        dw::CHILDREN_NO,
+        &sp_attrs,
+    );
+    // 3: subprogram WITH children (a function whose scalar params/locals are described).
+    entry(
+        &mut b,
+        dw::ABBREV_SUBPROGRAM_KIDS,
+        dw::TAG_SUBPROGRAM,
+        dw::CHILDREN_YES,
+        &sp_attrs,
+    );
+    // 4: formal_parameter — name + type (a DIE ref) + a location expression (the wasm local slot).
+    entry(
+        &mut b,
+        dw::ABBREV_FORMAL_PARAMETER,
+        dw::TAG_FORMAL_PARAMETER,
+        dw::CHILDREN_NO,
+        &[
+            (dw::AT_NAME, dw::FORM_STRP),
+            (dw::AT_TYPE, dw::FORM_REF4),
+            (dw::AT_LOCATION, dw::FORM_EXPRLOC),
+        ],
+    );
+    // 5: base_type — name + encoding + byte size.
+    entry(
+        &mut b,
+        dw::ABBREV_BASE_TYPE,
+        dw::TAG_BASE_TYPE,
+        dw::CHILDREN_NO,
+        &[
+            (dw::AT_NAME, dw::FORM_STRP),
+            (dw::AT_ENCODING, dw::FORM_DATA1),
+            (dw::AT_BYTE_SIZE, dw::FORM_DATA1),
+        ],
+    );
     // End of the abbreviation table.
     uleb128(0, &mut b);
     b
 }
 
-/// `.debug_info` — the CU header + the compile_unit DIE + one subprogram DIE per function.
-/// CU header (DWARF 4, 32-bit): `unit_length(u32) version(u16=4) abbrev_offset(u32=0) addr_size(u8=4)`,
-/// then the DIE tree, closed by a 0 abbrev code (the compile_unit's children terminator).
+/// The DWARF-4 32-bit CU header size in bytes: `unit_length(4) version(2) abbrev_offset(4) addr_size(1)`.
+/// DIE offsets (`DW_FORM_ref4`) are measured from the CU START (the `.debug_info` section start, since
+/// there is one CU), so the first DIE sits at this offset.
+const CU_HEADER_LEN: usize = 4 + 2 + 4 + 1;
+
+/// `.debug_info` — the CU header + the compile_unit DIE, whose children are: one `DW_TAG_base_type` per
+/// distinct scalar type (D3), then one subprogram DIE per function (each with its scalar params as
+/// `DW_TAG_formal_parameter` children referencing those base types). `fn_name_offs`/`base_type_offs`
+/// carry the `.debug_str` offsets; `base_type_die` maps each `BaseType` to its DIE offset (for a
+/// variable's `DW_AT_type` ref). CU header (DWARF 4, 32-bit); the tree is closed by 0 abbrev codes.
+#[allow(clippy::too_many_arguments)]
 fn build_info(
     fn_name_offs: &[u32],
     funcs: &[DwarfFunc],
@@ -254,8 +407,14 @@ fn build_info(
     comp_dir_off: u32,
     cu_low: u32,
     cu_high: u32,
+    base_types: &[(BaseType, u32)], // (type, its .debug_str name offset), in emission order
+    var_name_off: &std::collections::HashMap<(usize, usize), u32>, // (func_ix, var_ix) → name strp
 ) -> Vec<u8> {
+    // DIE bytes accumulate AFTER the CU header; a `DW_FORM_ref4` is `CU_HEADER_LEN + die.len()` at the
+    // point a DIE begins. Record each base type's DIE offset so variables can reference it.
     let mut die = Vec::new();
+    let off_at = |die: &Vec<u8>| (CU_HEADER_LEN + die.len()) as u32;
+
     // compile_unit DIE (abbrev 1).
     uleb128(dw::ABBREV_COMPILE_UNIT, &mut die);
     die.extend_from_slice(&producer_off.to_le_bytes()); // DW_AT_producer (strp)
@@ -265,14 +424,48 @@ fn build_info(
     die.extend_from_slice(&cu_high.saturating_sub(cu_low).to_le_bytes()); // DW_AT_high_pc (data4 = size)
     die.extend_from_slice(&0u32.to_le_bytes()); // DW_AT_stmt_list (sec_offset → .debug_line start)
 
-    // One subprogram DIE (abbrev 2) per function.
-    for (f, &name_off) in funcs.iter().zip(fn_name_offs) {
-        uleb128(dw::ABBREV_SUBPROGRAM, &mut die);
+    // Base-type DIEs first (abbrev 5), recording each one's offset for variable `DW_AT_type` refs.
+    let mut base_die_off: std::collections::HashMap<BaseType, u32> =
+        std::collections::HashMap::new();
+    for &(bt, name_off) in base_types {
+        base_die_off.insert(bt, off_at(&die));
+        uleb128(dw::ABBREV_BASE_TYPE, &mut die);
         die.extend_from_slice(&name_off.to_le_bytes()); // DW_AT_name (strp)
+        die.push(bt.encoding); // DW_AT_encoding (data1)
+        die.push(bt.byte_size); // DW_AT_byte_size (data1)
+    }
+
+    // One subprogram DIE per function; abbrev 3 (has children) when it has scalar vars, else abbrev 2.
+    for (fi, (f, &fn_name_off)) in funcs.iter().zip(fn_name_offs).enumerate() {
+        let has_vars = !f.vars.is_empty();
+        uleb128(
+            if has_vars {
+                dw::ABBREV_SUBPROGRAM_KIDS
+            } else {
+                dw::ABBREV_SUBPROGRAM
+            },
+            &mut die,
+        );
+        die.extend_from_slice(&fn_name_off.to_le_bytes()); // DW_AT_name (strp)
         die.push(1u8); // DW_AT_decl_file (data1) — file 1 (our single file)
         uleb128(f.line.max(1) as u64, &mut die); // DW_AT_decl_line (udata)
         die.extend_from_slice(&f.low_pc.to_le_bytes()); // DW_AT_low_pc (addr)
         die.extend_from_slice(&f.high_pc.saturating_sub(f.low_pc).to_le_bytes()); // DW_AT_high_pc (data4)
+        // A formal_parameter DIE (abbrev 4) per scalar var.
+        for (vi, v) in f.vars.iter().enumerate() {
+            uleb128(dw::ABBREV_FORMAL_PARAMETER, &mut die);
+            die.extend_from_slice(&var_name_off[&(fi, vi)].to_le_bytes()); // DW_AT_name (strp)
+            let ty_off = base_die_off[&v.base];
+            die.extend_from_slice(&ty_off.to_le_bytes()); // DW_AT_type (ref4 → the base type DIE)
+            // DW_AT_location (exprloc): `DW_OP_WASM_location 0x00 <local-idx-uleb>`. Length-prefixed.
+            let mut loc = vec![dw::OP_WASM_LOCATION, 0x00];
+            uleb128(v.slot as u64, &mut loc);
+            uleb128(loc.len() as u64, &mut die); // exprloc length
+            die.extend_from_slice(&loc);
+        }
+        if has_vars {
+            uleb128(0, &mut die); // terminate the subprogram's children
+        }
     }
     // Terminate the compile_unit's children.
     uleb128(0, &mut die);
