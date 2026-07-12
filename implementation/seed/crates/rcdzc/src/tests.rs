@@ -4849,7 +4849,11 @@ mod stage1 {
             .iter()
             .find(|d| d.severity == crate::abi::Severity::Error)
             .expect("a bare escaped None with an unresolved payload declines");
-        assert_eq!(err.code.as_deref(), Some("CDZ0203"), "an ambiguous escaped type is a type fault");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0203"),
+            "an ambiguous escaped type is a type fault"
+        );
         assert!(
             err.message.contains("not fully determined") && err.message.contains("annotate"),
             "the message must name the unresolved type + the annotation fix, got: {}",

@@ -855,30 +855,28 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // not a defect in the artifact. Under the gate's heavy parallelism this window can outlast a single
     // retry, so back off briefly and retry a handful of times before giving up. (A GENUINELY unrunnable
     // binary fails every attempt, so this never hides a real problem.)
-    let run = loop {
-        let mut last_err = None;
-        let mut got = None;
-        for attempt in 0..8 {
-            match Command::new(&bin).output() {
-                Ok(o) => {
-                    got = Some(o);
-                    break;
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                    // A short escalating backoff to let the writer handle close.
-                    std::thread::sleep(std::time::Duration::from_millis(2 * (attempt + 1)));
-                }
+    let mut last_err = None;
+    let mut got = None;
+    for attempt in 0..8 {
+        match Command::new(&bin).output() {
+            Ok(o) => {
+                got = Some(o);
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                // A short escalating backoff to let the writer handle close.
+                std::thread::sleep(std::time::Duration::from_millis(2 * (attempt + 1)));
             }
         }
-        match got {
-            Some(o) => break o,
-            None => {
-                return Ran::BadArtifact(format!(
-                    "compiled prog failed to launch: {}",
-                    last_err.expect("a launch error after all retries failed")
-                ));
-            }
+    }
+    let run = match got {
+        Some(o) => o,
+        None => {
+            return Ran::BadArtifact(format!(
+                "compiled prog failed to launch: {}",
+                last_err.expect("a launch error after all retries failed")
+            ));
         }
     };
     if run.status.success() {
