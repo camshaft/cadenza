@@ -13,17 +13,21 @@
 //! names the value renderer supplies (`reference-compiler.md` §Rendering Walks A Static Shape And
 //! Supplies The Names) — a language fact, not a target one.
 //!
-//! Stage 0's universe is the three scalar types the thin slice needs. Later stages widen this sum
-//! (parametric types, sums, collections) — it is a closed, exhaustively-matched set, so a new type
-//! is a new variant and every pass that reads a type is forced to say what it does with it.
+//! The universe is a CLOSED, exhaustively-matched set of variants: integers (width- and
+//! sign-indexed), Bool, Unit, records, tuples, sums, function types, the type-value type, a
+//! unification variable, and `Any`. Because it is closed, adding a type is adding a variant, which
+//! forces every pass that reads a type to say what it does with it — the property that keeps a new
+//! type honest as the language grows.
 //!
 //! **An integer type carries its width and signedness, not a fixed name.** `Int64` is not a type
 //! unto itself — it is the signed, 64-bit instance of the one integer type `(Int width)`, whose
-//! signedness and width are data (`prelude-and-resolution.md` §A Numeric Width Is A Type Record, Its
-//! Machine Operation Read From Its Meta). Carrying the parameter from genesis is what keeps widths
-//! from being a retrofit (`build-order.md` §Stage 7): Stage 0 only ever *produces* the signed-64
-//! instance, but the representation is already the general one, so a later width is a value the
-//! compiler computes rather than a new `Ty` variant.
+//! signedness and width are data:
+//!
+//= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
+//# An integer type MUST be identified by a signedness and a bit width, so that two integer types of different width or signedness are distinct types that do not silently convert to one another.
+//!
+//! So a width is a value the compiler computes and unifies, never a new `Ty` variant per width — the
+//! single [`IntTy`] carries both axes, and every named width (`Int8`, `UInt32`, …) is one instance.
 
 /// The default bit width an integer literal grounds to when nothing fixes it — the width the backend
 /// picks for an unresolved literal (`Int64`).
@@ -115,7 +119,7 @@ impl IntTy {
     }
 }
 
-/// A solved type. Frozen for Stage 0/1 at the scalars the slice exercises, records, and `Any`.
+/// A solved type — the closed variant set inference determines and every pass below reads.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Ty {
     /// An integer of a given signedness and a possibly-deferred width.
@@ -178,14 +182,15 @@ pub enum Ty {
     /// type-value).
     Type,
     /// A unification variable — an as-yet-unsolved type inference introduces (e.g. a fresh operand
-    /// type before it is constrained). Resolved to a concrete type by unification; a variable that
-    /// survives to the boundary is an undetermined type (a rejection, not a default). The full HM
-    /// engine that solves these lands with functions; the arithmetic-intrinsic increment uses a
-    /// single variable per operation to be generic over the integer type.
+    /// type before it is constrained). Resolved to a concrete type by the Hindley-Milner solve in
+    /// [`crate::unify`]; a variable that survives to the boundary is an undetermined type (a rejection,
+    /// not a default). An operator's scheme carries one variable per generic axis so an application
+    /// unifies its operands rather than hard-coding a type.
     Var(u32),
     /// The type of a node the compiler could not type — a poison's type. It is COMPATIBLE with every
     /// type, so a "no" never induces a spurious mismatch upward (the poison itself is the reported
-    /// fault, not a type error it would otherwise cascade). A top type for Stage 0's purposes.
+    /// fault, not a type error it would otherwise cascade). Behaves as a top type in `agrees_with`
+    /// and `unify`.
     Any,
 }
 
@@ -200,10 +205,12 @@ impl Ty {
         Ty::Int(IntTy::i64())
     }
 
-    /// Whether two types agree for Stage-0 checking. `Any` agrees with anything (a poison never
-    /// disagrees); two integers agree if their signedness matches and their widths are compatible (a
-    /// deferred width is compatible with any width — it has not been fixed yet). Full unification
-    /// arrives with real inference; this is the Stage-0 compatibility relation.
+    /// Whether two types are COMPATIBLE — a structural yes/no relation, distinct from [`crate::unify`]
+    /// which solves variables into a substitution. This is the cheap check the passes that only need a
+    /// verdict use (an annotation's declared vs inferred type, an `if`'s two branches, a match
+    /// pattern's type vs its scrutinee); the solving inference uses `unify`. `Any` agrees with anything
+    /// (a poison never disagrees); two integers agree if their signedness matches and their widths are
+    /// compatible (a deferred/variable width or sign is compatible — it has not been fixed yet).
     pub fn agrees_with(&self, other: &Ty) -> bool {
         match (self, other) {
             (Ty::Any, _) | (_, Ty::Any) => true,
