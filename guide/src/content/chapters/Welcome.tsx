@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { StatusLegend } from "../../components/StatusIcon.tsx";
 
 export default function Welcome() {
   return (
@@ -45,7 +46,18 @@ export default function Welcome() {
       <P>
         Work through the chapters in order using the sidebar, or jump around. Each chapter has runnable
         examples you are encouraged to edit — you will learn faster by changing things and seeing what
-        happens than by only reading.
+        happens than by only reading. Many chapters end with <strong>exercises</strong>: fill in the
+        blank, press <C>Check</C>, and the guide grades your answer. A <C>Show solution</C> button is
+        always there if you get stuck — try not to lean on it too soon.
+      </P>
+
+      <P>When you run an example, its result is tagged so you always know what happened:</P>
+      <StatusLegend />
+      <P>
+        That last one — the compiler <em>declining</em> a program — is worth dwelling on. Cadenza would
+        rather refuse a program it can't compile correctly than emit something that silently misbehaves.
+        Some examples in this guide are declined <em>on purpose</em>, to show you the language's
+        guardrails.
       </P>
     </article>
   );

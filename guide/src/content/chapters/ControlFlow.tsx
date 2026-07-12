@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Exercise } from "../../components/Exercise.tsx";
 
 export default function ControlFlow() {
   return (
@@ -24,10 +25,42 @@ export default function ControlFlow() {
 
       <H2>Booleans compose</H2>
       <P>
-        Comparisons produce <C>Bool</C> values you can combine. Try wiring two comparisons together
-        after reading the next chapters on data.
+        Comparisons produce <C>Bool</C> values, and <C>and</C>, <C>or</C>, and <C>not</C> combine
+        them (short-circuiting, so a false <C>and</C> never evaluates its right side).
       </P>
-      <Runnable source={`(if (= (+ 2 2) 4) 1 0)`} />
+      <Runnable source={`(if (and (< 1 2) (< 2 3)) 100 0)`} />
+
+      <H2>Recursion</H2>
+      <P>
+        A function can call itself. This is how you loop in Cadenza: a base case stops the recursion,
+        and each step reduces toward it. Here <C>sm</C> sums the integers from <C>n</C> down to 0.
+      </P>
+      <Runnable
+        wrap={false}
+        source={`(module m
+  (def (sm n)
+    (if (= n 0) 0 (+ n (sm (- n 1)))))
+  (def (main) (sm 5))
+  (export main))`}
+      />
+
+      <H2>Your turn</H2>
+      <Exercise
+        prompt={<>Fix the base case so <C>sm</C> correctly sums 1..5 to <C>15</C>.</>}
+        starter={`(module m
+  (def (sm n)
+    (if (= n 0) ? (+ n (sm (- n 1)))))
+  (def (main) (sm 5))
+  (export main))`}
+        solution={`(module m
+  (def (sm n)
+    (if (= n 0) 0 (+ n (sm (- n 1)))))
+  (def (main) (sm 5))
+  (export main))`}
+        expected="15"
+        wrap={false}
+        hint={<>When <C>n</C> reaches 0, there is nothing left to add — the sum of no numbers is <C>0</C>.</>}
+      />
     </article>
   );
 }

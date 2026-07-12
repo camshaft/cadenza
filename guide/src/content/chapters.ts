@@ -54,6 +54,13 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/PatternMatching.tsx")),
   },
   {
+    slug: "lists",
+    title: "Lists",
+    blurb: "Ordered, immutable sequences on the value heap.",
+    section: "Fundamentals",
+    Component: lazy(() => import("./chapters/Lists.tsx")),
+  },
+  {
     slug: "numbers",
     title: "The numeric model",
     blurb: "Checked integers and no silent promotion.",

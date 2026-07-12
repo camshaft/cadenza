@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Exercise } from "../../components/Exercise.tsx";
 
 export default function Basics() {
   return (
@@ -35,6 +36,34 @@ export default function Basics() {
       </P>
       <Runnable source={`(let ((apply-twice (fn (f v) (f (f v)))))
   (apply-twice (fn (x) (+ x 1)) 5))`} />
+
+      <H2>Your turn</H2>
+      <P>Time to write some Cadenza. Fill in the blank, press Check, and the guide will grade it.</P>
+
+      <Exercise
+        prompt={<>Make this produce <C>42</C> by doubling 21.</>}
+        starter={`(* 21 ?)`}
+        solution={`(* 21 2)`}
+        expected="42"
+        hint={<>Replace the <C>?</C> with the number that doubles 21.</>}
+      />
+
+      <Exercise
+        prompt={<>Write a <C>max</C> function that returns the larger of two numbers, then call it on 3 and 9.</>}
+        starter={`(module m
+  (def (max a b)
+    (if ? a b))
+  (def (main) (max 3 9))
+  (export main))`}
+        solution={`(module m
+  (def (max a b)
+    (if (> a b) a b))
+  (def (main) (max 3 9))
+  (export main))`}
+        expected="9"
+        wrap={false}
+        hint={<>The condition should be true when <C>a</C> is bigger. Try <C>(&gt; a b)</C>.</>}
+      />
     </article>
   );
 }
