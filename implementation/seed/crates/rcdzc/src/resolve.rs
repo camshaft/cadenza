@@ -38,16 +38,24 @@ use crate::resolved::{Prim, Resolved, Symbol};
 use std::collections::BTreeMap;
 use tracing::trace;
 
-/// The fixed, closed set of GRAMMAR head names — the forms that bind names or control evaluation, plus
+/// The fixed, closed set of GRAMMAR head NAMES — the forms that bind names or control evaluation, plus
 /// member access. This set does NOT grow when a built-in value is added (that is a prelude entry).
-/// A form whose head is one of these is dispatched structurally; any other head is an application (or,
-/// for a bare atom, a name looked up).
+/// A form whose head is one of these is dispatched structurally; any other NAME head is an application
+/// (or, for a bare atom, a name looked up).
+///
+/// The compound-value constructors are NOT here: their PRIMITIVE is a STRING-LITERAL head — `("tuple"
+/// …)` builds a tuple, `("record" …)` builds a record (dispatched via [`Arenas::head_ctor`], before
+/// this name dispatch). A string is unspellable as an identifier, so the primitive can never be
+/// shadowed; the ORDINARY names `tuple` and `record` are prelude ALIASES (shadowable) that reduce to
+/// the same value. So a `(tuple …)` NAME head resolves through the ordinary scope→def→prelude lookup —
+/// a local binding of `tuple` wins (the head-vs-value split that made `(let ((tuple …)) (tuple 3 4))`
+/// ignore the binding is gone). See `core-semantics.md` §A Compound Value Has A Symbol Constructor And
+/// A Shadowable Alias. ("The strings are the symbols" — the reserved primitive names are string
+/// literals, needing no invented sigils and no reader change.)
 const GRAMMAR: &[&str] = &[
     "let",
     "if",
     "match",
-    "record",
-    "tuple",
     ".",
     "module",
     "def",
@@ -125,12 +133,22 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             if children.is_empty() {
                 return Resolved::Unit;
             }
+            // The compound-value-constructor PRIMITIVES are STRING-LITERAL heads: `("record" …)` builds
+            // a record, `("tuple" …)` builds a tuple. A string is unspellable as an identifier, so the
+            // primitive is unshadowable — dispatched here, before the NAME dispatch. The ordinary names
+            // `tuple`/`record` are prelude ALIASES that reduce to these (via `(meta apply)`), so they
+            // are NOT matched below: a `(tuple …)` NAME head falls through to `Resolved::Apply` and
+            // resolves lexically-first (a local `tuple` binding shadows the alias). ("The strings are
+            // the symbols.")
+            match db.ast.head_ctor(id) {
+                Some("record") => return resolve_record(db, id),
+                Some("tuple") => return resolve_tuple(db, id),
+                _ => {}
+            }
             match db.ast.head_name(id) {
                 Some("if") => resolve_if(db, id),
                 Some("match") => resolve_match(db, id),
                 Some("let") => resolve_let(db, id),
-                Some("record") => resolve_record(db, id),
-                Some("tuple") => resolve_tuple(db, id),
                 Some(".") => resolve_member(db, id),
                 Some("fn") => resolve_lambda(db, id),
                 Some(":") => resolve_annot(db, id),
@@ -826,14 +844,31 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
 /// (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields); the check is over the WHOLE field
 /// list, not adjacent pairs.
 fn resolve_record(db: &Db, id: StructId) -> Resolved {
-    let tail = db.ast.as_form(id, "record").unwrap_or(&[]);
+    let tail = db.ast.as_ctor_form(id, "record").unwrap_or(&[]);
+    match read_record_fields(db, tail) {
+        Ok(fields) => Resolved::Record {
+            fields: std::sync::Arc::new(fields),
+        },
+        Err(reject) => Resolved::Poison(reject),
+    }
+}
+
+/// Read a record's `(key value)` field list into the `label → value-occurrence` map — the ONE
+/// field-reading rule, shared by the `{}` primitive (`resolve_record`) and the `record` alias
+/// application (whose `(meta apply)` is `Prim::RecordNew`; `lower`/`infer` read the same fields). Each
+/// field must be a two-element `(key value)` list; the key is a label via [`read_key`]; a duplicate
+/// field name — anywhere in the list — is ill-formed. Returns the fault as `Err` so each caller wraps
+/// it in the "no" shape it needs (a `Poison` value, a lowering poison, …).
+pub(crate) fn read_record_fields(
+    db: &Db,
+    fields_tail: &[StructId],
+) -> Result<BTreeMap<Symbol, StructId>, Reject> {
     let mut fields: BTreeMap<Symbol, StructId> = BTreeMap::new();
-    for &field in tail {
-        // Each field is `(key value)`.
+    for &field in fields_tail {
         let kv = match db.ast.get(field) {
             Struct::List(kv) if kv.len() == 2 => kv,
             _ => {
-                return Resolved::Poison(Reject::coded(
+                return Err(Reject::coded(
                     Code::Malformed,
                     "record field must be (key value)",
                 ));
@@ -842,7 +877,7 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
         let label = match read_key(db, kv[0]) {
             Some(sym) => sym,
             None => {
-                return Resolved::Poison(Reject::coded(
+                return Err(Reject::coded(
                     Code::Malformed,
                     "record field key must be a name or (meta name)",
                 ));
@@ -850,15 +885,13 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
         };
         // A duplicate field name — anywhere in the list — is ill-formed.
         if fields.insert(label.clone(), kv[1]).is_some() {
-            return Resolved::Poison(Reject::coded(
+            return Err(Reject::coded(
                 Code::Malformed,
                 format!("record names field `{}` more than once", label.name),
             ));
         }
     }
-    Resolved::Record {
-        fields: std::sync::Arc::new(fields),
-    }
+    Ok(fields)
 }
 
 /// Resolve `(. operand key)` — the ONE dotted projection form, whose KEY KIND selects the meaning:
@@ -912,7 +945,7 @@ fn tuple_index(value: &crate::ast::IntValue) -> Option<usize> {
 /// elements — it is the empty product, which coincides with unit; but the reader writes `()` for unit,
 /// so a written `(tuple)` is kept as a zero-element tuple here and typed as such (its arity is 0).
 fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
-    let elems: std::sync::Arc<[StructId]> = db.ast.as_form(id, "tuple").unwrap_or(&[]).into();
+    let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "tuple").unwrap_or(&[]).into();
     Resolved::Tuple { elems }
 }
 

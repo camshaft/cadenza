@@ -55,6 +55,16 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // builder reads each arg as a `(name type)` pair.
     names.insert("Record".to_string(), ctor_record(ast, "Record"));
 
+    // The compound-VALUE constructors as SHADOWABLE aliases. The primitive is a symbol head (`(,)`
+    // builds a tuple, `{}` builds a record — dispatched structurally in `resolve`), but the ordinary
+    // names `tuple`/`record` are prelude records here so `(tuple 1 2)` / `(record (x 1))` written with
+    // the NAME are ordinary applications: their `(meta apply)` holds the value-constructor intrinsic,
+    // and being ordinary names they are SHADOWABLE (a local `(let ((tuple …)) …)` wins via the
+    // scope-first lookup, never reaching this entry). This is what removes the head-vs-value resolution
+    // split — the name is looked up, the symbol is the unspellable primitive.
+    names.insert("tuple".to_string(), ctor_record(ast, "tuple-new"));
+    names.insert("record".to_string(), ctor_record(ast, "record-new"));
+
     // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
     // application of the value `+` resolves to — the SAME mechanism every application uses, dispatched
@@ -119,7 +129,7 @@ pub(crate) fn meta_field(ast: &mut Arenas, key: &str, value: StructId) -> Struct
 /// A ground-type record `(record ((meta t) (intrinsic PRIM)))` — `Bool`/`Unit`. Its `(meta t)` holds
 /// the ground type-value; it carries no `(meta apply)`, so it is not applyable.
 fn ground_type_record(ast: &mut Arenas, prim: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
     let ty_val = intrinsic_node(ast, prim);
     let t_field = meta_field(ast, "t", ty_val);
     push_list(ast, vec![head, t_field])
@@ -128,7 +138,7 @@ fn ground_type_record(ast: &mut Arenas, prim: &str) -> StructId {
 /// A type-constructor record `(record ((meta apply) (intrinsic PRIM)))` — `Int`/`UInt`/`->`. Applying
 /// it (`(Int a)`) projects `(meta apply)` and applies the native builder.
 fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
     let builder = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", builder);
     push_list(ast, vec![head, apply_field])
@@ -149,7 +159,7 @@ enum OpShape {
 /// is the operator's type — a compile-time type-lambda read generically by `infer`; `(meta apply)` is
 /// the reduction, read by `lower`. `shape` selects the type-lambda (integer-binary vs comparison).
 fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
-    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
     let lambda = match shape {
         OpShape::IntBinary => binop_type_lambda(ast),
         OpShape::Comparison => comparison_type_lambda(ast),
@@ -222,7 +232,7 @@ fn comparison_type_lambda(ast: &mut Arenas) -> StructId {
 /// `UInt64.max = 2^64-1` is exact); its arithmetic/conversion ops are `unrealized` (decline when
 /// projected). Nothing is special-cased per name — only the `(signed, width)` differs.
 fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
-    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta t)` = the type expression `(Int width)` / `(UInt width)`, reduced to the concrete
     // type-value by `typeval_of`. This is what makes the name usable as a TYPE.
     let ty_expr = {
@@ -308,7 +318,7 @@ fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let params = push_list(ast, vec![a_param]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic wrap)))`.
-    let rec_head = push_atom(ast, Leaf::Name("record".to_string()));
+    let rec_head = push_atom(ast, Leaf::Str("record".to_string()));
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, "wrap");
     let apply_field = meta_field(ast, "apply", prim);

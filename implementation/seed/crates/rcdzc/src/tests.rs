@@ -3352,6 +3352,53 @@ mod stage1 {
     }
 
     #[test]
+    fn a_binding_shadows_the_tuple_and_record_constructor_aliases() {
+        // `tuple`/`record` are SHADOWABLE prelude aliases for the symbol primitives `(,)`/`{}`. A local
+        // binding of the name wins in application-head position via the ordinary scope-first lookup —
+        // `(tuple 3 4)` applies the bound function (7), NOT the built-in tuple value. Earlier the
+        // structural grammar dispatch on the head name won over the binding (wrong value / spurious
+        // reject) — the head-vs-value resolution split #Binding Is Lexical forbids.
+        assert_eq!(run_main("(let ((tuple (fn (a b) (+ a b)))) (tuple 3 4))"), 7);
+        assert_eq!(run_main("(let ((record (fn (a b) (+ a b)))) (record 3 4))"), 7);
+        // A PARAMETER named `tuple` shadows it just the same (applies the argument function): 3*4 = 12.
+        assert_eq!(
+            run_main("((fn (tuple) (tuple 3 4)) (fn (a b) (* a b)))"),
+            12
+        );
+        // TYPE soundness: the shadowed result types at the binding's Int64 return, so `(+ … 1)` = 8
+        // (earlier CDZ0203 'cannot unify Int64 with (Tuple Int64 Int64)' — the type-level split).
+        assert_eq!(
+            run_main("(+ (let ((tuple (fn (a b) (+ a b)))) (tuple 3 4)) 1)"),
+            8
+        );
+    }
+
+    #[test]
+    fn the_unshadowed_tuple_and_record_aliases_build_the_compound() {
+        // With no shadowing binding, the alias names build the compound exactly as the string
+        // primitives do — a projection of a constant compound FOLDS to its element (no heap).
+        assert_eq!(run_main("(. (tuple 7 8) 0)"), 7);
+        assert_eq!(run_main("(. (record (x 1) (y 2)) y)"), 2);
+        // The STRING primitives are equivalent — a string head is unspellable as an identifier (so
+        // unshadowable) yet writable directly, and builds the same compound as the alias. ("The strings
+        // are the symbols.")
+        assert_eq!(run_main("(. (\"tuple\" 7 8) 1)"), 8);
+        assert_eq!(run_main("(. (\"record\" (x 1) (y 2)) x)"), 1);
+    }
+
+    #[test]
+    fn a_string_primitive_head_is_not_shadowable_by_a_same_named_binding() {
+        // The primitive is a STRING, the alias a NAME — distinct leaf kinds. So even when the NAME
+        // `tuple` is shadowed by a binding, the STRING primitive `"tuple"` still builds a tuple: the
+        // binding shadows the alias name, never the unspellable string. `(. ("tuple" 7 8) 0)` = 7 even
+        // under `(let ((tuple …)) …)`.
+        assert_eq!(
+            run_main("(let ((tuple (fn (a b) (+ a b)))) (. (\"tuple\" 7 8) 0))"),
+            7
+        );
+    }
+
+    #[test]
     fn an_unrealized_builtin_field_declines() {
         // `(. Int64 of)` — the field EXISTS (present as a poison), so projecting it declines "not yet
         // realized" rather than rejecting as absent. No open-module rule: it is filled with a poison.

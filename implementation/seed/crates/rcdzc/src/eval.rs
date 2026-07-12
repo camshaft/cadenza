@@ -827,6 +827,20 @@ pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::sync::Arc
             reduce_to_tuple_elems(db, elem)
         }
         Resolved::Annot { expr, .. } => reduce_to_tuple_elems(db, expr),
+        // A `(tuple a b)` written with the shadowable alias name — reduce the application to the
+        // symbol-headed primitive (`reduce_ctor` pins the arg scopes, then builds `((,) a b)`) and read
+        // its elements, so a constant tuple built via the alias folds exactly as one written `((,) a b)`
+        // does. Mirrors `reduce_to_record_id`'s `Apply` arm; run under the depth guard.
+        Resolved::Apply { head, args } => {
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let prim = meta_apply_of(g, head)?;
+            if prim.is_arith() {
+                return None;
+            }
+            let built = reduce_ctor(g, prim, &args).ok()?;
+            reduce_to_tuple_elems(g, built)
+        }
         _ => None,
     }
 }
@@ -938,6 +952,32 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
             let rec = crate::ty::Ty::Record(std::sync::Arc::new(fields));
             trace!(target: "rcdzc::eval", ty = %rec.render_name(), "ctor (Record): built record type-value");
             Ok(encode_typeval(db, &rec))
+        }
+        // The compound-VALUE constructors reached via the shadowable `tuple`/`record` alias names.
+        // Reduce the application to the STRING-HEADED primitive form — `(tuple a b)` → `("tuple" a b)`,
+        // `(record (x 1) …)` → `("record" (x 1) …)` — so it resolves to `Resolved::Tuple`/
+        // `Resolved::Record` and every downstream machinery (the compile-time-visible fold in
+        // `reduce_to_tuple_elems`/`reduce_to_record_id`, member projection, the host-escape walk,
+        // `type_of`, `lower`) treats it IDENTICALLY to a value written with the string primitive.
+        //
+        // ⚠ `push_list` RE-PARENTS the arg subtrees under the new head, which would orphan a field/
+        // element value like the runtime param `a` in `(record (x a) …)` from its lexical scope (a
+        // spurious unbound name — the re-parenting hazard `apply_lambda` documents). So PIN each arg's
+        // resolution first (`resolve_subtree` memoizes every node against its CURRENT scope), exactly as
+        // β-reduction pins a call argument before splicing it; the later re-parent then cannot change
+        // how any node inside an arg resolves.
+        Prim::TupleNew | Prim::RecordNew => {
+            for &a in args {
+                crate::resolve::resolve_subtree(db, a);
+            }
+            let head = db.push_str(if matches!(prim, Prim::TupleNew) {
+                "tuple"
+            } else {
+                "record"
+            });
+            let mut children = vec![head];
+            children.extend_from_slice(args);
+            Ok(db.push_list(children))
         }
         _ => Err("not a type constructor".to_string()),
     }
@@ -1174,7 +1214,10 @@ pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
     // the shared `wrap` intrinsic.
     fields.push(wrap_field(db, signed, width));
 
-    let head = db.push_name("record");
+    // The record PRIMITIVE head is the STRING `"record"` (the ordinary NAME `record` is a shadowable
+    // prelude alias). A compiler-synthesized module record builds directly with the string head so it
+    // resolves structurally to `Resolved::Record`, independent of any user binding of the name `record`.
+    let head = db.push_str("record");
     let mut children = vec![head];
     children.append(&mut fields);
     db.push_list(children)
@@ -1204,8 +1247,9 @@ fn wrap_field(db: &mut Db, signed: bool, width: u32) -> StructId {
     let a_param = db.push_name("a");
     let params = db.push_list(vec![a_param]);
     let lambda = db.push_list(vec![fn_head, params, body]);
-    // `(record ((meta t) lambda) ((meta apply) (intrinsic wrap)))`.
-    let rec_head = db.push_name("record");
+    // `("record" ((meta t) lambda) ((meta apply) (intrinsic wrap)))` — the record primitive is the
+    // string head `"record"`.
+    let rec_head = db.push_str("record");
     let t_field = meta_field(db, "t", lambda);
     let prim = intrinsic_node(db, "wrap");
     let apply_field = meta_field(db, "apply", prim);

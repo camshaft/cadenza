@@ -176,10 +176,32 @@ impl Arenas {
         }
     }
 
+    /// The contents of a string-literal `Atom`, if `id` is one.
+    pub fn as_str(&self, id: StructId) -> Option<&str> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Str(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The head name of a `List` occurrence, if its first child is an `Atom(Name)`.
     pub fn head_name(&self, id: StructId) -> Option<&str> {
         match self.get(id) {
             Struct::List(items) => items.first().and_then(|&h| self.as_name(h)),
+            _ => None,
+        }
+    }
+
+    /// The head STRING-LITERAL of a `List` occurrence, if its first child is an `Atom(Str)` — the
+    /// compound-value CONSTRUCTOR primitive spelling (`"list"`/`"tuple"`/`"record"`/`"map"`). A string
+    /// head is the unshadowable primitive a surface literal desugars to; the pretty-printer round-trips
+    /// it back to the literal, distinct from a NAME head of the same spelling (an ordinary application).
+    pub fn head_ctor(&self, id: StructId) -> Option<&str> {
+        match self.get(id) {
+            Struct::List(items) => items.first().and_then(|&h| self.as_str(h)),
             _ => None,
         }
     }
@@ -189,6 +211,17 @@ impl Arenas {
         match self.get(id) {
             Struct::List(items) => match items.first() {
                 Some(&h) if self.as_name(h) == Some(head) => Some(&items[1..]),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// If `id` is a `List` headed by the STRING-LITERAL `head` (a constructor primitive), the tail.
+    pub fn as_ctor_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
+        match self.get(id) {
+            Struct::List(items) => match items.first() {
+                Some(&h) if self.as_str(h) == Some(head) => Some(&items[1..]),
                 _ => None,
             },
             _ => None,

@@ -634,6 +634,32 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return type_of(db, head);
     }
+    // The compound-VALUE constructors reached via the `tuple`/`record` alias names build a compound
+    // whose type is VARIADIC in the arguments — a tuple of the arg types, or a record of the field
+    // types — so it cannot be expressed as a fixed `(meta t)` scheme (unlike a sum variant's arrow).
+    // Type them the same way the symbol-headed `Resolved::Tuple`/`Record` forms are typed, so the
+    // name-alias application and the symbol primitive agree on the value's type.
+    match crate::eval::meta_apply_of(db, head) {
+        Some(crate::resolved::Prim::TupleNew) => {
+            return Ty::Tuple(args.iter().map(|&e| type_of(db, e)).collect());
+        }
+        Some(crate::resolved::Prim::RecordNew) => {
+            // Each arg is a `(key value)` pair; the record type is the field-name → value-type map.
+            return match crate::resolve::read_record_fields(db, args) {
+                Ok(fields) => {
+                    let mut field_tys = std::collections::BTreeMap::new();
+                    for (label, &value) in fields.iter() {
+                        field_tys.insert(label.clone(), type_of(db, value));
+                    }
+                    Ty::Record(std::sync::Arc::new(field_tys))
+                }
+                // A malformed field list has no well-formed record type — `Any` here; the fault is
+                // reported by `type_errors` (which lowers the form and surfaces the poison).
+                Err(_) => Ty::Any,
+            };
+        }
+        _ => {}
+    }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
@@ -1019,8 +1045,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // Descend into the HEAD (an unbound head like `frobnicate` is a scope error caught here)
             // and each operand for their own faults.
             collect(db, head, out);
-            for &arg in &args {
-                collect(db, arg, out);
+            // A RECORD value-constructor alias applied — `(record (x 1) (y 2))`. Its arguments are
+            // `(key value)` FIELD PAIRS, not expressions, so descending into a pair as an expression
+            // would resolve the key `x` as an unbound name. Instead validate the field shape (a
+            // malformed pair / duplicate field is CDZ0201) and descend into each field's VALUE only —
+            // exactly what the symbol-headed `({} …)` form does via `resolve_record`.
+            if matches!(crate::eval::meta_apply_of(db, head), Some(crate::resolved::Prim::RecordNew)) {
+                match crate::resolve::read_record_fields(db, &args) {
+                    Ok(fields) => {
+                        for (_, &value) in fields.iter() {
+                            collect(db, value, out);
+                        }
+                    }
+                    Err(reject) => out.push(reject),
+                }
+            } else {
+                for &arg in &args {
+                    collect(db, arg, out);
+                }
             }
         }
         // A type annotation `(: expr T)`: UNIFY the asserted type `T` against `expr`'s type. A failure

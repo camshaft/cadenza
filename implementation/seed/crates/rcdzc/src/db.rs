@@ -534,6 +534,12 @@ impl Db {
         self.push_atom(Leaf::Name(name.to_string()))
     }
 
+    /// Append an `Atom` of a STRING literal. A synthesized primitive-constructor head (`"tuple"`/
+    /// `"record"`) is a string, not a name — unspellable as an identifier, so unshadowable.
+    pub fn push_str(&mut self, s: &str) -> StructId {
+        self.push_atom(Leaf::Str(s.to_string()))
+    }
+
     /// The definition of the given name, if one exists — how an export resolves its target and how a
     /// later call resolves its callee (by name against the index, reading a signature, not a body).
     /// O(1) via the `def_name_index` map (built at load). `resolve_name` calls this for every non-local

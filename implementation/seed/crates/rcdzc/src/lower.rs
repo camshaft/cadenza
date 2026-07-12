@@ -306,8 +306,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: sum variant constructor");
                     lower_sum_new(db, head, &args)
                 }
+                // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
+                // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
+                // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
+                // `(record …)` → `({} …)`). Lowering the reduced node then goes through the ORDINARY
+                // `Resolved::Tuple`/`Record` path — so a constant compound FOLDS (a projection reads the
+                // element with no heap) exactly as a symbol-written one does, with no value-ctor special
+                // case here. (A type constructor like `(Int 64)` reduces to its module the same way.)
                 Some(prim) => {
-                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: type-constructor prim");
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: constructor prim");
                     match crate::eval::reduce_ctor(db, prim, &args) {
                         Ok(built) => core_of(db, built),
                         Err(msg) => {
@@ -1593,7 +1600,9 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::BoolTy
         | Prim::UnitTy
         | Prim::SumNew
-        | Prim::SumCtor => {
+        | Prim::SumCtor
+        | Prim::TupleNew
+        | Prim::RecordNew => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -1814,6 +1823,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitTy => "Unit",
         Prim::SumNew => "sum-new",
         Prim::SumCtor => "sum-ctor",
+        Prim::TupleNew => "tuple-new",
+        Prim::RecordNew => "record-new",
     }
 }
 

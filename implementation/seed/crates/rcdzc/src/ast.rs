@@ -424,6 +424,17 @@ impl Arenas {
         }
     }
 
+    /// If `id` is an `Atom` of a string literal, its contents.
+    pub fn as_str(&self, id: StructId) -> Option<&str> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Str(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The head name of a `List` occurrence, if its first child is an `Atom(Name)`.
     pub fn head_name(&self, id: StructId) -> Option<&str> {
         match self.get(id) {
@@ -432,11 +443,37 @@ impl Arenas {
         }
     }
 
-    /// If `id` is a `List` headed by the name `head`, the tail (the argument occurrences).
+    /// The head STRING-LITERAL of a `List` occurrence, if its first child is an `Atom(Str)`. A string
+    /// in head position is a PRIMITIVE CONSTRUCTOR spelling — `("tuple" …)`, `("record" …)` — the
+    /// unshadowable counterpart of the shadowable NAME head (`head_name`). A string is unspellable as an
+    /// identifier, so a primitive named by one can never be shadowed by a binding; the ordinary names
+    /// `tuple`/`record` are prelude ALIASES to these primitives (see `resolve`). This is why the two
+    /// accessors are distinct: the resolver dispatches a string head structurally, but looks a name head
+    /// up (so a bound `tuple` wins). ("The strings are the symbols" — no invented sigils.)
+    pub fn head_ctor(&self, id: StructId) -> Option<&str> {
+        match self.get(id) {
+            Struct::List(items) => items.first().and_then(|&h| self.as_str(h)),
+            _ => None,
+        }
+    }
+
+    /// If `id` is a `List` headed by the NAME `head`, the tail (the argument occurrences).
     pub fn as_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
         match self.get(id) {
             Struct::List(items) => match items.first() {
                 Some(&h) if self.as_name(h) == Some(head) => Some(&items[1..]),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// If `id` is a `List` headed by the STRING-LITERAL `head` (a primitive constructor spelling like
+    /// `"tuple"`/`"record"`), the tail (the argument occurrences). The string-head twin of [`as_form`].
+    pub fn as_ctor_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
+        match self.get(id) {
+            Struct::List(items) => match items.first() {
+                Some(&h) if self.as_str(h) == Some(head) => Some(&items[1..]),
                 _ => None,
             },
             _ => None,

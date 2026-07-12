@@ -141,6 +141,54 @@
   (input  (let ((list (fn (a b) (+ a b)))) (list 3 4)))
   (output (: 7 Int64)))
 
+; The SAME head-position shadowing holds for `tuple` and `record` — the compound-VALUE constructors.
+; They are ordinary shadowable names bound in the prelude (aliases for the primitive symbol
+; constructors `(,)` and `{}`, which a program cannot spell), so a `let`/`def`/parameter binding of
+; `tuple`/`record` shadows the built-in exactly as one of `list` does: `(tuple 3 4)` in the binding's
+; scope applies the bound function, yielding 7 — NOT the built-in tuple value `(tuple 3 4)`. A compiler
+; that dispatches a `tuple`/`record` head STRUCTURALLY (matching the head name before consulting the
+; environment) resolves the name two ways by syntactic position — the built-in in head position, the
+; binding in value position — which #Binding Is Lexical forbids. (core-semantics.md §A Compound Value
+; Has A Symbol Constructor And A Shadowable Alias: the name is looked up like any other; the primitive
+; is the symbol.)
+
+(case "a let binding shadows the tuple constructor in application-head position"
+  (doc    "The `tuple` sibling of the recorded `list` head-position shadow: `(let ((tuple (fn (a b) (+ a
+           b)))) (tuple 3 4))` applies the nearest binding, yielding 7 — not the built-in tuple value
+           `(tuple 3 4)`. `tuple` is a shadowable prelude alias for the primitive symbol constructor
+           `(,)`, so a binding named `tuple` shadows it; head-position resolution consults the lexical
+           environment first. Earlier the seed answered `(tuple 3 4)` — the structural grammar dispatch
+           on the head name won over the binding (a wrong value, the one-name-two-resolutions bug).")
+  (input  (do (def (main) (let ((tuple (fn (a b) (+ a b)))) (tuple 3 4))) (export main)))
+  (output (: 7 Int64)))
+
+(case "a let binding shadows the record constructor in application-head position"
+  (doc    "The `record` sibling: `(let ((record (fn (a b) (+ a b)))) (record 3 4))` applies the bound
+           function in its scope, yielding 7 — `record` is a shadowable prelude alias for the primitive
+           symbol constructor `{}`. Earlier the seed instead REJECTED with CDZ0201 'record field must be
+           (key value)' — the built-in record form's shape check fired on an application of a lexically
+           bound function: a spurious rejection of a well-typed program, the same head-vs-value split.")
+  (input  (do (def (main) (let ((record (fn (a b) (+ a b)))) (record 3 4))) (export main)))
+  (output (: 7 Int64)))
+
+(case "a parameter named tuple is applied as the bound function"
+  (doc    "The parameter companion: `(def (f tuple) (tuple 3 4))` — the formal `tuple` is the nearest
+           binding, so applying it calls the argument function. `(f (fn (a b) (* a b)))` = 12. Pins that
+           a parameter shadows the `tuple` alias exactly as a `let` binding does — the name resolves to
+           the parameter in head position, not the built-in constructor.")
+  (input  (do (def (f tuple) (tuple 3 4)) (def (main) (f (fn (a b) (* a b)))) (export main)))
+  (output (: 12 Int64)))
+
+(case "a shadowed-constructor application types at the binding's return type"
+  (doc    "The head-position misresolution was a TYPE-soundness bug too: the shadowing binding returns
+           Int64, so `(+ (let ((tuple (fn (a b) (+ a b)))) (tuple 3 4)) 1)` = (3+4)+1 = 8. Earlier the
+           seed REJECTED with CDZ0203 'cannot unify Int64 with (Tuple Int64 Int64)' — inference resolved
+           the head to the built-in tuple constructor, typing the application as a Tuple, so the outer
+           `+ … 1` failed to unify. Resolving the head to the lexical binding fixes the value AND the
+           type: the same name no longer has two types by syntactic position.")
+  (input  (do (def (main) (+ (let ((tuple (fn (a b) (+ a b)))) (tuple 3 4)) 1)) (export main)))
+  (output (: 8 Int64)))
+
 ; --- The bindings of one `let` take effect in order (let*, not parallel) --------------------
 ; core-semantics.md #The Bindings Of One `let` Take Effect In Order: each binding's initializer sees
 ; the bindings written before it in the SAME let, so `(let ((x 1) (y (+ x 1))) y)` is 2 — `y`'s

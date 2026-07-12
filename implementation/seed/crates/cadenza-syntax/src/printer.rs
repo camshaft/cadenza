@@ -95,6 +95,20 @@ impl<'a> Printer<'a> {
             self.doc.word("#[]");
             return;
         }
+        // A compound-value CONSTRUCTOR primitive is a STRING head — render it back to its surface
+        // literal (`("list" …)` → `[…]`, `("tuple" …)` → `(a, b)`, `("record" …)` → `{…}`, `("map" …)`
+        // → `#{…}`), the round-trip inverse of the reader's literal desugar. Checked before the
+        // name-head dispatch: the string primitive is unshadowable and never an operator/keyword.
+        if let Some(ctor) = self.head_ctor(items[0]) {
+            let args = &items[1..];
+            match ctor.as_str() {
+                "list" => return self.print_list_literal(args),
+                "tuple" if !args.is_empty() => return self.print_tuple(args),
+                "record" if self.is_record_shape(args) => return self.print_record(args),
+                "map" if self.is_map_shape(args) => return self.print_map(args),
+                _ => {}
+            }
+        }
         // A head that is an Atom(Name) may name a construct or an operator; otherwise it is a
         // computed-callee application.
         let head = self.head_name(items[0]);
@@ -141,10 +155,9 @@ impl<'a> Printer<'a> {
                 "do" if !args.is_empty() => return self.print_do(args),
                 "type" if self.is_type_shape(args) => return self.print_type(args),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
-                "list" => return self.print_list_literal(args),
-                "tuple" if !args.is_empty() => return self.print_tuple(args),
-                "record" if self.is_record_shape(args) => return self.print_record(args),
-                "map" if self.is_map_shape(args) => return self.print_map(args),
+                // The compound-value literals (`list`/`tuple`/`record`/`map`) are STRING-headed now and
+                // handled by the `head_ctor` dispatch above — a NAME head of the same spelling is an
+                // ordinary application of the shadowable alias (or a user binding), rendered as a call.
                 // A `(comment "text" node)` wraps a node in ANY position, so render it as `// text`
                 // above the node wherever it appears. A `(doc …)`, by contrast, is only a `///`
                 // line in a def/module BODY position (handled by print_def/print_module); a stray
@@ -550,16 +563,23 @@ impl<'a> Printer<'a> {
     /// the plain-expression path — inline when they fit, else a flat-laid-out indented continuation.
     fn is_block_body(&self, id: StructId) -> bool {
         let (head, args) = match self.a.get(id) {
-            Struct::List(items) if !items.is_empty() => (self.head_name(items[0]), &items[1..]),
+            Struct::List(items) if !items.is_empty() => (items[0], &items[1..]),
             _ => return false,
         };
-        match head.as_deref() {
+        // The compound-value literals are STRING-headed primitives (`("record" …)` etc.) — a body that
+        // renders as a `{…}`/`[…]`/`(a,b)`/`#{…}` literal hugs the `=`. Recognized by the string head.
+        if let Some(ctor) = self.a.as_str(head) {
+            return match ctor {
+                "list" => true,
+                "tuple" => args.len() >= 2,
+                "record" => self.is_record_shape(args),
+                "map" => self.is_map_shape(args),
+                _ => false,
+            };
+        }
+        match self.a.as_name(head) {
             Some("match") => self.is_match_shape(args),
             Some("module") => self.is_module_shape(args),
-            Some("list") => true,
-            Some("tuple") => args.len() >= 2,
-            Some("record") => self.is_record_shape(args),
-            Some("map") => self.is_map_shape(args),
             _ => false,
         }
     }
@@ -955,6 +975,20 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// The head STRING-LITERAL of a `List` occurrence, if its first child is an `Atom(Str)` — the
+    /// compound-value CONSTRUCTOR primitive (`("list" …)`/`("tuple" …)`/`("record" …)`/`("map" …)`).
+    /// The reader desugars a `[…]`/`(a,b)`/`{…}`/`#{…}` literal to a string-headed form (unshadowable);
+    /// the printer round-trips it BACK to the literal by recognizing this string head.
+    fn head_ctor(&self, id: StructId) -> Option<String> {
+        match self.a.get(id) {
+            Struct::Atom(l) => match self.a.leaf(*l) {
+                Leaf::Str(s) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// If `id` is an `Atom(Name)` that is a plain member key (alpha/underscore start, no dots), that
     /// name — so `(. a b)` prints as `a.b` but a dotted/odd key falls back to the call form.
     fn plain_key(&self, id: StructId) -> Option<String> {
@@ -1326,9 +1360,11 @@ mod tests {
 
     #[test]
     fn empty_literals() {
-        // Empty list and map from the s-expr surface (`(list)`, `(map)`) render as `[]` / `#{}`.
-        assert_eq!(print(&sexpr::read("(list)").unwrap(), 80), "[]");
-        assert_eq!(print(&sexpr::read("(map)").unwrap(), 80), "#{}");
+        // Empty list and map from the s-expr surface render as `[]` / `#{}`. The compound-value
+        // constructor primitive is a STRING head (`("list")`, `("map")`), not a name — a bare `(list)`
+        // name head is an ordinary application, so the literal round-trip uses the string form.
+        assert_eq!(print(&sexpr::read("(\"list\")").unwrap(), 80), "[]");
+        assert_eq!(print(&sexpr::read("(\"map\")").unwrap(), 80), "#{}");
     }
 
     #[test]

@@ -162,6 +162,15 @@ impl<'a> Parser<'a> {
         self.atom(Leaf::Name(name.into()), span)
     }
 
+    /// An `Atom` of a STRING literal with source `span` — used as the HEAD of a compound-value literal
+    /// so it desugars to the primitive CONSTRUCTOR (`[1 2]` → `("list" 1 2)`, `(a, b)` → `("tuple" a
+    /// b)`). A string head is the unshadowable primitive: unlike a NAME head (`(list …)`), it is not a
+    /// name a binding could shadow, so a literal always builds the compound even where the alias name
+    /// `list`/`tuple`/`record`/`map` is rebound. ("The strings are the symbols.")
+    fn ctor_head(&mut self, name: &str, span: Span) -> StructId {
+        self.atom(Leaf::Str(name.to_string()), span)
+    }
+
     // ---- token cursor ----
 
     fn tok(&self) -> Option<Token> {
@@ -612,8 +621,10 @@ impl<'a> Parser<'a> {
         }
         let first = self.expr(0);
         if self.at(Kind::Comma) {
-            // a tuple: gather the rest, recovering from a missing `,` between elements.
-            let head = self.name("tuple", start);
+            // a tuple: gather the rest, recovering from a missing `,` between elements. The head is the
+            // STRING primitive `"tuple"` (not the name), so the literal builds the unshadowable tuple
+            // constructor even where the name `tuple` is rebound.
+            let head = self.ctor_head("tuple", start);
             let mut items = vec![head, first];
             while self.sep_continue(Kind::RParen) {
                 items.push(self.expr(0));
@@ -1080,10 +1091,11 @@ impl<'a> Parser<'a> {
         self.list(vec![head, inner], span)
     }
 
-    /// `[ e, … ]`  ->  `(list e …)`. A homogeneous sequence literal.
+    /// `[ e, … ]`  ->  `("list" e …)`. A homogeneous sequence literal — head is the STRING primitive
+    /// so the literal builds the unshadowable list constructor (a rebound name `list` cannot capture it).
     fn list_literal(&mut self) -> StructId {
         let start = self.cur_span();
-        let head = self.name("list", start);
+        let head = self.ctor_head("list", start);
         self.bump(); // '['
         let mut items = vec![head];
         if !self.at(Kind::RBracket) {
@@ -1103,10 +1115,11 @@ impl<'a> Parser<'a> {
         self.list(items, span)
     }
 
-    /// `{ name = e, … }`  ->  `(record (name e) …)`. Fixed named fields (distinct from a map).
+    /// `{ name = e, … }`  ->  `("record" (name e) …)`. Fixed named fields (distinct from a map); head is
+    /// the STRING primitive so the literal builds the unshadowable record constructor.
     fn record_literal(&mut self) -> StructId {
         let start = self.cur_span();
-        let head = self.name("record", start);
+        let head = self.ctor_head("record", start);
         self.bump(); // '{'
         let mut items = vec![head];
         if !self.at(Kind::RBrace) {
@@ -1137,7 +1150,7 @@ impl<'a> Parser<'a> {
     /// never infix; equality is `==`.)
     fn map_literal(&mut self) -> StructId {
         let start = self.cur_span();
-        let head = self.name("map", start);
+        let head = self.ctor_head("map", start);
         self.bump(); // '#'
         self.bump(); // '{'
         let mut items = vec![head];
@@ -1517,11 +1530,12 @@ mod tests {
 
     #[test]
     fn missing_comma_in_list_recovers() {
-        // `[1 2 3]` — every element is recovered, with one missing-`,` error per gap.
+        // `[1 2 3]` — every element is recovered, with one missing-`,` error per gap. The literal
+        // desugars to the STRING-headed primitive `("list" 1 2 3)`, so read the tail via `as_ctor_form`.
         let p = read_ml("[1 2 3]");
         assert!(!p.ok());
         let a = &p.arenas;
-        let list = a.as_form(a.root, "list").unwrap();
+        let list = a.as_ctor_form(a.root, "list").unwrap();
         assert_eq!(list.len(), 3, "all three elements recovered: {list:?}");
     }
 

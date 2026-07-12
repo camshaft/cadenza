@@ -230,6 +230,12 @@ Applying a built-in operation value to arguments MUST produce the same result th
 
 A built-in operation value used other than by application — bound to a name, stored in a data structure, compared, or partially applied — has no outcome fixed by this document beyond that it MUST NOT produce a wrong result: a compiler that does not realize such a use MUST decline to compile the program rather than emit code that computes an incorrect value. This preserves *reject-don't-miscompile* while leaving the first-class treatment of a built-in operation value (storage, partial application) to be specified as it is realized.
 
+### A Compound Value Has A Symbol Constructor And A Shadowable Alias
+
+A compound value — a tuple, a record — MUST have a **primitive constructor named by a string literal** in head position: a tuple is constructed by `("tuple" …)` and a record by `("record" …)`. A string literal is not something a name binding can introduce (a binding introduces an identifier, never a string), so the primitive constructor MUST NOT be shadowable, and the language recognizes the string-headed form structurally. The string spelling IS the reserved symbol — no distinct sigil is introduced, and the surface reader needs no dedicated literal syntax to write one.
+
+Each such primitive MUST ALSO be reachable through an ordinary **alias name** — `tuple` for `("tuple" …)`, `record` for `("record" …)` — bound in the prelude exactly as any other built-in name, and therefore subject to *Binding Is Lexical* and *A Built-In Module Is A Record Of Its Operations*: a reference to the alias MUST resolve to the nearest enclosing binding of that name. Consequently a program binding named `tuple` or `record` (by `let`, a definition, or a parameter) MUST shadow the built-in alias for the extent of its scope — an application `(tuple a b)` in that scope MUST apply the bound value, not construct a tuple — precisely as a binding named `list` shadows the list constructor. The alias name MUST resolve identically in application-head position and in value position: the language MUST NOT recognize the alias name as the built-in constructor in a position a program-defined name would not be, so that one name never resolves two ways by syntactic position (the resolution split *Binding Is Lexical* forbids). Only the string-named primitive is beyond shadowing (a name binding cannot spell it); the alias is an ordinary name.
+
 ## Failure And Termination
 
 ### A Program That Terminates Ends In One Of Two Terminal Conditions

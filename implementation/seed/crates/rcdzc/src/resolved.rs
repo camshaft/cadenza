@@ -132,6 +132,17 @@ pub enum Prim {
     /// discriminant), so `Option`/`Result`/… need no per-type prim — the same "type constructor's
     /// `(meta apply)` builds a type" model as `Int`/`Tuple`/`->`.
     SumCtor,
+    /// A TUPLE VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `tuple` alias. Applying it (`(tuple
+    /// 1 2)` written with the shadowable name) builds the tuple value, exactly as the STRING-head
+    /// primitive `("tuple" 1 2)` does: it lowers to `Core::Tuple{elems=args}` and types as `Ty::Tuple(elem
+    /// types)`. VARIADIC over its elements — its type is the tuple of the argument types, so (unlike a
+    /// sum variant's fixed arrow) it needs its own `apply_type` arm rather than a `(meta t)` scheme.
+    TupleNew,
+    /// A RECORD VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `record` alias. Applying it
+    /// (`(record (x 1) (y 2))`) builds the record value, exactly as the STRING-head primitive `("record"
+    /// (x 1) (y 2))` does: each argument is a `(key value)` pair. VARIADIC over its fields; the record
+    /// companion of `TupleNew`.
+    RecordNew,
 }
 
 impl Prim {
@@ -165,6 +176,8 @@ impl Prim {
             "Unit" => Some(Prim::UnitTy),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
+            "tuple-new" => Some(Prim::TupleNew),
+            "record-new" => Some(Prim::RecordNew),
             _ => None,
         }
     }

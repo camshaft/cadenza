@@ -123,7 +123,7 @@ fn type_form(ast: &mut Arenas, name: &str, variants: &[(&str, &[&str])]) -> Stru
 /// `Ty::Sum { decl, args: [Int64] }` — the same "a type ctor's `(meta apply)` builds a type" model as
 /// `Int`/`Tuple`. A monomorphic sum needs no `(meta apply)` (it is never applied in type position).
 fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
-    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
     let mut children = vec![head];
 
     // `(meta t)` — the sum type-value, so `Option` used in type position reduces to `Ty::Sum` (with no
@@ -174,7 +174,8 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
 ///    per-variant prim). The owning sum + payload arity are recovered from the ctor's `(meta t)`, so
 ///    the discriminant is all this channel needs.
 fn variant_ctor(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant, disc: u32) -> StructId {
-    let head = push_atom(ast, Leaf::Name("record".to_string()));
+    // The record PRIMITIVE head is the STRING `"record"` (the NAME `record` is a shadowable alias).
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
     let ctor_ty = ctor_type_scheme(ast, decl, variant);
     let t_field = meta_field(ast, "t", ctor_ty);
     // `(meta apply)` = the shared sum-new intrinsic.
