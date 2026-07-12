@@ -42,6 +42,36 @@ use crate::layout::Layout;
 /// Emit a WebAssembly component for the program in `db` under the boundary `layout`. Selects each
 /// definition in the layout's emission order, serializes the core module, and assembles the envelope.
 pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
+    // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
+    // nullary export returning a COMPOUND crosses as a component-model resource whose `encode() ->
+    // list<u8>` yields the canonical binary value form. For a fully-CONSTANT compound (R1) the value is
+    // known at compile time, so its bytes are baked into the resource core module (no runtime heap
+    // construction, no selection of a compound-returning body — which would decline at `select`) and the
+    // whole component takes the resource shape, a different envelope than the multi-export boundary. A
+    // RUNTIME compound (elements computed at run time) is R2 (the real handle-walking encoder); it falls
+    // through to the normal path and still declines at `export_result`. Routes ONLY the constant
+    // single-export case for now.
+    if let [e] = &layout.exports[..]
+        && e.params.is_empty()
+        && matches!(e.result, crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_))
+    {
+        let body = def_body(db, e.def)?;
+        if let Some(value_bytes) = crate::lower::constant_value_form(db, body) {
+            let main_core = serialize::resource_core_module(&value_bytes);
+            let dtor_core = serialize::resource_dtor_module();
+            return Ok(envelope::assemble_resource(&main_core, &dtor_core));
+        }
+        // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is built on
+        // the heap) crosses through the SAME resource shape, but its `encode()` WALKS the live handle
+        // rather than baking constant bytes (R2). Build the value-form TEMPLATE for the result type; if
+        // it has one, route through `assemble_runtime_resource` (the combined runtime-import + resource
+        // envelope). `None` (a compound with a non-value-form element — a function/type) falls through to
+        // decline at `export_result` below.
+        if let Some(tpl) = crate::lower::runtime_value_form_template(&e.result) {
+            return emit_runtime_resource(db, layout, e.def, &tpl);
+        }
+    }
+
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
     // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
     // resolves to. Walk every reachable body's core for the value-heap ops it will emit
@@ -124,6 +154,98 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // ABI-agnostic; the ABI identity lives in the generated `runtime_abi` table.
     let import_name = runtime_import_name();
     Ok(envelope::assemble(&core, &boundary, &imports, &import_name))
+}
+
+/// Emit the COMBINED runtime-import + resource escape component (R2) for a single nullary export
+/// returning a RUNTIME compound. The compound is built on the value heap by the export body, crosses as
+/// a monomorphized resource, and its `encode()` WALKS the live handle to produce the canonical value
+/// bytes (`tpl` — the value-form template for the result type). Unlike the constant escape (which bakes
+/// the bytes), this emits the real program bodies + threads BOTH the runtime ops AND the resource
+/// `new`/`rep` intrinsics ([[rcdzc-r1-resource-encode-linking-findings]] R2).
+///
+/// The used-op set fixes the import layout, so it is computed first and MUST include the ops the
+/// synthesized `t-encode` walker calls (`arr-get` for any nested path, `get-int`/`get-bool` per leaf) —
+/// those never appear in the reachable bodies (the export only CONSTRUCTS), so the template's holes add
+/// them. `import_base` is `k + 2` (the `k` ops + `resource-new` + `resource-rep`), which shifts every
+/// defined `Lir::Call` past the imports.
+fn emit_runtime_resource(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+    tpl: &crate::lower::ValueFormTemplate,
+) -> Result<Vec<u8>, Reject> {
+    // Ops the reachable bodies emit (construction: arr-alloc/arr-set/box-*), PLUS the ops the walker
+    // `t-encode` calls (arr-get + get-int/get-bool per template leaf). The walker ops are added here
+    // because they appear only in the synthesized encode body, not in any reachable Core.
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    // The walker's ops: `arr-get` to descend a nested path, and per leaf its `get-*` accessor.
+    if tpl.leaves.iter().any(|l| !l.path.is_empty()) {
+        used.insert("arr-get");
+    }
+    for leaf in &tpl.leaves {
+        match leaf.kind {
+            crate::lower::LeafFill::Int => used.insert("get-int"),
+            crate::lower::LeafFill::Bool => used.insert("get-bool"),
+        };
+    }
+    // The resource DTOR calls `drop` to release the escaped compound's rc handle on host-drop (or when
+    // `encode` consumes the `own<t>`). `drop` appears only in the synthesized dtor, never in a reachable
+    // Core, so add it here — it becomes one of the lowered ops, and the envelope threads it into the
+    // separate `heap-dtor` instance the dtor imports.
+    used.insert("drop");
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+
+    // Defined funcs' absolute indices are shifted past the `k` ops + the two resource intrinsics
+    // (`resource-new`, `resource-rep`), so `import_base = k + 2`.
+    let k = imports.len() as u32;
+    let layout = Layout {
+        import_base: k + 2,
+        ..layout.clone()
+    };
+    let layout = &layout;
+
+    // Select every reachable body (the export + its call-graph). The export body returns the compound's
+    // heap handle (a `Ty::Tuple`/`Record` selects to an i32 handle — `valtype_of`), so it selects fine;
+    // `make` will call it then `resource.new`.
+    let mut funcs: Vec<SelectedFunc> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        let params = match layout.exports.iter().find(|e| e.def == def) {
+            Some(e) => e.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        funcs.push(select_function(db, body, &params, layout)?);
+    }
+
+    // The escaping export's absolute core-func index — `make` calls it to build the compound.
+    let export_abs = layout
+        .abs(export_def)
+        .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
+
+    let main_core = serialize::runtime_resource_core_module(&funcs, &imports, export_abs, tpl)
+        .map_err(Reject::decline)?;
+    // The RUNTIME escape uses the drop-calling dtor (releases the live rc handle), NOT the constant-path
+    // stub — its handle is a genuine heap allocation the host must reclaim.
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble_runtime_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+    ))
 }
 
 /// The program's runtime import name: the interface (`cadenza:runtime/heap`) pinned to the semver
@@ -299,5 +421,13 @@ mod wasm_abi_tests {
             ComponentSectionId::CanonicalFunction as u8
         );
         assert_eq!(wasm_abi::COMP_SEC_EXPORT, ComponentSectionId::Export as u8);
+        assert_eq!(
+            wasm_abi::COMP_SEC_COMPONENT,
+            ComponentSectionId::Component as u8
+        );
+        assert_eq!(
+            wasm_abi::COMP_SEC_INSTANCE,
+            ComponentSectionId::Instance as u8
+        );
     }
 }

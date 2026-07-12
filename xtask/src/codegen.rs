@@ -699,6 +699,11 @@ mod wasm_abi {
                 SectionId::Start,
             ),
             core_sec("CORE_SEC_CODE", "core CODE section id.", SectionId::Code),
+            core_sec(
+                "CORE_SEC_DATA",
+                "core DATA section id (an active segment initializing linear memory — the constant value form + return area of a resource escape).",
+                SectionId::Data,
+            ),
             comp_sec(
                 "COMP_SEC_CORE_MODULE",
                 "component CORE-MODULE section id.",
@@ -734,10 +739,25 @@ mod wasm_abi {
                 "component EXPORT section id.",
                 ComponentSectionId::Export,
             ),
+            comp_sec(
+                "COMP_SEC_COMPONENT",
+                "component COMPONENT section id (a nested component definition).",
+                ComponentSectionId::Component,
+            ),
+            comp_sec(
+                "COMP_SEC_INSTANCE",
+                "component INSTANCE section id (instantiate a component).",
+                ComponentSectionId::Instance,
+            ),
             Single {
                 ident: "EXPORT_KIND_FUNC",
                 byte: one_byte("export kind func", ExportKind::Func),
                 doc: "core export kind `func` — the export-descriptor byte for a function export.",
+            },
+            Single {
+                ident: "EXPORT_KIND_MEMORY",
+                byte: one_byte("export kind memory", ExportKind::Memory),
+                doc: "core export kind `memory` — the export-descriptor byte for a memory export (the resource escape's `memory`).",
             },
             Single {
                 ident: "CORE_FUNCTYPE_FORM",

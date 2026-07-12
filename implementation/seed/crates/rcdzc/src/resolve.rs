@@ -597,6 +597,23 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             }
             Some(Ty::Tuple(elems))
         }
+        // A record type-value: `(Record (name T)…)` — each `(name T)` a field pair. The head is
+        // capitalized `Record` (the TYPE; the VALUE head is lowercase `record`), matching `encode_ty`
+        // and the corpus type surface. The field-name SET + per-field types ARE the type.
+        "Record" => {
+            let tail = db.ast.as_form(node, "Record")?;
+            let mut fields = std::collections::BTreeMap::new();
+            for &pair in tail {
+                let items = match db.ast.get(pair) {
+                    Struct::List(items) if items.len() == 2 => items,
+                    _ => return None,
+                };
+                let name = db.ast.as_name(items[0])?.to_string();
+                let t = decode_ty(db, items[1])?;
+                fields.insert(crate::resolved::Symbol::plain(name), t);
+            }
+            Some(Ty::Record(fields))
+        }
         _ => None,
     }
 }

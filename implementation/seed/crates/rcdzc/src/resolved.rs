@@ -108,6 +108,11 @@ pub enum Prim {
     /// different type. Used in type position (an annotation `(: e (Tuple …))`), the arity/element check
     /// the annotation needs.
     TupleCtor,
+    /// `Record : ((name Type)…) → Type` — the record-type constructor, VARIADIC over its `(name type)`
+    /// field pairs. `(Record (a Int64) (b Bool))` builds the type-value `(Record (a Int64) (b Bool))`; the
+    /// field-name SET and per-field types ARE the type. Used in type position (an annotation `(: e (Record
+    /// …))`), giving the field-name/type check the annotation needs — the record companion of `TupleCtor`.
+    RecordCtor,
     /// The ground type-values — nullary "constructors" that ARE a type-value directly (`Bool`/`Unit`
     /// resolve to a record whose `(meta t)` holds one of these).
     BoolTy,
@@ -140,6 +145,7 @@ impl Prim {
             "UInt" => Some(Prim::UIntCtor),
             "->" => Some(Prim::FnCtor),
             "Tuple" => Some(Prim::TupleCtor),
+            "Record" => Some(Prim::RecordCtor),
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
             _ => None,

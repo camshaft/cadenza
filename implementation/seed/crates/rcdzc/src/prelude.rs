@@ -48,6 +48,10 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // `Tuple` — the tuple-type constructor, VARIADIC over its element types: `(Tuple Int64 Bool)` builds
     // the tuple type-value. Same `(meta apply)` mechanism as `->`; only the builder differs.
     names.insert("Tuple".to_string(), ctor_record(ast, "Tuple"));
+    // `Record` — the record-type constructor, VARIADIC over `(name type)` field pairs: `(Record (a
+    // Int64) (b Bool))` builds the record type-value. Same `(meta apply)` mechanism as `Tuple`; the
+    // builder reads each arg as a `(name type)` pair.
+    names.insert("Record".to_string(), ctor_record(ast, "Record"));
 
     // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the

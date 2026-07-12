@@ -193,16 +193,13 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         Ty::Int(it) => Some(int_valtype(*it)),
         Ty::Bool => Some(ValType::I32),
         Ty::Unit => None,
-        // A record is a value-heap compound (a handle), not a scalar slot — Stage 1 folds records at
-        // compile time and does not construct one at runtime, so a record reaching a machine slot has
-        // no scalar representation here and DECLINES (the value heap is a later stage).
-        Ty::Record(_) => None,
-        // A tuple is a value-heap compound — at run time it is an OPAQUE u32 HANDLE into the runtime's
-        // store, which occupies an i32 machine slot. So a runtime tuple value (a `let`-bound tuple, a
-        // tuple threaded between construct and project) lives in an i32 local (H2b). The record path
-        // still folds at compile time, so it keeps no runtime slot — but a tuple genuinely crosses
-        // through a local, hence i32 here.
-        Ty::Tuple(_) => Some(ValType::I32),
+        // A record and a tuple are BOTH value-heap compounds — at run time each is an OPAQUE u32 HANDLE
+        // into the runtime's store (a record IS a positional array; field names are compile-time-only),
+        // occupying an i32 machine slot. So a runtime record/tuple value (a `let`-bound one, one threaded
+        // between construct and use, one flowing through an `if` branch, or one escaping to the host)
+        // lives in an i32 local. (A compound consumed only to read a field/element folds at compile time
+        // and keeps no runtime slot; one that survives to selection genuinely crosses through a handle.)
+        Ty::Record(_) | Ty::Tuple(_) => Some(ValType::I32),
         // A function value has no scalar machine representation (runtime closures are a later stage);
         // one reaching a slot declines.
         Ty::Fn(_, _) => None,

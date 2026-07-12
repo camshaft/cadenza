@@ -88,6 +88,19 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
         .instantiate(&mut store, &component)
         .map_err(|e| anyhow!("instantiate: {e}"))?;
 
+    // The RESOURCE ESCAPE (`DESIGN-value-heap-rcdzc.md` §3a): a program whose result is a COMPOUND
+    // exports no bare function — it publishes a `cadenza:run/run` instance carrying `make : () -> own<t>`
+    // + `encode : (own<t>) -> list<u8>`. Call `make` then `encode`, DECODE the canonical binary value
+    // form with the shared codec, and pretty-print `(: value type)` — the value crossing the boundary as
+    // a strongly-typed resource, rendered by the host (not spelled out in wasm). Taken when no explicit
+    // `--call` names a bare function.
+    if opts.export.is_none()
+        && sole_func_export(&engine, &component).is_none()
+        && has_run_instance(&engine, &component)
+    {
+        return run_resource_escape(&mut store, &instance);
+    }
+
     // Resolve the export to call: the named one, or the sole function export found by signature.
     let export_name = match &opts.export {
         Some(name) => name.clone(),
@@ -248,6 +261,82 @@ fn sole_func_export(engine: &Engine, component: &Component) -> Option<String> {
         }
     }
     only
+}
+
+/// The well-known instance a resource-escape program exports its result through (`make`/`encode` live
+/// inside it). `cdz-run` recognizes this instance to take the resource-decode path.
+const RUN_INTERFACE: &str = "cadenza:run/run";
+
+/// Whether `component` exports a `cadenza:run/run` INSTANCE — the marker of a resource-escape program
+/// (its compound result crosses as a resource with a `make`/`encode` pair, not a bare function).
+fn has_run_instance(engine: &Engine, component: &Component) -> bool {
+    component
+        .component_type()
+        .exports(engine)
+        .any(|(name, item)| {
+            name == RUN_INTERFACE && matches!(item, ComponentItem::ComponentInstance(_))
+        })
+}
+
+/// Run a resource-escape program: reach `make`/`encode` inside the `cadenza:run/run` instance, call
+/// `make()` → a resource handle, `encode(handle)` → the canonical binary value form as `list<u8>`,
+/// then DECODE those bytes to `Arenas` and print `(: value type)`. The type travels WITH the value (the
+/// encoded s-expression is `(: <value> <type>)`), so the host spells no type name — it decodes and
+/// prints. Mirrors the compiler's `constant_value_form`/resource-envelope emission
+/// ([[rcdzc-r1-resource-encode-linking-findings]]).
+fn run_resource_escape(
+    store: &mut Store<()>,
+    instance: &wasmtime::component::Instance,
+) -> Result<Outcome> {
+    let iface = instance
+        .get_export_index(&mut *store, None, RUN_INTERFACE)
+        .ok_or_else(|| anyhow!("resource escape: no `{RUN_INTERFACE}` instance export"))?;
+    let make_idx = instance
+        .get_export_index(&mut *store, Some(&iface), "make")
+        .ok_or_else(|| anyhow!("resource escape: `{RUN_INTERFACE}` exports no `make`"))?;
+    let encode_idx = instance
+        .get_export_index(&mut *store, Some(&iface), "encode")
+        .ok_or_else(|| anyhow!("resource escape: `{RUN_INTERFACE}` exports no `encode`"))?;
+    let make = instance
+        .get_func(&mut *store, make_idx)
+        .ok_or_else(|| anyhow!("resource escape: `make` is not a function"))?;
+    let encode = instance
+        .get_func(&mut *store, encode_idx)
+        .ok_or_else(|| anyhow!("resource escape: `encode` is not a function"))?;
+
+    let mut handle = [Val::Bool(false)];
+    if let Err(e) = make.call(&mut *store, &[], &mut handle) {
+        return Ok(Outcome::Trap(format!("{e}")));
+    }
+    let _ = make.post_return(&mut *store);
+    let mut out = [Val::Bool(false)];
+    if let Err(e) = encode.call(&mut *store, &handle, &mut out) {
+        return Ok(Outcome::Trap(format!("{e}")));
+    }
+    let _ = encode.post_return(&mut *store);
+
+    let bytes: Vec<u8> = match &out[0] {
+        Val::List(items) => items
+            .iter()
+            .map(|v| match v {
+                Val::U8(b) => Ok(*b),
+                o => Err(anyhow!(
+                    "resource escape: encode returned a non-u8 element {o:?}"
+                )),
+            })
+            .collect::<Result<_>>()?,
+        o => {
+            return Err(anyhow!(
+                "resource escape: encode returned {o:?}, expected list<u8>"
+            ));
+        }
+    };
+    let arenas = cadenza_syntax::codec::decode(&bytes).ok_or_else(|| {
+        anyhow!("resource escape: encode bytes are not a valid canonical value form")
+    })?;
+    Ok(Outcome::Value(
+        cadenza_syntax::sexpr::print(&arenas).trim().to_string(),
+    ))
 }
 
 /// Coerce each raw CLI argument string to the corresponding declared parameter type. The arity must

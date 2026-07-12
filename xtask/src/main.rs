@@ -731,15 +731,19 @@ fn grade_ran(rec: &CorpusRecord, ran: &Ran) -> Grade {
         .split_once(' ')
         .unwrap_or((rec.expect.as_str(), ""));
     match kind {
-        // `output (: <value> <Type>)`: the run must produce that value. cdz-run renders the value
-        // alone, so compare against the value-form's value (the first element after `:`).
+        // `output (: <value> <Type>)`: the run must produce that value. A SCALAR crosses as a bare value
+        // (`cdz-run` renders `42`), so it matches the value-form's value alone; a COMPOUND crosses via
+        // the resource escape as the WHOLE `(: value type)` form (the host decodes the canonical bytes
+        // and prints value AND type). Accept EITHER — the bare value (scalar) or the full form (compound)
+        // — so both ABIs grade against the one recorded `(: value type)` outcome.
         "output" => {
-            let expected = expected_value(payload);
+            let expected_val = expected_value(payload);
+            let expected_full = payload.trim().to_string();
             match ran {
-                Ran::Value(v) if *v == expected => Grade::Pass,
-                Ran::Value(v) => Grade::Fail(format!("expected {expected}, ran → {v}")),
+                Ran::Value(v) if *v == expected_val || *v == expected_full => Grade::Pass,
+                Ran::Value(v) => Grade::Fail(format!("expected {expected_full}, ran → {v}")),
                 Ran::Declined => Grade::Todo, // compiler can't compile it yet
-                Ran::Trap(t) => Grade::Fail(format!("expected {expected}, trapped: {t}")),
+                Ran::Trap(t) => Grade::Fail(format!("expected {expected_full}, trapped: {t}")),
             }
         }
         // `error CODE` / `trap …`: matching a rejection code or a trap reason needs machinery not yet

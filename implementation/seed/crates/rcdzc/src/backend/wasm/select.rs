@@ -214,7 +214,15 @@ pub fn collect_used_ops(
             }
         }
         Core::Record { fields } => {
+            // A runtime record builds on the heap exactly as a tuple — `arr-alloc` + per-field
+            // `box-*`/`arr-set` (the same ops `emit`'s `Core::Record` arm lays down), so the used-set
+            // must include them or the import section would omit an op the body calls.
+            out.insert(OP_ARR_ALLOC);
+            out.insert(OP_ARR_SET);
             for value in fields.values() {
+                if let Ok(op) = box_op(db, *value) {
+                    out.insert(op);
+                }
                 collect_used_ops(db, *value, out);
             }
         }
@@ -319,7 +327,9 @@ fn emit_tail(
                     out.push(Lir::ReturnCall(idx));
                     Ok(())
                 }
-                None => Err(Reject::decline("tail call to a definition with no emission index")),
+                None => Err(Reject::decline(
+                    "tail call to a definition with no emission index",
+                )),
             }
         }
         // An `if` in tail position: its condition is not tail (a value the branch selects on), but BOTH
@@ -381,7 +391,16 @@ fn emit_tail(
                 let vt = valtype_of(&ty).ok_or_else(|| {
                     Reject::decline("a let binding's type has no machine representation")
                 })?;
-                emit(db, *value, &extended, slot + 1, high, scratch_ty, layout, out)?;
+                emit(
+                    db,
+                    *value,
+                    &extended,
+                    slot + 1,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?;
                 out.push(Lir::LocalSet(slot));
                 scratch_ty.insert(slot, vt);
                 if slot + 1 > *high {
@@ -416,8 +435,8 @@ fn emit_tail(
                 _ => None,
             };
             emit_match_arms_tailable(
-                db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
-                out, true,
+                db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty,
+                layout, out, true,
             )
         }
         // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally.
@@ -473,12 +492,25 @@ fn emit(
             // Unit occupies no slot and pushes nothing.
             Ok(())
         }
-        // A record that SURVIVED folding to selection is used as a runtime value (not just to read a
-        // field, which folds away). Constructing a compound at run time needs the value-heap runtime,
-        // a later stage — so decline cleanly rather than emit a plausible-but-wrong sequence.
-        Core::Record { .. } => Err(Reject::decline(
-            "constructing a record at run time needs the value heap (not yet built)",
-        )),
+        // A runtime RECORD — the SAME positional heap array as a tuple, its fields in canonical
+        // (key-sorted) order (the `BTreeMap` iteration order, which the value-form renderer and every
+        // `arr-get` index agree on). Field names are compile-time information the runtime does not hold;
+        // at run time a record IS a tuple. So build it exactly as a tuple: `arr-alloc(n)`, then each
+        // field value boxed by its type and `arr-set` into its sorted position. Leaves the record's u32
+        // handle on the stack. (A record consumed only to read a field folds away in `lower`; a record
+        // that survives to selection is a genuine runtime value — e.g. one that escapes to the host.)
+        Core::Record { fields } => {
+            out.push(Lir::ConstI32(fields.len() as i32));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
+            for (i, (_, &value)) in fields.iter().enumerate() {
+                // [arr] ; push index ; push+box the field value ; arr-set → [arr]
+                out.push(Lir::ConstI32(i as i32)); // [arr, i]
+                emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [arr, i, value]
+                out.push(Lir::CallImport(box_op(db, value)?)); // [arr, i, handle]
+                out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
+            }
+            Ok(()) // leaves [arr] — the record handle
+        }
         // A runtime TUPLE — build it on the value heap: `arr-alloc(n)` leaves the array handle on the
         // stack, then for each element push `(handle, index, boxed-elem)` and `arr-set` (which returns
         // the handle, threading it to the next element). The handle stays on the operand stack across
@@ -556,8 +588,8 @@ fn emit(
                 _ => None,
             };
             emit_match_arms(
-                db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
-                out,
+                db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty,
+                layout, out,
             )
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
@@ -844,8 +876,8 @@ fn emit_match_arms_tailable(
             emit_body(db, *body, base, high, scratch_ty, out)?;
             out.push(Lir::Else);
             emit_match_arms_tailable(
-                db, scrutinee, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
-                out, tail,
+                db, scrutinee, rest, it, result_it, block_ty, slots, base, high, scratch_ty,
+                layout, out, tail,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -1144,10 +1176,30 @@ fn emit_checked_arith(
     let operand_base = base + 3;
     let ot = IntTy::fixed(m.signed, m.width);
     // <A> local.set $a  (a bare-literal operand is grounded to the OP's width `ot`, not its own default)
-    emit_operand(db, lhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(
+        db,
+        lhs,
+        ot,
+        slots,
+        operand_base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+    )?;
     out.push(Lir::LocalSet(sa));
     // <B> local.set $b  (B reuses A's dead scratch, from operand_base — minimal locals)
-    emit_operand(db, rhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(
+        db,
+        rhs,
+        ot,
+        slots,
+        operand_base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+    )?;
     out.push(Lir::LocalSet(sb));
     // get$a get$b <machine-op> local.set $r
     out.push(Lir::LocalGet(sa));
@@ -1313,8 +1365,28 @@ fn emit_div_rem(
     }
     scratch_ty.insert(sr, m.slot());
     let operand_base = base + 1;
-    emit_operand(db, lhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
-    emit_operand(db, rhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(
+        db,
+        lhs,
+        ot,
+        slots,
+        operand_base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+    )?;
+    emit_operand(
+        db,
+        rhs,
+        ot,
+        slots,
+        operand_base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+    )?;
     out.push(m.div()); // traps on ÷0 natively; the machine op does not overflow at a narrow width
     out.push(Lir::LocalSet(sr));
     emit_range_check(m, sr, out);
@@ -1364,9 +1436,29 @@ fn emit_shift(
     let ot = IntTy::fixed(m.signed, m.width);
     // <A> local.set $a ; <B> local.set $b. Both the value and the count share the op's machine slot, so
     // a bare-literal value or count is grounded to that width (a mixed i32/i64 shift is invalid wasm).
-    emit_operand(db, lhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(
+        db,
+        lhs,
+        ot,
+        slots,
+        operand_base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+    )?;
     out.push(Lir::LocalSet(sa));
-    emit_operand(db, rhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(
+        db,
+        rhs,
+        ot,
+        slots,
+        operand_base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+    )?;
     out.push(Lir::LocalSet(sb));
     // Count guard: `b >=ᵤ N` → trap. A negative count read unsigned is huge (≥ N), so this one test
     // catches both a negative and a too-large count. Bound is the LANGUAGE width N, not the slot width.

@@ -762,6 +762,83 @@ fn a_runtime_tuple_round_trips_through_the_heap() {
     }
 }
 
+/// R2 e2e: a RUNTIME compound built behind a RECURSIVE call ESCAPES to the host as a resource, and its
+/// `encode()` walks the live handle to the canonical value form. `f` is genuinely recursive (calls
+/// itself), so `is_recursive` DECLINES the compile-time fold — `f` becomes a real `Core::Call`, `(f 3)`
+/// runs it at run time, and the returned `(tuple n 7)` is built on the value heap (NOT constant-folded).
+/// It must IMPORT the runtime (the genuine-heap signal, distinct from a folded constant tuple which
+/// imports nothing) and, composed, decode to the exact value form. This is the first COMPILER-EMITTED
+/// runtime-compound host escape (R2) — the walker/envelope proven independently in `r2_runtime_resource`,
+/// here driven by the real compile pipeline.
+#[test]
+fn a_recursive_runtime_tuple_escapes_to_the_host() {
+    use crate::testkit::parse;
+    // `f` recurses to its base case, which builds `(tuple n 7)` from the runtime-threaded `n`. Recursive
+    // → not folded → the tuple is a genuine heap value that escapes as a resource.
+    let src = "(module m (def (f n) (if (= n 0) (tuple n 7) (f (- n 1)))) \
+                 (def (main) (f 3)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+
+    // The genuine-heap signal: it imports the value-heap runtime (a folded constant tuple would import
+    // nothing — this is what distinguishes R2 from the R1 constant escape).
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a recursive runtime-tuple escape must import the value-heap runtime (genuine heap, not a fold)"
+    );
+
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[R2] runtime wasm not found; skipping composed escape run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None, // a resource-escape program exports no bare func — the host takes the escape path
+        args: vec![],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(
+                s, "(: (tuple 0 7) (Tuple Int64 Int64))",
+                "R2 escape value form"
+            )
+        }
+        cdz_run::Outcome::Trap(t) => panic!("R2 escape run trapped: {t}"),
+    }
+}
+
+/// R2 e2e for a RECORD: a runtime record built behind a recursive call escapes as a resource and its
+/// `encode()` walks the heap array (a record IS the same positional array as a tuple — its fields in
+/// canonical sorted order — the distinction is only the static type the renderer bakes). Companion of
+/// `a_recursive_runtime_tuple_escapes_to_the_host`, on the record surface. Pins that a runtime record
+/// crosses with its field NAMES rendered (from the type) though the runtime holds a nameless array.
+#[test]
+fn a_recursive_runtime_record_escapes_to_the_host() {
+    use crate::testkit::parse;
+    let src = "(module m (def (f n) (if (= n 0) (record (a n) (b 7)) (f (- n 1)))) \
+                 (def (main) (f 3)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a recursive runtime-record escape must import the value-heap runtime (genuine heap)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[R2] runtime wasm not found; skipping composed record escape");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "(: (record (a 0) (b 7)) (Record (a Int64) (b Int64)))",
+            "R2 record escape value form"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("R2 record escape run trapped: {t}"),
+    }
+}
+
 // ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
 //
 // The operator directive: get the static heap-value path right FIRST — a constant compound must never
@@ -954,6 +1031,59 @@ impl ComposedRuntime {
             other => panic!("live-objects returned {other:?}"),
         }
     }
+
+    /// Drive a RESOURCE-ESCAPE program to completion: reach `make`/`encode` inside the `cadenza:run/run`
+    /// instance, call `make()` → a resource handle, then `encode(handle)` → the value bytes. `encode`
+    /// currently takes `self: own<t>`, so it CONSUMES the resource — the canonical ABI drops the owned
+    /// `self` at the end of the call, which is WHERE the dtor would fire. But because `encode` swallows
+    /// the handle without dropping it (and the ABI's own-arg handling here does not invoke the dtor), the
+    /// compound LEAKS — this is the open R2-dtor bug the `borrow<t>` migration will fix. So `live_objects`
+    /// afterward is currently non-zero (the probe below is the RED marker for that bug). Returns the
+    /// decoded value text. (A separate host `resource_drop` is impossible — encode already consumed the
+    /// handle, "unknown handle index".)
+    fn run_escape_and_drop(&mut self) -> String {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:run/run")
+            .expect("run interface");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "make")
+            .expect("make export");
+        let encode_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "encode")
+            .expect("encode export");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let encode = self
+            .program
+            .get_func(&mut self.store, encode_idx)
+            .expect("encode func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, &[], &mut handle).expect("make");
+        make.post_return(&mut self.store).expect("make post");
+        let mut out = [Val::Bool(false)];
+        encode
+            .call(&mut self.store, &handle, &mut out)
+            .expect("encode"); // consumes the own<t>
+        encode.post_return(&mut self.store).expect("encode post");
+        let bytes: Vec<u8> = match &out[0] {
+            Val::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::U8(b) => *b,
+                    o => panic!("not u8: {o:?}"),
+                })
+                .collect(),
+            o => panic!("expected list<u8>, got {o:?}"),
+        };
+        let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode value form");
+        cadenza_syntax::sexpr::print(&arenas).trim().to_string()
+    }
 }
 
 /// H2d ACCEPTANCE: after a heap round-trip, the runtime's live-cell count is 0 — the dup/drop discipline
@@ -985,6 +1115,39 @@ fn perceus_balance_leaves_no_live_objects() {
         rt.live_objects(),
         0,
         "Perceus leak: heap cells still live after the round-trip (expected 0)"
+    );
+}
+
+/// R2 DTOR ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource, once the host DROPS
+/// that resource, leaves NO live heap cells — the resource dtor releases the compound's rc handle (which
+/// cascades to its boxed elements). Composes the debug-counters runtime, runs the recursive-tuple escape,
+/// drops the resource, and reads `live-objects`. With the STUB dtor this LEAKS (the tuple + its 2 boxes
+/// stay live → count > 0); the real `heap.drop` dtor balances it to 0. `#[ignore]` — needs `xtask build`
+/// to have populated the store (run with `-- --ignored`).
+#[test]
+#[ignore]
+fn a_dropped_runtime_resource_leaves_no_live_objects() {
+    use crate::testkit::parse;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[R2-dtor] debug-counters runtime not in the store; skipping dtor leak probe");
+        return;
+    };
+    // A recursive (unfoldable) tuple that escapes to the host as a resource.
+    let src = "(module m (def (f n) (if (= n 0) (tuple n 7) (f (- n 1)))) \
+                 (def (main) (f 3)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    let value = rt.run_escape_and_drop();
+    assert_eq!(
+        value, "(: (tuple 0 7) (Tuple Int64 Int64))",
+        "the escaped value still decodes correctly"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "R2 dtor leak: the escaped compound's heap cells are still live after the host dropped the \
+         resource (expected 0 — the dtor must call the runtime `drop`)"
     );
 }
 
@@ -1994,7 +2157,10 @@ mod recursion {
             "(module m (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1)))) (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1)))) (def (main (: n Int64)) (even n)) (export main))",
         )))
         .expect("compile");
-        assert_eq!(run_returns_with::<i64>(&eo, "main", &[Val::S64(100_000)]), 1);
+        assert_eq!(
+            run_returns_with::<i64>(&eo, "main", &[Val::S64(100_000)]),
+            1
+        );
     }
 
     #[test]
@@ -2500,9 +2666,18 @@ mod stage1 {
     }
 
     #[test]
-    fn returning_a_record_declines_pending_the_value_heap() {
-        // A record used as a runtime VALUE (returned, not projected) needs the value heap — declines.
-        assert!(expect_decline("(record (x 1))").contains("value heap"));
+    fn returning_a_constant_record_compiles_via_the_resource_escape() {
+        // A CONSTANT record returned as the program result now crosses the host boundary as a
+        // component-model resource whose `encode()` yields the canonical value form (the escape path,
+        // §3a) — it no longer declines. (The end-to-end value assertion, decoding to `(: (record …)
+        // (Record …))`, is `constant_resource_escape::a_constant_record_return_decodes`.) A record
+        // consumed INTERNALLY still folds/declines per its use; this pins that a constant record RESULT
+        // compiles to a component.
+        let src = "(module m (def (main) (record (x 1))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a constant record return must compile via the resource escape"
+        );
     }
 
     // ── Value-heap H2a: tuple surface + fold (static-correct first) ───────────────────────────────
@@ -2527,6 +2702,17 @@ mod stage1 {
         // A `let`-bound tuple projected ONCE is copy-propagated (single use) and folds — the binding is
         // not kept, so the projection sees the literal `(tuple 1 2)` and reduces to `2`.
         assert_eq!(run_main("(let ((t (tuple 1 2))) (. t 1))"), 2);
+    }
+
+    #[test]
+    fn positional_projection_is_member_access_with_an_integer_key() {
+        // Positional tuple projection is the one member-access form with an INTEGER key — `(. operand N)`
+        // (a NAME key reads a record field, an integer key a tuple element). `(. (tuple 10 20) 1)` folds
+        // to 20. (There is no `tuple.N` sigil — the single `.` form serves both.)
+        assert_eq!(run_main("(. (tuple 10 20) 1)"), 20);
+        assert_eq!(run_main("(. (tuple 10 20) 0)"), 10);
+        // A multi-digit index is one integer key (not per-digit): position 10 of an 11-tuple.
+        assert_eq!(run_main("(. (tuple 0 1 2 3 4 5 6 7 8 9 99) 10)"), 99);
     }
 
     #[test]
@@ -2555,15 +2741,39 @@ mod stage1 {
     }
 
     #[test]
-    fn returning_a_tuple_to_the_host_declines_pending_the_resource_renderer() {
-        // A tuple RETURNED across the host boundary needs the type-directed RENDERER to produce its
-        // canonical text — the compound will cross as a monomorphized component RESOURCE with
-        // `display-value`/`display-type` methods (the resource vertical). Until that lands, a compound
-        // host-return DECLINES (reject-don't-miscompile) rather than handing the host a raw handle it
-        // would misreport. (A compound CONSUMED internally — projected, threaded — works via the heap;
-        // only the host-facing return waits on the resource + renderer.)
-        let msg = expect_decline("(tuple 1 2)");
-        assert!(msg.contains("renderer"), "got: {msg}");
+    fn returning_a_constant_tuple_compiles_via_the_resource_escape() {
+        // A CONSTANT tuple returned across the host boundary now crosses as a monomorphized component
+        // RESOURCE whose `encode() -> list<u8>` yields the canonical binary value form; the host decodes
+        // + prints `(: (tuple …) (Tuple …))` (the escape path, §3a). It no longer declines. (The
+        // end-to-end value assertion is `constant_resource_escape::a_constant_tuple_return_decodes…`.)
+        // A RUNTIME tuple (elements computed at run time) still declines here pending R2 (the real
+        // handle-walking encoder) — see `a_runtime_tuple_return_still_declines_pending_r2`.
+        let src = "(module m (def (main) (tuple 1 2)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a constant tuple return must compile via the resource escape"
+        );
+    }
+
+    #[test]
+    fn a_parameterized_compound_return_export_declines() {
+        // A tuple returned from an export that TAKES A PARAMETER cannot cross as the resource escape:
+        // the resource's constructor is `make : () -> own<t>` (NULLARY), so the escaping export must be
+        // nullary. A parameterized compound-returning export therefore still DECLINES here (its
+        // component functype would need a compound RESULT with parameters, which the boundary does not
+        // carry — reject-don't-miscompile). The runtime-compound escape (R2) covers the NULLARY case: a
+        // recursive/heap-built tuple returned from a nullary export now crosses (see
+        // `a_recursive_runtime_tuple_escapes_to_the_host`). Pins the nullary-only escape boundary.
+        let src = "(module m (def (pair (: n Int64)) (tuple n 1)) (export pair))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a parameterized compound-return export declines");
+        assert!(
+            err.message.contains("value heap")
+                || err.message.contains("renderer")
+                || err.message.contains("boundary"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -2896,9 +3106,9 @@ mod stage1 {
         for body in [
             "(: 5 (Int -8))",
             "(: 5 (UInt -1))",
-            "(: 300 (Int -8))",   // if the width were honored 300 would overflow; if dropped it fits — neither
+            "(: 300 (Int -8))", // if the width were honored 300 would overflow; if dropped it fits — neither
             "(: 300 (Int true))", // a bool in width position
-            "(: 300 (Int 8.0))",  // a float in width position
+            "(: 300 (Int 8.0))", // a float in width position
             "(: 300 (Int Int64))", // a type-value in width position
         ] {
             assert!(
@@ -3206,8 +3416,14 @@ mod stage1 {
                 "main",
             )
         };
-        assert_eq!(run("(module m (def (mk) 42) (def (main) (mk)) (export main))"), 42);
-        assert_eq!(run("(module m (def (g) 7) (def (main) (+ (g) 5)) (export main))"), 12);
+        assert_eq!(
+            run("(module m (def (mk) 42) (def (main) (mk)) (export main))"),
+            42
+        );
+        assert_eq!(
+            run("(module m (def (g) 7) (def (main) (+ (g) 5)) (export main))"),
+            12
+        );
         assert_eq!(
             run("(module m (def (g) 7) (def (f x) (+ x (g))) (def (main) (f 5)) (export main))"),
             12
@@ -3215,7 +3431,10 @@ mod stage1 {
         // A nullary LAMBDA applied still works (the β-reduce path, unchanged), and a bare nullary-def
         // reference still denotes its body value.
         assert_eq!(run("(module m (def (main) ((fn () 7))) (export main))"), 7);
-        assert_eq!(run("(module m (def (g) 7) (def (main) g) (export main))"), 7);
+        assert_eq!(
+            run("(module m (def (g) 7) (def (main) g) (export main))"),
+            7
+        );
     }
 
     #[test]
@@ -3289,10 +3508,7 @@ mod stage1 {
         );
         // The lambda sibling and the nested-application sibling exercise the same splice: a let-bound
         // name and a call's own result, each passed as an argument to another user call.
-        assert_eq!(
-            run_main("(let ((k 10) (f (fn (x) (+ x 1)))) (f k))"),
-            11
-        );
+        assert_eq!(run_main("(let ((k 10) (f (fn (x) (+ x 1)))) (f k))"), 11);
         assert_eq!(run_main("(let ((f (fn (x) (+ x 1)))) (f (f 0)))"), 2);
     }
 
@@ -3869,6 +4085,25 @@ mod r1_reference {
     /// `resource.new` + inner re-export component, no shim/fixup). VALIDATES under wasmparser + wasmtime and RUNS the
     /// round-trip: `make()` → a strongly-typed resource handle (NOT a bare u32), `encode(handle)` →
     /// `[1,2,3]`. This is the authoritative shape the hand-emitted `envelope.rs` R1 path must mirror.
+    /// The hand-emitted resource-escape envelope ([`envelope::assemble_resource`]) is BYTE-IDENTICAL to
+    /// the `ComponentBuilder` oracle — the anchor that licenses hand-emitting the resource + dtor +
+    /// `resource.new` + nested-re-export plumbing with no external encoder in the compile path
+    /// (`reference-compiler.md` §Emission Is Validated Byte-Identical To An Independent Encoder). This is
+    /// R1's byte gate; it takes the SAME core modules the oracle wraps (`resource_core` + `dtor_module`),
+    /// so the diff isolates the ENVELOPE encoding (the core-module emission is a separate concern, R2).
+    #[test]
+    fn resource_envelope_matches_component_builder_oracle() {
+        use crate::backend::wasm::envelope::assemble_resource;
+        let main_core = resource_core();
+        let dtor_core = dtor_module();
+        let ours = assemble_resource(&main_core, &dtor_core);
+        let oracle = oracle_resource_component(&main_core);
+        assert_eq!(
+            ours, oracle,
+            "resource envelope mismatch vs ComponentBuilder"
+        );
+    }
+
     #[test]
     fn resource_encode_oracle_runs() {
         let core = resource_core();
@@ -3932,5 +4167,684 @@ mod r1_reference {
             }
             o => panic!("expected list, got {o:?}"),
         }
+    }
+}
+
+// ── value-heap R1c/R3: a COMPILER-GENERATED constant-compound resource escape, run + decoded ──────
+//
+// The compiler routes a nullary export returning a fully-CONSTANT compound through the resource escape
+// path (`emit` → `serialize::resource_core_module` with the baked `constant_value_form` bytes →
+// `envelope::assemble_resource`). This exercises the WHOLE pipeline the corpus's constant tuple/record
+// returns need: the value is serialized to its canonical binary form AT COMPILE TIME, crosses as the
+// resource `encode()`'s `list<u8>`, and the host DECODES it with the same codec + prints the recorded
+// `(: value type)` text. Constant-first (R1): no runtime heap construction, so it runs under a bare
+// linker (no value-heap runtime composed) — the runtime path (R2) reuses this envelope + host wiring.
+mod constant_resource_escape {
+    use crate::compile::compile_component;
+    use crate::testkit::parse;
+
+    /// Compile `src`, run its resource export under wasmtime, and DECODE the `encode()` bytes back to
+    /// canonical text — the value the host would print. Returns the decoded `(: value type)` string.
+    fn run_and_decode(src: &str) -> String {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // Validate then run under a bare linker — a constant escape composes no runtime.
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("resource component validates");
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:run/run")
+            .expect("run interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let encode_idx = instance
+            .get_export_index(&mut store, Some(&iface), "encode")
+            .expect("encode export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let encode = instance
+            .get_func(&mut store, encode_idx)
+            .expect("encode func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        let mut out = [Val::Bool(false)];
+        encode
+            .call(&mut store, &handle, &mut out)
+            .expect("encode call");
+        encode.post_return(&mut store).expect("encode post_return");
+        let bytes: Vec<u8> = match &out[0] {
+            Val::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::U8(b) => *b,
+                    o => panic!("not u8: {o:?}"),
+                })
+                .collect(),
+            o => panic!("expected list<u8>, got {o:?}"),
+        };
+        // Decode with `cadenza-syntax`'s codec — the SAME codec `cdz-run` (the host) uses; rcdzc's own
+        // `codec` is a byte-identical COPY (the copy-don't-depend rule), so the bytes the compiler baked
+        // decode here through the front-end crate exactly as the host will. Then print canonical text.
+        let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode canonical value form");
+        cadenza_syntax::sexpr::print(&arenas).trim().to_string()
+    }
+
+    /// A constant tuple returned as the program result crosses as a resource and decodes to the exact
+    /// corpus text — the `(def (main) (tuple 3 1))` case (`spec/semantics/05-compound-types.sexp`).
+    #[test]
+    fn a_constant_tuple_return_decodes_to_its_value_form() {
+        let src = "(module m (def (main) (tuple 3 1)) (export main))";
+        assert_eq!(run_and_decode(src), "(: (tuple 3 1) (Tuple Int64 Int64))");
+    }
+
+    /// A constant tuple with a Bool element — the heap layout carries a Bool beside an Int64.
+    #[test]
+    fn a_constant_mixed_tuple_return_decodes() {
+        let src = "(module m (def (main) (tuple 0 true)) (export main))";
+        assert_eq!(run_and_decode(src), "(: (tuple 0 true) (Tuple Int64 Bool))");
+    }
+
+    /// A nested constant tuple — a compound element recurses in both the value and the type.
+    #[test]
+    fn a_constant_nested_tuple_return_decodes() {
+        let src = "(module m (def (main) (tuple 2 (tuple 2 2))) (export main))";
+        assert_eq!(
+            run_and_decode(src),
+            "(: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))"
+        );
+    }
+
+    /// A constant record — the value head is lowercase `record`, the type head capital `Record`, fields
+    /// in canonical (key-sorted) order.
+    #[test]
+    fn a_constant_record_return_decodes() {
+        let src = "(module m (def (main) (record (a 3) (b 1))) (export main))";
+        assert_eq!(
+            run_and_decode(src),
+            "(: (record (a 3) (b 1)) (Record (a Int64) (b Int64)))"
+        );
+    }
+}
+
+// ── value-heap R2: a RUNTIME compound escapes — the handle-walking encode() (ComponentBuilder ref) ──
+//
+// R1 proved a CONSTANT compound crosses (its bytes baked at compile time). R2 is the real thing: a
+// compound BUILT ON THE HEAP at run time (`arr-alloc`/`box-int`/`arr-set`) crosses as a resource whose
+// `encode()` WALKS the live handle (`arr-get`/`get-int`/`get-bool`) and writes the canonical value
+// bytes. This module builds that shape with `ComponentBuilder` (the authoritative encoder) + RUNS it
+// COMPOSED WITH THE REAL RUNTIME — the reference the hand-emitted combined envelope + walker will
+// mirror (the H1b method). It is the FIRST end-to-end exercise of the genuine heap path: every corpus
+// runtime-compound case so far passes by CONSTANT-FOLDING (they run with no runtime present, because a
+// nullary `main` inlines its call), so the alloc→escape→walk pipeline has never actually run until now.
+//
+// The encode() strategy is R2 step 1's template made concrete: the value-form byte TEMPLATE is a data
+// segment doubling as the OUTPUT buffer (every leaf is a runtime hole that `encode` fully overwrites,
+// and the non-hole framing bytes are constant, so no copy is needed). CRUCIAL (empirically, R2): the
+// canonical ABI hands `encode` the resource-table HANDLE, NOT the heap rep — so `encode` FIRST calls
+// `resource.rep(handle) -> rep` to recover the walkable heap rep (a guest resource's `own<t>` param
+// crosses as a table index; `arr-get` on it traps because the small index is misread as an inline
+// value). It then walks each hole's `arr-get` path from `rep`, reads the leaf (`get-int`/`get-bool`),
+// and writes its bytes into the template at the hole's offset (an Int as 8 big-endian magnitude bytes
+// + the NEG kind byte for a negative; a Bool as the 8/9 kind byte).
+mod r2_runtime_resource {
+    use crate::backend::wasm::runtime_abi::{AbiValType, OPS, RtOp};
+    use crate::lower::{LeafFill, ValueFormTemplate, runtime_value_form_template};
+    use crate::ty::Ty;
+
+    /// The runtime ops the escape shape uses, in the SORTED order the compiler's used-op set
+    /// (`collect_used_ops` → a `BTreeSet`) produces — so the oracle's op order matches what
+    /// `assemble_runtime_resource` receives. `arr-alloc`/`arr-set` build, `arr-get`/`get-int`/`get-bool`
+    /// walk, `box-int` boxes a leaf, and `drop` releases the compound's rc handle in the resource DTOR
+    /// (on host-drop / when `encode` consumes the `own<t>`). (`resource-new`/`resource-rep` are resource
+    /// intrinsics, not runtime ops, so they are threaded separately — not in this set.)
+    fn walker_ops() -> [&'static RtOp; 7] {
+        // Sorted by name: arr-alloc, arr-get, arr-set, box-int, drop, get-bool, get-int.
+        [
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_bool,
+            OPS.get_int,
+        ]
+    }
+
+    /// The component valtype of an ABI type — the boundary form the import instance-type declares.
+    fn abi_comp(p: AbiValType) -> wasm_encoder::ComponentValType {
+        use wasm_encoder::{ComponentValType, PrimitiveValType};
+        ComponentValType::Primitive(match p {
+            AbiValType::U32 => PrimitiveValType::U32,
+            AbiValType::S64 => PrimitiveValType::S64,
+            AbiValType::Bool => PrimitiveValType::Bool,
+            AbiValType::F64 => PrimitiveValType::F64,
+        })
+    }
+
+    /// The core functype `(params)->(result?)` of a runtime op — its CORE valtypes (a u32 handle is i32,
+    /// s64 is i64), the shape the program core module imports it under.
+    fn op_core_functype(op: &RtOp) -> (Vec<wasm_encoder::ValType>, Vec<wasm_encoder::ValType>) {
+        use wasm_encoder::ValType;
+        let core = |p: AbiValType| match p {
+            AbiValType::U32 | AbiValType::Bool => ValType::I32,
+            AbiValType::S64 => ValType::I64,
+            AbiValType::F64 => ValType::F64,
+        };
+        let params = op.params.iter().map(|p| core(*p)).collect();
+        let results = op.result.map(|r| vec![core(r)]).unwrap_or_default();
+        (params, results)
+    }
+
+    /// The DTOR core module — `t-dtor : (i32 rep) -> ()`, which RELEASES the resource's rep by calling
+    /// the runtime `drop` (imported as `heap-dtor.drop`). On host-drop (or when `encode` consumes the
+    /// `own<t>`), the component invokes this to release the compound's rc handle — which cascades to its
+    /// boxed children. It imports `drop` from a SEPARATE small core instance (`heap-dtor`) built from the
+    /// LOWERED `drop` op (a core func available BEFORE the resource type), NOT from the full `heap`
+    /// instance — so the dtor module can still instantiate before the resource type, keeping the
+    /// resource↔dtor↔resource.new cycle dissolved ([[rcdzc-r1-resource-encode-linking-findings]]).
+    /// Byte-identical to `serialize::resource_dtor_module`.
+    fn dtor_module() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![]); // 0: (i32) -> () for both drop-import and t-dtor
+        m.section(&types);
+        // Import `drop : (i32) -> ()` from the `heap-dtor` module → core func 0.
+        let mut imports = ImportSection::new();
+        imports.import("heap-dtor", "drop", EntityType::Function(0));
+        m.section(&imports);
+        // t-dtor is defined func 1 (the import is func 0).
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("t-dtor", ExportKind::Func, 1);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut dtor = Function::new(vec![]);
+        dtor.instruction(&Instruction::LocalGet(0)); // the rep
+        dtor.instruction(&Instruction::Call(0)); // call the imported drop
+        dtor.instruction(&Instruction::End);
+        code.function(&dtor);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The PROGRAM core module for a runtime compound `(tuple 3 1)` escape. Imports the walker runtime
+    /// ops + `resource-new` from `"heap"`; exports `memory`, `make`, `t-encode`, `cabi_realloc`.
+    ///
+    ///  * `make()` BUILDS the tuple on the value heap — `arr-alloc(2)`, then each element boxed
+    ///    (`box-int`) and `arr-set` — then `resource.new(handle)` registers the runtime handle as the
+    ///    resource's rep and returns the resource handle.
+    ///  * `t-encode(rep)` receives the runtime handle directly (the guest resource's canonical ABI
+    ///    passes the rep). The value-form TEMPLATE is a data segment at offset 0 doubling as the output
+    ///    buffer; `encode` walks each hole's `arr-get` path from `rep`, reads the leaf, and writes its
+    ///    bytes at the hole's offset, then returns the `(ptr=0, len)` return area pointer.
+    fn walker_core(tpl: &ValueFormTemplate, elems: &[i64]) -> Vec<u8> {
+        use wasm_encoder::*;
+        // Import order fixes the core func indices the bodies call. Walker ops first (0..6), then
+        // `resource-new` (6). The import NAMES are what the `heap` instance resolves by.
+        let ops = walker_ops();
+        let mut m = Module::new();
+
+        // Type section: one functype per import (deduped-by-shape is unnecessary — just list them), then
+        // the three defined-func types (make `()->i32`, encode `(i32)->i32`, cabi_realloc `(i32×4)->i32`).
+        let mut types = TypeSection::new();
+        let mut import_type_idx = Vec::new();
+        for op in ops {
+            let (p, r) = op_core_functype(op);
+            types.ty().function(p, r);
+            import_type_idx.push(import_type_idx.len() as u32);
+        }
+        // resource-new / resource-rep : both (i32)->i32.
+        let rnew_ty = import_type_idx.len() as u32;
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]);
+        let make_ty = rnew_ty + 1;
+        types.ty().function(vec![], vec![ValType::I32]); // make ()->i32
+        let encode_ty = make_ty + 1;
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // encode (i32)->i32
+        let realloc_ty = encode_ty + 1;
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        );
+        m.section(&types);
+
+        // Import section: the walker ops + resource-new + resource-rep, all from module "heap". Core
+        // func indices 0..=7 in this order; the defined funcs follow. `resource.new` registers the heap
+        // rep → a resource handle in `make`; `resource.rep` recovers the heap rep from the handle the
+        // canonical ABI hands `encode` (the handle is a guest resource-table index, NOT the rep).
+        let mut imports = ImportSection::new();
+        for (i, op) in ops.iter().enumerate() {
+            imports.import("heap", op.name, EntityType::Function(import_type_idx[i]));
+        }
+        imports.import("heap", "resource-new", EntityType::Function(rnew_ty));
+        imports.import("heap", "resource-rep", EntityType::Function(rnew_ty));
+        m.section(&imports);
+        // Import func indices — resolve each op by NAME against the (sorted) import order, so the body
+        // is robust to the op ordering (the sorted used-set the compiler produces). `resource-new`/
+        // `resource-rep` follow the k ops.
+        let idx_of = |name: &str| ops.iter().position(|o| o.name == name).unwrap() as u32;
+        let f_arr_alloc = idx_of("arr-alloc");
+        let f_arr_set = idx_of("arr-set");
+        let f_arr_get = idx_of("arr-get");
+        let f_box_int = idx_of("box-int");
+        let f_get_int = idx_of("get-int");
+        let f_get_bool = idx_of("get-bool");
+        let f_rnew = ops.len() as u32;
+        let f_rrep = ops.len() as u32 + 1;
+
+        // Defined funcs follow the `k` ops + resource-new + resource-rep (= k+2 imports): make=k+2,
+        // encode=k+3, cabi_realloc=k+4.
+        let make_fn = ops.len() as u32 + 2;
+        let encode_fn = make_fn + 1;
+        let realloc_fn = encode_fn + 1;
+        let mut funcs = FunctionSection::new();
+        funcs.function(make_ty);
+        funcs.function(encode_ty);
+        funcs.function(realloc_ty);
+        m.section(&funcs);
+
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        m.section(&mems);
+
+        let mut exports = ExportSection::new();
+        exports.export("memory", ExportKind::Memory, 0);
+        exports.export("make", ExportKind::Func, make_fn);
+        exports.export("t-encode", ExportKind::Func, encode_fn);
+        exports.export("cabi_realloc", ExportKind::Func, realloc_fn);
+        m.section(&exports);
+
+        // Data: the value-form template at offset 0 (doubles as the output buffer), then the (ptr,len)
+        // return area 4-aligned after it: ptr=0, len=template length.
+        let tpl_len = tpl.bytes.len();
+        let ret_off = (tpl_len + 3) & !3;
+        let mut data_bytes = tpl.bytes.clone();
+        data_bytes.resize(ret_off, 0);
+        data_bytes.extend_from_slice(&0u32.to_le_bytes()); // ptr = 0 (template @ 0)
+        data_bytes.extend_from_slice(&(tpl_len as u32).to_le_bytes()); // len
+        let mut data = DataSection::new();
+        data.active(0, &ConstExpr::i32_const(0), data_bytes.iter().copied());
+
+        // make: build (tuple <elems>) on the heap, then resource.new(handle).
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(elems.len() as i32));
+        make.instruction(&Instruction::Call(f_arr_alloc)); // [arr]
+        for (i, &v) in elems.iter().enumerate() {
+            make.instruction(&Instruction::I32Const(i as i32)); // [arr, i]
+            make.instruction(&Instruction::I64Const(v));
+            make.instruction(&Instruction::Call(f_box_int)); // [arr, i, h]
+            make.instruction(&Instruction::Call(f_arr_set)); // [arr]
+        }
+        make.instruction(&Instruction::Call(f_rnew)); // [resource-handle]
+        make.instruction(&Instruction::End);
+
+        // encode(handle): the canonical ABI passes the resource-table HANDLE, not the heap rep — so
+        // FIRST recover the heap rep via `resource.rep(handle)` into local `rep`, then walk each hole
+        // and write its bytes into the template-as-output buffer. Locals: 0 = handle param, 1 = the
+        // recovered heap rep (i32), 2 = i64 scratch (leaf value / magnitude).
+        let mut encode = Function::new(vec![(1, ValType::I32), (1, ValType::I64)]);
+        let handle = 0u32;
+        let rep = 1u32;
+        let scratch = 2u32;
+        encode.instruction(&Instruction::LocalGet(handle));
+        encode.instruction(&Instruction::Call(f_rrep)); // handle → heap rep
+        encode.instruction(&Instruction::LocalSet(rep));
+        for hole in &tpl.leaves {
+            let out_off = hole.offset as u64; // template is at memory offset 0
+            match hole.kind {
+                LeafFill::Int => {
+                    // Walk to the leaf handle, then get-int → i64 value in scratch.
+                    encode.instruction(&Instruction::LocalGet(rep));
+                    for &idx in &hole.path {
+                        encode.instruction(&Instruction::I32Const(idx as i32));
+                        encode.instruction(&Instruction::Call(f_arr_get));
+                    }
+                    encode.instruction(&Instruction::Call(f_get_int));
+                    encode.instruction(&Instruction::LocalSet(scratch));
+                    // Negative? flip the kind byte (offset-2: kind, then a 1-byte len=8) to NEG_DEC (3)
+                    // and negate the magnitude.
+                    encode.instruction(&Instruction::LocalGet(scratch));
+                    encode.instruction(&Instruction::I64Const(0));
+                    encode.instruction(&Instruction::I64LtS);
+                    encode.instruction(&Instruction::If(BlockType::Empty));
+                    encode.instruction(&Instruction::I32Const((out_off - 2) as i32));
+                    encode.instruction(&Instruction::I32Const(3)); // KIND_INT_NEG_DEC
+                    encode.instruction(&Instruction::I32Store8(MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    }));
+                    encode.instruction(&Instruction::I64Const(0));
+                    encode.instruction(&Instruction::LocalGet(scratch));
+                    encode.instruction(&Instruction::I64Sub);
+                    encode.instruction(&Instruction::LocalSet(scratch));
+                    encode.instruction(&Instruction::End);
+                    // Write 8 big-endian magnitude bytes at out_off.
+                    for k in 0..8u64 {
+                        encode.instruction(&Instruction::I32Const((out_off + k) as i32));
+                        encode.instruction(&Instruction::LocalGet(scratch));
+                        encode.instruction(&Instruction::I64Const((8 * (7 - k)) as i64));
+                        encode.instruction(&Instruction::I64ShrU);
+                        encode.instruction(&Instruction::I32WrapI64);
+                        encode.instruction(&Instruction::I32Store8(MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        }));
+                    }
+                }
+                LeafFill::Bool => {
+                    // Write the kind byte 8+bool (8 false / 9 true) at out_off.
+                    encode.instruction(&Instruction::I32Const(out_off as i32));
+                    encode.instruction(&Instruction::LocalGet(rep));
+                    for &idx in &hole.path {
+                        encode.instruction(&Instruction::I32Const(idx as i32));
+                        encode.instruction(&Instruction::Call(f_arr_get));
+                    }
+                    encode.instruction(&Instruction::Call(f_get_bool));
+                    encode.instruction(&Instruction::I32Const(8));
+                    encode.instruction(&Instruction::I32Add);
+                    encode.instruction(&Instruction::I32Store8(MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    }));
+                }
+            }
+        }
+        encode.instruction(&Instruction::I32Const(ret_off as i32)); // return the (ptr,len) area
+        encode.instruction(&Instruction::End);
+
+        let mut realloc = Function::new(vec![]);
+        realloc.instruction(&Instruction::I32Const(0)); // stub (never called for a nullary-input list result)
+        realloc.instruction(&Instruction::End);
+
+        let mut code = CodeSection::new();
+        code.function(&make);
+        code.function(&encode);
+        code.function(&realloc);
+        m.section(&code);
+        m.section(&data);
+        m.finish()
+    }
+
+    /// The INNER re-export component (identical to R1's — imports the abstract resource + funcs, re-
+    /// exports the resource directly + the funcs against it). Reused so the combined shape publishes
+    /// `cadenza:run/run` the same way.
+    fn inner_reexport_component() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        let (list1, ld) = c.type_defined();
+        ld.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_ty, mut ef) = c.type_function();
+        ef.params([("self", ComponentValType::Type(own_imp))])
+            .result(Some(ComponentValType::Type(list1)));
+        let enc_fn = c.import("import-func-encode", ComponentTypeRef::Func(enc_ty));
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od2) = c.type_defined();
+        od2.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (own_exp2, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (list2, ld2) = c.type_defined();
+        ld2.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_exp_ty, mut ef2) = c.type_function();
+        ef2.params([("self", ComponentValType::Type(own_exp2))])
+            .result(Some(ComponentValType::Type(list2)));
+        c.export(
+            "encode",
+            ComponentExportKind::Func,
+            enc_fn,
+            Some(ComponentTypeRef::Func(enc_exp_ty)),
+        );
+        c
+    }
+
+    /// Build the COMBINED runtime-import + resource component with `ComponentBuilder` — the authoritative
+    /// reference for the R2 shape. Imports the runtime `heap` interface (the walker ops), lowers them,
+    /// then builds the resource shape whose `heap` core-instance threads BOTH the lowered ops AND
+    /// `resource.new`. The program core (`make`/`t-encode`) uses all of them. Published as `cadenza:run/run`.
+    fn oracle_runtime_resource_component(core: &[u8], import_name: &str) -> Vec<u8> {
+        use wasm_encoder::*;
+        let ops = walker_ops();
+        let mut c = ComponentBuilder::default();
+
+        // (1) import instance-type declaring the walker ops.
+        let mut it = InstanceType::new();
+        for (i, op) in ops.iter().enumerate() {
+            let params: Vec<(String, ComponentValType)> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(j, p)| (format!("p{j}"), abi_comp(*p)))
+                .collect();
+            {
+                let mut ft = it.ty().function();
+                ft.params(params.iter().map(|(n, t)| (n.as_str(), *t)));
+                ft.result(op.result.map(abi_comp));
+            }
+            it.export(op.name, ComponentTypeRef::Func(i as u32));
+        }
+        let it_ty = c.type_instance(&it);
+        let inst = c.import(import_name, ComponentTypeRef::Instance(it_ty));
+
+        // (2) alias ALL ops out of the instance first (component funcs 0..k), then lower ALL (core funcs
+        // 0..k) — the batched two-section style `assemble_with_imports` uses, so the combined hand-emit
+        // stays uniform with the proven import path (one alias section, one lower section).
+        let comp_fns: Vec<u32> = ops
+            .iter()
+            .map(|op| c.alias_export(inst, op.name, ComponentExportKind::Func))
+            .collect();
+        let lowered: Vec<(&str, u32)> = ops
+            .iter()
+            .zip(comp_fns)
+            .map(|(op, f)| (op.name, c.lower_func(f, [])))
+            .collect();
+
+        // (3) The dtor module now CALLS `drop` to release the rep, so it imports `heap-dtor.drop`. Build
+        // a small `heap-dtor` core instance exporting the lowered `drop` op (a core func from step 2,
+        // available BEFORE the resource type), thread it into the dtor module's instantiation, THEN alias
+        // `t-dtor`. This keeps the dtor instantiable before the resource type (the cycle stays dissolved:
+        // `drop` is a plain lowered op, independent of resource.new/rep). Then resource type →
+        // resource.new + resource.rep.
+        let drop_core = lowered
+            .iter()
+            .find(|(n, _)| *n == "drop")
+            .map(|(_, f)| *f)
+            .expect("drop is in the op set");
+        let heap_dtor_inst = c.core_instantiate_exports([("drop", ExportKind::Func, drop_core)]);
+        let dtor_idx = c.core_module_raw(&dtor_module());
+        let dtor_inst = c.core_instantiate(
+            dtor_idx,
+            [("heap-dtor", ModuleArg::Instance(heap_dtor_inst))],
+        );
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+
+        // (4) heap core-instance exporting the lowered ops + resource-new + resource-rep; instantiate
+        // the program. `resource.rep` is what `encode` calls to turn the handle the canonical ABI hands
+        // it back into the heap rep it walks (the handle is a guest resource-table index, not the rep).
+        let mut heap_exports: Vec<(&str, ExportKind, u32)> = lowered
+            .iter()
+            .map(|(n, f)| (*n, ExportKind::Func, *f))
+            .collect();
+        heap_exports.push(("resource-new", ExportKind::Func, rnew_core));
+        heap_exports.push(("resource-rep", ExportKind::Func, rrep_core));
+        let heap_inst = c.core_instantiate_exports(heap_exports);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let encode_core = c.core_alias_export(prog_inst, "t-encode", ExportKind::Func);
+        let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
+        let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+
+        // (5) lift make/encode against the internal resource type (both `own<t>` self for now — the
+        // `borrow<t>` migration is the R2-dtor follow-up).
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut enc) = c.type_function();
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (list_u8, ldef) = c.type_defined();
+        ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (encode_ty, mut enc2) = c.type_function();
+        enc2.params([("self", ComponentValType::Type(own_t))])
+            .result(Some(ComponentValType::Type(list_u8)));
+        let encode_comp = c.lift_func(
+            encode_core,
+            encode_ty,
+            [
+                CanonicalOption::Memory(mem),
+                CanonicalOption::Realloc(realloc),
+            ],
+        );
+
+        // (6) inner re-export component → the `cadenza:run/run` instance.
+        let inner_idx = c.component(inner_reexport_component());
+        let inst2 = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-encode", ComponentExportKind::Func, encode_comp),
+            ],
+        );
+        c.export(
+            "cadenza:run/run",
+            ComponentExportKind::Instance,
+            inst2,
+            None,
+        );
+        c.finish()
+    }
+
+    /// Drive the combined component through the HOST (`cdz_run::run`), composing the real value-heap
+    /// runtime — the same path `cdz-run` takes for a resource-escape program. Returns the decoded
+    /// `(: value type)` text (or skips if the runtime wasm is not built). The import name carries the
+    /// runtime's content hash so the host composes it.
+    fn run_composed(core: &[u8]) -> Option<String> {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        let comp = oracle_runtime_resource_component(core, &import_name);
+        // Validate structurally first (localizes any byte/index error before wasmtime).
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("combined runtime-resource component validates");
+        let runtime = super::find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: None, // no bare func export → the host takes the resource-escape path
+            args: vec![],
+            runtime: Some(runtime),
+        };
+        match cdz_run::run(&comp, &opts).expect("run composed") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("composed runtime-resource run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_flat_runtime_tuple_walks_and_crosses() {
+        // Build `(tuple 3 1)` on the value heap, escape it as a resource, walk it in encode(), decode →
+        // the exact corpus value form. The FIRST genuine heap-alloc→escape→walk round-trip.
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()]);
+        let tpl = runtime_value_form_template(&ty).expect("template");
+        let core = walker_core(&tpl, &[3, 1]);
+        if let Some(text) = run_composed(&core) {
+            assert_eq!(text, "(: (tuple 3 1) (Tuple Int64 Int64))");
+        } else {
+            eprintln!("[R2] runtime wasm not found; skipping composed walk");
+        }
+    }
+
+    #[test]
+    fn a_runtime_tuple_with_a_negative_element_walks() {
+        // A negative element exercises the NEG kind-byte flip + absolute-magnitude write in the walker.
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()]);
+        let tpl = runtime_value_form_template(&ty).expect("template");
+        let core = walker_core(&tpl, &[-5, 7]);
+        if let Some(text) = run_composed(&core) {
+            assert_eq!(text, "(: (tuple -5 7) (Tuple Int64 Int64))");
+        } else {
+            eprintln!("[R2] runtime wasm not found; skipping composed walk");
+        }
+    }
+
+    /// The hand-emitted combined runtime-import + resource envelope
+    /// ([`crate::backend::wasm::envelope::assemble_runtime_resource`]) is BYTE-IDENTICAL to the
+    /// `ComponentBuilder` combined oracle — the R2 byte gate, licensing the hand-emit of the fused
+    /// import-prologue + resource shape (now with the DROP-calling dtor + its `heap-dtor` instance) with
+    /// no external encoder in the compile path. Diffs against the SAME walker core + dtor module the
+    /// oracle wraps, so the diff isolates the ENVELOPE. The op set is the seven walker ops (incl. `drop`)
+    /// in the SAME sorted order the compiler's used-set would produce.
+    #[test]
+    fn combined_envelope_matches_component_builder_oracle() {
+        use crate::backend::wasm::envelope::assemble_runtime_resource;
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()]);
+        let tpl = runtime_value_form_template(&ty).expect("template");
+        let core = walker_core(&tpl, &[3, 1]);
+        let dtor = dtor_module();
+        let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
+        let ops: Vec<&RtOp> = walker_ops().to_vec();
+        let ours = assemble_runtime_resource(&core, &dtor, &ops, import_name);
+        let oracle = oracle_runtime_resource_component(&core, import_name);
+        assert_eq!(
+            ours, oracle,
+            "combined envelope mismatch vs ComponentBuilder"
+        );
+    }
+
+    /// The compiler's hand-emitted drop-dtor core module
+    /// ([`crate::backend::wasm::serialize::resource_dtor_module_with_drop`]) is byte-identical to the
+    /// oracle's `dtor_module` — so the envelope byte test above (which wraps the oracle's dtor bytes)
+    /// also pins the real dtor the compiler emits.
+    #[test]
+    fn drop_dtor_module_matches_the_oracle() {
+        assert_eq!(
+            crate::backend::wasm::serialize::resource_dtor_module_with_drop(),
+            dtor_module(),
+            "the compiler's drop-dtor module must match the oracle's"
+        );
     }
 }

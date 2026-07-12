@@ -589,6 +589,31 @@
             (def (main) (f 5)) (export main)))
   (output (: 6 Int64)))
 
+(case "a runtime tuple built behind a recursive call escapes to the host"
+  (doc    "A tuple returned from a RECURSIVE function that threads a runtime value into it —
+           `(f 3)` recurses down to `(f 0)`, which builds `(tuple n 7)` with n=0 → `(tuple 0 7)`. The
+           element `n` is a genuine runtime value carried through the recursion (it does NOT constant-
+           fold, unlike a literal-only tuple), so the compound is built on the value heap and CROSSES
+           the host boundary as a resource whose `encode()` walks the live handle
+           (component-abi.md §A Compound Result Is Rendered By Compiler-Emitted Code). Pins the genuine
+           heap-alloc → escape → walk round-trip: a fold-only path would never touch the runtime.")
+  (input  (do
+            (def (f n) (if (= n 0) (tuple n 7) (f (- n 1))))
+            (def (main) (f 3)) (export main)))
+  (output (: (tuple 0 7) (Tuple Int64 Int64))))
+
+(case "a runtime record built behind a recursive call escapes to the host"
+  (doc    "The record companion of the recursive-tuple escape: `(f 3)` recurses to `(f 0)`, which builds
+           `(record (a n) (b 7))` with n=0 → `(record (a 0) (b 7))`. A record is the SAME positional heap
+           array as a tuple (fields in canonical sorted order); the runtime holds a nameless array and the
+           compiler-emitted renderer bakes the field names from the static type
+           (component-abi.md §The Runtime Does Not Name Or Render Values). Recursive → not folded → a
+           genuine heap value that crosses the host boundary as a resource whose `encode()` walks it.")
+  (input  (do
+            (def (f n) (if (= n 0) (record (a n) (b 7)) (f (- n 1))))
+            (def (main) (f 3)) (export main)))
+  (output (: (record (a 0) (b 7)) (Record (a Int64) (b Int64)))))
+
 ; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
 ; A record and a list carrying a runtime element are, at run time, the SAME positional heap
 ; array a tuple is — field names and the tuple/list/record distinction are static type

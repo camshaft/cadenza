@@ -51,11 +51,44 @@ mod sec {
     pub const CANON: u8 = wasm_abi::COMP_SEC_CANONICAL;
     pub const COMPONENT_IMPORT: u8 = wasm_abi::COMP_SEC_IMPORT;
     pub const COMPONENT_EXPORT: u8 = wasm_abi::COMP_SEC_EXPORT;
+    pub const COMPONENT: u8 = wasm_abi::COMP_SEC_COMPONENT;
+    pub const COMPONENT_INSTANCE: u8 = wasm_abi::COMP_SEC_INSTANCE;
 }
 
 /// The core wasm module name the program's core module imports the runtime funcs from, and the name
 /// the threaded core-instance of lowered ops is bound under (they must match).
 const HEAP_MODULE: &str = "heap";
+/// The core module name the RUNTIME resource dtor imports `drop` from — a SEPARATE small instance of the
+/// lowered `drop` op (distinct from `heap`), so the dtor can instantiate before the resource type
+/// without depending on the resource intrinsics (R2, [[rcdzc-r1-resource-encode-linking-findings]]).
+const HEAP_DTOR_MODULE: &str = "heap-dtor";
+/// The runtime op the dtor calls to release the compound's rc handle — its name in the used-op set.
+const RUNTIME_DROP: &str = "drop";
+
+/// The well-known component instance the resource escape path publishes — the `cadenza:run/run`
+/// interface `cdz-run` reaches into for the `make`/`encode` exports (the resource-aware host, R3).
+const RUN_INTERFACE: &str = "cadenza:run/run";
+/// The core-module import name for the `resource.new` intrinsic the escape shape threads in (module
+/// [`HEAP_MODULE`], export `resource-new`) — the resource type's constructor lowered to a core func.
+const RESOURCE_NEW: &str = "resource-new";
+/// The core-module import name for the `resource.rep` intrinsic (module [`HEAP_MODULE`], export
+/// `resource-rep`) — recovers the heap rep from a resource handle. Threaded into the RUNTIME resource
+/// shape (R2) so `t-encode` can turn its `own<t>` handle param back into the walkable heap rep.
+const RESOURCE_REP: &str = "resource-rep";
+/// The core-module export names the escape shape aliases off the program instance: the resource
+/// constructor, the `encode` method body, and the canonical-ABI memory + realloc the list-lift reads.
+const MAKE_CORE_EXPORT: &str = "make";
+const ENCODE_CORE_EXPORT: &str = "t-encode";
+const MEMORY_EXPORT: &str = "memory";
+const REALLOC_EXPORT: &str = "cabi_realloc";
+/// The dtor core module's single export — the resource destructor the component invokes on host-drop
+/// (its own module so it instantiates first, dissolving the resource↔dtor↔`resource.new` cycle without
+/// a shim; [[rcdzc-r1-resource-encode-linking-findings]]).
+const DTOR_CORE_EXPORT: &str = "t-dtor";
+/// The boundary export names the resource + its two methods cross under (inside [`RUN_INTERFACE`]).
+const RESOURCE_TYPE_NAME: &str = "t";
+const MAKE_BOUNDARY_NAME: &str = "make";
+const ENCODE_BOUNDARY_NAME: &str = "encode";
 
 /// An export's RESULT as the boundary crosses it. A scalar crosses as a component primitive byte; a
 /// compound's canonical binary value form crosses as `list<u8>` (the R0 escape-path ABI — the resource
@@ -381,6 +414,701 @@ fn assemble_with_imports(
     out.extend_from_slice(&lift_sec); // 8: lift boundary funcs
     out.extend_from_slice(&export_sec); // 11: export
     out
+}
+
+/// The RESOURCE-ESCAPE shape — a compound leaves the component as a monomorphized component-model
+/// RESOURCE `t` (rep i32, with a dtor) whose `encode() -> list<u8>` returns the canonical binary value
+/// form, published inside the `cadenza:run/run` instance alongside `make : () -> own<t>`. This is the
+/// escape path (`DESIGN-value-heap-rcdzc.md` §3a): the host holds a strongly-typed live handle and calls
+/// `encode()` to render it (R3), rather than a raw `u32` crossing the boundary.
+///
+/// `main_core` is the program core module (imports `heap.resource-new`; exports `memory`,
+/// `cabi_realloc`, `make`, `t-encode`); `dtor_core` is the STANDALONE dtor module (exports `t-dtor`,
+/// imports nothing). Two core modules dissolve the resource↔dtor↔`resource.new` circular dependency
+/// WITHOUT wit-bindgen's shim/fixup: the dtor module instantiates FIRST, so the resource type has a real
+/// dtor core-func before `resource.new` (and hence `main_core`) needs the resource type
+/// ([[rcdzc-r1-resource-encode-linking-findings]]). Byte-identical to the `ComponentBuilder`
+/// `oracle_resource_component` (the R1 reference), hand-emitted section-by-section per that dump.
+///
+/// Index spaces: core funcs — dtor `0`, lowered `resource.new` `1`, `make` `2`, `t-encode` `3`,
+/// `cabi_realloc` `4`; memory `0`; core instances — dtor `0`, heap `1`, program `2`. Outer component
+/// types — resource `0`, `own<t>` `1`, make-ft `2`, `list u8` `3`, encode-ft `4`. Outer component funcs
+/// — `make` (lift) `0`, `encode` (lift) `1`. The inner re-export component (its own index spaces) is a
+/// raw nested blob ([`resource_inner_component`]) instantiated as component instance `0`, then exported
+/// as the `cadenza:run/run` instance.
+pub fn assemble_resource(main_core: &[u8], dtor_core: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 1: the standalone dtor core module (module 0) — imports nothing, so it instantiates first.
+    out.extend_from_slice(&core_module_section(dtor_core));
+    // sec 2: instantiate the dtor module (no args) → core instance 0.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[])),
+    ));
+    // sec 6: alias `t-dtor` out of core instance 0 → core func 0.
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(0, DTOR_CORE_EXPORT)),
+    ));
+    // sec 7: the resource type `t` (rep i32, dtor = core func 0) → component type 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item(0)),
+    ));
+    // sec 8: canon `resource.new` for type 0 → core func 1 (the constructor `make` calls).
+    out.extend_from_slice(&section(sec::CANON, &wasm_vec(1, &resource_new_item(0))));
+    // sec 2: the `heap` core instance (export-items form) exporting `resource-new` = core func 1 → core
+    // instance 1 (the instance `main_core` binds its `heap` import to).
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RESOURCE_NEW, 1)])),
+    ));
+    // sec 1: the program core module (module 1).
+    out.extend_from_slice(&core_module_section(main_core));
+    // sec 2: instantiate the program module (module 1) threading `heap` = core instance 1 → core
+    // instance 2.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 1)])),
+    ));
+    // sec 6: alias the boundary exports off the program instance (core instance 2) — `make` = core func
+    // 2, `t-encode` = core func 3, `memory` = memory 0, `cabi_realloc` = core func 4.
+    let boundary_aliases = {
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(2, MAKE_CORE_EXPORT));
+        items.extend_from_slice(&core_alias_item(2, ENCODE_CORE_EXPORT));
+        items.extend_from_slice(&memory_alias_item(2, MEMORY_EXPORT));
+        items.extend_from_slice(&core_alias_item(2, REALLOC_EXPORT));
+        section(sec::ALIAS, &wasm_vec(4, &items))
+    };
+    out.extend_from_slice(&boundary_aliases);
+    // sec 7: `own<t>` (type 1) then the `make` functype `() -> own<t>` (type 2).
+    let make_types = {
+        let mut items = own_item(0);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(1)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_types);
+    // sec 8: lift `make` (core func 2) against functype type 2 → component func 0.
+    out.extend_from_slice(&section(sec::CANON, &wasm_vec(1, &canon_lift_item(2, 2))));
+    // sec 7: the shared `list u8` type (type 3) then the `encode` functype `(self: own<t>) -> list<u8>`
+    // (type 4).
+    let encode_types = {
+        let mut items = list_u8_defined_type();
+        items.extend_from_slice(&self_own_to_list_functype(1, 3));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&encode_types);
+    // sec 8: lift `encode` (core func 3) against functype type 4, carrying Memory 0 + Realloc (core func
+    // 4) → component func 1.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_list_item(3, 0, 4, 4)),
+    ));
+    // sec 4: the nested re-export component (its own header + sections) — the mechanism that converts
+    // the internal rep-carrying resource identity into an exported abstract one.
+    out.extend_from_slice(&component_section(&resource_inner_component()));
+    // sec 5: instantiate the inner component (component 0) with the internal resource type (comp type 0)
+    // + the two lifted funcs (comp funcs 0, 1) → component instance 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(1, &component_instantiate_item(0, 0, 1)),
+    ));
+    // sec 11: export the instantiated inner component as the `cadenza:run/run` instance.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(RUN_INTERFACE, 0)),
+    ));
+    out
+}
+
+/// The COMBINED runtime-import + resource escape shape (R2) — a RUNTIME compound (built on the value
+/// heap, not a compile-time constant) leaves the component as a resource whose `encode()` WALKS the live
+/// handle. It fuses the import shape's prologue (import the runtime `heap` interface, alias + lower the
+/// used ops) with the resource shape (dtor module, resource type + `resource.new`/`resource.rep`, the
+/// `heap` core-instance threading BOTH the lowered runtime ops AND the two resource intrinsics, the
+/// program core, lift make/encode, inner re-export). `imports` is the program's sorted used-op set
+/// (`k = imports.len()`), `import_name` the versioned runtime import. Byte-identical to the
+/// `ComponentBuilder` combined oracle (`r2_runtime_resource::oracle_runtime_resource_component`); the
+/// section sequence + index math were dumped from it and mirrored (the H1b method,
+/// [[rcdzc-r1-resource-encode-linking-findings]]).
+///
+/// Index spaces (with `k = imports.len()`): core funcs — lowered ops `0..k`, `t-dtor` `k`,
+/// `resource.new` `k+1`, `resource.rep` `k+2`, then the program's `make` `k+3`, `t-encode` `k+4`,
+/// `cabi_realloc` `k+5` (the program core module imports the `k` runtime ops + `resource-new` +
+/// `resource-rep` = `k+2` funcs before its own three). Component types — import-instance-type `0`,
+/// resource `1`, `own<t>` `2`, make-ft `3`, `list u8` `4`, encode-ft `5`. Component funcs — aliased ops
+/// `0..k`, make-lift `k`, encode-lift `k+1`. Core instances — dtor `0`, heap `1`, program `2`. The
+/// program core module (`serialize::runtime_resource_core_module`) must import the `k` ops + the two
+/// intrinsics in THIS order and export `memory`/`make`/`t-encode`/`cabi_realloc`.
+pub fn assemble_runtime_resource(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+) -> Vec<u8> {
+    let k = imports.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 7: the import instance-type declaring the k used runtime ops (component type 0). Identical to
+    // the import shape's instance-type: 2k interleaved (ty, export) decls.
+    let instance_type = {
+        let mut decls = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            decls.push(0x01);
+            decls.extend_from_slice(&op_comp_functype(op));
+            decls.push(0x04);
+            decls.extend_from_slice(&extern_name(op.name));
+            decls.push(0x01);
+            uleb128(i as u64, &mut decls);
+        }
+        let mut it = vec![0x42];
+        it.extend_from_slice(&wasm_vec(2 * k, &decls));
+        it
+    };
+    out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
+
+    // sec 10: import the runtime interface as an instance of component type 0.
+    let import_sec = {
+        let mut item = extern_name(import_name);
+        item.push(0x05); // ComponentTypeRef::Instance
+        uleb128(0, &mut item);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+    };
+    out.extend_from_slice(&import_sec);
+
+    // sec 6: alias each op out of the imported instance (component instance 0) → component funcs 0..k.
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(0, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(k, &items))
+    };
+    out.extend_from_slice(&op_alias_sec);
+
+    // sec 8: canon-lower each aliased op (component func i) → core funcs 0..k.
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..k {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(k, &items))
+    };
+    out.extend_from_slice(&lower_sec);
+
+    // sec 2: the `heap-dtor` core instance (export-items form) exporting the lowered `drop` op (the core
+    // func at `drop`'s sorted position in the used-set) as `drop` → core instance 0. The dtor module
+    // imports `heap-dtor.drop` to release the resource's rep; sourcing `drop` from THIS small instance
+    // (a plain lowered op, no resource intrinsic) — not the full `heap` instance — is what keeps the dtor
+    // instantiable before the resource type, dissolving the resource↔dtor↔`resource.new` cycle.
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| i as u32)
+        .expect("the runtime-resource escape imports `drop` for the dtor");
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+    ));
+    // sec 1: the dtor core module (module 0) — imports `heap-dtor.drop`, calls it in `t-dtor`.
+    out.extend_from_slice(&core_module_section(dtor_core));
+    // sec 2: instantiate the dtor module threading `heap-dtor` = core instance 0 → core instance 1.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[(HEAP_DTOR_MODULE, 0)])),
+    ));
+    // sec 6: alias `t-dtor` out of core instance 1 → core func k.
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(1, DTOR_CORE_EXPORT)),
+    ));
+    // sec 7: the resource type `t` (rep i32, dtor = core func k) → component type 1.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item(k as u32)),
+    ));
+    // sec 8: canon `resource.new` (→ core func k+1) AND `resource.rep` (→ core func k+2) for the resource
+    // type — BOTH in one canon section (count 2), as the oracle emits them.
+    let resource_canons = {
+        let mut items = resource_new_item(1);
+        items.extend_from_slice(&resource_rep_item(1));
+        section(sec::CANON, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&resource_canons);
+    // sec 2: the `heap` core instance (export-items form) exporting the k lowered ops (funcs 0..k) + the
+    // two resource intrinsics (`resource-new` = core func k+1, `resource-rep` = core func k+2) → core
+    // instance 2 (what `main_core` binds its `heap` import to).
+    let heap_exports = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, i as u32))
+            .collect();
+        ex.push((RESOURCE_NEW, (k + 1) as u32));
+        ex.push((RESOURCE_REP, (k + 2) as u32));
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    // sec 1: the program core module (module 1).
+    out.extend_from_slice(&core_module_section(main_core));
+    // sec 2: instantiate the program module (module 1) threading `heap` = core instance 2 → core
+    // instance 3.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 2)])),
+    ));
+    // sec 6: alias the boundary exports off the program instance (core instance 3). Program core funcs
+    // are shifted by the `k+2` imports (k ops + resource-new + resource-rep): `make` = core func k+3,
+    // `t-encode` = k+4, `memory` = memory 0, `cabi_realloc` = k+5.
+    let boundary_aliases = {
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(3, MAKE_CORE_EXPORT));
+        items.extend_from_slice(&core_alias_item(3, ENCODE_CORE_EXPORT));
+        items.extend_from_slice(&memory_alias_item(3, MEMORY_EXPORT));
+        items.extend_from_slice(&core_alias_item(3, REALLOC_EXPORT));
+        section(sec::ALIAS, &wasm_vec(4, &items))
+    };
+    out.extend_from_slice(&boundary_aliases);
+    // sec 7: `own<t>` (type 2) then the `make` functype `() -> own<t>` (type 3). The resource is
+    // component type 1 here (the import-instance-type is type 0), so `own` references type 1.
+    let make_types = {
+        let mut items = own_item(1);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(2)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_types);
+    // sec 8: lift `make` (core func k+3) against functype type 3 → component func k.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
+    ));
+    // sec 7: the shared `list u8` type (type 4) then the `encode` functype `(self: own<t>) -> list<u8>`
+    // (type 5). ⚠ `encode` takes `own<t>` (CONSUMES self) — this is why a runtime compound's handle
+    // LEAKS: encode swallows the handle and the guest never drops it, so the dtor never fires. The
+    // correct design is `borrow<t>` (host keeps ownership, drops afterward → dtor fires), but that
+    // regresses the composed walk under wasmtime 37 with an un-root-caused host-side trap in encode
+    // (resource.rep / borrow-lend interaction). Tracked as the R2-dtor follow-up in
+    // [[rcdzc-r1-resource-encode-linking-findings]]; kept as `own` here to preserve a GREEN gate.
+    let encode_types = {
+        let mut items = list_u8_defined_type();
+        items.extend_from_slice(&self_own_to_list_functype(2, 4));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&encode_types);
+    // sec 8: lift `encode` (core func k+4) against functype type 5, carrying Memory 0 + Realloc (core
+    // func k+5) → component func k+1.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(
+            1,
+            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 5),
+        ),
+    ));
+    // sec 4: the nested re-export component (its own local resource/func indices) — same blob as the
+    // constant path's inner component.
+    out.extend_from_slice(&component_section(&resource_inner_component()));
+    // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the two
+    // lifted funcs (comp funcs k, k+1) → component instance 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(1, &component_instantiate_item(1, k as u32, (k + 1) as u32)),
+    ));
+    // sec 11: export the instantiated inner component as the `cadenza:run/run` instance. The runtime
+    // IMPORT is component instance 0, so the inner re-export instantiation is component instance 1 (in
+    // the constant shape, with no import, it is instance 0).
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(RUN_INTERFACE, 1)),
+    ));
+    out
+}
+
+/// The nested RE-EXPORT component (a self-contained component blob, its own magic + sections). It
+/// IMPORTS an abstract resource (`SubResource` bound) + the two funcs typed against it, then RE-EXPORTS
+/// the resource DIRECTLY (no `SubResource` ascription — that would mint a fresh identity distinct from
+/// the funcs' resource → "resource types are not the same") + the funcs re-typed against the exported
+/// resource. This is the only way to export a resource-with-methods; the outer component instantiates it
+/// with the real (rep-carrying) resource + lifted funcs. Inner index spaces: imported resource → type 0;
+/// `own<0>` → type 1; make-ft → type 2; `list u8` → type 3; encode-ft → type 4; imported `make` → func
+/// 0; imported `encode` → func 1; the RE-EXPORTED resource → type 5; `own<5>` → type 6; make-exp-ft →
+/// type 7; `own<5>`,`list u8`,encode-exp-ft → types 8,9,10.
+fn resource_inner_component() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    // sec 10: import the abstract resource `import-type-t` (Type, SubResource bound) → type 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_subresource_item("import-type-t")),
+    ));
+    // sec 7: `own<0>` (type 1) then the imported `make` functype `() -> own<0>` (type 2).
+    let make_import_types = {
+        let mut items = own_item(0);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(1)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_import_types);
+    // sec 10: import `import-func-make` as a func of type 2 → func 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-make", 2)),
+    ));
+    // sec 7: `list u8` (type 3) then the imported `encode` functype `(self: own<0>) -> list<u8>` (type
+    // 4).
+    let encode_import_types = {
+        let mut items = list_u8_defined_type();
+        items.extend_from_slice(&self_own_to_list_functype(1, 3));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&encode_import_types);
+    // sec 10: import `import-func-encode` as a func of type 4 → func 1.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-encode", 4)),
+    ));
+    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY under the name `t` (no ascription — a
+    // `SubResource` ascription would mint a fresh identity) → exported type 5.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
+    ));
+    // sec 7: `own<5>` (type 6) then the `make` functype re-typed against the exported resource (type 7).
+    let make_export_types = {
+        let mut items = own_item(5);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(6)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_export_types);
+    // sec 11: export `make` (func 0) ascribed to the exported functype 7.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 7)),
+    ));
+    // sec 7: `own<5>` (type 8), `list u8` (type 9), then the `encode` functype re-typed against the
+    // exported resource (type 10).
+    let encode_export_types = {
+        let mut items = own_item(5);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_own_to_list_functype(8, 9));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    };
+    out.extend_from_slice(&encode_export_types);
+    // sec 11: export `encode` (func 1) ascribed to the exported functype 10.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, 10)),
+    ));
+    out
+}
+
+/// The nested RE-EXPORT component for the RUNTIME escape (R2) — like [`resource_inner_component`] but
+/// `encode` takes `self: borrow<t>` (reads without consuming) instead of `own<t>`. The extra `borrow`
+/// defined type shifts every type index after it by one vs the own variant. Inner index spaces:
+/// imported resource → type 0; `own<0>` → 1; make-ft → 2; `borrow<0>` → 3; `list u8` → 4; encode-ft
+/// `(self:borrow<0>)->list u8` → 5; imported `make` → func 0; imported `encode` → func 1; RE-EXPORTED
+/// resource → type 6; `own<6>` → 7; make-exp-ft → 8; `borrow<6>` → 9, `list u8` → 10, encode-exp-ft → 11.
+///
+/// ⚠ NOT yet wired in: the `borrow<t>` encode is the correct R2-dtor fix (so the host keeps ownership
+/// and drops → dtor fires), but it currently regresses the composed walk under wasmtime 37 with an
+/// un-root-caused host-side trap in encode. Kept here (byte-layout worked out, byte-identity verified
+/// against the ComponentBuilder borrow oracle) as scaffolding for the follow-up; the live path still
+/// uses `own` ([[rcdzc-r1-resource-encode-linking-findings]]).
+#[allow(dead_code)]
+fn resource_inner_component_borrow() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    // sec 10: import the abstract resource `import-type-t` (Type, SubResource bound) → type 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_subresource_item("import-type-t")),
+    ));
+    // sec 7: `own<0>` (type 1) then the imported `make` functype `() -> own<0>` (type 2).
+    let make_import_types = {
+        let mut items = own_item(0);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(1)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_import_types);
+    // sec 10: import `import-func-make` as a func of type 2 → func 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-make", 2)),
+    ));
+    // sec 7: `borrow<0>` (type 3), `list u8` (type 4), then the imported `encode` functype
+    // `(self: borrow<0>) -> list<u8>` (type 5).
+    let encode_import_types = {
+        let mut items = borrow_item(0);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(3, 4));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    };
+    out.extend_from_slice(&encode_import_types);
+    // sec 10: import `import-func-encode` as a func of type 5 → func 1.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-encode", 5)),
+    ));
+    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY under the name `t` → exported type 6.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
+    ));
+    // sec 7: `own<6>` (type 7) then the `make` functype re-typed against the exported resource (type 8).
+    let make_export_types = {
+        let mut items = own_item(6);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(7)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_export_types);
+    // sec 11: export `make` (func 0) ascribed to the exported functype 8.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 8)),
+    ));
+    // sec 7: `borrow<6>` (type 9), `list u8` (type 10), then the `encode` functype re-typed against the
+    // exported resource (type 11).
+    let encode_export_types = {
+        let mut items = borrow_item(6);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(9, 10));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    };
+    out.extend_from_slice(&encode_export_types);
+    // sec 11: export `encode` (func 1) ascribed to the exported functype 11.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, 11)),
+    ));
+    out
+}
+
+/// The sec-4 nested-component bytes: `<id> <byte-length> <component>` — like [`core_module_section`] but
+/// for a whole embedded component (its own magic + sections travel as a raw blob).
+fn component_section(component: &[u8]) -> Vec<u8> {
+    let mut out = vec![sec::COMPONENT];
+    out.extend_from_slice(&uleb_bytes(component.len() as u64));
+    out.extend_from_slice(component);
+    out
+}
+
+/// A core-instance INSTANTIATE item: `00 <module-idx> <args-vec>`, each arg `<name> 0x12 <core-instance>`
+/// (`0x12` = the ModuleArg::Instance / core-instance sort). Instantiate-arg names are BARE (no `0x00`
+/// extern-name prefix), unlike component imports/exports.
+fn core_instantiate_item(module_idx: u32, args: &[(&str, u32)]) -> Vec<u8> {
+    let mut item = vec![0x00]; // instantiate form
+    uleb128(module_idx as u64, &mut item);
+    let mut arg_items = Vec::new();
+    for (name, core_instance) in args {
+        arg_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        arg_items.extend_from_slice(name.as_bytes());
+        arg_items.push(0x12); // ModuleArg::Instance (core-instance sort)
+        uleb128(*core_instance as u64, &mut arg_items);
+    }
+    item.extend_from_slice(&wasm_vec(args.len(), &arg_items));
+    item
+}
+
+/// A core-instance EXPORT-ITEMS item: `01 <exports-vec>`, each export `<name> 0x00 <core-func>` (`0x00`
+/// = ExportKind::Func). Forms an inline core instance from already-defined core funcs (here the lowered
+/// `resource.new`, bound as the `heap` instance the program module imports).
+fn core_export_instance_item(exports: &[(&str, u32)]) -> Vec<u8> {
+    let mut item = vec![0x01]; // export-items form
+    let mut export_items = Vec::new();
+    for (name, core_func) in exports {
+        export_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        export_items.extend_from_slice(name.as_bytes());
+        export_items.push(wasm_abi::EXPORT_KIND_FUNC);
+        uleb128(*core_func as u64, &mut export_items);
+    }
+    item.extend_from_slice(&wasm_vec(exports.len(), &export_items));
+    item
+}
+
+/// A sec-7 RESOURCE-type item: `3f 7f 01 <dtor-core-func>` — resource-def tag `0x3f`, rep `i32`
+/// (`CORE_I32`), has-dtor flag `0x01`, then the dtor core-func index. The `0x3f`/`0x01` are
+/// component-model structural bytes `wasm-encoder` does not expose as constants; pinned by the R1
+/// byte-identity oracle.
+fn resource_type_item(dtor_core_func: u32) -> Vec<u8> {
+    let mut item = vec![0x3f, wasm_abi::CORE_I32, 0x01];
+    uleb128(dtor_core_func as u64, &mut item);
+    item
+}
+
+/// A sec-8 canon `resource.new` item: `02 <resource-type>` — canon tag `0x02` (resource.new) then the
+/// resource type index; lowers the constructor intrinsic to a core func (the guest calls it in `make` to
+/// register a rep → an export-table handle).
+fn resource_new_item(resource_type_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x02];
+    uleb128(resource_type_idx as u64, &mut item);
+    item
+}
+
+/// A sec-8 canon `resource.rep` item: `04 <resource-type>` — canon tag `0x04` (resource.rep) then the
+/// resource type index; lowers the rep-recovery intrinsic to a core func. `encode` calls it to turn the
+/// resource-table HANDLE the canonical ABI hands it (an `own<t>` param crosses as a table index, NOT the
+/// heap rep) back into the i32 heap rep the guest registered via `resource.new` — then walks that rep
+/// ([[rcdzc-r1-resource-encode-linking-findings]] R2: without `resource.rep`, `arr-get` traps on the
+/// small handle index, which `is_immediate` misreads as an inline value).
+fn resource_rep_item(resource_type_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x04];
+    uleb128(resource_type_idx as u64, &mut item);
+    item
+}
+
+/// A sec-7 `own<resource>` defined-type item: `69 <resource-type>` — the own-handle tag `0x69` then the
+/// resource type index. A functype references a resource ONLY through an `own`/`borrow` handle, never the
+/// resource type directly.
+fn own_item(resource_type_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x69];
+    uleb128(resource_type_idx as u64, &mut item);
+    item
+}
+
+/// A component VALTYPE referencing a defined type (an `own<…>` handle here) by index — encoded as the
+/// bare type-index uleb (distinct from a primitive, which is its own negative-space byte).
+fn owned_valtype(type_idx: u32) -> Vec<u8> {
+    uleb_bytes(type_idx as u64)
+}
+
+/// A component functype with NO params and ONE result: `40 00 00 <result-valtype>` — functype form,
+/// empty param vec, result-form `0x00` (one result), then the result valtype bytes. Used for `make : ()
+/// -> own<t>`.
+fn nullary_result_functype(result_valtype: &[u8]) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM, 0x00, 0x00];
+    item.extend_from_slice(result_valtype);
+    item
+}
+
+/// A component functype `(self: own<t>) -> list<u8>` — form, one param named `self` of type
+/// `own<own_type_idx>`, one `list<u8>` result. Used by the CONSTANT escape (R1), whose resource carries
+/// no live heap handle, so consuming it in `encode` leaks nothing.
+fn self_own_to_list_functype(own_type_idx: u32, list_type_idx: u32) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM, 0x01];
+    item.extend_from_slice(&uleb_bytes("self".len() as u64));
+    item.extend_from_slice(b"self");
+    item.extend_from_slice(&owned_valtype(own_type_idx));
+    item.push(0x00); // result form: one result
+    uleb128(list_type_idx as u64, &mut item);
+    item
+}
+
+/// A sec-7 `borrow<resource>` defined-type item: `68 <resource-type>` — the borrow-handle tag `0x68`
+/// then the resource type index. `encode` takes a BORROW (reads self without consuming), so the caller
+/// keeps ownership and drops the handle afterward — which fires the dtor. (An `own` self would move the
+/// handle into `encode`, which then leaks it.)
+#[allow(dead_code)]
+fn borrow_item(resource_type_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x68];
+    uleb128(resource_type_idx as u64, &mut item);
+    item
+}
+
+/// A component functype `(self: borrow<t>) -> list<u8>`: `40 01 <"self"> <borrow-valtype> 00 <list-type>`
+/// — form, one param named `self` of type `borrow<borrow_type_idx>` (a DEFINED type by index),
+/// result-form `0x00` (one result), the list defined-type index. Used for `encode`. `borrow_type_idx` is
+/// the component-type index of the `borrow<t>` defined type (laid just before the functype).
+#[allow(dead_code)]
+fn self_borrow_to_list_functype(borrow_type_idx: u32, list_type_idx: u32) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM, 0x01];
+    item.extend_from_slice(&uleb_bytes("self".len() as u64));
+    item.extend_from_slice(b"self");
+    item.extend_from_slice(&owned_valtype(borrow_type_idx));
+    item.push(0x00); // result form: one result
+    uleb128(list_type_idx as u64, &mut item);
+    item
+}
+
+/// A sec-10 component-import item for an abstract RESOURCE: `<extern-name> 03 01` — `0x03` =
+/// ComponentTypeRef::Type, `0x01` = TypeBounds::SubResource (mint a fresh abstract resource the importer
+/// binds).
+fn import_subresource_item(name: &str) -> Vec<u8> {
+    let mut item = extern_name(name);
+    item.push(0x03); // ComponentTypeRef::Type
+    item.push(0x01); // TypeBounds::SubResource
+    item
+}
+
+/// A sec-10 component-import item for a FUNC: `<extern-name> 01 <type-idx>` — `0x01` =
+/// ComponentTypeRef::Func, then the functype index.
+fn import_func_item(name: &str, type_idx: u32) -> Vec<u8> {
+    let mut item = extern_name(name);
+    item.push(0x01); // ComponentTypeRef::Func
+    uleb128(type_idx as u64, &mut item);
+    item
+}
+
+/// A sec-11 export item RE-EXPORTING a TYPE directly: `00 <name> 03 <type-idx> 00` — extern-name, sort
+/// type `0x03`, the type index, no outer-type ascription (`0x00`). A direct re-export publishes the
+/// imported resource's identity unchanged; an ascription would mint a fresh, incompatible identity.
+fn export_type_direct_item(name: &str, type_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x00];
+    item.extend_from_slice(&uleb_bytes(name.len() as u64));
+    item.extend_from_slice(name.as_bytes());
+    item.push(0x03); // sort: type
+    uleb128(type_idx as u64, &mut item);
+    item.push(0x00); // no outer-type ascription
+    item
+}
+
+/// A sec-11 export item for a FUNC WITH an outer-type ascription: `00 <name> 01 <func-idx> 01 01
+/// <type-idx>` — extern-name, sort func `0x01`, the func index, ascription-present `0x01`, then a
+/// ComponentTypeRef::Func (`0x01`) + the functype index. The ascription re-types the imported func
+/// against the EXPORTED resource identity.
+fn export_func_ascribed_item(name: &str, func_idx: u32, type_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x00];
+    item.extend_from_slice(&uleb_bytes(name.len() as u64));
+    item.extend_from_slice(name.as_bytes());
+    item.push(0x01); // sort: component func
+    uleb128(func_idx as u64, &mut item);
+    item.push(0x01); // outer-type ascription present
+    item.push(0x01); // ComponentTypeRef::Func
+    uleb128(type_idx as u64, &mut item);
+    item
+}
+
+/// A sec-5 component-INSTANTIATE item wiring the resource re-export component's imports: `00 <component>
+/// <args-vec>` with the three args — `import-type-t` = the internal resource (comp type `res_ty`),
+/// `import-func-make` = the lifted `make` (comp func `make_fn`), `import-func-encode` = the lifted
+/// `encode` (comp func `encode_fn`). The constant escape wires `(0, 0, 1)` (no ops precede); the runtime
+/// escape wires `(1, k, k+1)` (the import-instance-type is comp type 0 + the `k` aliased ops precede the
+/// lifts). Instantiate-arg names are BARE (no `0x00` prefix); the sort byte is `0x03` (type) / `0x01`
+/// (func).
+fn component_instantiate_item(res_ty: u32, make_fn: u32, encode_fn: u32) -> Vec<u8> {
+    let mut item = vec![0x00]; // instantiate form
+    uleb128(0, &mut item); // inner component index (always component 0 in both shapes)
+    let args: [(&str, u8, u32); 3] = [
+        ("import-type-t", 0x03, res_ty), // Type → internal resource comp type
+        ("import-func-make", 0x01, make_fn), // Func → lifted make comp func
+        ("import-func-encode", 0x01, encode_fn), // Func → lifted encode comp func
+    ];
+    let mut arg_items = Vec::new();
+    for (name, sort, idx) in args {
+        arg_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        arg_items.extend_from_slice(name.as_bytes());
+        arg_items.push(sort);
+        uleb128(idx as u64, &mut arg_items);
+    }
+    item.extend_from_slice(&wasm_vec(args.len(), &arg_items));
+    item
+}
+
+/// A sec-11 export item for an INSTANCE: `00 <name> 05 <instance-idx> 00` — extern-name, sort
+/// component-instance `0x05`, the instance index, no type ascription. Publishes the instantiated
+/// re-export component as the well-known `cadenza:run/run` interface.
+fn export_instance_item(name: &str, instance_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x00];
+    item.extend_from_slice(&uleb_bytes(name.len() as u64));
+    item.extend_from_slice(name.as_bytes());
+    item.push(0x05); // sort: component instance
+    uleb128(instance_idx as u64, &mut item);
+    item.push(0x00); // no type ascription
+    item
 }
 
 /// The sec-1 embedded-core-module bytes: `<id> <byte-length> <core>` (the module is a raw blob, not a

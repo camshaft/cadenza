@@ -702,6 +702,32 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
             trace!(target: "rcdzc::eval", ty = %tup.render_name(), "ctor (Tuple): built tuple type-value");
             Ok(encode_typeval(db, &tup))
         }
+        // `Record` — VARIADIC over `(name type)` field pairs: each arg is a raw `(name T)` list; read the
+        // field name (first child) and reduce the type (second child) to a `Ty`. The field-name SET +
+        // per-field types ARE the record type, so `(: e (Record (a T)…))` checks the value's field set and
+        // field types against it (a wrong field type is CDZ0203 at the annotation, via `unify`). A
+        // duplicate field name collapses in the `BTreeMap` — the same fixed-SET rule a record VALUE has.
+        Prim::RecordCtor => {
+            let mut fields: std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty> =
+                std::collections::BTreeMap::new();
+            for (i, &a) in args.iter().enumerate() {
+                let pair = match db.ast.get(a).clone() {
+                    crate::ast::Struct::List(children) if children.len() == 2 => children,
+                    _ => return Err(format!("Record field {i} is not a (name type) pair")),
+                };
+                let name = db
+                    .ast
+                    .as_name(pair[0])
+                    .ok_or_else(|| format!("Record field {i} has no name"))?
+                    .to_string();
+                let t = typeval_of(db, pair[1])
+                    .ok_or_else(|| format!("Record field `{name}` is not a type"))?;
+                fields.insert(crate::resolved::Symbol::plain(name), t);
+            }
+            let rec = crate::ty::Ty::Record(fields);
+            trace!(target: "rcdzc::eval", ty = %rec.render_name(), "ctor (Record): built record type-value");
+            Ok(encode_typeval(db, &rec))
+        }
         _ => Err("not a type constructor".to_string()),
     }
 }
@@ -821,7 +847,19 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             }
             db.push_list(items)
         }
-        // Var/Any/Record shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
+        // A record type-value: `(Record (name T)…)` in canonical (sorted) field order — the capitalized
+        // `Record` head (the TYPE; the VALUE head is lowercase `record`), each field a `(name T)` pair.
+        // Round-trips with `decode_ty`'s `"Record"` arm; the `BTreeMap` iteration IS the canonical order.
+        Ty::Record(fields) => {
+            let mut items = vec![db.push_name("Record")];
+            for (name, t) in fields {
+                let fname = db.push_name(&name.name);
+                let fty = encode_ty(db, t);
+                items.push(db.push_list(vec![fname, fty]));
+            }
+            db.push_list(items)
+        }
+        // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }
 }

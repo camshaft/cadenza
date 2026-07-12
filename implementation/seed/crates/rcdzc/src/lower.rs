@@ -545,11 +545,303 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
 /// the classification that routes a STATIC compound away from per-call construction (§2d): a constant
 /// tuple has no runtime-varying part, so it need never be built at run time — its projections fold, and
 /// (once an escape path exists) its materialization is a build-once global rather than a per-call alloc.
-fn is_constant_compound(db: &mut Db, id: StructId) -> bool {
+pub fn is_constant_compound(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => true,
         Core::Tuple { elems } => elems.iter().all(|&e| is_constant_compound(db, e)),
+        Core::Record { fields } => fields.values().all(|&v| is_constant_compound(db, v)),
         _ => false,
+    }
+}
+
+/// The CANONICAL BINARY VALUE FORM of a fully-constant compound at `id` — the bytes the resource escape
+/// path's `encode()` returns (`DESIGN-value-heap-rcdzc.md` §3a; `contracts/deterministic-value-form.md`).
+/// Reconstructs the s-expression `(: <value> <type>)` as ordinary AST (the value from the constant core,
+/// the type from the solved `type_of`) and encodes it with the shared codec — the SAME bytes the corpus
+/// value form uses, so the host decodes + pretty-prints them to the recorded text. Returns `None` if the
+/// node is not a compile-time-constant compound (a runtime compound's bytes are built by the real
+/// handle-walking encoder, R2 — this constant path is R1's proof that the resource+`encode()`+decode
+/// pipeline crosses correctly before the walk exists). The type is baked as constant bytes (the runtime
+/// is name-free); this does NO in-wasm formatting — it is a compile-time serialization.
+pub fn constant_value_form(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
+    let mut b = crate::ast::Builder::new();
+    let colon = b.name(":");
+    let value = const_value_ast(db, &mut b, id)?;
+    let ty = crate::infer::type_of(db, id);
+    let type_ast = type_ast(&mut b, &ty)?;
+    let root = b.list(vec![colon, value, type_ast]);
+    Some(crate::codec::encode(&b.finish(root)))
+}
+
+/// A RUNTIME leaf hole in a value-form byte template: the byte OFFSET in the template where the leaf's
+/// runtime value is written, the WALK PATH of `arr-get` indices from the root heap handle to the leaf,
+/// and its KIND (how many bytes / which encoding). The template bakes everything static (structure,
+/// names, type nodes, kind/len framing); at run time `encode()` walks each hole's path and writes the
+/// value. (`DESIGN-value-heap-rcdzc.md` §3a R2 — the runtime compound escape.)
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RuntimeLeaf {
+    /// Byte offset in the template where the runtime value is written.
+    pub offset: usize,
+    /// `arr-get` indices from the root handle down to this leaf (empty = the root is itself the leaf).
+    pub path: Vec<u32>,
+    /// How the leaf's runtime value fills its hole.
+    pub kind: LeafFill,
+}
+
+/// How a runtime leaf's value fills its template hole.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LeafFill {
+    /// A boxed integer: read `get-int` (s64), write 8 big-endian magnitude bytes at `offset` (the
+    /// template reserves an 8-byte magnitude with `len=8`; a non-minimal magnitude decodes fine because
+    /// `BigInt::from_bytes_be` normalizes leading zeros). A NEGATIVE value also flips the kind byte at
+    /// `offset - 2` from `INT_POS_DEC` to `INT_NEG_DEC` and writes the ABSOLUTE magnitude.
+    Int,
+    /// A boxed boolean: read `get-bool`, write the kind byte at `offset` — `9` (true) or `8` (false).
+    Bool,
+}
+
+/// The value-form byte TEMPLATE for a runtime compound of type `ty`: the codec bytes with every leaf's
+/// value left as a placeholder, plus the [`RuntimeLeaf`] holes to fill at run time. Everything static —
+/// the `(: value type)` structure, the `tuple`/`record` heads + field names, the whole TYPE node, and
+/// each leaf's kind/len framing — is baked; only the leaf VALUES are holes. `encode()` copies this
+/// template into linear memory, walks each hole's heap path, and writes the value (R2). `None` if the
+/// type has no value-form surface (a function/type-value). Every leaf is treated as a runtime hole
+/// (walked from the handle), so a mixed const/runtime compound needs no special-casing — a constant
+/// element still sits boxed on the heap and reads back the same.
+pub fn runtime_value_form_template(ty: &crate::ty::Ty) -> Option<ValueFormTemplate> {
+    let mut b = crate::ast::Builder::new();
+    let colon = b.name(":");
+    // Build the value AST with PLACEHOLDER leaves, recording each leaf's walk path + kind as we go.
+    let mut leaves: Vec<PendingLeaf> = Vec::new();
+    let value = template_value_ast(&mut b, ty, &mut Vec::new(), &mut leaves)?;
+    let type_ast = type_ast(&mut b, ty)?;
+    let root = b.list(vec![colon, value, type_ast]);
+    let arenas = b.finish(root);
+    let bytes = crate::codec::encode(&arenas);
+    // Locate each placeholder leaf's byte offset in the encoded LEAF POOL (leaves are encoded in order
+    // right after the 8-byte header + leaf-count LEB). Walk the pool, tracking offsets; a leaf that was
+    // recorded as runtime (by its LeafId) gets its hole offset resolved here.
+    let holes = resolve_leaf_offsets(&bytes, &arenas, &leaves)?;
+    Some(ValueFormTemplate {
+        bytes,
+        leaves: holes,
+    })
+}
+
+/// A value-form template: the byte buffer (placeholders in the leaf values) + the runtime holes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ValueFormTemplate {
+    pub bytes: Vec<u8>,
+    pub leaves: Vec<RuntimeLeaf>,
+}
+
+/// A leaf recorded during template construction, before its byte offset is resolved: its arena `LeafId`
+/// (to locate it in the encoded pool) plus the runtime info the hole carries.
+struct PendingLeaf {
+    leaf_id: crate::ast::LeafId,
+    path: Vec<u32>,
+    kind: LeafFill,
+}
+
+/// Build the VALUE s-expression for a type with PLACEHOLDER leaves, recording each scalar leaf's walk
+/// `path` (the `arr-get` indices to reach it) and kind. A tuple/record recurses, pushing the positional
+/// index onto the path; a scalar emits a placeholder atom and records a `PendingLeaf`. `None` for a type
+/// with no value surface.
+fn template_value_ast(
+    b: &mut crate::ast::Builder,
+    ty: &crate::ty::Ty,
+    path: &mut Vec<u32>,
+    out: &mut Vec<PendingLeaf>,
+) -> Option<StructId> {
+    use crate::ast::{Leaf, Radix};
+    use crate::ty::Ty;
+    match ty {
+        Ty::Int(_) => {
+            // Placeholder: a positive zero with a FIXED 8-byte magnitude, so the template reserves an
+            // 8-byte hole (len=8) the runtime overwrites with the leaf's big-endian magnitude (a
+            // non-minimal magnitude decodes fine — `BigInt::from_bytes_be` drops leading zeros). Pushed
+            // NON-deduped (`leaf_unique`) so this occurrence has its OWN pool entry and hence its own
+            // byte offset — two equal placeholders must not collapse to one hole.
+            let leaf_id = b.leaf_unique(Leaf::Int {
+                value: crate::ast::IntValue {
+                    negative: false,
+                    magnitude: vec![0u8; 8],
+                },
+                radix: Radix::Dec,
+            });
+            let atom = b.atom(leaf_id);
+            out.push(PendingLeaf {
+                leaf_id,
+                path: path.clone(),
+                kind: LeafFill::Int,
+            });
+            Some(atom)
+        }
+        Ty::Bool => {
+            // Placeholder `false`; the runtime overwrites the kind byte (8=false / 9=true). Pushed
+            // NON-deduped so each bool occurrence has its own pool entry + offset.
+            let leaf_id = b.leaf_unique(Leaf::Bool(false));
+            let atom = b.atom(leaf_id);
+            out.push(PendingLeaf {
+                leaf_id,
+                path: path.clone(),
+                kind: LeafFill::Bool,
+            });
+            Some(atom)
+        }
+        Ty::Tuple(elems) => {
+            let head = b.name("tuple");
+            let mut children = vec![head];
+            for (i, e) in elems.iter().enumerate() {
+                path.push(i as u32);
+                children.push(template_value_ast(b, e, path, out)?);
+                path.pop();
+            }
+            Some(b.list(children))
+        }
+        Ty::Record(fields) => {
+            let head = b.name("record");
+            let mut children = vec![head];
+            // A record is a positional heap array in canonical (sorted) field order — the same order the
+            // BTreeMap iterates, so the `arr-get` index is the field's position in that order.
+            for (i, (name, t)) in fields.iter().enumerate() {
+                let fname = b.name(&name.name);
+                path.push(i as u32);
+                let fval = template_value_ast(b, t, path, out)?;
+                path.pop();
+                children.push(b.list(vec![fname, fval]));
+            }
+            Some(b.list(children))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve each pending leaf's BYTE OFFSET in the encoded template. Re-encodes the leaf pool the same
+/// way `codec::encode` does (header + count, then each leaf), tracking the running offset; when a leaf's
+/// `LeafId` matches a pending runtime leaf, its hole offset is the magnitude position (Int: after the
+/// kind + len bytes) or the kind-byte position (Bool). Returns the resolved holes in the pending order.
+fn resolve_leaf_offsets(
+    bytes: &[u8],
+    arenas: &crate::ast::Arenas,
+    pending: &[PendingLeaf],
+) -> Option<Vec<RuntimeLeaf>> {
+    // Offset walk mirrors `codec::encode`: 8-byte header, then a LEB128 leaf-count, then each leaf.
+    let mut off = 8usize;
+    off += leb_len(arenas.leaves.len() as u64);
+    // Map each LeafId → (magnitude offset for Int, kind-byte offset for Bool).
+    let mut leaf_off: std::collections::HashMap<u32, (usize, LeafFill)> =
+        std::collections::HashMap::new();
+    for (i, leaf) in arenas.leaves.iter().enumerate() {
+        let kind_off = off;
+        match leaf {
+            crate::ast::Leaf::Int { value, .. } => {
+                // kind byte (1) + len LEB + magnitude.
+                let len = value.magnitude.len();
+                let mag_off = off + 1 + leb_len(len as u64);
+                leaf_off.insert(i as u32, (mag_off, LeafFill::Int));
+                off = mag_off + len;
+            }
+            crate::ast::Leaf::Bool(_) => {
+                leaf_off.insert(i as u32, (kind_off, LeafFill::Bool));
+                off += 1;
+            }
+            crate::ast::Leaf::Name(n) => {
+                off += 1 + leb_len(n.len() as u64) + n.len();
+            }
+            crate::ast::Leaf::Str(s) => {
+                off += 1 + leb_len(s.len() as u64) + s.len();
+            }
+            crate::ast::Leaf::Float(_) => return None, // floats not yet in the runtime escape
+        }
+    }
+    let _ = bytes;
+    let mut holes = Vec::with_capacity(pending.len());
+    for p in pending {
+        let (offset, _) = leaf_off.get(&p.leaf_id.0)?;
+        holes.push(RuntimeLeaf {
+            offset: *offset,
+            path: p.path.clone(),
+            kind: p.kind,
+        });
+    }
+    Some(holes)
+}
+
+/// The number of bytes the unsigned LEB128 encoding of `n` occupies (matches `encode::uleb128`).
+fn leb_len(mut n: u64) -> usize {
+    let mut c = 1;
+    while n >= 0x80 {
+        n >>= 7;
+        c += 1;
+    }
+    c
+}
+
+/// Reconstruct the VALUE s-expression of a constant node into `b`: a scalar → its literal atom; a
+/// `Core::Tuple` → `(tuple <elem>…)`; a `Core::Record` → `(record (<name> <value>)…)` in canonical field
+/// order. `None` if the node is not a constant the escape path can bake.
+fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Option<StructId> {
+    use crate::ast::{Leaf, Radix};
+    match core_of(db, id) {
+        Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
+            value: v,
+            radix: Radix::Dec,
+        })),
+        Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
+        Core::Unit => Some(b.name("unit")),
+        Core::Tuple { elems } => {
+            let head = b.name("tuple");
+            let mut children = vec![head];
+            for e in elems {
+                children.push(const_value_ast(db, b, e)?);
+            }
+            Some(b.list(children))
+        }
+        Core::Record { fields } => {
+            let head = b.name("record");
+            let mut children = vec![head];
+            // Canonical (sorted) field order — a `BTreeMap` iterates sorted, matching the type render.
+            for (name, &v) in &fields {
+                let fname = b.name(name.name.clone());
+                let fval = const_value_ast(db, b, v)?;
+                children.push(b.list(vec![fname, fval]));
+            }
+            Some(b.list(children))
+        }
+        _ => None,
+    }
+}
+
+/// Reconstruct a TYPE s-expression into `b`, matching `Ty::render_name`'s surface exactly so the host
+/// prints the recorded type: `Int64`/`UInt8`/… as a name atom, `Bool`/`Unit` likewise, a tuple as
+/// `(Tuple T…)`, a record as `(record (name T)…)`. `None` for a type with no value-form surface (a
+/// function/type-value/unsolved variable can never be a runtime value crossing the boundary).
+fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Int(_) | Ty::Bool | Ty::Unit => Some(b.name(ty.render_name())),
+        Ty::Tuple(elems) => {
+            let head = b.name("Tuple");
+            let mut children = vec![head];
+            for t in elems {
+                children.push(type_ast(b, t)?);
+            }
+            Some(b.list(children))
+        }
+        Ty::Record(fields) => {
+            // The TYPE head is capitalized `Record` (like `Tuple`); the VALUE head is lowercase `record`
+            // (see `const_value_ast`). The corpus writes `(Record (a Int64) …)` for the type.
+            let head = b.name("Record");
+            let mut children = vec![head];
+            for (name, t) in fields {
+                let fname = b.name(name.name.clone());
+                let fty = type_ast(b, t)?;
+                children.push(b.list(vec![fname, fty]));
+            }
+            Some(b.list(children))
+        }
+        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
     }
 }
 
@@ -711,6 +1003,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UIntCtor
         | Prim::FnCtor
         | Prim::TupleCtor
+        | Prim::RecordCtor
         | Prim::BoolTy
         | Prim::UnitTy => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
@@ -912,6 +1205,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UIntCtor => "UInt",
         Prim::FnCtor => "->",
         Prim::TupleCtor => "Tuple",
+        Prim::RecordCtor => "Record",
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
     }
@@ -922,6 +1216,131 @@ mod tests {
     use super::*;
     use crate::ast::IntValue;
     use crate::testkit::{if_program, scalar_program};
+
+    // ── R2 value-form TEMPLATE (the compile-time-computed byte template + runtime holes) ──────────
+    //
+    // A runtime compound's `encode()` copies the template into memory then fills each hole by walking
+    // the heap handle. These tests SIMULATE that fill in Rust — build the template for a type, write
+    // each hole from a Rust value model, decode with the shared codec, and assert the rendered text —
+    // proving the template layout + hole offsets are right BEFORE any wasm emission depends on them.
+
+    /// A tiny value model mirroring what the runtime holds: a nested tuple/record of ints and bools.
+    #[derive(Clone)]
+    enum V {
+        Int(i64),
+        Bool(bool),
+        Tuple(Vec<V>),
+        Record(Vec<V>), // fields in canonical (sorted) order — positional, like the heap array
+    }
+
+    /// Follow a hole's `arr-get` path from the root value to the leaf it addresses.
+    fn walk<'a>(root: &'a V, path: &[u32]) -> &'a V {
+        let mut v = root;
+        for &i in path {
+            v = match v {
+                V::Tuple(es) | V::Record(es) => &es[i as usize],
+                _ => panic!("path descends into a scalar"),
+            };
+        }
+        v
+    }
+
+    /// Simulate `encode()`: fill the template's holes from `root`, returning the finished bytes. Int →
+    /// 8 big-endian magnitude bytes at the hole (+ flip the kind byte to NEG for a negative); Bool →
+    /// the kind byte (8/9).
+    fn fill(tpl: &ValueFormTemplate, root: &V) -> Vec<u8> {
+        let mut bytes = tpl.bytes.clone();
+        for hole in &tpl.leaves {
+            match (hole.kind, walk(root, &hole.path)) {
+                (LeafFill::Int, V::Int(n)) => {
+                    let mag = (n.unsigned_abs()).to_be_bytes(); // 8 bytes, big-endian
+                    bytes[hole.offset..hole.offset + 8].copy_from_slice(&mag);
+                    if *n < 0 {
+                        // kind byte sits 2 bytes before the magnitude (kind + len=8 → len is one byte).
+                        bytes[hole.offset - 2] = 3; // KIND_INT_NEG_DEC
+                    }
+                }
+                (LeafFill::Bool, V::Bool(b)) => {
+                    bytes[hole.offset] = if *b { 9 } else { 8 };
+                }
+                _ => panic!("hole kind / value mismatch"),
+            }
+        }
+        bytes
+    }
+
+    /// Build a template for `ty`, fill it from `root`, decode + print — the value-form text the host
+    /// would render.
+    fn render(ty: &crate::ty::Ty, root: &V) -> String {
+        let tpl = runtime_value_form_template(ty).expect("template");
+        let bytes = fill(&tpl, root);
+        let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode filled template");
+        cadenza_syntax::sexpr::print(&arenas).trim().to_string()
+    }
+
+    fn t_int() -> crate::ty::Ty {
+        crate::ty::Ty::int64()
+    }
+
+    #[test]
+    fn template_fills_a_flat_runtime_tuple() {
+        let ty = crate::ty::Ty::Tuple(vec![t_int(), t_int()]);
+        assert_eq!(
+            render(&ty, &V::Tuple(vec![V::Int(3), V::Int(1)])),
+            "(: (tuple 3 1) (Tuple Int64 Int64))"
+        );
+        // Different runtime values reuse the SAME template — only the holes change.
+        assert_eq!(
+            render(&ty, &V::Tuple(vec![V::Int(4), V::Int(8)])),
+            "(: (tuple 4 8) (Tuple Int64 Int64))"
+        );
+    }
+
+    #[test]
+    fn template_fills_a_mixed_and_negative_tuple() {
+        let ty = crate::ty::Ty::Tuple(vec![t_int(), crate::ty::Ty::Bool]);
+        assert_eq!(
+            render(&ty, &V::Tuple(vec![V::Int(0), V::Bool(true)])),
+            "(: (tuple 0 true) (Tuple Int64 Bool))"
+        );
+        let ty2 = crate::ty::Ty::Tuple(vec![t_int(), t_int()]);
+        assert_eq!(
+            render(&ty2, &V::Tuple(vec![V::Int(-5), V::Int(7)])),
+            "(: (tuple -5 7) (Tuple Int64 Int64))"
+        );
+    }
+
+    #[test]
+    fn template_fills_a_three_element_and_nested_tuple() {
+        let ty3 = crate::ty::Ty::Tuple(vec![t_int(), t_int(), t_int()]);
+        assert_eq!(
+            render(&ty3, &V::Tuple(vec![V::Int(10), V::Int(11), V::Int(12)])),
+            "(: (tuple 10 11 12) (Tuple Int64 Int64 Int64))"
+        );
+        let nested =
+            crate::ty::Ty::Tuple(vec![t_int(), crate::ty::Ty::Tuple(vec![t_int(), t_int()])]);
+        assert_eq!(
+            render(
+                &nested,
+                &V::Tuple(vec![V::Int(2), V::Tuple(vec![V::Int(2), V::Int(2)])])
+            ),
+            "(: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))"
+        );
+    }
+
+    #[test]
+    fn template_fills_a_runtime_record() {
+        use crate::resolved::Symbol;
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(Symbol::plain("a"), t_int());
+        fields.insert(Symbol::plain("b"), t_int());
+        let ty = crate::ty::Ty::Record(fields);
+        // Fields in canonical (sorted) order a, b → positional [a, b].
+        assert_eq!(
+            render(&ty, &V::Record(vec![V::Int(3), V::Int(1)])),
+            "(: (record (a 3) (b 1)) (Record (a Int64) (b Int64)))"
+        );
+    }
 
     #[test]
     fn lowers_a_literal_to_a_const() {

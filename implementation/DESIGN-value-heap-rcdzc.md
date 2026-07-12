@@ -447,6 +447,103 @@ The LEANER shape (no shim/fixup — dtor in its own module). Outer component sec
 1. **sec 1** dtor core module (`t-dtor : (i32)->()`, stub body). 2. **sec 2** instantiate it (`01 00 00 00`). 3. **sec 6** alias `t-dtor` → core func 0 (`00 00 01 00 <name>`). 4. **sec 7** resource type: `0x3f 0x7f 0x01 0x00` = resource-def, rep i32, has-dtor, dtor core-func 0 → comp-type 0. 5. **sec 8** `resource.new`: `0x02 <ty0>` → core func 1. 6. **sec 2** heap instance: export-items form, `resource-new` = core func 1 (`01 01 <name> 00 01`). 7. **sec 1** main core module (imports `heap.resource-new`, exports memory/make/t-encode/cabi_realloc; make = `i32.const rep; call resource-new`). 8. **sec 2** instantiate main threading `heap` = instance 1 (`00 <mod1> 01 heap 0x12 1`). 9. **sec 6** four core aliases off the prog instance (core inst 2): make→func2, t-encode→func3, memory→mem0, cabi_realloc→func4. 10. **sec 7** own<0> (`0x69 00`) + make functype (`0x40` 0-params result-form`0x00` own-idx1) → comp-types 1,2. 11. **sec 8** make lift: `00 00 <func2> 00 <ty2>` (no opts). 12. **sec 7** list<u8> (`0x70 0x7d`) + encode functype (1 param "self" own-idx1, result list-idx3) → comp-types 3,4. 13. **sec 8** encode lift: `00 00 <func3>` opts=`02 03 <mem0> 04 <realloc4>` `<ty4>`. 14. **sec 4** nested inner re-export component (see below). 15. **sec 5** instantiate inner: `01 00 <innercomp0> 03 (import-type-t Type res_ty0)(import-func-make Func makecomp)(import-func-encode Func enccomp)`. 16. **sec 11** export instance `cadenza:run/run` (`01 00 <name> 05 00`).
 Inner re-export component (its own header + sections): **sec10** import `import-type-t` (`03 <name> 03 01` = Type-ref SubResource) → type0; **sec7** own<0>+make-ft; **sec10** import `import-func-make` Func→func0; **sec7** list<u8>+encode-ft(self:own idx1); **sec10** import `import-func-encode` Func→func1; **sec11** export `t` type0 (`01 00 01 t 03 00 00`); **sec7** own<5>(`69 05`)+make-ft(result own idx6); **sec11** export `make` func0 ascribed ft7; **sec7** own<5>+list<u8>+encode-ft(self own idx8); **sec11** export `encode` func1 ascribed ft. KEY: re-export the resource type DIRECTLY (no SubResource ascription on the export → would mint a fresh identity ≠ the funcs' resource).
 
+**R1 ENVELOPE HAND-EMIT LANDED** — `envelope::assemble_resource(main_core, dtor_core)` emits the whole
+outer envelope + nested inner component above, **byte-identical to `oracle_resource_component`** (test
+`resource_envelope_matches_component_builder_oracle`, diffs against the SAME `resource_core`+`dtor_module`
+the oracle wraps so the diff isolates the envelope from the core-module emission). Method as with H1b:
+dump the oracle bytes, mirror section-by-section — landed byte-exact on the first run. The two new
+component section ids (`COMP_SEC_COMPONENT`=4, `COMP_SEC_INSTANCE`=5) were added via `xtask codegen`
+(from `wasm-encoder`'s `ComponentSectionId`), not hand-typed.
+
+**R1c + R2-CONSTANT + R3-DECODE LANDED (2026-07-12) — the CONSTANT-compound boundary vertical is COMPLETE
+end-to-end.** A nullary export returning a fully-CONSTANT compound now crosses as a resource and the host
+renders its exact `(: value type)` text:
+- `lower::constant_value_form(db, id)` reconstructs the s-expression `(: <value> <type>)` from the
+  constant core + solved `type_of`, and `codec::encode`s it — the SAME bytes the corpus value form uses
+  (value head lowercase `tuple`/`record`, type head capital `Tuple`/`Record`). No in-wasm formatting; the
+  bytes are baked at compile time.
+- `serialize::resource_core_module(value_bytes)` (imports `heap.resource-new`; exports
+  `memory`/`make`/`t-encode`/`cabi_realloc`; `make` calls resource.new on a dummy rep, `encode` returns
+  the baked bytes via the R0 `(ptr,len)` return area) + `serialize::resource_dtor_module()` (stub `t-dtor`).
+  Two new codegen'd byte consts: `CORE_SEC_DATA`=0x0b, `EXPORT_KIND_MEMORY`=0x02.
+- `emit` detects `[single nullary export]` returning `Ty::Tuple/Record` that is `is_constant_compound`,
+  BEFORE selection (which would decline a compound body), and routes to `assemble_resource`.
+- `cdz-run::run_resource_escape` finds `make`/`encode` inside the `cadenza:run/run` instance, calls them,
+  `cadenza_syntax::codec::decode`s the `list<u8>`, and `sexpr::print`s `(: value type)`. The gate's
+  `output` grader now accepts EITHER the bare value (scalar) OR the full `(: value type)` (compound).
+- **Added a `Record` TYPE CONSTRUCTOR** (`Prim::RecordCtor`, prelude `ctor_record("Record")`, `reduce_ctor`
+  reads `(name type)` pairs, `encode_ty`/`decode_ty` gained `Record` arms) so `(: e (Record (a T)…))`
+  type-checks — a wrong field type is now CDZ0203 (the record companion of `TupleCtor`). Fixed a latent gap:
+  `encode_ty` previously stubbed `Ty::Record`→`Unit`.
+- Gate **135→145 pass, 0 fail**; 231 rcdzc tests (4 new `constant_resource_escape` e2e-run-and-decode
+  tests: flat/mixed/nested tuple + record). Two stale "declines pending renderer" tests updated to assert
+  the new escape + a genuine runtime-element decline (note: `(f 3)` at nullary `main` FOLDS to a constant —
+  a real runtime compound needs a live parameter).
+
+**R2 STEP 1 — the compile-time VALUE-FORM TEMPLATE landed (2026-07-12).** The hardest R2 design question
+(how does an in-wasm `encode()` emit the variable-length codec format?) is answered: **compute everything
+static up front, leave only leaf VALUES as runtime holes.** Operator confirmed the form need not be
+canonical/minimal for now and leaves may be emitted in any order — so a leaf's magnitude can be a FIXED
+8-byte big-endian field (`BigInt::from_bytes_be` normalizes leading zeros → a non-minimal magnitude
+decodes fine; verified). `lower::runtime_value_form_template(ty)` returns the codec byte template (the
+whole `(: value type)` structure, heads, field names, TYPE node, and each leaf's kind/len framing all
+baked) + a `Vec<RuntimeLeaf>` of holes, each `{offset, path (arr-get indices from the root handle), kind
+(Int=8 BE bytes + neg flips the kind byte / Bool=the kind byte)}`. Placeholder leaves are pushed
+NON-deduped (`Builder::leaf_unique`) so each occurrence has its own byte offset. Validated by 4 tests that
+SIMULATE the runtime fill in Rust (walk a value model, write holes, decode+print) → flat/mixed/negative/
+3-elem/nested tuples + records all render exactly. This is the reusable core; the wasm `encode()` that
+does the walk+fill is R2 step 2.
+
+**R2 STEP 2 — the RUNTIME-compound escape landed end-to-end (2026-07-12).** A compound BUILT ON THE
+VALUE HEAP (not constant-foldable) now crosses to the host as a resource whose `encode()` WALKS the live
+handle. Gate 152→**159**, 0 fail; 241 rcdzc tests.
+- 🔑 **Correction to the R2 design assumption:** `encode`'s `own<t>` param crosses as the resource-table
+  HANDLE, **not** the heap rep. The guest MUST call `resource.rep(handle) -> rep` first to recover the
+  walkable rep (empirically: `arr-get` on the raw handle traps, because the small table index is misread
+  as an inline immediate). So BOTH `resource.new` (in `make`) and `resource.rep` (in `encode`) are
+  lowered + threaded into the `heap` core-instance.
+- **Proven by a ComponentBuilder oracle + composed run FIRST** (`tests::r2_runtime_resource`): the oracle
+  builds the combined import+resource shape whose `make` builds `(tuple 3 1)` on the real heap + calls
+  `resource.new`, and whose `encode` calls `resource.rep` then walks — RUN COMPOSED with the real runtime
+  via `cdz_run::run`, decoding to the exact value form (+ a negative element). The value-form TEMPLATE
+  (R2 step 1) is a data segment doubling as the OUTPUT BUFFER (every leaf is a hole, framing bytes const)
+  → no copy; return the `(ptr=0,len)` area after it.
+- **`envelope::assemble_runtime_resource`** hand-emits the combined shape BYTE-IDENTICAL to that oracle
+  (`combined_envelope_matches_component_builder_oracle`). ⚠ two index gotchas vs the constant shape: the
+  resource type is comp-type **1** (import-instance-type is comp-type 0), and the exported run instance
+  is component-instance **1** (the runtime import is component-instance 0).
+- **`serialize::runtime_resource_core_module`** emits the real program core: imports k ops +
+  `resource-new` + `resource-rep`, emits every reachable body (`import_base = k+2`), synthesizes
+  `make` = `call <export>; call resource-new`, `t-encode` = `resource.rep` + the template walk
+  (`encode_walk_body`), and a stub `cabi_realloc`.
+- **`emit` routing:** a single NULLARY export returning a Tuple/Record that is NOT `constant_value_form`
+  routes through `emit_runtime_resource` (build the used-set INCLUDING the walk ops the template needs —
+  `arr-get`/`get-int`/`get-bool` — which appear only in the synthesized `t-encode`). A PARAMETERIZED
+  compound-return export still declines (the resource `make` is nullary).
+- ⚠ **The corpus's own runtime-compound cases fold** (a nullary `main`'s `(f 3)` inlines to a constant),
+  so the genuine heap escape is a RECURSIVE return: `(def (f n) (if (= n 0) (tuple n 7) (f (- n 1))))` —
+  `is_recursive` declines the fold, `f` becomes a real `Core::Call`, the tuple is heap-built and escapes.
+  Corpus case "a runtime tuple built behind a recursive call escapes to the host" (05) + rcdzc test
+  `a_recursive_runtime_tuple_escapes_to_the_host` (asserts it IMPORTS the runtime = genuine heap, then
+  decodes composed to `(: (tuple 0 7) (Tuple Int64 Int64))`).
+
+**RUNTIME RECORDS landed (2026-07-12, same session).** A record is the SAME positional heap array as a
+tuple — its field values in canonical (sorted `BTreeMap`) order, which the `arr-get` index and the
+value-form renderer already agree on. So `select`'s `Core::Record` arm now builds it exactly like a
+tuple (`arr-alloc` + per-field `box`/`arr-set` in sorted order) instead of declining, `collect_used_ops`
+adds the construction ops, and `valtype_of`/`comp_valtype_of` give a record the same i32 handle slot a
+tuple gets (was `None` → an `if` returning a record declined "no machine representation"). A runtime
+record now escapes to the host through the SAME R2 resource envelope, rendered with its field names from
+the type. Gate 159→**160**; `a_recursive_runtime_record_escapes_to_the_host` +
+corpus "a runtime record built behind a recursive call escapes" → `(record (a 0) (b 7))`. 242 tests.
+⚠ a record with a NESTED-compound field still declines (`box_op`/`get_op` handle only scalar Int/Bool
+leaves — same limit as tuples; nested runtime compounds are H4).
+
+NEXT: (1) the real `drop` dtor body (needs `heap.drop` threaded into the resource shape — currently a
+stub, so a runtime compound's rc handle leaks on host-drop). (2) NESTED runtime compounds (a tuple/record
+whose element is itself a runtime compound — `box_op`/`get_op` extend past scalar leaves). (3) build-once
+GLOBAL (§2d H2c-real).
+
 5. **(H4) Records at runtime** (rides H2 — a record is a positional array; its host-return rides the
    resource vertical above), then **sums** (`sum-new`/`sum-disc`/`sum-payload`), then tuple/record/sum
    PATTERNS in match (the pattern engine grows a product/sum probe), then `.of`→Option (task #59).

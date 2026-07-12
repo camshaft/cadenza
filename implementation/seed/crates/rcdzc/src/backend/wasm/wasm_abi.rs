@@ -123,6 +123,8 @@ pub const CORE_SEC_EXPORT: u8 = 0x07;
 pub const CORE_SEC_START: u8 = 0x08;
 /// core CODE section id.
 pub const CORE_SEC_CODE: u8 = 0x0a;
+/// core DATA section id (an active segment initializing linear memory — the constant value form + return area of a resource escape).
+pub const CORE_SEC_DATA: u8 = 0x0b;
 /// component CORE-MODULE section id.
 pub const COMP_SEC_CORE_MODULE: u8 = 0x01;
 /// component CORE-INSTANCE section id.
@@ -137,8 +139,14 @@ pub const COMP_SEC_CANONICAL: u8 = 0x08;
 pub const COMP_SEC_IMPORT: u8 = 0x0a;
 /// component EXPORT section id.
 pub const COMP_SEC_EXPORT: u8 = 0x0b;
+/// component COMPONENT section id (a nested component definition).
+pub const COMP_SEC_COMPONENT: u8 = 0x04;
+/// component INSTANCE section id (instantiate a component).
+pub const COMP_SEC_INSTANCE: u8 = 0x05;
 /// core export kind `func` — the export-descriptor byte for a function export.
 pub const EXPORT_KIND_FUNC: u8 = 0x00;
+/// core export kind `memory` — the export-descriptor byte for a memory export (the resource escape's `memory`).
+pub const EXPORT_KIND_MEMORY: u8 = 0x02;
 /// core functype form tag — opens a core `func` type before its param/result vecs.
 pub const CORE_FUNCTYPE_FORM: u8 = 0x60;
 /// component functype form tag — opens a component function type.

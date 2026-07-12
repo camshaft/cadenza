@@ -349,6 +349,16 @@ impl Builder {
         self.push(Struct::Atom(leaf))
     }
 
+    /// Intern a leaf WITHOUT deduplication — a fresh pool entry every call, even for an equal leaf. The
+    /// value-form TEMPLATE (`lower::runtime_value_form_template`) needs every placeholder leaf to be its
+    /// OWN pool entry so each has a DISTINCT byte offset a runtime hole can write independently (two
+    /// equal placeholders must not collapse to one offset). The ordinary `leaf` still dedups.
+    pub fn leaf_unique(&mut self, leaf: Leaf) -> LeafId {
+        let id = LeafId(self.leaves.len() as u32);
+        self.leaves.push(leaf);
+        id
+    }
+
     /// Push a `List` occurrence. Not deduplicated.
     pub fn list(&mut self, children: Vec<StructId>) -> StructId {
         self.push(Struct::List(children))
