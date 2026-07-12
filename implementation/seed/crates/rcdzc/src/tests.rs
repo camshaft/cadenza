@@ -4106,6 +4106,30 @@ mod match_engine {
     }
 
     #[test]
+    fn string_concat_folds_two_constant_strings() {
+        // `String.concat : String → String → String` — the total binary join. On two CONSTANT ASCII
+        // strings it FOLDS to their concatenation (`collections-and-text.md` §Strings Concatenate). The
+        // result is another constant `String`; consumed here by constant string equality so `main`
+        // returns a Bool (no string escape needed). Covers the general join and BOTH identity edges (an
+        // empty operand on the left / right changes nothing).
+        for (a, b, want) in [
+            ("hello", " world", "hello world"),
+            ("hi", "", "hi"),
+            ("", "hi", "hi"),
+            ("", "", ""),
+        ] {
+            let src = format!(
+                "(module m (def (main) (if (= (String.concat \"{a}\" \"{b}\") \"{want}\") 1 0)) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                1,
+                "String.concat {a:?} ++ {b:?} = {want:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_string_annotation_checks_against_a_string_value() {
         // `String` in type position (`(: "hi" String)`) decodes to `Ty::String` (`resolve::decode_ty`) —
         // transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)` conflicts the

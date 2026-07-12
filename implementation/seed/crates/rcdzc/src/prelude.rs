@@ -276,6 +276,12 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let at_op = list_op_record(ast, "str-at", at_ty);
     let at_key = push_atom(ast, Leaf::Name("at".to_string()));
     children.push(push_list(ast, vec![at_key, at_op]));
+    // `concat : String → String → String` — the total binary join (the compiler builds error messages
+    // and export names this way). On two constant strings it FOLDS to their concatenation.
+    let concat_ty = string_concat_type(ast);
+    let concat_op = list_op_record(ast, "str-concat", concat_ty);
+    let concat_key = push_atom(ast, Leaf::Name("concat".to_string()));
+    children.push(push_list(ast, vec![concat_key, concat_op]));
     push_list(ast, children)
 }
 
@@ -390,6 +396,21 @@ fn str_at_type(ast: &mut Arenas) -> StructId {
     let index_arrow = arrow_type(ast, int64, option_string); // (-> Int64 (Option String))
     let string = intrinsic_node(ast, "String");
     let body = arrow_type(ast, string, index_arrow); // (-> String (-> Int64 (Option String)))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> String (-> String String)))` for `String.concat` — the total binary join. A
+/// ZERO-PARAM `fn` wrapper (monomorphic, but the wrapper is needed so `scheme_of` reads a SCHEME not a
+/// bare type-value — see [`string_to_int64_type`]). Both operands and the result are the `(intrinsic
+/// "String")` type node (→ `Ty::String`), not the NAME `String` (the module record).
+fn string_concat_type(ast: &mut Arenas) -> StructId {
+    let out = intrinsic_node(ast, "String");
+    let rhs = intrinsic_node(ast, "String");
+    let inner = arrow_type(ast, rhs, out); // (-> String String)
+    let lhs = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, lhs, inner); // (-> String (-> String String))
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])

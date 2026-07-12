@@ -553,6 +553,29 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // to `(Some "<char>")` in range / `None` out (by Unicode SCALAR position, not byte). A
                 // runtime string declines (the byte-rope read is a later increment).
                 Some(Prim::StrAt) if args.len() == 2 => lower_str_at(db, id, args[0], args[1]),
+                // `String.concat` — the TOTAL binary join. FOLD two constant strings to their
+                // concatenation (the result is another constant `String`). The value form is always NFC,
+                // and NFC is NOT closed under concatenation in general (a combining mark starting the RIGHT
+                // operand can compose with the base char ending the LEFT one). The reader already NFC-
+                // normalizes each `ConstStr`, and concatenation of two ALL-ASCII strings is trivially NFC
+                // (ASCII carries no combining marks) — so fold that case, which the compiler's own error-
+                // message/name assembly (and every corpus concat case) lives in. A concat where either
+                // operand has a non-ASCII scalar DECLINES: re-normalizing the join would need Unicode
+                // tables, and the pure compiler core carries no value deps (that arrives with the runtime
+                // byte-rope join). A runtime operand likewise declines.
+                Some(Prim::StrConcat) if args.len() == 2 => {
+                    match (core_of(db, args[0]), core_of(db, args[1])) {
+                        (Core::ConstStr(a), Core::ConstStr(b)) if a.is_ascii() && b.is_ascii() => {
+                            trace!(target: "rcdzc::fold", node = id.0, "String.concat folds two constant ASCII strings");
+                            Core::ConstStr(format!("{a}{b}"))
+                        }
+                        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                        _ => Core::Poison(Reject::decline(
+                            "a string concatenation is only folded for constant ASCII operands (the \
+                             normalizing byte-rope join arrives with the runtime string heap)",
+                        )),
+                    }
+                }
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2602,6 +2625,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrScalarLen
         | Prim::StrByteLen
         | Prim::StrAt
+        | Prim::StrConcat
         | Prim::StringTy
         | Prim::BytesAt
         | Prim::BytesConcat
@@ -3173,6 +3197,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BytesSlice => "bytes-slice",
         Prim::BytesCompact => "bytes-compact",
         Prim::StrAt => "str-at",
+        Prim::StrConcat => "str-concat",
     }
 }
 
