@@ -1283,6 +1283,57 @@
   (input  (: 0 (UInt 0)))
   (error  CDZ0302))
 
+(case "a negative integer width is rejected"
+  (doc    "`(: 5 (Int -8))` names an integer of width -8 — a negative width, which the CDZ0302 registry
+           entry lists explicitly ('a negative width'). It is outside the admitted 1..=64 range and
+           rejected at compile time exactly as `(UInt 0)` is. A negative width MUST NOT be silently
+           dropped so the literal keeps its default Int64 — the ill-formed width is the rejection, not a
+           footnote to a value the annotation is ignored to produce.")
+  (needs  numeric-model)
+  (input  (: 5 (Int -8)))
+  (error  CDZ0302))
+
+(case "a negative unsigned integer width is rejected"
+  (doc    "`(: 5 (UInt -1))` — the unsigned companion, width -1. Same negative-width rejection (CDZ0302)
+           as the signed case; the sign of the constructor does not make a negative width admissible.")
+  (needs  numeric-model)
+  (input  (: 5 (UInt -1)))
+  (error  CDZ0302))
+
+(case "a negative width is not honored as a narrow type"
+  (doc    "`(: 300 (Int -8))` — the discriminating case: if `(Int -8)` were (wrongly) honored as some
+           narrow width, 300 would overflow it; if the width were silently dropped to Int64, 300 fits and
+           the program returns 300. Neither is correct — the ill-formed negative width is rejected
+           (CDZ0302) before any literal-fit check, so the outcome is the rejection, not 300.")
+  (needs  numeric-model)
+  (input  (: 300 (Int -8)))
+  (error  CDZ0302))
+
+(case "a boolean in integer-width position is rejected"
+  (doc    "`(: 300 (Int true))` puts a Bool where a compile-time natural width belongs — a non-natural
+           width (the CDZ0302 registry entry covers 'a negative width, or a non-natural width'). Rejected
+           at compile time, not silently degraded to Int64. A non-integer value in width position is
+           ill-formed exactly as a negative one is.")
+  (needs  numeric-model)
+  (input  (: 300 (Int true)))
+  (error  CDZ0302))
+
+(case "a float in integer-width position is rejected"
+  (doc    "`(: 300 (Int 8.0))` puts a Float where a natural width belongs — a non-natural width, CDZ0302.
+           `(Int 8)` would be a valid 8-bit type in which 300 overflows; the float `8.0` is neither
+           accepted-as-8 nor overflow-checked — it is an ill-formed width, rejected.")
+  (needs  numeric-model)
+  (input  (: 300 (Int 8.0)))
+  (error  CDZ0302))
+
+(case "a type-value in integer-width position is rejected"
+  (doc    "`(: 300 (Int Int64))` puts a type-value where a width natural belongs — a non-natural width,
+           CDZ0302. Completes the non-natural-width family (negative / bool / float / type) that shares
+           one rule: a width the compiler cannot read as a natural in 1..=64 is rejected, never dropped.")
+  (needs  numeric-model)
+  (input  (: 300 (Int Int64)))
+  (error  CDZ0302))
+
 (case "an integer width above the 64-bit ceiling is rejected"
   (doc    "`(: 5 (UInt 65))` names a 65-bit integer, one past the 1..=64 ceiling — a width a single
            core-wasm register cannot hold. It is rejected at compile time (CDZ0302); a fixed-size integer

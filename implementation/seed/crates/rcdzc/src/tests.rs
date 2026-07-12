@@ -2786,6 +2786,30 @@ mod stage1 {
     }
 
     #[test]
+    fn a_malformed_integer_width_is_rejected_not_dropped() {
+        // A NON-NATURAL width — negative, or a bool/float/type-value in width position — must be
+        // rejected (CDZ0302), NOT silently dropped so the literal keeps its default Int64. The width
+        // reader used to narrow with `u32::try_from`, whose `None` was ignored: `(: 5 (Int -8))` then
+        // ran to 5. Each of these now reduces to the invalid sentinel width 0 and the fit-check
+        // rejects it, exactly as an explicit `(UInt 0)` is rejected.
+        for body in [
+            "(: 5 (Int -8))",
+            "(: 5 (UInt -1))",
+            "(: 300 (Int -8))",   // if the width were honored 300 would overflow; if dropped it fits — neither
+            "(: 300 (Int true))", // a bool in width position
+            "(: 300 (Int 8.0))",  // a float in width position
+            "(: 300 (Int Int64))", // a type-value in width position
+        ] {
+            assert!(
+                expect_decline(body).contains("does not fit"),
+                "malformed width must be rejected CDZ0302: {body}"
+            );
+        }
+        // A valid width is unaffected — `(Int 64)` still builds and `5` fits (crosses as s64).
+        assert_eq!(run_main("(: 5 (Int 64))"), 5);
+    }
+
+    #[test]
     fn arbitrary_odd_widths_compute_their_bounds() {
         // The bounds are computed FROM THE WIDTH PARAMETER, not a per-named-type table — so an ODD,
         // non-machine width works: `(UInt 7)` max = 2^7-1 = 127, `(UInt 24)` max = 2^24-1 = 16777215,

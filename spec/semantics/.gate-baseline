@@ -183,6 +183,7 @@ todo	a bool match missing the false arm is non-exhaustive
 todo	a bool match missing the true arm is non-exhaustive
 todo	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 todo	a boolean connective with a non-boolean operand is a type error
+todo	a boolean in integer-width position is rejected
 todo	a boolean literal pattern against an integer scrutinee is a type error
 todo	a boolean literal pattern matches a runtime scrutinee
 todo	a boolean record field is projected as the program result
@@ -260,6 +261,7 @@ todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a fixpoint loop that threads a growing list accumulator returns that list
 todo	a fixpoint that re-seeds a fresh list each round via a helper returns a list
+todo	a float in integer-width position is rejected
 todo	a floating-point literal
 todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function declaration in a do block is callable by the following forms
@@ -346,9 +348,12 @@ todo	a named function is partially applied, bound, and used
 todo	a named multi-argument function applies in explicit curried form
 todo	a named width alias and its width-indexed expansion name the same type
 todo	a nearer handler on the call chain shadows an outer one
+todo	a negative integer width is rejected
 todo	a negative right-shift count traps rather than masking
 todo	a negative shift count traps rather than masking
 todo	a negative string index yields None rather than wrapping to a large offset
+todo	a negative unsigned integer width is rejected
+todo	a negative width is not honored as a narrow type
 todo	a negative zero in a record field is distinct from positive zero
 todo	a negative zero nested in a tuple is distinct from positive zero
 todo	a negative-power SI prefix is an exact rational scale
@@ -530,6 +535,7 @@ todo	a tuple payload extracted through a helper return must not be rejected as a
 todo	a tuple payload returned through a helper from a built-in Option must not trap
 todo	a tuple with a runtime element is returned as a program result
 todo	a tuple with every element computed at run time is returned as a result
+todo	a type-value in integer-width position is rejected
 todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer

@@ -599,8 +599,18 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
                     if signed { "Int" } else { "UInt" }
                 ));
             }
-            let width = const_width(db, args[0])
-                .ok_or_else(|| "integer width must be a constant".to_string())?;
+            // A MALFORMED width (negative/non-natural) reduces to the invalid sentinel width 0, so the
+            // built module's type is `Ty::Int(Fixed(0))` — which `int_bounds`/`fits_width` reject as
+            // CDZ0302 exactly as an explicit `(UInt 0)` is (a nonsensical width is rejected at the
+            // annotation, not silently dropped to the default Int64). A NON-CONSTANT width still
+            // declines (a runtime/variable width is not yet supported), unchanged.
+            let width = match read_width(db, args[0]) {
+                WidthRead::Fixed(w) => w,
+                WidthRead::Malformed => 0,
+                WidthRead::NotConst => {
+                    return Err("integer width must be a constant".to_string());
+                }
+            };
             // Build once per (ctor, width): the first demand appends the module, every later demand —
             // repeated on this occurrence, or another `(Int 64)` elsewhere — returns the same node, so
             // the reduction is idempotent and the arena holds one module per width.
@@ -676,13 +686,46 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
     }
 }
 
-/// Read a constant width from the node at `id` — an integer literal's value narrowed to a `u32`. Used
-/// for the width argument of `(Int W)`. `None` if not a constant that fits.
-fn const_width(db: &mut Db, id: StructId) -> Option<u32> {
+/// How a `(Int W)`/`(UInt W)` width argument reads. A concrete non-negative natural is `Fixed`. A
+/// concrete but NON-NATURAL width — a negative or over-`u32` integer, or a bool/float/type-value in
+/// width position — is `Malformed`: the diagnostics registry lists exactly these (CDZ0302, "a negative
+/// width, or a non-natural width"). A width that is not a concrete value at all — a width variable, an
+/// unbound name, or a non-constant computation — is `NotConst`, a genuine decline (its own scope error,
+/// if any, surfaces elsewhere; a runtime width is simply not yet supported).
+enum WidthRead {
+    Fixed(u32),
+    Malformed,
+    NotConst,
+}
+
+/// Classify the width argument of `(Int W)`/`(UInt W)`. The old reader narrowed with `u32::try_from`
+/// and returned `None` for anything that failed — which silently DROPPED a negative/non-natural width
+/// (the annotation was ignored and the literal kept its default Int64) instead of rejecting it. This
+/// distinguishes a MALFORMED concrete width (reject) from a NON-CONSTANT one (decline), so the caller
+/// can reject the former with CDZ0302 exactly as `(UInt 0)` already is.
+fn read_width(db: &mut Db, id: StructId) -> WidthRead {
     match resolved_of(db, id) {
-        Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok()),
-        Resolved::Ref { value } => const_width(db, value),
-        _ => None,
+        // A concrete integer literal: a non-negative natural that fits `u32` is the width. A negative
+        // or over-`u32` literal is a malformed (non-natural) width.
+        Resolved::Int(v) => match v.to_i64() {
+            Some(n) if (0..=i64::from(u32::MAX)).contains(&n) => WidthRead::Fixed(n as u32),
+            _ => WidthRead::Malformed,
+        },
+        Resolved::Ref { value } => read_width(db, value),
+        // A concrete NON-integer value in width position (a Bool, a type-value, a type/module record)
+        // is a non-natural width — reject, don't drop.
+        Resolved::Bool(_) | Resolved::TypeVal(_) | Resolved::Record { .. } => WidthRead::Malformed,
+        // A float LITERAL reaches here as a decline-poison (floats are unsupported), but a concrete
+        // float in width position is still a non-natural width → malformed. Anything else (an unbound
+        // name, a width variable, a non-constant computation) is not a concrete width → decline.
+        _ => match db.ast.get(id) {
+            crate::ast::Struct::Atom(lid)
+                if matches!(db.ast.leaf(*lid), crate::ast::Leaf::Float(_)) =>
+            {
+                WidthRead::Malformed
+            }
+            _ => WidthRead::NotConst,
+        },
     }
 }
 
