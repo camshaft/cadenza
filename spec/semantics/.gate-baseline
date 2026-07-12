@@ -56,6 +56,7 @@ pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested match on a runtime scrutinee
+pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a nullary function called from another function's body
@@ -81,6 +82,7 @@ pass	a runtime left shift multiplies by a power of two
 pass	a runtime left shift of -1 by 63 is exactly the minimum integer
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime record built behind a recursive call escapes to the host
+pass	a runtime record whose field is a runtime tuple escapes to the host
 pass	a runtime remainder takes the dividend's sign
 pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime truncation into a signed byte sign-extends
@@ -89,6 +91,8 @@ pass	a runtime truncation to an unsigned byte keeps the low bits
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a runtime-branched tuple returned from a callee is projected in the caller (else)
+pass	a runtime-branched tuple returned from a callee is projected in the caller (then)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
@@ -97,6 +101,7 @@ pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
 pass	a signed-byte entrypoint returns its runtime argument
+pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack

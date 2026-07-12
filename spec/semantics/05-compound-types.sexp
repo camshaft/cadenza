@@ -369,6 +369,51 @@
             (def (main) (. (dec 4) 0)) (export main)))
   (output (: 40 Int64)))
 
+; --- A compound built in an if-branch, returned ACROSS a call, projected in the caller -----------
+; The distinguishing shape from the conditional-access cases above (which put the `if` INSIDE the
+; projecting function): here a callee `pick` returns one of two tuples chosen by a runtime `Bool`
+; parameter, and the CALLER projects the result. Inlining a non-recursive callee whose body is an
+; `if` over the callee's own param, with a compound constructor in each branch, must thread the
+; parameter substitution into the constructed branches — earlier this dropped the substitution and
+; reported a spurious `unbound name` for the plainly-bound parameter. Both branch selections and the
+; straight-line companion (no `if`) project the runtime element.
+
+(case "a runtime-branched tuple returned from a callee is projected in the caller (then)"
+  (doc    "`(pick b)` returns `(tuple 1 2)` or `(tuple 3 4)` chosen by the runtime Bool `b`; the caller
+           projects element 0. With `b` = true the callee returns the first tuple, so element 0 is 1.
+           The `if`-branched compound crosses the `pick`→`main` call boundary and is projected in the
+           caller — pins that inlining `pick` threads main's `b` into both branch constructors (a
+           substitution earlier dropped through the branch/compound combination, spuriously reporting
+           `b` unbound).")
+  (input  (do
+            (def (pick b) (if b (tuple 1 2) (tuple 3 4)))
+            (def (main (: b Bool)) (. (pick b) 0))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 1 Int64)))
+
+(case "a runtime-branched tuple returned from a callee is projected in the caller (else)"
+  (doc    "The else companion: with `b` = false, `(pick b)` is `(tuple 3 4)` and element 0 is 3.
+           Confirms the projection follows the runtime branch the callee selected, across the call.")
+  (input  (do
+            (def (pick b) (if b (tuple 1 2) (tuple 3 4)))
+            (def (main (: b Bool)) (. (pick b) 0))
+            (export main)))
+  (call   main (: false Bool))
+  (output (: 3 Int64)))
+
+(case "a straight-line tuple built from callee params is projected in the caller"
+  (doc    "The branch-free anchor: `(mk x 2)` builds a tuple straight from the callee's params (no
+           `if`), and the caller projects element 0 — the runtime argument `x`. Contrasts the branched
+           cases above: the substitution works straight-line, so both must; pins that the callee's
+           parameter reaches the constructed tuple whether or not a branch intervenes.")
+  (input  (do
+            (def (mk a b) (tuple a b))
+            (def (main (: x Int64)) (. (mk x 2) 0))
+            (export main)))
+  (call   main (: 41 Int64))
+  (output (: 41 Int64)))
+
 (case "a recursive resolver whose trapping arm builds a compound compiles"
   (doc    "A recursive `Node → Core` resolver — the self-hosting compiler's front rung — applied to a
            runtime-built `Node` and consumed as a scalar. One arm (`unknown-head`) builds a Core whose
