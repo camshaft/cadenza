@@ -2519,7 +2519,7 @@ mod recursion {
 // non-exhaustive match) is checked STRUCTURALLY, before the fold. These run whole programs under
 // wasmtime + assert the rejections.
 mod match_engine {
-    use super::{run_returns, run_returns_with};
+    use super::{call_traps, run_returns, run_returns_with};
     use crate::backend::Target;
     use crate::compile::{compile, compile_component};
     use crate::testkit::parse;
@@ -2605,6 +2605,35 @@ mod match_engine {
                 "main"
             ),
             120
+        );
+    }
+
+    #[test]
+    fn a_computed_match_scrutinee_is_evaluated_once() {
+        use wasmtime::component::Val;
+        // `(match (+ a b) (0 10) (1 20) (_ 30))` — the scrutinee is a CHECKED add. It is evaluated ONCE
+        // into a slot; each probe reads that slot (not a recomputed add). Correct dispatch across arms:
+        let src = "(module m (def (f (: a Int64) (: b Int64)) \
+                     (match (+ a b) (0 10) (1 20) (_ 30))) (export f))";
+        let bytes = component(src);
+        // (a+b)=0 → 10; =1 → 20; =5 → wildcard 30. The single evaluation must feed every probe.
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(-2), Val::S64(2)]),
+            10
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(1), Val::S64(0)]),
+            20
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(3), Val::S64(2)]),
+            30
+        );
+        // The scrutinee's own overflow guard must STILL fire (evaluated once, but still checked): a+b
+        // overflowing Int64 traps before any probe runs.
+        assert!(
+            call_traps(&bytes, "f", &[Val::S64(i64::MAX), Val::S64(1)]),
+            "an overflowing computed scrutinee must trap (its guard is not lost by the compute-once)"
         );
     }
 

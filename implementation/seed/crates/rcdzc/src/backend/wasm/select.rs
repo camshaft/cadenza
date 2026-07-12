@@ -1012,6 +1012,107 @@ fn emit_match_arms_tailable(
     out: &mut Vec<Lir>,
     tail: bool,
 ) -> Result<(), Reject> {
+    // Resolve the scrutinee to a SOURCE pushed once per probe. A match dispatches by testing the
+    // scrutinee against each arm's literal in turn — so the scrutinee is read once PER PROBE. If it is a
+    // reusable value (a parameter/local, or a constant), re-pushing it each time is free. But a COMPUTED
+    // scrutinee (`(match (+ a b) …)`) would be fully RE-EVALUATED per probe — recomputing the add AND
+    // its overflow guard N times. So a non-reusable scrutinee is evaluated ONCE into a scratch slot here,
+    // and every probe reads that slot. A scalar match's scrutinee is Int or Bool (an i32/i64 slot).
+    let scrut_vt = match block_scalar_slot(db, scrutinee) {
+        Some(vt) => vt,
+        None => {
+            return Err(Reject::decline(
+                "match scrutinee has no machine representation",
+            ));
+        }
+    };
+    let (src, chain_base) = match reusable_scalar_src(db, scrutinee, slots) {
+        // A reusable scrutinee is pushed in place at each probe — no scratch, the probe chain keeps the
+        // full scratch region from `base`.
+        Some(src) => (src, base),
+        None => {
+            // Evaluate the scrutinee ONCE into scratch slot `base`, and run the probe chain from `base+1`
+            // so the arm bodies and later probes never clobber that live slot (it must survive every
+            // probe). The scrutinee's own emit uses `base+1` too (it is fully consumed into `base` before
+            // any probe runs). `slot` is at least `base`, so the high-water covers it.
+            let slot = base;
+            if slot + 1 > *high {
+                *high = slot + 1;
+            }
+            scratch_ty.insert(slot, scrut_vt);
+            emit(
+                db,
+                scrutinee,
+                slots,
+                base + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(Lir::LocalSet(slot));
+            (OperandSrc::Slot(slot), base + 1)
+        }
+    };
+    emit_probe_chain(
+        db, src, arms, it, result_it, block_ty, slots, chain_base, high, scratch_ty, layout, out,
+        tail,
+    )
+}
+
+/// The wasm slot type of a scalar match scrutinee (Int → its width's slot, Bool → i32), or `None` if
+/// it has no machine representation.
+fn block_scalar_slot(db: &mut Db, scrutinee: StructId) -> Option<ValType> {
+    match type_of(db, scrutinee) {
+        Ty::Int(it) => Some(m_slot(it)),
+        Ty::Bool => Some(ValType::I32),
+        _ => None,
+    }
+}
+
+/// The reusable [`OperandSrc`] for a match scrutinee that need NOT be stashed — a parameter/kept-local
+/// (re-`local.get` is free) or a compile-time constant (re-materialized inline). `None` for a computed
+/// scrutinee, which the caller evaluates once into a scratch slot. (A constant scrutinee normally folds
+/// away in `lower` before reaching a runtime match, but handling it keeps the source uniform.)
+fn reusable_scalar_src(
+    db: &mut Db,
+    scrutinee: StructId,
+    slots: &HashMap<StructId, u32>,
+) -> Option<OperandSrc> {
+    match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => {
+            slots.get(&binder).copied().map(OperandSrc::Slot)
+        }
+        Core::ConstInt(v) => match type_of(db, scrutinee) {
+            Ty::Int(it) if it.ground_width() <= 32 => {
+                Some(OperandSrc::ConstI32(v.to_i32_bits(it.ground_width())))
+            }
+            _ => Some(OperandSrc::ConstI64(v.to_i64_bits())),
+        },
+        Core::ConstBool(b) => Some(OperandSrc::ConstI32(if b { 1 } else { 0 })),
+        _ => None,
+    }
+}
+
+/// The probe chain over a match's arms, dispatching on a scrutinee already resolved to `src` (pushed
+/// once per probe — a local read or an inline constant, never a recomputation). See
+/// [`emit_match_arms_tailable`], which resolves `src` and (for a computed scrutinee) evaluates it once.
+#[allow(clippy::too_many_arguments)]
+fn emit_probe_chain(
+    db: &mut Db,
+    src: OperandSrc,
+    arms: &[(crate::core::Probe, StructId)],
+    it: IntTy,
+    result_it: Option<IntTy>,
+    block_ty: BlockType,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+    tail: bool,
+) -> Result<(), Reject> {
     // Emit an arm body. Every arm produces the match's RESULT type, so a bare-LITERAL arm body must be
     // grounded to the result's integer width (`result_it`) — otherwise a default-Int64 literal arm
     // beside a narrow-width arm pushes a mismatched machine slot and wasm rejects the block (the same
@@ -1058,8 +1159,10 @@ fn emit_match_arms_tailable(
             emit_body(db, *body, base, high, scratch_ty, out)
         }
         Some(((probe, body), rest)) => {
-            // A literal probe: `scrutinee == literal`, then `if (block_ty) body else <rest>`.
-            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
+            // A literal probe: `scrutinee == literal`, then `if (block_ty) body else <rest>`. The
+            // scrutinee is pushed from its resolved SOURCE (a local read or an inline constant) — never
+            // recomputed, even when it was a computation (evaluated once in `emit_match_arms_tailable`).
+            src.push(out);
             match probe {
                 crate::core::Probe::Int(v) => {
                     let m = Machine::of(it);
@@ -1075,9 +1178,9 @@ fn emit_match_arms_tailable(
             out.push(Lir::If(block_ty));
             emit_body(db, *body, base, high, scratch_ty, out)?;
             out.push(Lir::Else);
-            emit_match_arms_tailable(
-                db, scrutinee, rest, it, result_it, block_ty, slots, base, high, scratch_ty,
-                layout, out, tail,
+            emit_probe_chain(
+                db, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+                tail,
             )?;
             out.push(Lir::End);
             Ok(())
