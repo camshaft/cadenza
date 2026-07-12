@@ -2588,16 +2588,21 @@ mod tests {
     }
 
     #[test]
-    fn selects_an_if_to_a_structured_block() {
-        let (ast, if_node) = if_program();
+    fn selects_a_runtime_if_to_a_structured_block() {
+        // A RUNTIME condition (a bool param `p`) — an unfoldable `if` selects to a structured wasm
+        // block: `local.get 0 ; if (result i64) ; i64.const 1 ; else ; i64.const 2 ; end`. (A CONSTANT
+        // condition folds away in `lower`; this exercises the surviving `Core::If` emission.)
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: p Bool)) (if p 1 2)) (def (main) 0) (export main))",
+        );
         let mut db = Db::load(ast);
         let layout = layout_of(&mut db);
-        let f = select_body(&mut db, if_node, &layout).expect("select");
-        // (if false 1 2) → i32.const 0 ; if (result i64) ; i64.const 1 ; else ; i64.const 2 ; end
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
         assert_eq!(
             f.code,
             vec![
-                Lir::ConstI32(0),
+                Lir::LocalGet(0),
                 Lir::If(BlockType::Val(ValType::I64)),
                 Lir::ConstI64(1),
                 Lir::Else,

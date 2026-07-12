@@ -186,7 +186,36 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
             }
         }
-        Resolved::If { cond, then_, else_ } => Core::If { cond, then_, else_ },
+        // An `if`. FOLD when the condition reduces to a compile-time-constant boolean: the branch the
+        // condition selects IS the result, so lower it directly and drop the `if`. This is dead-branch
+        // elimination on a proven-constant condition — the untaken branch NEVER executes at run time.
+        // ⚠ WHAT MAY BE DROPPED from the untaken branch mirrors the reachability model
+        // (`compile::collect_reached_poisons`, which does NOT descend an `if`'s branches): a RUNTIME TRAP
+        // shielded by an untaken branch is not a build failure, so a `ConstTrap` (CDZ0304) untaken branch
+        // folds away (`(if (< 1 2) 7 (% 5 0))` → 7 — the div-by-zero is unreachable). But a NON-TRAP
+        // poison — an ill-FORMED untaken branch (an unbound name, a type mismatch, an unsupported
+        // literal like a float, whose branch also DISAGREES in type with the taken one, e.g.
+        // `(if true 1 3.5)`) — is a static well-formedness fault the program must be REJECTED for,
+        // reachability notwithstanding. So keep the `Core::If` when the untaken branch is a non-trap
+        // poison, letting that fault surface; fold otherwise. A runtime condition stays a `Core::If`.
+        Resolved::If { cond, then_, else_ } => match core_of(db, cond) {
+            Core::ConstBool(b) => {
+                let (taken, dropped) = if b { (then_, else_) } else { (else_, then_) };
+                let untaken_is_illformed = matches!(
+                    core_of(db, dropped),
+                    Core::Poison(r) if r.code != Some(Code::ConstTrap)
+                );
+                if untaken_is_illformed {
+                    Core::If { cond, then_, else_ }
+                } else {
+                    trace!(target: "rcdzc::lower", node = id.0, taken = b, "if with a constant condition folds to the taken branch");
+                    core_of(db, taken)
+                }
+            }
+            // A condition that is a poison propagates (the ill-formed condition is the fault).
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::If { cond, then_, else_ },
+        },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
         // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
         Resolved::Match { scrutinee, arms } => lower_match(db, scrutinee, &arms),
@@ -1920,12 +1949,56 @@ mod tests {
     }
 
     #[test]
-    fn lowers_an_if_referencing_its_child_ids() {
+    fn an_if_with_a_constant_condition_folds_to_the_taken_branch() {
+        // `if_program` is `(if false 1 2)` — a CONSTANT condition, so it folds to the else-branch (2),
+        // NOT a residual `Core::If`. (A constant-condition `if` is dead-branch-eliminated in `lower`.)
         let (ast, if_node) = if_program();
         let mut db = Db::load(ast);
-        match core_of(&mut db, if_node) {
-            Core::If { cond, then_, else_ } => {
-                assert_eq!(core_of(&mut db, cond), Core::ConstBool(false));
+        assert_eq!(
+            core_of(&mut db, if_node),
+            Core::ConstInt(IntValue::from_i64(2)),
+            "if false 1 2 folds to 2"
+        );
+    }
+
+    #[test]
+    fn a_const_if_folds_past_an_unreachable_trap_but_not_an_illformed_branch() {
+        // A `ConstTrap` (CDZ0304) in the UNTAKEN branch is reachability-gated — the const-if folds past
+        // it to the taken branch (the same rule `collect_reached_poisons` applies: a trap shielded by an
+        // untaken branch is not a build failure). `(if (< 1 2) 7 (% 5 0))` → 7.
+        let ast =
+            crate::testkit::parse("(module m (def (main) (if (< 1 2) 7 (% 5 0))) (export main))");
+        let mut db = Db::load(ast);
+        let body = db.defs[db.def_by_name("main").unwrap()].body.unwrap();
+        assert_eq!(
+            core_of(&mut db, body),
+            Core::ConstInt(IntValue::from_i64(7)),
+            "a const-if folds past an unreachable ConstTrap untaken branch"
+        );
+        // But a NON-TRAP poison in the untaken branch (an unbound name) is an ill-formedness the program
+        // must be rejected for — the const-if is KEPT (not folded) so the fault surfaces.
+        let ast2 =
+            crate::testkit::parse("(module m (def (main) (if (< 1 2) 7 nope)) (export main))");
+        let mut db2 = Db::load(ast2);
+        let body2 = db2.defs[db2.def_by_name("main").unwrap()].body.unwrap();
+        assert!(
+            matches!(core_of(&mut db2, body2), Core::If { .. }),
+            "a const-if with an ill-formed (unbound-name) untaken branch is NOT folded away"
+        );
+    }
+
+    #[test]
+    fn lowers_a_runtime_if_referencing_its_child_ids() {
+        // A RUNTIME condition (a bool parameter `p`) is NOT foldable, so it stays a `Core::If` carrying
+        // its child occurrences: `(def (f (: p Bool)) (if p 1 2))`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: p Bool)) (if p 1 2)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let d = db.def_by_name("f").expect("def f");
+        let body = db.defs[d].body.expect("body");
+        match core_of(&mut db, body) {
+            Core::If { then_, else_, .. } => {
                 assert_eq!(
                     core_of(&mut db, then_),
                     Core::ConstInt(IntValue::from_i64(1))
