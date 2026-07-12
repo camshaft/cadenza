@@ -991,3 +991,109 @@ fn named_file_still_honors_from() {
     assert_eq!(stdout.trim(), "1", "named .txt read as sexpr: {stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- combined structural + semantic query: `cdz query … --where 'type-of(x) = T'` ----
+// The compiler-backed filter, unique to the unified `cdz` binary (it holds both libraries). A
+// structural `(foo ,x)` match survives only if the binding `x`'s inferred type relates to the type.
+
+#[test]
+fn where_keeps_only_matches_whose_binding_has_the_asked_type() {
+    let dir = scratch_dir("where_eq");
+    let f = dir.join("prog.sexp");
+    // `foo` is applied to an Int64 arg and a Bool arg; --where Int64 keeps only the Int64 call.
+    std::fs::write(
+        &f,
+        "(module m (def (foo x) x) \
+           (def (main) (if (foo true) (foo (: 42 Int64)) 0)) (export main))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(
+        &[
+            "query",
+            "(foo ,x)",
+            f.to_str().unwrap(),
+            "--where",
+            "type-of(x) = Int64",
+            "--count",
+        ],
+        "",
+    );
+    assert!(ok);
+    // Two structural (foo ,x) sites bind an Int64: the `(foo (: 42 Int64))` call — plus the def-site
+    // `(foo x)` whose param `x` is NOT Int64 (it's an unconstrained param), and `(foo true)` is Bool.
+    // So exactly ONE match has an Int64 binding.
+    assert_eq!(
+        stdout.trim(),
+        "1",
+        "only the Int64 call survives --where: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn where_neq_and_bool_variants_filter_as_expected() {
+    let dir = scratch_dir("where_variants");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (foo x) x) \
+           (def (main) (if (foo true) (foo (: 42 Int64)) 0)) (export main))\n",
+    )
+    .unwrap();
+    let path = f.to_str().unwrap();
+
+    // = Bool keeps the single Bool call.
+    let (ok, out_bool, _) = run(
+        &[
+            "query",
+            "(foo ,x)",
+            path,
+            "--where",
+            "type-of(x) = Bool",
+            "--count",
+        ],
+        "",
+    );
+    assert!(ok);
+    assert_eq!(out_bool.trim(), "1", "one Bool call: {out_bool}");
+
+    // The rendered (non-count) output carries a file:line:col location.
+    let (ok, out_loc, _) = run(
+        &["query", "(foo ,x)", path, "--where", "type-of(x) = Bool"],
+        "",
+    );
+    assert!(ok);
+    assert!(
+        out_loc.contains("prog.sexp:"),
+        "location is file:line:col: {out_loc}"
+    );
+    assert!(
+        out_loc.contains("(foo true)"),
+        "the Bool match is shown: {out_loc}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn where_malformed_predicate_is_an_error() {
+    let dir = scratch_dir("where_bad");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (main) 42) (export main))\n").unwrap();
+    let (ok, _, stderr) = run(
+        &[
+            "query",
+            "(foo ,x)",
+            f.to_str().unwrap(),
+            "--where",
+            "x is Int64",
+        ],
+        "",
+    );
+    assert!(!ok, "a malformed --where predicate fails");
+    assert!(
+        stderr.contains("unsupported --where predicate"),
+        "clear error: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
