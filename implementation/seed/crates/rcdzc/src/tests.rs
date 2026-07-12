@@ -7976,6 +7976,38 @@ mod stage1 {
     }
 
     #[test]
+    fn the_prelude_sign_sum_is_built_in() {
+        // `Sign` is a BUILT-IN monomorphic prelude sum `(type Sign Neg Zero Pos)` — a program uses
+        // `Sign.Pos`/`Sign.Zero`/`Sign.Neg` with NO declaration, and an exhaustive three-way match over
+        // it folds through the constant scrutinee. `(Sign.Zero unit)` matched → 0; the other two → 1/-1.
+        use crate::testkit::parse;
+        for (ctor, want) in [("Sign.Neg", -1), ("Sign.Zero", 0), ("Sign.Pos", 1)] {
+            let src = format!(
+                "(module m (def (main) (match ({ctor} unit) \
+                   ((Sign.Neg _) -1) ((Sign.Zero _) 0) ((Sign.Pos _) 1))) (export main))"
+            );
+            let bytes = compile_component(&crate::codec::encode(&parse(&src)))
+                .expect("compile built-in Sign match");
+            let Some(runtime) = super::find_runtime_wasm() else {
+                eprintln!("runtime wasm not found; skipping Sign run");
+                return;
+            };
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => {
+                    assert_eq!(s, want.to_string(), "built-in Sign match: {ctor}")
+                }
+                cdz_run::Outcome::Trap(t) => panic!("Sign match run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_user_type_shadows_a_prelude_sum_name() {
         // A user `(type Option …)` SHADOWS the built-in Option — top-level `type_decls` resolve before
         // the prelude. So `Option` in a program that declares it is the USER sum (its own declaration
