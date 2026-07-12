@@ -1,10 +1,13 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	a Bool match with its arms in either order is exhaustive
+pass	a Bool match with its arms in either order selects the false arm at run time
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a boolean function result bound by let is still a boolean
 pass	a boolean is greater-than-or-equal to itself
 pass	a boolean is less-than-or-equal to itself
+pass	a boolean literal pattern matches a runtime scrutinee
 pass	a boolean parameter forwarded to a conditional result
 pass	a boolean result propagates through a three-deep chain of forwarding functions
 pass	a boolean result threaded through a second function
@@ -123,6 +126,7 @@ pass	a three-element runtime tuple is returned as a result
 pass	a tuple is constructed with positional elements
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
+pass	a two-arm Bool match selects its second (false) arm
 pass	a type annotation consistent with the value is transparent
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an element is projected from a runtime-constructed tuple
@@ -213,6 +217,7 @@ todo	String.scalar-len of a string selected by a runtime match
 todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
 todo	a Bool argument to a parameter used in integer addition is rejected
+todo	a Bool match with only the true arm is non-exhaustive
 todo	a CBOR atom decodes each scalar major type to its value
 todo	a CBOR head decodes its major type and big-endian argument from the input bytes
 todo	a CBOR reader walks a variable-length array using its decoded length as the element count
@@ -247,7 +252,6 @@ todo	a bool match on a constant scrutinee is non-exhaustive even when the consta
 todo	a boolean connective with a non-boolean operand is a type error
 todo	a boolean in integer-width position is rejected
 todo	a boolean literal pattern against an integer scrutinee is a type error
-todo	a boolean literal pattern matches a runtime scrutinee
 todo	a boolean record field is projected as the program result
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a bound name in a map key is used by its value, not the literal name

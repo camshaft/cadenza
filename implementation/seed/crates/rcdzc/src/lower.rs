@@ -352,13 +352,26 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             ));
         }
     }
-    //  (2) exhaustiveness: a scalar match needs a wildcard tail (no finite literal set covers every
-    //      integer/bool value in Stage 3a). This holds EVEN when the scrutinee is a constant that hits
-    //      an arm — a program is ill-formed if it would not cover some value. Without a wildcard, reject.
+    //  (2) exhaustiveness: a scalar match must cover every value of the scrutinee's type. A wildcard
+    //      tail covers the rest, and for an OPEN type (Int64) that is the ONLY way — no finite literal
+    //      set exhausts the integers. But a FINITE type is exhausted by its literals: a Bool scrutinee
+    //      covered by BOTH a `true` arm and a `false` arm needs no wildcard (the two values are the
+    //      whole type — `core-semantics.md` §Matching Is Exhaustive Or Rejected). This holds EVEN when
+    //      the scrutinee is a constant that hits an arm — well-formedness is independent of the value.
     let has_wild = probes
         .iter()
         .any(|(p, _)| matches!(p, crate::core::Probe::Wild));
-    if !has_wild {
+    // A Bool scrutinee's two literals exhaust it. (A definitely-Bool or still-open `Any` scrutinee whose
+    // arms are Bool literals — a bare parameter matched with `true`/`false` — is matching over Bool; a
+    // definitely-Int scrutinee with a Bool probe already faulted in step (1) and never reaches here.)
+    let bool_exhaustive = scrut_ty.agrees_with(&crate::ty::Ty::Bool)
+        && probes
+            .iter()
+            .any(|(p, _)| matches!(p, crate::core::Probe::Bool(true)))
+        && probes
+            .iter()
+            .any(|(p, _)| matches!(p, crate::core::Probe::Bool(false)));
+    if !has_wild && !bool_exhaustive {
         return Core::Poison(Reject::coded(
             Code::NonExhaustive,
             "a scalar match must end in a wildcard `_` arm (non-exhaustive)",

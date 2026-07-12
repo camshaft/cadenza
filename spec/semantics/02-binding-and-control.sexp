@@ -1426,6 +1426,45 @@
             (def (main) (negate true)) (export main)))
   (output (: false Bool)))
 
+(case "a two-arm Bool match selects its second (false) arm"
+  (doc    "The else-branch companion of the `negate` case above: `(negate false)` takes the `false`
+           arm, yielding `true`. A wildcard-less exhaustive Bool match emits its LAST arm as the
+           unconditional else (once the `true` probe fails, `false` is the only value left), so this
+           pins that the second arm's value is produced — not a dangling fallthrough. Together with the
+           `(negate true)` case it exercises both selections of the two-arm Bool match.")
+  (input  (do
+            (def (negate b) (match b (true false) (false true)))
+            (def (main) (negate false)) (export main)))
+  (output (: true Bool)))
+
+(case "a Bool match with its arms in either order is exhaustive"
+  (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: exhaustiveness of a Bool match is a
+           property of the arm-value SET {true, false}, not the arm order. `(match b (false 2) (true
+           1))` covers both values with the arms reversed, so it needs no wildcard; with the runtime
+           `b` = true the `true` arm gives 1. Pins that the checker accepts the reversed order exactly
+           as it accepts `(true …) (false …)` — the wildcard requirement is for OPEN types (Int64),
+           never for a Bool covered by both literals.")
+  (input  (do (def (main (: b Bool)) (match b (false 2) (true 1))) (export main)))
+  (call   main (: true Bool))
+  (output (: 1 Int64)))
+
+(case "a Bool match with its arms in either order selects the false arm at run time"
+  (doc    "The false-selection companion of the reversed-order case: with runtime `b` = false the
+           `(false 2)` arm gives 2. Confirms both runtime selections of the reversed-order Bool match.")
+  (input  (do (def (main (: b Bool)) (match b (false 2) (true 1))) (export main)))
+  (call   main (: false Bool))
+  (output (: 2 Int64)))
+
+(case "a Bool match with only the true arm is non-exhaustive"
+  (doc    "The negative control that pins the Bool-exhaustiveness relaxation does NOT over-accept:
+           `(match b (true 1))` covers only `true`, leaving `false` unhandled — genuinely
+           non-exhaustive, so it MUST reject (CDZ0210) exactly as an Int64 match without a wildcard
+           does. A Bool match is exhaustive only when BOTH `true` and `false` arms are present; a single
+           Bool literal is not enough. (An Int64 match without a wildcard likewise stays rejected — the
+           relaxation is specific to a Bool scrutinee covered by both of its two values.)")
+  (input  (do (def (main (: b Bool)) (match b (true 1))) (export main)))
+  (error  CDZ0210))
+
 (case "a match on a runtime integer scrutinee producing a boolean"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: the scrutinee is a runtime integer
            but the arm bodies are Bool — a match is an expression of whatever type its arms yield,

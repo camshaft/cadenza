@@ -924,6 +924,16 @@ fn emit_match_arms_tailable(
             // a wildcard are unreachable; `lower` keeps them but they never emit.)
             emit_body(db, *body, base, high, scratch_ty, out)
         }
+        Some(((_probe, body), [])) => {
+            // The LAST arm of a wildcard-less match — its probe is redundant: `lower` admitted this
+            // match only if it is exhaustive (a wildcard tail, or a Bool scrutinee whose `true`+`false`
+            // arms cover the type), so once every earlier probe has failed this arm's value is the ONLY
+            // remaining one. Emit its body unconditionally, exactly like a wildcard tail — a final
+            // `scrutinee == literal` test would be dead (always true here) and, worse, leave the `else`
+            // with no value (the "ran off the end" decline below). So a two-arm Bool match `(true X)
+            // (false Y)` emits `if (== s true) X else Y` with no dangling arm.
+            emit_body(db, *body, base, high, scratch_ty, out)
+        }
         Some(((probe, body), rest)) => {
             // A literal probe: `scrutinee == literal`, then `if (block_ty) body else <rest>`.
             emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
