@@ -73,6 +73,9 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 # The independent byte ORACLE (tests only): licenses the hand-emitted byte path by asserting it is
 # byte-identical to the authoritative component-model encoder. NEVER in the compile path.
 wasm-encoder = "0.239"
+# The component/core validator (tests only): parses + type-checks a component to LOCALIZE a byte error
+# (`Component::from_binary`'s error is opaque). Diagnoses the resource-linking envelope during R1/R2.
+wasmparser = "0.239"
 # Runs the emitted component in tests (the "run the artifact" behavior check). Tests only.
 wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"] }
 # The canonical component RUNNER (tests only) — composes the value-heap runtime and invokes an export,
