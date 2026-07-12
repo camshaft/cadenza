@@ -61,6 +61,12 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(*n as i64, out);
         }
+        // `f64.const` — the opcode then the 8 raw bit-pattern bytes, little-endian (NOT LEB128; the
+        // float-const immediate is a fixed-width IEEE-754 encoding). `bits` already IS the pattern.
+        Lir::F64ConstBits(bits) => {
+            out.push(op::F64_CONST);
+            out.extend_from_slice(&bits.to_le_bytes());
+        }
         Lir::LocalGet(idx) => {
             out.push(op::LOCAL_GET);
             uleb128(*idx as u64, out);

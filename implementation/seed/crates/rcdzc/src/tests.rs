@@ -628,6 +628,17 @@ impl FromVal for u16 {
     }
 }
 
+// A Float64 crosses the boundary as the component `f64` primitive — read back as an `f64`. Compared by
+// BITS in the test (so `-0.0` ≠ `0.0` and a NaN is exact), the canonical-value contract.
+impl FromVal for f64 {
+    fn from_val(v: &wasmtime::component::Val) -> f64 {
+        match v {
+            wasmtime::component::Val::Float64(n) => *n,
+            other => panic!("expected Float64 result, got {other:?}"),
+        }
+    }
+}
+
 /// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the single
 /// result decoded to `T` — the "run the artifact" behavior check, generic over the boundary type.
 fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
@@ -4295,6 +4306,28 @@ mod match_engine {
                 run_returns::<i64>(&component(&src), "main"),
                 want,
                 "float equality fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_float_literal_crosses_the_boundary_as_an_f64_value() {
+        // A float literal `Core::ConstFloat` emits an `f64.const` of its canonical bits; the export
+        // returns f64 (`valtype_of(Ty::Float) = F64`) and the boundary lifts it to the component `f64`
+        // (`comp_valtype_of = COMP_F64`). Read back BY BITS so the canonical value is exact: `3.5`, a
+        // large whole float NOT saturated to i64 (`1e19`), and `-0.0` DISTINCT from `0.0` all round-trip.
+        for (prog, want_bits) in [
+            ("3.5", 3.5f64.to_bits()),
+            ("1e19", 1e19f64.to_bits()),
+            ("-0.0", (-0.0f64).to_bits()),
+            ("0.0", (0.0f64).to_bits()),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            let got = run_returns::<f64>(&component(&src), "main");
+            assert_eq!(
+                got.to_bits(),
+                want_bits,
+                "float literal {prog} crosses as its canonical f64 (by bits)"
             );
         }
     }

@@ -1574,12 +1574,13 @@ fn emit(
         Core::ConstStr(_) => Err(Reject::decline(
             "a runtime string value is not yet built (only a constant string escapes / folds)",
         )),
-        // A float VALUE has no machine slot yet (no f64 path / boundary rep) — a float constant that
-        // reaches emission (rather than folding away, e.g. through equality) declines. Float equality
-        // folds to a Bool in `lower`; float arithmetic + boundary crossing are later increments.
-        Core::ConstFloat(_) => Err(Reject::decline(
-            "a floating-point value has no machine representation yet (only float equality folds)",
-        )),
+        // A float CONSTANT emits an `f64.const` of its canonical bit pattern — the value a `Ty::Float`
+        // occupies in its f64 machine slot, and what an export returning a float leaves on the stack (the
+        // boundary lifts it to the component `f64`). Float ARITHMETIC (f64.add/…) is a later increment.
+        Core::ConstFloat(d) => {
+            out.push(Lir::F64ConstBits(d.to_f64_bits()));
+            Ok(())
+        }
         Core::Unit => {
             // Unit occupies no slot and pushes nothing.
             Ok(())

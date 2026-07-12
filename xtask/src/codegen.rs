@@ -611,6 +611,7 @@ mod wasm_abi {
         let opcodes = vec![
             op("I32_CONST", Instruction::I32Const(0)),
             op("I64_CONST", Instruction::I64Const(0)),
+            op("F64_CONST", Instruction::F64Const(0.0f64.into())),
             op("IF", Instruction::If(wasm_encoder::BlockType::Empty)),
             op("ELSE", Instruction::Else),
             op("END", Instruction::End),
