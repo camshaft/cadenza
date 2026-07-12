@@ -614,6 +614,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(prim @ (Prim::CheckedAdd | Prim::CheckedMul)) if args.len() == 2 => {
                     lower_checked_arith(db, id, prim, args[0], args[1])
                 }
+                // `Int64.wrapping-add` / `wrapping-mul` — two's-complement wraparound, NEVER trapping. FOLD
+                // a constant pair via `wrapping_*`; a runtime operand emits `Core::Arith` (which for a
+                // wrapping prim selects the RAW machine op, no overflow guard).
+                Some(prim @ (Prim::WrappingAdd | Prim::WrappingMul)) if args.len() == 2 => {
+                    lower_wrapping_arith(db, prim, args[0], args[1])
+                }
                 // `String.concat` — the TOTAL binary join. FOLD two constant strings to their
                 // concatenation (the result is another constant `String`). The value form is always NFC,
                 // and NFC is NOT closed under concatenation in general (a combining mark starting the RIGHT
@@ -3011,6 +3017,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SumExpect
         | Prim::CheckedAdd
         | Prim::CheckedMul
+        | Prim::WrappingAdd
+        | Prim::WrappingMul
         | Prim::StringTy
         | Prim::BytesAt
         | Prim::BytesConcat
@@ -3467,6 +3475,35 @@ fn lower_checked_arith(
     }
 }
 
+/// Lower `(Int64.wrapping-add a b)` / `(Int64.wrapping-mul a b)` — two's-complement wraparound, NEVER
+/// trapping (numeric-model.md §Overflow Is Defined — the modular value outcome). FOLD a constant operand
+/// pair via `i64` `wrapping_add`/`wrapping_mul` (evaluated at the Stage default width; a later width stage
+/// masks to the solved width). A runtime operand becomes a `Core::Arith` carrying the WRAPPING prim — the
+/// backend selects the RAW machine `i64.add`/`i64.mul` (which already wraps), NOT the checked/trapping
+/// path the `+`/`*` prims take. A poison operand propagates.
+fn lower_wrapping_arith(db: &mut Db, prim: Prim, lhs: StructId, rhs: StructId) -> Core {
+    let a = core_of(db, lhs);
+    let b = core_of(db, rhs);
+    match (a, b) {
+        (Core::ConstInt(x), Core::ConstInt(y)) => {
+            let (Some(x), Some(y)) = (x.to_i64(), y.to_i64()) else {
+                return Core::Poison(Reject::decline(
+                    "wrapping arithmetic on an operand beyond the evaluated width is not yet folded",
+                ));
+            };
+            let n = match prim {
+                Prim::WrappingAdd => x.wrapping_add(y),
+                _ => x.wrapping_mul(y),
+            };
+            trace!(target: "rcdzc::fold", ?prim, result = n, "wrapping arithmetic folds to a constant");
+            Core::ConstInt(IntValue::from_i64(n))
+        }
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        // A runtime operand — the RAW (non-trapping) machine op, selected in the backend from this prim.
+        _ => Core::Arith { op: prim, lhs, rhs },
+    }
+}
+
 /// Lower `(Bytes.of list)` — construct a byte sequence from a list of `Int64` in `0..=255`. Folds only
 /// a compile-time-visible `Core::ListNew` operand (a runtime list source is a later increment → declines
 /// cleanly). Each element must fold to a constant in range: a value `< 0` or `> 255` is a compile-time
@@ -3755,6 +3792,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::SumExpect => "sum-expect",
         Prim::CheckedAdd => "checked-add",
         Prim::CheckedMul => "checked-mul",
+        Prim::WrappingAdd => "wrapping-add",
+        Prim::WrappingMul => "wrapping-mul",
     }
 }
 

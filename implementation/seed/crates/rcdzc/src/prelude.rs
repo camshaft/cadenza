@@ -700,13 +700,29 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
         signed,
         width,
     ));
+    // `wrapping-add`/`wrapping-mul` — two's-complement wraparound modulo 2^width: `T → T → T`, NEVER
+    // trapping (numeric-model.md §Overflow Is Defined — the modular value outcome, what a hash / fixed-
+    // width round-trip wants). Real operator records (`(meta apply)` = the wrapping intrinsic); a constant
+    // folds via `wrapping_*`, a runtime operand emits the RAW machine `i64.add`/`i64.mul` (no overflow
+    // guard — wasm's add/mul already wrap).
+    fields.push(wrapping_field(
+        ast,
+        "wrapping-add",
+        "wrapping-add",
+        signed,
+        width,
+    ));
+    fields.push(wrapping_field(
+        ast,
+        "wrapping-mul",
+        "wrapping-mul",
+        signed,
+        width,
+    ));
     // Operations not yet realized — present, but their value declines when projected. `of` (the CHECKED
     // conversion) returns `Option<T>`; sum types now exist, so what remains is wiring `.of` to build a
-    // `(Some v)` in range / `(None)` out (task #59) — until that lands it stays an unrealized field. The
-    // `wrapping-*` ops (two's-complement wraparound, returning a bare `T`) are a sibling arc.
-    for op in ["of", "wrapping-add", "wrapping-mul"] {
-        fields.push(unrealized_field(ast, op));
-    }
+    // `(Some v)` in range / `(None)` out (task #59) — until that lands it stays an unrealized field.
+    fields.push(unrealized_field(ast, "of"));
     let mut children = vec![head];
     children.append(&mut fields);
     push_list(ast, children)
@@ -787,6 +803,48 @@ fn checked_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: 
     let rhs = target(ast);
     let inner = arrow_type(ast, rhs, option_target);
     // `(-> TARGET (-> TARGET (Option TARGET)))`.
+    let lhs = target(ast);
+    let body = arrow_type(ast, lhs, inner);
+    // `(fn () body)`.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    let lambda = push_list(ast, vec![fn_head, params, body]);
+    // `(record ((meta t) lambda) ((meta apply) (intrinsic prim)))`.
+    let rec_head = push_atom(ast, Leaf::Str("record".to_string()));
+    let t_field = meta_field(ast, "t", lambda);
+    let prim_node = intrinsic_node(ast, prim);
+    let apply_field = meta_field(ast, "apply", prim_node);
+    let record = push_list(ast, vec![rec_head, t_field, apply_field]);
+    let k = push_atom(ast, Leaf::Name(name.to_string()));
+    push_list(ast, vec![k, record])
+}
+
+/// A `(name (record ((meta t) TYPE) ((meta apply) (intrinsic PRIM))))` field — a WRAPPING arithmetic op
+/// on this module's width. `TYPE` is `(fn () (-> TARGET (-> TARGET TARGET)))`: both operands and the
+/// result are `TARGET` = `(Int width)`/`(UInt width)`, this module's own concrete type — no `Option`,
+/// wrapping never fails (two's-complement wraparound modulo 2^width). The zero-param `fn` wrapper makes
+/// `scheme_of` read a monomorphic SCHEME (see `checked_field`/`string_to_int64_type`). `(meta apply)` =
+/// the `PRIM` intrinsic (`wrapping-add`/`wrapping-mul`), whose target width is read off the solved type.
+fn wrapping_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: u32) -> StructId {
+    let target = |ast: &mut Arenas| {
+        let ctor = push_atom(
+            ast,
+            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
+        );
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    // `(-> TARGET TARGET)`.
+    let rhs = target(ast);
+    let out = target(ast);
+    let inner = arrow_type(ast, rhs, out);
+    // `(-> TARGET (-> TARGET TARGET))`.
     let lhs = target(ast);
     let body = arrow_type(ast, lhs, inner);
     // `(fn () body)`.

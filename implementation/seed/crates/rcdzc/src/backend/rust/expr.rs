@@ -831,6 +831,17 @@ fn emit_arith(
             };
             Ok(format!("({l} {sym} {r})"))
         }
+        // WRAPPING arithmetic → Rust's own `wrapping_add`/`wrapping_mul` — two's-complement wraparound,
+        // never panics (the native mirror of the wasm backend's raw `i64.add`/`i64.mul`). `it` is the
+        // aliased width N, so the operands are the N-bit type and the wrap is modulo 2^N.
+        Prim::WrappingAdd | Prim::WrappingMul => {
+            let method = if matches!(op, Prim::WrappingAdd) {
+                "wrapping_add"
+            } else {
+                "wrapping_mul"
+            };
+            Ok(format!("({l}).{method}({r})"))
+        }
         // A runtime shift, honoring the numeric model's trapping semantics exactly (mirroring the wasm
         // backend's `emit_shift` — `numeric-model.md` §A Shift Is Not Exempt From Overflow Is Defined):
         //   - COUNT GUARD: a count outside `0..N` traps. The count is read as `u32` and compared `>= N`,

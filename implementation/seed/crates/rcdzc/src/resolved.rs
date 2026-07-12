@@ -252,6 +252,14 @@ pub enum Prim {
     /// read off the solved type.
     CheckedAdd,
     CheckedMul,
+    /// `Int64.wrapping-add` / `wrapping-mul` — two's-complement wraparound modulo 2^width: `T → T → T`,
+    /// NEVER trapping (numeric-model.md §Overflow Is Defined — the modular value outcome). The `(meta
+    /// apply)` of the `wrapping-add`/`wrapping-mul` field of an integer module. A CONSTANT operand pair
+    /// FOLDS (`i64::wrapping_add`/`wrapping_mul`); a runtime operand emits the RAW machine `i64.add`/
+    /// `i64.mul` (wasm's add/mul already wrap — no overflow guard, unlike the trapping `+`/`*`). The
+    /// target width is the module's own, read off the solved type (a narrow width masks after the op).
+    WrappingAdd,
+    WrappingMul,
 }
 
 impl Prim {
@@ -310,6 +318,8 @@ impl Prim {
             "sum-expect" => Some(Prim::SumExpect),
             "checked-add" => Some(Prim::CheckedAdd),
             "checked-mul" => Some(Prim::CheckedMul),
+            "wrapping-add" => Some(Prim::WrappingAdd),
+            "wrapping-mul" => Some(Prim::WrappingMul),
             _ => None,
         }
     }

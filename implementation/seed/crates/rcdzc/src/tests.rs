@@ -4342,6 +4342,37 @@ mod match_engine {
     }
 
     #[test]
+    fn wrapping_arithmetic_folds_and_runs_with_two_s_complement_wraparound() {
+        // `Int64.wrapping-add`/`wrapping-mul` — two's-complement wraparound, NEVER trapping (numeric-
+        // model.md §Overflow Is Defined). A constant pair FOLDS via `wrapping_*`; the result is a bare
+        // Int64 (no Option). `MAX + 1` wraps to MIN, `MAX * 2` wraps to -2, in-range equals `+`/`*`.
+        let min = i64::MIN; // -9223372036854775808
+        for (prog, want) in [
+            ("(Int64.wrapping-add 20 22)", 42),
+            ("(Int64.wrapping-add Int64.max 1)", min),
+            ("(Int64.wrapping-mul 6 7)", 42),
+            ("(Int64.wrapping-mul Int64.max 2)", -2),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "wrapping arithmetic fold: {prog}"
+            );
+        }
+        // The RUNTIME path: `(w a b) = (Int64.wrapping-add a b)` over PARAMETERS emits the raw `i64.add`
+        // (no overflow guard), so `(w Int64.max 1)` wraps to MIN rather than trapping — the same result
+        // as the fold, proving wrapping is the raw op, not the checked/trapping one.
+        let src = "(module m (def (w a b) (Int64.wrapping-add a b)) \
+                    (def (main) (w Int64.max 1)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(&component(src), "main"),
+            min,
+            "runtime wrapping-add wraps at run time"
+        );
+    }
+
+    #[test]
     fn option_expect_unwraps_a_runtime_optional_through_the_disc_probe() {
         // The RUNTIME `Option.expect` path: unwrap an optional a runtime op PRODUCED (not a constant), the
         // compiler's `List.at`+`Option.expect` idiom the spec cites. `build 0 3 (list)` = `[0 1 2]`;
