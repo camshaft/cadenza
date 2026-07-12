@@ -7264,6 +7264,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_cross_function_perform_is_discharged_by_the_callers_handler() {
+        // E1c-3 (the inline trigger): a perform in a CALLEE `gen` is discharged by the handler enclosing
+        // `gen`'s CALL — `(handle … (gen))`. The fold inlines `gen` into the handled region (β-reduces
+        // the call) so its perform `(Bump.by 41)` resolves to the arm, which resumes `(+ n 1)` = 42.
+        // `gen` performing an effect is well-formed (its home is its caller's handler, not itself), so it
+        // is not independently faulted CDZ0401. (`capabilities-and-effects.md` §Handler Resolution Is
+        // Dynamic In Extent — a function may perform an operation its caller discharges.)
+        let src = "(do (effect Bump (op by (-> Int64 Int64))) \
+                   (def (gen) ((. Bump by) 41)) \
+                   (def (main) (handle unit (((. Bump by) (n) s (resume (+ n 1) s))) (gen))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a cross-function perform is discharged by the caller's handler"),
+                "main"
+            ),
+            42
+        );
+    }
+
+    #[test]
     fn resuming_with_a_wrong_type_value_is_cdz0201() {
         // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
         // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is

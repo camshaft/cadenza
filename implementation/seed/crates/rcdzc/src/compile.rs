@@ -243,16 +243,26 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
     );
     match out.artifact(Target::Wasm.artifact_kind()) {
         Some(bytes) => Ok(bytes.to_vec()),
-        None => Err(out
-            .diagnostics
-            .into_iter()
-            .find(|d| d.severity == Severity::Error)
-            .unwrap_or(Diagnostic {
+        None => {
+            // Prefer a CODED error (a rejection — an ill-formed program, the stronger, more actionable
+            // "no") over an uncoded DECLINE (a construct not yet lowered), matching the safety ordering
+            // (`reference-compiler.md` §Outcomes Are Ordered By Safety). A program that is both rejected
+            // AND has a not-yet-lowered construct reports the rejection. (A single-error caller — the
+            // tests, the pipe — wants the decision, not the incidental decline the same body may also
+            // raise; e.g. an ungranted perform is CDZ0401, not the "no handler here" decline its standalone
+            // lowering also emits.)
+            let errors = || out.diagnostics.iter().filter(|d| d.severity == Severity::Error);
+            let chosen = errors()
+                .find(|d| d.code.is_some())
+                .or_else(|| errors().next())
+                .cloned();
+            Err(chosen.unwrap_or(Diagnostic {
                 severity: Severity::Error,
                 code: None,
                 message: "compilation produced no component".into(),
                 node: None,
-            })),
+            }))
+        }
     }
 }
 
@@ -435,10 +445,23 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
+    // A def is an ENTRYPOINT if it is exported — the only context where a nullary body is lowered
+    // STANDALONE as the emitted artifact. A non-exported nullary def is always inlined at its call sites
+    // (or dead), so its standalone lowering is not what ships; its reached-poison walk would fault on a
+    // decline that the inline at the call site resolves (e.g. a library def that performs an effect whose
+    // home is its caller's handler). So run the reached-poison walk only on EXPORTED nullary bodies.
+    let exported_bodies: std::collections::HashSet<StructId> = db
+        .exports
+        .iter()
+        .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
+        .collect();
     let bodies: Vec<(StructId, bool)> = db
         .defs
         .iter()
-        .filter_map(|d| d.body.map(|b| (b, d.params.is_empty())))
+        .filter_map(|d| {
+            d.body
+                .map(|b| (b, d.params.is_empty() && exported_bodies.contains(&b)))
+        })
         .collect();
     for (body, nullary) in bodies {
         // TYPE CHECKING FIRST, then the reached-poison (lowering) walk — the safety ordering
@@ -458,6 +481,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         if nullary {
             collect_reached_poisons(db, body, &mut faults);
         }
+    }
+    // ENTRYPOINT NO-HOME CHECK (CDZ0401). An effect operation reached from an ENTRYPOINT with neither an
+    // enclosing handler nor a host delegation escapes ungranted — the merged "no home" check
+    // (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). This is an
+    // ENTRYPOINT-level property (a library def that performs an effect is fine — its home is its callers'
+    // context), so it is checked over each EXPORT's body, following the call graph, rather than per-def.
+    // A perform enclosed by a `handle` that discharges its effect, or a `host` that delegates it, has a
+    // home and is skipped; one that reaches the entrypoint top with no home is CDZ0401.
+    let export_bodies: Vec<StructId> = db
+        .exports
+        .iter()
+        .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
+        .collect();
+    for body in export_bodies {
+        crate::effects::check_no_home(db, body, &mut faults);
     }
     faults
 }

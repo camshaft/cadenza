@@ -363,20 +363,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
         // bare type/module used at runtime declines at the erasure fence.
         Resolved::Apply { head, args } => {
-            // A PERFORM WITH NO HOME. If the head is an effect OPERATION and this application is being
-            // lowered directly, no enclosing handler discharged it (a handled perform is REDUCED AWAY by
-            // `effects::reduce_handle` before its body is lowered, so it never reaches here) and no host
-            // delegation routed it (E2). An effect reached with neither a handler nor a delegation is
-            // rejected — CDZ0401, the merged "no home for a reached effect" check
-            // (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). Reported here
-            // rather than leaking the op's `(intrinsic perform)` marker as an "unknown intrinsic" and its
-            // `(meta effect-op)` node as an unbound `effect-op`.
+            // A PERFORM that reaches lowering directly — no enclosing handler discharged it (a handled
+            // perform is REDUCED AWAY by `effects::reduce_handle` before its body is lowered, so it never
+            // reaches here) and no host delegation routed it (E2). Whether this is an ERROR depends on
+            // CONTEXT: an unhandled perform reached from an ENTRYPOINT escapes ungranted (CDZ0401 — the
+            // "no home" check, reported at the export level in `compile.rs`), but a perform in a LIBRARY
+            // function's body is fine — its home is whatever handler/delegation encloses its CALLERS (the
+            // cross-function inline trigger resolves it there). So here — the standalone lowering of an
+            // arbitrary def body — a bare perform is a DECLINE, not a coded reject: a library def that
+            // performs an effect stays well-formed, while the entrypoint-level check catches a genuinely
+            // ungranted escape. (Reported cleanly rather than leaking the op's `(intrinsic perform)` marker
+            // as an "unknown intrinsic".)
             if crate::eval::effect_op_of(db, head).is_some() {
-                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: perform with no enclosing handler/delegation (CDZ0401)");
-                return Core::Poison(Reject::coded(
-                    crate::diag::Code::EffectNoHome,
-                    "this effect operation is reached with neither an enclosing handler nor a host \
-                     delegation, so it has no home (add a handler or delegate it at the entrypoint)",
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unhandled perform at standalone lowering → decline (entrypoint check reports CDZ0401)");
+                return Core::Poison(Reject::decline(
+                    "this effect operation is performed with no enclosing handler here; its home is \
+                     determined by the handler or delegation enclosing its callers",
                 ));
             }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
