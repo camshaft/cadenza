@@ -78,7 +78,16 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     // program uses bare `Sign.Neg`/`Zero`/`Pos` without declaring it. Nothing privileged — the same
     // `type_form` + `scan_type_decl` path, just no type parameters.
     let sign = type_form(ast, "Sign", &[("Neg", &[]), ("Zero", &[]), ("Pos", &[])]);
-    [option, result, sign]
+    // `(type Ordering Less Equal Greater)` — the result of the three-way `compare` (core-semantics.md §A
+    // Total Order Is Observed Through A Three-Way Comparison). A monomorphic closed prelude sum like
+    // `Sign`; the DISCRIMINANT ORDER is Less=0, Equal=1, Greater=2, which `compare` maps a `<`/`=`/`>`
+    // ordering to. `compare` itself is a prelude operator (see `prelude::install`).
+    let ordering = type_form(
+        ast,
+        "Ordering",
+        &[("Less", &[]), ("Equal", &[]), ("Greater", &[])],
+    );
+    [option, result, sign, ordering]
         .into_iter()
         .filter_map(|item| crate::db::scan_type_decl(ast, item))
         .collect()

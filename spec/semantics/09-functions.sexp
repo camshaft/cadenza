@@ -60,6 +60,43 @@
             ((adder 10) 5)))
   (output (: 15 Int64)))
 
+; A function SELECTED BY A RUNTIME CONDITION and then applied — `((if b f g) x)`. `core-semantics.md`
+; §A Function Is A First-Class Value: a function is a value an `if` may return, so applying the `if`'s
+; result must run whichever function the runtime condition chose. The condition here is a RUNTIME
+; parameter (`b`), so the choice is not known at compile time — the application is pushed into each
+; branch (a case-of-case / commuting conversion `((if b f g) x)` → `(if b (f x) (g x))`), where each
+; branch's function applies. Both branches must yield the same type (Int64), which is the application's
+; type. A generation that cannot select a runtime function value declines rather than running.
+
+(case "a function chosen by a runtime condition is applied (true branch)"
+  (doc    "`choose` returns one of two functions by its Bool argument; `((choose b) 5)` applies the
+           chosen one. With b=true the chosen function is `(fn (x) (+ x 1))`, so the result is 6. The
+           condition is a runtime parameter, so the function is selected at run time, not folded.")
+  (input  (do
+            (def (choose (: b Bool)) (if b (fn (x) (+ x 1)) (fn (x) (+ x 10))))
+            (def (main (: b Bool)) ((choose b) 5)) (export main)))
+  (call   main (: true Bool))
+  (output (: 6 Int64)))
+
+(case "a function chosen by a runtime condition is applied (false branch)"
+  (doc    "The false branch of the case above: with b=false the chosen function is `(fn (x) (+ x 10))`,
+           so `((choose false) 5)` = 15. The SAME program, run with the other runtime input, takes the
+           other branch — pinning that the selection is genuinely by the runtime condition.")
+  (input  (do
+            (def (choose (: b Bool)) (if b (fn (x) (+ x 1)) (fn (x) (+ x 10))))
+            (def (main (: b Bool)) ((choose b) 5)) (export main)))
+  (call   main (: false Bool))
+  (output (: 15 Int64)))
+
+(case "a runtime-selected function chosen directly at the application head is applied"
+  (doc    "The commuting conversion at the application head directly: `((if b (fn (x) (+ x 1)) (fn (x)
+           (- x 1))) 10)`. No intervening def — the `if` sits in head position and the application is
+           pushed into its branches. With b=true the result is 11.")
+  (input  (do
+            (def (main (: b Bool)) ((if b (fn (x) (+ x 1)) (fn (x) (- x 1))) 10)) (export main)))
+  (call   main (: true Bool))
+  (output (: 11 Int64)))
+
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
 ; element (or list element) must be extractable and callable, exactly as one stored in a record field
@@ -625,6 +662,38 @@
   (input  (do
             (def (add x y) (+ x y))
             (def (main) ((add 3) 4)) (export main)))
+  (output (: 7 Int64)))
+
+; Partial application to a VARIABLE reference (a runtime parameter, a let-bound value) must CAPTURE it in
+; the residual (partially-applied) lambda — the primary use of currying: fixing a function's first
+; argument to a runtime value. `((sub n) 3)` curries to a residual `(fn (b) (- n b))` whose body
+; references `n`; `n`'s binding (the caller's parameter/`let`) must be carried into the residual's scope
+; (closed over), exactly as the non-partial `(sub n 3)` has `n` in scope. A currying copy that substitutes
+; the name occurrence WITHOUT capturing its binding leaves `n` unbound (CDZ0101). A CONSTANT capture (`(add
+; 3)` above) has no free variable to capture and already worked; these pin the variable-reference case.
+
+(case "partial application captures a runtime parameter in the residual lambda"
+  (doc    "`(sub a b)` = a − b. Partially applying it to a runtime PARAMETER — `((sub n) 3)` with `n` a
+           parameter — curries to a residual lambda that CAPTURES `n`, then subtracts: `n` = 10 gives
+           `(sub 10 3)` = 7. The residual body references `n`, so `n`'s binding is carried into the
+           residual's scope (closed over), exactly as the non-partial `(sub n 3)`. Was CDZ0101 'unbound
+           name n' — the currying copy substituted the name occurrence without capturing its binding.")
+  (input  (do
+            (def (sub a b) (- a b))
+            (def (main (: n Int64)) ((sub n) 3))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 7 Int64)))
+
+(case "partial application captures a let-bound value in the residual lambda"
+  (doc    "The let-binding companion: `(let ((m 10)) ((sub m) 3))` partially applies `sub` to the
+           let-bound `m`, currying to a residual lambda that captures `m` = 10, so `(sub 10 3)` = 7. Pins
+           that the captured argument may be any in-scope binding (a `let` name, not only a parameter or a
+           constant) — the residual closes over it.")
+  (input  (do
+            (def (sub a b) (- a b))
+            (def (main) (let ((m 10)) ((sub m) 3)))
+            (export main)))
   (output (: 7 Int64)))
 
 (case "a named multi-argument function applies to all its arguments at once"

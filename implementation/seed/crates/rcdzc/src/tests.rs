@@ -5992,7 +5992,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, run_returns};
+    use super::{FromVal, run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -8133,6 +8133,44 @@ mod stage1 {
     }
 
     #[test]
+    fn compare_yields_the_three_way_ordering() {
+        // `compare : ∀a. a → a → Ordering` — the three-way comparison (core-semantics.md §A Total Order
+        // Is Observed Through A Three-Way Comparison). A constant scalar/string pair FOLDS to the matching
+        // `Ordering` variant; deconstructed by a three-arm match → -1/0/1. Covers int, string, and the
+        // agreement with `<` (all three relations across two operand types).
+        for (prog, want) in [
+            ("(compare 1 2)", -1),         // Less
+            ("(compare 2 2)", 0),          // Equal
+            ("(compare 3 2)", 1),          // Greater
+            ("(compare \"a\" \"b\")", -1), // strings order lexicographically
+            ("(compare \"b\" \"b\")", 0),
+        ] {
+            let src = format!(
+                "(module m (def (main) (match {prog} \
+                   ((Ordering.Less _) -1) ((Ordering.Equal _) 0) ((Ordering.Greater _) 1))) (export main))"
+            );
+            let bytes = compile_component(&crate::codec::encode(&parse(&src)))
+                .expect("compile compare match");
+            let Some(runtime) = super::find_runtime_wasm() else {
+                eprintln!("runtime wasm not found; skipping compare run");
+                return;
+            };
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => {
+                    assert_eq!(s, want.to_string(), "compare fold: {prog}")
+                }
+                cdz_run::Outcome::Trap(t) => panic!("compare run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_user_type_shadows_a_prelude_sum_name() {
         // A user `(type Option …)` SHADOWS the built-in Option — top-level `type_decls` resolve before
         // the prelude. So `Option` in a program that declares it is the USER sum (its own declaration
@@ -9042,6 +9080,39 @@ mod stage1 {
     }
 
     #[test]
+    fn partial_application_captures_a_runtime_variable_in_the_residual() {
+        use wasmtime::component::Val;
+        // Partially applying to a VARIABLE reference (a runtime param / let-bound) must CAPTURE it in the
+        // residual lambda: `((sub n) 3)` curries to `(fn (b) (- n b))`, and `n` — a caller-pinned free
+        // variable — must keep its binding across the residual's later full application. The currying copy
+        // re-copied the `n` name atom and re-resolved it against the residual's scope (where it is
+        // unbound) → CDZ0101. Fixed by SHARING a resolve-pinned name (a captured free var) rather than
+        // re-copying it. A CONSTANT capture always worked (no free var); this pins the variable case.
+        let param =
+            "(module m (def (sub a b) (- a b)) (def (main (: n Int64)) ((sub n) 3)) (export main))";
+        let b =
+            compile_component(&crate::codec::encode(&parse(param))).expect("compile param capture");
+        assert_eq!(run_returns_with::<i64>(&b, "main", &[Val::S64(10)]), 7);
+        // The let-bound companion: `(let ((m 10)) ((sub m) 3))` = 7 — the captured value is any in-scope
+        // binding, not only a parameter.
+        let letcap = "(module m (def (sub a b) (- a b)) (def (main) (let ((m 10)) ((sub m) 3))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(letcap)))
+                    .expect("compile let capture"),
+                "main"
+            ),
+            7
+        );
+        // A body-internal `let`-local is UNAFFECTED (never resolve-pinned, so it still re-resolves against
+        // the copied scope): `(inc n)` with `(let ((k 10)) (+ n k))`, n=5 → 15.
+        let letlocal = "(module m (def (inc n) (let ((k 10)) (+ n k))) (def (main (: v Int64)) (inc v)) (export main))";
+        let l =
+            compile_component(&crate::codec::encode(&parse(letlocal))).expect("compile let-local");
+        assert_eq!(run_returns_with::<i64>(&l, "main", &[Val::S64(5)]), 15);
+    }
+
+    #[test]
     fn a_let_bound_variable_passed_as_a_call_argument_resolves_at_the_call_site() {
         // `(let ((k 10)) (inc k))` = 11: β-reduction splices the CALL-SITE argument `k` into a copy of
         // `inc`'s body, and `push_list` re-parents the splice — so without pinning the argument's scope
@@ -9080,6 +9151,40 @@ mod stage1 {
         assert_eq!(
             run_main("(let ((add-y (let ((y 3)) (fn (x) (+ x y))))) (let ((y 100)) (add-y 4)))"),
             7
+        );
+    }
+
+    #[test]
+    fn a_runtime_selected_function_applies_via_case_of_case() {
+        use wasmtime::component::Val;
+        // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The
+        // application is pushed into each branch (case-of-case: `(if c (f x) (g x))`), where each
+        // branch's lambda β-reduces, so the whole thing computes with no closure surviving. Driven
+        // through a Bool parameter so the condition is genuinely runtime (a constant would fold the
+        // `if` upstream). `core-semantics.md` §A Function Is A First-Class Value (an `if` returns a fn).
+        let src = "(module m \
+            (def (choose (: b Bool)) (if b (fn (x) (+ x 1)) (fn (x) (+ x 10)))) \
+            (def (main (: b Bool)) ((choose b) 5)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(true)]),
+            6
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(false)]),
+            15
+        );
+        // The `if` directly in head position (no intervening def).
+        let src2 = "(module m \
+            (def (main (: b Bool)) ((if b (fn (x) (+ x 1)) (fn (x) (- x 1))) 10)) (export main))";
+        let bytes2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes2, "main", &[Val::Bool(true)]),
+            11
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes2, "main", &[Val::Bool(false)]),
+            9
         );
     }
 
