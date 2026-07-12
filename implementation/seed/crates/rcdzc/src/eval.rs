@@ -589,6 +589,20 @@ pub fn member_value(db: &mut Db, operand: StructId, key: &Symbol) -> Member {
     }
 }
 
+/// The sorted-position index of field `key` in a RUNTIME record operand — one whose value does not
+/// reduce to a compile-time-visible record (returned from a call, selected by an `if`) but whose TYPE
+/// is a record carrying the field. `None` if the operand is not a record type, or is a record type
+/// lacking the field. At run time a record IS a positional heap array in sorted-key order — the
+/// `Ty::Record`/`Core::Record` `BTreeMap` order the backend's `arr-set`/`arr-get` share — so a field
+/// read on such an operand lowers to a `Core::Proj` at this index, the same `arr-get` a tuple
+/// projection uses. The symmetric counterpart of a tuple projection falling through to a runtime read.
+pub fn runtime_member_index(db: &mut Db, operand: StructId, key: &Symbol) -> Option<usize> {
+    match crate::infer::type_of(db, operand) {
+        crate::ty::Ty::Record(fields) => fields.keys().position(|k| k == key),
+        _ => None,
+    }
+}
+
 /// Reduce the value at `id` to the element occurrences of a COMPILE-TIME-VISIBLE tuple, if it reduces
 /// to one: a `(tuple …)` literal directly, or following a `Ref` to one. Returns the ordered element
 /// occurrences. `None` if the operand is not (statically reducible to) a tuple — a runtime tuple (a

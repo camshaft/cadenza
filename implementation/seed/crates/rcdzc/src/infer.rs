@@ -95,7 +95,14 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // cascade; the actual fault (CDZ0201) is reported by `type_errors`.
         Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
             crate::eval::Member::Field(value) => type_of(db, value),
-            _ => Ty::Any,
+            // The operand does not reduce to a compile-time-visible record (a call result, an `if`
+            // selection), but its TYPE may be a record carrying the field — a RUNTIME record. Its
+            // field type is that field's type in the record type (the runtime read's result type),
+            // mirroring how a tuple projection reads its element type off `Ty::Tuple`.
+            _ => match type_of(db, operand) {
+                Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
+                _ => Ty::Any,
+            },
         },
         // A tuple's type is the tuple of its elements' types, in position order (each a lazy `type_of`).
         // Arity + element types ARE the type.
@@ -803,15 +810,32 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         format!("record has no field `{}`", key.name),
                     ))
                 }
+                // The operand did not reduce to a compile-time-visible record. Before rejecting, check
+                // its TYPE: a RUNTIME record (a call result, an `if` selection) carries a record type,
+                // and the access is well-formed iff that type has the field — the field read lowers to
+                // an `arr-get` at the field's sorted index (mirrors a tuple projection on a runtime
+                // tuple). Only a genuine non-record operand, or a record type lacking the field, faults.
                 crate::eval::Member::NotRecord if !operand_is_poison => {
-                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
-                    out.push(Reject::coded(
-                        Code::Malformed,
-                        format!(
-                            "member access requires a record, found {}",
-                            type_of(db, operand).render_name()
-                        ),
-                    ))
+                    match type_of(db, operand) {
+                        Ty::Record(fields) if fields.contains_key(&key) => {}
+                        Ty::Record(_) => {
+                            trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: runtime record has no such field (CDZ0201)");
+                            out.push(Reject::coded(
+                                Code::Malformed,
+                                format!("record has no field `{}`", key.name),
+                            ))
+                        }
+                        other => {
+                            trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
+                            out.push(Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "member access requires a record, found {}",
+                                    other.render_name()
+                                ),
+                            ))
+                        }
+                    }
                 }
                 crate::eval::Member::NotRecord => {}
             }

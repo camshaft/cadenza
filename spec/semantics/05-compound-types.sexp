@@ -304,6 +304,69 @@
             (def (main) (f 0)) (export main)))
   (output (: 1 Int64)))
 
+; --- Field access on a RUNTIME record (returned from a call / selected by a conditional) -----------
+; The record analogue of the runtime-tuple projection cases: `(. rec field)` where the record operand
+; does NOT reduce to a compile-time-visible record — it is RETURNED FROM A CALL, or SELECTED BY AN
+; `if`, over a runtime parameter. At run time a record IS a positional value-heap array in sorted-key
+; order (the same array a tuple uses), so a field read is `arr-get` at the field's sorted index — the
+; SAME mechanism a tuple positional access uses. Earlier the member-access check folded ONLY through a
+; compile-time-visible record and REJECTED any other operand with a self-contradictory CDZ0201
+; "requires a record, found (record …)" (it had the record TYPE but the value didn't reduce) — a
+; spurious rejection of a well-typed program the tuple path never suffered. These pin that a field of a
+; runtime record projects like an element of a runtime tuple, however the record was produced.
+
+(case "a field is projected from a record returned across a call boundary"
+  (doc    "`(mk v)` returns a runtime `(record (x v) (y 2))` — a genuine value-heap record because its
+           `x` field is the runtime parameter. The caller projects field `x`. With `v` = 41 the field
+           is 41. Pins that a field read on a call-produced record reads the heap array at the field's
+           sorted index (`arr-get`), the record counterpart of projecting a named-def function's runtime
+           tuple result — earlier this was spuriously rejected CDZ0201 because the operand did not
+           reduce to a compile-time record even though its TYPE was one.")
+  (input  (do
+            (def (mk n) (record (x n) (y 2)))
+            (def (main (: v Int64)) (. (mk v) x))
+            (export main)))
+  (call   main (: 41 Int64))
+  (output (: 41 Int64)))
+
+(case "a non-first field is projected from a record returned across a call boundary"
+  (doc    "The companion selecting the SECOND sorted field: `(mk v)` returns `(record (x v) (y 2))` and
+           the caller projects `y` — sorted index 1 of the heap array — which is the constant 2,
+           independent of the runtime argument. Confirms the field-name→sorted-index mapping reads the
+           right slot, not only field 0.")
+  (input  (do
+            (def (mk n) (record (x n) (y 2)))
+            (def (main (: v Int64)) (. (mk v) y))
+            (export main)))
+  (call   main (: 41 Int64))
+  (output (: 2 Int64)))
+
+(case "a field read follows the record's SORTED field order, not its written order"
+  (doc    "`(mk v)` writes its fields as `(record (z 9) (a v))` — `z` before `a` — but a record's heap
+           layout is its fields in SORTED-KEY order, so `a` is slot 0 and `z` is slot 1. Projecting `a`
+           must read the runtime argument (slot 0), not the literal 9. With `v` = 1 the field `a` is 1.
+           Pins that the runtime field read indexes by the field's SORTED position, not the source
+           write order — the `BTreeMap` order the record builder and every `arr-get` share.")
+  (input  (do
+            (def (mk n) (record (z 9) (a n)))
+            (def (main (: v Int64)) (. (mk v) a))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "a field is projected from a record chosen across a call boundary by a runtime conditional"
+  (doc    "`(pick b)` returns one of two records chosen by the runtime Bool `b`, and the CALLER projects
+           field `y` — the `if`-selected record crosses the `pick`→`main` boundary. With `b` = true the
+           first record `(record (x 1) (y 2))` is selected, so `y` is 2. The record analogue of a
+           runtime-branched tuple projected in the caller: a field read on a conditionally-selected
+           record still resolves to an `arr-get` at the field's sorted index.")
+  (input  (do
+            (def (pick b) (if b (record (x 1) (y 2)) (record (x 3) (y 4))))
+            (def (main (: b Bool)) (. (pick b) y))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 2 Int64)))
+
 ; --- Positional access on a RUNTIME tuple bound by `let` -------------------------------------------
 ; A tuple returned from a function and BOUND BY `let` is a genuine runtime value (a value-heap
 ; positional array), not a compile-time structure. `(. x N)` on such a bound name reads element N from

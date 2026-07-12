@@ -792,6 +792,42 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
     }
 }
 
+/// A FIELD read on a RUNTIME record (one returned from a call, not a compile-time-visible literal)
+/// projects like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order,
+/// so `(. rec field)` is an `arr-get` at the field's sorted index. `mk` writes its fields OUT of sorted
+/// order — `(record (z 9) (a n))` — so `a` is heap slot 0 and `z` is slot 1; projecting `a` must read
+/// the runtime argument (slot 0), not the literal 9. Earlier the member-access path folded only through
+/// a compile-time record and REJECTED a call-produced one with a self-contradictory CDZ0201 "requires a
+/// record, found (record …)"; this pins the runtime field read AND that it indexes by sorted position.
+#[test]
+fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
+    use crate::testkit::parse;
+    // `pick` returns a runtime record whose `a` field is the parameter; fields written z-before-a so the
+    // sorted layout (a=0, z=1) differs from the write order. Projecting `a` reads slot 0 = the argument.
+    let src = "(module m (def (pick n) (record (z 9) (a n))) \
+                 (def (main (: v Int64)) (. (pick v) a)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime-record field read must import the value-heap runtime (genuine heap, not a fold)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["41".to_string()],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(s, "41", "runtime-record field `a` reads sorted slot 0 = the argument")
+        }
+        cdz_run::Outcome::Trap(t) => panic!("runtime-record field read trapped (miscompile?): {t}"),
+    }
+}
+
 /// R2 e2e: a RUNTIME compound built behind a RECURSIVE call ESCAPES to the host as a resource, and its
 /// `encode()` walks the live handle to the canonical value form. `f` is genuinely recursive (calls
 /// itself), so `is_recursive` DECLINES the compile-time fold — `f` becomes a real `Core::Call`, `(f 3)`

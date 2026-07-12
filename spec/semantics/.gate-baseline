@@ -19,6 +19,9 @@ pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant tuple is returned as a program result
 pass	a decimal integer literal
 pass	a deeply nested constant expression compiles or declines without crashing
+pass	a field is projected from a record chosen across a call boundary by a runtime conditional
+pass	a field is projected from a record returned across a call boundary
+pass	a field read follows the record's SORTED field order, not its written order
 pass	a function applied to an argument
 pass	a function bound to a name and then applied
 pass	a function is passed as an argument (higher-order)
@@ -59,6 +62,7 @@ pass	a nested match on a runtime scrutinee
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested-let chain that reuses each binding folds to one value
+pass	a non-first field is projected from a record returned across a call boundary
 pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
@@ -150,6 +154,8 @@ pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
+pass	member access on a conditionally-chosen record, other branch
+pass	member access on a record chosen by a conditional projects the field
 pass	modulo by -1 is zero even at the minimum integer
 pass	modulo gives the remainder
 pass	multi-argument application is curried application
@@ -809,10 +815,8 @@ todo	member access of a field the record does not have is a type error
 todo	member access of a missing field is a type error
 todo	member access of an absent field on a function-returned record is a type error
 todo	member access on a boolean is a type error
-todo	member access on a conditionally-chosen record, other branch
 todo	member access on a map is a type error
 todo	member access on a non-record is a type error
-todo	member access on a record chosen by a conditional projects the field
 todo	member access on a string is a type error
 todo	member access on a tuple is a type error
 todo	membership of a present element is true

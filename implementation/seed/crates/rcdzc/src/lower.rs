@@ -96,15 +96,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Code::Malformed,
                 format!("record has no field `{}`", key.name),
             )),
-            // Not a record. If the operand is itself a poison (e.g. a dup-field record), propagate
-            // THAT root cause rather than the generic "requires a record".
-            crate::eval::Member::NotRecord => match core_of(db, operand) {
-                Core::Poison(r) => Core::Poison(r),
-                _ => Core::Poison(Reject::coded(
-                    Code::Malformed,
-                    "member access requires a record",
-                )),
-            },
+            // The operand did not reduce to a compile-time-visible record. If it is a RUNTIME record (a
+            // call result, an `if` selection) carrying the field, read it off the heap array: a record
+            // at run time IS a positional array in sorted-key order, so the field read is a `Core::Proj`
+            // at the field's sorted index — the SAME `arr-get` a tuple projection uses. Otherwise it is
+            // a genuine non-record (or a poison operand, whose own root cause propagates).
+            crate::eval::Member::NotRecord => {
+                match crate::eval::runtime_member_index(db, operand, &key) {
+                    Some(index) => {
+                        trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, key = %key.name, index, "member access on a runtime record → arr-get at the field's sorted index");
+                        Core::Proj { operand, index }
+                    }
+                    None => match core_of(db, operand) {
+                        Core::Poison(r) => Core::Poison(r),
+                        _ => Core::Poison(Reject::coded(
+                            Code::Malformed,
+                            "member access requires a record",
+                        )),
+                    },
+                }
+            }
         },
         // A tuple literal — kept as a compound. Like a record, it folds away only when a projection
         // reads a visible element of it; a tuple that survives (constructed from runtime operands, or a
