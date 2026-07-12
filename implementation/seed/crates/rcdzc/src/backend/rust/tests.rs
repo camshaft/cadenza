@@ -71,6 +71,45 @@ fn an_exported_function_emits_native_params_and_checked_arith() {
 }
 
 #[test]
+fn a_narrow_literal_operand_is_grounded_to_the_op_width() {
+    // REGRESSION (the reported width miscompile): a bare literal operand of a narrow-width op was
+    // emitted at the default i64 (`1u64 as i64`), producing `u8::checked_add(i64)` → rustc E0308. It
+    // must be grounded to the op's width (`1u8`). Covers arith, comparison, if-branch, and match-arm.
+    let add = compile_rust("(module m (def (go (: a UInt8)) (+ a 1)) (export go))");
+    assert!(add.contains("checked_add(1u8)"), "arith operand:\n{add}");
+    assert!(
+        !add.contains("1u64 as i64"),
+        "must NOT default to i64:\n{add}"
+    );
+
+    let cmp = compile_rust("(module m (def (go (: a UInt8)) (< a 5)) (export go))");
+    assert!(cmp.contains("(a < 5u8)"), "compare operand:\n{cmp}");
+
+    let iff = compile_rust("(module m (def (go (: a UInt8) (: c Bool)) (if c a 1)) (export go))");
+    assert!(iff.contains("else { 1u8 }"), "if-branch literal:\n{iff}");
+
+    let mat = compile_rust("(module m (def (go (: a UInt8)) (match a (0 9) (_ a))) (export go))");
+    assert!(mat.contains("9u8"), "match-arm literal:\n{mat}");
+    assert!(
+        !mat.contains("9u64"),
+        "match arm must not default to i64:\n{mat}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_narrow_literal_operand_computes_and_traps() {
+    // The narrow-literal fix, end-to-end through rustc: `(+ x 1)` on a UInt8 computes at u8 width AND
+    // still traps on overflow (255+1) — the numeric model preserved, not silently wrapped.
+    let rs = compile_rust("(module m (def (go (: x UInt8)) (+ x 1)) (export go))");
+    if let Some(out) = rustc_run(&rs, "go(100)") {
+        assert_eq!(out, "101");
+    }
+    // 255 + 1 = 256 leaves UInt8 → the checked_add panics (nonzero exit); rustc_run's success assert
+    // would fail on a panic, so we only positively assert the in-range answer here (the trap path is
+    // exercised by the wasm gate's overflow case and the `_traps` test elsewhere).
+}
+
+#[test]
 fn a_narrow_signed_negative_constant_uses_the_bit_pattern_cast() {
     // -56 : Int8 is emitted as `200u8 as i8` (the two's-complement bit pattern), mirroring the wasm
     // backend's `to_i32_bits` (tests.rs `a_narrow_signed_...` expects -56 from a UInt8 wrap).

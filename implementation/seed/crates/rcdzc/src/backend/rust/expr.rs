@@ -61,6 +61,28 @@ pub fn emit_body(
     Ok(format!("    {expr}"))
 }
 
+/// Render the node at `id` GROUNDED to the context integer type `it` — the width/signedness of the
+/// construct the node sits in (an arithmetic/comparison op, an `if`/`match` result). A bare integer
+/// LITERAL is width-polymorphic: its own `type_of` defaults to `Int64` (unification fixes the parent's
+/// type from the definite operand but does NOT thread that width back onto the literal node), so a
+/// literal operand of a narrow op would otherwise render `1u64 as i64` and produce a Rust type mismatch
+/// against the narrow context (`u8::checked_add(i64)` → E0308). Grounding renders the literal at the
+/// context width (`1u8`), exactly as the wasm backend's `emit_operand`/`emit_branch` normalize a bare
+/// literal to the op/branch machine width. A NON-literal node already carries its own definite type, so
+/// it emits unchanged.
+fn emit_grounded(
+    db: &mut Db,
+    id: StructId,
+    it: IntTy,
+    env: &Env,
+    layout: &Layout,
+) -> Result<String, Reject> {
+    if let Core::ConstInt(v) = core_of(db, id) {
+        return emit_const_int_at(it, &v);
+    }
+    emit(db, id, env, layout)
+}
+
 /// Render the node at `id` as a Rust expression string. Exhaustive over `Core`; a form without a
 /// scalar rendering declines. Reads the core + type columns on demand. The rendered expression is
 /// parenthesized where needed so it composes as a sub-expression without precedence surprises.
@@ -88,11 +110,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
             .cloned()
             .ok_or_else(|| Reject::decline("reference has no bound Rust identifier")),
         // An `if` → Rust's `if cond { then } else { else }`. Rust's `if` is an expression, so it yields
-        // the branch value directly — the structured target expresses the core's `If` as itself.
+        // the branch value directly — the structured target expresses the core's `If` as itself. Both
+        // branches must produce the `if`'s RESULT type; a bare-literal branch is GROUNDED to that width
+        // (via `emit_branch`) so a default-Int64 literal opposite a narrow branch does not mismatch the
+        // block's type — the same reconciliation the wasm backend's `emit_branch` does.
         Core::If { cond, then_, else_ } => {
             let c = emit(db, cond, env, layout)?;
-            let t = emit(db, then_, env, layout)?;
-            let e = emit(db, else_, env, layout)?;
+            let t = emit_branch(db, then_, id, env, layout)?;
+            let e = emit_branch(db, else_, id, env, layout)?;
             Ok(format!("if {c} {{ {t} }} else {{ {e} }}"))
         }
         // A short-circuiting boolean connective → Rust's own `&&`/`||`, which short-circuit with
@@ -128,16 +153,28 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
         // literal pattern (written in the scrutinee's type), a wildcard/binder is `_`. `lower`
         // guaranteed exhaustiveness (a wildcard tail, or full Bool coverage), so the Rust match is
         // exhaustive too. The scrutinee is rendered once (Rust binds it), not re-tested per arm.
-        Core::Match { scrutinee, arms } => emit_match(db, scrutinee, &arms, env, layout),
+        Core::Match { scrutinee, arms } => emit_match(db, id, scrutinee, &arms, env, layout),
         // A runtime comparison → the Rust comparison operator. Signedness/width are already baked into
         // the operands' Rust types (a `u32` compares unsigned, an `i8` signed), so the operator alone
-        // is correct — no `_s`/`_u` variant selection like wasm needs.
+        // is correct — no `_s`/`_u` variant selection like wasm needs. Both operands must share one
+        // type; a bare-literal operand is GROUNDED to the comparison's integer type (the non-literal
+        // side's width) so `(< a 5)` over a narrow `a` does not compare `u8 < i64` (Rust E0308).
         Core::Compare { op, lhs, rhs } => {
-            let l = emit(db, lhs, env, layout)?;
-            let r = emit(db, rhs, env, layout)?;
             let sym =
                 compare_sym(op).ok_or_else(|| Reject::decline("not a comparison operator"))?;
-            Ok(format!("({l} {sym} {r})"))
+            match operand_int_ty(db, lhs, rhs) {
+                Some(it) => {
+                    let l = emit_grounded(db, lhs, it, env, layout)?;
+                    let r = emit_grounded(db, rhs, it, env, layout)?;
+                    Ok(format!("({l} {sym} {r})"))
+                }
+                // A non-integer comparison (Bool operands) — no width to reconcile, emit as-is.
+                None => {
+                    let l = emit(db, lhs, env, layout)?;
+                    let r = emit(db, rhs, env, layout)?;
+                    Ok(format!("({l} {sym} {r})"))
+                }
+            }
         }
         // A runtime arithmetic op.
         Core::Arith { op, lhs, rhs } => emit_arith(db, id, op, lhs, rhs, env, layout),
@@ -201,12 +238,22 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
     }
 }
 
-/// Render an integer constant as `<bits><utype> as <target>` (or just `<bits><utype>` when the target
-/// IS the unsigned bit type). Mirrors the wasm backend: the value must fit its solved width (else
-/// CDZ0302 — never truncate), and it is written as the two's-complement bit pattern so a negative
-/// signed value and a large unsigned value share one spelling.
+/// Render an integer constant at the node's OWN solved type. Used only where the node stands in a
+/// context that already fixes its width (a bare literal whose own `type_of` is definite). A literal
+/// used as an OPERAND / BRANCH / ARM BODY of a construct is instead grounded to that construct's width
+/// via [`emit_const_int_at`] — see [`emit_grounded`] — because a bare literal's own type is the default
+/// (`Int64`), which unification does not thread the context width back onto.
 fn emit_const_int(db: &mut Db, id: StructId, v: &IntValue) -> Result<String, Reject> {
-    let it = int_ty_of(db, id);
+    emit_const_int_at(int_ty_of(db, id), v)
+}
+
+/// Render an integer constant as `<bits><utype> as <target>` (or just `<bits><utype>` when the target
+/// IS the unsigned bit type) at the GIVEN integer type `it` — the width/signedness of the CONTEXT the
+/// literal appears in, not necessarily the literal's own defaulted type. Mirrors the wasm backend
+/// (`emit_operand`/`emit_branch` ground a bare literal to the op/branch width): the value must fit that
+/// width (else CDZ0302 — never truncate), and it is written as the two's-complement bit pattern so a
+/// negative signed value and a large unsigned value share one spelling.
+fn emit_const_int_at(it: IntTy, v: &IntValue) -> Result<String, Reject> {
     let signed = it.ground_signed();
     let width = it.ground_width();
     if !v.fits_width(signed, width) {
@@ -251,8 +298,12 @@ fn emit_arith(
     env: &Env,
     layout: &Layout,
 ) -> Result<String, Reject> {
-    let l = emit(db, lhs, env, layout)?;
-    let r = emit(db, rhs, env, layout)?;
+    // Both operands share the OP's integer type (its result width == operand width). Ground a bare
+    // literal operand to it so `(+ a 1)` over a narrow `a` emits `<narrow>::checked_add(1<narrow>)`,
+    // not `checked_add((1u64 as i64))` (Rust E0308) — the analogue of the wasm backend's `emit_operand`.
+    let it = int_ty_of(db, id);
+    let l = emit_grounded(db, lhs, it, env, layout)?;
+    let r = emit_grounded(db, rhs, it, env, layout)?;
     match op {
         Prim::Add | Prim::Sub | Prim::Mul => {
             let method = match op {
@@ -321,11 +372,19 @@ fn emit_arith(
 /// lint) — leaving a `match` Rust sees as exhaustive.
 fn emit_match(
     db: &mut Db,
+    match_id: StructId,
     scrutinee: StructId,
     arms: &[crate::core::MatchArm],
     env: &Env,
     layout: &Layout,
 ) -> Result<String, Reject> {
+    // The match's RESULT integer type, if any — a bare-literal arm body is grounded to it so a
+    // default-Int64 literal arm beside a narrow-width arm does not yield a mismatched type (Rust E0308),
+    // the same reconciliation the wasm backend applies to a `ConstInt` arm body via `emit_operand`.
+    let result_it = match type_of(db, match_id) {
+        Ty::Int(it) => Some(it),
+        _ => None,
+    };
     let scrut = emit(db, scrutinee, env, layout)?;
     let mut out = format!("match ({scrut}) {{ ");
     for arm in arms {
@@ -338,7 +397,10 @@ fn emit_match(
             Some(g) => format!(" if {}", emit(db, g, env, layout)?),
             None => String::new(),
         };
-        let b = emit(db, arm.body, env, layout)?;
+        let b = match result_it {
+            Some(it) => emit_grounded(db, arm.body, it, env, layout)?,
+            None => emit(db, arm.body, env, layout)?,
+        };
         out.push_str(&format!("{pat}{guard} => {b}, "));
         // An UNGUARDED wildcard is the unconditional catch-all — every later arm is unreachable (as in
         // `lower`/wasm). Stop here so the emitted `match` is exhaustive with no unreachable arm.
@@ -460,5 +522,46 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
             sign: Sign::Fixed(true),
             width: Width::Fixed(crate::ty::DEFAULT_INT_WIDTH),
         },
+    }
+}
+
+/// Emit an `if`/`match` branch producing the construct at `construct_id`'s RESULT type. When that
+/// result is an integer, a bare-literal branch is GROUNDED to its width (via [`emit_grounded`]) so a
+/// default-Int64 literal branch opposite a narrow branch does not mismatch the block's type; a
+/// non-integer result (e.g. Bool branches) emits normally. Mirrors the wasm backend's `emit_branch`.
+fn emit_branch(
+    db: &mut Db,
+    branch: StructId,
+    construct_id: StructId,
+    env: &Env,
+    layout: &Layout,
+) -> Result<String, Reject> {
+    match type_of(db, construct_id) {
+        Ty::Int(it) => emit_grounded(db, branch, it, env, layout),
+        _ => emit(db, branch, env, layout),
+    }
+}
+
+/// The shared integer type of a comparison's two operands — the width/signedness both must be rendered
+/// at. A bare literal defaults to `Int64`, so the DEFINITE side (the non-literal operand) supplies the
+/// real width: prefer whichever operand has a concrete `Ty::Int`. `None` when neither is an integer (a
+/// Bool comparison — no width to reconcile, the operands emit as-is). Mirrors `select.rs`'s
+/// `operand_int_ty`, but returns `None` for the non-integer case rather than a Bool-as-i32 stand-in
+/// (Rust compares `bool` with `==` directly, needing no width).
+fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<IntTy> {
+    // Prefer the operand whose type is NOT a bare defaulted literal: a param/computed operand carries
+    // the real width, a literal defaults. Both concrete-and-equal is the common case; if one is a
+    // literal (deferred width) the other pins the width through unify, so either read gives the same
+    // ground width — but reading the non-literal side first is robust to the literal's default.
+    let pick = |id: StructId, db: &mut Db| match type_of(db, id) {
+        Ty::Int(it) => Some(it),
+        _ => None,
+    };
+    // If lhs is a literal and rhs is definite (or vice versa), take the definite side.
+    let lhs_lit = matches!(core_of(db, lhs), Core::ConstInt(_));
+    if lhs_lit {
+        pick(rhs, db).or_else(|| pick(lhs, db))
+    } else {
+        pick(lhs, db).or_else(|| pick(rhs, db))
     }
 }

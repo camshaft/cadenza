@@ -93,6 +93,12 @@ enum Cmd {
         /// (pass→not-pass), even while totals shift. Reports regressions and newly-passing cases.
         #[arg(long)]
         check: bool,
+        /// Which backend to drive each case through: `wasm` (default — the historical cdz-run path) or
+        /// `rust` (emit `--target rust`, compile with `rustc`, run). The Rust path grades the SAME
+        /// corpus expectations against the Rust backend, catching a non-compiling artifact or a wrong
+        /// answer. Slower (a `rustc` invocation per case), so it is opt-in and has its own baseline.
+        #[arg(long, default_value = "wasm")]
+        target: GateTargetArg,
     },
     /// The omnibus health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
     /// the wasm runtime build, and the behavior gate. Each step's output is captured to a log file
@@ -190,6 +196,7 @@ fn main() {
             case,
             save,
             check,
+            target,
         } => gate(
             &paths,
             profile,
@@ -199,6 +206,10 @@ fn main() {
                 case,
                 save,
                 check,
+                target: match target {
+                    GateTargetArg::Wasm => GateTarget::Wasm,
+                    GateTargetArg::Rust => GateTarget::Rust,
+                },
             },
         ),
         Cmd::Check => check(&paths, profile),
@@ -231,7 +242,11 @@ fn miri(paths: &Paths, filter: &str) {
     }
     eprintln!(
         "xtask miri: running cdz-runtime tests under Miri (filter: {:?}) — this is SLOW (~100-1000x)…",
-        if filter.is_empty() { "<whole suite>" } else { filter }
+        if filter.is_empty() {
+            "<whole suite>"
+        } else {
+            filter
+        }
     );
     match cmd.status() {
         Ok(s) if s.success() => eprintln!("xtask miri: OK (no UB reported)"),
@@ -539,6 +554,32 @@ enum Ran {
     Declined { code: Option<String> },
     /// The component ran but trapped.
     Trap(String),
+    /// The backend produced an artifact that FAILED TO BUILD/LOAD — a broken artifact, distinct from a
+    /// clean decline (the compiler refused up front) and from a trap (a well-formed artifact that ran
+    /// and aborted). Only the Rust backend produces this today: emitted `.rs` that `rustc` rejects
+    /// (e.g. the narrow-literal width mismatch that motivated Rust-backend gating). It grades as a FAIL
+    /// on an `output`/`trap` case (the backend was asked for a value and emitted un-compilable source —
+    /// the miscompile the gate must catch), the way a wrong `Value` does.
+    BadArtifact(String),
+}
+
+/// Which backend the gate drives each corpus program through. `Wasm` is the default and historical
+/// path (cdz-syntax → rcdzc → cdz-run); `Rust` emits `--target rust`, compiles the source with `rustc`,
+/// and runs it — so the SAME corpus expectations grade the Rust backend, catching a non-compiling
+/// artifact or a wrong answer against the one executable oracle (`backends-and-targets.md` §The meaning
+/// against which every backend's output is judged MUST be the one executable semantics).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GateTarget {
+    Wasm,
+    Rust,
+}
+
+/// The `--target` value clap parses for the `gate` command (its own enum so clap validates the
+/// spelling and `--help` lists the choices), mapped to [`GateTarget`] at dispatch.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum GateTargetArg {
+    Wasm,
+    Rust,
 }
 
 /// Drive one program's s-expression `text` through cdz-syntax → rcdzc → cdz-run, returning the
@@ -546,7 +587,26 @@ enum Ran {
 /// is given, the export is invoked with those runtime arguments (`--call <export> --arg <v>…`) — how a
 /// case exercises a parameterized entrypoint rather than a nullary one; `None` runs the sole export
 /// with no arguments (the common case).
-fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str, call: Option<&Call>) -> Ran {
+fn run_program(
+    tools: &Tools,
+    store: &Option<PathBuf>,
+    program: &str,
+    call: Option<&Call>,
+    target: GateTarget,
+) -> Ran {
+    match target {
+        GateTarget::Wasm => run_program_wasm(tools, store, program, call),
+        GateTarget::Rust => run_program_rust(tools, program, call),
+    }
+}
+
+/// Drive one program through cdz-syntax → rcdzc (wasm) → cdz-run — the historical path.
+fn run_program_wasm(
+    tools: &Tools,
+    store: &Option<PathBuf>,
+    program: &str,
+    call: Option<&Call>,
+) -> Ran {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -617,6 +677,184 @@ fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str, call: Opti
     }
 }
 
+/// Drive one program through cdz-syntax → rcdzc `--target rust` → `rustc` → run — the Rust-backend
+/// gate path. Returns the SAME [`Ran`] outcomes as the wasm path, so `grade_trial` judges the Rust
+/// backend against the one corpus oracle:
+///  - rcdzc REJECTS/declines → `Ran::Declined { code }` (unchanged from wasm — the front-end is shared);
+///  - the emitted `.rs` fails to COMPILE under `rustc` → `Ran::BadArtifact` (the miscompile a broken
+///    artifact is — e.g. the narrow-literal width mismatch this gate was built to catch);
+///  - the compiled program PANICS at run time → `Ran::Trap` (a Cadenza trap is a Rust panic);
+///  - it prints a value → `Ran::Value` (the export's result, in cdz-run's bare-scalar rendering, which
+///    Rust's `Display` for an integer/bool reproduces exactly — `42`, `true`).
+///
+/// A driver `fn main` is generated that calls the sole export (or the `(call …)` export with the trial's
+/// args written verbatim as Rust literals) and prints the result, so the value crosses on stdout exactly
+/// as cdz-run emits it. Scalar-only today: a compound result declines in the Rust backend (→ `Declined`
+/// → Todo), so no `(: value type)` rendering is needed here.
+fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>) -> Ran {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Stage 1+2: program text → binary AST → Rust source (rcdzc `--target rust -o -`, source on stdout).
+    let mut syntax = Command::new(&tools.syntax)
+        .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+    syntax
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(program.as_bytes())
+        .ok();
+    let rcdzc = Command::new(&tools.rcdzc)
+        .args(["-", "-o", "-", "--target", "rust"])
+        .stdin(Stdio::from(syntax.stdout.take().unwrap()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("rcdzc", e));
+    let rcdzc_out = rcdzc.wait_with_output().expect("wait rcdzc");
+    let _ = syntax.wait();
+    if !rcdzc_out.status.success() {
+        // A shared-front rejection/decline — identical outcome to the wasm path.
+        return Ran::Declined {
+            code: first_error_code(&rcdzc_out.stderr),
+        };
+    }
+    let module = String::from_utf8_lossy(&rcdzc_out.stdout).to_string();
+
+    // The export to invoke, and the call expression. The gate passes bare value text (`20`, `-1`,
+    // `true`); written verbatim they are valid Rust literals whose type the fn signature fixes. A
+    // negative arg is a valid Rust expression too. With no `(call …)`, invoke the sole export nullary.
+    let (export, call_expr) = match call {
+        Some(c) => (
+            rust_ident(&c.export),
+            format!("{}({})", rust_ident(&c.export), c.args.join(", ")),
+        ),
+        None => {
+            // The sole export's name is the fn to call with no args — recover it from the emitted
+            // `pub fn <name>(`. (A nullary export; the common no-`call` case.)
+            match module
+                .split("pub fn ")
+                .nth(1)
+                .and_then(|s| s.split('(').next())
+            {
+                Some(name) => (name.trim().to_string(), format!("{}()", name.trim())),
+                None => return Ran::BadArtifact("no `pub fn` in emitted Rust".to_string()),
+            }
+        }
+    };
+
+    // A per-program temp dir (keyed by a content hash so parallel gate workers do not collide, and a
+    // re-run reuses it). Write the module + a driver `main` that prints the export's result.
+    let key = fnv1a(program);
+    let dir = std::env::temp_dir().join(format!("rcdzc-gate-rust-{key:016x}"));
+    let _ = std::fs::create_dir_all(&dir);
+    let src = dir.join("prog.rs");
+    let bin = dir.join("prog");
+    // The driver's entry MUST NOT collide with the export: the corpus overwhelmingly names its export
+    // `main`, and the emitted module defines `pub fn main`, so a top-level driver `fn main` beside it is
+    // a duplicate `main` (E0428). Wrap the whole emitted module in `mod prog { … }` — its `pub fn main`
+    // becomes `prog::main`, and the driver's `fn main` is then the only crate `main`. The module's
+    // `#![allow(…)]` inner attributes are valid at the top of the `mod` block, so no rewriting is needed.
+    //
+    // A UNIT-returning export (`-> ()`) prints the token `unit` (matching cdz-run) — `()` has no
+    // `Display`, so the driver evaluates the call for its (absent) value and prints `unit` directly. A
+    // scalar/bool export prints via `Display` (`42`, `true`), exactly as cdz-run renders it. The return
+    // type is read off the emitted `pub fn …(-> <ty>)` signature, so the one driver stays type-agnostic.
+    let returns_unit = export_returns_unit(&module, &export);
+    let body = if returns_unit {
+        format!("fn main() {{ prog::{call_expr}; println!(\"unit\"); }}\n")
+    } else {
+        format!("fn main() {{ println!(\"{{}}\", prog::{call_expr}); }}\n")
+    };
+    let full = format!("mod prog {{\n{module}\n}}\n{body}");
+    if std::fs::write(&src, &full).is_err() {
+        return Ran::BadArtifact("could not write emitted Rust to a temp file".to_string());
+    }
+    // Compile with the ambient rustc. A compile failure is a BAD ARTIFACT (the backend emitted source
+    // that does not build) — the exact miscompile class this gate catches.
+    let compiled = Command::new("rustc")
+        .args(["-O", "--edition", "2021"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .output();
+    let compiled = match compiled {
+        Ok(o) => o,
+        Err(e) => return Ran::BadArtifact(format!("rustc failed to launch: {e}")),
+    };
+    if !compiled.status.success() {
+        return Ran::BadArtifact(first_line(&compiled.stderr));
+    }
+    // Run it. A panic (Cadenza trap) exits non-zero → `Ran::Trap`; a clean run prints the value.
+    let run = match Command::new(&bin).output() {
+        Ok(o) => o,
+        Err(e) => return Ran::BadArtifact(format!("compiled prog failed to launch: {e}")),
+    };
+    if run.status.success() {
+        Ran::Value(String::from_utf8_lossy(&run.stdout).trim().to_string())
+    } else {
+        Ran::Trap(first_line(&run.stderr))
+    }
+}
+
+/// Make a Cadenza name a Rust identifier the SAME way the Rust backend does (`sanitize_ident`): a `-`
+/// (and any non-ident char) becomes `_`. Kept in lockstep so the driver's call names match the emitted
+/// `pub fn` names. (A small copy rather than a dependency on the compiler crate, per the xtask/tools
+/// process boundary — the tools are separate binaries.)
+fn rust_ident(name: &str) -> String {
+    let mut s = String::with_capacity(name.len());
+    for (i, c) in name.chars().enumerate() {
+        if c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()) {
+            s.push(c);
+        } else if c.is_ascii_digit() {
+            s.push('_');
+            s.push(c);
+        } else {
+            s.push('_');
+        }
+    }
+    if s.is_empty() {
+        s.push('_');
+    }
+    s
+}
+
+/// Whether the export `name`'s emitted signature returns unit (`-> ()`) — read off the `pub fn <name>(
+/// …) -> <ty> {` line in the emitted module. A unit return has no `Display`, so the driver prints the
+/// `unit` token directly rather than through `{}`. Matches by the exact `pub fn <name>(` prefix so a
+/// different export's signature is not misread.
+fn export_returns_unit(module: &str, name: &str) -> bool {
+    let needle = format!("pub fn {name}(");
+    for line in module.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix(&needle) {
+            // The signature's return type is between `-> ` and the opening ` {`. Unit is `()`.
+            if let Some(arrow) = rest.split_once("-> ") {
+                let ret = arrow.1.trim_end().trim_end_matches('{').trim();
+                return ret == "()";
+            }
+            // No `->` means an implicit unit return (the backend always writes `-> ()`, but be safe).
+            return true;
+        }
+    }
+    false
+}
+
+/// A tiny FNV-1a hash of a string → a stable per-program key for the temp compile dir (no dependency;
+/// `Date.now`/rng are unavailable and would break parallel determinism anyway).
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 fn first_line(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -649,6 +887,7 @@ struct GateOpts {
     case: Option<String>,
     save: bool,
     check: bool,
+    target: GateTarget,
 }
 
 /// Run one or more corpus files through the pipeline and grade each case against its recorded
@@ -664,7 +903,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     // `--case`: run only matching cases and print each one's program / expected / actual — the
     // single-case debug loop, not a pass/fail tally.
     if let Some(needle) = &opts.case {
-        gate_one_case(&tools, &opts.store, &files, needle);
+        gate_one_case(&tools, &opts.store, &files, needle, opts.target);
         return;
     }
 
@@ -679,7 +918,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
         .iter()
         .flat_map(|file| read_corpus(&tools, file))
         .collect();
-    let graded = grade_all_parallel(&tools, &opts.store, records);
+    let graded = grade_all_parallel(&tools, &opts.store, records, opts.target);
 
     // Reassemble the tally + the ordered verdict list from the in-order graded results.
     let (mut pass, mut todo, mut fail) = (0u32, 0u32, 0u32);
@@ -713,18 +952,18 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     }
 
     if opts.save {
-        save_baseline(paths, &verdicts);
+        save_baseline(paths, &verdicts, opts.target);
         println!(
             "\nbaseline saved: {} cases → {}",
             verdicts.len(),
-            baseline_path(paths).display()
+            baseline_path(paths, opts.target).display()
         );
         return;
     }
     if opts.check {
         // A regression (a case that used to pass and now doesn't) fails the check even if the
         // totals look fine — the trap the raw counts hide. Newly-passing cases are reported, not failed.
-        std::process::exit(check_baseline(paths, &verdicts));
+        std::process::exit(check_baseline(paths, &verdicts, opts.target));
     }
     if fail > 0 {
         std::process::exit(1);
@@ -745,6 +984,7 @@ fn grade_all_parallel(
     tools: &Tools,
     store: &Option<PathBuf>,
     records: Vec<CorpusRecord>,
+    target: GateTarget,
 ) -> Vec<(String, Grade)> {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -774,7 +1014,7 @@ fn grade_all_parallel(
                         break;
                     }
                     let rec = &records[i];
-                    let grade = grade(tools, store, rec);
+                    let grade = grade(tools, store, rec, target);
                     *slots[i].lock().unwrap() = Some((rec.description.clone(), grade));
                 }
             });
@@ -790,7 +1030,13 @@ fn grade_all_parallel(
 
 /// Run only the case(s) whose description contains `needle`, printing each one's normalized program,
 /// expected result, and actual outcome. A focused debug view, not a tally.
-fn gate_one_case(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], needle: &str) {
+fn gate_one_case(
+    tools: &Tools,
+    store: &Option<PathBuf>,
+    files: &[PathBuf],
+    needle: &str,
+    target: GateTarget,
+) {
     let mut found = 0;
     for file in files {
         for rec in read_corpus(tools, file) {
@@ -803,7 +1049,7 @@ fn gate_one_case(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], need
             let rans: Vec<Ran> = rec
                 .trials
                 .iter()
-                .map(|t| run_program(tools, store, &rec.program, t.call.as_ref()))
+                .map(|t| run_program(tools, store, &rec.program, t.call.as_ref(), target))
                 .collect();
             let verdict = match grade_ran(&rec, &rans) {
                 Grade::Pass => "PASS",
@@ -823,6 +1069,7 @@ fn gate_one_case(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], need
                         "declined (compiler can't compile it yet)".to_string()
                     }
                     Ran::Trap(t) => format!("trap: {t}"),
+                    Ran::BadArtifact(e) => format!("artifact did not build: {e}"),
                 };
                 println!("expect:   {}", trial.expect);
                 println!("actual:   {actual}");
@@ -951,11 +1198,11 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
 /// disagreement wins, tagged with which trial), else `Todo` if any trial is todo (the whole case is
 /// only as "done" as its least-done trial — a partially-declining case is not a live guard), else
 /// `Pass`. The common single-trial case grades exactly as before.
-fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord) -> Grade {
+fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: GateTarget) -> Grade {
     let rans: Vec<Ran> = rec
         .trials
         .iter()
-        .map(|t| run_program(tools, store, &rec.program, t.call.as_ref()))
+        .map(|t| run_program(tools, store, &rec.program, t.call.as_ref(), target))
         .collect();
     grade_ran(rec, &rans)
 }
@@ -1007,6 +1254,11 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
                 Ran::Value(v) => Grade::Fail(format!("expected {expected_full}, ran → {v}")),
                 Ran::Declined { .. } => Grade::Todo, // compiler can't compile it yet
                 Ran::Trap(t) => Grade::Fail(format!("expected {expected_full}, trapped: {t}")),
+                // A broken artifact for a case the corpus says yields a VALUE is the miscompile the
+                // Rust-backend gate exists to catch — the backend emitted un-compilable source.
+                Ran::BadArtifact(e) => Grade::Fail(format!(
+                    "expected {expected_full}, artifact did not build: {e}"
+                )),
             }
         }
         // `error CODE`: the corpus says this program is REJECTED with diagnostic `CODE`. Grade by what
@@ -1028,12 +1280,20 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
                 Ran::Declined { code: Some(got) } if got == want => Grade::Pass,
                 // Rejected (a different code), a codeless decline, or a trap — refused, not miscompiled.
                 Ran::Declined { .. } | Ran::Trap(_) => Grade::Todo,
+                // A broken artifact cannot validate a rejection CODE (the front-end never rejected — the
+                // BACK end failed to build a value it accepted), so it is not a clean signal here: Todo.
+                Ran::BadArtifact(_) => Grade::Todo,
             }
         }
         // `trap …`: matching a trap reason needs machinery not yet wired (the runtime message). Count as
         // todo unless a clear disagreement — a program the corpus says TRAPS that instead ran to a value.
         "trap" => match ran {
             Ran::Value(v) => Grade::Fail(format!("expected a trap, ran → {v}")),
+            // A broken artifact for a case that should TRAP is still a miscompile (the backend was asked
+            // for a runnable artifact that traps and emitted un-compilable source instead).
+            Ran::BadArtifact(e) => {
+                Grade::Fail(format!("expected a trap, artifact did not build: {e}"))
+            }
             _ => Grade::Todo,
         },
         _ => Grade::Todo,
@@ -1126,14 +1386,20 @@ impl Verdict {
     }
 }
 
-/// The committed baseline file: `<repo>/spec/semantics/.gate-baseline`.
-fn baseline_path(paths: &Paths) -> PathBuf {
-    paths.repo.join("spec/semantics/.gate-baseline")
+/// The committed baseline file for a target: `<repo>/spec/semantics/.gate-baseline` for the default
+/// wasm gate, and a target-suffixed sibling (`.gate-baseline-rust`) for another backend — so each
+/// backend has its OWN regression baseline and one does not clobber the other's.
+fn baseline_path(paths: &Paths, target: GateTarget) -> PathBuf {
+    let name = match target {
+        GateTarget::Wasm => ".gate-baseline".to_string(),
+        GateTarget::Rust => ".gate-baseline-rust".to_string(),
+    };
+    paths.repo.join("spec/semantics").join(name)
 }
 
 /// Write the current verdicts as the baseline: one `verdict\tdescription` line per case, sorted by
 /// description so the file is stable and a diff is meaningful.
-fn save_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) {
+fn save_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTarget) {
     let mut lines: Vec<String> = verdicts
         .iter()
         .map(|(d, v)| format!("{}\t{d}", v.tag()))
@@ -1143,14 +1409,14 @@ fn save_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) {
         "# gate baseline — per-case verdicts (verdict\\tdescription). Regenerate with `cargo xtask gate --save`.\n{}\n",
         lines.join("\n")
     );
-    std::fs::write(baseline_path(paths), body).expect("write baseline");
+    std::fs::write(baseline_path(paths, target), body).expect("write baseline");
 }
 
 /// Compare current verdicts to the baseline. Returns the process exit code: non-zero if any case
 /// REGRESSED (baseline pass → now not pass) or a baseline case vanished. Newly-passing cases and
 /// new cases are reported but do not fail the check.
-fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)]) -> i32 {
-    let path = baseline_path(paths);
+fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTarget) -> i32 {
+    let path = baseline_path(paths, target);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(_) => {
@@ -1273,7 +1539,10 @@ fn check(paths: &Paths, profile: &str) {
     // gaps?" — a green check means the library is healthy AND the compiler didn't backslide. With no
     // baseline, fall back to a plain `gate`. The gate's own summary is short, so let it print to the
     // console (it is the useful signal) while its verbose build noise still lands in the log.
-    let gate_cmd = if baseline_path(paths).exists() {
+    // The omnibus `check` runs the default (WASM) gate; the Rust-backend gate is a separate opt-in
+    // (`gate --target rust --check`) with its own baseline, so it does not gate `check` (it needs
+    // `rustc` per case and is slower).
+    let gate_cmd = if baseline_path(paths, GateTarget::Wasm).exists() {
         format!("{xtask} --profile {profile} gate --check")
     } else {
         format!("{xtask} --profile {profile} gate")
