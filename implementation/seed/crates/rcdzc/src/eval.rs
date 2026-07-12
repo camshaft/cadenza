@@ -242,6 +242,14 @@ pub fn apply_lambda(
     }
     let mut arg_of: HashMap<StructId, StructId> = HashMap::new();
     for (p, a) in params.iter().zip(args.iter()) {
+        // PIN each argument's meaning at the CALL SITE before reducing. `beta_reduce` splices the
+        // shared argument occurrence into a freshly `push_list`-built copy of the body, and
+        // `push_list` re-parents its children — which moves the argument's root out of the caller's
+        // scope. Resolving the argument subtree now memoizes every node against its caller-side
+        // position, so the later re-parent cannot change how a caller-bound name inside the argument
+        // resolves (`(let ((k 10)) (inc k))` — `k` must stay bound to the caller's `let`). The body's
+        // OWN names still resolve lazily after the copy, against the copied scope, as intended.
+        crate::resolve::resolve_subtree(db, *a);
         // A body reference to a parameter binds to the parameter's NAME occurrence (resolve's
         // `binder_in` returns the name, seeing through a `(: name T)` annotated binder). So key the
         // substitution on the name occurrence too, not the raw signature child (which is the `(:…)`

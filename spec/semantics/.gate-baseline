@@ -30,6 +30,9 @@ pass	a later let binding sees an earlier one in the same let
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
+pass	a let-bound variable derived from a runtime parameter passed as a call argument
+pass	a let-bound variable passed as a function-call argument resolves at the call site
+pass	a let-bound variable passed to a let-bound lambda resolves at the call site
 pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
@@ -40,6 +43,7 @@ pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies to all its arguments at once
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
+pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested match on a runtime scrutinee
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a parameter carries a type annotation in the signature

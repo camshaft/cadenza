@@ -350,6 +350,47 @@
   (input  (do (def base 10) (def (add-base n) (+ n base)) (add-base 5)))
   (output (: 15 Int64)))
 
+; An ARGUMENT to a user-function call is an expression evaluated in the CALL SITE's scope, and its
+; names bind there — a compiler that reduces a call by substituting the argument into the callee's
+; body must not thereby resolve the argument's names in the callee's scope. The witnesses below pin
+; a let-bound name, a let-bound lambda's argument, and a call's own result each passed as an argument
+; to another user call: every one keeps the binding in effect where it was written (core-semantics.md
+; #Binding Is Lexical). The passing anchors (a literal argument, a direct reference with no call) sit
+; among the other let/def cases in this file; these add the call-argument position specifically.
+
+(case "a let-bound variable passed as a function-call argument resolves at the call site"
+  (doc    "`(let ((k 10)) (inc k))` binds `k` = 10, then applies the top-level `inc` to it, yielding
+           11. The argument `k` is a reference to the caller's `let` binding; reducing `(inc k)` by
+           substituting `k` into `inc`'s body must keep `k` bound at the call site, not resolve it in
+           `inc`'s scope (where it is unbound). A literal argument `(inc 10)` and a direct reference
+           `(let ((k 10)) (+ k 1))` both already resolve; this pins the call-argument position.")
+  (input  (do (def (inc x) (+ x 1)) (def (main) (let ((k 10)) (inc k))) (export main)))
+  (output (: 11 Int64)))
+
+(case "a let-bound variable passed to a let-bound lambda resolves at the call site"
+  (doc    "The lambda sibling: `(let ((k 10) (f (fn (x) (+ x 1)))) (f k))` applies the let-bound `f`
+           to the let-bound `k`, yielding 11. Both names are bound by the same `let`; the argument `k`
+           passed to `f` resolves against that `let`, not inside `f`'s body.")
+  (input  (do (def (main) (let ((k 10) (f (fn (x) (+ x 1)))) (f k))) (export main)))
+  (output (: 11 Int64)))
+
+(case "a nested application of a let-bound lambda resolves each argument at its call site"
+  (doc    "`(let ((f (fn (x) (+ x 1)))) (f (f 0)))` = 2: the inner `(f 0)` yields 1 and is the
+           argument to the outer `f`. The inner call's result, substituted into the outer application,
+           keeps `f` bound by the enclosing `let` — nesting one call as another's argument does not
+           lose the binding.")
+  (input  (do (def (main) (let ((f (fn (x) (+ x 1)))) (f (f 0)))) (export main)))
+  (output (: 2 Int64)))
+
+(case "a let-bound variable derived from a runtime parameter passed as a call argument"
+  (doc    "The runtime companion: `(let ((k (+ n 1))) (inc k))` binds `k` from the runtime parameter
+           `n` and passes it to `inc`; with n = 40, k = 41 and the result is 42. The binding is
+           resolved at the call site whether the let value is a constant or a runtime expression — it
+           is the call-argument resolution that matters, not the value's staticness.")
+  (input  (do (def (inc x) (+ x 1)) (def (main (: n Int64)) (let ((k (+ n 1))) (inc k))) (export main)))
+  (call   main (: 40 Int64))
+  (output (: 42 Int64)))
+
 (case "a declaration in a do block shadows an outer binding"
   (doc    "`(let ((x 1)) (do (def x 99) x))`: the `def x 99` inside the `do` shadows the outer `let`
            binding of `x` for the forms that follow it, so the block yields 99. Pins that a do-block

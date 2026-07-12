@@ -80,6 +80,25 @@ pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
     r
 }
 
+/// Eagerly resolve an ENTIRE subtree, memoizing every node against its CURRENT lexical position. Used
+/// to PIN a call-site argument's meaning before β-reduction splices it into a copied callee body: the
+/// splice re-parents the argument's root (so the copied body's own names resolve against the copy —
+/// necessary for a body-local `let`/param that binds a substituted value), which would otherwise drag
+/// the argument out of the caller's scope and leave a caller-bound name (`(let ((k 10)) (inc k))`)
+/// spuriously unbound. Resolving the argument here fills the memo, so the later re-parent cannot change
+/// how any node inside it resolves — the "arguments resolve in the caller's scope" invariant
+/// `apply_lambda` documents, made robust to the re-parenting `push_list` performs.
+pub fn resolve_subtree(db: &mut Db, id: StructId) {
+    resolved_of(db, id);
+    let children = match db.ast.get(id) {
+        Struct::List(children) => children.clone(),
+        Struct::Atom(_) => return,
+    };
+    for c in children {
+        resolve_subtree(db, c);
+    }
+}
+
 /// Classify one AST occurrence into its resolved form. Reads the AST + the parent index (for scope);
 /// does not recurse into children (they resolve on their own demand). A "no" is a `Poison` value.
 fn compute(db: &Db, id: StructId) -> Resolved {

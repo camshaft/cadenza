@@ -3034,6 +3034,30 @@ mod stage1 {
     }
 
     #[test]
+    fn a_let_bound_variable_passed_as_a_call_argument_resolves_at_the_call_site() {
+        // `(let ((k 10)) (inc k))` = 11: β-reduction splices the CALL-SITE argument `k` into a copy of
+        // `inc`'s body, and `push_list` re-parents the splice — so without pinning the argument's scope
+        // at the call site, `k` would resolve in the CALLEE's scope (where it is unbound) and the
+        // program would be spuriously rejected CDZ0101. The argument must keep the caller's `let`.
+        let src =
+            "(module m (def (inc x) (+ x 1)) (def (main) (let ((k 10)) (inc k))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                "main"
+            ),
+            11
+        );
+        // The lambda sibling and the nested-application sibling exercise the same splice: a let-bound
+        // name and a call's own result, each passed as an argument to another user call.
+        assert_eq!(
+            run_main("(let ((k 10) (f (fn (x) (+ x 1)))) (f k))"),
+            11
+        );
+        assert_eq!(run_main("(let ((f (fn (x) (+ x 1)))) (f (f 0)))"), 2);
+    }
+
+    #[test]
     fn a_higher_order_function_folds() {
         // `(let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))` = 7 — a function passed as
         // an argument, applied twice; the whole thing β-reduces to `(+ (+ 5 1) 1)` = 7.
