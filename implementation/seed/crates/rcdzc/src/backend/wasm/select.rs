@@ -1344,6 +1344,20 @@ fn m_slot(ot: IntTy) -> ValType {
     }
 }
 
+/// Where a checked op leaves its result:
+///  - `Stack` — the usual case: the result is left on the operand stack (via `local.get $r`), for the
+///    enclosing expression to consume.
+///  - `Slot(d)` — the caller wants the result in local `d` and NOT on the stack. Used when this op is
+///    an OPERAND of an enclosing checked op: the enclosing op would otherwise `emit_operand(this) ;
+///    local.set d` — computing this result into its own `$r` then COPYING it to `d`. Passing `Slot(d)`
+///    makes THIS op use `d` as its `$r` directly, so its final `local.set` IS the store and the copy
+///    (`local.get $r_inner ; local.tee d`) vanishes, along with the separate `$r_inner` scratch slot.
+#[derive(Clone, Copy)]
+enum ResultDest {
+    Stack,
+    Slot(u32),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_checked_arith(
     db: &mut Db,
@@ -1357,6 +1371,37 @@ fn emit_checked_arith(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    emit_checked_arith_to(
+        db,
+        op,
+        m,
+        lhs,
+        rhs,
+        slots,
+        base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+        ResultDest::Stack,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_checked_arith_to(
+    db: &mut Db,
+    op: Prim,
+    m: Machine,
+    lhs: StructId,
+    rhs: StructId,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+    dest: ResultDest,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
     // Each operand's SOURCE at every use site (the machine op + the guard's re-reads): a reusable
@@ -1393,20 +1438,34 @@ fn emit_checked_arith(
             OperandSrc::Slot(s)
         }
     };
-    let sr = claim(high);
-    scratch_ty.insert(sr, m.slot());
+    // `$r` (the result slot): the caller-requested destination when this op is an operand of an
+    // enclosing op (`Slot(d)`), else a fresh scratch slot. Using `d` directly means this op's final
+    // `local.set` IS the store the enclosing op wanted — no copy. `d` is one of the enclosing op's
+    // operand slots, claimed BELOW this op's `base`, so this op's own operand scratch (claimed from
+    // `base` up) never collides with it.
+    let sr = match dest {
+        ResultDest::Slot(d) => d,
+        ResultDest::Stack => {
+            let s = claim(high);
+            scratch_ty.insert(s, m.slot());
+            s
+        }
+    };
     // Operands that DO need a copy recurse above the scratch slots claimed so far; A is stored before
     // B runs, so B may reuse A's operand scratch (the liveness the high-water mark captures).
     let operand_base = next_scratch;
-    // <A> local.set $a  — only when A is a stashed (non-reusable) operand; a reusable source is pushed
-    // in place at each use. A bare-literal operand is grounded to the OP's width `ot` by `emit_operand`.
+    // <A> compute A into $a — only when A is a stashed (non-reusable) operand; a reusable source is
+    // pushed in place at each use. `emit_operand_into` writes the result straight into `$a`: a nested
+    // checked op targets `$a` as its own result slot (no copy), any other operand is `emit_operand`ed
+    // then `local.set $a`. A bare-literal operand is grounded to the OP's width `ot` by `emit_operand`.
     if sa_src.is_none()
         && let OperandSrc::Slot(sa_slot) = sa
     {
-        emit_operand(
+        emit_operand_into(
             db,
             lhs,
             ot,
+            sa_slot,
             slots,
             operand_base,
             high,
@@ -1414,16 +1473,16 @@ fn emit_checked_arith(
             layout,
             out,
         )?;
-        out.push(Lir::LocalSet(sa_slot));
     }
-    // <B> local.set $b  — likewise only for a stashed operand.
+    // <B> compute B into $b — likewise only for a stashed operand.
     if sb_src.is_none()
         && let OperandSrc::Slot(sb_slot) = sb
     {
-        emit_operand(
+        emit_operand_into(
             db,
             rhs,
             ot,
+            sb_slot,
             slots,
             operand_base,
             high,
@@ -1431,7 +1490,6 @@ fn emit_checked_arith(
             layout,
             out,
         )?;
-        out.push(Lir::LocalSet(sb_slot));
     }
     // push$a push$b <machine-op> local.set $r
     sa.push(out);
@@ -1447,8 +1505,55 @@ fn emit_checked_arith(
     emit_machine_overflow_guard(op, m, sa, sb, sr, out);
     // Step 2: the narrow-width range-check on the exact result in `$r`.
     emit_range_check(m, sr, out);
-    // The result.
-    out.push(Lir::LocalGet(sr));
+    // The result. `Stack` leaves it on the operand stack (`local.get $r`) for the enclosing expression;
+    // `Slot(d)` means `$r` IS `d` and the caller wants the value only in the slot, so nothing is pushed
+    // (the `local.set $r` above already stored it) — this is where the copy-into-the-operand-slot goes
+    // away.
+    if matches!(dest, ResultDest::Stack) {
+        out.push(Lir::LocalGet(sr));
+    }
+    Ok(())
+}
+
+/// Emit operand `id` (at op width `ot`) so its value ends up in local `slot`. When `id` is itself a
+/// nested checked `+`/`-`/`*`, it is emitted with `ResultDest::Slot(slot)` so its own result store
+/// writes `slot` directly — no `emit_operand` + separate `local.set`, hence no `local.get $r_inner ;
+/// local.tee slot` copy and no extra `$r_inner` scratch. Any other operand (a projection, a call, a
+/// conversion, a shift/bitwise, a literal, …) is `emit_operand`ed onto the stack then `local.set slot`.
+#[allow(clippy::too_many_arguments)]
+fn emit_operand_into(
+    db: &mut Db,
+    id: StructId,
+    ot: IntTy,
+    slot: u32,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    if let Core::Arith { op, lhs, rhs } = core_of(db, id)
+        && matches!(op, Prim::Add | Prim::Sub | Prim::Mul)
+    {
+        let m = Machine::of(int_ty_of(db, id));
+        return emit_checked_arith_to(
+            db,
+            op,
+            m,
+            lhs,
+            rhs,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+            ResultDest::Slot(slot),
+        );
+    }
+    emit_operand(db, id, ot, slots, base, high, scratch_ty, layout, out)?;
+    out.push(Lir::LocalSet(slot));
     Ok(())
 }
 
@@ -2064,14 +2169,13 @@ mod tests {
 
     #[test]
     fn a_nested_checked_op_shares_scratch_minimally() {
-        // (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) — a nested checked op. The inner
-        // `(+ a b)` fully drains its scratch (leaves only its result on the stack → stored to the
-        // outer's $a) before the outer `*` uses its slots, so the two share the scratch pool: the
-        // declared-locals count is the MAX depth, not the sum. Direct-operand reuse SHRINKS it further:
-        // a,b (inner add) and c (outer mul's rhs) are params read DIRECTLY, so only $r slots plus the
-        // outer's $a (which holds the inner result) need scratch. Outer mul: $a=3 (the inner result),
-        // $b=c=slot 2 (direct, no scratch), $r=4, operand_base 5. Inner add: a,b direct, $r=5.
-        // High-water 6 → 3 scratch locals (slots 3,4,5), NOT 6.
+        // (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) — a nested checked op. The outer
+        // mul's LHS is the inner add; instead of computing the add into its OWN $r and copying that to
+        // the mul's $a, the add is emitted with `ResultDest::Slot($a)` so its result store writes $a
+        // directly (no `local.get $r_inner ; local.tee $a` copy, no separate $r_inner slot). Slots:
+        // outer mul $a=3 (the inner add writes here), $b=c=slot 2 (a direct param, no scratch), $r=4;
+        // the inner add reuses $a=3 as its own $r and its a,b are direct params → no scratch of its own.
+        // So only slots 3 and 4 are declared — 2 locals, down from 3 before the dest-threading.
         let ast = crate::testkit::parse(
             "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (def (main) 0) (export main))",
         );
@@ -2079,7 +2183,7 @@ mod tests {
         let layout = layout_of(&mut db);
         let (params, body) = function_of(&mut db, "f");
         let f = select_function(&mut db, body, &params, &layout).expect("select");
-        assert_eq!(f.declared, vec![ValType::I64; 3]);
+        assert_eq!(f.declared, vec![ValType::I64; 2]);
     }
 
     // ── value-heap H2d: Perceus — a kept heap binding constructs then DROPS ───────────────────────
