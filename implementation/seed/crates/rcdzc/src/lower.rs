@@ -705,8 +705,13 @@ fn checked_shl_i64(x: i64, count: i64) -> Option<i64> {
     if !(0..64).contains(&count) {
         return None;
     }
-    // Multiply by 2^count with overflow checking — the defined meaning of a left shift.
-    x.checked_mul(1i64.checked_shl(count as u32)?)
+    // Multiply by 2^count and narrow to `i64`, `None` on overflow — the defined meaning of a left
+    // shift. The product is computed in `i128` because the `2^count` factor is itself not always an
+    // `i64`: `1i64 << 63` is `i64::MIN` (a NEGATIVE 2^63), so a signed factor miscomputes both
+    // `1 << 63` (folds to `i64::MIN` instead of overflowing) and `-1 << 63` (overflows the signed
+    // multiply instead of yielding `i64::MIN`). In `i128`, `2^count` (count < 64) and its product
+    // with any `i64` both fit exactly, so the single `i64::try_from` fit-check is the whole rule.
+    i64::try_from((x as i128) << count).ok()
 }
 
 /// An ARITHMETIC (sign-extending) right shift: `None` if the count is outside `0..64` (an out-of-range

@@ -1361,6 +1361,22 @@ mod runtime_ops {
             "(<< a b)",
             &[Val::S64(1), Val::S64(-1)]
         ));
+        // count = 63, the largest in-range count and the Int64 edge: -1<<63 is exactly Int64.min (in
+        // range, must NOT trap), while 1<<63 is +2^63 (out of range, must trap). A folder that builds
+        // the 2^count factor with a signed `1<<63` = i64::MIN would get both backwards.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(<< a b)",
+                &[Val::S64(-1), Val::S64(63)]
+            ),
+            i64::MIN
+        );
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(<< a b)",
+            &[Val::S64(1), Val::S64(63)]
+        ));
     }
 
     #[test]

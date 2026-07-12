@@ -14,6 +14,7 @@ pass	a comparison-predicate function returns its boolean result
 pass	a conditional selects a branch by a runtime value that is not known at compile time
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional's condition may itself be a conditional
+pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a decimal integer literal
 pass	a function applied to an argument
 pass	a function bound to a name and then applied
@@ -56,6 +57,7 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime division truncates toward zero
 pass	a runtime greater-than compares by signed order
 pass	a runtime left shift multiplies by a power of two
+pass	a runtime left shift of -1 by 63 is exactly the minimum integer
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime remainder takes the dividend's sign
 pass	a runtime scrutinee selects a non-first literal arm
@@ -219,6 +221,7 @@ todo	a conditionally-selected nullary variant is returned as a runtime sum resul
 todo	a conditionally-selected variant is returned as a runtime sum result
 todo	a conjunction guards a let over a runtime value inside a conditional
 todo	a consistent annotation type-checks against the inferred type
+todo	a constant left shift of 1 by 63 overflows and is rejected
 todo	a constant tuple is returned as a program result
 todo	a constructor pattern in a tuple payload slot is matched in one arm
 todo	a constructor pattern nested under Some matches a runtime list element
@@ -435,6 +438,7 @@ todo	a runtime Option carrying a user sum is matched by a nested constructor pat
 todo	a runtime compound structural equality is expressible as a hand-written recursive comparator
 todo	a runtime division by zero traps
 todo	a runtime left shift by the bit width or more traps
+todo	a runtime left shift of 1 by 63 overflows and traps
 todo	a runtime multiplication that overflows traps
 todo	a runtime overflowing left shift traps
 todo	a runtime right shift by the bit width or more traps

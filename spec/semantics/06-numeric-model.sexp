@@ -612,6 +612,30 @@
   (input  (<< 1 -1))
   (error  CDZ0304))
 
+; The count = 63 boundary — the largest in-range shift count — is where a left shift's exact-2^count
+; multiplication meets Int64's edge, and where a folder that builds the `2^count` factor with a signed
+; `1 << 63` (= i64::MIN, a NEGATIVE 2^63) miscomputes in BOTH directions: `(<< 1 63)` folds to a
+; wrong VALUE instead of overflowing, and `(<< -1 63)` overflows the checked multiply instead of
+; yielding the representable Int64.min. The fold must compute `x * 2^count` at a width where 2^63 is
+; exactly +2^63 (the seed uses i128) and then check the product fits Int64 — the same fit-check `*`
+; makes — so the const path agrees with the runtime `<< 63` companions below.
+
+(case "a constant left shift of 1 by 63 overflows and is rejected"
+  (doc    "1 * 2^63 = +9223372036854775808, one past Int64.max — a provable overflow, rejected
+           CDZ0304 exactly as `(<< 2 62)` (same value) is. The fold computes the 2^63 factor at a
+           width where it is +2^63, not the signed `1 << 63` = i64::MIN that would fold this to a
+           spurious -9223372036854775808 and disagree with the runtime path (which traps).")
+  (input  (do (def (main) (<< 1 63)) (export main)))
+  (error  CDZ0304))
+
+(case "a constant left shift of -1 by 63 is exactly the minimum integer"
+  (doc    "-1 * 2^63 = -9223372036854775808 = Int64.min, which FITS — the one in-range shl-by-63,
+           over a negative operand. The fold must accept it (its exact product is representable), not
+           reject it as it would if the 2^63 factor were the signed i64::MIN and `-1 * factor`
+           overflowed the checker. The runtime companion below produces the same Int64.min.")
+  (input  (do (def (main) (<< -1 63)) (export main)))
+  (output (: -9223372036854775808 Int64)))
+
 ; The three shift cases above use CONSTANT operands (folded at compile time). The SAME shift with
 ; RUNTIME operands (function parameters) must trap identically — a shift is a shift regardless of
 ; whether its operands are compile-time-known. The overflow/out-of-range-count check must be emitted
@@ -638,6 +662,27 @@
             (def (sh a b) (<< a b))
             (def (main) (sh 4611686018427387904 1)) (export main)))
   (error  CDZ0304))
+
+; The count = 63 boundary at run time — the shifted operand arrives as a parameter, so nothing folds
+; and the emitted guarded `i64.shl` runs. These are the agreement anchors for the two constant `<< 63`
+; cases above: `-1 << 63` produces exactly Int64.min (in range) and `1 << 63` overflows and traps, so
+; the const fold of each must match (reject the overflow, produce the Int64.min) — not diverge.
+
+(case "a runtime left shift of -1 by 63 is exactly the minimum integer"
+  (doc    "The runtime companion of `(<< -1 63)`: the operand arrives as a parameter, so the emitted
+           guarded i64.shl runs rather than folding. -1 * 2^63 = Int64.min, which fits, so the run
+           produces -9223372036854775808 — the value the constant fold must also produce.")
+  (input  (do (def (main (: x Int64)) (<< x 63)) (export main)))
+  (call   main (: -1 Int64))
+  (output (: -9223372036854775808 Int64)))
+
+(case "a runtime left shift of 1 by 63 overflows and traps"
+  (doc    "The runtime companion of `(<< 1 63)`: 1 * 2^63 overflows Int64, and the emitted round-trip
+           overflow guard traps rather than wrapping — the outcome the constant fold of the same shift
+           must match by rejecting (CDZ0304), not by producing a wrapped Int64.min.")
+  (input  (do (def (main (: x Int64)) (<< x 63)) (export main)))
+  (call   main (: 1 Int64))
+  (trap   "integer overflow"))
 
 ; The out-of-range shift-count rule (#Overflow Is Defined: "a shift count outside the type's bit
 ; width has no defined value") applies to the RIGHT shift too, not only the left — the cases above
