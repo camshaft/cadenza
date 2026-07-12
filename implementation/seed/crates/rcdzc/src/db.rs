@@ -244,8 +244,7 @@ pub struct Db {
     /// Nested (`scope → name → occ`) rather than a `(scope, name)` tuple key so the inner lookup can
     /// borrow the reference's `&str` directly (via `String: Borrow<str>`) — no per-lookup `String`
     /// allocation on the hot resolve path.
-    scope_binders:
-        crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>>,
+    scope_binders: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>>,
 
     /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
     /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
@@ -605,7 +604,8 @@ impl Db {
         } else {
             children.clone()
         };
-        let mut map: crate::fxhash::FxHashMap<String, StructId> = crate::fxhash::FxHashMap::default();
+        let mut map: crate::fxhash::FxHashMap<String, StructId> =
+            crate::fxhash::FxHashMap::default();
         for p in params {
             // A parameter is a bare name atom or an annotated binder `(: name T)` (its first child is
             // the name) — the two shapes `build_scope_binders`/`param_name` recognize.
@@ -773,11 +773,16 @@ fn build_scope_binders(
         // For a `fn` the whole list is parameters; for a `def` the first child is the def NAME, not a
         // parameter — skip it. Distinguish by which form matched (a `def`'s signature holds the name).
         let is_def = ast.as_form(form, "def").is_some();
-        let params = if is_def { &children[1.min(children.len())..] } else { &children[..] };
+        let params = if is_def {
+            &children[1.min(children.len())..]
+        } else {
+            &children[..]
+        };
         if params.is_empty() {
             continue;
         }
-        let mut map: crate::fxhash::FxHashMap<String, StructId> = crate::fxhash::FxHashMap::default();
+        let mut map: crate::fxhash::FxHashMap<String, StructId> =
+            crate::fxhash::FxHashMap::default();
         for &p in params {
             if let Some((n, name_occ)) = param_binder(ast, p) {
                 map.insert(n.to_string(), name_occ); // last-wins

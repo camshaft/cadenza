@@ -126,7 +126,11 @@ fn main() -> ExitCode {
     } else {
         cli.target.iter().map(|&t| t.into()).collect()
     };
-    let out = compile(&inputs, &targets);
+    // Run the compile on a worker thread with a stack sized to reach the recursive-descent depth
+    // guard, so pathologically deep input DECLINES (the guard trips) rather than overflowing the
+    // native stack and aborting — the `decline-don't-crash` contract, made independent of whatever
+    // stack the ambient thread happens to have. See `rcdzc::host`.
+    let out = rcdzc::run_with_compiler_stack(|| compile(&inputs, &targets));
 
     // Report diagnostics (stderr).
     for d in &out.diagnostics {

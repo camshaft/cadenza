@@ -1050,7 +1050,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // would resolve the key `x` as an unbound name. Instead validate the field shape (a
             // malformed pair / duplicate field is CDZ0201) and descend into each field's VALUE only —
             // exactly what the symbol-headed `({} …)` form does via `resolve_record`.
-            if matches!(crate::eval::meta_apply_of(db, head), Some(crate::resolved::Prim::RecordNew)) {
+            if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordNew)
+            ) {
                 match crate::resolve::read_record_fields(db, &args) {
                     Ok(fields) => {
                         for (_, &value) in fields.iter() {

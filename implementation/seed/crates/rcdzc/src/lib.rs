@@ -63,9 +63,15 @@ pub mod backend;
 pub mod abi;
 pub mod compile;
 
+// The host boundary — process/thread/stack concerns the pure core excludes (NOT ported to the
+// Cadenza self-host). Runs compilation on a stack sized to reach the recursive-descent depth guard,
+// so `decline-don't-crash` holds in every build profile with no environment to remember.
+pub mod host;
+
 pub use abi::{Artifact, CompileOutput, Diagnostic, Severity};
 pub use backend::Target;
 pub use compile::{compile, compile_component};
+pub use host::run_with_compiler_stack;
 
 // Shared test fixtures + the Stage-0 end-to-end tests (compiled only under `#[cfg(test)]`).
 #[cfg(test)]

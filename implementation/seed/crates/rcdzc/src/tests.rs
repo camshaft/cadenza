@@ -3915,9 +3915,8 @@ mod stage1 {
         // non-natural width — the annotation reduces to the sentinel width 0 and the fit-check rejects
         // it (CDZ0302), rather than DROPPING the annotation so the literal keeps its default Int64 (which
         // is what made `(mk 8)` run to 5). The runtime branch of the drop-instead-of-reject family.
-        let compile = |src: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(src)))
-        };
+        let compile =
+            |src: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(src)));
         // Runtime width via an inlined call — `(mk 8)` substitutes 8 but `n` is not a constant at the
         // annotation site; the width is non-constant → reject, not run-to-5.
         let e = compile("(module m (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main))")
@@ -5162,14 +5161,23 @@ mod stage1 {
         // (a resource-limit rejection) rather than overflow its own stack and abort — a compiler
         // completes or declines on well-formed input, never crashes. A shallow nest still folds (the
         // 64-deep corpus case folds to 65); this pins the deep end declines instead of aborting.
-        let mut body = "1".to_string();
-        for _ in 0..4000 {
-            body = format!("(+ 1 {body})");
-        }
-        let src = format!("(module m (def (main) {body}) (export main))");
-        let msg = compile_component(&crate::codec::encode(&parse(&src)))
-            .expect_err("a pathologically deep expression must decline")
-            .message;
+        //
+        // Run through the SAME host-stack helper the `rcdzc` bin uses: the decline is enforced by the
+        // recursive-descent depth guard (`DESCENT_DEPTH_LIMIT`), and reaching that guard needs a stack
+        // deeper than a default `cargo test` worker thread's (≈2 MB, which overflows at ~depth 179 in a
+        // debug build). `run_with_compiler_stack` sizes the stack FROM the guard, so the semantic guard
+        // is what fires here just as it does at the bin — no `RUST_MIN_STACK` to remember. See
+        // `rcdzc::host`.
+        let msg = crate::host::run_with_compiler_stack(|| {
+            let mut body = "1".to_string();
+            for _ in 0..4000 {
+                body = format!("(+ 1 {body})");
+            }
+            let src = format!("(module m (def (main) {body}) (export main))");
+            compile_component(&crate::codec::encode(&parse(&src)))
+                .expect_err("a pathologically deep expression must decline")
+                .message
+        });
         assert!(
             msg.contains("deeply") || msg.contains("recursion") || msg.contains("resource"),
             "got: {msg}"

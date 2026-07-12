@@ -848,7 +848,9 @@ fn grade_ran(rec: &CorpusRecord, rans: &[Ran]) -> Grade {
             // Tag a failing trial with its call so a multi-trial case points at the offending run.
             Grade::Fail(why) => {
                 return Grade::Fail(match &trial.call {
-                    Some(c) if !c.args.is_empty() => format!("[{} {}] {why}", c.export, c.args.join(" ")),
+                    Some(c) if !c.args.is_empty() => {
+                        format!("[{} {}] {why}", c.export, c.args.join(" "))
+                    }
                     _ => why,
                 });
             }

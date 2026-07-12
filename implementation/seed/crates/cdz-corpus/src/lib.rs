@@ -446,7 +446,10 @@ mod tests {
         )
         .unwrap();
         // Two `expect` lines (one per trial) and two `call` lines.
-        assert_eq!(text.matches("\nexpect\t").count() + text.starts_with("expect\t") as usize, 2);
+        assert_eq!(
+            text.matches("\nexpect\t").count() + text.starts_with("expect\t") as usize,
+            2
+        );
         assert_eq!(text.matches("call\t").count(), 2);
     }
 }

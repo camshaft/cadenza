@@ -265,9 +265,7 @@ pub fn collect_used_ops(
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
-        Core::Convert { operand, .. } | Core::Not { operand } => {
-            collect_used_ops(db, operand, out)
-        }
+        Core::Convert { operand, .. } | Core::Not { operand } => collect_used_ops(db, operand, out),
         Core::Call { args, .. } => {
             for arg in args {
                 collect_used_ops(db, arg, out);
@@ -2620,7 +2618,7 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{if_program, scalar_program};
+    use crate::testkit::scalar_program;
 
     /// Compute the boundary layout for a test program (all test fixtures have an export). `select_*`
     /// needs it to resolve a `Core::Call` callee's function index; these Lir-level tests exercise no
