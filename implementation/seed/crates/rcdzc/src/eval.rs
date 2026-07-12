@@ -153,6 +153,29 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let r = type_in_env(db, args[1], env)?;
                     Some(Ty::Fn(Box::new(p), Box::new(r)))
                 }
+                // A GENERIC SUM application `(Option a)` inside a type-lambda — each arg reduced under
+                // the env (so `a` becomes its type variable), then `Ty::Sum{decl, args}`. This is what
+                // makes a generic variant ctor's `(meta t)` = `(fn (a) (-> a (Option a)))` read as the
+                // scheme `∀a. a → Option a`. The owning declaration is on the head's `(meta sum-decl)`.
+                Prim::SumCtor => {
+                    let decl_field = project_meta(db, head, "sum-decl")?;
+                    let decl = match resolved_of(db, decl_field) {
+                        Resolved::Int(v) => {
+                            crate::ast::StructId(v.to_i64().and_then(|n| u32::try_from(n).ok())?)
+                        }
+                        _ => return None,
+                    };
+                    let name = db.type_decl_by_occ(decl)?.name.clone();
+                    let mut arg_tys = Vec::with_capacity(args.len());
+                    for &a in &args {
+                        arg_tys.push(type_in_env(db, a, env)?);
+                    }
+                    Some(Ty::Sum {
+                        decl,
+                        name,
+                        args: arg_tys,
+                    })
+                }
                 _ => None,
             }
         }

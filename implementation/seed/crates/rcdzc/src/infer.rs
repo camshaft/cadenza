@@ -131,12 +131,18 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             Ty::Tuple(elems) => elems.get(index).cloned().unwrap_or(Ty::Any),
             _ => Ty::Any,
         },
-        // A sum-variant pattern's payload binder — its type is the variant's PAYLOAD type, read off the
-        // pattern's constructor `(. Sum V)` (whose `(meta t)` is `(-> payload Sum)`). So `(match s
-        // ((Some x) …))` types `x` as the `Some` variant's payload. `Any` if the head is not a
-        // single-payload variant constructor (a fault the match check reports).
-        Resolved::SumPayload { variant_head, .. } => {
-            crate::eval::variant_payload_type(db, variant_head).unwrap_or(Ty::Any)
+        // A sum-variant pattern's payload binder — its type is the variant's PAYLOAD type AT THE
+        // SCRUTINEE'S INSTANTIATION. The ctor `(. Sum V)`'s scheme is `∀a. a → Option a`; instantiating
+        // it gives `?0 → Option ?0`, and unifying the RESULT `Option ?0` against the scrutinee's solved
+        // type `Option Int64` solves `?0 = Int64` — so `(match (s : Option Int64) ((Some x) …))` types
+        // `x` as `Int64`, not a free var. For a MONOMORPHIC sum the scheme has no vars, so the payload is
+        // read directly. `Any` if the head is not a single-payload variant (a fault the match reports).
+        Resolved::SumPayload {
+            variant_head,
+            scrutinee,
+        } => {
+            let scrut_ty = type_of(db, scrutinee);
+            payload_ty_at_instantiation(db, variant_head, &scrut_ty).unwrap_or(Ty::Any)
         }
         Resolved::If { cond, then_, else_ } => {
             // Reading the children's types is the backward demand: each is a lazy `type_of`.
@@ -678,6 +684,30 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
         }
     }
     subst.apply(&cur)
+}
+
+/// The PAYLOAD type of a variant `variant_head` at the scrutinee's instantiation `scrut_ty` — the type
+/// a match-arm payload binder takes. The ctor's scheme is `∀params. payload… → Sum params`;
+/// instantiate it, unify its RESULT (`Sum ?params`) against `scrut_ty` (a `Ty::Sum{args}` — the solved
+/// scrutinee type) to solve the fresh params from the scrutinee's concrete args, then return the
+/// (substituted) FIRST payload. So `(match (s : Option Int64) ((Some x) …))` reads `Some`'s payload as
+/// `Int64`, not a free var. For a MONOMORPHIC ctor the scheme has no vars and the result unify is a
+/// no-op, so the payload is the declared type directly. `None` if the ctor has no payload (a nullary
+/// variant — no binding) or its scheme is not a single-payload arrow.
+fn payload_ty_at_instantiation(db: &mut Db, variant_head: StructId, scrut_ty: &Ty) -> Option<Ty> {
+    let mut fresh = Fresh::new();
+    let scheme = crate::eval::scheme_of(db, variant_head, &mut fresh)?;
+    let inst = crate::unify::instantiate(&scheme, &mut fresh);
+    // The ctor type is `payload → result` (a single-payload variant). Peel the one arrow.
+    let (payload, result) = match inst {
+        Ty::Fn(p, r) => (*p, *r),
+        _ => return None, // nullary (bare sum) — no payload to bind
+    };
+    // Solve the scheme's params from the scrutinee's concrete instantiation: unify the ctor's RESULT
+    // (`Sum ?a`) against the scrutinee type (`Sum Int64`).
+    let mut subst = Subst::new();
+    let _ = crate::unify::unify(&mut subst, &result, scrut_ty);
+    Some(subst.apply(&payload))
 }
 
 /// The `db.defs` index of the top-level def an application head names, if any — for typing a recursive

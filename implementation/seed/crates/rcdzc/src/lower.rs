@@ -946,14 +946,14 @@ pub struct SumFormTemplate {
 /// `None` — the escape declines. Needs `db` to read the variant names + payload types from
 /// `db.type_decls` (found by the sum's `decl` occurrence).
 pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTemplate> {
-    // NOTE: a GENERIC sum's escape needs its `args` to substitute each variant's payload type variable
-    // before templating — a later increment. For now the monomorphic sum (empty args) escapes; a
-    // generic instantiation reaches here only once its payload types are concrete.
-    let crate::ty::Ty::Sum { decl, name, .. } = ty else {
+    let crate::ty::Ty::Sum { decl, args, .. } = ty else {
         return None;
     };
-    // Recover the variant set from the declaration occurrence (the nominal identity).
+    // Recover the variant set + the declaration's type PARAMS from the declaration occurrence. A generic
+    // sum's payload occurrences mention the params (a lowercase `a`); the instantiation's `args` are the
+    // concrete types to substitute for them, positionally.
     let decl_ref = db.type_decl_by_occ(*decl)?;
+    let params = decl_ref.params.clone();
     // Clone the shape out so we can reduce payload types with `&mut db` below.
     let variants: Vec<(String, Vec<StructId>)> = decl_ref
         .variants
@@ -962,12 +962,22 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
         .collect();
     let mut out = Vec::with_capacity(variants.len());
     for (vname, payload_occs) in &variants {
-        // Resolve each payload TYPE occurrence to a `Ty` (the constructor's declared payload types).
+        // Reduce each payload TYPE occurrence to a `Ty` AT THE INSTANTIATION: a payload that IS a type
+        // parameter (a bare name in `params`) becomes the corresponding concrete `arg`; any other
+        // payload reduces normally (`typeval_of`). This is what makes a generic `Option Int64` escape
+        // with its `Some` payload templated as `Int64` rather than the unresolvable param `a`.
         let mut payload_tys = Vec::with_capacity(payload_occs.len());
         for &p in payload_occs {
-            payload_tys.push(crate::eval::typeval_of(db, p)?);
+            let pty = match db.ast.as_name(p) {
+                Some(n) if params.iter().any(|q| q == n) => {
+                    let idx = params.iter().position(|q| q == n).unwrap();
+                    args.get(idx).cloned()?
+                }
+                _ => crate::eval::typeval_of(db, p)?,
+            };
+            payload_tys.push(pty);
         }
-        out.push(variant_form_template(vname, &payload_tys, name)?);
+        out.push(variant_form_template(vname, &payload_tys, ty)?);
     }
     Some(SumFormTemplate { variants: out })
 }
@@ -977,7 +987,7 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 fn variant_form_template(
     vname: &str,
     payloads: &[crate::ty::Ty],
-    sum_name: &str,
+    sum_ty: &crate::ty::Ty,
 ) -> Option<ValueFormTemplate> {
     let mut b = crate::ast::Builder::new();
     let colon = b.name(":");
@@ -1018,11 +1028,11 @@ fn variant_form_template(
         }
         b.list(children)
     };
-    // The TYPE node: for now, the sum's bare nominal name (matching `type_ast`'s `Ty::Sum` arm). The
-    // corpus writes `(Option Int64)` for a parameterized sum, but Stage-1 sums are monomorphic and
-    // render by their declared name — the payload-parameter surface arrives with generic sums.
-    let type_ast = b.name(sum_name);
-    let root = b.list(vec![colon, value, type_ast]);
+    // The TYPE node — the sum's full type surface: a bare `Sign` for a monomorphic sum, `(Option
+    // Int64)` for a generic instantiation (`type_ast`'s `Ty::Sum` arm renders both from the solved
+    // type). So `(: (Some 5) (Option Int64))` — the corpus parameterized form.
+    let type_node = type_ast(&mut b, sum_ty)?;
+    let root = b.list(vec![colon, value, type_node]);
     let arenas = b.finish(root);
     let bytes = crate::codec::encode(&arenas);
     let holes = resolve_leaf_offsets(&bytes, &arenas, &leaves)?;
@@ -1242,10 +1252,24 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        // A sum's type surface is its nominal name (`(: (Some 5) Option)` annotates `Option`), like a
-        // scalar's. (No sum value can cross the boundary until construction lands in a later tick; the
-        // value-form surface — `(disc payload)` from the heap walk — is that tick's work.)
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Sum { .. } => Some(b.name(ty.render_name())),
+        // A scalar's type surface is its name atom.
+        Ty::Int(_) | Ty::Bool | Ty::Unit => Some(b.name(ty.render_name())),
+        // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
+        // STRUCTURED application `(Option Int64)` for a generic instantiation — a `(NAME arg…)` list, so
+        // the args round-trip as separate nodes (not one spaced-out name atom). Matches `render_name`'s
+        // surface but built as real structure so the codec + host reader see the parameterized type.
+        Ty::Sum { name, args, .. } => {
+            if args.is_empty() {
+                Some(b.name(name.clone()))
+            } else {
+                let head = b.name(name.clone());
+                let mut children = vec![head];
+                for a in args {
+                    children.push(type_ast(b, a)?);
+                }
+                Some(b.list(children))
+            }
+        }
         Ty::Tuple(elems) => {
             let head = b.name("Tuple");
             let mut children = vec![head];

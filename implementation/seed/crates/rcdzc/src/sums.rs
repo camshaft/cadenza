@@ -114,7 +114,7 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
 ///    the discriminant is all this channel needs.
 fn variant_ctor(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant, disc: u32) -> StructId {
     let head = push_atom(ast, Leaf::Name("record".to_string()));
-    let ctor_ty = ctor_type(ast, decl, variant);
+    let ctor_ty = ctor_type_scheme(ast, decl, variant);
     let t_field = meta_field(ast, "t", ctor_ty);
     // `(meta apply)` = the shared sum-new intrinsic.
     let builder = {
@@ -135,15 +135,37 @@ fn variant_ctor(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant, disc: u32)
     push_list(ast, vec![head, t_field, apply_field, variant_field])
 }
 
-/// The constructor's type expression. A NULLARY variant (no payloads) constructs the sum directly —
-/// its type is the sum type-value. A PAYLOAD variant `(Some Int64)` has type `(-> Int64 Sum)`; multiple
-/// payloads curry (`(Cons a b) : (-> a (-> b Sum))`). Each payload TYPE occurrence is COPIED fresh (a
-/// structural copy, so it re-resolves in the synthesized scope and does not steal the user occurrence's
-/// single parent — the single-parent invariant the scope walk relies on), and the arrow ends in the sum
-/// type-value.
-fn ctor_type(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant) -> StructId {
-    // Innermost: the sum type-value the constructor produces.
-    let mut ty = sum_typeval(ast, decl);
+/// The constructor's type EXPRESSION as a `(meta t)` — for a GENERIC sum, a type-LAMBDA over the sum's
+/// params so it reads as a polymorphic scheme; for a MONOMORPHIC sum, the bare arrow. `Some` of `(type
+/// Option (Some a) None)` gets `(fn (a) (-> a (Option a)))` — a scheme `∀a. a → Option a`, so
+/// `(Option.Some 5)` unifies `a = Int64` and yields `Option Int64` through the ordinary `scheme_of` +
+/// `apply_type` machinery (the same generic path an operator's `(meta t)` takes). A monomorphic variant
+/// keeps `(-> payload… Sum)` (no lambda, `params` empty).
+fn ctor_type_scheme(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant) -> StructId {
+    let body = ctor_arrow(ast, decl, variant);
+    if decl.params.is_empty() {
+        return body;
+    }
+    // `(fn (a b…) <arrow>)` — the params, in first-appearance order, quantified over the ctor type.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let param_atoms: Vec<StructId> = decl
+        .params
+        .iter()
+        .map(|p| push_atom(ast, Leaf::Name(p.clone())))
+        .collect();
+    let params_list = push_list(ast, param_atoms);
+    push_list(ast, vec![fn_head, params_list, body])
+}
+
+/// The constructor's ARROW type `(-> payload… <sum>)`. A NULLARY variant (no payloads) IS the sum type
+/// directly. A PAYLOAD variant `(Some a)` is `(-> a <sum>)`; multiple payloads curry (`(Cons a b)` →
+/// `(-> a (-> b <sum>))`). The result `<sum>` is the sum APPLIED to its params — `(Option a)` for a
+/// generic sum (so it reduces to `Ty::Sum{args:[a]}` under the lambda), or the bare sum type-value for a
+/// monomorphic sum. Each payload TYPE occurrence is COPIED fresh (a structural copy re-resolving in the
+/// synthesized scope — a lowercase `a` re-resolves to the lambda param; a single-parent invariant too).
+fn ctor_arrow(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant) -> StructId {
+    // Innermost: the sum the constructor produces — applied to its params when generic.
+    let mut ty = sum_applied(ast, decl);
     // Wrap right-to-left in `(-> payload …)` so the arrow curries in declaration order.
     for &payload in variant.payloads.iter().rev() {
         let arrow = push_atom(ast, Leaf::Name("->".to_string()));
@@ -151,6 +173,23 @@ fn ctor_type(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant) -> StructId {
         ty = push_list(ast, vec![arrow, p, ty]);
     }
     ty
+}
+
+/// The sum the constructor produces, as a type expression: for a GENERIC sum, the sum NAME applied to
+/// its params — `(Option a)` — an ordinary type-constructor application that reduces to `Ty::Sum{decl,
+/// args:[a]}` (the `NAME` atom re-resolves to the synthesized sum record, whose `(meta apply)` is the
+/// `sum-ctor` intrinsic). For a MONOMORPHIC sum, the bare `(typeval (Sum NAME <decl>))`.
+fn sum_applied(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
+    if decl.params.is_empty() {
+        return sum_typeval(ast, decl);
+    }
+    // `(NAME a b…)` — the sum name applied to its params; `NAME` re-resolves to the sum record.
+    let name = push_atom(ast, Leaf::Name(decl.name.clone()));
+    let mut items = vec![name];
+    for p in &decl.params {
+        items.push(push_atom(ast, Leaf::Name(p.clone())));
+    }
+    push_list(ast, items)
 }
 
 /// The sum's type-value as an arena node: `(typeval (Sum NAME <decl>))`. The dual of

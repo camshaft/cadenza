@@ -4221,6 +4221,125 @@ mod stage1 {
     }
 
     #[test]
+    fn a_generic_variant_constructor_infers_its_instantiation() {
+        // G2: a GENERIC variant ctor `Some` of `(type Option (Some a) None)` has `(meta t)` =
+        // `(fn (a) (-> a (Option a)))` — a scheme `∀a. a → Option a`. So `(Option.Some 5)` INFERS the
+        // instantiation `Ty::Sum { args: [Int64] }` through the ordinary `apply_type` (instantiate +
+        // unify a = Int64), not a monomorphic `(-> a Sum)`. `(Option.Some true)` infers `Option Bool`.
+        use crate::db::Db;
+        use crate::infer::type_of;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let ast = parse(
+            "(module m (type Option (Some a) None) \
+               (def (i) (Option.Some 5)) \
+               (def (b) (Option.Some true)) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let i_body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "i")
+            .and_then(|d| d.body)
+            .expect("i");
+        match type_of(&mut db, i_body) {
+            Ty::Sum { name, args, .. } => {
+                assert_eq!(name, "Option");
+                assert_eq!(args.len(), 1);
+                assert_eq!(
+                    args[0].render_name(),
+                    "Int64",
+                    "(Some 5) infers Option Int64"
+                );
+            }
+            other => panic!("expected Ty::Sum, got {}", other.render_name()),
+        }
+        let b_body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "b")
+            .and_then(|d| d.body)
+            .expect("b");
+        match type_of(&mut db, b_body) {
+            Ty::Sum { args, .. } => assert_eq!(
+                args[0].render_name(),
+                "Bool",
+                "(Some true) infers Option Bool"
+            ),
+            other => panic!("expected Ty::Sum, got {}", other.render_name()),
+        }
+    }
+
+    #[test]
+    fn a_generic_sum_matches_and_runs_at_a_concrete_instantiation() {
+        // The G2 end-to-end: a GENERIC `Option` built + matched at a concrete payload, composed + run.
+        // `(pick n)` builds `(Option.Some n)` / `Option.None` (an `Option Int64` by inference) and
+        // matches it — `(Some x) → x`, `None → -1`. So `pick 7` → 7 (reads the Int64 payload via
+        // `sum-payload`), `pick 0` → -1. Exercises a generic sum's construction + disc dispatch + payload
+        // binding at a concrete instantiation, all through the ordinary machinery.
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some a) None) \
+                     (def (pick (: n Int64)) \
+                        (match (if (> n 0) (Option.Some n) Option.None) \
+                          ((Option.Some x) x) (Option.None -1))) \
+                     (export pick))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile generic sum match");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime generic-sum match imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed generic-sum-match run");
+            return;
+        };
+        for (arg, want) in [("7", "7"), ("0", "-1")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("pick".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "generic pick {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("composed generic-sum-match run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_generic_sum_escapes_to_the_host_at_a_concrete_instantiation() {
+        // A GENERIC `Option` built at `Int64` and RETURNED across the host boundary renders `(: (Some 5)
+        // (Option Int64))` — the parameterized type surface (§158, the corpus form), driven by the
+        // sum's solved `Ty::Sum{args:[Int64]}`. The escape walker's per-variant template reads the
+        // concrete payload type (`Int64`) from the instantiation, so the `Some` arm holds a real Int64
+        // hole. Composed + run through `cdz-run` (the resource shape, `export: None`).
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some a) None) \
+                     (def (main) (Option.Some 5)) (export main))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile generic escape");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed generic-escape run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec![],
+            runtime: Some(runtime),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "(: (Some 5) (Option Int64))",
+                    "generic sum escape renders the instantiation"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("composed generic-escape run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_variant_constructor_is_a_member_typed_as_a_function_to_the_sum() {
         // `Option.Some` is ORDINARY member access on the sum record (the `Int64.max` path), reaching a
         // variant-constructor record whose `(meta t)` is `(-> Int64 Option)`. So `Some` types as a
