@@ -4699,6 +4699,25 @@ mod match_engine {
     }
 
     #[test]
+    fn a_string_payload_variant_is_not_misjudged_nullary() {
+        // REGRESSION: a variant carrying a `String` payload — `(type Tag (Named String) Anon)` — must
+        // construct, not be misjudged NULLARY. `eval::encode_ty` (the `Ty → type-value AST` round-trip a
+        // constructor scheme takes) had NO `Ty::String` arm, so it hit the `_ => Unit` catch-all: the
+        // `Named` ctor's `(-> String Tag)` scheme round-tripped to `(-> Unit Tag)`, and applying `Named`
+        // to a `String` arg then unified "cannot unify Unit with String". (The strings vertical added
+        // `Ty::String` + `decode_ty`'s `"String"` arm but forgot the `encode_ty` side — the exact hole the
+        // `Bytes` arm's comment warned about.) Fixed by `Ty::String => push_name("String")`. Compile-only:
+        // a runtime String projection needs the composed runtime (the corpus 13-strings cases run it).
+        let src = "(module m (type Tag (Named String) Anon) \
+                     (def (main) (match (Tag.Named \"hi\") ((Tag.Named s) 1) (Tag.Anon 0))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a String-payload variant must COMPILE — not reject Named as nullary (encode_ty must round-trip String)"
+        );
+    }
+
+    #[test]
     fn a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary() {
         // REGRESSION: a GENERIC sum whose variant carries a TUPLE or RECORD payload MENTIONING a type
         // parameter — `(type Box (B (Tuple a Int64)) N)` / `(type Box (B (Record (val a))) N)` — must

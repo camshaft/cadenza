@@ -242,13 +242,18 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
 /// queries; concat/at/slice arrive with the runtime byte-rope ops.
 fn string_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
-    // The `String` module is a plain record of operation fields — NO `(meta t)`/`(meta apply)`, so it
-    // stays MEMBER-ACCESSIBLE (`(. String scalar-len)`) like `List`; a `(meta t)` would make the whole
-    // record a bare type-VALUE and break projection. `String` as a TYPE (in `(: x String)`, or the op
-    // schemes' `String` param) reduces via the `(intrinsic "String")` type node, NOT this record.
-    // (`Bytes` above CAN carry `(meta t)` because its ops' schemes reduce it via `bytes-ty` and its own
-    // member access still works — but for `String` the plain-record shape is the tested-working one.)
-    let mut children = vec![head];
+    // `(meta t)` = the ground type-value `String` (`(intrinsic "String")` → `Ty::String`), so bare
+    // `String` in type position IS the type — `(: x String)` reduces it, and a variant payload `(Named
+    // String)` reads it as the payload type — exactly as `Bytes` carries `(meta t) = bytes-ty`. Member
+    // access `(. String scalar-len)` still works: a record carrying `(meta t)` stays a record whose
+    // FIELDS project (the `Bytes` module proves both — a `(meta t)` type-value AND member access
+    // coexist; the earlier "a `(meta t)` breaks projection" note was mistaken, and left bare `String`
+    // un-usable as a type: `(: s String)` faulted "found a non-type" and a String-payload variant was
+    // misjudged nullary). The op schemes still use `(intrinsic "String")` for their `String` positions
+    // (a bare name would mis-resolve inside the module being built).
+    let ty_val = intrinsic_node(ast, "String");
+    let t_field = meta_field(ast, "t", ty_val);
+    let mut children = vec![head, t_field];
     // The LENGTH queries: each a `String → Int64` scheme (built fresh per field — a shared occurrence
     // must not be).
     for (name, prim) in [

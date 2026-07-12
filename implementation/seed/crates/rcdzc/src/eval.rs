@@ -1406,6 +1406,12 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // arm. Without this the catch-all below encoded it as `Unit`, so a `(-> … Bytes)` scheme
         // round-tripped to `(-> … Unit)` and `Bytes.of`/`Bytes.len` mis-typed.
         Ty::Bytes => db.push_name("Bytes"),
+        // A string type-value: the bare name `String` (a leaf), the exact `Bytes` analogue. Round-trips
+        // with `decode_ty`'s `"String"` arm. Without it the catch-all encoded `String` as `Unit`, so a
+        // `(-> String Sum)` variant-constructor scheme round-tripped to `(-> Unit Sum)` — a `String`-payload
+        // variant `(type Tag (Named String) …)` then unified its `"x"` argument against `Unit` ("cannot
+        // unify Unit with String"). The same round-trip hole the `Bytes` arm above fixed for bytes.
+        Ty::String => db.push_name("String"),
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }

@@ -105,6 +105,7 @@ pass	a function whose name is capitalized is called, not treated as a constructo
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a generic sum with TWO type parameters instantiates each independently
 pass	a generic sum with a type parameter inside a record payload constructs and projects
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic unwrap helper consumes a fallible Bytes.at result
@@ -260,6 +261,7 @@ pass	a runtime right shift by the bit width or more traps
 pass	a runtime scrutinee matching no arm traps
 pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
 pass	a runtime scrutinee selects a non-first literal arm
+pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
 pass	a runtime subtraction that overflows traps
@@ -286,6 +288,7 @@ pass	a signed-byte entrypoint returns its runtime argument
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
+pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
@@ -327,6 +330,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an absurd runtime width is rejected, not silently ignored
+pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated value takes a narrower integer width
 pass	an annotation that contradicts the value is rejected
@@ -447,6 +451,7 @@ pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	negation inverts a boolean
 pass	nested patterns deconstruct recursively
+pass	one generic sum instantiated at two different types in one program
 pass	ordering an integer against a boolean is a type error
 pass	over-applying a constructor by several arguments is a type error
 pass	over-applying a constructor is a type error, not a silent argument drop
@@ -713,7 +718,6 @@ todo	a returned runtime string with a non-printable scalar renders it verbatim, 
 todo	a right shift by a floating-point count does not silently promote
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
-todo	a runtime string bound from a sum payload compares equal to a string parameter
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a runtime string is sliced by scalar offsets
 todo	a runtime string returned across the run boundary renders as its quoted text
@@ -741,7 +745,6 @@ todo	a slice whose end precedes its start yields None
 todo	a slice whose start equals its end is Some of the empty string
 todo	a slice with a negative start yields None
 todo	a stateful handler threads its counter across a function boundary
-todo	a string carried as a sum-variant payload is bound and measured at run time
 todo	a string compared to a symbol is a type error
 todo	a string literal
 todo	a string literal is normalized to the canonical text form
