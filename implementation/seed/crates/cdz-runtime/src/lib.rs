@@ -2846,9 +2846,11 @@ fn merge_two_entries(e1: Entry, h1: u32, e2: Entry, h2: u32, level: u32) -> Hand
 
 /// Insert `entry` into a collision node (both bitmaps 0, `handles` nonempty). CONSUMES `node` and
 /// `entry`. Overwrite (key present) keeps the stored key + takes incoming value columns, dropping
-/// the incoming duplicate key; otherwise the entry is appended. Path-copied.
+/// the incoming duplicate key; otherwise the entry is appended. Path-copied. Returns
+/// `(new_node, size_delta)` where `size_delta` is 0 (overwrite) or 1 (new key) — so the caller
+/// propagates the size change WITHOUT a `champ_size_of` re-read of the child subtree.
 #[allow(dead_code)]
-fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: usize) -> Handle {
+fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: usize) -> (Handle, u32) {
     let key = entry.key();
     let mut found = None;
     let mut idx = 0;
@@ -2874,7 +2876,7 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: us
             let new = alloc_raw(new_handles, champ_header(0, 0, entries));
             op_drop(entry.key()); // incoming duplicate key unused
             op_drop(node);
-            new
+            (new, 0) // overwrite: size unchanged
         }
         None => {
             // New key: splice the incoming entry at the position that keeps entries sorted by KEY
@@ -2904,15 +2906,17 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: us
             let entries = (handles.len() / stride + 1) as u32;
             let new = alloc_raw(new_handles, champ_header(0, 0, entries));
             op_drop(node);
-            new
+            (new, 1) // new key: size + 1
         }
     }
 }
 
 /// The per-node recursive insert core. CONSUMES `node` and `entry` (`entry[0]` = key, len = stride);
-/// returns the new node. Bounded recursion (≤ `CHAMP_LEVELS`). Always path-copies.
+/// returns `(new_node, size_delta)` where `size_delta` is 0 (an existing key was overwritten) or 1 (a
+/// new key was added). Bounded recursion (≤ `CHAMP_LEVELS`). Always path-copies. Returning the delta
+/// lets the DESCEND branch set the parent's size header WITHOUT two `champ_size_of` subtree re-reads.
 #[allow(dead_code)]
-fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: usize) -> Handle {
+fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: usize) -> (Handle, u32) {
     let key = entry.key();
     // Read only the HEADER + arity upfront — NOT a clone of `handles`. The old code cloned the whole
     // handle vector here even on the SPLIT/EMPTY/collision branches that only ever READ it by index and
@@ -2938,11 +2942,11 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
             let i = level_index(hash, level);
             let new = alloc_raw(entry.into_vec(), champ_header(1 << i, 0, 1)); // entry owned
             op_drop(node);
-            return new;
+            return (new, 1); // fresh single entry: a new key
         }
         // Collision node — needs an owned copy of the entries (the helper appends + rebuilds).
         let handles = with_node(node, Vec::new(), |n| n.handles.clone());
-        return collision_insert(node, handles, entry, stride);
+        return collision_insert(node, handles, entry, stride); // returns (node, delta)
     }
 
     let dcount = data_count(datamap) as usize;
@@ -2972,7 +2976,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
             let new = alloc_raw(new_handles, champ_header(datamap, nodemap, size));
             op_drop(entry.key()); // incoming duplicate key unused
             op_drop(node); // frees the old value columns (and balances the dups) if node was unique
-            return new;
+            return (new, 0); // overwrite: size unchanged
         }
         // SPLIT: turn the inline entry + newcomer into a subnode. Build the STORED entry (dup'd, since
         // the consumed node's copy also survives via `op_drop(node)` releasing only ITS references).
@@ -3011,7 +3015,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
         });
         let new = alloc_raw(new_handles, champ_header(new_datamap, new_nodemap, size + 1));
         op_drop(node);
-        return new;
+        return (new, 1); // split adds the new key
     }
 
     if nodemap & bit != 0 {
@@ -3019,10 +3023,11 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
         // node's handles — clone ONCE here (at the branch that needs it) and mutate the one child slot.
         let sidx = subnode_index_for_slot(nodemap, i) as usize;
         let child = champ_handle_at(node, subbase + sidx);
-        let old_child_size = champ_size_of(child);
         op_dup(child);
-        let new_child = champ_insert_node(child, entry, hash, level + 1, stride);
-        let delta = champ_size_of(new_child) - old_child_size; // 0 (overwrite) or 1 (new key)
+        // The recursion RETURNS the size delta (0 overwrite / 1 new key) directly — no `champ_size_of`
+        // re-read of the child subtree before and after (two 12-byte-header node reads per level, a
+        // measurable ~5% of insert in profiling).
+        let (new_child, delta) = champ_insert_node(child, entry, hash, level + 1, stride);
         // Swap the one child slot to `new_child` (the recursion already consumed the old `child` ref via
         // the op_dup above) and dup each KEPT handle so `new` owns its own references.
         let mut new_handles = with_node(node, Vec::new(), |n| n.handles.clone());
@@ -3035,7 +3040,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
         }
         let new = alloc_raw(new_handles, champ_header(datamap, nodemap, size + delta));
         op_drop(node);
-        return new;
+        return (new, delta); // propagate the child's delta up
     }
 
     // EMPTY slot: place a new inline entry in canonical (ascending-bit) order. Fresh, larger result —
@@ -3066,7 +3071,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
     });
     let new = alloc_raw(new_handles, champ_header(new_datamap, nodemap, size + 1));
     op_drop(node);
-    new
+    (new, 1) // empty slot filled: a new key
 }
 
 // ─── FBIP (Functional But In-Place) rc==1 shell reuse for CHAMP insert/remove (U5) ────────────
@@ -3135,7 +3140,9 @@ fn champ_set_child_and_size_inplace(node: Handle, slot: usize, child: Handle, si
 
 /// FBIP variant of `champ_insert_node`. `mine` ⇒ reuse `node`'s shell in place; `!mine` ⇒ delegate to
 /// the path-copying `champ_insert_node` verbatim. Bounded recursion (≤ `CHAMP_LEVELS`). CONSUMES
-/// `node` and `entry` (`entry[0]` = key, len = `stride`). See the safety note above.
+/// `node` and `entry` (`entry[0]` = key, len = `stride`). See the safety note above. Returns
+/// `(new_node, size_delta)` — 0 (overwrite) or 1 (new key) — so the DESCEND branch propagates the size
+/// change WITHOUT two `champ_size_of` subtree re-reads per level (a measurable insert cost, profiled).
 fn champ_insert_fbip(
     node: Handle,
     entry: Entry,
@@ -3143,7 +3150,7 @@ fn champ_insert_fbip(
     level: u32,
     stride: usize,
     mine: bool,
-) -> Handle {
+) -> (Handle, u32) {
     if !mine {
         return champ_insert_node(node, entry, hash, level, stride); // shared: proven copy path
     }
@@ -3163,12 +3170,12 @@ fn champ_insert_fbip(
     if datamap == 0 && nodemap == 0 {
         if arity == 0 {
             let i = level_index(hash, level);
-            return champ_become_hdr(node, entry.into_vec(), 1 << i, 0, 1); // entry owned, moved in
+            return (champ_become_hdr(node, entry.into_vec(), 1 << i, 0, 1), 1); // fresh: new key
         }
         // Collision node (full 32-bit hash clash — rare): path-copy via the proven helper, which
         // `op_drop`s `node` and so needs its child references intact — clone rather than take here.
         let handles = with_node(node, Vec::new(), |n| n.handles.clone());
-        return collision_insert(node, handles, entry, stride);
+        return collision_insert(node, handles, entry, stride); // returns (node, delta)
     }
 
     // Normal (bitmap) node on a UNIQUE spine: TAKE its handle vector instead of cloning it. `node` is
@@ -3201,7 +3208,7 @@ fn champ_insert_fbip(
                 handles[base + t] = entry.col(t); // incoming value column (owned)
             }
             op_drop(entry.key()); // incoming duplicate key unused
-            return champ_become_hdr(node, handles, datamap, nodemap, size);
+            return (champ_become_hdr(node, handles, datamap, nodemap, size), 0); // overwrite
         }
         // SPLIT: fold the inline entry + newcomer into a subnode. MOVE the stored entry (no dup — the
         // node's handle vec was already taken, so these references relocate) into the merge; carry the
@@ -3221,24 +3228,24 @@ fn champ_insert_fbip(
         //     goes at `+ new_sidx`. The only allocation left is `sub` itself (intrinsic — a new node).
         handles.drain(base..base + stride);
         handles.insert(stride * (dcount - 1) + new_sidx, sub);
-        return champ_become_hdr(node, handles, new_datamap, new_nodemap, size + 1);
+        return (champ_become_hdr(node, handles, new_datamap, new_nodemap, size + 1), 1); // split: new key
     }
 
     if nodemap & bit != 0 {
-        // DESCEND. Read the child's size BEFORE recursing (it may be mutated in place), and its rc to
-        // decide `child_mine`. The recursion consumes the one reference we pass and returns the handle.
+        // DESCEND. Read the child's rc to decide `child_mine`; the recursion consumes the one reference
+        // we pass and RETURNS `(new_child, delta)`. Taking the delta from the return replaces the two
+        // `champ_size_of(child)` subtree re-reads (before + after) the old code did per level — a
+        // measurable ~5% of insert in profiling, for a value the recursion already knows.
         let sidx = subnode_index_for_slot(nodemap, i) as usize;
         let child = handles[subbase + sidx];
-        let old_child_size = champ_size_of(child);
         let child_mine = node_rc(child) == 1;
-        let new_child = champ_insert_fbip(child, entry, hash, level + 1, stride, child_mine);
-        let delta = champ_size_of(new_child) - old_child_size; // 0 (overwrite) or 1 (new key)
+        let (new_child, delta) = champ_insert_fbip(child, entry, hash, level + 1, stride, child_mine);
         // Arity unchanged — swap the one child slot in the taken `handles` IN PLACE and reinstall,
         // rather than rebuilding a fresh Vec (saves one alloc per descended level, the common path).
         // The recursion CONSUMED `child` (the reference at this slot); writing `new_child` here is a
         // no-op when it reused the shell (`new_child == child`) and installs the fresh node otherwise.
         handles[subbase + sidx] = new_child;
-        return champ_become_hdr(node, handles, datamap, nodemap, size + delta);
+        return (champ_become_hdr(node, handles, datamap, nodemap, size + delta), delta);
     }
 
     // EMPTY slot: place a new inline entry in canonical (ascending-bit) order. The entry region sits
@@ -3252,7 +3259,7 @@ fn champ_insert_fbip(
         handles.insert(stride * new_eidx + off, *h); // incoming entry column (owned), no dup
     }
     let _ = entry; // consumed: columns relocated into `handles` by value (handles are Copy)
-    champ_become_hdr(node, handles, new_datamap, nodemap, size + 1)
+    (champ_become_hdr(node, handles, new_datamap, nodemap, size + 1), 1) // empty slot filled: new key
 }
 
 /// Insert `key => val`, returning the new map. CONSUMES `m`, `key`, `val`. Inserting an existing key
@@ -3263,7 +3270,7 @@ fn champ_insert_fbip(
 fn op_map_insert(m: Handle, key: Handle, val: Handle) -> Handle {
     let hash = champ_hash(key);
     let mine = node_rc(m) == 1;
-    champ_insert_fbip(m, Entry::kv(key, val), hash, 0, MAP_STRIDE, mine)
+    champ_insert_fbip(m, Entry::kv(key, val), hash, 0, MAP_STRIDE, mine).0 // discard the size delta
 }
 
 // ─── CHAMP persistent MAP: remove (the exact inverse of insert) ─────────────────────────
@@ -4078,7 +4085,7 @@ fn op_set_insert(s: Handle, elem: Handle) -> Handle {
 fn set_insert_h(s: Handle, elem: Handle, hash: u32) -> Handle {
     let mine = node_rc(s) == 1;
     // SET_STRIDE (1) routes through the SAME FBIP core as the map — one careful change covers both.
-    champ_insert_fbip(s, Entry::elem(elem), hash, 0, SET_STRIDE, mine)
+    champ_insert_fbip(s, Entry::elem(elem), hash, 0, SET_STRIDE, mine).0 // discard the size delta
 }
 
 /// Remove `elem`, returning the new set (canonical empty if the last element is removed). CONSUMES
@@ -4757,8 +4764,6 @@ mod tests {
     /// whether they are linear-ish or super-linear (the alloc bench can't see the O(log) contains-probe
     /// factor — evidence for whether the O(min) node-merge redesign is worth a future tick). Also times
     /// UNION over COMPOUND (tuple) elements, where hashing an element walks its whole subtree — this is
-    /// what the `set_insert_h` hash-once change in `op_set_union` sped up (a scalar union can't show it,
-    /// its element hash is O(1)). `#[ignore]`d, prints ns/element, no assertion.
     #[test]
     #[ignore] // diagnostic timing — run with --ignored --nocapture
     fn set_algebra_cpu_scaling_probe() {
@@ -7950,6 +7955,49 @@ mod tests {
         assert_eq!(mlookup_int(m, 5), Some(222), "value replaced");
         op_drop(m);
         assert_eq!(live_nodes(), before, "old value + duplicate key reclaimed");
+    }
+
+    /// The size header must stay EXACTLY correct as inserts descend deep spines and split — this is the
+    /// job of the `(handle, delta)` the insert core now RETURNS (0 overwrite / 1 new key) instead of
+    /// recomputing via two `champ_size_of` subtree reads. Interleaves new-key inserts (delta 1, must
+    /// bump size at EVERY ancestor level) with overwrites (delta 0, must bump NOTHING), on BOTH the
+    /// unique-FBIP path and the shared path-copy path, then verifies size + a full membership sweep. A
+    /// wrong propagated delta would desync the size header from the true count at some interior node.
+    #[test]
+    fn insert_size_delta_stays_exact_across_deep_spines_and_overwrites() {
+        reset();
+        let before = live_nodes();
+        // 400 distinct keys spanning many hash prefixes → deep spines + splits at multiple levels.
+        let keys: Vec<i64> = (0..400).map(|k| k * 7 + 1).collect();
+        let mut m = op_map_empty();
+        let mut expected = 0u32;
+        for (i, &k) in keys.iter().enumerate() {
+            m = minsert_int(m, k, k * 2);
+            expected += 1; // a fresh key: delta 1 at every ancestor
+            assert_eq!(op_map_size(m), expected, "size after inserting fresh key #{i} ({k})");
+        }
+        // Overwrite every key (delta 0 everywhere) — size must NOT change at any step.
+        for &k in &keys {
+            m = minsert_int(m, k, k * 3);
+            assert_eq!(op_map_size(m), expected, "overwrite of {k} must not change size");
+        }
+        // Now the SHARED (path-copy) insert path: keep the base, derive versions, check their sizes.
+        for &k in &[keys[0], 999_999, keys[200], 888_888] {
+            op_dup(m); // base stays shared → the derived insert path-copies
+            let m2 = minsert_int(m, k, 0);
+            let was_present = keys.contains(&k);
+            let want = if was_present { expected } else { expected + 1 };
+            assert_eq!(op_map_size(m2), want, "shared-insert size for key {k} (present={was_present})");
+            assert_eq!(op_map_size(m), expected, "the shared base's size is untouched");
+            op_drop(m2);
+        }
+        // Full membership + value sweep on the (overwritten) map.
+        for &k in &keys {
+            assert_eq!(mlookup_int(m, k), Some(k * 3), "key {k} resolves to its overwritten value");
+        }
+        assert_eq!(mlookup_int(m, 999_999), None, "an absent key still misses");
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak across the whole sequence");
     }
 
     #[test]
