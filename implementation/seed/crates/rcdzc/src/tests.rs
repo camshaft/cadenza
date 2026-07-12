@@ -1590,6 +1590,22 @@ mod runtime_ops {
     }
 
     #[test]
+    fn runtime_narrow_param_with_a_bare_literal_grounds_the_literal_to_the_param_width() {
+        // A NARROW parameter combined with a BARE LITERAL: the literal (width-polymorphic, Int64 on its
+        // own = an i64 slot) must take the parameter's narrow width, so the emitted op is a homogeneous
+        // i32 op — not an i32/i64 mix wasm rejects. Regression for the narrow-param-plus-literal
+        // MISCOMPILE (invalid component). Covers `+`, comparison, `*`, and bitwise `&`.
+        assert_eq!(run::<u8>("(: x UInt8)", "(+ x 1)", &[Val::U8(100)]), 101);
+        assert_eq!(run::<i8>("(: x Int8)", "(+ x 1)", &[Val::S8(50)]), 51);
+        assert_eq!(run::<u8>("(: x UInt8)", "(* x 2)", &[Val::U8(10)]), 20);
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 15)", &[Val::U8(255)]), 15);
+        assert!(run::<bool>("(: x UInt8)", "(> x 50)", &[Val::U8(100)]));
+        // Overflow of the narrow width still traps — grounding the literal does not disable the
+        // range-check: UInt8 255 + 1 = 256 leaves [0,255].
+        assert!(traps("(: x UInt8)", "(+ x 1)", &[Val::U8(255)]));
+    }
+
+    #[test]
     fn runtime_narrow_signed_division_min_over_minus_one_traps() {
         // Int8 division: -128 / -1 = 128 overflows Int8 (max 127). The i32 div_s does NOT trap here (128
         // fits i32), so the range-check catches it — the narrow-signed-division overflow the machine op

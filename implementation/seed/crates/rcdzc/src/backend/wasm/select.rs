@@ -517,9 +517,11 @@ fn emit(
         // sign-agnostic). The result is an i32 boolean. A comparison never overflows, so both operands
         // share the same scratch base (each is dead once pushed).
         Core::Compare { op, lhs, rhs } => {
-            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
-            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+            // Both operands must share the comparison's machine slot; ground a bare-literal operand to
+            // the shared width so `(> x 50)` over a narrow `x` does not push an i64 beside `x`'s i32.
             let it = operand_int_ty(db, lhs, rhs);
+            emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
+            emit_operand(db, rhs, it, slots, base, high, scratch_ty, layout, out)?;
             out.push(compare_op(op, it));
             Ok(())
         }
@@ -549,8 +551,9 @@ fn emit(
                     db, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
                 ),
                 Prim::BitAnd | Prim::BitOr | Prim::BitXor => {
-                    emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
-                    emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+                    let ot = IntTy::fixed(m.signed, m.width);
+                    emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
+                    emit_operand(db, rhs, ot, slots, base, high, scratch_ty, layout, out)?;
                     out.push(m.bitwise(op));
                     Ok(())
                 }
@@ -852,6 +855,43 @@ impl Machine {
 /// stored into `$a` before B's code runs, so A's scratch `[base+3..]` is DEAD during B and B safely
 /// reuses it. The declared-locals count is therefore `max(A-scratch, B-scratch)+3`, not the sum — the
 /// high-water mark in `high` captures exactly that.
+/// Emit a binary op's OPERAND at the operation's width. A binary integer op's two operands must share
+/// one machine slot (i32 for a ≤32-bit op, i64 otherwise) — wasm rejects a mixed `i32`/`i64` op. A
+/// bare integer LITERAL is width-polymorphic (it defaults to Int64 = an i64 slot when typed on its
+/// own), so a `(+ x 1)` / `(> x 50)` over a NARROW parameter `x` would otherwise push the literal as
+/// an i64 beside `x`'s i32 and produce invalid wasm. Ground a bare-literal operand to the OP's width
+/// `it` here (the width unification the per-node `type_of` does not thread back to the operand). A
+/// non-literal operand carries its own machine width already and is emitted unchanged.
+#[allow(clippy::too_many_arguments)]
+fn emit_operand(
+    db: &mut Db,
+    id: StructId,
+    it: IntTy,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    if let Core::ConstInt(v) = core_of(db, id) {
+        let width = it.ground_width();
+        if !v.fits_width(it.ground_signed(), width) {
+            return Err(Reject::coded(
+                Code::IntOutOfRange,
+                "integer literal does not fit its width",
+            ));
+        }
+        if width <= 32 {
+            out.push(Lir::ConstI32(v.to_i32_bits(width)));
+        } else {
+            out.push(Lir::ConstI64(v.to_i64_bits()));
+        }
+        return Ok(());
+    }
+    emit(db, id, slots, base, high, scratch_ty, layout, out)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_checked_arith(
     db: &mut Db,
@@ -876,11 +916,12 @@ fn emit_checked_arith(
         scratch_ty.insert(s, m.slot());
     }
     let operand_base = base + 3;
-    // <A> local.set $a
-    emit(db, lhs, slots, operand_base, high, scratch_ty, layout, out)?;
+    let ot = IntTy::fixed(m.signed, m.width);
+    // <A> local.set $a  (a bare-literal operand is grounded to the OP's width `ot`, not its own default)
+    emit_operand(db, lhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(Lir::LocalSet(sa));
     // <B> local.set $b  (B reuses A's dead scratch, from operand_base — minimal locals)
-    emit(db, rhs, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(db, rhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(Lir::LocalSet(sb));
     // get$a get$b <machine-op> local.set $r
     out.push(Lir::LocalGet(sa));
@@ -1027,10 +1068,11 @@ fn emit_div_rem(
     // but not the slot). Every other case — `%` (bounded by the divisor), unsigned `/` (magnitude only
     // shrinks), full-width signed `/` (the machine `div_s` traps MIN/-1 itself) — is exact after the
     // native trap, so no scratch is needed.
+    let ot = IntTy::fixed(m.signed, m.width);
     let needs_range_check = matches!(op, Prim::Div) && m.signed && m.narrow();
     if !needs_range_check {
-        emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
-        emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+        emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
+        emit_operand(db, rhs, ot, slots, base, high, scratch_ty, layout, out)?;
         out.push(if matches!(op, Prim::Div) {
             m.div()
         } else {
@@ -1045,8 +1087,8 @@ fn emit_div_rem(
     }
     scratch_ty.insert(sr, m.slot());
     let operand_base = base + 1;
-    emit(db, lhs, slots, operand_base, high, scratch_ty, layout, out)?;
-    emit(db, rhs, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(db, lhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(db, rhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(m.div()); // traps on ÷0 natively; the machine op does not overflow at a narrow width
     out.push(Lir::LocalSet(sr));
     emit_range_check(m, sr, out);
@@ -1093,10 +1135,12 @@ fn emit_shift(
         scratch_ty.insert(s, m.slot());
     }
     let operand_base = base + 3;
-    // <A> local.set $a ; <B> local.set $b
-    emit(db, lhs, slots, operand_base, high, scratch_ty, layout, out)?;
+    let ot = IntTy::fixed(m.signed, m.width);
+    // <A> local.set $a ; <B> local.set $b. Both the value and the count share the op's machine slot, so
+    // a bare-literal value or count is grounded to that width (a mixed i32/i64 shift is invalid wasm).
+    emit_operand(db, lhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(Lir::LocalSet(sa));
-    emit(db, rhs, slots, operand_base, high, scratch_ty, layout, out)?;
+    emit_operand(db, rhs, ot, slots, operand_base, high, scratch_ty, layout, out)?;
     out.push(Lir::LocalSet(sb));
     // Count guard: `b >=ᵤ N` → trap. A negative count read unsigned is huge (≥ N), so this one test
     // catches both a negative and a too-large count. Bound is the LANGUAGE width N, not the slot width.

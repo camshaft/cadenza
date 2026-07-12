@@ -847,6 +847,49 @@
   (call   main (: 200 UInt8) (: 55 UInt8))
   (output (: 255 UInt8)))
 
+; The addition above has two NARROW runtime operands; the far more common shape is a narrow parameter
+; and a BARE INTEGER LITERAL — incrementing a byte, comparing a narrow counter to a bound. A bare
+; literal is width-polymorphic (it defaults to Int64 on its own), so it MUST take the width of the
+; operand it is combined with — `(+ x 1)` with `x : UInt8` treats `1` as a UInt8. The operands of a
+; binary op share one machine representation; a literal left at its Int64 default beside a narrow
+; (i32-slot) parameter is a width clash the emitted op cannot express. These pin that a narrow-param-
+; plus-literal op computes (the literal grounded to the operand's width), for `+`, `*`, and comparison.
+
+(case "a narrow-width parameter plus a bare literal computes at the parameter width"
+  (doc    "`(def (main (: x UInt8)) (+ x 1))` called with 100 = 101. The bare literal `1` takes `x`'s
+           UInt8 width (a literal is width-polymorphic until an operand constrains it), so the addition
+           is a homogeneous narrow op — not a UInt8-plus-Int64 clash. The annotated form `(+ x (: 1
+           UInt8))` and two-narrow-param `(+ a b)` (above) already compute; this pins the bare-literal
+           operand, the common increment-a-byte shape.")
+  (input  (do (def (main (: x UInt8)) (+ x 1)) (export main)))
+  (call   main (: 100 UInt8))
+  (output (: 101 UInt8)))
+
+(case "a signed narrow-width parameter plus a bare literal computes at the parameter width"
+  (doc    "The signed sibling: `(def (main (: x Int8)) (+ x 1))` called with 50 = 51. The literal takes
+           the Int8 width, so the op is a homogeneous narrow (i32-slot) addition. Pins that the
+           literal-width unification is not UInt8-specific.")
+  (input  (do (def (main (: x Int8)) (+ x 1)) (export main)))
+  (call   main (: 50 Int8))
+  (output (: 51 Int8)))
+
+(case "a narrow-width parameter compared to a bare literal computes at the parameter width"
+  (doc    "The comparison face: `(def (main (: x UInt8)) (> x 50))` called with 100 = true. The literal
+           `50` takes `x`'s UInt8 width, so the comparison's operands share one machine slot. Pins that
+           the bare-literal width unification applies to every binary op over a narrow parameter, not
+           only `+`.")
+  (input  (do (def (main (: x UInt8)) (> x 50)) (export main)))
+  (call   main (: 100 UInt8))
+  (output (: true Bool)))
+
+(case "a narrow-width parameter plus a bare literal computes inside a helper function"
+  (doc    "`(def (bump (: x UInt8)) (+ x 1))` called via `(bump y)` where `y : UInt8` = 101. The
+           narrow-param-plus-literal op computes in a non-entry function body exactly as in the entry —
+           the literal takes the parameter's width wherever the operation appears.")
+  (input  (do (def (bump (: x UInt8)) (+ x 1)) (def (main (: y UInt8)) (bump y)) (export main)))
+  (call   main (: 100 UInt8))
+  (output (: 101 UInt8)))
+
 (case "a signed-byte entrypoint returns its runtime argument"
   (doc    "`(def (main (: n Int8)) n)` called with -128 (Int8.min). The parameter crosses as the
            component `s8`, so the sign is preserved at the boundary (an s8 -128, not a widened s32). Pins
