@@ -326,9 +326,10 @@ fn emit_tail(
         // branches are — a tail call in either branch is the function's result.
         Core::If { cond, then_, else_ } => {
             emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
-            let block_ty = match type_of(db, id) {
+            let result = type_of(db, id);
+            let block_ty = match &result {
                 Ty::Unit => BlockType::Empty,
-                other => match valtype_of(&other) {
+                other => match valtype_of(other) {
                     Some(vt) => BlockType::Val(vt),
                     None => {
                         return Err(Reject::decline(
@@ -338,9 +339,23 @@ fn emit_tail(
                 },
             };
             out.push(Lir::If(block_ty));
-            emit_tail(db, then_, slots, base, high, scratch_ty, layout, out)?;
+            // Each branch is TAIL (a tail call becomes `return_call`), EXCEPT a bare-literal branch,
+            // which must be GROUNDED to the `if`'s result width (a bare literal is never a tail call, so
+            // grounding is safe): a default-Int64 literal opposite a narrow branch would push a
+            // mismatched machine slot into the block. Ground via `emit_operand`, else emit in tail pos.
+            let emit_tail_branch =
+                |db: &mut Db, b: StructId, high: &mut u32, st: &mut HashMap<u32, ValType>, out: &mut Vec<Lir>| -> Result<(), Reject> {
+                    if matches!(core_of(db, b), Core::ConstInt(_))
+                        && let Ty::Int(rit) = &result
+                    {
+                        emit_operand(db, b, *rit, slots, base, high, st, layout, out)
+                    } else {
+                        emit_tail(db, b, slots, base, high, st, layout, out)
+                    }
+                };
+            emit_tail_branch(db, then_, high, scratch_ty, out)?;
             out.push(Lir::Else);
-            emit_tail(db, else_, slots, base, high, scratch_ty, layout, out)?;
+            emit_tail_branch(db, else_, high, scratch_ty, out)?;
             out.push(Lir::End);
             Ok(())
         }
@@ -495,9 +510,10 @@ fn emit(
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.
             emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
-            let block_ty = match type_of(db, id) {
+            let result = type_of(db, id);
+            let block_ty = match &result {
                 Ty::Unit => BlockType::Empty,
-                other => match valtype_of(&other) {
+                other => match valtype_of(other) {
                     Some(vt) => BlockType::Val(vt),
                     None => {
                         return Err(Reject::decline(
@@ -507,9 +523,13 @@ fn emit(
                 },
             };
             out.push(Lir::If(block_ty));
-            emit(db, then_, slots, base, high, scratch_ty, layout, out)?;
+            // Both branches must produce the `if`'s RESULT machine slot; a bare-literal branch (default
+            // Int64) opposite a NARROW branch would otherwise push a mismatched i64 into a narrow-i32
+            // block. Ground a bare-`ConstInt` branch to the result's integer width via `emit_operand`,
+            // exactly as an operator operand (`@1a4528f`) and a match arm (`@10f7bdb`) are grounded.
+            emit_branch(db, then_, &result, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::Else);
-            emit(db, else_, slots, base, high, scratch_ty, layout, out)?;
+            emit_branch(db, else_, &result, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::End);
             Ok(())
         }
@@ -1070,6 +1090,30 @@ fn emit_operand(
             out.push(Lir::ConstI64(v.to_i64_bits()));
         }
         return Ok(());
+    }
+    emit(db, id, slots, base, high, scratch_ty, layout, out)
+}
+
+/// Emit an `if`/`match` branch (or arm) body producing the construct's RESULT type. Both branches must
+/// leave the same machine slot on the stack (the block's result type), so a bare-literal branch — a
+/// width-polymorphic `ConstInt` that defaults to Int64 — is GROUNDED to the result's integer width
+/// (`emit_operand`), exactly as an operator operand is: else a default-Int64 literal branch opposite a
+/// NARROW branch pushes a mismatched i64 into a narrow-i32 block and wasm rejects the function. A
+/// non-literal branch, or a non-integer result, emits normally.
+#[allow(clippy::too_many_arguments)]
+fn emit_branch(
+    db: &mut Db,
+    id: StructId,
+    result: &Ty,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    if let (Ty::Int(rit), Core::ConstInt(_)) = (result, core_of(db, id)) {
+        return emit_operand(db, id, *rit, slots, base, high, scratch_ty, layout, out);
     }
     emit(db, id, slots, base, high, scratch_ty, layout, out)
 }

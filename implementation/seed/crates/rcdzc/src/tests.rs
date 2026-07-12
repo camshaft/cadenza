@@ -1606,6 +1606,27 @@ mod runtime_ops {
     }
 
     #[test]
+    fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
+        // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
+        // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
+        // slot — not an i32/i64 mismatch wasm rejects. Regression for the if-branch-narrow-literal
+        // MISCOMPILE. Both branch orders, signed and unsigned.
+        assert_eq!(
+            run::<u8>("(: x UInt8) (: c Bool)", "(if c x 0)", &[Val::U8(200), Val::Bool(true)]),
+            200
+        );
+        assert_eq!(
+            run::<i8>("(: x Int8) (: c Bool)", "(if c x 0)", &[Val::S8(50), Val::Bool(true)]),
+            50
+        );
+        // Order-independent: the bare literal in the THEN branch, narrow in the ELSE.
+        assert_eq!(
+            run::<u8>("(: x UInt8) (: c Bool)", "(if c 0 x)", &[Val::U8(200), Val::Bool(false)]),
+            200
+        );
+    }
+
+    #[test]
     fn runtime_narrow_signed_division_min_over_minus_one_traps() {
         // Int8 division: -128 / -1 = 128 overflows Int8 (max 127). The i32 div_s does NOT trap here (128
         // fits i32), so the range-check catches it — the narrow-signed-division overflow the machine op

@@ -959,6 +959,38 @@
   (call   main (: 50 UInt8))
   (output (: 100 UInt8)))
 
+; An `if` whose branches MIX a narrow-width value and a bare integer literal must reconcile the branch
+; widths: both branches produce the `if`'s RESULT type, so a bare-literal branch (which defaults to
+; Int64 on its own) takes the result's narrow width — otherwise a default-Int64 branch beside a narrow
+; branch pushes a mismatched machine slot into the block. This is the `if`-branch analogue of the
+; bare-literal-operand (`(+ x 1)`) and bare-literal-match-arm reconciliations above. The corpus gates
+; `if` over narrow conditions but never an `if` whose branches mix a narrow value and a bare literal.
+
+(case "an if with a narrow branch and a bare-literal branch computes at the narrow width"
+  (doc    "`(if c x 0)` with `x : UInt8` and `c : Bool`: the then-branch is the UInt8 param, the
+           else-branch a bare literal `0`. With c = true the result is x = 200. The literal branch takes
+           the `if`'s UInt8 result width so both branches share the i32 slot — not a UInt8-vs-Int64
+           machine-type clash. The annotated form `(if c x (: 0 UInt8))` and the both-same-param form
+           already compute; this pins the bare-literal branch.")
+  (input  (do (def (main (: x UInt8) (: c Bool)) (if c x 0)) (export main)))
+  (call   main (: 200 UInt8) (: true Bool))
+  (output (: 200 UInt8)))
+
+(case "a signed narrow if-branch opposite a bare literal computes at the narrow width"
+  (doc    "The signed sibling: `(if c x 0)` with `x : Int8`, c = true → 50. Confirms the `if`-branch
+           width reconciliation spans every aliased narrow width, not just UInt8.")
+  (input  (do (def (main (: x Int8) (: c Bool)) (if c x 0)) (export main)))
+  (call   main (: 50 Int8) (: true Bool))
+  (output (: 50 Int8)))
+
+(case "a narrow value in the else branch opposite a bare literal computes at the narrow width"
+  (doc    "Branch-position independence: `(if c 0 x)` puts the bare literal in the THEN branch and the
+           narrow `x` in the ELSE; with c = false the result is x = 200. The reconciliation grounds
+           whichever branch is the bare literal, so both orders compute identically.")
+  (input  (do (def (main (: x UInt8) (: c Bool)) (if c 0 x)) (export main)))
+  (call   main (: 200 UInt8) (: false Bool))
+  (output (: 200 UInt8)))
+
 (case "a signed-byte entrypoint returns its runtime argument"
   (doc    "`(def (main (: n Int8)) n)` called with -128 (Int8.min). The parameter crosses as the
            component `s8`, so the sign is preserved at the boundary (an s8 -128, not a widened s32). Pins

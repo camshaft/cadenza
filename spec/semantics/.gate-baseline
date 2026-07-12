@@ -47,6 +47,7 @@ pass	a name resolves to the nearest enclosing binding
 pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies to all its arguments at once
 pass	a narrow match binder used in arithmetic with the scrutinee
+pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
@@ -84,6 +85,7 @@ pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
+pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
 pass	a signed-byte entrypoint returns its runtime argument
@@ -98,6 +100,7 @@ pass	an element is projected from a tuple returned by a nullary function
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
+pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an inner binding shadows an outer one only within its scope
 pass	an integer literal pattern matches a runtime scrutinee
 pass	an integer literal with digit separators
