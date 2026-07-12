@@ -722,60 +722,47 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A `let`-bound tuple built ONCE from runtime params, then projected twice and summed — the composed
-/// heap round-trip. `t` is multi-use, so it is kept as a `Core::Let` binding (a real `arr-alloc`), and
-/// each `(. t i)` is a runtime `arr-get` (the binding is opaque to the fold). The two elements sum back
-/// to a scalar the boundary can carry — so this needs NO renderer, just the heap. Run composed: builds
-/// `(tuple a b)` on the heap, reads both back, adds → the scalar.
+/// A `let`-bound tuple built from runtime params but ONLY PROJECTED (never used as a whole value)
+/// FOLDS AWAY: each `(. t i)` reduces straight to its element (the param), so the body is just
+/// `(+ a b)` — no `arr-alloc`, no heap round-trip, no runtime import at all. Building the tuple only to
+/// read it back is pure waste when it never has to exist as a value. (The GENUINE heap-alloc → escape →
+/// walk round-trip is exercised where a compound is RETURNED whole and must be built — see
+/// `a_recursive_runtime_tuple_escapes_to_the_host`, which passes a runtime value in via the harness
+/// `call` and escapes the built tuple as a resource.)
 #[test]
-fn a_runtime_tuple_round_trips_through_the_heap() {
+fn a_projection_only_runtime_tuple_folds_without_the_heap() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
-    // An EXPORTED function so the tuple's elements are genuine runtime params (unfoldable): build a
-    // 2-tuple from (a, b), project both, add. `t` used twice → kept → real heap construction.
+    // Runtime params, but `t` is only projected → folds; the program touches the value heap not at all.
     let src = "(module m (def (pair-sum (: a Int64) (: b Int64)) \
                  (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-
-    // It must IMPORT the runtime (the heap ops are used) — proven by the required-runtime probe.
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a runtime tuple program must import the value-heap runtime"
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a projection-only tuple must fold, importing no runtime op (no per-call arr-alloc)"
     );
-
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!(
-            "[H2b] runtime wasm not found (run `cargo xtask codegen`); skipping composed run"
-        );
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: Some("pair-sum".to_string()),
-        args: vec!["20".to_string(), "22".to_string()],
-        runtime: Some(runtime),
-    };
-    // Compose + run: (tuple 20 22) built on the heap, both elements projected back, summed → 42.
-    let _ = Val::S64(0); // (Val import kept for parity with the other runtime tests.)
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(s, "42", "composed heap round-trip"),
-        cdz_run::Outcome::Trap(t) => panic!("composed run trapped: {t}"),
-    }
+    // It runs as a plain scalar function (no runtime composed in) — 20 + 22 = 42.
+    let got: i64 = run_returns_with(&bytes, "pair-sum", &[Val::S64(20), Val::S64(22)]);
+    assert_eq!(got, 42, "folds to (+ a b)");
 }
 
 /// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
 /// an integer as one i64 cell, but a narrow width (UInt8) lives in an i32 slot — so a narrow element is
-/// extended i32→i64 into the heap and narrowed i64→i32 out of it. Two narrow projections feeding one op
-/// is the shape that exposed the miscompile (invalid component) when the conversion was missing. Here
-/// `(+ (. t 0) (. t 1))` over a UInt8 tuple must build, validate, and compute 100+50 = 150.
+/// extended i32→i64 into the heap and narrowed i64→i32 out of it. To exercise a GENUINE heap round-trip
+/// (a projection-only tuple LITERAL now folds away, no heap), the tuple comes from a CALL: `(mk a b)`
+/// returns `(tuple a b)`, which escapes the callee and is built on the heap; the caller binds the
+/// call result (a `Core::Call`, kept as a runtime binding, not a literal that folds) and projects both
+/// narrow fields. `(+ (. t 0) (. t 1))` must build, validate, and compute 100+50 = 150 through the heap.
 #[test]
 fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
     use crate::testkit::parse;
-    let src = "(module m (def (pair-sum (: a UInt8) (: b UInt8)) \
-                 (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
+    let src = "(module m (def (mk (: a UInt8) (: b UInt8)) (tuple a b)) \
+                 (def (pair-sum (: a UInt8) (: b UInt8)) \
+                   (let ((t (mk a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
         cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a narrow runtime tuple program must import the value-heap runtime"
+        "a call-returned narrow tuple, projected, must build on the heap (import the runtime)"
     );
     let Some(runtime) = find_runtime_wasm() else {
         eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
@@ -1127,33 +1114,27 @@ fn a_multi_use_constant_tuple_folds_away_with_no_heap() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
 }
 
-/// The contrast that pins the routing: the SAME program shape with a RUNTIME element (a parameter)
-/// genuinely allocates — it IS kept, imports the runtime, and round-trips through the heap (H2b). So
-/// staticness, not the syntactic shape, decides heap-vs-fold.
+/// The routing pin: a projection-only tuple LITERAL folds whether or not its elements are runtime —
+/// what a projection reads is the element's own computation, not a heap cell. `(let ((t (tuple 10 a)))
+/// (+ (. t 0) (. t 1)))` folds to `(+ 10 a)`: no heap, no runtime import, even though `a` is a runtime
+/// param. A tuple reaches the heap only when it is used as a WHOLE value (returned/passed) and so must
+/// be built — see `a_narrow_runtime_tuple_element_crosses_the_heap_boundary` (a call-returned tuple)
+/// and `a_recursive_runtime_tuple_escapes_to_the_host` (a returned tuple). Shape alone never forces the
+/// heap; escaping-as-a-value does.
 #[test]
-fn a_runtime_element_tuple_still_uses_the_heap() {
+fn a_projection_only_tuple_folds_even_with_a_runtime_element() {
     use crate::testkit::parse;
-    // One constant, one runtime element → the tuple is NOT constant, so it is kept and built on the heap.
+    use wasmtime::component::Val;
     let src = "(module m (def (with-param (: a Int64)) \
                  (let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))) (export with-param))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a tuple with a runtime element must build on the heap (import the runtime)"
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a projection-only tuple folds — no heap — even with a runtime element"
     );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("[H2c] runtime wasm not found; skipping composed run");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: Some("with-param".to_string()),
-        args: vec!["32".to_string()],
-        runtime: Some(runtime),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(s, "42", "10 + 32 through the heap"),
-        cdz_run::Outcome::Trap(t) => panic!("composed run trapped: {t}"),
-    }
+    // Runs as a plain scalar function: 10 + 32 = 42, folded, no runtime composed in.
+    let got: i64 = run_returns_with(&bytes, "with-param", &[Val::S64(32)]);
+    assert_eq!(got, 42, "folds to (+ 10 a)");
 }
 
 // ── value-heap H2d: the Perceus BALANCE probe (no leak) ──────────────────────────────────────────

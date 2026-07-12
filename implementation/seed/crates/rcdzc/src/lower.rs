@@ -570,12 +570,93 @@ fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool 
     if !is_runtime_computation(db, init) {
         return false;
     }
+    // A COMPOUND (tuple/record) binding that is ONLY ever PROJECTED — never used as a whole value —
+    // need not be built on the heap at all: each projection folds straight through to the element's own
+    // computation (a param `local.get`, a nested op, …), which is far cheaper than an `arr-alloc` +
+    // per-field `box`/`arr-set` + `arr-get`/`get` + `drop` round-trip. Keeping it would build a heap
+    // value only to read it back (or, when the projections fold, to drop it dead). So a projection-only
+    // compound is NOT kept — it folds. A compound that ESCAPES as a whole (returned, passed as an arg,
+    // nested into another compound) genuinely needs materialization and IS kept. (A non-compound
+    // runtime binding — a shared scalar computation — keeps the multi-use rule below: naming avoids a
+    // recompute.)
+    if is_compound_value(db, init) && !binding_escapes_whole(db, init, scope) {
+        return false;
+    }
     // Count references to this binding across its scope. Naming is worth it only at >= 2 uses.
     let mut n = 0;
     for &region in scope {
         n += uses_in(db, region, init);
     }
     n >= 2
+}
+
+/// Whether the node at `init` lowers to a COMPOUND heap value — a tuple or a record. These are the
+/// values whose only-projected form folds through rather than being built on the heap.
+fn is_compound_value(db: &mut Db, init: StructId) -> bool {
+    matches!(core_of(db, init), Core::Tuple { .. } | Core::Record { .. })
+}
+
+/// Whether the binding `init` is used as a WHOLE VALUE anywhere in `scope` — i.e. referenced in any
+/// position OTHER than as the operand of a projection (`(. c i)` / `(. c field)`). A whole-value use
+/// (returned as the body's result, passed as a call argument, nested as an element of another compound,
+/// annotated, …) means the compound must actually exist at run time, so it is materialized on the heap.
+/// If every reference is a projection, the compound never needs to exist — each field read folds to the
+/// element directly — so this returns `false` and the binding is not kept. Mirrors the value-flow
+/// discipline `binding_escapes` uses in selection for Perceus drops, at the resolved layer.
+fn binding_escapes_whole(db: &mut Db, init: StructId, scope: &[StructId]) -> bool {
+    scope
+        .iter()
+        .any(|&region| ref_escapes_whole(db, region, init))
+}
+
+/// Whether a reference to `init` appears as a WHOLE-VALUE use within `node` (not merely as a projection
+/// operand). Recurses every sub-position; at a projection `(. operand i)`, a reference that IS the
+/// `operand` is a projection (does not escape), but the operand is still recursed in case it nests a
+/// whole-value use deeper (e.g. `(. (f c) 0)` uses `c` wholly as `f`'s argument).
+fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
+    match resolved_of(db, node) {
+        // A bare reference to the binding, in a non-projection position → a whole-value use.
+        Resolved::Ref { value } => value == init,
+        // A projection: if its operand is a DIRECT ref to `init`, that is a projection use (does not
+        // escape). Otherwise recurse the operand (it may nest a whole-value use).
+        Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
+            if matches!(resolved_of(db, operand), Resolved::Ref { value } if value == init) {
+                false
+            } else {
+                ref_escapes_whole(db, operand, init)
+            }
+        }
+        Resolved::If { cond, then_, else_ } => {
+            ref_escapes_whole(db, cond, init)
+                || ref_escapes_whole(db, then_, init)
+                || ref_escapes_whole(db, else_, init)
+        }
+        Resolved::Let { bindings, body } => {
+            bindings
+                .iter()
+                .any(|(_, v)| ref_escapes_whole(db, *v, init))
+                || ref_escapes_whole(db, body, init)
+        }
+        Resolved::Record { fields } => fields.values().any(|&v| ref_escapes_whole(db, v, init)),
+        Resolved::Tuple { elems } => elems.iter().any(|&e| ref_escapes_whole(db, e, init)),
+        Resolved::Annot { expr, .. } => ref_escapes_whole(db, expr, init),
+        Resolved::Apply { head, args } => {
+            ref_escapes_whole(db, head, init)
+                || args.iter().any(|&a| ref_escapes_whole(db, a, init))
+        }
+        Resolved::Match { scrutinee, arms } => {
+            ref_escapes_whole(db, scrutinee, init)
+                || arms.iter().any(|(_, b)| ref_escapes_whole(db, *b, init))
+        }
+        Resolved::Int(_)
+        | Resolved::Bool(_)
+        | Resolved::Unit
+        | Resolved::Prim(_)
+        | Resolved::Param { .. }
+        | Resolved::TypeVal(_)
+        | Resolved::Lambda { .. }
+        | Resolved::Poison(_) => false,
+    }
 }
 
 /// Whether the node at `init` lowers to a RUNTIME COMPUTATION — a core form that emits instructions

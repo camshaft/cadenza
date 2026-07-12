@@ -2320,12 +2320,15 @@ mod tests {
     // ── value-heap H2d: Perceus — a kept heap binding constructs then DROPS ───────────────────────
 
     #[test]
-    fn a_runtime_tuple_let_constructs_then_drops() {
-        // (def (f (: a Int64) (: b Int64)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) — `t` is a
-        // multi-use RUNTIME tuple (a param element), so it is kept in a slot, BUILT on the heap
-        // (arr-alloc + box + arr-set), projected twice, and — being a dead heap value after the scalar
-        // body — RECLAIMED with `local.get <slot> ; drop` at the end. The construction leads and the
-        // drop trails; that framing is the Perceus contract (constructors consume, the owner drops).
+    fn a_projection_only_tuple_folds_and_builds_no_heap() {
+        // (def (f (: a Int64) (: b Int64)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) — `t` is ONLY
+        // ever projected (never used as a whole value), so it does NOT need to exist on the heap: each
+        // projection folds straight through to its element (the param), and the body is just `(+ a b)`.
+        // No `arr-alloc`, no `box`/`arr-set`, no `drop` — a projection-only compound emits ZERO heap ops
+        // (`should_keep_binding` does not keep a projection-only compound). The GENUINE heap-alloc →
+        // escape → walk → drop (Perceus) path is exercised by the recursive-escape resource tests
+        // (`a_recursive_runtime_tuple_escapes_to_the_host` + the `live-objects == 0` balance probe),
+        // where the compound is returned WHOLE and must actually be built.
         let ast = crate::testkit::parse(
             "(module m (def (f (: a Int64) (: b Int64)) \
                (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (def (main) 0) (export main))",
@@ -2334,28 +2337,18 @@ mod tests {
         let layout = layout_of(&mut db);
         let (params, body) = function_of(&mut db, "f");
         let f = select_function(&mut db, body, &params, &layout).expect("select");
-        // The binding `t` occupies slot 2 (params a,b are 0,1). Construction is the FIRST run of ops:
-        // arr-alloc(2), then per element box-int + arr-set. Assert the shape brackets: it OPENS with
-        // arr-alloc and, after the body, CLOSES with `local.get 2 ; drop`.
-        assert_eq!(
-            f.code.first(),
-            Some(&Lir::ConstI32(2)),
-            "construction leads with the tuple arity"
+        assert!(
+            !f.code.contains(&Lir::CallImport("arr-alloc")),
+            "a projection-only tuple must not be built on the heap"
         );
         assert!(
-            f.code.contains(&Lir::CallImport("arr-alloc")),
-            "a runtime tuple is built with arr-alloc"
+            !f.code.contains(&Lir::CallImport("drop")),
+            "nothing is built, so nothing is dropped"
         );
+        // It is exactly the checked add of the two params — the same code `(+ a b)` emits directly.
         assert!(
-            f.code.contains(&Lir::CallImport("box-int")),
-            "each element is boxed"
-        );
-        // The reclamation trails: the LAST two instructions release the binding's slot.
-        let n = f.code.len();
-        assert_eq!(
-            &f.code[n - 2..],
-            &[Lir::LocalGet(2), Lir::CallImport("drop")],
-            "a dead heap binding is dropped at the end (Perceus)"
+            f.code.contains(&Lir::I64Add) && f.code.contains(&Lir::LocalGet(0)),
+            "the body folds to `(+ a b)` over the params"
         );
     }
 
