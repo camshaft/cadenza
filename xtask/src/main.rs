@@ -1186,39 +1186,24 @@ fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
         files
     };
 
+    // Gather every case, then round-trip them in PARALLEL. Each case is independent — it only READS
+    // `tools` and spawns its own `cdz-syntax` conversions — so the ~1025 cases × 2 surfaces (each a
+    // subprocess) are embarrassingly parallel; the serial loop was process-wait-bound at ~10s. Failure
+    // messages are collected per case (in the SAME order as `records`) so the reported list is stable.
+    let records: Vec<CorpusRecord> = files
+        .iter()
+        .flat_map(|file| read_corpus(&tools, file))
+        .collect();
+    let per_case = roundtrip_all_parallel(&tools, records);
+
     let (mut ok, mut fail) = (0u32, 0u32);
     let mut failures: Vec<String> = Vec::new();
-
-    for file in &files {
-        for rec in read_corpus(&tools, file) {
-            // The reference: the program's canonical binary AST.
-            let bin0 = match to_binary(&tools, &rec.program) {
-                Some(b) => b,
-                None => {
-                    fail += 1;
-                    failures.push(format!("{}: sexpr→binary failed", rec.description));
-                    continue;
-                }
-            };
-            // Round-trip through each intermediate surface, back to binary, and compare bytes.
-            for surface in ["sexpr", "ml"] {
-                match roundtrip_via(&tools, &bin0, surface) {
-                    Some(bin1) if bin1 == bin0 => {}
-                    Some(_) => {
-                        fail += 1;
-                        failures.push(format!("{}: binary≠binary via {surface}", rec.description));
-                    }
-                    None => {
-                        fail += 1;
-                        failures.push(format!(
-                            "{}: round-trip via {surface} errored",
-                            rec.description
-                        ));
-                    }
-                }
-            }
+    for case in per_case {
+        if case.counted_ok {
             ok += 1;
         }
+        fail += case.failures.len() as u32;
+        failures.extend(case.failures);
     }
 
     println!("\nroundtrip: {ok} programs ok, {fail} failures");
@@ -1232,6 +1217,81 @@ fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
         }
         std::process::exit(1);
     }
+}
+
+/// One case's round-trip outcome: whether it counted as an `ok` program, and any failure messages.
+/// `counted_ok` mirrors the serial loop's `ok += 1` — reached iff the reference sexpr→binary
+/// succeeded (a program whose reference conversion fails is NOT counted ok).
+struct RoundtripCase {
+    counted_ok: bool,
+    failures: Vec<String>,
+}
+
+/// Round-trip every record in PARALLEL, returning one [`RoundtripCase`] per record in the SAME order
+/// as `records`. Same shape as `grade_all_parallel`: a `std::thread::scope` worker pool (no new
+/// dependency) pulling from a shared atomic cursor, each result written to its own index slot so the
+/// reported failure list is order-stable. Each case only READS `tools` and spawns its own `cdz-syntax`
+/// conversions, so there is no shared mutable state.
+fn roundtrip_all_parallel(tools: &Tools, records: Vec<CorpusRecord>) -> Vec<RoundtripCase> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let n = records.len();
+    let slots: Vec<Mutex<Option<RoundtripCase>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    let cursor = AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let cursor = &cursor;
+            let slots = &slots;
+            let records = &records;
+            scope.spawn(move || {
+                loop {
+                    let i = cursor.fetch_add(1, Ordering::Relaxed);
+                    if i >= records.len() {
+                        break;
+                    }
+                    let rec = &records[i];
+                    let mut failures = Vec::new();
+                    // The reference: the program's canonical binary AST. If it fails, the case is not
+                    // counted ok (mirrors the serial loop's early `continue`).
+                    let counted_ok = match to_binary(tools, &rec.program) {
+                        None => {
+                            failures.push(format!("{}: sexpr→binary failed", rec.description));
+                            false
+                        }
+                        Some(bin0) => {
+                            // Round-trip through each intermediate surface, back to binary, compare bytes.
+                            for surface in ["sexpr", "ml"] {
+                                match roundtrip_via(tools, &bin0, surface) {
+                                    Some(bin1) if bin1 == bin0 => {}
+                                    Some(_) => failures.push(format!(
+                                        "{}: binary≠binary via {surface}",
+                                        rec.description
+                                    )),
+                                    None => failures.push(format!(
+                                        "{}: round-trip via {surface} errored",
+                                        rec.description
+                                    )),
+                                }
+                            }
+                            true
+                        }
+                    };
+                    *slots[i].lock().unwrap() = Some(RoundtripCase { counted_ok, failures });
+                }
+            });
+        }
+    });
+
+    slots
+        .into_iter()
+        .map(|slot| slot.into_inner().unwrap().expect("every case round-tripped"))
+        .collect()
 }
 
 /// A program's sexpr text → its canonical binary AST bytes (via `cdz-syntax`).
