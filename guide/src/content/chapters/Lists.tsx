@@ -79,6 +79,7 @@ export default function Lists() {
 
       <H2>Your turn</H2>
       <Exercise
+        id="lists:1"
         prompt={<>Concatenate the two lists, then report the total length — it should be <C>5</C>.</>}
         starter={`(List.len (List.concat (list 1 2) ?))`}
         solution={`(List.len (List.concat (list 1 2) (list 3 4 5)))`}

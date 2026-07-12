@@ -50,6 +50,7 @@ export default function Basics() {
       <P>Time to write some Cadenza. Fill in the blank, press Check, and the guide will grade it.</P>
 
       <Exercise
+        id="basics:1"
         prompt={<>Make this produce <C>42</C> by doubling 21.</>}
         starter={`(* 21 ?)`}
         solution={`(* 21 2)`}
@@ -58,6 +59,7 @@ export default function Basics() {
       />
 
       <Exercise
+        id="basics:2"
         prompt={<>Write a <C>max</C> function that returns the larger of two numbers, then call it on 3 and 9.</>}
         starter={`(module m
   (def (max a b)

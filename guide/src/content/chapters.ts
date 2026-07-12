@@ -14,6 +14,8 @@ export interface Chapter {
   blurb: string;
   /** Section grouping for the sidebar. */
   section: string;
+  /** Number of graded exercises in the chapter (drives the sidebar progress badge). Default 0. */
+  exercises?: number;
   Component: ComponentType;
 }
 
@@ -37,6 +39,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Values & functions",
     blurb: "Literals, bindings, functions, and type inference.",
     section: "Fundamentals",
+    exercises: 2,
     Component: lazy(() => import("./chapters/Basics.tsx")),
   },
   {
@@ -44,7 +47,16 @@ export const CHAPTERS: Chapter[] = [
     title: "Control flow",
     blurb: "if / then / else, sequencing, and short-circuit logic.",
     section: "Fundamentals",
+    exercises: 1,
     Component: lazy(() => import("./chapters/ControlFlow.tsx")),
+  },
+  {
+    slug: "ordering",
+    title: "Comparison & ordering",
+    blurb: "Comparisons, and the three-way shape of a total order.",
+    section: "Fundamentals",
+    exercises: 1,
+    Component: lazy(() => import("./chapters/Ordering.tsx")),
   },
   {
     slug: "data",
@@ -65,6 +77,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Lists",
     blurb: "Ordered, immutable sequences on the value heap.",
     section: "Fundamentals",
+    exercises: 1,
     Component: lazy(() => import("./chapters/Lists.tsx")),
   },
   {

@@ -46,6 +46,7 @@ export default function ControlFlow() {
 
       <H2>Your turn</H2>
       <Exercise
+        id="control-flow:1"
         prompt={<>Fix the base case so <C>sm</C> correctly sums 1..5 to <C>15</C>.</>}
         starter={`(module m
   (def (sm n)

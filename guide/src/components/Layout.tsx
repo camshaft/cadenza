@@ -5,11 +5,13 @@ import { NavLink, useParams } from "react-router-dom";
 import { Suspense } from "react";
 import { CHAPTERS, chapterAt } from "../content/chapters.ts";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
+import { useProgress } from "../progress/ProgressContext.tsx";
 
 export function Layout() {
   const { slug } = useParams();
   const active = slug ?? CHAPTERS[0].slug;
   const found = chapterAt(active);
+  const progress = useProgress();
 
   const sections = groupBySection();
 
@@ -19,27 +21,43 @@ export function Layout() {
       <div className="mx-auto flex max-w-7xl gap-8 px-4 py-8">
         <aside className="hidden w-60 shrink-0 md:block">
           <nav className="sticky top-24 space-y-6">
+            <ProgressSummary />
             {sections.map(([section, chapters]) => (
               <div key={section}>
                 <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
                   {section}
                 </div>
                 <ul className="space-y-0.5">
-                  {chapters.map((c) => (
-                    <li key={c.slug}>
-                      <NavLink
-                        to={`/${c.slug}`}
-                        className={({ isActive }) =>
-                          "block rounded-md px-2.5 py-1.5 text-sm transition " +
-                          (isActive
-                            ? "bg-cadenza-600/15 font-medium text-cadenza-300"
-                            : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200")
-                        }
-                      >
-                        {c.title}
-                      </NavLink>
-                    </li>
-                  ))}
+                  {chapters.map((c) => {
+                    const total = c.exercises ?? 0;
+                    const done = total > 0 ? progress.countFor(c.slug) : 0;
+                    return (
+                      <li key={c.slug}>
+                        <NavLink
+                          to={`/${c.slug}`}
+                          className={({ isActive }) =>
+                            "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition " +
+                            (isActive
+                              ? "bg-cadenza-600/15 font-medium text-cadenza-300"
+                              : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200")
+                          }
+                        >
+                          <span className="flex-1">{c.title}</span>
+                          {total > 0 && (
+                            <span
+                              className={
+                                "shrink-0 text-[10px] tabular-nums " +
+                                (done >= total ? "text-emerald-400" : "text-slate-500")
+                              }
+                              title={`${done} of ${total} exercises done`}
+                            >
+                              {done >= total ? "✓" : `${done}/${total}`}
+                            </span>
+                          )}
+                        </NavLink>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             ))}
@@ -58,6 +76,36 @@ export function Layout() {
             {found && <PrevNext index={found.index} />}
           </div>
         </main>
+      </div>
+    </div>
+  );
+}
+
+/// Overall exercise progress across the whole tour, with a reset. Sits atop the sidebar to give the
+/// reader a sense of momentum. Hidden until there is at least one exercise completed, so it doesn't
+/// nag a first-time reader.
+function ProgressSummary() {
+  const progress = useProgress();
+  const total = CHAPTERS.reduce((n, c) => n + (c.exercises ?? 0), 0);
+  const done = CHAPTERS.reduce((n, c) => n + (c.exercises ? progress.countFor(c.slug) : 0), 0);
+  if (done === 0) return null;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+      <div className="mb-1.5 flex items-center justify-between text-xs">
+        <span className="font-medium text-slate-300">
+          Exercises: {done}/{total}
+        </span>
+        <button
+          onClick={progress.clear}
+          className="text-slate-500 transition hover:text-slate-300"
+          title="Reset your progress"
+        >
+          reset
+        </button>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+        <div className="h-full rounded-full bg-cadenza-500 transition-all" style={{ width: `${pct}%` }} />
       </div>
     </div>
   );

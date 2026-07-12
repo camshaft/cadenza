@@ -14,9 +14,12 @@ import { CodeEditor } from "../editor/CodeEditor.tsx";
 import { useCadenzaEditor } from "./useCadenzaEditor.ts";
 import { renderSyntax } from "../compiler/client.ts";
 import { StatusIcon } from "./StatusIcon.tsx";
+import { useProgress } from "../progress/ProgressContext.tsx";
 import type { Surface } from "../syntax/SyntaxContext.tsx";
 
 interface Props {
+  /** Stable id for progress tracking, e.g. "basics:1". Completing it (passing Check) is remembered. */
+  id: string;
   /** What to do — the exercise prompt (prose/JSX). */
   prompt: React.ReactNode;
   /** Starter code (with a hole to fill), authored in `authoredIn`. */
@@ -42,6 +45,7 @@ type Check =
   | { phase: "trap"; message: string };
 
 export function Exercise({
+  id,
   prompt,
   starter,
   solution,
@@ -51,19 +55,23 @@ export function Exercise({
   hint,
 }: Props) {
   const editor = useCadenzaEditor(starter, authoredIn, wrap);
+  const { complete, isComplete } = useProgress();
   const [check, setCheck] = useState<Check>({ phase: "idle" });
   const [showHint, setShowHint] = useState(false);
+  // A previously-completed exercise shows its earned checkmark even before the reader re-checks it.
+  const alreadyDone = isComplete(id);
 
   async function doCheck() {
     setCheck({ phase: "busy" });
     const out = await editor.run();
     switch (out.kind) {
       case "value":
-        setCheck(
-          out.text.trim() === expected.trim()
-            ? { phase: "pass", text: out.text }
-            : { phase: "wrong", text: out.text },
-        );
+        if (out.text.trim() === expected.trim()) {
+          complete(id);
+          setCheck({ phase: "pass", text: out.text });
+        } else {
+          setCheck({ phase: "wrong", text: out.text });
+        }
         break;
       case "declined":
         setCheck({
@@ -89,20 +97,25 @@ export function Exercise({
   }
 
   const busy = check.phase === "busy";
-  const passed = check.phase === "pass";
+  const done = check.phase === "pass" || alreadyDone;
 
   return (
     <div
       className={
         "my-6 overflow-hidden rounded-xl border shadow-lg transition-colors " +
-        (passed ? "border-emerald-600/60 bg-emerald-950/10" : "border-cadenza-700/50 bg-slate-900/70")
+        (done ? "border-emerald-600/60 bg-emerald-950/10" : "border-cadenza-700/50 bg-slate-900/70")
       }
     >
       <div className="flex items-center gap-2 border-b border-slate-700/60 bg-slate-800/50 px-3 py-2">
         <span className="rounded bg-cadenza-600/20 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-cadenza-300">
           Exercise
         </span>
-        <span className="text-sm text-slate-300">{prompt}</span>
+        <span className="flex-1 text-sm text-slate-300">{prompt}</span>
+        {done && (
+          <span className="shrink-0 text-emerald-400" title="Completed" aria-label="Completed">
+            ✓
+          </span>
+        )}
       </div>
 
       <CodeEditor value={editor.text} onChange={editor.setText} />
