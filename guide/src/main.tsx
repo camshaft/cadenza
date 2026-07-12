@@ -1,10 +1,10 @@
 import { StrictMode, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { Layout } from "./components/Layout.tsx";
+import HomePage from "./components/HomePage.tsx";
 import { SyntaxProvider } from "./syntax/SyntaxContext.tsx";
 import { ProgressProvider } from "./progress/ProgressContext.tsx";
-import { CHAPTERS } from "./content/chapters.ts";
 import "./index.css";
 
 // The playground is a heavy, full-screen route — lazy-load it so the guide's first paint stays light.
@@ -16,7 +16,7 @@ const basename = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 const router = createBrowserRouter(
   [
-    { path: "/", element: <Navigate to={`/${CHAPTERS[0].slug}`} replace /> },
+    { path: "/", element: <HomePage /> },
     {
       path: "/playground",
       element: (

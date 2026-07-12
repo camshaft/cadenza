@@ -7,49 +7,78 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Link } from "react-router-dom";
 import { PlaygroundEditor } from "./PlaygroundEditor.tsx";
-import { OutputPanel, type RunView } from "./OutputPanel.tsx";
+import { OutputPanel, type RunView, type CompiledInfo } from "./OutputPanel.tsx";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { decodeShareHash, encodeShareHash } from "./share.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
-import { compile, renderSyntax, type Diag } from "../compiler/client.ts";
+import { compile, renderSyntax, type Diag, type Surface } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import type { EditorView } from "@codemirror/view";
 import { byteToUtf16 } from "./offsets.ts";
 
+const BUFFER_KEY = "cadenza.playground.buffer";
+
+/// The buffer to open with, decided SYNCHRONOUSLY at first render (no effect race): a shared link
+/// (URL hash) wins, then the reader's last saved buffer, else the default example. Returns the source
+/// and the surface it's written in; the caller aligns the global surface toggle to match.
+function initialBuffer(): { src: string; surface: Surface } {
+  const shared = decodeShareHash(window.location.hash);
+  if (shared) return { src: shared.src, surface: shared.s };
+  try {
+    const saved = localStorage.getItem(BUFFER_KEY);
+    if (saved) {
+      const { s, src } = JSON.parse(saved) as { s: Surface; src: string };
+      if (typeof src === "string" && src.trim() && (s === "ml" || s === "sexpr")) {
+        return { src, surface: s };
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return { src: DEFAULT_EXAMPLE.source, surface: DEFAULT_EXAMPLE.surface };
+}
+
 export default function PlaygroundPage() {
   const { surface, setSurface } = useSyntax();
-  const [text, setText] = useState<string>(DEFAULT_EXAMPLE.source);
+  const [initial] = useState(initialBuffer);
+  const [text, setText] = useState<string>(initial.src);
   const [runView, setRunView] = useState<RunView>({ kind: "idle" });
   const [diags, setDiags] = useState<Diag[]>([]);
   const [ast, setAst] = useState<string>("");
+  const [compiled, setCompiled] = useState<CompiledInfo | null>(null);
   const [cursor, setCursor] = useState<{ line: number; col: number }>({ line: 1, col: 1 });
   const viewRef = useRef<EditorView | null>(null);
   // The surface the current `text` is written in — so a toggle re-renders the buffer (preserving
   // edits) rather than trying to parse it in the wrong surface.
   const shownSurface = useRef(surface);
+  // Becomes true once the mount effect has chosen the starting buffer, so the persist effect doesn't
+  // save the initial default over a restored buffer.
+  const seeded = useRef(false);
 
-  // Seed the buffer on first mount: a shared link wins (URL hash), else the default example rendered
-  // into the reader's active surface (the default example is authored in s-expr, but the surface
-  // toggle may be set to ML from the guide).
+  // Seed the buffer on first mount, in priority order: a shared link (URL hash) → the reader's last
+  // saved buffer (localStorage) → the default example rendered into the active surface (the default is
+  // authored in s-expr, but the surface toggle may be set to ML from the guide).
   useEffect(() => {
-    const shared = decodeShareHash(window.location.hash);
-    if (shared) {
-      setText(shared.src);
-      shownSurface.current = shared.s;
-      if (shared.s !== surface) setSurface(shared.s);
-      return;
-    }
-    if (DEFAULT_EXAMPLE.surface !== surface) {
-      renderSyntax(DEFAULT_EXAMPLE.source, DEFAULT_EXAMPLE.surface, surface)
-        .then((r) => {
-          setText(r);
-          shownSurface.current = surface;
-        })
-        .catch(() => {});
-    }
+    // `text` is already `initial.src` (a synchronous lazy init). Align the global surface toggle to
+    // the buffer's surface so the two agree; the surface-toggle effect below then won't re-render it.
+    shownSurface.current = initial.surface;
+    if (surface !== initial.surface) setSurface(initial.surface);
+    seeded.current = true;
     // mount only
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Persist the buffer so a reload restores the reader's work. Gated on `seeded` so the initial
+  // render's default `text` doesn't clobber the saved buffer BEFORE the mount effect above restores it
+  // (the mount effect sets `seeded.current = true` once it has decided the starting text).
+  useEffect(() => {
+    if (!seeded.current) return;
+    try {
+      localStorage.setItem(BUFFER_KEY, JSON.stringify({ s: shownSurface.current, src: text }));
+    } catch {
+      /* storage full/disabled — persistence is a nicety */
+    }
+  }, [text, surface]);
 
   // On a global surface toggle, re-render the current buffer into the new surface (preserving edits).
   useEffect(() => {
@@ -85,10 +114,15 @@ export default function PlaygroundPage() {
     setRunView({ kind: "busy" });
     const out = await compile(text, surface);
     if (!out.component) {
+      setCompiled(null);
       const firstErr = out.diagnostics.find((d) => d.error);
       setRunView({ kind: "error", message: firstErr ? `${firstErr.code || ""} ${firstErr.message}`.trim() : "declined" });
       return;
     }
+    // Summarize what it compiled to (for the Compiled tab): a component that imports the value-heap
+    // runtime carries the well-known import name in its bytes; a scalar one is self-contained.
+    const marker = new TextEncoder().encode("cadenza:runtime/heap");
+    setCompiled({ bytes: out.component.length, importsRuntime: indexOfBytes(out.component, marker) >= 0 });
     const r = await runComponent(out.component);
     switch (r.kind) {
       case "value":
@@ -219,7 +253,7 @@ export default function PlaygroundPage() {
         </Panel>
         <PanelResizeHandle className="w-1.5 bg-slate-800 transition hover:bg-cadenza-600/50" />
         <Panel defaultSize={45} minSize={25} className="min-w-0">
-          <OutputPanel run={runView} diagnostics={diags} ast={ast} onJumpTo={jumpTo} />
+          <OutputPanel run={runView} diagnostics={diags} ast={ast} compiled={compiled} onJumpTo={jumpTo} />
         </Panel>
       </PanelGroup>
 
@@ -234,12 +268,23 @@ export default function PlaygroundPage() {
         <span className={warnCount > 0 ? "text-amber-400" : ""}>
           {warnCount} warning{warnCount === 1 ? "" : "s"}
         </span>
+        <span className="hidden text-slate-600 sm:inline">⌘/Ctrl↵ to run</span>
         <span className="ml-auto">
-          Cadenza · <Link to="/" className="hover:text-slate-300">the guide</Link>
+          Cadenza · <Link to="/" className="hover:text-slate-300">home</Link> ·{" "}
+          <Link to="/welcome" className="hover:text-slate-300">the guide</Link>
         </span>
       </div>
     </div>
   );
+}
+
+/// Find `needle` within `hay` (naive scan; both small — a component is a few KB, needle ~20 bytes).
+function indexOfBytes(hay: Uint8Array, needle: Uint8Array): number {
+  outer: for (let i = 0; i + needle.length <= hay.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
 }
 
 function SurfaceToggle({ surface, setSurface }: { surface: "ml" | "sexpr"; setSurface: (s: "ml" | "sexpr") => void }) {
