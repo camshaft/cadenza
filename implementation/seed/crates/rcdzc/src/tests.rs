@@ -1056,6 +1056,38 @@ fn a_let_bound_runtime_tuple_under_a_fn_param_projects() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
 }
 
+/// The atom-copy fix must NOT substitute a BINDER occurrence that shadows the parameter. `(def (f x)
+/// (let ((x true)) x))` binds the inner `x = true` shadowing the Int64 param `x`; `(f 99)` must return
+/// `true`. The atom-copy pass resolved the let's BINDER-name occurrence `x` (a `Ref` up to the param,
+/// because it shares the name) and SUBSTITUTED the argument into it — turning the binding into `(99
+/// true)`, so the body's `x` found no binding and reported a spurious unbound name. A differently-typed
+/// shadow additionally MISCOMPILED (the parameter's i64 slot reused for the Bool). A binder occurrence
+/// NAMES a binding — β-reduction must copy it, never substitute — so both the same-type and Bool
+/// shadows now run. (The companion `a_let_bound_value_under_a_fn_param_compiles` pins that a genuine
+/// let-local REFERENCE is still substituted/re-resolved — this pins that its BINDER is not.)
+#[test]
+fn a_let_binder_shadowing_a_parameter_is_not_substituted() {
+    use crate::testkit::parse;
+    // Bool shadow: the inner binding's type differs from the parameter — the worst case (was an invalid
+    // component). `(f 99)` returns the inner `x = true`.
+    let bool_shadow =
+        "(module m (def (f x) (let ((x true)) x)) (def (main) (f 99)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(bool_shadow))).expect("compile");
+    assert!(run_returns::<bool>(&bytes, "main"), "Bool shadow of an Int64 param returns true");
+
+    // Same-type shadow: `(let ((x 7)) x)` over Int64 param `x` — `(f 99)` returns the inner `x = 7`.
+    let int_shadow = "(module m (def (f x) (let ((x 7)) x)) (def (main) (f 99)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(int_shadow))).expect("compile");
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 7, "same-type shadow returns the inner binding");
+
+    // A match-arm pattern binder that shadows the param is likewise a binder, not a reference:
+    // `(match 5 (x x))` binds `x` to the scrutinee 5 for the arm, shadowing the param `x`.
+    let arm_shadow =
+        "(module m (def (f x) (match 5 (x x))) (def (main) (f 99)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(arm_shadow))).expect("compile");
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 5, "match-arm binder shadow binds the scrutinee");
+}
+
 // ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
 //
 // The operator directive: get the static heap-value path right FIRST — a constant compound must never

@@ -173,6 +173,22 @@ fn sign_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
 /// occurrence that IS a reference to one of these params is replaced by its argument; every other node
 /// is structurally copied (its children reduced in turn).
 pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, StructId>) -> StructId {
+    // A name occurrence in a BINDER POSITION (the name slot of a `let` binding pair, or a match-arm
+    // pattern binder) NAMES a binding — it is not a reference to be substituted. Its `resolved_of`
+    // walks the scope and, when it shadows a parameter of the same name, reaches that param's binder
+    // (which IS in `arg_of`), so the substitution branches below would replace the binding NAME with
+    // the argument — turning `(let ((x true)) x)` under param `x` into `(let ((99 true)) x)`, whose
+    // body `x` then finds no `x` binding and reports a spurious unbound name (a differently-typed
+    // shadow additionally MISCOMPILED to an invalid component). A binder is copied structurally like
+    // any other node, never substituted. (Only VALUE references — a bare use of the name — are.)
+    if is_binder_occurrence(db, body) {
+        let leaf = match db.ast.get(body) {
+            crate::ast::Struct::Atom(lid) => db.ast.leaf(*lid).clone(),
+            // A non-atom binder (an annotated `(: name T)` binder) copies structurally below.
+            _ => return copy_structural(db, body, arg_of),
+        };
+        return db.push_atom(leaf);
+    }
     // A reference to a substituted parameter → its argument. A parameter reference resolves to
     // `Ref { value: <param binder occ> }`; if that binder is one we're substituting, use the arg. The
     // ref is followed TRANSITIVELY: a MATCH-ARM BINDER `k` resolves (Case 5) to the scrutinee
@@ -208,6 +224,21 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // resolve to the COPY's substituted init `(+ arg 1)`, not the original `(+ n 1)`). A param reference
     // never reaches here (the substitution branches above return the arg first); a prelude/free name
     // re-resolves to the same global, harmlessly.
+    copy_structural(db, body, arg_of)
+}
+
+/// Structurally copy `body` (no substitution at THIS node — the caller decided it is not a
+/// substituted reference). A CONSTANT atom (int/bool/float/string leaf) is self-contained — it
+/// resolves to its own value regardless of scope, so SHARE it (cheap, no re-resolution needed). A NAME
+/// atom resolves by a SCOPE WALK: if it names a binding INSIDE this body (a `let`-local like `x`),
+/// sharing the original node would keep its stale resolution to the ORIGINAL (pre-copy) binding — but
+/// the copy re-parents everything, so a `let`-local's copied init differs from the original. So COPY a
+/// name atom (a fresh occurrence of the same name leaf); `push_list` re-parents it under the copied
+/// enclosing form, and its `resolved_of` re-runs against the COPIED scope, binding it to the copied
+/// binding (`(def (g n) (let ((x (+ n 1))) (+ x x)))` — the body's `x` must resolve to the COPY's
+/// substituted init `(+ arg 1)`, not the original `(+ n 1)`). A prelude/free name re-resolves to the
+/// same global, harmlessly.
+fn copy_structural(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, StructId>) -> StructId {
     match db.ast.get(body).clone() {
         crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
             crate::ast::Leaf::Name(_) => {
@@ -224,6 +255,46 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
             db.push_list(reduced)
         }
     }
+}
+
+/// Whether `id` is a name occurrence in a BINDER POSITION — the name slot of a `let` binding pair, or a
+/// match-arm pattern binder. Such an occurrence NAMES a binding; it is not a value reference, so
+/// β-reduction must copy it structurally rather than substitute an argument for it (else a binder that
+/// shadows a same-named parameter would be replaced by the argument, destroying the binding). Detected
+/// structurally by the parent chain, so no name-specific knowledge is needed:
+///
+///  - `id` is the FIRST child of a `(name init)` pair whose grandparent is a `let`'s bindings-list.
+///  - `id` is the FIRST child (the pattern) of a `(pattern body)` arm whose grandparent is a `match`.
+fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
+    let Some(pair) = db.parent_of(id) else {
+        return false;
+    };
+    // `id` must be the pattern/name slot — the pair's/arm's first child.
+    let crate::ast::Struct::List(pair_children) = db.ast.get(pair) else {
+        return false;
+    };
+    if pair_children.first() != Some(&id) {
+        return false;
+    }
+    let Some(grandparent) = db.parent_of(pair) else {
+        return false;
+    };
+    // A `let` binding pair: the grandparent is the bindings-LIST of a `let` — its own parent is a `let`
+    // form whose FIRST tail element is that list (the bindings position, distinct from the body).
+    if let Some(great) = db.parent_of(grandparent)
+        && let Some(let_tail) = db.ast.as_form(great, "let")
+        && let_tail.first() == Some(&grandparent)
+    {
+        return true;
+    }
+    // A `match` arm: the grandparent is the `match` form and `pair` is one of its ARMS (a tail element,
+    // i.e. not the scrutinee at tail position 0).
+    if let Some(tail) = db.ast.as_form(grandparent, "match")
+        && tail.iter().skip(1).any(|&arm| arm == pair)
+    {
+        return true;
+    }
+    false
 }
 
 /// If `head` reduces to a lambda, apply it to `args` by β-reduction, returning the reduced body's

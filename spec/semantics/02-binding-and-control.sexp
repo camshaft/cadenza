@@ -48,6 +48,33 @@
             (def (main) (f 99)) (export main)))
   (output (: true Bool)))
 
+(case "a let shadowing a parameter with a same-typed value runs, not miscompiles"
+  (doc    "The same-type companion of the differently-typed shadow above: `(def (f x) (let ((x 7)) x))`
+           shadows the Int64 parameter `x` with another Int64 `x = 7`, so `(f 99)` = 7. Distinct from
+           the Bool shadow because the types AGREE, yet it exercises the same binder-substitution hazard:
+           when a function is inlined, β-reduction must NOT substitute the argument into the let's BINDER
+           occurrence `x` (which resolves up to the same-named parameter). A generation that did so turned
+           the binding into `(99 7)` — losing the name — so the body's `x` found no binding; here it
+           additionally reused the parameter's slot, an outcome that MISCOMPILED to an invalid component.
+           A binder names a binding and is copied, never substituted, so the inner `7` is returned.")
+  (input  (do
+            (def (f x) (let ((x 7)) x))
+            (def (main) (f 99)) (export main)))
+  (output (: 7 Int64)))
+
+(case "a match-arm binder shadowing a parameter binds the scrutinee, not the argument"
+  (doc    "A match-arm PATTERN binder is a binding site, like a let binder: `(def (f x) (match 5 (x x)))`
+           binds `x` to the scrutinee 5 for the arm's scope (core-semantics.md #Bindings Introduced By A
+           Pattern Are Scoped To Its Branch), shadowing the parameter `x`; `(f 99)` = 5. When `f` inlines,
+           β-reduction must copy the arm's binder occurrence `x` rather than substitute the argument for
+           it (the binder resolves up to the same-named param) — else the arm binds nothing and the body's
+           `x` is spuriously unbound. Pins that binder protection covers match-arm patterns, not only let
+           bindings.")
+  (input  (do
+            (def (f x) (match 5 (x x)))
+            (def (main) (f 99)) (export main)))
+  (output (: 5 Int64)))
+
 (case "a let binding whose value references a parameter compiles under a call"
   (doc    "`(def (g n) (let ((x (+ n 1))) (+ x x)))` — the `let` value USES the parameter `n` (not a
            shadow). Calling `(g 10)` inlines g's body; the reduction must substitute `n`→`10` in the

@@ -38,7 +38,9 @@ pass	a hexadecimal literal with digit separators
 pass	a later let binding sees an earlier one in the same let
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
+pass	a let binding whose value references a parameter compiles under a call
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
+pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
@@ -48,6 +50,7 @@ pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
+pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
