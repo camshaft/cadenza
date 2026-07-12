@@ -382,7 +382,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         vec![0],
         1,
     );
-    let ours = core_module(&[func], &[OPS.arr_alloc], &layout, None).expect("core module");
+    let ours = core_module(&[func], &[OPS.arr_alloc], &layout).expect("core module");
 
     // The oracle: a core module importing `heap."arr-alloc" : (i32) -> i32`, then one defined
     // `() -> i64` func (function index 1) exported as `main`, returning 42.
@@ -11517,7 +11517,7 @@ mod debug_info {
 
         // And the whole thing is consistent with a real `core_module`: the module must contain the two
         // entries' bytes consecutively at the payload region the ranges describe.
-        let core = core_module(&funcs, &imports, &layout, None).expect("core module");
+        let core = core_module(&funcs, &imports, &layout).expect("core module");
         let mut concat = entry0.clone();
         concat.extend_from_slice(&entry1);
         assert!(
@@ -11963,6 +11963,13 @@ mod debug_info {
         assert!(
             has(b"main"),
             "the escape component's DWARF must name the source functions"
+        );
+        // The wasm `name` section rides in too (uniformly with the ordinary path now) — so a plain
+        // profiler/trace shows `f`/`main`, not `func[N]`. Its section-name string is the length-prefixed
+        // `\x04name` (the custom-section name), distinct from the incidental substring "name".
+        assert!(
+            has(b"\x04name"),
+            "the escape component must carry the wasm `name` section"
         );
         // The plain build embeds no DWARF (the sections are debug-only).
         let plain = component_of(src, Target::Wasm);
