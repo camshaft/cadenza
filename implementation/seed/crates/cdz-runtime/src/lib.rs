@@ -2408,28 +2408,104 @@ fn op_map_lookup(m: Handle, key: Handle) -> Handle {
 }
 
 // ─── STRIDE-PARAMETERIZED insert core (shared by MAP stride 2 and SET stride 1) ─────────
-// An "entry" is a `Vec<Handle>` of length `stride`; `entry[0]` is the key/element compared by
-// `champ_eq`. Map entries are `[key, value]` (stride 2); set entries are `[elem]` (stride 1). The
-// generic OVERWRITE rule (key already present) keeps the STORED key and takes the incoming value
-// columns `entry[1..]`, dropping the incoming duplicate `entry[0]`; the old stored value columns die
-// with the consumed node. For a set (stride 1) that degenerates to "keep stored, drop incoming
+// An "entry" is the incoming key/element columns for ONE insert; `entry.key()` (column 0) is the
+// key/element compared by `champ_eq`. Map entries are `[key, value]` (len 2); set entries are `[elem]`
+// (len 1). The generic OVERWRITE rule (key already present) keeps the STORED key and takes the incoming
+// value columns `entry[1..]`, dropping the incoming duplicate `entry[0]`; the old stored value columns
+// die with the consumed node. For a set (len 1) that degenerates to "keep stored, drop incoming
 // element" — idempotent insert, size unchanged.
+//
+// `Entry` is an INLINE (stack) buffer of ≤2 handles, NOT a heap `Vec` — an insert is on the hot path
+// (map/set insert + every set-algebra element), so allocating a Vec per insert was pure waste (the
+// entry's handles are only ever MOVED into node storage, never shared). An entry holds Copy `Handle`s,
+// so moving it touches no refcount — refcount-identical to the old `Vec<Handle>`. It is deliberately
+// NOT `Copy`: the compiler's move-checking then still enforces that an entry (and each handle it owns)
+// is consumed exactly once — the linearity discipline the old owned `Vec` gave us for free.
+
+/// The incoming columns for one insert: `len` handles (1 for a set elem, 2 for a map `[k,v]`) in a
+/// fixed inline `[Handle; 2]`. Move-only (no `Copy`/`Clone`) so single-consumption is compiler-checked.
+struct Entry {
+    cols: [Handle; 2],
+    len: usize,
+}
+impl Entry {
+    /// A set element (len 1).
+    fn elem(e: Handle) -> Entry {
+        Entry { cols: [e, Handle::NULL], len: 1 }
+    }
+    /// A map key/value pair (len 2).
+    fn kv(k: Handle, v: Handle) -> Entry {
+        Entry { cols: [k, v], len: 2 }
+    }
+    /// The key/element column (column 0), compared by `champ_eq`.
+    fn key(&self) -> Handle {
+        self.cols[0]
+    }
+    /// Column `i` (0 ≤ i < len).
+    fn col(&self, i: usize) -> Handle {
+        self.cols[i]
+    }
+    /// The number of columns (the insert stride: 1 for a set, 2 for a map).
+    fn len(&self) -> usize {
+        self.len
+    }
+    /// Consume the entry, appending its columns onto `out` — used where the columns become part of a
+    /// freshly-built node handle vector (the rare fresh-single / split / collision-append paths).
+    fn extend_into(self, out: &mut Vec<Handle>) {
+        out.extend_from_slice(&self.cols[..self.len]);
+    }
+    /// Consume the entry into a fresh 1- or 2-element `Vec` (only where a node's `handles` IS exactly
+    /// this entry — the fresh-single-entry node).
+    fn into_vec(self) -> Vec<Handle> {
+        self.cols[..self.len].to_vec()
+    }
+    /// The entry's columns as a slice — for a caller that copies them into node storage BY VALUE
+    /// (handles are `Copy`, so this relocates them without dup/drop, exactly like moving the old Vec's
+    /// elements). The caller is responsible for consuming the entry exactly once overall.
+    fn cols(&self) -> &[Handle] {
+        &self.cols[..self.len]
+    }
+}
+
+/// Append `entry`'s columns onto `out` by value (handles are `Copy`). Used at the collision-node
+/// splice site, which conditionally splices at one of two positions; the caller `drop`s the entry once
+/// after the single splice actually runs, so this borrows rather than consumes.
+fn entry_splice(out: &mut Vec<Handle>, entry: &Entry) {
+    out.extend_from_slice(entry.cols());
+}
+
+/// Build an `Entry` from the `stride` columns of `handles` starting at `base` — the STORED entry a
+/// SPLIT folds together with the newcomer. `dup` ⇒ retain a reference to each column (the copy path,
+/// where the consumed node still owns its copy); `!dup` ⇒ relocate the columns (the FBIP path, where
+/// the node's handle vector was already taken and these references move out).
+fn stored_entry_from(handles: &[Handle], base: usize, stride: usize, dup: bool) -> Entry {
+    let mut cols = [Handle::NULL, Handle::NULL];
+    for t in 0..stride {
+        let h = handles[base + t];
+        if dup {
+            op_dup(h);
+        }
+        cols[t] = h;
+    }
+    Entry { cols, len: stride }
+}
 
 /// Build a node holding exactly two entries whose keys hash to `h1`/`h2`, splitting by the trie
 /// index at `level` and recursing while they collide; at the hash floor they share a collision node.
-/// CONSUMES both entry vectors (their handles become the new node's). Bounded recursion (≤7).
+/// CONSUMES both entries (their handles become the new node's). Bounded recursion (≤7).
 #[allow(dead_code)]
-fn merge_two_entries(e1: Vec<Handle>, h1: u32, e2: Vec<Handle>, h2: u32, level: u32) -> Handle {
+fn merge_two_entries(e1: Entry, h1: u32, e2: Entry, h2: u32, level: u32) -> Handle {
     if level >= CHAMP_LEVELS {
         // Hash exhausted: a collision node holding both entries, stored in canonical KEY order
         // (insertion-independent) so equal collision sets are byte-identical regardless of order.
-        let (first, second) = if champ_key_cmp(e1[0], e2[0]) == core::cmp::Ordering::Greater {
+        let (first, second) = if champ_key_cmp(e1.key(), e2.key()) == core::cmp::Ordering::Greater {
             (e2, e1)
         } else {
             (e1, e2)
         };
-        let mut hs = first;
-        hs.extend(second);
+        let mut hs = Vec::with_capacity(first.len() + second.len());
+        first.extend_into(&mut hs);
+        second.extend_into(&mut hs);
         return alloc(hs, champ_header(0, 0, 2));
     }
     let i1 = level_index(h1, level);
@@ -2439,12 +2515,14 @@ fn merge_two_entries(e1: Vec<Handle>, h1: u32, e2: Vec<Handle>, h2: u32, level: 
         let sub = merge_two_entries(e1, h1, e2, h2, level + 1);
         alloc(vec![sub], champ_header(0, 1 << i1, 2))
     } else if i1 < i2 {
-        let mut hs = e1;
-        hs.extend(e2);
+        let mut hs = Vec::with_capacity(e1.len() + e2.len());
+        e1.extend_into(&mut hs);
+        e2.extend_into(&mut hs);
         alloc(hs, champ_header((1 << i1) | (1 << i2), 0, 2))
     } else {
-        let mut hs = e2;
-        hs.extend(e1);
+        let mut hs = Vec::with_capacity(e1.len() + e2.len());
+        e2.extend_into(&mut hs);
+        e1.extend_into(&mut hs);
         alloc(hs, champ_header((1 << i2) | (1 << i1), 0, 2))
     }
 }
@@ -2453,8 +2531,8 @@ fn merge_two_entries(e1: Vec<Handle>, h1: u32, e2: Vec<Handle>, h2: u32, level: 
 /// `entry`. Overwrite (key present) keeps the stored key + takes incoming value columns, dropping
 /// the incoming duplicate key; otherwise the entry is appended. Path-copied.
 #[allow(dead_code)]
-fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Vec<Handle>, stride: usize) -> Handle {
-    let key = entry[0];
+fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: usize) -> Handle {
+    let key = entry.key();
     let mut found = None;
     let mut idx = 0;
     while idx < handles.len() {
@@ -2469,7 +2547,7 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Vec<Handle>, stri
             let mut new_handles = Vec::with_capacity(handles.len());
             for (i2, &h) in handles.iter().enumerate() {
                 if i2 > j && i2 < j + stride {
-                    new_handles.push(entry[i2 - j]); // incoming value column
+                    new_handles.push(entry.col(i2 - j)); // incoming value column
                 } else {
                     op_dup(h);
                     new_handles.push(h);
@@ -2477,7 +2555,7 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Vec<Handle>, stri
             }
             let entries = (handles.len() / stride) as u32;
             let new = alloc(new_handles, champ_header(0, 0, entries));
-            op_drop(entry[0]); // incoming duplicate key unused
+            op_drop(entry.key()); // incoming duplicate key unused
             op_drop(node);
             new
         }
@@ -2497,14 +2575,15 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Vec<Handle>, stri
             let mut new_handles = Vec::with_capacity(handles.len() + stride);
             for (i2, &h) in handles.iter().enumerate() {
                 if i2 == pos {
-                    new_handles.extend(entry.iter().copied()); // owned incoming entry, in place
+                    entry_splice(&mut new_handles, &entry); // owned incoming entry, in place
                 }
                 op_dup(h);
                 new_handles.push(h);
             }
             if pos == handles.len() {
-                new_handles.extend(entry.iter().copied()); // sorts last
+                entry_splice(&mut new_handles, &entry); // sorts last
             }
+            let _ = entry; // consumed: its columns were copied into new_handles above (once, by `pos`)
             let entries = (handles.len() / stride + 1) as u32;
             let new = alloc(new_handles, champ_header(0, 0, entries));
             op_drop(node);
@@ -2516,8 +2595,8 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Vec<Handle>, stri
 /// The per-node recursive insert core. CONSUMES `node` and `entry` (`entry[0]` = key, len = stride);
 /// returns the new node. Bounded recursion (≤ `CHAMP_LEVELS`). Always path-copies.
 #[allow(dead_code)]
-fn champ_insert_node(node: Handle, entry: Vec<Handle>, hash: u32, level: u32, stride: usize) -> Handle {
-    let key = entry[0];
+fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: usize) -> Handle {
+    let key = entry.key();
     let (datamap, nodemap, size, handles) = with_node(
         node,
         (0u32, 0u32, 0u32, Vec::<Handle>::new()),
@@ -2535,7 +2614,7 @@ fn champ_insert_node(node: Handle, entry: Vec<Handle>, hash: u32, level: u32, st
     if datamap == 0 && nodemap == 0 {
         if handles.is_empty() {
             let i = level_index(hash, level);
-            let new = alloc(entry, champ_header(1 << i, 0, 1)); // entry owned
+            let new = alloc(entry.into_vec(), champ_header(1 << i, 0, 1)); // entry owned
             op_drop(node);
             return new;
         }
@@ -2557,24 +2636,20 @@ fn champ_insert_node(node: Handle, entry: Vec<Handle>, hash: u32, level: u32, st
             let mut new_handles = Vec::with_capacity(handles.len());
             for (idx, &h) in handles.iter().enumerate() {
                 if idx > base && idx < base + stride {
-                    new_handles.push(entry[idx - base]); // incoming value column
+                    new_handles.push(entry.col(idx - base)); // incoming value column
                 } else {
                     op_dup(h);
                     new_handles.push(h);
                 }
             }
             let new = alloc(new_handles, champ_header(datamap, nodemap, size));
-            op_drop(entry[0]); // incoming duplicate key unused
+            op_drop(entry.key()); // incoming duplicate key unused
             op_drop(node); // frees the old value columns if node was unique
             return new;
         }
-        // SPLIT: turn the inline entry + newcomer into a subnode.
-        let mut stored_entry = Vec::with_capacity(stride);
-        for t in 0..stride {
-            let h = handles[base + t];
-            op_dup(h);
-            stored_entry.push(h);
-        }
+        // SPLIT: turn the inline entry + newcomer into a subnode. Build the STORED entry (dup'd, since
+        // the consumed node's copy also survives via `op_drop(node)` releasing only ITS references).
+        let stored_entry = stored_entry_from(&handles, base, stride, true);
         let h1 = champ_hash(stored_key);
         let sub = merge_two_entries(stored_entry, h1, entry, hash, level + 1);
         let new_datamap = datamap & !bit;
@@ -2637,9 +2712,10 @@ fn champ_insert_node(node: Handle, entry: Vec<Handle>, hash: u32, level: u32, st
             new_handles.push(h);
         }
     }
-    for (off, &h) in entry.iter().enumerate() {
-        new_handles.insert(stride * new_eidx + off, h); // entry columns at the entry position
+    for (off, h) in entry.cols().iter().enumerate() {
+        new_handles.insert(stride * new_eidx + off, *h); // entry columns at the entry position
     }
+    let _ = entry; // consumed: columns relocated into new_handles by value (handles are Copy)
     for s in 0..scount {
         let c = handles[subbase + s];
         op_dup(c);
@@ -2718,7 +2794,7 @@ fn champ_set_child_and_size_inplace(node: Handle, slot: usize, child: Handle, si
 /// `node` and `entry` (`entry[0]` = key, len = `stride`). See the safety note above.
 fn champ_insert_fbip(
     node: Handle,
-    entry: Vec<Handle>,
+    entry: Entry,
     hash: u32,
     level: u32,
     stride: usize,
@@ -2727,7 +2803,7 @@ fn champ_insert_fbip(
     if !mine {
         return champ_insert_node(node, entry, hash, level, stride); // shared: proven copy path
     }
-    let key = entry[0];
+    let key = entry.key();
     // Read the header + arity WITHOUT cloning `handles` (see the take below).
     let (datamap, nodemap, size, arity) =
         with_node(node, (0u32, 0u32, 0u32, 0usize), |n| {
@@ -2743,7 +2819,7 @@ fn champ_insert_fbip(
     if datamap == 0 && nodemap == 0 {
         if arity == 0 {
             let i = level_index(hash, level);
-            return champ_become_hdr(node, entry, 1 << i, 0, 1); // entry owned, moved in
+            return champ_become_hdr(node, entry.into_vec(), 1 << i, 0, 1); // entry owned, moved in
         }
         // Collision node (full 32-bit hash clash — rare): path-copy via the proven helper, which
         // `op_drop`s `node` and so needs its child references intact — clone rather than take here.
@@ -2779,17 +2855,15 @@ fn champ_insert_fbip(
             // reinstall it, rather than allocating a fresh `new_handles` (saves one Vec per spine node).
             for t in 1..stride {
                 op_drop(handles[base + t]); // old value column, replaced
-                handles[base + t] = entry[t]; // incoming value column (owned)
+                handles[base + t] = entry.col(t); // incoming value column (owned)
             }
-            op_drop(entry[0]); // incoming duplicate key unused
+            op_drop(entry.key()); // incoming duplicate key unused
             return champ_become_hdr(node, handles, datamap, nodemap, size);
         }
-        // SPLIT: fold the inline entry + newcomer into a subnode. Move the stored entry (no dup) into
-        // the merge; carry other entries/subnodes without dup.
-        let mut stored_entry = Vec::with_capacity(stride);
-        for t in 0..stride {
-            stored_entry.push(handles[base + t]); // moved (no dup)
-        }
+        // SPLIT: fold the inline entry + newcomer into a subnode. MOVE the stored entry (no dup — the
+        // node's handle vec was already taken, so these references relocate) into the merge; carry the
+        // other entries/subnodes without dup.
+        let stored_entry = stored_entry_from(&handles, base, stride, false);
         let h1 = champ_hash(stored_key);
         let sub = merge_two_entries(stored_entry, h1, entry, hash, level + 1);
         let new_datamap = datamap & !bit;
@@ -2837,9 +2911,10 @@ fn champ_insert_fbip(
     // than building a fresh one: `Vec::insert` may grow it once, but there is no separate full-copy pass.
     let new_datamap = datamap | bit;
     let new_eidx = entry_index_for_slot(new_datamap, i) as usize;
-    for (off, &h) in entry.iter().enumerate() {
-        handles.insert(stride * new_eidx + off, h); // incoming entry column (owned), no dup
+    for (off, h) in entry.cols().iter().enumerate() {
+        handles.insert(stride * new_eidx + off, *h); // incoming entry column (owned), no dup
     }
+    let _ = entry; // consumed: columns relocated into `handles` by value (handles are Copy)
     champ_become_hdr(node, handles, new_datamap, nodemap, size + 1)
 }
 
@@ -2851,7 +2926,7 @@ fn champ_insert_fbip(
 fn op_map_insert(m: Handle, key: Handle, val: Handle) -> Handle {
     let hash = champ_hash(key);
     let mine = node_rc(m) == 1;
-    champ_insert_fbip(m, vec![key, val], hash, 0, MAP_STRIDE, mine)
+    champ_insert_fbip(m, Entry::kv(key, val), hash, 0, MAP_STRIDE, mine)
 }
 
 // ─── CHAMP persistent MAP: remove (the exact inverse of insert) ─────────────────────────
@@ -3596,7 +3671,7 @@ fn op_set_insert(s: Handle, elem: Handle) -> Handle {
     let hash = champ_hash(elem);
     let mine = node_rc(s) == 1;
     // SET_STRIDE (1) routes through the SAME FBIP core as the map — one careful change covers both.
-    champ_insert_fbip(s, vec![elem], hash, 0, SET_STRIDE, mine)
+    champ_insert_fbip(s, Entry::elem(elem), hash, 0, SET_STRIDE, mine)
 }
 
 /// Remove `elem`, returning the new set (canonical empty if the last element is removed). CONSUMES
@@ -3830,9 +3905,9 @@ mod tests {
     /// so it catches a future change that reintroduces the per-spine-node `new_handles`/`champ_header`
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
-    /// champ_eq/cmp worklist + EMPTY-slot in-place splice work (insert 3057, remove 1953, iterate 2248,
-    /// push 197, get 0, lookup 0); they are UPPER BOUNDS so ordinary noise never trips them but a
-    /// regression toward the old 6779/8397/5248/1000 does.
+    /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry work (insert 1740, remove 1953,
+    /// iterate 2248, push 197, get 0, lookup 0; set union 1298 / ∩ 2974 / ∖ 2980); they are UPPER
+    /// BOUNDS so ordinary noise never trips them but a regression toward the old 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -3859,7 +3934,7 @@ mod tests {
             }
         });
         println!("ALLOC map_insert x{N}: {insert}");
-        assert!(insert <= 3400, "unique map_insert x{N} allocs {insert} exceeds ceiling 3400 (6779 → 3907 champ_become_hdr+in-place → 3589 lazy champ_eq worklist → ~3057 EMPTY-slot in-place splice)");
+        assert!(insert <= 2000, "unique map_insert x{N} allocs {insert} exceeds ceiling 2000 (6779 → 3907 champ_become_hdr+in-place → 3589 lazy champ_eq worklist → 3057 EMPTY-slot splice → ~1740 inline Entry, no per-insert Vec)");
 
         // (B) full iteration (unique cursor walk).
         let iterate = measure(&mut || {
@@ -3949,21 +4024,21 @@ mod tests {
             op_drop(op_set_union(sa, sc));
         });
         println!("ALLOC set_union x{N}: {union}");
-        assert!(union <= 3500, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 3500");
+        assert!(union <= 1600, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 1600");
         let inter = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_intersection(sa, sb));
         });
         println!("ALLOC set_intersection x{N}: {inter}");
-        assert!(inter <= 4500, "set_intersection x{N} allocs {inter} exceeds ceiling 4500");
+        assert!(inter <= 3300, "set_intersection x{N} allocs {inter} exceeds ceiling 3300");
         let diff = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_difference(sa, sb));
         });
         println!("ALLOC set_difference x{N}: {diff}");
-        assert!(diff <= 4500, "set_difference x{N} allocs {diff} exceeds ceiling 4500");
+        assert!(diff <= 3300, "set_difference x{N} allocs {diff} exceeds ceiling 3300");
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
@@ -8269,6 +8344,43 @@ mod tests {
         op_drop(snap);
         op_drop(m);
         assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn entry_columns_consumed_exactly_once_across_all_insert_paths() {
+        reset();
+        let before = live_nodes();
+        // Guards the move-only inline `Entry` that replaced the per-insert `Vec<Handle>`: each entry's
+        // key/value columns must be consumed EXACTLY ONCE across every insert path (fresh-single,
+        // EMPTY-slot splice, OVERWRITE which drops the incoming key + swaps the value, SPLIT which folds
+        // via merge_two_entries, DESCEND, and the collision-node splice) — no leak (double-count) and no
+        // double-free (crash). Value maps (stride 2) exercise the two-column key+value handling; use
+        // BOXED (out-of-window) values so each column is a real heap node whose rc the leak counter sees.
+        let (sa, sb) = low5_split_pair(); // force a split
+        let (ca, cb) = full_hash_collision_pair(); // force a collision node + merge at the hash floor
+        let boxed = |v: i64| boxed_int_leaf((1i64 << 40) + v); // out-of-window ⇒ real node value
+        // Build a map hitting fresh/empty-slot/split/descend/collision, then OVERWRITE several keys
+        // (drops the old boxed value + the incoming duplicate key), then verify every value and no leak.
+        let keys = [sa, sb, ca, cb, 1i64, 2, 3, 100, 101];
+        let mut m = op_map_empty();
+        for (i, &k) in keys.iter().enumerate() {
+            m = op_map_insert(m, op_box_int(k), boxed(i as i64));
+        }
+        // Overwrite half the keys with new boxed values — the OVERWRITE path must drop the old value
+        // node and the incoming duplicate key, keeping the stored key.
+        for (i, &k) in keys.iter().enumerate().filter(|(i, _)| i % 2 == 0) {
+            m = op_map_insert(m, op_box_int(k), boxed(1000 + i as i64));
+        }
+        assert_eq!(op_map_size(m) as usize, keys.len(), "overwrites did not change size");
+        for (i, &k) in keys.iter().enumerate() {
+            let want = if i % 2 == 0 { 1000 + i as i64 } else { i as i64 };
+            let probe = op_box_int(k);
+            let got = op_map_lookup(m, probe); // borrows the value; do not retain
+            assert_eq!(op_get_int(got), (1i64 << 40) + want, "key {k} has the right (boxed) value");
+            op_drop(probe);
+        }
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "every entry column freed exactly once — no leak, no double-free");
     }
 
     #[test]
