@@ -3971,6 +3971,12 @@ fn op_set_iter_elem(cur: Handle) -> Handle {
 /// per-element dup). An empty operand is the identity (`union(empty,b)==b`, `union(a,empty)==a`).
 #[allow(dead_code)]
 fn op_set_union(a: Handle, b: Handle) -> Handle {
+    if a == b {
+        // Same node (structural sharing / self-union): a ∪ a = a. The caller passed two references to
+        // the one node; keep one as the result and release the other. O(1) vs the O(n·log) fold below.
+        op_drop(b);
+        return a;
+    }
     if is_empty_node(a) {
         op_drop(a);
         return b;
@@ -4006,6 +4012,12 @@ fn op_set_union(a: Handle, b: Handle) -> Handle {
 /// other. `intersection(x, empty) == empty` and `intersection(empty, x) == empty`.
 #[allow(dead_code)]
 fn op_set_intersection(a: Handle, b: Handle) -> Handle {
+    if a == b {
+        // Same node: a ∩ a = a. Keep one reference, release the other. O(1). (Correct even for the
+        // empty set: ∅ ∩ ∅ = ∅.)
+        op_drop(b);
+        return a;
+    }
     if is_empty_node(a) || is_empty_node(b) {
         op_drop(a);
         op_drop(b);
@@ -4044,6 +4056,12 @@ fn op_set_intersection(a: Handle, b: Handle) -> Handle {
 /// `difference(a, empty) == a` (all of a) and `difference(empty, b) == empty`.
 #[allow(dead_code)]
 fn op_set_difference(a: Handle, b: Handle) -> Handle {
+    if a == b {
+        // Same node: a ∖ a = ∅. Release both references and return a fresh empty set. O(1).
+        op_drop(a);
+        op_drop(b);
+        return op_set_empty();
+    }
     if is_empty_node(a) {
         op_drop(a);
         op_drop(b);
@@ -9336,6 +9354,69 @@ mod tests {
         op_drop(ba);
         op_drop(fresh);
         assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn set_algebra_same_operand_short_circuits() {
+        reset();
+        let before = live_nodes();
+        // Guards the O(1) pointer-identity (a==b) short-circuits: the idempotent set laws must hold when
+        // the SAME handle is passed to both operands (structural sharing / self-op), with correct rc
+        // (each op CONSUMES two references to the one node). Build a non-trivial set (a subnode split +
+        // a collision pair, so the shape is real), then check a∪a=a, a∩a=a, a∖a=∅ — each by dup'ing the
+        // set twice so both operand slots hold the same node, and asserting contents + no leak. Also
+        // covers the EMPTY set (∅∪∅=∅ etc.) so the short-circuit is correct on the degenerate node too.
+        let (sa, sb) = low5_split_pair();
+        let (ca, cb) = full_hash_collision_pair();
+        let elems = [sa, sb, ca, cb, 1i64, 2, 3, 42];
+        let ref_set: std::collections::BTreeSet<i64> = elems.iter().copied().collect();
+        let universe: Vec<i64> = elems.iter().copied().chain([999]).collect();
+
+        // a ∪ a = a  (dup twice → both slots the same node → the a==b branch fires)
+        let s = set_of(&elems);
+        op_dup(s);
+        op_dup(s); // s now has 3 refs: the two we pass + the one we keep to compare
+        let u = op_set_union(s, s);
+        assert!(champ_eq(u, s), "a ∪ a == a");
+        assert_set_eq_reference(u, &ref_set, &universe);
+        op_drop(u);
+
+        // a ∩ a = a
+        op_dup(s);
+        op_dup(s);
+        let x = op_set_intersection(s, s);
+        assert!(champ_eq(x, s), "a ∩ a == a");
+        assert_set_eq_reference(x, &ref_set, &universe);
+        op_drop(x);
+
+        // a ∖ a = ∅
+        op_dup(s);
+        op_dup(s);
+        let d = op_set_difference(s, s);
+        assert!(is_empty_node(d), "a ∖ a == ∅");
+        assert_eq!(op_set_size(d), 0);
+        op_drop(d);
+        op_drop(s); // the reference we kept
+
+        // The EMPTY set through each self-op (∅ is also a valid a==b node). Use a FRESH empty set per
+        // op (each op consumes exactly the two references it is passed), so no cross-op aliasing.
+        let e1 = op_set_empty();
+        op_dup(e1);
+        let eu = op_set_union(e1, e1); // consumes both refs, returns one (== e1)
+        assert!(is_empty_node(eu), "∅ ∪ ∅ == ∅");
+        op_drop(eu);
+        let e2 = op_set_empty();
+        op_dup(e2);
+        let ex = op_set_intersection(e2, e2);
+        assert!(is_empty_node(ex), "∅ ∩ ∅ == ∅");
+        op_drop(ex);
+        let e3 = op_set_empty();
+        op_dup(e3);
+        let ed = op_set_difference(e3, e3); // consumes both refs, returns a fresh empty
+        assert!(is_empty_node(ed), "∅ ∖ ∅ == ∅");
+        op_drop(ed);
+
+        assert_eq!(live_nodes(), before, "self-op short-circuits balanced all refs — no leak/double-free");
     }
 
     #[test]
