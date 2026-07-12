@@ -2033,17 +2033,15 @@ fn leb_len(mut n: u64) -> usize {
 }
 
 /// Build the variant HEAD s-expression for variant `disc` of the sum declared at `decl`, as it appears
-/// in an observed value's canonical form. A USER-declared sum renders its variant QUALIFIED as the
-/// MEMBER-ACCESS form `(. Type Variant)` — `(. IntList Cons)`, `(. Sign Pos)`: the tag-free runtime holds
-/// only the discriminant, and the type-directed renderer reconstructs the `Type.Variant` reference from
-/// the declaration (corpus 05 "a recursive user sum type … renders with qualified variant names"; the
-/// dotted `IntList.Cons` source sugar reads to `(. IntList Cons)`, so the observed value form is that
-/// member-access list). A BUILT-IN prelude sum (Option/Result — whose variant names bind BARE,
-/// `Some`/`None`/`Ok`/`Err`) renders its variant BARE as a NAME atom, the corpus surface (`(Some 5)`,
-/// `(None unit)`). The two are distinguished by `is_user_node(decl)`: a user declaration's occurrence is
-/// below the prelude-install watermark, a built-in's at/above it — no name special-case. `None` if the
-/// disc is out of range (a compiler bug). Shared by the constant-escape bake and the runtime-escape
-/// template so both write the identical head.
+/// in an observed value's canonical form: the variant's BARE NAME atom — `Some`, `Sm`, `Cons`, `Pos`. A
+/// variant renders the SAME whether its sum is BUILT-IN (Option/Result) or USER-declared: the value form
+/// of a variant does not depend on where its sum was declared (the built-in-vs-user split that rendered a
+/// user variant as the member-access `(. Type Variant)` while a built-in rendered bare was an
+/// inconsistency — a rendered VALUE should be a variant name, not a projection expression). The rendered
+/// value is always annotated with its sum type (`(: (Sm 42) Opt)`), which disambiguates a bare variant
+/// name shared across sums (sum identity is by declaration occurrence, carried by the annotation). `None`
+/// if the disc is out of range (a compiler bug). Shared by the constant-escape bake and the
+/// runtime-escape template so both write the identical head.
 fn variant_head_ast(
     db: &Db,
     b: &mut crate::ast::Builder,
@@ -2052,16 +2050,7 @@ fn variant_head_ast(
 ) -> Option<StructId> {
     let t = db.type_decl_by_occ(decl)?;
     let vname = t.variants.get(disc as usize)?.name.clone();
-    if db.is_user_node(decl) {
-        // `(. Type Variant)` — the member-access form the dotted `Type.Variant` sugar reads to.
-        let dot = b.name(".");
-        let tname = b.name(t.name.clone());
-        let variant = b.name(vname);
-        Some(b.list(vec![dot, tname, variant]))
-    } else {
-        // A built-in prelude variant binds bare — render the bare name atom.
-        Some(b.name(vname))
-    }
+    Some(b.name(vname))
 }
 
 /// Reconstruct the VALUE s-expression of a constant node into `b`: a scalar → its literal atom; a

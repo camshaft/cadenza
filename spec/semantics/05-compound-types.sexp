@@ -1491,36 +1491,37 @@
                                           (Node.NPrim (tuple "*" (Node.NInt 2) (Node.NInt 11)))))))) (export main)))
   (output (: 42 Int64)))
 
-(case "a recursive user sum type is built at run time and renders with qualified variant names"
-  (doc    "A QUALIFIED-constructor recursive sum type — the linked-list / AST shape a self-hosted
-           compiler manipulates — constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))`
-           with n=5 a runtime value produces `(IntList.Cons (tuple 5 (IntList.Nil unit)))`: a heap sum
-           whose payload is a heap tuple whose second element is a nested heap sum. Pins that a
-           QUALIFIED variant (`IntList.Cons`, not a bare `Some`) constructs at run time and the
-           type-directed renderer reconstructs its qualified `Type.Variant` name from the sum type's
-           declaration (the tag-free runtime holds only the discriminant), recursing through the
-           tuple and the nested sum. This is the runtime construction half of the recursive-sum idiom
-           the const case §\"a recursive sum type works with pattern matching\" folds; here the payload
-           is a genuine runtime value so it lives on the value heap.")
+(case "a recursive user sum type is built at run time and renders its variant names"
+  (doc    "A recursive user sum type — the linked-list / AST shape a self-hosted compiler manipulates —
+           constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))` with n=5 a runtime value
+           produces `(: (Cons (tuple 5 (Nil unit))) IntList)`: a heap sum whose payload is a heap tuple
+           whose second element is a nested heap sum. Pins that a user variant constructs at run time and
+           the type-directed renderer reconstructs its variant NAME from the sum type's declaration (the
+           tag-free runtime holds only the discriminant), recursing through the tuple and the nested sum.
+           A variant renders as its BARE name — `Cons`, `Nil` — the SAME form built-in sums use (`Some`,
+           `Ok`); the value form does not depend on whether the sum is built-in or user-declared, and the
+           enclosing type annotation (`IntList`) disambiguates the name. This is the runtime construction
+           half of the recursive-sum idiom the const case §\"a recursive sum type works with pattern
+           matching\" folds; here the payload is a genuine runtime value so it lives on the value heap.")
   (needs  sum-type-declaration)
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (f n) (IntList.Cons (tuple n (IntList.Nil ()))))
             (def (main) (f 5)) (export main)))
-  (output (: (IntList.Cons (tuple 5 (IntList.Nil unit))) IntList)))
+  (output (: (Cons (tuple 5 (Nil unit))) IntList)))
 
 (case "a recursively-built linked list renders its full runtime spine"
   (doc    "The RENDER counterpart of the runtime-fold cases: a list whose spine is built by a
            self-recursive function (so its length is decided at run time) is returned as the program's
            RESULT and must render its complete structure — `count 3` yields
-           `(IntList.Cons (tuple 3 (IntList.Cons (tuple 2 (IntList.Cons (tuple 1 (IntList.Nil unit)))))))`.
+           `(Cons (tuple 3 (Cons (tuple 2 (Cons (tuple 1 (Nil unit)))))))`.
            A generation that cannot yet infer the static shape of a value of a RECURSIVE sum type (whose
            shape is unbounded — the tree-shaped renderer would need to walk to a runtime-determined
            depth) MUST decline rather than render a truncated or wrong structure. This is the render dual
            of §\"a recursive function folds a linked list of runtime-determined length\": consuming such a
            list to a scalar works, but rendering it as the boundary result is harder (an infinite static
            shape) and is not on the self-hosting critical path (a compiler returns bytes, not a rendered
-           list). Pins decline-don't-miscompile: the wrong answer `(IntList.Cons 0)` — reading the Cons
+           list). Pins decline-don't-miscompile: the wrong answer `(Cons 0)` — reading the Cons
            payload's tuple handle as a boxed integer — is a FAIL, never an accepted output.")
   (needs  sum-type-declaration)
   (input  (do
@@ -1529,7 +1530,7 @@
                                (IntList.Nil ())
                                (IntList.Cons (tuple n (count (- n 1))))))
             (def (main) (count 3)) (export main)))
-  (output (: (IntList.Cons (tuple 3 (IntList.Cons (tuple 2 (IntList.Cons (tuple 1 (IntList.Nil unit))))))) IntList)))
+  (output (: (Cons (tuple 3 (Cons (tuple 2 (Cons (tuple 1 (Nil unit))))))) IntList)))
 
 (case "a recursively-built binary tree renders its full runtime structure"
   (doc    "The MULTI-WAY recursive counterpart of the linked-list spine: a `Tree` whose `Node` variant
@@ -1547,9 +1548,9 @@
                                (Tree.Leaf n)
                                (Tree.Node (tuple (build (- n 1)) (build (- n 1))))))
             (def (main) (build 2)) (export main)))
-  (output (: (Tree.Node (tuple
-                (Tree.Node (tuple (Tree.Leaf 0) (Tree.Leaf 0)))
-                (Tree.Node (tuple (Tree.Leaf 0) (Tree.Leaf 0))))) Tree)))
+  (output (: (Node (tuple
+                (Node (tuple (Leaf 0) (Leaf 0)))
+                (Node (tuple (Leaf 0) (Leaf 0))))) Tree)))
 
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
@@ -2748,15 +2749,52 @@
 
 (case "a variant carrying a record payload escapes to the host"
   (doc    "The escape companion: `(P.Pt (record (x 1) (y 2)))` returned as the program result renders
-           its canonical form `(: ((. P Pt) (record (x 1) (y 2))) P)` — a user-declared variant renders
-           its constructor QUALIFIED `(. P Pt)`, its record payload as `(record (x 1) (y 2))`. Pins that
-           a record-payload sum value crosses the boundary through the sum-escape resource path, its
-           lowercase field names carried through as labels (not misread as type parameters).")
+           its canonical form `(: (Pt (record (x 1) (y 2))) P)` — the variant's BARE name `Pt` applied to
+           its record payload `(record (x 1) (y 2))`, the same variant-name form built-in sums use
+           (`(Some 5)`). Pins that a record-payload sum value crosses the boundary through the sum-escape
+           resource path, its lowercase field names carried through as labels (not misread as type
+           parameters).")
   (needs  sum-type-declaration)
   (input  (do
             (type P (Pt (Record (x Int64) (y Int64))) O)
             (def (main) (P.Pt (record (x 1) (y 2)))) (export main)))
-  (output (: ((. P Pt) (record (x 1) (y 2))) P)))
+  (output (: (Pt (record (x 1) (y 2))) P)))
+
+; --- A user variant renders its BARE name, uniformly with built-in sums -----------------------------
+; The escaped value form of a variant is its BARE variant name applied to its payload — `(Sm 42)`,
+; `(Nn unit)` — the SAME form a built-in sum uses (`(Some 5)`, `(None unit)`). The rendered value form
+; does NOT depend on whether the sum is built-in or user-declared: a rendered value is a variant name,
+; not the member-access projection expression `(. Type Variant)` (which is source sugar for a reference,
+; not a value). The enclosing type annotation (`Opt`) disambiguates a bare variant name shared across
+; sums — sum identity is by declaration occurrence, carried by the annotation. These pin the uniform
+; bare-name render across a payload variant, a nullary variant, and a variant whose name is NOT a
+; built-in's (so the render cannot be accidentally borrowing a prelude variant's form).
+
+(case "a user sum's payload variant escapes with its bare variant name"
+  (doc    "`(type Opt (Sm Int64) (Nn))` and `(Opt.Sm 42)` — a user sum's payload variant built and escaped
+           to the host renders `(: (Sm 42) Opt)`: the variant's BARE name `Sm` applied to its payload,
+           exactly as a built-in `(Some 5)` renders (not the member-access `((. Opt Sm) 42)`). Pins that a
+           user variant's value form is a variant name, uniform with built-in sums.")
+  (needs  sum-type-declaration)
+  (input  (do (type Opt (Sm Int64) (Nn)) (def (main) (Opt.Sm 42)) (export main)))
+  (output (: (Sm 42) Opt)))
+
+(case "a user sum's nullary variant escapes with its bare variant name"
+  (doc    "The nullary companion: `(Opt.Nn)` (a nullary user variant, its payload the unit value) escapes
+           as `(: (Nn unit) Opt)` — the bare variant name `Nn` applied to `unit`, exactly as a built-in
+           `(None unit)` renders. Pins the bare-name render for a nullary user variant.")
+  (needs  sum-type-declaration)
+  (input  (do (type Opt (Sm Int64) (Nn)) (def (main) (Opt.Nn)) (export main)))
+  (output (: (Nn unit) Opt)))
+
+(case "a two-payload sum escapes its second variant with a bare name"
+  (doc    "A sum whose variants are both payload-carrying — `(type E (A Int64) (B Int64))` — escaping its
+           SECOND variant `(E.B 7)` renders `(: (B 7) E)`: the bare name of the matched variant (the
+           second, not the first), disambiguated by the `E` annotation. Pins that the renderer picks the
+           correct variant name by discriminant and renders it bare.")
+  (needs  sum-type-declaration)
+  (input  (do (type E (A Int64) (B Int64)) (def (main) (E.B 7)) (export main)))
+  (output (: (B 7) E)))
 
 (case "a program's unary variant reusing a prelude nullary variant name is unary"
   (doc    "A program declares `(type Expr (Lit Int64) (Neg Expr))` whose `Neg` variant carries a

@@ -3232,17 +3232,17 @@ mod match_engine {
 
     #[test]
     fn a_multi_payload_variant_value_escapes_to_the_host() {
-        // A multi-payload variant VALUE crossing to the host renders its fields inline under the QUALIFIED
-        // variant constructor: `(Rec.Mk 1 2 3)` → `(: ((. Rec Mk) 1 2 3) Rec)` (a user sum's variant
-        // renders qualified). Pins that construction + escape of a 3-field variant (a tuple-payload handle)
-        // round-trips through the resource `encode()`.
+        // A multi-payload variant VALUE crossing to the host renders its fields inline under the variant's
+        // BARE name: `(Rec.Mk 1 2 3)` → `(: (Mk 1 2 3) Rec)` (the same variant-name form built-in sums
+        // use). Pins that construction + escape of a 3-field variant (a tuple-payload handle) round-trips
+        // through the resource `encode()`.
         let Some(v) = run_heap_value_escape(
             "(module m (type Rec (Mk Int64 Int64 Int64)) (def (main) (Rec.Mk 1 2 3)) (export main))",
         ) else {
             eprintln!("runtime wasm not found; skipping multi-payload escape run");
             return;
         };
-        assert_eq!(v, "(: ((. Rec Mk) 1 2 3) Rec)");
+        assert_eq!(v, "(: (Mk 1 2 3) Rec)");
     }
 
     #[test]
@@ -6877,13 +6877,11 @@ mod stage1 {
     fn a_generic_sum_escapes_to_the_host_at_a_concrete_instantiation() {
         // A GENERIC `Option` built at `Int64` and RETURNED across the host boundary renders the
         // parameterized type surface `(Option Int64)` (§158, the corpus form), driven by the sum's solved
-        // `Ty::Sum{args:[Int64]}`. Here the program DECLARES its own `(type Option (Some a) None)` — a
-        // USER sum (its declaration occurrence is below the prelude watermark) — so its variant renders
-        // QUALIFIED as the member-access form `(. Option Some)`, the `Type.Variant` reconstruction the
-        // type-directed renderer applies to a user declaration (a built-in prelude `Some` would render
-        // bare; see `bare_prelude_option_needs_no_declaration`). The escape walker's per-variant template
-        // reads the concrete payload type (`Int64`) from the instantiation, so the `Some` arm holds a real
-        // Int64 hole. Composed + run through `cdz-run` (the resource shape, `export: None`).
+        // `Ty::Sum{args:[Int64]}`. Here the program DECLARES its own `(type Option (Some a) None)`; its
+        // variant renders as its BARE name `Some` — uniformly with a built-in sum (the value form does
+        // not depend on built-in-vs-user). The escape walker's per-variant template reads the concrete
+        // payload type (`Int64`) from the instantiation, so the `Some` arm holds a real Int64 hole.
+        // Composed + run through `cdz-run` (the resource shape, `export: None`).
         use crate::testkit::parse;
         let src = "(module m (type Option (Some a) None) \
                      (def (main) (Option.Some 5)) (export main))";
@@ -6902,8 +6900,8 @@ mod stage1 {
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
                 assert_eq!(
-                    s, "(: ((. Option Some) 5) (Option Int64))",
-                    "a user-declared generic sum escape renders the instantiation with the qualified variant"
+                    s, "(: (Some 5) (Option Int64))",
+                    "a user-declared generic sum escape renders the instantiation with the bare variant name"
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed generic-escape run trapped: {t}"),
@@ -7189,9 +7187,9 @@ mod stage1 {
         // A single NULLARY export returning a user sum crosses as a resource. `(Option.Some 5)` over a
         // USER `(type Option (Some Int64) None)` is a COMPILE-TIME CONSTANT, so its canonical bytes are
         // baked (the `const_value_ast` `SumNew` arm) and NO value-heap runtime is imported. The variant
-        // renders QUALIFIED — `(. Option Some)` — because the sum is user-declared (a built-in prelude
-        // `Some` would render bare). `(Option.Some 5)` → `(: ((. Option Some) 5) Option)`. The RUNTIME
-        // disc-switch encoder (a sum built from a non-constant payload) is exercised separately by
+        // renders as its BARE name — `Some` — uniformly with a built-in sum (the value form does not
+        // depend on built-in-vs-user). `(Option.Some 5)` → `(: (Some 5) Option)`. The RUNTIME disc-switch
+        // encoder (a sum built from a non-constant payload) is exercised separately by
         // `a_runtime_sum_export_escapes_via_the_heap_walk`. Composed + run through `cdz-run`.
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
@@ -7219,8 +7217,8 @@ mod stage1 {
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
                 assert_eq!(
-                    s, "(: ((. Option Some) 5) Option)",
-                    "sum escape renders the qualified variant"
+                    s, "(: (Some 5) Option)",
+                    "sum escape renders the bare variant name"
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed sum-escape run trapped: {t}"),
@@ -7268,10 +7266,10 @@ mod stage1 {
 
     #[test]
     fn a_nullary_variant_export_escapes_as_unit_payload() {
-        // The nullary arm: `Option.None` over a USER `(type Option …)` renders `(: ((. Option None) unit)
-        // Option)` — a nullary variant carries the unit value, and the user-declared variant renders
-        // QUALIFIED as the member-access form. The value is a compile-time constant, so its bytes are
-        // baked (no runtime import); the `None` template has NO holes (the `unit` payload is static).
+        // The nullary arm: `Option.None` over a USER `(type Option …)` renders `(: (None unit) Option)` —
+        // a nullary variant carries the unit value, and the variant renders as its BARE name `None`
+        // (uniform with a built-in sum). The value is a compile-time constant, so its bytes are baked (no
+        // runtime import); the `None` template has NO holes (the `unit` payload is static).
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
                      (def (main) Option.None) (export main))";
@@ -7290,8 +7288,8 @@ mod stage1 {
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
                 assert_eq!(
-                    s, "(: ((. Option None) unit) Option)",
-                    "nullary variant escape renders the qualified variant"
+                    s, "(: (None unit) Option)",
+                    "nullary variant escape renders the bare variant name"
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed None-escape run trapped: {t}"),
