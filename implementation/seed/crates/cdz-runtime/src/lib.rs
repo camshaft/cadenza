@@ -3332,6 +3332,27 @@ fn champ_cursor_read(cur: Handle) -> (u32, Vec<Handle>, Vec<u32>) {
     })
 }
 
+/// Like `champ_cursor_read` but MOVES the frame handles out of the cursor (`mem::take`) instead of
+/// cloning them — the alloc-free read for the FBIP advance, whose caller has verified the cursor is
+/// UNIQUELY owned (`rc == 1`), so no other reference observes the transient empty `handles`. The
+/// returned `frames` carry the cursor's frame references verbatim (a `Vec<Handle>` move touches no
+/// refcount — `Handle` is `Copy`); the caller MUST reinstall a frame vector via `champ_become_cursor`
+/// before returning (every path does). SAFETY: caller verified `node_rc(cur) == 1`.
+fn champ_cursor_take(cur: Handle) -> (u32, Vec<Handle>, Vec<u32>) {
+    match unsafe { cur.0.as_mut() } {
+        Some(n) => {
+            let state = read_u32_at(&n.raw, 0);
+            let frames = std::mem::take(&mut n.handles);
+            let mut slots = Vec::with_capacity(frames.len());
+            for i in 0..frames.len() {
+                slots.push(read_u32_at(&n.raw, 4 + 4 * i));
+            }
+            (state, frames, slots)
+        }
+        None => (CURSOR_EXHAUSTED, Vec::new(), Vec::new()),
+    }
+}
+
 /// The current entry's `(deepest_node, base_index_in_handles)` under `stride`, or None if exhausted.
 /// The projection primitive SHARED by map (key = base, val = base+1) and set (elem = base).
 #[allow(dead_code)]
@@ -3411,7 +3432,9 @@ fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Vec<u32>, state:
 /// the traversal (identical order + exhausted-signal to the copy path), then applies ONLY the frame-ref
 /// delta and refits `cur`'s shell in place. Returns `cur`. Stride selects map (2) vs set (1).
 fn champ_cursor_next_fbip(cur: Handle, stride: usize) -> Handle {
-    let (state, frames, slots) = champ_cursor_read(cur);
+    // `cur` is rc==1 (caller-gated) ⇒ MOVE its frames out (no clone); we reinstall via
+    // `champ_become_cursor` on every return path before any other reference could observe `cur`.
+    let (state, frames, slots) = champ_cursor_take(cur);
     if state != CURSOR_LIVE {
         // Already exhausted: release any frames it held (normally none) and stay exhausted in place.
         for &f in &frames {
@@ -3419,8 +3442,11 @@ fn champ_cursor_next_fbip(cur: Handle, stride: usize) -> Handle {
         }
         return champ_become_cursor(cur, Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
     }
+    // The advance mutates a working copy `wf`/`ws`; we still need the ORIGINAL `frames` afterward for
+    // the common-prefix compare, so `wf` is a genuine clone. But the original `slots` is never read
+    // again after `champ_advance`, so `ws` MOVES `slots` (one clone saved per step).
     let mut wf = frames.clone();
-    let mut ws = slots.clone();
+    let mut ws = slots;
     let live = champ_advance(&mut wf, &mut ws, stride);
     if !live {
         // Walk exhausted: every frame the cursor owned is gone → drop them all, become exhausted.
@@ -3453,13 +3479,15 @@ fn op_map_iter_next(cur: Handle) -> Handle {
         return champ_cursor_next_fbip(cur, MAP_STRIDE);
     }
     // Shared (rc>1): copy path — build a fresh independent cursor, then release just THIS reference.
+    // `champ_cursor_read` CLONED the frames (the shared cursor keeps its own), so `frames`/`slots`
+    // here are throwaway locals — MOVE them into the working `wf`/`ws` rather than cloning again.
     let (state, frames, slots) = champ_cursor_read(cur);
     if state != CURSOR_LIVE {
         op_drop(cur);
         return champ_make_cursor(Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
     }
-    let mut wf = frames.clone();
-    let mut ws = slots.clone();
+    let mut wf = frames;
+    let mut ws = slots;
     let live = champ_advance(&mut wf, &mut ws, MAP_STRIDE);
     let new = if live {
         for &f in &wf {
@@ -3568,13 +3596,15 @@ fn op_set_iter_next(cur: Handle) -> Handle {
     if node_rc(cur) == 1 {
         return champ_cursor_next_fbip(cur, SET_STRIDE);
     }
+    // Shared (rc>1): copy path. `champ_cursor_read` already cloned the frames, so move the throwaway
+    // `frames`/`slots` locals into the working `wf`/`ws` instead of cloning them a second time.
     let (state, frames, slots) = champ_cursor_read(cur);
     if state != CURSOR_LIVE {
         op_drop(cur);
         return champ_make_cursor(Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
     }
-    let mut wf = frames.clone();
-    let mut ws = slots.clone();
+    let mut wf = frames;
+    let mut ws = slots;
     let live = champ_advance(&mut wf, &mut ws, SET_STRIDE);
     let new = if live {
         for &f in &wf {
@@ -8053,6 +8083,41 @@ mod tests {
         assert_eq!(live_nodes(), after_iter, "LIVE_NODES flat across the unique set walk");
         op_drop(c);
         op_drop(s);
+    }
+
+    #[test]
+    fn champ_cursor_next_fbip_take_past_exhaustion_is_sound() {
+        reset();
+        let before = live_nodes();
+        // Guards `champ_cursor_take` — the mem::take that replaced the per-step frame clone in the
+        // rc==1 FBIP advance. Two properties the take must preserve on the EXHAUSTED-return paths (where
+        // it reinstalls an EMPTY frame vector via champ_become_cursor): (1) advancing a unique cursor
+        // PAST the last entry, then re-reading and re-advancing the exhausted cursor, stays sound —
+        // key/val read NULL, further advances are stable no-ops; (2) no frame is leaked or double-freed
+        // across the whole over-walk (LIVE_NODES returns to baseline after the final drop).
+        let m = deep_walk_map();
+        let size = op_map_size(m) as usize;
+        let mut c = op_map_iter(m);
+        let mut steps = 0;
+        while op_map_iter_key(c) != Handle::NULL {
+            c = op_map_iter_next(c);
+            steps += 1;
+        }
+        assert_eq!(steps, size, "walked exactly size entries before exhaustion");
+        // Now exhausted. Re-read: both projections must be the NULL done-signal.
+        assert_eq!(op_map_iter_key(c), Handle::NULL, "exhausted cursor key is NULL");
+        assert_eq!(op_map_iter_val(c), Handle::NULL, "exhausted cursor val is NULL");
+        // Advance PAST the end several more times (each takes the rc==1 take path, reinstalls empty):
+        // must stay exhausted, allocate no node, and not corrupt the (empty) frame set.
+        for _ in 0..3 {
+            let pre = live_nodes();
+            c = op_map_iter_next(c);
+            assert_eq!(live_nodes() - pre, 0, "advancing an exhausted unique cursor allocates nothing");
+            assert_eq!(op_map_iter_key(c), Handle::NULL, "still exhausted after over-advance");
+        }
+        op_drop(c);
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no frame leaked or double-freed across the over-walk");
     }
 
     #[test]
