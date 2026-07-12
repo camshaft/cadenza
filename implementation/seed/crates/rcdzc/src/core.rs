@@ -113,6 +113,24 @@ pub enum SumCont {
         body: StructId,
         els: Box<SumCont>,
     },
+    /// A LITERAL-PAYLOAD test — a variant pattern whose payload (or a deeper sub-value) is a LITERAL
+    /// rather than a binder: `(Some 0)` matches `Some` carrying EXACTLY `0` (`core-semantics.md §Pattern
+    /// Matching`: "nested patterns can combine constructors and literals … the literal refines the
+    /// match"). The sub-value at `path` (from the ROOT scrutinee, `sum-payload`/`arr-get` steps) is read
+    /// and compared against the literal `probe`; on a match, control proceeds to `then_`; on a MISMATCH it
+    /// FALLS THROUGH to `els` — the continuation built from the REMAINING rows (a later arm of the same
+    /// variant, typically the binding arm `(Some k)`), exactly as [`Guarded`] threads a false guard's
+    /// `else`. A literal test does NOT count toward exhaustiveness (it may not match — it needs an
+    /// unguarded/binder fall-through of the same variant), the same rule guards follow. Distinct from a
+    /// discriminant [`Switch`] (which tests `sum-disc`); this tests a scalar VALUE at a payload leaf, so
+    /// the payload's variant is already fixed by an enclosing switch. `then_`/`els` are continuations
+    /// (so several literal tests on one arm nest, and the matched body is itself a `Leaf`/`LitTest`).
+    LitTest {
+        path: Vec<PathStep>,
+        probe: Probe,
+        then_: Box<SumCont>,
+        els: Box<SumCont>,
+    },
     /// A nested switch on the sub-value at `path` (from the ROOT scrutinee) — try each arm's disc, else
     /// the default arm. `path` is the full path from the scrutinee (not relative to the parent switch),
     /// so the backend walks it from the scrutinee handle uniformly at every depth.
@@ -217,6 +235,25 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
+    /// `Bytes.concat` — append `lhs` and `rhs` into one byte sequence (runtime `bytes-concat`; consumes
+    /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
+    /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.
+    BytesConcat { lhs: StructId, rhs: StructId },
+    /// `Bytes.slice` — the FALLIBLE sub-range read, present when the operand is a RUNTIME value (a
+    /// constant `Bytes.of` + constant `start`/`len` FOLDS to a `SumNew` in `lower`). The backend
+    /// bounds-checks (`start >= 0 && len >= 0 && start + len <= bytes-len`), and in range builds
+    /// `Some(bytes-slice(bytes, start, len))` — the slice is a Bytes HANDLE, used as the `Some` payload
+    /// directly (no box) — else `None`. `disc_some`/`disc_none` are the built-in Option variants' discs.
+    BytesSlice {
+        bytes: StructId,
+        start: StructId,
+        len: StructId,
+        disc_some: u32,
+        disc_none: u32,
+    },
+    /// `Bytes.compact` — a content-equal byte sequence with independent storage (runtime `bytes-compact`;
+    /// consumes its operand). Present when the operand is a RUNTIME value (a constant folds to itself).
+    BytesCompact { operand: StructId },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

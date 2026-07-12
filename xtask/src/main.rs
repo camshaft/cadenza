@@ -824,7 +824,10 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // A scalar prints via `{}`; `()` prints `unit`; a tuple `(T0,T1)` prints `(tuple <r.0> <r.1>)`,
     // recursively — matching the `(tuple …)` a compound value crosses as (the gate accepts either the
     // bare value or the full `(: value type)` form, so the bare `(tuple …)` suffices).
-    let body = match ret_ty.as_deref().map(cdz_render_expr) {
+    // The user-sum descriptors (`// cdz-sum[Ident]: (Variant payload) …`) the backend emitted — the
+    // variant structure the render needs to `match` a user-enum value into its canonical bare form.
+    let sums = cdz_sum_descriptors(&module);
+    let body = match ret_ty.as_deref().map(|ty| cdz_render_expr(ty, &sums)) {
         Some(render) => {
             format!("fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n")
         }
@@ -971,14 +974,21 @@ fn cdz_return_type(module: &str, name: &str) -> Option<String> {
 ///    order (both the type's render and the emitted Rust tuple order them the same), so element `i`
 ///    reads `.i`;
 ///  - any scalar (`Int64`, `Bool`, …) → `{}` (an integer/bool `Display`s exactly as cdz-run prints it).
-fn cdz_render_expr(ty: &str) -> String {
-    cdz_render_at(ty, "__r")
+fn cdz_render_expr(
+    ty: &str,
+    sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+) -> String {
+    cdz_render_at(ty, "__r", sums)
 }
 
 /// The recursive worker for [`cdz_render_expr`]: `path` is the Rust access path to the value being
 /// rendered (starts at `__r`, descends `.0`/`.1`… into tuple/record elements — a record IS a positional
 /// tuple in sorted-field order, so its `i`th field is `.i`).
-fn cdz_render_at(ty: &str, path: &str) -> String {
+fn cdz_render_at(
+    ty: &str,
+    path: &str,
+    sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+) -> String {
     let ty = ty.trim();
     if ty == "Unit" {
         return "\"unit\".to_string()".to_string();
@@ -989,7 +999,7 @@ fn cdz_render_at(ty: &str, path: &str) -> String {
         let args: Vec<String> = elems
             .iter()
             .enumerate()
-            .map(|(i, e)| cdz_render_at(e, &format!("({path}).{i}")))
+            .map(|(i, e)| cdz_render_at(e, &format!("({path}).{i}"), sums))
             .collect();
         return format!("format!(\"(tuple {placeholders})\", {})", args.join(", "));
     }
@@ -1012,13 +1022,103 @@ fn cdz_render_at(ty: &str, path: &str) -> String {
                 .trim();
             let (fname, fty) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
             args.push(format!("\"{}\"", fname.trim()));
-            args.push(cdz_render_at(fty.trim(), &format!("({path}).{i}")));
+            args.push(cdz_render_at(fty.trim(), &format!("({path}).{i}"), sums));
         }
         let groups = vec!["({} {})"; fields.len()].join(" ");
         return format!("format!(\"(record {groups})\", {})", args.join(", "));
     }
+    // The BUILT-IN `Option`/`Result` map to Rust's OWN `Option`/`Result`, so a value of one is rendered by
+    // MATCHING it — the driver knows both variant shapes (`Some`/`None`, `Ok`/`Err`) and cdz-run's canonical
+    // BARE form for a built-in variant (`(Some <p>)`, `(None unit)`, `(Ok <p>)`, `(Err <p>)`). The payload
+    // types come from the head's type ARGS (`(Option A)` → the `Some` payload is `A`; `(Result A B)` → `Ok`
+    // is `A`, `Err` is `B`), each rendered recursively, so a nested `(Option (Option Int64))` or an
+    // `(Option (Tuple …))` composes. Matching `&<path>` borrows (the value may be used only here) and relies
+    // on default binding modes (the payload binder is a reference, which `Display`s / indexes fine). A
+    // FRESH binder per match depth (`__v{depth}`, derived from the path length) avoids a shadow-capture when
+    // a payload is itself a sum.
+    let vbind = format!("__v{}", path.len());
+    if let Some(args) = parse_head_type(ty, "Option") {
+        let payload = args.first().map(String::as_str).unwrap_or("");
+        let inner = cdz_render_at(payload, &vbind, sums);
+        return format!(
+            "match &{path} {{ Some({vbind}) => format!(\"(Some {{}})\", {inner}), None => \"(None unit)\".to_string() }}"
+        );
+    }
+    if let Some(args) = parse_head_type(ty, "Result") {
+        let ok = cdz_render_at(args.first().map(String::as_str).unwrap_or(""), &vbind, sums);
+        let err = cdz_render_at(args.get(1).map(String::as_str).unwrap_or(""), &vbind, sums);
+        return format!(
+            "match &{path} {{ Ok({vbind}) => format!(\"(Ok {{}})\", {ok}), Err({vbind}) => format!(\"(Err {{}})\", {err}) }}"
+        );
+    }
+    // A USER sum — a bare type name (`Opt`, `P`, `E`) with an emitted `// cdz-sum[…]` descriptor giving its
+    // variants (name + payload type) in discriminant order. Render by MATCHING into cdz-run's BARE form,
+    // uniform with a built-in sum: a payload variant → `(<Variant> <payload>)` (payload rendered
+    // recursively from its type); a nullary variant → `(<Variant> unit)`. The Rust variant identifier is
+    // the SANITIZED name (matching the emitted enum); the printed name is the CADENZA variant name (the
+    // descriptor's first token). A generic user sum has no descriptor (its payload is a type parameter) —
+    // it falls through to the scalar path, which does not `Display` an enum, so the compile error stays a
+    // clear signal rather than a silent wrong render (no corpus case escapes a generic user sum).
+    if let Some(variants) = sums.get(ty) {
+        // The enum is defined INSIDE `mod prog { … }` (the driver wraps the emitted module), so the
+        // driver's `fn main` names it qualified: `prog::<Enum>::<Variant>`. (A built-in Option/Result is
+        // std's, unqualified — handled above.)
+        let mut arms = Vec::with_capacity(variants.len());
+        for (vname, payload) in variants {
+            let vident = rust_ident(vname);
+            match payload {
+                Some(pty) => {
+                    let inner = cdz_render_at(pty, &vbind, sums);
+                    arms.push(format!(
+                        "prog::{ty}::{vident}({vbind}) => format!(\"({vname} {{}})\", {inner})"
+                    ));
+                }
+                None => arms.push(format!(
+                    "prog::{ty}::{vident} => \"({vname} unit)\".to_string()"
+                )),
+            }
+        }
+        return format!("match &{path} {{ {} }}", arms.join(", "));
+    }
     // A scalar: Display it.
     format!("format!(\"{{}}\", {path})")
+}
+
+/// Parse the `// cdz-sum[<Ident>]: (<Variant> <payload-render>) (<Nullary>) …` descriptor notes the Rust
+/// backend emits into a map `Ident → [(variant-name, Some(payload-type) | None)]`, variants in
+/// discriminant order. The gate driver reads this to `match` a USER-sum boundary value into its canonical
+/// bare form (the enum decl gives rustc the type; this gives the driver the variant structure the plain
+/// return-type name erases). Only monomorphic user sums have a descriptor (see `emit_sum_descriptors`).
+fn cdz_sum_descriptors(
+    module: &str,
+) -> std::collections::HashMap<String, Vec<(String, Option<String>)>> {
+    let mut map = std::collections::HashMap::new();
+    for line in module.lines() {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix("// cdz-sum[") else {
+            continue;
+        };
+        let Some((ident, groups)) = rest.split_once("]:") else {
+            continue;
+        };
+        // Each top-level `(…)` group is one variant: its first token is the Cadenza variant name, the
+        // remainder (if any) is the payload type's render_name. `split_top_level` respects nesting, so a
+        // record/tuple payload `(Pt (record (x Int64) (y Int64)))` stays one group.
+        let variants: Vec<(String, Option<String>)> = split_top_level(groups.trim())
+            .iter()
+            .filter_map(|g| {
+                let inner = g.strip_prefix('(')?.strip_suffix(')')?.trim();
+                match inner.split_once(char::is_whitespace) {
+                    Some((name, payload)) => {
+                        Some((name.trim().to_string(), Some(payload.trim().to_string())))
+                    }
+                    None => Some((inner.to_string(), None)),
+                }
+            })
+            .collect();
+        map.insert(ident.trim().to_string(), variants);
+    }
+    map
 }
 
 /// Split a `render_name` head-applied type `(<Head> A B …)` into its argument strings, or `None` if `ty`

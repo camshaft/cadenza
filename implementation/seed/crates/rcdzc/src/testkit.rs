@@ -52,6 +52,7 @@ pub fn parse_spanned(src: &str) -> (Arenas, crate::spans::SpanData) {
     let data = crate::spans::SpanData {
         module_path: "test.cdz".to_string(),
         spans,
+        source: src.to_string(),
     };
     (decoded, data)
 }

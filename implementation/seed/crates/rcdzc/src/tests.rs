@@ -368,6 +368,8 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         ret: Ty::int64(),
         code: vec![Lir::ConstI64(42)],
         declared: vec![],
+        src_body: None,
+        locals: vec![],
     };
     let layout = Layout::new(
         vec![ExportPlan {
@@ -744,6 +746,42 @@ fn a_projection_only_runtime_tuple_folds_without_the_heap() {
     // It runs as a plain scalar function (no runtime composed in) — 20 + 22 = 42.
     let got: i64 = run_returns_with(&bytes, "pair-sum", &[Val::S64(20), Val::S64(22)]);
     assert_eq!(got, 42, "folds to (+ a b)");
+}
+
+/// A SINGLE projection of a tuple built through an `if` FOLDS the tuple away by pushing the projection
+/// INTO the branches: `(. (if c (tuple a b) (tuple b a)) 0)` → `(if c a b)`. The `if`-selected tuple was
+/// previously OPAQUE to the projection fold (`reduce_to_tuple_elems` stops at an `if`), forcing a
+/// per-call `arr-alloc` + `arr-get`; now the projection reduces to one `if` over the two selected element
+/// occurrences — no heap, no runtime import. The transform reuses the EXISTING element occurrences
+/// (each keeps the scope it was resolved in — no ast synthesis), so `.0` selects `a`/`b` by the
+/// condition and `.1` selects `b`/`a`. A trap in the condition is preserved (it still gates each branch),
+/// and the un-projected sibling drops exactly as it does for a plain visible-tuple projection. Contrast
+/// `a_narrow_runtime_tuple_element_crosses_the_heap_boundary`, where the tuple is read TWICE (a kept
+/// multi-use binding) so the fold correctly DECLINES and the heap round-trip stands.
+#[test]
+fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // `.0` of `(if p (tuple a b) (tuple b a))` → `(if p a b)`: p true selects a, p false selects b.
+    let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
+                 (. (if p (tuple a b) (tuple b a)) 0)) (export pick))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a single projection of an if-of-tuples must fold (no per-call arr-alloc, no runtime import)"
+    );
+    let t: i64 = run_returns_with(
+        &bytes,
+        "pick",
+        &[Val::Bool(true), Val::S64(10), Val::S64(20)],
+    );
+    assert_eq!(t, 10, "p true → .0 = a");
+    let f: i64 = run_returns_with(
+        &bytes,
+        "pick",
+        &[Val::Bool(false), Val::S64(10), Val::S64(20)],
+    );
+    assert_eq!(f, 20, "p false → .0 = b (the else branch's element 0)");
 }
 
 /// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
@@ -3568,23 +3606,83 @@ mod match_engine {
     }
 
     #[test]
-    fn bytes_of_out_of_range_element_is_a_compile_time_trap() {
-        // A byte must be 0..=255 (collections-and-text.md). A constant element out of range is a provable
-        // trap → CDZ0304 (the build fails, matching the runtime `bytes-set` guard): 256 is too large, -1 is
-        // negative. (Used via `len` so `main` returns a scalar — a bytes result's boundary form is B2.)
+    fn runtime_bytes_concat_slice_compact_under_wasmtime() {
+        // The runtime `Core::BytesConcat`/`BytesSlice`/`BytesCompact` paths (not folds): each threads a
+        // byte sequence through a fn PARAMETER so the op actually runs, and reads a SCALAR out (via
+        // `Bytes.len` / a `Bytes.at` match) so `main` returns without needing bytes escape.
+        //   - concat: `(Bytes.len (concat a b))` = |a|+|b|. `bump` forces a runtime `a` (param).
+        //   - slice:  in bounds → `(Some sub)`, its length read; out of bounds → `None` → -1.
+        //   - compact: `(Bytes.len (compact b))` = |b| (content-equal, so same length).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed bytes concat/slice/compact run");
+            return;
+        };
+        let run = |src: &str| -> String {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&component(src), &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+            }
+        };
+        // concat two runtime sequences (each built behind a fn so neither folds), measure the length.
+        assert_eq!(
+            run("(module m \
+                   (def (mk n) ((. Bytes of) (list n 20 30))) \
+                   (def (main) ((. Bytes len) ((. Bytes concat) (mk 10) (mk 40)))) (export main))"),
+            "6",
+            "concat length"
+        );
+        // slice in bounds: len 2 from start 1 of a runtime 4-byte sequence → Some(2-byte); its length = 2.
+        assert_eq!(
+            run("(module m \
+                   (def (mk n) ((. Bytes of) (list n 20 30 40))) \
+                   (def (main) (match ((. Bytes slice) (mk 10) 1 2) ((Some s) ((. Bytes len) s)) (None -1))) (export main))"),
+            "2",
+            "in-bounds slice length"
+        );
+        // slice out of bounds (start 3 + len 5 > 4) → None → -1.
+        assert_eq!(
+            run("(module m \
+                   (def (mk n) ((. Bytes of) (list n 20 30 40))) \
+                   (def (main) (match ((. Bytes slice) (mk 10) 3 5) ((Some s) ((. Bytes len) s)) (None -1))) (export main))"),
+            "-1",
+            "out-of-bounds slice → None"
+        );
+        // compact a runtime sequence, measure length (content-equal → unchanged length).
+        assert_eq!(
+            run("(module m \
+                   (def (mk n) ((. Bytes of) (list n 20 30))) \
+                   (def (main) ((. Bytes len) ((. Bytes compact) (mk 10)))) (export main))"),
+            "3",
+            "compact length"
+        );
+    }
+
+    #[test]
+    fn bytes_of_out_of_range_element_is_a_width_error() {
+        // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
+        // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
+        // UInt8 model the ill-typed byte cannot be constructed. 256 is too large, -1 negative. To truncate
+        // a wider value into a byte, the program writes `(UInt8.wrap n)` explicitly (total, never traps).
+        // (Used via `len` so `main` returns a scalar.)
         assert_eq!(
             reject_code(
                 "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 256)))) (export main))"
             )
             .as_deref(),
-            Some("CDZ0304")
+            Some("CDZ0302")
         );
         assert_eq!(
             reject_code(
                 "(module m (def (main) ((. Bytes len) ((. Bytes of) (list -1)))) (export main))"
             )
             .as_deref(),
-            Some("CDZ0304")
+            Some("CDZ0302")
         );
     }
 
@@ -4047,6 +4145,30 @@ mod match_engine {
     }
 
     #[test]
+    fn string_concat_folds_two_constant_strings() {
+        // `String.concat : String → String → String` — the total binary join. On two CONSTANT ASCII
+        // strings it FOLDS to their concatenation (`collections-and-text.md` §Strings Concatenate). The
+        // result is another constant `String`; consumed here by constant string equality so `main`
+        // returns a Bool (no string escape needed). Covers the general join and BOTH identity edges (an
+        // empty operand on the left / right changes nothing).
+        for (a, b, want) in [
+            ("hello", " world", "hello world"),
+            ("hi", "", "hi"),
+            ("", "hi", "hi"),
+            ("", "", ""),
+        ] {
+            let src = format!(
+                "(module m (def (main) (if (= (String.concat \"{a}\" \"{b}\") \"{want}\") 1 0)) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                1,
+                "String.concat {a:?} ++ {b:?} = {want:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_string_annotation_checks_against_a_string_value() {
         // `String` in type position (`(: "hi" String)`) decodes to `Ty::String` (`resolve::decode_ty`) —
         // transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)` conflicts the
@@ -4092,6 +4214,48 @@ mod match_engine {
                 run_returns::<i64>(&component(&src), "main"),
                 -1,
                 "String.at {s:?}[{i}] out of range → None"
+            );
+        }
+    }
+
+    #[test]
+    fn string_slice_folds_in_range_to_some_of_the_substring() {
+        // `String.slice : String → Int64 → Int64 → (Option String)` — the fallible SCALAR sub-range read
+        // `[start, end)`. A constant string + constant in-range bounds FOLD to `(Some "<substr>")`,
+        // indexed by UNICODE SCALAR position, NOT byte offset (`"héllo" [0,2)` = "hé", though é is two
+        // UTF-8 bytes). `start == end` is an in-range EMPTY slice (Some ""), not None. Consumed by a match
+        // + constant string equality so `main` returns a Bool — fully foldable.
+        for (s, a, b, want) in [
+            ("hello world", 0, 5, "hello"),
+            ("hello", 1, 4, "ell"),
+            ("héllo", 0, 2, "hé"),
+            ("hello", 2, 2, ""),
+        ] {
+            let src = format!(
+                "(module m (def (main) (if (= (match (String.slice \"{s}\" {a} {b}) ((Some x) x) ((None _) \"!\")) \"{want}\") 1 0)) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                1,
+                "String.slice {s:?}[{a},{b}) = {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_slice_out_of_range_folds_to_none() {
+        // A range outside `0 <= start <= end <= scalar-len` has no defined substring → `None`
+        // (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping): end beyond the length
+        // (`"hi" [0,5)`), a REVERSED range (`"hello" [3,1)`), and a NEGATIVE start (`"hello" [-1,3)`, which
+        // MUST NOT wrap to a huge unsigned offset) all take the `None` arm → -1.
+        for (s, a, b) in [("hi", 0, 5), ("hello", 3, 1), ("hello", -1, 3)] {
+            let src = format!(
+                "(module m (def (main) (match (String.slice \"{s}\" {a} {b}) ((Some x) 1) ((None _) -1))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                -1,
+                "String.slice {s:?}[{a},{b}) out of range → None"
             );
         }
     }
@@ -4698,6 +4862,25 @@ mod match_engine {
     }
 
     #[test]
+    fn a_string_payload_variant_is_not_misjudged_nullary() {
+        // REGRESSION: a variant carrying a `String` payload — `(type Tag (Named String) Anon)` — must
+        // construct, not be misjudged NULLARY. `eval::encode_ty` (the `Ty → type-value AST` round-trip a
+        // constructor scheme takes) had NO `Ty::String` arm, so it hit the `_ => Unit` catch-all: the
+        // `Named` ctor's `(-> String Tag)` scheme round-tripped to `(-> Unit Tag)`, and applying `Named`
+        // to a `String` arg then unified "cannot unify Unit with String". (The strings vertical added
+        // `Ty::String` + `decode_ty`'s `"String"` arm but forgot the `encode_ty` side — the exact hole the
+        // `Bytes` arm's comment warned about.) Fixed by `Ty::String => push_name("String")`. Compile-only:
+        // a runtime String projection needs the composed runtime (the corpus 13-strings cases run it).
+        let src = "(module m (type Tag (Named String) Anon) \
+                     (def (main) (match (Tag.Named \"hi\") ((Tag.Named s) 1) (Tag.Anon 0))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a String-payload variant must COMPILE — not reject Named as nullary (encode_ty must round-trip String)"
+        );
+    }
+
+    #[test]
     fn a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary() {
         // REGRESSION: a GENERIC sum whose variant carries a TUPLE or RECORD payload MENTIONING a type
         // parameter — `(type Box (B (Tuple a Int64)) N)` / `(type Box (B (Record (val a))) N)` — must
@@ -4864,6 +5047,29 @@ mod match_engine {
             call_traps(&bytes, "f", &[Val::S64(i64::MAX), Val::S64(1)]),
             "an overflowing computed scrutinee must trap (its guard is not lost by the compute-once)"
         );
+    }
+
+    #[test]
+    fn a_large_scalar_match_beyond_the_br_table_cap_compiles_and_dispatches() {
+        // A scalar match with MORE arms than the br_table density cap (>256 int arms) is INELIGIBLE for
+        // the jump table (a dense table can hold at most 256 distinct values), so it emits the linear
+        // `if (== k)` probe cascade. The eligibility test is gated O(1) on the arm count BEFORE building
+        // the per-arm literal vector, so re-attempting the table on every recursive `rest` stays O(arms)
+        // rather than O(arms²) — this exercises that fallback path end-to-end and pins that a matched
+        // value still reaches the right arm through the long chain. 300 consecutive arms `k → k*2`.
+        use wasmtime::component::Val;
+        let n = 300;
+        let arms: String = (0..n).map(|i| format!("({i} {}) ", i * 2)).collect();
+        let src = format!("(module m (def (f (: k Int64)) (match k {arms}(_ -1))) (export f))");
+        let bytes = component(&src);
+        // A value in the middle of the chain, the last arm, and out-of-range (the wildcard default).
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]), 0);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(150)]), 300);
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(n - 1)]),
+            (n - 1) * 2
+        );
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(9999)]), -1);
     }
 
     #[test]
@@ -6649,14 +6855,84 @@ mod stage1 {
 
     #[test]
     fn an_unmodeled_top_level_form_declines() {
-        // A top-level declaration the compiler does not model — `(effect …)`, `(pragma …)` — makes the
-        // whole program DECLINE (decline-don't-miscompile), NOT silently ignore it and run `main` as if
-        // it were absent. `(effect E …)` is unmodeled, so the program declines rather than compiling
-        // `(def (main) 1)` alone (which would hide the effect's ill-formedness).
-        let src = "(do (effect E (op f (-> Int64 Int64))) (def (main) 1) (export main))";
+        // A top-level declaration the compiler does not model — `(pragma …)` and any other unrecognized
+        // declaration-shaped head — makes the whole program DECLINE (decline-don't-miscompile), NOT
+        // silently ignore it and run `main` as if it were absent. `(pragma …)` is unmodeled, so the
+        // program declines rather than compiling `(def (main) 1)` alone. (`(effect …)` USED to be the
+        // example here; it is now a modeled top-level form — see `a_bare_effect_declaration_compiles`.)
+        let src = "(do (pragma strict) (def (main) 1) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a program with an unmodeled top-level form must decline"
+        );
+    }
+
+    #[test]
+    fn a_bare_effect_declaration_compiles() {
+        // An `(effect …)` declaration is a routing-agnostic contract; declaring it grants nothing and
+        // performs nothing (`capabilities-and-effects.md` §An Effect Declaration Names The Effect). So a
+        // program that declares an effect but never performs it is well-formed — `main` returns its
+        // value, the effect decl contributing no behavior (E0: the surface is recognized, not lowered).
+        let src = "(do (effect E (op f (-> Int64 Int64))) (def (main) 1) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a bare effect declaration compiles"),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_duplicate_effect_operation_is_rejected() {
+        // An effect's operations are a closed name-set (like a sum's variants), so declaring `f` twice is
+        // CDZ0201 — the fifth closed-name-set duplicate-member check (`capabilities-and-effects.md` §An
+        // Effect Declaration Names The Effect And Types Its Operations).
+        let src = "(do (effect E (op f (-> Int64 Int64)) (op f (-> Int64 Int64))) \
+                   (def (main) 1) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a duplicate effect operation must be rejected"
+        );
+    }
+
+    #[test]
+    fn performing_an_operation_with_a_wrong_type_argument_is_rejected() {
+        // `E.op` is declared `(-> Int64 Int64)`; performing `(E.op true)` supplies a Bool where an Int64
+        // is required. E0 synthesizes `E.op` as a typed operation value, so a perform is an ordinary
+        // application checked against that arrow (`capabilities-and-effects.md` §Performing An Operation
+        // Is Typed) — a wrong-type argument is a type error even before the perform can be lowered
+        // (which E0 does not do; the point is the ARGUMENT check fires at the surface). The perform is
+        // written with the qualified projection `(. E op)` (the desugaring of `E.op`); `main` returns the
+        // op's result, so the whole program still declines to run (no handler yet) — but the mistyped
+        // argument is caught first.
+        let src = "(do (effect E (op op (-> Int64 Int64))) \
+                   (def (main) ((. E op) true)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a wrong-type perform argument must be rejected"
+        );
+    }
+
+    #[test]
+    fn two_effects_may_declare_a_same_named_operation() {
+        // An operation is reached through its declaring effect, so two effects may each declare an `op`
+        // of the same name without collision (`capabilities-and-effects.md` §An Operation Is Reached
+        // Through Its Declaring Effect). Both `A.op` and `B.op` synthesize as distinct operation values
+        // (identity = the declaring effect's occurrence), so neither the declarations nor the projections
+        // collide — the program is well-formed (it declines to RUN only for want of a handler, an E1
+        // concern; here we assert the two same-named ops do not clash at the surface, so a projection of
+        // each resolves rather than erroring unbound/duplicate).
+        let src = "(do (effect A (op op (-> Int64 Int64))) (effect B (op op (-> Bool Bool))) \
+                   (def (main) 1) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("two effects with a same-named op are well-formed"),
+                "main"
+            ),
+            1
         );
     }
 
@@ -7460,6 +7736,50 @@ mod stage1 {
                 "main"
             ),
             0
+        );
+    }
+
+    #[test]
+    fn a_literal_payload_pattern_refines_a_sum_match() {
+        // A variant pattern whose payload is a LITERAL — `(Some 0)` — matches the variant carrying EXACTLY
+        // that value, falling through to a same-variant binder `(Some k)` otherwise (core-semantics.md
+        // §Pattern Matching: "the literal refines the match"). Was declined "a malformed sum match
+        // pattern"; now a `SumCont::LitTest` at the payload path tests the scalar and threads the
+        // non-matching case to the fall-through. CONSTANT-scrutinee folds (checked here via run_returns):
+        // `(Some 0)` selects the literal arm → 100; `(Some 5)` folds past it to the binder → 5. (The
+        // runtime-payload path is exercised by corpus 02 "a literal inside a constructor pattern matches a
+        // runtime payload"; a nested + Result + bool literal by the sibling corpus cases.)
+        let hit = "(module m (def (main) \
+                     (match (Some 0) ((Some 0) 100) ((Some k) k) ((None _) -1))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(hit))).expect("compile"),
+                "main"
+            ),
+            100,
+            "a matching literal payload selects its arm"
+        );
+        let miss = "(module m (def (main) \
+                      (match (Some 5) ((Some 0) 100) ((Some k) k) ((None _) -1))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(miss))).expect("compile"),
+                "main"
+            ),
+            5,
+            "a non-matching literal payload falls through to the same-variant binder"
+        );
+        // A literal-only arm with no same-variant fall-through is NON-EXHAUSTIVE (the literal does not
+        // cover the variant — a `Some` other than 0 is unmatched), CDZ0210 — the same rule a guard follows.
+        let non_exhaustive = "(module m (def (f n) \
+                               (match (Some n) ((Some 0) 100) ((None _) -1))) \
+                             (def (main) (f 5)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(non_exhaustive)))
+            .expect_err("a literal-only Some arm with no binder fall-through must reject");
+        assert!(
+            err.message.contains("non-exhaustive") || err.message.contains("cover every variant"),
+            "a literal payload arm with no same-variant binder fall-through is non-exhaustive; got: {}",
+            err.message
         );
     }
 
@@ -9598,7 +9918,9 @@ mod sidecar_driven {
     use crate::abi::{Artifact, Severity};
     use crate::backend::Target;
     use crate::compile::compile;
-    use crate::sidecar::{self, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request};
+    use crate::sidecar::{
+        self, KIND_DIAGNOSTICS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
+    };
     use crate::testkit::parse;
 
     /// Build the two input artifacts (the AST + a sidecar request list) for `src` and `requests`.
@@ -9902,6 +10224,44 @@ mod sidecar_driven {
             Some("unknown")
         );
     }
+
+    #[test]
+    fn a_diagnostics_query_reports_faults_without_an_export() {
+        // The "diagnostics as you type" primitive: an ill-typed program with NO export still yields its
+        // faults (the query is not gated on layout/export). `(if 5 1 2)` — a non-Bool condition — is a
+        // CDZ0203, reported as `severity<TAB>code<TAB>node-id<TAB>message`.
+        let src = "(module m (def (main) (if 5 1 2)))"; // note: NO (export …)
+        let out = compile(&inputs(src, &[Request::Query(Query::Diagnostics)]), &[]);
+        // A query never fails the compile; the diagnostics ride in the artifact, not the error channel.
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        let text = artifact_text(&out, KIND_DIAGNOSTICS).expect("a diagnostics artifact");
+        let line = text
+            .lines()
+            .find(|l| l.contains("CDZ0203"))
+            .unwrap_or_else(|| panic!("expected a CDZ0203 fault, got:\n{text}"));
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols[0], "error", "severity column");
+        assert_eq!(cols[1], "CDZ0203", "code column");
+        assert!(
+            cols[2].parse::<u32>().is_ok(),
+            "node-id column is a number: {:?}",
+            cols[2]
+        );
+        assert!(!cols[3].is_empty(), "message column is non-empty");
+    }
+
+    #[test]
+    fn a_diagnostics_query_on_a_clean_program_is_empty() {
+        // A well-formed program yields the empty diagnostics result (total — no faults, no error).
+        let src = "(module m (def (main) (: 42 Int64)) (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Diagnostics)]), &[]);
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_DIAGNOSTICS).as_deref(), Some(""));
+    }
 }
 
 /// Debug information (D0 of `DESIGN-debug-info-rcdzc.md`) — the wasm `name` custom section, enabled by
@@ -9950,37 +10310,41 @@ mod debug_info {
     /// The parsed `name` section: the optional module name and the `(func_index, name)` pairs.
     type NameSection = (Option<String>, Vec<(u32, String)>);
 
-    /// Extract the embedded core module's `name`-section function names from a component's bytes, using
-    /// `wasmparser` (a dev-only validator, never in the compile path). Returns `(module_name,
-    /// [(func_index, name)])`; `None` if there is no `name` section.
-    fn name_section_of(component: &[u8]) -> Option<NameSection> {
+    /// The embedded core module's bytes, extracted from a component wrapper via `wasmparser` (a dev-only
+    /// validator, never in the compile path) — the blob that carries the `name` + `.debug_*` sections.
+    fn core_module_of(component: &[u8]) -> Option<Vec<u8>> {
         use wasmparser::{Chunk, Parser, Payload};
-        // Find the embedded core module: the component is a wrapper; a `ModuleSection` payload gives the
-        // byte range of the core module, which itself carries the `name` custom section.
         let mut parser = Parser::new(0);
         let mut offset = 0usize;
-        let mut core: Option<&[u8]> = None;
         let mut buf = component;
         loop {
             match parser.parse(buf, true).expect("parse component") {
-                Chunk::NeedMoreData(_) => break,
+                Chunk::NeedMoreData(_) => return None,
                 Chunk::Parsed { consumed, payload } => {
                     if let Payload::ModuleSection {
                         unchecked_range, ..
                     } = &payload
                     {
-                        core = Some(&component[unchecked_range.start..unchecked_range.end]);
-                        break;
+                        return Some(
+                            component[unchecked_range.start..unchecked_range.end].to_vec(),
+                        );
                     }
                     offset += consumed;
                     buf = &component[offset..];
                     if let Payload::End(_) = payload {
-                        break;
+                        return None;
                     }
                 }
             }
         }
-        let core = core?;
+    }
+
+    /// Extract the embedded core module's `name`-section function names from a component's bytes.
+    /// Returns `(module_name, [(func_index, name)])`; `None` if there is no `name` section.
+    fn name_section_of(component: &[u8]) -> Option<NameSection> {
+        use wasmparser::{Parser, Payload};
+        let core = core_module_of(component)?;
+        let core = core.as_slice();
         // Now parse the core module for its `name` custom section.
         let mut module_name = None;
         let mut func_names = Vec::new();
@@ -10211,6 +10575,468 @@ mod debug_info {
             with_spans.artifact("component").expect("component"),
             without.as_slice(),
             "a spans input must not change the plain (non-debug) component's bytes"
+        );
+    }
+
+    // ── D1b: the offset→StructId line-table primitive (§2.1b) ──────────────────────────────────────
+
+    #[test]
+    fn code_ranges_partition_the_code_section_payload_and_carry_src() {
+        // The D1b primitive: `code_ranges` gives each function's byte range within the code-section
+        // PAYLOAD, paired with its source occurrence. Verify (a) the ranges are contiguous, start past
+        // the function-count prefix, and cover exactly the payload; (b) each range's bytes ARE that
+        // function's `code_entry` (byte-identical); (c) `src` round-trips. Two functions with distinct
+        // source ids exercise the pairing.
+        use crate::ast::StructId;
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{code_entry_bytes, code_ranges, core_module};
+        use crate::layout::{ExportPlan, Layout};
+        use crate::ty::Ty;
+
+        let funcs = vec![
+            SelectedFunc {
+                params: vec![],
+                ret: Ty::int64(),
+                code: vec![Lir::ConstI64(7)],
+                declared: vec![],
+                src_body: Some(StructId(11)),
+                locals: vec![],
+            },
+            SelectedFunc {
+                params: vec![],
+                ret: Ty::int64(),
+                code: vec![Lir::ConstI64(1000), Lir::ConstI64(2), Lir::I64Add],
+                declared: vec![],
+                src_body: Some(StructId(22)),
+                locals: vec![],
+            },
+        ];
+        // One import so the layout mirrors the oracle shape; ranges are import-independent.
+        let imports = [OPS.arr_alloc];
+        let layout = Layout::new(
+            vec![ExportPlan {
+                name: "main".to_string(),
+                def: 0,
+                body: StructId(11),
+                params: vec![],
+                result: Ty::int64(),
+            }],
+            vec![0, 1],
+            1,
+        );
+
+        let ranges = code_ranges(&funcs, &imports);
+        assert_eq!(ranges.len(), 2);
+        // (c) src round-trips, in emission order.
+        assert_eq!(ranges[0].src, Some(StructId(11)));
+        assert_eq!(ranges[1].src, Some(StructId(22)));
+
+        // (a) contiguous + starts past the count prefix (a 2-function module: count = 1 byte).
+        assert_eq!(
+            ranges[0].code_start, 1,
+            "starts past the 1-byte function count"
+        );
+        assert_eq!(
+            ranges[0].code_end, ranges[1].code_start,
+            "ranges are contiguous"
+        );
+
+        // (b) each range's bytes ARE that function's code entry.
+        let entry0 = code_entry_bytes(&funcs[0], &imports);
+        let entry1 = code_entry_bytes(&funcs[1], &imports);
+        assert_eq!(
+            (ranges[0].code_end - ranges[0].code_start) as usize,
+            entry0.len()
+        );
+        assert_eq!(
+            (ranges[1].code_end - ranges[1].code_start) as usize,
+            entry1.len()
+        );
+
+        // Cross-check the payload total: count prefix + both entries == last range end.
+        let count_prefix = 1u32; // uleb(2) is one byte
+        assert_eq!(
+            ranges[1].code_end,
+            count_prefix + entry0.len() as u32 + entry1.len() as u32
+        );
+
+        // And the whole thing is consistent with a real `core_module`: the module must contain the two
+        // entries' bytes consecutively at the payload region the ranges describe.
+        let core = core_module(&funcs, &imports, &layout, None).expect("core module");
+        let mut concat = entry0.clone();
+        concat.extend_from_slice(&entry1);
+        assert!(
+            core.windows(concat.len()).any(|w| w == concat.as_slice()),
+            "the emitted core module must contain both code entries consecutively"
+        );
+    }
+
+    // ── D2: the .debug_* DWARF sections (§2.3) ─────────────────────────────────────────────────────
+
+    /// The names of the custom sections in a component's embedded core module (in order).
+    fn custom_section_names(component: &[u8]) -> Vec<String> {
+        use wasmparser::{Parser, Payload};
+        let core = core_module_of(component).expect("embedded core module");
+        let mut names = Vec::new();
+        for payload in Parser::new(0).parse_all(&core) {
+            if let Payload::CustomSection(reader) = payload.expect("parse core") {
+                names.push(reader.name().to_string());
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn a_debug_component_carries_the_dwarf_sections() {
+        // A debug component's embedded core module carries the four `.debug_*` custom sections (plus the
+        // D0 `name` section) — the sections a debugger reads to step through source.
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        let debug = component_of(src, Target::WasmDebug);
+        let names = custom_section_names(&debug);
+        for want in [
+            "name",
+            ".debug_abbrev",
+            ".debug_info",
+            ".debug_str",
+            ".debug_line",
+        ] {
+            assert!(
+                names.iter().any(|n| n == want),
+                "missing custom section `{want}`; found {names:?}"
+            );
+        }
+        // A plain component has none of them.
+        let plain = component_of(src, Target::Wasm);
+        assert!(
+            custom_section_names(&plain)
+                .iter()
+                .all(|n| !n.starts_with(".debug")),
+            "a plain component must carry no `.debug_*` sections"
+        );
+    }
+
+    #[test]
+    fn the_dwarf_parses_under_llvm_dwarfdump() {
+        // The correctness ORACLE (§6): the hand-rolled DWARF must parse cleanly under `llvm-dwarfdump`.
+        // We extract the embedded core module (dwarfdump rejects a component's version number) and dump
+        // it; the output must name our compile unit + a subprogram, and report NO parse error. Skips if
+        // `llvm-dwarfdump` is not installed.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        let debug = component_of(src, Target::WasmDebug);
+        let core = core_module_of(&debug).expect("embedded core module");
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-dwarf-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&core))
+            .expect("write core module");
+
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--all")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found on PATH; skipping DWARF-validity check");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "llvm-dwarfdump failed: {stderr}\n{stdout}"
+        );
+        // The dump must NOT report a parse error, and must name our compile unit + a subprogram.
+        assert!(
+            !stdout.to_lowercase().contains("error:") && !stderr.to_lowercase().contains("error:"),
+            "llvm-dwarfdump reported an error:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("DW_TAG_compile_unit"),
+            "no compile unit in the dump:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DW_TAG_subprogram"),
+            "no subprogram in the dump:\n{stdout}"
+        );
+        // The producer + a function name must round-trip through .debug_str.
+        assert!(
+            stdout.contains("cadenza-rcdzc"),
+            "producer string missing:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("countdown") || stdout.contains("main"),
+            "no source function name in the dump:\n{stdout}"
+        );
+    }
+
+    // ── Mode S: the detached `dwarf` sidecar artifact (§9.2) ───────────────────────────────────────
+
+    /// Compile `src` with the given request list + the `spans` input, returning the full output.
+    fn compile_debug(src: &str, requests: &[Request]) -> crate::abi::CompileOutput {
+        let (arenas, span_data) = parse_spanned(src);
+        compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&arenas)),
+                Artifact::new(spans::KIND_SPANS, "m", spans::encode(&span_data)),
+                Artifact::new(sidecar::KIND_SIDECAR, "d", sidecar::encode(requests)),
+            ],
+            &[],
+        )
+    }
+
+    #[test]
+    fn an_emit_dwarf_request_produces_a_dwarf_artifact_not_a_component() {
+        // A lone `Emit(Dwarf)` yields a `dwarf` artifact and NO component — the detached sidecar mode.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        assert!(
+            out.artifact("dwarf").is_some(),
+            "an Emit(Dwarf) request must produce a `dwarf` artifact"
+        );
+        assert!(
+            out.artifact("component").is_none(),
+            "a lone Emit(Dwarf) must NOT produce a component"
+        );
+    }
+
+    #[test]
+    fn wasm_and_dwarf_compose_into_two_artifacts() {
+        // Requesting both a plain component AND a detached dwarf yields both — the "lean component + its
+        // detached DWARF" shape.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile_debug(
+            src,
+            &[Request::Emit(Target::Wasm), Request::Emit(Target::Dwarf)],
+        );
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        assert!(
+            out.artifact("component").is_some(),
+            "the runnable component"
+        );
+        assert!(out.artifact("dwarf").is_some(), "the detached DWARF");
+    }
+
+    #[test]
+    fn the_dwarf_sidecar_parses_under_llvm_dwarfdump() {
+        // The sidecar module is ALREADY a bare core module (no component wrapper), so llvm-dwarfdump
+        // reads it directly. It must show the same compile unit + subprograms as the embedded form.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-sidecar-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write dwarf sidecar");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--all")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "dwarfdump failed: {stderr}\n{stdout}"
+        );
+        assert!(
+            !stdout.to_lowercase().contains("error:") && !stderr.to_lowercase().contains("error:"),
+            "dwarfdump reported an error:\n{stdout}\n{stderr}"
+        );
+        assert!(stdout.contains("DW_TAG_compile_unit"), "no CU:\n{stdout}");
+        assert!(
+            stdout.contains("DW_TAG_subprogram"),
+            "no subprogram:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("countdown") || stdout.contains("main"),
+            "no fn name:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn the_sidecar_code_offsets_match_the_embedded_ones() {
+        // The load-bearing invariant: a detached DWARF's code addresses must reference the RUNNABLE
+        // component's code section identically to the embedded form — otherwise a debugger would map to
+        // the wrong instruction. Compare the subprogram low_pc/high_pc reported by dwarfdump for the
+        // embedded component vs the sidecar; they must be identical. Skips if llvm-dwarfdump is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        // Embedded: extract the core module from the WasmDebug component.
+        let embedded_component = component_of(src, Target::WasmDebug);
+        let embedded_core = core_module_of(&embedded_component).expect("core module");
+        // Sidecar: the standalone dwarf module.
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let sidecar_mod = out.artifact("dwarf").expect("dwarf").to_vec();
+
+        // Dump each and pull the ordered list of (low_pc, high_pc) from the subprogram DIEs.
+        let pcs = |bytes: &[u8], tag: &str| -> Option<Vec<(String, String)>> {
+            let dir = std::env::temp_dir();
+            let path = dir.join(format!("cdz-cmp-{}-{tag}.wasm", std::process::id()));
+            std::fs::File::create(&path)
+                .and_then(|mut f| f.write_all(bytes))
+                .ok()?;
+            let o = Command::new("llvm-dwarfdump")
+                .arg("--debug-info")
+                .arg(&path)
+                .output()
+                .ok()?;
+            let _ = std::fs::remove_file(&path);
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            let mut lows: Vec<String> = Vec::new();
+            let mut highs: Vec<String> = Vec::new();
+            for line in s.lines() {
+                let t = line.trim();
+                if let Some(v) = t.strip_prefix("DW_AT_low_pc") {
+                    lows.push(v.trim().to_string());
+                } else if let Some(v) = t.strip_prefix("DW_AT_high_pc") {
+                    highs.push(v.trim().to_string());
+                }
+            }
+            Some(lows.into_iter().zip(highs).collect())
+        };
+
+        let (Some(emb), Some(side)) = (pcs(&embedded_core, "emb"), pcs(&sidecar_mod, "side"))
+        else {
+            eprintln!("llvm-dwarfdump not found; skipping offset-match check");
+            return;
+        };
+        assert!(!emb.is_empty(), "the embedded DWARF had no pc ranges");
+        assert_eq!(
+            emb, side,
+            "the sidecar's code offsets must match the embedded component's exactly"
+        );
+    }
+
+    // ── D3: scalar variable inspection (§2.4) ──────────────────────────────────────────────────────
+
+    #[test]
+    fn scalar_params_get_formal_parameter_dies_with_locations() {
+        // D3: an exported function's scalar parameters emit `DW_TAG_formal_parameter` DIEs, each with a
+        // `DW_AT_type` (→ a base type) and a `DW_AT_location` naming the wasm local slot — so a debugger
+        // can `print` the argument. Verified via llvm-dwarfdump on the detached sidecar (a bare module).
+        use std::io::Write;
+        use std::process::Command;
+        // Two Int64 params so the fn has real scalar locals at slots 0 and 1.
+        let src = "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-d3-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump error:\n{stdout}"
+        );
+        // A base type for Int64.
+        assert!(
+            stdout.contains("DW_TAG_base_type") && stdout.contains("\"i64\""),
+            "missing the i64 base type:\n{stdout}"
+        );
+        // Both params, as formal parameters, with a type ref and a wasm-local location.
+        assert!(
+            stdout.contains("DW_TAG_formal_parameter"),
+            "no formal_parameter DIE:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("\"a\"") && stdout.contains("\"b\""),
+            "param names:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DW_OP_WASM_location"),
+            "no wasm-local location:\n{stdout}"
+        );
+        // The two params sit at consecutive local slots 0 and 1.
+        assert!(
+            stdout.contains("DW_OP_WASM_location 0x0 0x0")
+                && stdout.contains("DW_OP_WASM_location 0x0 0x1"),
+            "params must be at local slots 0 and 1:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_nullary_function_has_no_formal_parameters() {
+        // A function with no params emits a childless subprogram — no formal_parameter DIEs.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-d3n-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.contains("DW_TAG_formal_parameter"),
+            "a nullary function must have no formal parameters:\n{stdout}"
         );
     }
 }

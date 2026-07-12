@@ -10,6 +10,7 @@ import init, {
   compile as wasmCompile,
   diagnostics as wasmDiagnostics,
   type_at as wasmTypeAt,
+  define_at as wasmDefineAt,
   render_syntax as wasmRenderSyntax,
   render_value as wasmRenderValue,
   required_runtime_hash as wasmRuntimeHash,
@@ -43,6 +44,14 @@ export interface TypeAtInfo {
   typeName: string;
   from: number;
   to: number;
+}
+
+/** The definition a reference at a source offset points to, for go-to-definition. Byte offsets. */
+export interface DefineAtInfo {
+  from: number;
+  to: number;
+  refFrom: number;
+  refTo: number;
 }
 
 let ready: Promise<void> | null = null;
@@ -83,6 +92,13 @@ const api = {
     await ensureReady();
     const t = wasmTypeAt(text, from, byteOffset);
     return t ? { typeName: t.type_name, from: t.from, to: t.to } : null;
+  },
+
+  /// The definition a reference at a UTF-8 byte offset points to (go-to-definition), or null.
+  async defineAt(text: string, from: Surface, byteOffset: number): Promise<DefineAtInfo | null> {
+    await ensureReady();
+    const d = wasmDefineAt(text, from, byteOffset);
+    return d ? { from: d.from, to: d.to, refFrom: d.ref_from, refTo: d.ref_to } : null;
   },
 
   // `to` may be a surface or an output-only view ("debug"/"flat"); the wasm accepts the wider set.

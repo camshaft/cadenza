@@ -27,6 +27,7 @@ pass	a boolean function result bound by let is still a boolean
 pass	a boolean in integer-width position is rejected
 pass	a boolean is greater-than-or-equal to itself
 pass	a boolean is less-than-or-equal to itself
+pass	a boolean literal inside a constructor pattern refines the match
 pass	a boolean literal pattern against an integer scrutinee is a type error
 pass	a boolean literal pattern matches a runtime scrutinee
 pass	a boolean parameter forwarded to a conditional result
@@ -105,6 +106,7 @@ pass	a function whose name is capitalized is called, not treated as a constructo
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a generic sum with TWO type parameters instantiates each independently
 pass	a generic sum with a type parameter inside a record payload constructs and projects
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic unwrap helper consumes a fallible Bytes.at result
@@ -142,6 +144,9 @@ pass	a list chosen by a runtime if is length-measured without emitting invalid w
 pass	a list mixing integer and boolean elements is a type error
 pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
+pass	a literal inside a NESTED constructor pattern refines the match
+pass	a literal inside a constructor pattern matches a runtime payload
+pass	a literal inside an Ok pattern refines a Result match
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match binder over a narrow scrutinee returns the bound value
@@ -200,6 +205,7 @@ pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-first field is projected from a record returned across a call boundary
+pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary function called from another function's body
@@ -260,8 +266,11 @@ pass	a runtime right shift by the bit width or more traps
 pass	a runtime scrutinee matching no arm traps
 pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
 pass	a runtime scrutinee selects a non-first literal arm
+pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
+pass	a runtime string slice out of range yields None
+pass	a runtime string slice with an empty in-range span is Some of the empty string
 pass	a runtime subtraction that overflows traps
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
 pass	a runtime truncation into a signed byte sign-extends
@@ -269,6 +278,7 @@ pass	a runtime truncation to an unsigned byte keeps the low bits, total on negat
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
@@ -283,9 +293,14 @@ pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
 pass	a signed-byte entrypoint returns its runtime argument
+pass	a slice whose end is beyond the string length yields None
+pass	a slice whose end precedes its start yields None
+pass	a slice whose start equals its end is Some of the empty string
+pass	a slice with a negative start yields None
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
+pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
@@ -302,6 +317,7 @@ pass	a tuple annotated with the wrong arity is rejected
 pass	a tuple is constructed with positional elements
 pass	a tuple pattern against a sum scrutinee is a type error
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
+pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
@@ -327,12 +343,14 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an absurd runtime width is rejected, not silently ignored
+pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated value takes a narrower integer width
 pass	an annotation that contradicts the value is rejected
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
+pass	an effect that declares an operation name twice is rejected
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
@@ -384,14 +402,21 @@ pass	bitwise XOR toggles bits
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	chained guards of the same variant are tried in order
+pass	compacting a byte sequence built at run time preserves its bytes
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
+pass	concatenating an empty string on the left is the identity
+pass	concatenating an empty string on the right is the identity
+pass	concatenating byte sequences built at run time appends their bytes in order
 pass	concatenating lists of different element types is a type error
+pass	concatenating two runtime strings and measuring the result
 pass	concatenating with the empty list on the right is identity
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
+pass	constructing a byte sequence with a negative value is a type error
+pass	constructing a byte sequence with a value out of range is a type error
 pass	constructor pattern binders capture the payload uniformly
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
@@ -411,6 +436,7 @@ pass	indexing a list bound from a sum payload yields the element
 pass	indexing a list in bounds yields Some of the element
 pass	indexing a list out of bounds yields None
 pass	indexing a list with a negative index yields None
+pass	indexing a runtime string past its last scalar yields None
 pass	indexing an empty list yields None
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
@@ -447,6 +473,7 @@ pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	negation inverts a boolean
 pass	nested patterns deconstruct recursively
+pass	one generic sum instantiated at two different types in one program
 pass	ordering an integer against a boolean is a type error
 pass	over-applying a constructor by several arguments is a type error
 pass	over-applying a constructor is a type error, not a silent argument drop
@@ -461,6 +488,12 @@ pass	recursive fibonacci with literal match base cases
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
+pass	slicing a runtime byte sequence past the end yields None
+pass	slicing a runtime byte sequence with a negative start yields None
+pass	slicing past the end of a byte sequence yields None
+pass	slicing with a negative start yields None
+pass	slicing with a start near i64::MAX is out of range, not a trap
+pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
 pass	splitting a tuple beyond its arity is rejected
 pass	string equality
 pass	string indexing addresses Unicode scalar values, not bytes
@@ -470,6 +503,7 @@ pass	string indexing returns Some of the character
 pass	string inequality
 pass	string length
 pass	string length counts scalar values after normalization
+pass	string slicing yields Some of the substring
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
@@ -507,6 +541,7 @@ pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the runtime-if list takes its else branch and measures that length
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
+pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the unit value
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	true is greater than false
@@ -616,7 +651,6 @@ todo	a list of tuples with different arities is a type error
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
-todo	a literal inside a constructor pattern matches a runtime payload
 todo	a literal inside a tuple pattern matches a runtime element
 todo	a literal segment before a binder dispatches then reads the payload
 todo	a literal segment matches a magic-number header by equality
@@ -661,7 +695,6 @@ todo	a nominal record compared to a plain record of the same shape is a type err
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a non-final unsized bytes segment is ill-formed
-todo	a non-matching literal inside a constructor pattern binds the runtime payload
 todo	a nullary constructor is a single-arity function taking unit
 todo	a one-element tuple pattern against a two-tuple is a type error
 todo	a pattern that binds the same name across nested sub-patterns is rejected
@@ -713,13 +746,10 @@ todo	a returned runtime string with a non-printable scalar renders it verbatim, 
 todo	a right shift by a floating-point count does not silently promote
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
-todo	a runtime string bound from a sum payload compares equal to a string parameter
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a runtime string is sliced by scalar offsets
 todo	a runtime string returned across the run boundary renders as its quoted text
 todo	a runtime string slice addresses scalar values, not bytes
-todo	a runtime string slice out of range yields None
-todo	a runtime string slice with an empty in-range span is Some of the empty string
 todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
 todo	a runtime three-variant classifier dispatches to the middle arm
@@ -736,12 +766,7 @@ todo	a signed i8 segment encodes as two's complement
 todo	a signed pattern segment reads a two's-complement integer as negative
 todo	a single-form body admits a sequence by holding a do block
 todo	a slice spanning a concatenation sees the logical bytes
-todo	a slice whose end is beyond the string length yields None
-todo	a slice whose end precedes its start yields None
-todo	a slice whose start equals its end is Some of the empty string
-todo	a slice with a negative start yields None
 todo	a stateful handler threads its counter across a function boundary
-todo	a string carried as a sum-variant payload is bound and measured at run time
 todo	a string compared to a symbol is a type error
 todo	a string literal
 todo	a string literal is normalized to the canonical text form
@@ -767,7 +792,6 @@ todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 todo	a tuple pattern against a Sign scrutinee is a type error
 todo	a tuple pattern of the wrong arity is a type error
-todo	a tuple payload extracted through a helper return must not be rejected as a type error
 todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer
@@ -799,7 +823,6 @@ todo	an effect operation reached with neither a handler nor a delegation is reje
 todo	an effect performed in a callee is discharged by the caller's handler
 todo	an effect resolves past an intermediate frame that installs no handler
 todo	an effect resolves through a deep chain of intermediate functions
-todo	an effect that declares an operation name twice is rejected
 todo	an element pattern matches a list by its length and elements
 todo	an element read across a concatenation boundary is the right value
 todo	an empty binary form is the empty byte sequence
@@ -845,7 +868,6 @@ todo	checked addition yields None on overflow instead of trapping
 todo	checked addition yields Some of the sum when it fits
 todo	checked multiplication reports overflow as None
 todo	checked multiplication yields Some when it fits
-todo	compacting a byte sequence built at run time preserves its bytes
 todo	compacting a slice preserves its bytes
 todo	compacting is the identity on value for a whole byte sequence
 todo	comparing a greater value to a lesser yields Greater
@@ -860,18 +882,11 @@ todo	comparing two same-shape nominal sum types is a type error, not false
 todo	comparing two units of one dimension converts before comparing
 todo	concatenating an empty byte sequence on the left is the identity
 todo	concatenating an empty byte sequence on the right is the identity
-todo	concatenating an empty string on the left is the identity
-todo	concatenating an empty string on the right is the identity
-todo	concatenating byte sequences built at run time appends their bytes in order
 todo	concatenating tuples preserves each element's type
 todo	concatenating two byte sequences appends their bytes in order
-todo	concatenating two runtime strings and measuring the result
 todo	concatenating two tuples appends their elements
 todo	concatenation is associative by content
 todo	constructing a bit-field from a value wider than its width traps
-todo	constructing a byte sequence with a negative value traps
-todo	constructing a byte sequence with a runtime value out of range traps
-todo	constructing a byte sequence with a value out of range traps
 todo	constructing a rational with a zero denominator traps
 todo	constructing a sized bytes segment whose value length differs from the size traps
 todo	constructing a u8 segment from a value above its range traps
@@ -921,7 +936,6 @@ todo	greater-than of an integer and a float is rejected
 todo	greater-than-or-equal of an integer and a float is rejected
 todo	host calls are observed in the order they were made
 todo	identical negative zeros nested in a tuple compare equal
-todo	indexing a runtime string past its last scalar yields None
 todo	indexing a slice is relative to the slice's start
 todo	inserting a key already present replaces its value, not the size
 todo	inserting a key of a different type into a map is a type error
@@ -998,17 +1012,12 @@ todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	set equality is independent of the order elements are written
 todo	signed 8-bit addition that overflows its width traps
 todo	slicing a byte sequence built at run time yields Some of the sub-range
-todo	slicing a runtime byte sequence past the end yields None
-todo	slicing a runtime byte sequence with a negative start yields None
-todo	slicing past the end of a byte sequence yields None
-todo	slicing with a negative start yields None
 todo	splice flattens where unquote nests
 todo	splicing a non-list value into a quasiquote is a type error
 todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
 todo	string concatenation
-todo	string slicing yields Some of the substring
 todo	string to bytes (UTF-8)
 todo	string to bytes encodes multi-byte characters
 todo	subtracting quantities of incompatible dimension is a compile-time error

@@ -36,6 +36,14 @@ pub enum Target {
     /// reproducibility anchor (§5). Its artifact kind stays `"component"`: it is a decorated component,
     /// not a new output kind (that is Mode S, [`Target::Dwarf`], a separate `"dwarf"` artifact).
     WasmDebug,
+    /// A standalone DWARF SIDECAR module (Mode S of `DESIGN-debug-info-rcdzc.md` §9.2) — a
+    /// `kind == "dwarf"` artifact SEPARATE from the runnable component: a bare core wasm module carrying
+    /// only the `.debug_*` custom sections, which a debugger loads alongside the (lean, undecorated)
+    /// runnable. The second enablement mode ("support both", the operator's third ruling): Mode E embeds
+    /// the sections; Mode S detaches them. Its code offsets reference the runnable component's code
+    /// section, which is byte-identical whether debug rides embedded or here (the sections are appended
+    /// inertly after the code), so the two modes share the offset computation.
+    Dwarf,
     /// Rust source — a self-contained `.rs` module (one `pub fn` per export) that links into an
     /// existing Rust codebase as ordinary source, with no component boundary and no FFI. The
     /// structured second backend (`backends-and-targets.md` §A Backend Linearizes The Core Only If Its
@@ -57,6 +65,8 @@ impl Target {
         match self {
             // A debug-carrying component is still a `component` — a decorated one, not a new kind.
             Target::Wasm | Target::WasmDebug => "component",
+            // The detached DWARF sidecar is its own output kind.
+            Target::Dwarf => "dwarf",
             // Both Rust forms are `rust`-kinded `.rs` source — they differ in calling convention, not
             // in artifact kind (a consumer picks the flavor by which target it asked to emit).
             Target::Rust | Target::RustAsync => "rust",
@@ -65,19 +75,37 @@ impl Target {
 
     /// Whether emitting this target requires the `spans` input artifact (the source side-table debug
     /// info is drawn from — `DESIGN-debug-info-rcdzc.md` §9.4). A debug target requested without spans
-    /// DECLINES (`compile`), rather than silently producing an undecorated artifact. The DWARF sidecar
-    /// target ([`Target::Dwarf`], a later increment) will report `true` here too.
+    /// DECLINES (`compile`), rather than silently producing an undecorated artifact. Both the embedded
+    /// (`WasmDebug`) and the detached (`Dwarf`) debug modes draw from the `spans` side-table.
     pub fn needs_spans(self) -> bool {
-        matches!(self, Target::WasmDebug)
+        matches!(self, Target::WasmDebug | Target::Dwarf)
     }
 }
 
 /// Emit the artifact for `target` from the program in `db` under `layout`. The seam: dispatch to the
-/// chosen backend, each a producer of the artifact column over the same upstream columns.
-pub fn emit(target: Target, db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
+/// chosen backend, each a producer of the artifact column over the same upstream columns. `spans` is
+/// the decoded source side-table (`DESIGN-debug-info-rcdzc.md` §2.1a), present when a debug target
+/// drives the compile — the wasm backend reads it to emit the `name` + DWARF sections; other targets
+/// ignore it.
+pub fn emit(
+    target: Target,
+    db: &mut Db,
+    layout: &Layout,
+    spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
     let result = match target {
-        Target::Wasm => wasm::emit(db, layout, false),
-        Target::WasmDebug => wasm::emit(db, layout, true),
+        Target::Wasm => wasm::emit(db, layout, None),
+        // A debug component draws its `name` + DWARF sections from the span side-table. `compile`
+        // guarantees `spans` is present for a `needs_spans()` target (else it declined, §9.4).
+        Target::WasmDebug => wasm::emit(db, layout, spans),
+        // The detached DWARF sidecar (Mode S). `compile` guarantees `spans` is present (§9.4); a caller
+        // that reached here without it is a bug, so decline rather than emit a positionless sidecar.
+        Target::Dwarf => match spans {
+            Some(s) => wasm::emit_dwarf(db, layout, s),
+            None => Err(Reject::decline(
+                "a `dwarf` sidecar needs the `spans` input artifact",
+            )),
+        },
         Target::Rust => rust::emit(db, layout, rust::Mode::Sync),
         Target::RustAsync => rust::emit(db, layout, rust::Mode::Async),
     };

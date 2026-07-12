@@ -223,11 +223,17 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
     let of_type = bytes_of_type(ast);
     let len_type = bytes_len_type(ast);
     let at_type = bytes_at_type(ast);
+    let concat_type = bytes_concat_type(ast);
+    let slice_type = bytes_slice_type(ast);
+    let compact_type = bytes_compact_type(ast);
     let mut children = vec![head, t_field];
     for (name, prim, ty) in [
         ("of", "bytes-of", of_type),
         ("len", "bytes-len", len_type),
         ("at", "bytes-at", at_type),
+        ("concat", "bytes-concat", concat_type),
+        ("slice", "bytes-slice", slice_type),
+        ("compact", "bytes-compact", compact_type),
     ] {
         let op = list_op_record(ast, prim, ty);
         let k = push_atom(ast, Leaf::Name(name.to_string()));
@@ -242,13 +248,18 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
 /// queries; concat/at/slice arrive with the runtime byte-rope ops.
 fn string_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
-    // The `String` module is a plain record of operation fields — NO `(meta t)`/`(meta apply)`, so it
-    // stays MEMBER-ACCESSIBLE (`(. String scalar-len)`) like `List`; a `(meta t)` would make the whole
-    // record a bare type-VALUE and break projection. `String` as a TYPE (in `(: x String)`, or the op
-    // schemes' `String` param) reduces via the `(intrinsic "String")` type node, NOT this record.
-    // (`Bytes` above CAN carry `(meta t)` because its ops' schemes reduce it via `bytes-ty` and its own
-    // member access still works — but for `String` the plain-record shape is the tested-working one.)
-    let mut children = vec![head];
+    // `(meta t)` = the ground type-value `String` (`(intrinsic "String")` → `Ty::String`), so bare
+    // `String` in type position IS the type — `(: x String)` reduces it, and a variant payload `(Named
+    // String)` reads it as the payload type — exactly as `Bytes` carries `(meta t) = bytes-ty`. Member
+    // access `(. String scalar-len)` still works: a record carrying `(meta t)` stays a record whose
+    // FIELDS project (the `Bytes` module proves both — a `(meta t)` type-value AND member access
+    // coexist; the earlier "a `(meta t)` breaks projection" note was mistaken, and left bare `String`
+    // un-usable as a type: `(: s String)` faulted "found a non-type" and a String-payload variant was
+    // misjudged nullary). The op schemes still use `(intrinsic "String")` for their `String` positions
+    // (a bare name would mis-resolve inside the module being built).
+    let ty_val = intrinsic_node(ast, "String");
+    let t_field = meta_field(ast, "t", ty_val);
+    let mut children = vec![head, t_field];
     // The LENGTH queries: each a `String → Int64` scheme (built fresh per field — a shared occurrence
     // must not be).
     for (name, prim) in [
@@ -265,6 +276,19 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let at_op = list_op_record(ast, "str-at", at_ty);
     let at_key = push_atom(ast, Leaf::Name("at".to_string()));
     children.push(push_list(ast, vec![at_key, at_op]));
+    // `concat : String → String → String` — the total binary join (the compiler builds error messages
+    // and export names this way). On two constant strings it FOLDS to their concatenation.
+    let concat_ty = string_concat_type(ast);
+    let concat_op = list_op_record(ast, "str-concat", concat_ty);
+    let concat_key = push_atom(ast, Leaf::Name("concat".to_string()));
+    children.push(push_list(ast, vec![concat_key, concat_op]));
+    // `slice : String → Int64 → Int64 → (Option String)` — the fallible sub-range read by SCALAR offsets
+    // (`start`, `end`, half-open). In range (`0 <= start <= end <= scalar-len`) → `Some substring`, else
+    // `None`. A constant string + constant bounds FOLD.
+    let slice_ty = string_slice_type(ast);
+    let slice_op = list_op_record(ast, "str-slice", slice_ty);
+    let slice_key = push_atom(ast, Leaf::Name("slice".to_string()));
+    children.push(push_list(ast, vec![slice_key, slice_op]));
     push_list(ast, children)
 }
 
@@ -285,20 +309,70 @@ fn bytes_at_type(ast: &mut Arenas) -> StructId {
     arrow_type(ast, bytes, index_arrow) // (-> Bytes (-> Int64 (Option Int64)))
 }
 
-/// The type `(-> (List Int64) Bytes)` for `Bytes.of` — a monomorphic arrow (no type parameter), taking
-/// a list of `Int64` and returning `Bytes`. The `Bytes` result is the `(intrinsic bytes-ty)` type-value
-/// DIRECTLY, not a bare `Bytes` NAME: this arrow is a field INSIDE the `Bytes` module record, so a name
-/// `Bytes` would try to resolve in scope (a forward reference to the module being built) and reduce
-/// wrong — the intrinsic is the ground type-value with no scope lookup. Reduced to the scheme `(List
-/// Int64) → Bytes` by `infer` (`typeval_of` → `Ty::Fn(List Int64, Bytes)`).
+/// The type `(-> Bytes (-> Bytes Bytes))` for `Bytes.concat` — append two byte sequences. Both `Bytes`
+/// positions are `(intrinsic bytes-ty)` (a bare name would mis-resolve inside the module). The byte
+/// companion of `List.concat`.
+fn bytes_concat_type(ast: &mut Arenas) -> StructId {
+    let b_out = intrinsic_node(ast, "bytes-ty");
+    let b_rhs = intrinsic_node(ast, "bytes-ty");
+    let inner = arrow_type(ast, b_rhs, b_out); // (-> Bytes Bytes)
+    let b_lhs = intrinsic_node(ast, "bytes-ty");
+    arrow_type(ast, b_lhs, inner) // (-> Bytes (-> Bytes Bytes))
+}
+
+/// The type `(-> Bytes (-> Int64 (-> Int64 (Option Bytes))))` for `Bytes.slice` — the FALLIBLE
+/// sub-range read: take a byte sequence, a `start` and a `len` (both `Int64`), return `(Option Bytes)`
+/// (`Some` of the slice when `start`/`len` are in range and non-negative, else `None`). Monomorphic; the
+/// bytes companion of the fallible `at`, returning `Option Bytes` rather than `Option Int64`.
+fn bytes_slice_type(ast: &mut Arenas) -> StructId {
+    let option_bytes = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let bytes = intrinsic_node(ast, "bytes-ty");
+        push_list(ast, vec![option, bytes])
+    };
+    let len_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let len_arrow = arrow_type(ast, len_i, option_bytes); // (-> Int64 (Option Bytes))
+    let start_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let start_arrow = arrow_type(ast, start_i, len_arrow); // (-> Int64 (-> Int64 (Option Bytes)))
+    let bytes = intrinsic_node(ast, "bytes-ty");
+    arrow_type(ast, bytes, start_arrow) // (-> Bytes (-> Int64 (-> Int64 (Option Bytes))))
+}
+
+/// The type `(-> Bytes Bytes)` for `Bytes.compact` — return a content-equal byte sequence with
+/// independent (rope-collapsed) storage. Monomorphic; a total (never-fallible) unary op.
+fn bytes_compact_type(ast: &mut Arenas) -> StructId {
+    let b_out = intrinsic_node(ast, "bytes-ty");
+    let b_in = intrinsic_node(ast, "bytes-ty");
+    arrow_type(ast, b_in, b_out) // (-> Bytes Bytes)
+}
+
+/// The type `(-> (List UInt8) Bytes)` for `Bytes.of` — a monomorphic arrow taking a list of `UInt8`
+/// and returning `Bytes`, TOTAL (never traps, no Option): a `UInt8` element is in `0..=255` by its TYPE,
+/// so a byte sequence is well-formed by construction (`collections-and-text.md` §A Byte Is A UInt8). To
+/// build a byte from a wider integer, TRUNCATE with `(UInt8.wrap n)` (total) at the call site — the LEB128
+/// encoder's `(UInt8.wrap (| (& n 127) 128))` — rather than validating inside `Bytes.of`. So an
+/// out-of-range LITERAL `(Bytes.of (list 256))` is a compile-time WIDTH reject (256 is not a UInt8), not a
+/// runtime trap. The element type is `(UInt N)` where `N=8` — built via the same `(UInt 8)` type
+/// constructor a `UInt8` annotation reduces to; `Bytes`/result is `(intrinsic bytes-ty)` directly (a bare
+/// name would mis-resolve inside the module being built). Reduced to `(List UInt8) → Bytes` by `infer`.
 fn bytes_of_type(ast: &mut Arenas) -> StructId {
-    let list_int64 = {
+    let list_u8 = {
         let list = push_atom(ast, Leaf::Name("List".to_string()));
-        let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
-        push_list(ast, vec![list, int64])
+        // `(UInt 8)` — the UInt8 type, applied via the `UInt` type constructor (the same reduction a
+        // `UInt8` annotation takes). A `List` element of this type makes each byte a UInt8.
+        let uint = push_atom(ast, Leaf::Name("UInt".to_string()));
+        let eight = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(8),
+                radix: Radix::Dec,
+            },
+        );
+        let u8_ty = push_list(ast, vec![uint, eight]);
+        push_list(ast, vec![list, u8_ty])
     };
     let bytes = intrinsic_node(ast, "bytes-ty");
-    arrow_type(ast, list_int64, bytes)
+    arrow_type(ast, list_u8, bytes)
 }
 
 /// The type `(-> Bytes Int64)` for `Bytes.len` — a monomorphic arrow taking a `Bytes` and returning its
@@ -342,6 +416,45 @@ fn str_at_type(ast: &mut Arenas) -> StructId {
     let index_arrow = arrow_type(ast, int64, option_string); // (-> Int64 (Option String))
     let string = intrinsic_node(ast, "String");
     let body = arrow_type(ast, string, index_arrow); // (-> String (-> Int64 (Option String)))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> String (-> String String)))` for `String.concat` — the total binary join. A
+/// ZERO-PARAM `fn` wrapper (monomorphic, but the wrapper is needed so `scheme_of` reads a SCHEME not a
+/// bare type-value — see [`string_to_int64_type`]). Both operands and the result are the `(intrinsic
+/// "String")` type node (→ `Ty::String`), not the NAME `String` (the module record).
+fn string_concat_type(ast: &mut Arenas) -> StructId {
+    let out = intrinsic_node(ast, "String");
+    let rhs = intrinsic_node(ast, "String");
+    let inner = arrow_type(ast, rhs, out); // (-> String String)
+    let lhs = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, lhs, inner); // (-> String (-> String String))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> String (-> Int64 (-> Int64 (Option String)))))` for `String.slice` — the
+/// FALLIBLE sub-range read by SCALAR offsets: take a string, a `start` and an `end` (both `Int64`,
+/// half-open `[start, end)`), return `(Option String)` (`Some` of the substring when `0 <= start <= end
+/// <= scalar-len`, else `None`). A ZERO-PARAM `fn` wrapper (see [`string_to_int64_type`] for why). The
+/// `String` param + `Option`'s `String` arg are `(intrinsic "String")` (→ `Ty::String`); the string
+/// companion of `Bytes.slice`, returning `Option String` rather than `Option Bytes` (and cutting by
+/// SCALAR offset, not byte).
+fn string_slice_type(ast: &mut Arenas) -> StructId {
+    let option_string = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let string = intrinsic_node(ast, "String");
+        push_list(ast, vec![option, string])
+    };
+    let end_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let end_arrow = arrow_type(ast, end_i, option_string); // (-> Int64 (Option String))
+    let start_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let start_arrow = arrow_type(ast, start_i, end_arrow); // (-> Int64 (-> Int64 (Option String)))
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, string, start_arrow); // (-> String (-> Int64 (-> Int64 (Option String))))
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])

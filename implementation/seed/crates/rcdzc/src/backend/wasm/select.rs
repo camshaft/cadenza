@@ -62,6 +62,13 @@ const OP_BYTES_LEN: &str = "bytes-len";
 /// `bytes-get(b, index) -> u32` — the byte at `index`, a RAW value in `0..=255` (NOT a heap handle,
 /// unlike `vec-get`), so no `dup` is needed; the caller bounds-checks (an OOB index TRAPS).
 const OP_BYTES_GET: &str = "bytes-get";
+/// `bytes-concat(a, b) -> handle` — a then b (consumes both, empty is the identity).
+const OP_BYTES_CONCAT: &str = "bytes-concat";
+/// `bytes-slice(buf, start, len) -> handle` — `len` bytes from `start` (consumes buf; `start+len >
+/// bytes-len` TRAPS, so the caller bounds-checks first and returns `None` instead).
+const OP_BYTES_SLICE: &str = "bytes-slice";
+/// `bytes-compact(buf) -> handle` — a content-equal sequence with independent storage (consumes buf).
+const OP_BYTES_COMPACT: &str = "bytes-compact";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -130,6 +137,20 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BytesAt { bytes, index, .. } => {
             binding_escapes(db, bytes, binder, true) || binding_escapes(db, index, binder, false)
         }
+        // `Bytes.concat`/`slice`/`compact` all CONSUME their bytes operand(s) into the new sequence
+        // (`bytes-concat`/`bytes-slice`/`bytes-compact` consume, per `value-heap-runtime.md §Constructors
+        // Consume`). A binding used as an operand escapes into the result. `slice`'s start/len are scalars.
+        Core::BytesConcat { lhs, rhs } => {
+            binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            binding_escapes(db, bytes, binder, false)
+                || binding_escapes(db, start, binder, false)
+                || binding_escapes(db, len, binder, false)
+        }
+        Core::BytesCompact { operand } => binding_escapes(db, operand, binder, false),
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
         // `Bytes.of`'s elements are scalar bytes (Int64 0..=255), consumed into the sequence like a list's.
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
@@ -214,6 +235,10 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
         crate::core::SumCont::Guarded { body, els, .. } => {
             binding_escapes(db, *body, binder, false) || cont_binding_escapes(db, els, binder)
         }
+        // A literal test's binder can escape through either continuation (the `path` walk only reads).
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            cont_binding_escapes(db, then_, binder) || cont_binding_escapes(db, els, binder)
+        }
         crate::core::SumCont::Switch { arms, .. } => arms
             .iter()
             .any(|a| cont_binding_escapes(db, &a.cont, binder)),
@@ -229,9 +254,10 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     match type_of(db, id) {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
-        // A nested compound — a tuple/record, or a SUM (its `sum-new` handle) — is already a u32 handle,
-        // so it is `arr-set` into the parent array as-is, no box op.
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } => Ok(None),
+        // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), or a
+        // BYTES sequence (`bytes-*` handle) — is already a u32 handle, so it is `arr-set` into the parent
+        // array (or used as a sum payload) as-is, no box op.
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes => Ok(None),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -248,8 +274,9 @@ fn get_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     match type_of(db, id) {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
-        // A nested compound / SUM handle `arr-get` yields is used as-is — no unbox.
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } => Ok(None),
+        // A nested compound / SUM / LIST / BYTES handle `arr-get` (or `sum-payload`) yields is used
+        // as-is — no unbox.
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes => Ok(None),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -287,6 +314,29 @@ pub struct SelectedFunc {
     pub ret: Ty,
     pub code: Vec<Lir>,
     pub declared: Vec<ValType>,
+    /// The AST occurrence this function's body was selected from — the source-attribution anchor for
+    /// debug info (`DESIGN-debug-info-rcdzc.md` §2.1b). Carried so `serialize` can pair each function's
+    /// emitted code byte range with the source `StructId` (→ span, via the `spans` sidecar), which is
+    /// what a DWARF `DW_TAG_subprogram`'s `low_pc`/`high_pc` + line-program rows need. This is
+    /// FUNCTION-granularity attribution; per-statement (per-`Lir`-run) is a later refinement that needs
+    /// threading the current node through the emit family. `None` for a synthesized function (an escape
+    /// walker) with no single source body.
+    pub src_body: Option<StructId>,
+    /// Named SCALAR locals for debug-info variable inspection (D3, `DESIGN-debug-info-rcdzc.md` §2.4) —
+    /// each a `(wasm local slot, source name, solved scalar type)`. Populated with the function's scalar
+    /// PARAMETERS (slots `0..n`, the common `print n` target). A `DW_TAG_variable` DIE emits from each so
+    /// a debugger can read the value. A compound (heap-handle) param is omitted — DWARF cannot walk the
+    /// tagless heap (§3), so only scalars appear. `let`-bindings / match binders live in dynamically-
+    /// claimed scratch slots and are a later refinement. Empty unless debug is requested.
+    pub locals: Vec<LocalVar>,
+}
+
+/// A named scalar local for debug info (D3): its wasm local slot, source name, and solved scalar type.
+#[derive(Clone, Debug)]
+pub struct LocalVar {
+    pub slot: u32,
+    pub name: String,
+    pub ty: Ty,
 }
 
 /// Select one NULLARY definition body (rooted at AST occurrence `body`) into its flat instruction
@@ -411,6 +461,29 @@ pub fn collect_used_ops(
             out.insert(OP_ARR_ALLOC);
             collect_used_ops(db, bytes, out);
             collect_used_ops(db, index, out);
+        }
+        // `Bytes.concat` = `bytes-concat`; `Bytes.compact` = `bytes-compact`; `Bytes.slice` bounds-checks
+        // via `bytes-len` then builds `Some(bytes-slice)` (a Bytes HANDLE, no box) / `None` (`arr-alloc(0)`).
+        Core::BytesConcat { lhs, rhs } => {
+            out.insert(OP_BYTES_CONCAT);
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_SLICE);
+            out.insert(OP_DROP); // the None branch drops the un-consumed bytes reference
+            out.insert(OP_SUM_NEW);
+            out.insert(OP_ARR_ALLOC);
+            collect_used_ops(db, bytes, out);
+            collect_used_ops(db, start, out);
+            collect_used_ops(db, len, out);
+        }
+        Core::BytesCompact { operand } => {
+            out.insert(OP_BYTES_COMPACT);
+            collect_used_ops(db, operand, out);
         }
         Core::If { cond, then_, else_ } => {
             collect_used_ops(db, cond, out);
@@ -540,6 +613,28 @@ fn collect_cont_ops(
             collect_used_ops(db, *body, out);
             collect_cont_ops(db, els, out);
         }
+        // A literal test walks its `path` (sum-payload/arr-get) then reads the leaf scalar to compare it;
+        // an Int probe reads `get-int`, a Bool probe `get-bool`. Then both continuations' ops.
+        crate::core::SumCont::LitTest {
+            path,
+            probe,
+            then_,
+            els,
+        } => {
+            for step in path {
+                match step {
+                    crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
+                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                };
+            }
+            match probe {
+                crate::core::Probe::Int(_) => out.insert(OP_GET_INT),
+                crate::core::Probe::Bool(_) => out.insert(OP_GET_BOOL),
+                crate::core::Probe::Wild => false,
+            };
+            collect_cont_ops(db, then_, out);
+            collect_cont_ops(db, els, out);
+        }
         crate::core::SumCont::Switch { path, arms } => {
             out.insert(OP_SUM_DISC);
             for step in path {
@@ -584,6 +679,11 @@ pub fn select_function_of(
     let mut slot_of: HashMap<StructId, u32> = HashMap::new();
     let mut param_vts: Vec<ValType> = Vec::new();
     let mut param_slots: Vec<u32> = Vec::new();
+    // Named SCALAR params for debug info (D3): slot `i` holds param `i`; record its source name + type
+    // when it is a scalar (int width / bool). A compound (heap-handle) param is skipped — DWARF cannot
+    // walk the tagless heap, so only scalars get a `DW_TAG_variable`. Cheap (a name lookup per param);
+    // the emit path only reads it under a debug request.
+    let mut locals: Vec<LocalVar> = Vec::new();
     for (i, (binder, ty)) in params.iter().enumerate() {
         let vt = valtype_of(ty).ok_or_else(|| {
             Reject::decline("a function parameter's type has no machine representation")
@@ -591,6 +691,15 @@ pub fn select_function_of(
         slot_of.insert(*binder, i as u32);
         param_vts.push(vt);
         param_slots.push(i as u32);
+        if matches!(ty, Ty::Int(_) | Ty::Bool)
+            && let Some(name) = db.ast.as_name(*binder)
+        {
+            locals.push(LocalVar {
+                slot: i as u32,
+                name: name.to_string(),
+                ty: ty.clone(),
+            });
+        }
     }
     let ret = type_of(db, body);
     let mut code = Vec::new();
@@ -718,6 +827,10 @@ pub fn select_function_of(
         ret,
         code,
         declared,
+        // The body occurrence is this function's source anchor for debug info (§2.1b).
+        src_body: Some(body),
+        // Named scalar params for debug-info variable inspection (§2.4, D3).
+        locals,
     })
 }
 
@@ -1836,6 +1949,108 @@ fn emit(
             out.push(Lir::End);
             Ok(())
         }
+        // `Bytes.concat(a, b)` — emit both handles, `bytes-concat` (consumes both, returns the new one).
+        Core::BytesConcat { lhs, rhs } => {
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
+            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
+            out.push(Lir::CallImport(OP_BYTES_CONCAT)); // → [a++b]
+            Ok(())
+        }
+        // `Bytes.compact(b)` — emit the handle, `bytes-compact` (consumes it, returns a content-equal one).
+        Core::BytesCompact { operand } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [b]
+            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // → [compacted]
+            Ok(())
+        }
+        // A runtime `Bytes.slice(bytes, start, len)` — the fallible sub-range read. Bounds-check `start >=
+        // 0 && len >= 0 && start <= bytes-len && len <= bytes-len - start` (all i64), then in bounds build
+        // `Some(bytes-slice(bytes, start, len))` — `bytes-slice` CONSUMES its buffer, but `bytes-len` above
+        // only BORROWED it, so the one owned ref is consumed exactly by the slice — else `None`. The slice
+        // result is a Bytes HANDLE, the `Some` payload directly (no box, unlike `at`'s byte value). Four
+        // scratch slots (bytes i32, start i64, len i64, byte-count i64) above `base`; operand recursions
+        // float above them.
+        //
+        // ⚠ The predicate is OVERFLOW-SAFE. The naive `start + len <= bytes-len` OVERFLOWS: for
+        // attacker-chosen `start`/`len` near i64::MAX the i64 sum wraps to a negative value that trivially
+        // passes the signed `<=`, wrongly taking the in-range path (a wrong `Some`, or a trap when the
+        // i32-wrapped index exceeds the runtime's u32 range) — a soundness hole in a FALLIBLE op that
+        // promises `None`, never a trap. Instead, once `start >= 0` holds, `bytes-len - start` (with the
+        // `start <= bytes-len` guard, so the difference is in `[0, bytes-len]`) cannot underflow — a small
+        // u32-extended non-negative i64 — and `len <= bytes-len - start` is the same range test with no
+        // add, so no sum ever overflows. Mirrors the const-fold path's i128 check (`lower_bytes_slice`).
+        Core::BytesSlice {
+            bytes,
+            start,
+            len,
+            disc_some,
+            disc_none,
+        } => {
+            let bytes_slot = base;
+            let start_slot = base + 1;
+            let len_slot = base + 2;
+            let bytelen_slot = base + 3;
+            if bytelen_slot + 1 > *high {
+                *high = bytelen_slot + 1;
+            }
+            scratch_ty.insert(bytes_slot, ValType::I32);
+            scratch_ty.insert(start_slot, ValType::I64);
+            scratch_ty.insert(len_slot, ValType::I64);
+            scratch_ty.insert(bytelen_slot, ValType::I64);
+            emit(db, bytes, slots, base + 4, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::LocalSet(bytes_slot));
+            emit(db, start, slots, base + 4, high, scratch_ty, layout, out)?; // [start:i64]
+            out.push(Lir::LocalSet(start_slot));
+            emit(db, len, slots, base + 4, high, scratch_ty, layout, out)?; // [len:i64]
+            out.push(Lir::LocalSet(len_slot));
+            // Materialize the byte-count ONCE (i64, u32-extended — read three times below).
+            out.push(Lir::LocalGet(bytes_slot));
+            out.push(Lir::CallImport(OP_BYTES_LEN)); // [len:i32]
+            out.push(Lir::I64ExtendI32U); // [byte-count:i64]
+            out.push(Lir::LocalSet(bytelen_slot));
+            // in_bounds = (start >= 0) & (len >= 0) & (start <= byte-count) & (len <= byte-count - start),
+            // all i64 — OVERFLOW-SAFE (no `start + len`; `byte-count - start` cannot underflow once
+            // `start >= 0 & start <= byte-count`).
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64GeS); // [start >= 0]
+            out.push(Lir::LocalGet(len_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64GeS); // [start>=0, len>=0]
+            out.push(Lir::I32And); // [start>=0 & len>=0]
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::LocalGet(bytelen_slot));
+            out.push(Lir::I64LeS); // [.., start <= byte-count]
+            out.push(Lir::I32And); // [start>=0 & len>=0 & start<=byte-count]
+            out.push(Lir::LocalGet(len_slot));
+            out.push(Lir::LocalGet(bytelen_slot));
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::I64Sub); // [.., len, byte-count - start]  (no underflow: start in [0, byte-count])
+            out.push(Lir::I64LeS); // [.., len <= byte-count - start]
+            out.push(Lir::I32And); // [in_bounds]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Some(bytes-slice(bytes, start, len)). The operand emit produced ONE owned ref;
+            // `bytes-len` above only BORROWED it (rc unchanged), so that one ref is still live and
+            // `bytes-slice` CONSUMES it exactly — net zero, no dup, no leak.
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(bytes_slot)); // [disc_some, bytes]
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::I32WrapI64); // [disc_some, bytes, start:i32]
+            out.push(Lir::LocalGet(len_slot));
+            out.push(Lir::I32WrapI64); // [disc_some, bytes, start, len:i32]
+            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [disc_some, slice-handle] (consumes bytes)
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None. `bytes-slice` was NOT called, so the operand's one owned ref is still live —
+            // DROP it (the None path does not consume the bytes) to avoid a leak.
+            out.push(Lir::LocalGet(bytes_slot));
+            out.push(Lir::CallImport(OP_DROP)); // release the un-consumed bytes reference
+            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
+            Ok(())
+        }
         // A runtime PROJECTION `(. t i)` — read element `i` off the operand's array handle and UNBOX it
         // to its scalar: `<operand handle> ; i32.const i ; arr-get ; get-<T>`. The result type (this
         // node's solved type) chooses the unbox op.
@@ -2585,6 +2800,17 @@ fn try_emit_scalar_br_table(
         }
         _ => return Ok(None),
     };
+    // O(1) SIZE GATE before the O(arms) literal walk below. Eligibility requires a DENSE range
+    // (`span <= 256`, checked below) and the literals are DISTINCT (a duplicate falls back), so
+    // `count <= span <= 256`: a table can NEVER fire with more than 256 int-arms. Reject those here in
+    // O(1) instead of building an O(arms) `lits` vector that the density check would discard. This is
+    // what keeps a LARGE sparse/dense match O(arms) overall: `emit_probe_chain` re-attempts this table
+    // on every recursive `rest`, so without the gate a 6400-arm match rebuilt a shrinking O(arms) vector
+    // at each of ~6400 levels — O(arms²). (A dense SUFFIX of <=256 arms still becomes eligible and emits
+    // its table exactly as before — byte-identical; only the always-doomed long-prefix attempts are cut.)
+    if int_arms.len() > 256 {
+        return Ok(None);
+    }
     let mut lits: Vec<i64> = Vec::with_capacity(int_arms.len());
     for a in int_arms {
         match &a.probe {
@@ -3020,6 +3246,60 @@ fn emit_sum_cont(
             } else {
                 emit(db, *body, slots, base, high, scratch_ty, layout, out)?;
             }
+            out.push(Lir::Else);
+            emit_sum_cont(
+                db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+            )?;
+            out.push(Lir::End);
+            Ok(())
+        }
+        // A LITERAL TEST: `if (<sub-value at path> == literal) then <then_> else <els>`. Walk the `path`
+        // from the scrutinee handle (`sum-payload`/`arr-get`, exactly as `Core::SumPayload` does), read the
+        // leaf scalar (`get-int` → i64 / `get-bool` → i32), compare against the literal, and branch. Both
+        // continuations recurse through `emit_sum_cont` and yield the match's result type (`block_ty`). The
+        // `then_` typically ends in the arm body; `els` is the same-variant fall-through (the binding arm).
+        // The read mirrors `SumPayload`'s walk + unbox; the compare mirrors `emit_probe_chain`'s Int/Bool
+        // probe. A narrow-int payload's `get-int` yields the normalized i64, so an i64 compare against the
+        // literal's i64 bits is exact (the pattern literal is in range or the arm is ill-typed and rejected
+        // earlier).
+        crate::core::SumCont::LitTest {
+            path,
+            probe,
+            then_,
+            els,
+        } => {
+            // Push the scrutinee handle and walk to the leaf's boxed handle.
+            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+            for step in path {
+                match step {
+                    crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
+                    crate::core::PathStep::Elem(i) => {
+                        out.push(Lir::ConstI32(*i as i32));
+                        out.push(Lir::CallImport(OP_ARR_GET));
+                    }
+                }
+            }
+            // Read the leaf scalar and compare against the literal.
+            match probe {
+                crate::core::Probe::Int(v) => {
+                    out.push(Lir::CallImport(OP_GET_INT)); // [i64]
+                    out.push(Lir::ConstI64(v.to_i64_bits()));
+                    out.push(Lir::I64Eq); // [bool]
+                }
+                crate::core::Probe::Bool(b) => {
+                    out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]
+                    out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
+                    out.push(Lir::I32Eq); // [bool]
+                }
+                crate::core::Probe::Wild => {
+                    return Err(Reject::decline("a wildcard literal test is a compiler bug"));
+                }
+            }
+            out.push(Lir::If(block_ty));
+            emit_sum_cont(
+                db, scrutinee, then_, result_it, block_ty, slots, base, high, scratch_ty, layout,
+                out,
+            )?;
             out.push(Lir::Else);
             emit_sum_cont(
                 db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,

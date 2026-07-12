@@ -32,6 +32,7 @@
 //! dependency and ports to the Cadenza self-host on the same footing as the byte path (a source
 //! string is as portable as a byte vector); `Target::Rust` is always available, not feature-gated.
 
+mod enums;
 mod expr;
 mod types;
 
@@ -58,6 +59,12 @@ impl Mode {
     }
 }
 
+/// The Rust type-PARAMETER name for the async gas/yield env (`async fn f<__CdzE: CdzEnv>(env: &mut
+/// __CdzE, …)`). A `__`-prefixed reserved name — NOT a bare `E` — so it cannot collide with a user sum's
+/// Rust type name (a `(type E …)` maps to `enum E`, which a bare `E` type param would shadow, breaking
+/// `E::Variant`). Matches the `__pay`/`__p` reserved-local convention the expression emitter uses.
+const ENV_TYPE_PARAM: &str = "__CdzE";
+
 /// Emit a Rust-source artifact for the program in `db` under the boundary `layout`. Produces one
 /// `pub fn` per export (verbatim name, native scalar signature), reading the shared columns on demand.
 /// Declines — attributed to this target — for a construct the scalar slice does not yet render.
@@ -78,6 +85,14 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     if mode.is_async() {
         out.push_str(CDZ_ENV_TRAIT);
     }
+    // Every sum type the program declares becomes a Rust `enum` (emitted before the functions that
+    // construct/match/return it). A declaration with no native form (a recursive sum, an unrepresentable
+    // payload) is skipped — a use of it declines at selection, so no orphan enum is emitted.
+    out.push_str(&enums::emit_enum_decls(db));
+    // A machine-readable descriptor per user sum (variant names + payload types in discriminant order) —
+    // inert to rustc (`//` comments), read by the corpus gate to render a user-sum boundary value to its
+    // canonical bare form. The enum decls above give rustc the types; these give the gate the structure.
+    out.push_str(&enums::emit_sum_descriptors(db));
     for &def in &layout.order {
         let f = match layout.export_plan(def) {
             // An exported definition — a `pub fn` under its verbatim boundary name.
@@ -166,13 +181,22 @@ fn emit_signature(
     // In async/gas mode, the FIRST parameter is the caller-supplied gas/yield env, threaded into every
     // call. It precedes the source parameters; the source params keep their positions after it.
     if mode.is_async() {
-        param_src.push_str("env: &mut E");
+        param_src.push_str(&format!("env: &mut {ENV_TYPE_PARAM}"));
     }
     for (i, (binder, ty)) in params.iter().enumerate() {
         if i > 0 || mode.is_async() {
             param_src.push_str(", ");
         }
         let pname = param_name(db, *binder, i);
+        // A sum type whose Rust `enum` did NOT emit (a recursive sum needs `Box`, deferred) has a name
+        // but no declaration — a signature naming it would not compile (`cannot find type IntList`). So a
+        // function that takes such a type declines HERE, consistently with the skipped enum decl.
+        if !enums::sum_representable(db, ty) {
+            return Err(Reject::decline(format!(
+                "`{name}`: parameter type {} is a sum with no emitted Rust enum (recursive/unrepresentable)",
+                ty.render_name()
+            )));
+        }
         let rty = types::rust_type(ty).ok_or_else(|| {
             Reject::decline(format!(
                 "`{name}`: parameter type {} has no native Rust representation",
@@ -182,6 +206,13 @@ fn emit_signature(
         // A looped function's params are reassigned per iteration → `mut`.
         let mut_kw = if loops { "mut " } else { "" };
         param_src.push_str(&format!("{mut_kw}{pname}: {rty}"));
+    }
+    // Same guard on the RESULT: a function returning a recursive sum (no emitted enum) declines.
+    if !enums::sum_representable(db, result) {
+        return Err(Reject::decline(format!(
+            "`{name}`: result type {} is a sum with no emitted Rust enum (recursive/unrepresentable)",
+            result.render_name()
+        )));
     }
     let ret = types::rust_type(result).ok_or_else(|| {
         Reject::decline(format!(
@@ -206,10 +237,13 @@ fn emit_signature(
     // rustc (a `//` comment); present on every emitted fn, keyed by ident so a caller finds the right one.
     let ret_note = format!("// cdz-return[{ident}]: {}\n", result.render_name());
     if mode.is_async() {
-        // `async fn <name><E: CdzEnv>(env: &mut E, …) -> <ret> { env.consume(1).await; <body> }` — the
-        // per-call fuel charge + cooperative-yield point at entry. `<E: CdzEnv>` is the host's env type.
+        // `async fn <name><__CdzE: CdzEnv>(env: &mut __CdzE, …) -> <ret> { env.consume(1).await; <body> }`
+        // — the per-call fuel charge + cooperative-yield point at entry. The env TYPE PARAMETER is named
+        // `__CdzE` (not a bare `E`) so it can NEVER collide with a user sum's Rust type name (a sum named
+        // `E` would otherwise shadow the type param, making `E::Variant` unresolvable) — the `__` prefix
+        // marks it backend-reserved, matching the emitted `__pay`/`__p` locals.
         Ok(format!(
-            "{ret_note}{vis}async fn {ident}<E: CdzEnv>({param_src}) -> {ret} {{\n    env.consume(1).await;\n{body_src}\n}}\n"
+            "{ret_note}{vis}async fn {ident}<{ENV_TYPE_PARAM}: CdzEnv>({param_src}) -> {ret} {{\n    env.consume(1).await;\n{body_src}\n}}\n"
         ))
     } else {
         Ok(format!(

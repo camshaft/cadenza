@@ -779,9 +779,9 @@
 ; returning it unchanged (core-semantics.md §Applying A Function Binds Its Parameters To Its
 ; Arguments — the parameter is bound to whatever argument it is applied to; type-system.md
 ; §Inference — an unconstrained parameter generalizes to a type variable rather than defaulting
-; to Int64). The seed monomorphizes such a parameter to Int64, so `(id true)` / `(id 3.5)`
-; decline "argument kind mismatch" — only `(id 42)` is accepted. These pin the polymorphic case;
-; the Int64 companion is the control that already passes.
+; to Int64). Inference realizes this: an unconstrained parameter generalizes to a type variable,
+; so `id : ∀a. a → a` accepts `(id 42)` AND `(id true)`, each application instantiating `a` at
+; its argument's type. These pin the polymorphic case; the Int64 companion is the control.
 
 (case "the identity function applied to an integer returns the integer"
   (doc    "The control: `(def (id x) x)` applied to an Int64 returns it. id(42) = 42. The body does
@@ -795,9 +795,9 @@
   (doc    "The polymorphic case: the same `(def (id x) x)` applied to a Bool returns the Bool.
            id(true) = true. Nothing in `id`'s body restricts `x` to Int64 — it is returned
            unchanged — so `id` is polymorphic and accepts a Bool argument exactly as it accepts an
-           Int64. The seed defaults the unconstrained parameter to Int64 and declines a Bool argument
-           (\"argument kind mismatch\"); a full inference generalizes `x` to a type variable so both
-           applications type-check.")
+           Int64. Inference generalizes the unconstrained parameter to a type variable (`id : ∀a. a →
+           a`), so both `(id 42)` and `(id true)` type-check, each application instantiating `a` at its
+           argument's type.")
   (input  (do
             (def (id x) x)
             (def (main) (id true)) (export main)))

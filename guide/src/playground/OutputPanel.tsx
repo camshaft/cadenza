@@ -13,17 +13,25 @@ export type RunView =
   | { kind: "timeout" }
   | { kind: "error"; message: string };
 
-type Tab = "result" | "diagnostics" | "ast";
+type Tab = "result" | "diagnostics" | "ast" | "compiled";
+
+/// A summary of the last successful compile, for the "Compiled" tab.
+export interface CompiledInfo {
+  bytes: number;
+  /** true if the emitted component imports the value-heap runtime (a compound result). */
+  importsRuntime: boolean;
+}
 
 interface Props {
   run: RunView;
   diagnostics: Diag[];
   ast: string;
+  compiled: CompiledInfo | null;
   /** Jump the editor to a diagnostic's source range. */
   onJumpTo: (from: number, to: number) => void;
 }
 
-export function OutputPanel({ run, diagnostics, ast, onJumpTo }: Props) {
+export function OutputPanel({ run, diagnostics, ast, compiled, onJumpTo }: Props) {
   const [tab, setTab] = useState<Tab>("result");
   const errorCount = diagnostics.filter((d) => d.error).length;
 
@@ -49,6 +57,9 @@ export function OutputPanel({ run, diagnostics, ast, onJumpTo }: Props) {
         <TabButton active={tab === "ast"} onClick={() => setTab("ast")}>
           AST
         </TabButton>
+        <TabButton active={tab === "compiled"} onClick={() => setTab("compiled")}>
+          Compiled
+        </TabButton>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[13px]">
@@ -57,6 +68,7 @@ export function OutputPanel({ run, diagnostics, ast, onJumpTo }: Props) {
         {tab === "ast" && (
           <pre className="whitespace-pre-wrap text-slate-400">{ast || "— run or edit to see the tree —"}</pre>
         )}
+        {tab === "compiled" && <CompiledBody compiled={compiled} />}
       </div>
     </div>
   );
@@ -107,6 +119,31 @@ function ResultBody({ run }: { run: RunView }) {
         </span>
       );
   }
+}
+
+function CompiledBody({ compiled }: { compiled: CompiledInfo | null }) {
+  if (!compiled) {
+    return <span className="text-slate-500">Run a well-formed program to see what it compiles to.</span>;
+  }
+  return (
+    <div className="space-y-2 text-slate-300">
+      <div>
+        <span className="text-slate-500">Component size:</span> {compiled.bytes.toLocaleString()} bytes
+      </div>
+      <div>
+        <span className="text-slate-500">Value-heap runtime:</span>{" "}
+        {compiled.importsRuntime ? (
+          <span className="text-cadenza-300">imported (a compound result crosses the boundary)</span>
+        ) : (
+          <span className="text-emerald-300">not needed (self-contained scalar/unit result)</span>
+        )}
+      </div>
+      <p className="pt-1 text-xs text-slate-500">
+        Cadenza compiles to a sandboxed WebAssembly component. A program that returns a compound value
+        imports a shared value-heap runtime; a scalar one is fully self-contained.
+      </p>
+    </div>
+  );
 }
 
 function DiagnosticsBody({ diagnostics, onJumpTo }: { diagnostics: Diag[]; onJumpTo: (f: number, t: number) => void }) {

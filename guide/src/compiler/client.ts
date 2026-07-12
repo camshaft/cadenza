@@ -2,7 +2,7 @@
 /// so any component can `await compiler.compile(...)` as if it were a local async function.
 
 import * as Comlink from "comlink";
-import type { CompilerApi, CompileOutcome, Diag, Surface, TypeAtInfo } from "./worker.ts";
+import type { CompilerApi, CompileOutcome, Diag, Surface, TypeAtInfo, DefineAtInfo } from "./worker.ts";
 
 let proxy: Comlink.Remote<CompilerApi> | null = null;
 
@@ -30,6 +30,11 @@ export function typeAt(text: string, from: Surface, byteOffset: number): Promise
   return client().typeAt(text, from, byteOffset);
 }
 
+/// The definition a reference at a UTF-8 byte offset points to, for go-to-definition.
+export function defineAt(text: string, from: Surface, byteOffset: number): Promise<DefineAtInfo | null> {
+  return client().defineAt(text, from, byteOffset);
+}
+
 /// `to` may be a surface (`ml`/`sexpr`) or an output-only view (`debug`/`flat`) for "show the raw AST".
 export type RenderTarget = Surface | "debug" | "flat";
 
@@ -45,4 +50,4 @@ export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }
 
-export type { CompileOutcome, Surface, Diag, TypeAtInfo };
+export type { CompileOutcome, Surface, Diag, TypeAtInfo, DefineAtInfo };

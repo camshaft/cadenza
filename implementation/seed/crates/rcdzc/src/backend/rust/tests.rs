@@ -595,6 +595,113 @@ fn rustc_roundtrip_mutual_recursion() {
     }
 }
 
+// ── sums → Rust enums ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_user_sum_emits_a_rust_enum_declaration() {
+    // A monomorphic user sum becomes a `pub enum` of its name: a nullary variant is a unit variant, a
+    // 1-payload variant carries its payload type, a multi-payload variant carries each positionally.
+    let rs = compile_rust(
+        "(module m (type Shape (Circle Int64) (Rect Int64 Int64)) \
+           (def (area (: s Shape)) (match s (((. Shape Circle) r) (* r r)) \
+                                            (((. Shape Rect) (tuple w h)) (* w h)))) (export area))",
+    );
+    // A 1-payload variant carries its payload directly (`Circle(i64)`); a MULTI-payload variant carries
+    // its payloads as ONE TUPLE (`Rect((i64, i64))`) — the single-`Ty::Tuple` payload the core models and
+    // the match reads as one indexed value, so the decl, construction, and match all agree.
+    assert!(
+        rs.contains("pub enum Shape { Circle(i64), Rect((i64, i64)) }"),
+        "enum decl:\n{rs}"
+    );
+    // Construction is `Enum::Variant(args)`; the match reads a Rust `match`.
+    assert!(rs.contains("Shape::Circle"), "ctor path:\n{rs}");
+    assert!(rs.contains("match"), "match lowering:\n{rs}");
+}
+
+#[test]
+fn a_generic_user_sum_emits_a_generic_enum() {
+    // A generic sum's params become the enum's type parameters (`T0`…), a param-typed payload renders as
+    // its `T{k}`, and a use at a concrete type instantiates them via `types::rust_type`.
+    // The type parameter `a` appears in the variant payload (`(Wrap a)`); the declaration is `(type Box
+    // (Wrap a))` — the params come from the lowercase names in the variant payloads, first-appearance order.
+    let rs = compile_rust(
+        "(module m (type Box (Wrap a)) \
+           (def (unwrap (: b (Box Int64))) (match b (((. Box Wrap) x) x))) (export unwrap))",
+    );
+    assert!(
+        rs.contains("pub enum Box<T0> { Wrap(T0) }"),
+        "generic enum decl:\n{rs}"
+    );
+    assert!(
+        rs.contains("unwrap(b: Box<i64>)"),
+        "instantiated use:\n{rs}"
+    );
+}
+
+#[test]
+fn the_builtin_option_maps_to_rusts_own_and_emits_no_enum() {
+    // The built-in `Option` maps to Rust's OWN `Option` — no synthetic `enum Option { … }` is emitted
+    // (that would shadow std's). Construction uses `Some(..)`/`None`, which resolve to std's.
+    let rs = compile_rust("(module m (def (wrap (: n Int64)) (Some n)) (export wrap))");
+    assert!(
+        !rs.contains("enum Option"),
+        "must not emit a synthetic Option enum:\n{rs}"
+    );
+    assert!(rs.contains("-> Option<i64>"), "std Option result:\n{rs}");
+    assert!(rs.contains("Some("), "std Some ctor:\n{rs}");
+}
+
+#[test]
+fn a_recursive_sum_declines_the_whole_function() {
+    // A recursive sum needs `Box` indirection (deferred), so its enum is not emitted — and a function
+    // taking/returning it DECLINES rather than emitting a signature naming an undeclared type.
+    let err = try_compile_rust(
+        "(module m (type IntList Nil (Cons (Tuple Int64 IntList))) \
+           (def (len (: xs IntList)) (match xs (((. IntList Nil) _) 0) \
+                                              (((. IntList Cons) (tuple h t)) (+ 1 (len t))))) (export len))",
+    )
+    .expect_err("a recursive sum must decline");
+    assert!(
+        err.iter()
+            .any(|d| d.contains("recursive") || d.contains("no emitted Rust enum")),
+        "decline reason should cite the recursive/unrepresentable sum: {err:?}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_user_sum_constructs_and_matches() {
+    // area(Circle 5) = 25, area(Rect 4 3) = 12 — construction + match run through rustc and match the
+    // wasm oracle. The driver constructs a variant and calls the export.
+    let rs = compile_rust(
+        "(module m (type Shape (Circle Int64) (Rect Int64 Int64)) \
+           (def (area (: s Shape)) (match s (((. Shape Circle) r) (* r r)) \
+                                            (((. Shape Rect) (tuple w h)) (* w h)))) (export area))",
+    );
+    if let Some(out) = rustc_run(&rs, "area(Shape::Circle(5))") {
+        assert_eq!(out, "25");
+    }
+    // A multi-payload variant carries ONE tuple, so it is constructed `Rect((4, 3))`.
+    if let Some(out) = rustc_run(&rs, "area(Shape::Rect((4, 3)))") {
+        assert_eq!(out, "12");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_builtin_option_matches() {
+    // unwrap-or(Some 8, _) = 8, unwrap-or(None, -1) = -1 — a match over std's Option, constructed with
+    // std's `Some`/`None` in the driver, runs and matches the oracle.
+    let rs = compile_rust(
+        "(module m (def (unwrap-or (: o (Option Int64)) (: d Int64)) \
+           (match o (((. Option Some) x) x) (((. Option None) _) d))) (export unwrap-or))",
+    );
+    if let Some(out) = rustc_run(&rs, "unwrap_or(Some(8), -1)") {
+        assert_eq!(out, "8");
+    }
+    if let Some(out) = rustc_run(&rs, "unwrap_or(None, -1)") {
+        assert_eq!(out, "-1");
+    }
+}
+
 // ── async / gas-metered emission ─────────────────────────────────────────────────────────────────
 
 /// Compile a program to the ASYNC Rust backend (gas-metered `async fn`s + the `CdzEnv` trait).
@@ -623,9 +730,10 @@ fn async_mode_emits_env_threaded_gas_metered_fns() {
     );
     // The gas/yield trait is declared once in the module.
     assert!(rs.contains("pub trait CdzEnv"), "trait:\n{rs}");
-    // The fn is async, takes `env: &mut E`, and charges gas at entry.
+    // The fn is async, takes `env: &mut __CdzE`, and charges gas at entry. The env type param is the
+    // reserved `__CdzE` (not a bare `E`) so it cannot collide with a user sum's Rust type name.
     assert!(
-        rs.contains("pub async fn sum_to<E: CdzEnv>(env: &mut E, n: i64)"),
+        rs.contains("pub async fn sum_to<__CdzE: CdzEnv>(env: &mut __CdzE, n: i64)"),
         "signature:\n{rs}"
     );
     assert!(rs.contains("env.consume(1).await;"), "gas charge:\n{rs}");
@@ -634,6 +742,41 @@ fn async_mode_emits_env_threaded_gas_metered_fns() {
         rs.contains("Box::pin(sum_to(env,"),
         "boxed recursive call:\n{rs}"
     );
+}
+
+#[test]
+fn async_env_type_param_does_not_collide_with_a_user_sum_named_e() {
+    // REGRESSION: the async env type param was a bare `E`; a user sum `(type E …)` maps to `enum E`, so
+    // `E::A` in the constructing code resolved to the type PARAMETER, not the enum (`no associated item
+    // named A`). The param is now the reserved `__CdzE`, so the enum `E` is unshadowed and constructs.
+    let rs = compile_rust_async(
+        "(module m (type E (A Int64) (B Int64)) (def (main) (E.B 7)) (export main))",
+    );
+    assert!(rs.contains("pub enum E {"), "user enum E emitted:\n{rs}");
+    assert!(rs.contains("<__CdzE: CdzEnv>"), "reserved env param:\n{rs}");
+    assert!(
+        !rs.contains("<E: CdzEnv>"),
+        "no bare-E param collision:\n{rs}"
+    );
+    // It compiles (the enum `E` and the env param no longer collide).
+    let driver = r#"
+struct M;
+impl prog::CdzEnv for M { async fn consume(&mut self, _: u64) {} }
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::*;
+    fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
+    fn r() -> RawWaker { RawWaker::new(core::ptr::null(), &V) }
+    static V: RawWakerVTable = RawWakerVTable::new(c, n, n, n);
+    let w = unsafe { Waker::from_raw(r()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn main() { let r = block_on(prog::main(&mut M)); if let prog::E::B(v) = r { println!("{}", v); } }
+"#;
+    if let Some(out) = rustc_run_driver(&rs, driver) {
+        assert_eq!(out, "7");
+    }
 }
 
 #[test]
