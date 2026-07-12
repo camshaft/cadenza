@@ -5184,6 +5184,79 @@ mod match_engine {
         );
     }
 
+    /// A match every UNGUARDED arm of which yields the SAME value COLLAPSES to that value — the probe
+    /// chain is dropped (the match analogue of `(if c x x)` → `x`). `(match a (1 x) (2 x) (_ x))` always
+    /// returns `x`, so it lowers to just `x` with no `i64.eq`/branch on `a`. Sound because the scrutinee
+    /// here is a trap-free parameter (nothing to preserve by evaluating it); a trapping scrutinee is
+    /// covered by `a_trapping_scrutinee_of_an_all_same_match_is_still_evaluated`.
+    #[test]
+    fn an_all_same_body_match_collapses_to_the_body() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        use wasmtime::component::Val;
+        let src = "(module m (def (f (: a Int64) (: x Int64)) \
+                     (match a (1 x) (2 x) (_ x))) (export f))";
+        // The collapse dropped the dispatch entirely: no equality probe on the scrutinee survives in the Lir.
+        let code = {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        assert!(
+            !code.contains(&Lir::I64Eq) && !code.iter().any(|i| matches!(i, Lir::If(_))),
+            "an all-same-body match must collapse to its body (no probe chain / branch), got: {code:?}"
+        );
+        // Every scrutinee value yields x — verify across a matched literal and the wildcard.
+        let bytes = component(src);
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(1), Val::S64(7)]),
+            7
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(9), Val::S64(7)]),
+            7
+        );
+    }
+
+    /// The all-same-body collapse is gated on a TRAP-FREE scrutinee: the discriminant is unused after the
+    /// collapse, but the scrutinee was evaluated to drive the (now-gone) probes, so a scrutinee that could
+    /// trap must STILL be evaluated. `(match (/ 10 b) (1 x) (_ x))` always yields `x`, but the division
+    /// must still run — `b = 0` traps rather than returning `x`.
+    #[test]
+    fn a_trapping_scrutinee_of_an_all_same_match_is_still_evaluated() {
+        use wasmtime::component::Val;
+        let src = "(module m (def (f (: b Int64) (: x Int64)) \
+                     (match (/ 10 b) (1 x) (_ x))) (export f))";
+        let bytes = component(src);
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(2), Val::S64(7)]),
+            7,
+            "a non-trapping scrutinee still yields the common body"
+        );
+        assert!(
+            call_traps(&bytes, "f", &[Val::S64(0), Val::S64(7)]),
+            "a div-by-zero scrutinee must trap even though every arm yields the same value"
+        );
+    }
+
     #[test]
     fn a_large_scalar_match_beyond_the_br_table_cap_compiles_and_dispatches() {
         // A scalar match with MORE arms than the br_table density cap (>256 int arms) is INELIGIBLE for

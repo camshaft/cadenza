@@ -939,6 +939,25 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             "matching a compound value needs a heap walk (not yet built)",
         ));
     }
+    // ALL-SAME-BODY COLLAPSE: if every arm is UNGUARDED and all their bodies lower to the SAME core, the
+    // match computes that value for every scrutinee — so it collapses to the body, dropping the probe
+    // chain (the match analogue of `(if c x x)` → `x`). Guarded arms are excluded: a guard may fail, so
+    // its arm does not unconditionally yield its body — the choice is then observable and the chain must
+    // stay. Sound ONLY when the scrutinee is TRAP-FREE: the discriminant is otherwise unused after the
+    // collapse, but the scrutinee was evaluated to drive the (now-gone) probes, so a scrutinee that could
+    // trap must still be evaluated (keep the chain). `core_equiv` is the same conservative pure-core
+    // equality the `if`-identical-branches fold uses; a binder arm's body `core_of` reads the scrutinee
+    // (Case 5), so `(match a (n n))`'s arm equals `core_of(a)` and only collapses when every arm agrees.
+    if probes.iter().all(|(_, guard, _)| guard.is_none())
+        && let Some((_, _, first_body)) = probes.first()
+        && probes[1..]
+            .iter()
+            .all(|(_, _, body)| core_equiv(db, *body, *first_body))
+        && is_trap_free(db, scrutinee)
+    {
+        trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, "match with all arms yielding the same value collapses to the body (trap-free scrutinee)");
+        return core_of(db, *first_body);
+    }
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = probes.len(), "match stays runtime (scalar scrutinee → probe chain)");
     Core::Match {
         scrutinee,
