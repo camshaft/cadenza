@@ -7243,18 +7243,42 @@ mod stage1 {
     }
 
     #[test]
-    fn a_handle_arm_binds_its_params_and_state_in_scope() {
-        // E1b: an arm `(op (params…) state body)` binds the operation parameters AND the state binder in
-        // the arm body — so a reference to `s` (state) in a `resume` is IN SCOPE, not an unbound-name
-        // error. Full lowering is still declined (E1c consumes the scope), so the program declines; the
-        // point is it must NOT crash and must NOT fault CDZ0101 on the arm binders. Before E1b this
-        // faulted CDZ0101 (unbound `s`); after, it declines cleanly on the not-yet-lowered handler.
+    fn a_stateful_handler_threads_its_state_across_performs() {
+        // E1c-2: a handler that FOLDS state — `(resume s (+ s 1))` hands back the current state and
+        // threads `s+1` forward — is reduced by the evaluation-order fold. `(Fresh.next)` reads state
+        // `0`; three performs in a `do` see 0, 1, 2, and the `do` yields the last (2). The state binder
+        // `s` (bound in scope by E1b) is substituted with the threaded state at each perform. The whole
+        // handle becomes plain arithmetic, so it runs to 2 (`capabilities-and-effects.md` §A Handler
+        // Threads State Across The Operations It Discharges).
         let src = "(do (effect Fresh (op next (-> Unit Int64))) \
                    (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
-                   ((. Fresh next)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a handler with state declines until E1c lowers it (but scope resolves)"
+                   (do ((. Fresh next)) ((. Fresh next)) ((. Fresh next))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a stateful tail-resumptive handler compiles and runs"),
+                "main"
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn resuming_with_a_wrong_type_value_is_cdz0201() {
+        // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
+        // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is
+        // Typed). `(resume true s)` for an `(-> Int64 Int64)` op resumes with a Bool — CDZ0201 (the
+        // result-type companion of the perform-argument check). Without the check the fold would silently
+        // substitute `true` as `(E.op 1)`'s value, a type-confusion miscompile.
+        let src = "(do (effect E (op op (-> Int64 Int64))) \
+                   (def (main) (handle unit ((E.op (n) s (resume true s))) (E.op 1))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a wrong-type resume value must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0201"),
+            "expected CDZ0201 (resume value vs result type), got: {}",
+            err.message
         );
     }
 
