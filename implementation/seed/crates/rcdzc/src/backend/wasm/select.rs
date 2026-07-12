@@ -59,11 +59,17 @@ const OP_VEC_LEN: &str = "vec-len";
 const OP_DROP: &str = "drop";
 
 /// Whether a solved type is a HEAP VALUE — one held as an owned runtime handle that the Perceus
-/// contract reclaims (a tuple; later a record/sum/collection). A scalar (integer/bool/unit) owns no
-/// heap cell, so it is never dup'd/drop'd. This is what decides which `let` bindings get a closing
-/// `drop`.
+/// contract reclaims (a tuple, record, sum, or list). A scalar (integer/bool/unit) owns no heap cell,
+/// so it is never dup'd/drop'd. This is what decides which `let` bindings get a closing `drop`, and it
+/// gates the branchless-`select` `if` lowering OUT for a heap result (a `select` on a handle would be
+/// ill-formed). A `Ty::List` is an owned `vec-*` handle exactly like a tuple/record/sum — it MUST be
+/// listed here, and `valtype_of` already agrees it is an i32 handle; omitting it let an `if` over a
+/// list take the scalar `select` path and emit a module that failed wasm validation (i64/i32 mismatch).
 fn is_heap_type(ty: &Ty) -> bool {
-    matches!(ty, Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. })
+    matches!(
+        ty,
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_)
+    )
 }
 
 /// Whether the reference to the `let` binding `binder` ESCAPES the node at `id` — i.e. its reference
@@ -1383,11 +1389,17 @@ fn emit(
             }
             Ok(()) // leaves [list] — the list handle
         }
-        // `List.len` — emit the list handle, then `vec-len` (→ u32 length, an i32 slot). The result is an
-        // Int64 at the type level; `vec-len` returns a u32 (i32 slot) that the boundary lifts.
+        // `List.len` — emit the list handle, then `vec-len` (→ u32 length, an i32 slot). `List.len`'s
+        // type is `Int64` (an i64 slot), so EXTEND the i32 length to i64 (unsigned — a length is
+        // non-negative). Without this the op left an i32 on the stack where an i64 is expected (the
+        // function result, or any enclosing i64 context), so a `List.len` whose list came through a
+        // runtime `if` (not folded to a constant) emitted a module that FAILED wasm validation
+        // ("expected i64, found i32"). A folded `List.len` over a literal never reaches here (it becomes
+        // a `ConstInt`), which is why the constant control validated while the runtime case did not.
         Core::ListLen { operand } => {
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [list]
-            out.push(Lir::CallImport(OP_VEC_LEN)); // → [len]
+            out.push(Lir::CallImport(OP_VEC_LEN)); // → [len:i32]
+            out.push(Lir::I64ExtendI32U); // → [len:i64] — List.len : Int64
             Ok(())
         }
         // A runtime SUM construction — `(Option.Some 5)` or a nullary `None`. Build the PAYLOAD handle,

@@ -838,6 +838,42 @@
   (input  (do (def (main) (List.len (List.concat (list 1 2 3) (list 4 5)))) (export main)))
   (output (: 5 Int64)))
 
+; A `(List a)` produced by a runtime `if` (both branches lists, unified into one handle) then consumed
+; by `List.len` — the list analogue of the sum-through-if cases above. A list is a value-heap value (an
+; owned `vec-*` handle, an i32 slot) exactly like a tuple/record/sum, so an `if` over two lists joins to
+; one i32 handle and `List.len` reads it. A generation that did not treat a list as a heap type at the
+; `if` join (taking the scalar branchless-`select` path) OR that left `List.len`'s `vec-len` result as an
+; i32 where `List.len : Int64` needs an i64 emitted a STRUCTURALLY INVALID wasm module (wasm validation:
+; "expected i64, found i32"). A well-typed program must never produce invalid wasm.
+
+(case "a list chosen by a runtime if is length-measured without emitting invalid wasm"
+  (doc    "`(List.len (if (> b 0) (list 1 2 3) (list 4 5)))` with b = 5 selects the first list and reads
+           its length = 3. The `if` unifies two `(List Int64)` branches into one heap handle, which
+           `List.len` measures. A folded `(List.len (list 1 2 3))` never exercises this runtime path (it
+           folds to a constant); this drives the emitted `if`-join over a list handle + the runtime
+           `vec-len`, which together must produce VALID wasm (a list is a heap i32 handle, and List.len's
+           i32 length extends to the Int64 i64 result). Expected: 3.")
+  (input  (do (def (main (: b Int64)) (List.len (if (> b 0) (list 1 2 3) (list 4 5)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 3 Int64)))
+
+(case "the runtime-if list takes its else branch and measures that length"
+  (doc    "The else path of the same program: with b = -1 the `if` selects `(list 4 5)` and `List.len`
+           reads 2. Pins that BOTH branches of the if-produced list are valid heap handles measured
+           correctly, not only the then branch. Expected: 2.")
+  (input  (do (def (main (: b Int64)) (List.len (if (> b 0) (list 1 2 3) (list 4 5)))) (export main)))
+  (call   main (: -1 Int64))
+  (output (: 2 Int64)))
+
+(case "a let-bound runtime-if list is length-measured with valid wasm"
+  (doc    "The `let`-bound companion: `(let ((l (if (> b 0) (list 1 2 3) (list 4 5)))) (List.len l))`
+           binds the if-produced list handle to `l` (a kept heap binding) and measures it — 3 for b = 5.
+           Pins that the branch-joined list handle survives a `let` binding and `List.len` on the bound
+           reference emits valid wasm, the shape a self-hosted reader takes threading a chosen list.")
+  (input  (do (def (main (: b Int64)) (let ((l (if (> b 0) (list 1 2 3) (list 4 5)))) (List.len l))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 3 Int64)))
+
 (case "an element read across a concatenation boundary is the right value"
   (doc    "`(Option.expect (List.at (List.concat (list 10 20 30) (list 40 50)) 3) …)` = 40 — index 3 of
            the concatenation is the FIRST element of the second operand, so the join places the second

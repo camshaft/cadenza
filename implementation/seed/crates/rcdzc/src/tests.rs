@@ -2953,6 +2953,36 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_if_list_is_length_measured_with_valid_wasm() {
+        // A `(List a)` produced by a RUNTIME `if` (neither branch folds away) then measured by `List.len`
+        // must emit VALID wasm and the right length. TWO bugs made it emit an invalid module: (1) a list
+        // was not an `is_heap_type`, so the `if` took the scalar branchless-`select` path (a `select` on
+        // an i32 handle is ill-formed); (2) `Core::ListLen` left `vec-len`'s i32 result on the stack where
+        // `List.len : Int64` needs an i64. `(List.len (if (> b 0) (list 1 2 3) (list 4 5)))` → 3 for b>0,
+        // 2 otherwise. The folded control (`a_list_constructs_and_its_length_folds`) never hits the runtime
+        // path, so it validated even before the fix — this drives the emitted `Core::ListLen` + `if`-join.
+        let src = "(module m (def (main (: b Int64)) \
+                     (List.len (if (> b 0) (list 1 2 3) (list 4 5)))) (export main))";
+        let bytes = component(src);
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed if-list-len run");
+            return;
+        };
+        for (arg, want) in [("5", "3"), ("-1", "2")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "if-list-len b={arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("if-list-len run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_mixed_element_list_is_rejected() {
         // A list is HOMOGENEOUS (collections-and-text.md §A List Is A Homogeneous Sequence): every element
         // shares one type. `(list 1 true)` mixes Int64 and Bool — a type mismatch (CDZ0203), the same
