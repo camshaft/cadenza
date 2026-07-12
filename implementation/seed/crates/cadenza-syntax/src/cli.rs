@@ -133,38 +133,44 @@ pub struct DiffArgs {
 pub struct QueryArgs {
     /// The s-expression pattern. Metavariables: `,x` (bind a node), `,@xs` (bind a run), `,_`
     /// (wildcard), `,(x GUARD…)` (guarded, e.g. `,(x is-literal)` / `,(x (head-is +))`).
-    pattern: String,
+    pub pattern: String,
 
     /// Input files or directories (recursed by extension). Omit (or use `-`) to read stdin.
-    files: Vec<String>,
+    pub files: Vec<String>,
 
     /// Input format. Inferred from each FILE's extension when omitted; required when reading stdin.
     #[arg(short, long, value_enum)]
-    from: Option<Fmt>,
+    pub from: Option<Fmt>,
 
     /// Print only the number of matches, not the matches themselves.
     #[arg(short, long)]
-    count: bool,
+    pub count: bool,
 
     /// Emit matches as JSON (`[{file?, span, matched, bindings}]`) for machine consumption.
     #[arg(long)]
-    json: bool,
+    pub json: bool,
 
     /// Keep only matches that occur INSIDE some ancestor matching this pattern (repeatable).
     #[arg(long)]
-    inside: Vec<String>,
+    pub inside: Vec<String>,
 
     /// Keep only matches that CONTAIN some descendant matching this pattern (repeatable).
     #[arg(long)]
-    has: Vec<String>,
+    pub has: Vec<String>,
 
     /// Drop matches that occur inside an ancestor matching this pattern (repeatable).
     #[arg(long = "not-inside")]
-    not_inside: Vec<String>,
+    pub not_inside: Vec<String>,
 
     /// Drop matches that contain a descendant matching this pattern (repeatable).
     #[arg(long = "not-has")]
-    not_has: Vec<String>,
+    pub not_has: Vec<String>,
+
+    /// A SEMANTIC filter: keep only matches whose binding has the asked-for type, e.g.
+    /// `--where 'type-of(x) = Int64'` (or `!=`). Only the unified `cdz` binary honors this (it needs
+    /// the compiler); the pure `cdz-syntax` front-end ignores it. See `cdz`'s combined-query path.
+    #[arg(long = "where")]
+    pub where_: Option<String>,
 }
 
 #[derive(Args)]
@@ -244,10 +250,10 @@ pub struct ConvertArgs {
     file: Option<String>,
 }
 
-/// The surface formats, as a clap `ValueEnum`. Mirrors [`Format`]; kept in the bin so the library
-/// takes no CLI dependency.
+/// The surface formats, as a clap `ValueEnum`. Mirrors [`Format`]. `pub` because it appears in the
+/// (now-`pub`) `QueryArgs::from` field that the `cdz` bin reads.
 #[derive(Clone, Copy, ValueEnum)]
-enum Fmt {
+pub enum Fmt {
     Binary,
     Sexpr,
     Ml,

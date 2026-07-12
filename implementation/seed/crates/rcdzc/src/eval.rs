@@ -983,6 +983,44 @@ pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::sync::Arc
     }
 }
 
+/// The condition occurrence and the two branches' element occurrences of an `if` whose branches both
+/// reduce to same-arity visible tuples — the result of [`reduce_to_if_of_tuples`].
+type IfOfTuples = (
+    StructId,
+    std::sync::Arc<[StructId]>,
+    std::sync::Arc<[StructId]>,
+);
+
+/// If `id` reduces (through refs/annotations) to an `(if cond T E)` whose BOTH branches reduce to
+/// compile-time-visible tuples of the SAME arity, return `(cond, te, ee)` — the condition occurrence and
+/// the two branches' element occurrences. This lets a projection push INTO the branches:
+/// `(. (if c T E) i)` → `(if c T[i] E[i])`, reusing the EXISTING element occurrences as the new `if`'s
+/// branches (NO ast synthesis, NO re-resolution — each occurrence keeps the scope it was resolved in).
+/// The un-projected sibling elements drop exactly as they do for a plain tuple projection
+/// (`reduce_to_tuple_elems` — a trapping sibling that folds away is never built, so never evaluated), and
+/// `cond` is evaluated in both forms, so the fold is value- and trap-preserving. `None` when the operand
+/// is not such an `if`, hits a KEPT multi-use binding (opaque — a runtime tuple, read by `arr-get`), or
+/// the branch tuples disagree in arity (then the projection stays a runtime `Core::Proj`). Mirrors
+/// `reduce_to_tuple_elems`'s ref/annot/kept handling.
+pub fn reduce_to_if_of_tuples(db: &mut Db, id: StructId) -> Option<IfOfTuples> {
+    match resolved_of(db, id) {
+        Resolved::If { cond, then_, else_ } => {
+            let te = reduce_to_tuple_elems(db, then_)?;
+            let ee = reduce_to_tuple_elems(db, else_)?;
+            (te.len() == ee.len()).then_some((cond, te, ee))
+        }
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                None
+            } else {
+                reduce_to_if_of_tuples(db, value)
+            }
+        }
+        Resolved::Annot { expr, .. } => reduce_to_if_of_tuples(db, expr),
+        _ => None,
+    }
+}
+
 /// The primitive the value at `id` denotes, following a `Ref` — `+` resolves to a `Ref` to its
 /// `(intrinsic +)` node, which resolves to `Prim::Add`. `None` if not a primitive.
 pub fn prim_of(db: &mut Db, id: StructId) -> Option<Prim> {
@@ -1406,6 +1444,12 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // arm. Without this the catch-all below encoded it as `Unit`, so a `(-> … Bytes)` scheme
         // round-tripped to `(-> … Unit)` and `Bytes.of`/`Bytes.len` mis-typed.
         Ty::Bytes => db.push_name("Bytes"),
+        // A string type-value: the bare name `String` (a leaf), the exact `Bytes` analogue. Round-trips
+        // with `decode_ty`'s `"String"` arm. Without it the catch-all encoded `String` as `Unit`, so a
+        // `(-> String Sum)` variant-constructor scheme round-tripped to `(-> Unit Sum)` — a `String`-payload
+        // variant `(type Tag (Named String) …)` then unified its `"x"` argument against `Unit` ("cannot
+        // unify Unit with String"). The same round-trip hole the `Bytes` arm above fixed for bytes.
+        Ty::String => db.push_name("String"),
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }

@@ -204,6 +204,17 @@ pub enum Prim {
     /// `(Some byte)` / `(None unit)`; a runtime read emits `Core::BytesAt` (a bounds-checked `bytes-get`
     /// boxed into `Some`, else `None`). The byte companion of `List.at`; monomorphic (a byte is Int64).
     BytesAt,
+    /// `Bytes.concat` — append two byte sequences `Bytes → Bytes → Bytes`. A constant pair folds to a
+    /// single `Core::BytesOf`; a runtime pair emits `Core::BytesConcat` (`bytes-concat`). Byte companion
+    /// of `List.concat`.
+    BytesConcat,
+    /// `Bytes.slice` — the FALLIBLE sub-range read `Bytes → Int64 → Int64 → (Option Bytes)`. In range
+    /// (`start >= 0`, `len >= 0`, `start + len <= bytes-len`) → `Some(bytes-slice)`, else `None` (the emit
+    /// bounds-checks first — the runtime `bytes-slice` would TRAP on OOB). Folds a constant.
+    BytesSlice,
+    /// `Bytes.compact` — `Bytes → Bytes`, a content-equal sequence with independent storage (rope
+    /// collapse). Total; a constant folds to itself, a runtime value emits `bytes-compact`.
+    BytesCompact,
     /// `String.at` — the FALLIBLE scalar-indexed read. `String → Int64 → (Option String)`: `Some` of the
     /// ONE-scalar string at that Unicode SCALAR position when in bounds (`0 <= i < scalar-len`), `None`
     /// otherwise (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping + #A String Is
@@ -211,6 +222,19 @@ pub enum Prim {
     /// index FOLDS to `(Some "<char>")` / `(None unit)` (`chars().nth(i)`); a runtime string declines
     /// (the byte-rope indexed read arrives later). The string companion of `List.at`.
     StrAt,
+    /// `String.concat` — the TOTAL binary join `String → String → String` (the `(meta apply)` of the
+    /// `concat` field of the `String` module). On two CONSTANT strings it FOLDS to their concatenation
+    /// (`(String.concat "hello" " world")` → `"hello world"`); a runtime operand declines (the byte-rope
+    /// join arrives with the runtime string heap). The compiler builds error messages and export names
+    /// this way (collections-and-text.md #Strings Concatenate).
+    StrConcat,
+    /// `String.slice` — the FALLIBLE sub-range read `String → Int64 → Int64 → (Option String)` by SCALAR
+    /// offsets (`start`, `end`, half-open `[start, end)`). In range (`0 <= start <= end <= scalar-len`) →
+    /// `Some substring`, else `None` (a reversed, over-long, or negative bound). A CONSTANT string +
+    /// constant bounds FOLD to `(Some "<substr>")` / `(None unit)` (indexed by Unicode scalar, NOT byte);
+    /// a runtime string declines (the byte-rope slice arrives later). The string companion of
+    /// `Bytes.slice`, but cut by scalar offset and with an `(start, end)` — not `(start, len)` — range.
+    StrSlice,
 }
 
 impl Prim {
@@ -260,7 +284,12 @@ impl Prim {
             "str-scalar-len" => Some(Prim::StrScalarLen),
             "str-byte-len" => Some(Prim::StrByteLen),
             "bytes-at" => Some(Prim::BytesAt),
+            "bytes-concat" => Some(Prim::BytesConcat),
+            "bytes-slice" => Some(Prim::BytesSlice),
+            "bytes-compact" => Some(Prim::BytesCompact),
             "str-at" => Some(Prim::StrAt),
+            "str-concat" => Some(Prim::StrConcat),
+            "str-slice" => Some(Prim::StrSlice),
             _ => None,
         }
     }

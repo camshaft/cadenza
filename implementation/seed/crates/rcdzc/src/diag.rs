@@ -53,6 +53,23 @@ pub enum Code {
     /// could never have produced a value (almost always a defect). The error-severity companion is
     /// `ConstTrap` (CDZ0304), emitted when the same provable trap IS observed.
     DeadTrap,
+    /// An effect operation is reached at a point with NEITHER an enclosing handler for its effect NOR an
+    /// enclosing host delegation of it — the merged "no home for a reached effect" check
+    /// (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). This single code
+    /// subsumes both the reached-but-undelegated host operation and the undischarged intra-program effect
+    /// (the retired CDZ0402), because host-binding is an entrypoint routing decision, not a
+    /// declaration-time property — an effect reached the entrypoint's top with no home.
+    EffectNoHome,
+    /// A handler arm names an operation the arm's effect does not declare — a closed-set violation
+    /// (`capabilities-and-effects.md` §A Handler Arm Names An Operation Its Effect Declares). An effect's
+    /// operations are a closed, statically-known set (like a sum's variants), so discharging an operation
+    /// that does not exist is ill-formed.
+    HandlerUndeclaredOp,
+    /// A host delegation names an effect the delegated computation never reaches — latent authority
+    /// (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). The manifest must
+    /// be exactly the effects that escape, no more and no fewer, so a granted-but-unexercised capability
+    /// is rejected rather than carried.
+    LatentAuthority,
 }
 
 impl Code {
@@ -69,6 +86,9 @@ impl Code {
             Code::ConstTrap => "CDZ0304",
             Code::DeadTrap => "CDZ0305",
             Code::NonExhaustive => "CDZ0210",
+            Code::EffectNoHome => "CDZ0401",
+            Code::HandlerUndeclaredOp => "CDZ0403",
+            Code::LatentAuthority => "CDZ0404",
         }
     }
 }

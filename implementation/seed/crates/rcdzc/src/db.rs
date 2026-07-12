@@ -113,6 +113,48 @@ pub struct TypeDecl {
     pub synth: Option<StructId>,
 }
 
+/// One operation of an effect declaration — a `(op NAME (-> Param Result))` clause. Its position in
+/// [`EffectDecl::ops`] is its stable operation index (declaration order), the analogue of a variant's
+/// discriminant. An effect's operations are a closed, statically-known SET (like a sum's variants or a
+/// record's fields), so a duplicate operation name is ill-formed (CDZ0201).
+#[derive(Clone, PartialEq, Debug)]
+pub struct OpDecl {
+    /// The operation's declared name (`emit` in `(op emit (-> Int64 Unit))`).
+    pub name: String,
+    /// The operation's NAME occurrence — the `op` clause's name atom. A duplicate-operation diagnostic
+    /// anchors here.
+    pub name_occ: StructId,
+    /// The operation's TYPE occurrence — the `(-> Param Result)` arrow written after the name. Copied
+    /// into the synthesized op-value's `(meta t)` so a performance `(E.op a)` types as an ordinary
+    /// application against that arrow (`capabilities-and-effects.md` §Performing An Operation Is Typed).
+    /// `None` for a malformed `(op NAME)` with no type.
+    pub ty: Option<StructId>,
+}
+
+/// An `(effect NAME (op f (-> A B)) …)` declaration scanned from the top level — a routing-agnostic
+/// contract naming an effect and typing each of its operations (`capabilities-and-effects.md` §An Effect
+/// Declaration Names The Effect And Types Its Operations). Modeled as the effect analogue of a
+/// [`TypeDecl`]: identity is the declaration OCCURRENCE (not the name), so two effects that declare a
+/// same-named operation never collide (the op is reached through its effect). Its `synth` record —
+/// fields = operation values, like a sum record's fields = variant constructors — is built by
+/// `effects::synthesize`, so `E.op` is ordinary member access and nothing is privileged by name.
+#[derive(Clone, PartialEq, Debug)]
+pub struct EffectDecl {
+    /// The effect's name (`E` in `(effect E …)`).
+    pub name: String,
+    /// The declaration occurrence — the effect's NOMINAL IDENTITY (the arena occurrence, as `TypeDecl`)
+    /// and the anchor for a declaration-level diagnostic. Two `(effect Foo …)` declared separately are
+    /// DISTINCT effects even with the same name.
+    pub occ: StructId,
+    /// The operations in declaration order — each position's index is its stable operation index.
+    pub ops: Vec<OpDecl>,
+    /// The SYNTHESIZED record occurrence — the record whose `(meta t)` marks it an effect and whose
+    /// fields are its operation values. `None` until `effects::synthesize` runs during `Db::load`;
+    /// ALWAYS `Some` once the `Db` exists. This is what the effect NAME resolves to (a `Ref` to it),
+    /// reached by the ordinary scope→top-level lookup like a `def`/`type` — no separate name map.
+    pub synth: Option<StructId>,
+}
+
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
 /// (a call whose callee transitively references itself declines before any inlining — see
 /// `eval::is_recursive`), so this only guards a non-recursive fold that nests unexpectedly deep. Kept
@@ -179,6 +221,10 @@ pub struct Db {
     /// The top-level `(type …)` sum declarations, from the scan (their variant sets validated at
     /// well-formedness time — a duplicate variant name is CDZ0201).
     pub type_decls: Vec<TypeDecl>,
+    /// The top-level `(effect …)` declarations, from the scan (their operation sets validated at
+    /// well-formedness time — a duplicate operation name is CDZ0201). The effect analogue of
+    /// `type_decls`; identity is the declaration occurrence.
+    pub effect_decls: Vec<EffectDecl>,
 
     /// For each `StructId`, the `List` occurrence that holds it as a child, or `None` for the root.
     /// The structure arena is NOT deduplicated, so every occurrence has exactly one parent — this is
@@ -471,7 +517,7 @@ impl Db {
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
         let mut prelude = crate::prelude::install(&mut ast);
-        let (defs, exports, mut type_decls) = scan_top_level(&ast);
+        let (defs, exports, mut type_decls, effect_decls) = scan_top_level(&ast);
         // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
         // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
         // corpus surface). They scan exactly like a user declaration; a user `(type Option …)` shadows
@@ -488,6 +534,11 @@ impl Db {
         // BEFORE the parent index (which must index the synthesized nodes so a name inside a synthesized
         // ctor type resolves by the scope walk).
         crate::sums::synthesize(&mut ast, &mut type_decls);
+        // Synthesize each `(effect …)` as a record (fields = operation values), the effect analogue of
+        // the sum synthesis above — AFTER the scan (it reads `effect_decls`) and BEFORE the parent index
+        // (which must index the synthesized nodes so a name inside a synthesized op type resolves).
+        let mut effect_decls = effect_decls;
+        crate::effects::synthesize(&mut ast, &mut effect_decls);
         // Bind the built-in sums' names in the PRELUDE map (the last-consulted lookup): the sum name to
         // its record (a type constructor / type-value), each variant name BARE to its ctor field. So a
         // reference to `Some`/`None`/`Ok`/`Err`/`Option`/`Result` resolves through the ordinary
@@ -529,6 +580,7 @@ impl Db {
             defs,
             exports,
             type_decls,
+            effect_decls,
             parent,
             child_ix,
             scope_skip,
@@ -780,6 +832,23 @@ impl Db {
         self.type_decls.iter().find(|t| t.occ == occ)
     }
 
+    /// The SYNTHESIZED record occurrence an effect NAME resolves to — the effect analogue of
+    /// `type_decl_by_name`. `E` in value position denotes its record (fields = operation values), so
+    /// `E.op` is ordinary member access. `None` if no effect of that name is declared.
+    pub fn effect_decl_by_name(&self, name: &str) -> Option<StructId> {
+        self.effect_decls
+            .iter()
+            .find(|e| e.name == name)
+            .and_then(|e| e.synth)
+    }
+
+    /// The [`EffectDecl`] whose DECLARATION OCCURRENCE is `occ` — the reverse of the identity an
+    /// operation's `(meta effect-op)` channel carries, so a later pass recovers an effect's operation set
+    /// from a projected op value. `None` if `occ` names no effect declaration.
+    pub fn effect_decl_by_occ(&self, occ: StructId) -> Option<&EffectDecl> {
+        self.effect_decls.iter().find(|e| e.occ == occ)
+    }
+
     /// The top-level items whose head is a form the compiler does NOT model — `(effect …)`, `(pragma
     /// …)`, or any other unrecognized top-level declaration — as `(head-name, occurrence)` pairs. A
     /// program containing one DECLINES (decline-don't-miscompile): the compiler cannot claim to compile a
@@ -994,10 +1063,11 @@ fn build_scope_binders(
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
 /// from the top form only, without entering any body. Recognizes `(module NAME item…)`, a bare
 /// `(do item…)`, or a lone item.
-fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
+fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>, Vec<EffectDecl>) {
     let mut defs: Vec<Def> = Vec::new();
     let mut exports: Vec<Export> = Vec::new();
     let mut types: Vec<TypeDecl> = Vec::new();
+    let mut effects: Vec<EffectDecl> = Vec::new();
 
     for item in top_items(ast) {
         if let Some(tail) = ast.as_form(item, "def") {
@@ -1029,6 +1099,10 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
             && let Some(decl) = scan_type_decl(ast, item)
         {
             types.push(decl);
+        } else if ast.as_form(item, "effect").is_some()
+            && let Some(decl) = scan_effect_decl(ast, item)
+        {
+            effects.push(decl);
         }
     }
 
@@ -1047,7 +1121,44 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
         e.def = def_of_name.get(e.name.as_str()).copied();
     }
 
-    (defs, exports, types)
+    (defs, exports, types, effects)
+}
+
+/// Scan an `(effect NAME (op f (-> A B)) …)` declaration at `item` into an [`EffectDecl`] — the effect
+/// name and each operation (its name occurrence + type occurrence). `synth` is left `None` (filled by
+/// `effects::synthesize`). Returns `None` if `item` is not an `(effect …)` form. The effect analogue of
+/// `scan_type_decl`. A malformed operation clause (not `(op NAME TYPE)`) is skipped; the name may be
+/// empty (malformed `(effect)`), in which case it binds nothing.
+pub(crate) fn scan_effect_decl(ast: &Arenas, item: StructId) -> Option<EffectDecl> {
+    let tail = ast.as_form(item, "effect")?;
+    let name = tail
+        .first()
+        .and_then(|&s| ast.as_name(s))
+        .unwrap_or("")
+        .to_string();
+    let mut ops = Vec::new();
+    for &clause in tail.iter().skip(1) {
+        // Each operation is `(op NAME TYPE)`. The op keyword names the clause; the first tail element is
+        // the operation name, the second its type expression `(-> Param Result)`.
+        let Some(op_tail) = ast.as_form(clause, "op") else {
+            continue;
+        };
+        let Some(&name_occ) = op_tail.first() else {
+            continue;
+        };
+        let op_name = ast.as_name(name_occ).unwrap_or("").to_string();
+        ops.push(OpDecl {
+            name: op_name,
+            name_occ,
+            ty: op_tail.get(1).copied(),
+        });
+    }
+    Some(EffectDecl {
+        name,
+        occ: item,
+        ops,
+        synth: None,
+    })
 }
 
 /// Scan a `(type NAME variant…)` declaration at `item` into a [`TypeDecl`] — the name, each variant
@@ -1168,7 +1279,7 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// `(pragma …)`), and the whole program DECLINES rather than silently ignoring it and compiling the rest
 /// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
 /// meaningful). Kept in sync with `scan_top_level`'s branches.
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type"];
+const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect"];
 
 #[cfg(test)]
 mod tests {

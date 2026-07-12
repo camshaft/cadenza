@@ -249,6 +249,18 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, bytes, out);
             collect_call_callees(db, index, out);
         }
+        crate::core::Core::BytesConcat { lhs, rhs } => {
+            collect_call_callees(db, lhs, out);
+            collect_call_callees(db, rhs, out);
+        }
+        crate::core::Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            collect_call_callees(db, bytes, out);
+            collect_call_callees(db, start, out);
+            collect_call_callees(db, len, out);
+        }
+        crate::core::Core::BytesCompact { operand } => collect_call_callees(db, operand, out),
         crate::core::Core::Convert { operand, .. } | crate::core::Core::Not { operand } => {
             collect_call_callees(db, operand, out)
         }
@@ -311,6 +323,11 @@ fn collect_cont_callees(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<
         crate::core::SumCont::Guarded { cond, body, els } => {
             collect_call_callees(db, *cond, out);
             collect_call_callees(db, *body, out);
+            collect_cont_callees(db, els, out);
+        }
+        // A literal test reaches callees through both continuations (the `path` walk has no calls).
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_cont_callees(db, then_, out);
             collect_cont_callees(db, els, out);
         }
         crate::core::SumCont::Switch { arms, .. } => {

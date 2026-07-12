@@ -247,6 +247,68 @@ pub fn type_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<TypeAt
     }))
 }
 
+/// The definition a name at a source byte offset refers to — for go-to-definition. Resolves the
+/// innermost user node at the offset; if it is a REFERENCE to a binding (`Resolved::Ref`), returns the
+/// byte range of the bound value (the `let`/`def`/parameter initializer occurrence). Returns `None`
+/// when the offset isn't on a resolvable reference, when it resolves to something without a source
+/// span (a prelude/built-in binding), or when it already IS the definition. Total on a well-parsed
+/// buffer.
+#[wasm_bindgen(getter_with_clone)]
+pub struct DefineAt {
+    /// Byte range of the definition the reference points to.
+    pub from: u32,
+    pub to: u32,
+    /// Byte range of the reference itself (the token under the cursor), so the caller can confirm the
+    /// cursor was on a navigable name.
+    pub ref_from: u32,
+    pub ref_to: u32,
+}
+
+#[wasm_bindgen]
+pub fn define_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<DefineAt>, JsError> {
+    let from = parse_format(from)?;
+    let (ast_bytes, spans) = match parse_spanned(text, from) {
+        Ok(pair) => pair,
+        Err(_) => return Ok(None),
+    };
+    let Some(spans) = spans else { return Ok(None) };
+    let off = byte_offset as usize;
+    let Some(node) = spans.node_at_offset(off) else {
+        return Ok(None);
+    };
+    let ref_span = spans.get(node).expect("node_at_offset returned a spanned node");
+    let arenas = match rcdzc::codec::decode(&ast_bytes) {
+        Some(a) => a,
+        None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
+    };
+    let mut db = rcdzc::db::Db::load(arenas);
+    // A name reference resolves to the occurrence it denotes:
+    //   - `Ref { value }`  — a nullary def's body, a `let` initializer, a parameter binder, a sum-type
+    //                        or prelude binding (prelude ones have no span, filtered below);
+    //   - `Lambda { body }` — a def WITH parameters (a function). Its body is where the definition is.
+    // That occurrence's source span IS the definition to jump to.
+    let target = match rcdzc::resolve::resolved_of(&mut db, rcdzc::ast::StructId(node.0)) {
+        rcdzc::resolved::Resolved::Ref { value } => value,
+        rcdzc::resolved::Resolved::Lambda { body, .. } => body,
+        _ => return Ok(None), // not a navigable reference (a literal, a prim, an unbound name, …)
+    };
+    // The target must be a USER node with a source span (a prelude binding has none — nothing to jump
+    // to in the editor). The span table is keyed in the shared index space (codec keeps ids aligned).
+    let Some(def_span) = spans.get(cadenza_syntax::ast::StructId(target.0)) else {
+        return Ok(None);
+    };
+    // Don't offer a no-op jump to the same place the cursor already is.
+    if def_span.start == ref_span.start && def_span.end == ref_span.end {
+        return Ok(None);
+    }
+    Ok(Some(DefineAt {
+        from: def_span.start as u32,
+        to: def_span.end as u32,
+        ref_from: ref_span.start as u32,
+        ref_to: ref_span.end as u32,
+    }))
+}
+
 /// Re-render one program from one surface to another — the guide's global syntax toggle.
 ///
 /// Because every surface is a lossless projection of the same binary AST, converting `text` from

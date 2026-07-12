@@ -10,6 +10,7 @@ import type { Extension } from "@codemirror/state";
 import { cadenzaLanguage } from "../editor/cadenzaLanguage.ts";
 import { cadenzaHighlighting } from "../editor/theme.ts";
 import { cadenzaHover } from "./cadenzaHover.ts";
+import { cadenzaGotoDef } from "./cadenzaGotoDef.ts";
 import { cadenzaLinter, lintGutter } from "./lintField.ts";
 import type { Diag, Surface } from "../compiler/client.ts";
 
@@ -69,6 +70,7 @@ export function PlaygroundEditor({ value, onChange, surface, onDiagnostics, onCu
         onDiagnostics: (d) => onDiagRef.current?.(d),
       }),
       cadenzaHover({ surface: () => surfaceRef.current, prepare: identityPrepare }),
+      cadenzaGotoDef({ surface: () => surfaceRef.current, prepare: identityPrepare }),
       EditorView.updateListener.of((u) => {
         if (u.selectionSet) {
           const head = u.state.selection.main.head;

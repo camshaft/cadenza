@@ -44,9 +44,33 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // (When Cadenza gains NOMINAL records, THAT is when a named Rust struct becomes the right
         // emission — the name will come from the language, not be synthesized.)
         Ty::Record(fields) => tuple_type(fields.values()),
-        // Sums, functions, and type/erased values have no native mapping yet.
+        // A SUM is a NOMINAL type — unlike a record it HAS a name (the declared sum name), so it maps to
+        // a Rust ENUM of that name (the backend emits the `enum <Name> { … }` declaration separately).
+        // A generic sum instantiation carries its type ARGS (`Option Int64` → args `[Int64]`), which
+        // become the Rust type parameters: `Option<i64>`. A monomorphic sum (`Sign`, no args) is the
+        // bare name. The enum name is sanitized (a `-` in a sum name → `_`), matching the declaration.
+        Ty::Sum { name, args, .. } => {
+            let ident = sum_ident(name);
+            if args.is_empty() {
+                Some(ident)
+            } else {
+                let mut params = Vec::with_capacity(args.len());
+                for a in args {
+                    params.push(rust_type(a)?);
+                }
+                Some(format!("{ident}<{}>", params.join(", ")))
+            }
+        }
+        // Functions and type/erased values have no native mapping.
         _ => None,
     }
+}
+
+/// The Rust identifier for a sum type / variant name — sanitized to a valid identifier the same way a
+/// def name is (`super::sanitize_ident`: a `-` and any non-ident char → `_`), so the emitted `enum`
+/// declaration, every `Name::Variant(...)` construction, and every `match` pattern agree on the spelling.
+pub fn sum_ident(name: &str) -> String {
+    super::sanitize_ident(name)
 }
 
 /// The Rust tuple type for a sequence of element types — `(T0, T1, …)`, each mapped recursively; a

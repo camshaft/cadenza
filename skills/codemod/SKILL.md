@@ -2,20 +2,22 @@
 name: codemod
 description: >-
   How to structurally search and rewrite Cadenza programs with the `cdz query` / `rewrite` codemod
-  tool, and how to ask the COMPILER for a semantic fact with `cdz type` / `cdz uses` (all in the
-  unified `cdz` binary). Read this whenever the task is finding or transforming code by SHAPE rather
-  than text — structural search-and-replace, a rename/peephole/wrap refactor, a multi-rule simplifier
-  pass, running a codemod across files/directories (apply in place, diff preview, or JSON),
+  tool, and how to ask the COMPILER for a semantic fact with `cdz type` / `cdz uses` / `cdz check` (all
+  in the unified `cdz` binary). Read this whenever the task is finding or transforming code by SHAPE
+  rather than text — structural search-and-replace, a rename/peephole/wrap refactor, a multi-rule
+  simplifier pass, running a codemod across files/directories (apply in place, diff preview, or JSON),
   structurally diffing two programs (which subtrees changed), finding duplicated subtrees (exact or
   near-clone / anti-unification), counting occurrences of a form, extracting spans of matching nodes,
   or building on the query/Tree matcher API — OR when the task is a SEMANTIC query the shape layer
-  can't answer: the type of a definition (`cdz type`) or every source location that references a
-  name (`cdz uses`, a span-mapped go-to-references). Covers the `,x`/`,@xs` pattern language,
+  can't answer: the type of a definition (`cdz type`), every source location that references a
+  name (`cdz uses`, a span-mapped go-to-references), or every well-formedness fault (`cdz check`,
+  "diagnostics as you type"). Covers the `,x`/`,@xs` pattern language,
   structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`),
   multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff`
   (structural tree-diff) and `clones` (content-hash duplicate + `--near` anti-unification)
   subcommands, `lint` mode (anti-pattern checker / CI gate), the semantic `type`/`uses` compiler
-  queries, the CLI, the library API, and the self-hosted sidecar map.
+  queries, the COMBINED `cdz query --where 'type-of(x) = T'` (a structural match filtered by a compiler
+  type predicate), the CLI, the library API, and the self-hosted sidecar map.
 ---
 
 # Structural query & rewrite (codemod) for Cadenza
@@ -76,9 +78,10 @@ scope/binding or type guards** (`refs`/`defines`/`type-of`) *inside a pattern*; 
 is the compiler's job, not the matcher's, to avoid duplicating the resolver. When you need a semantic
 fact — "what is the type of this node", "where is this name used" — use the `cdz type` / `cdz uses`
 compiler queries ([§Semantic queries](#semantic-queries-cdz-type--cdz-uses--the-compiler-as-oracle)),
-which ask `rcdzc` directly rather than re-deriving it in the pattern layer. (Combining the two —
-a structural selector filtered by a type predicate — is a planned `cdz query --where` increment; today
-run the structural query, then `cdz type` each hit.)
+which ask `rcdzc` directly rather than re-deriving it in the pattern layer. To COMBINE the two — a
+structural selector filtered by a type predicate — use `cdz query PATTERN --where 'type-of(x) = T'`
+([§Combined query](#combined-query-cdz-query----where--shape--meaning)); the pattern stays purely
+structural, the `--where` clause adds the semantic filter.
 
 ## CLI
 
@@ -203,7 +206,7 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
-## Semantic queries (`cdz type` / `cdz uses`) — the compiler as oracle
+## Semantic queries (`cdz type` / `cdz uses` / `cdz check`) — the compiler as oracle
 
 The codemod above is a **shape** layer: it never resolves a name or infers a type (that would
 duplicate the compiler's resolver). When you need a fact only the compiler knows, `cdz` — because it
@@ -226,6 +229,11 @@ no such definition `ghost`
 $ cdz uses helper prog.cdz
 prog.cdz:3:12
 prog.cdz:4:5
+
+# cdz check FILE — every well-formedness fault, "diagnostics as you type" (no export/run needed).
+# Exits non-zero on any error; a clean file prints nothing. An editor's inline squiggles / a CI gate.
+$ cdz check prog.cdz
+prog.cdz:2:16: error [CDZ0203]: if condition must be Bool, found Int64
 ```
 
 - **Why these are here and not codemod guards.** `type`/`uses` reach into `rcdzc` (inference,
@@ -239,12 +247,39 @@ prog.cdz:4:5
   order, each mapped to `file:line:col` via the span table this process kept (the cross-process CLI
   could only report raw node ids — this is the in-process win). A name with no references (or none
   such) prints nothing and exits 0.
+- **`check`** drives `Query::Diagnostics` — the full fault set (type mismatch, unbound name, duplicate
+  def/field, …) read WITHOUT gating on export/emit, so a mid-edit buffer with no `(export …)` still
+  reports. Each fault → `file:line:col: severity [CODE]: message`; exits non-zero iff any error-severity
+  fault. This is the "as you type" primitive an editor's inline diagnostics (and a CI lint) ride on.
 - **Format** is inferred from the file extension (`.cdz`/`.ml`→ml, `.sexp`/`.sexpr`→sexpr), like the
   codemod subcommands.
-- **Not yet:** a combined query (`cdz query '(f ,x)' --where 'type-of(x) = Int64'` — a structural
-  selector filtered by a compiler type predicate) is a planned increment. Today, run the structural
-  `query` and pass each hit's binding to `cdz type`. The underlying seam (both libraries, one shared
-  `StructId` space) already makes it reachable.
+
+## Combined query (`cdz query … --where …`) — shape ∧ meaning
+
+The structural `query` finds matches by SHAPE; `--where` filters them by a COMPILER fact. This is the
+one query neither the front-end nor the compiler can answer alone — `cdz` runs the structural search,
+then types each match's binding node (a batch of `TypeAt`), keeping only matches whose binding relates
+to the asked-for type. It needs a single FILE (a compiler query is per unit).
+
+```console
+# every call `(foo x)` whose argument x is Int64 — structural (foo ,x) AND semantic type-of(x)=Int64
+$ cdz query '(foo ,x)' --where 'type-of(x) = Int64' prog.sexp
+prog.sexp:3:30: (foo (: 42 Int64))
+  $x = (: 42 Int64)
+
+# the complement, with != ; and --count works too
+$ cdz query '(foo ,x)' --where 'type-of(x) != Int64' --count prog.sexp
+2
+```
+
+- **Predicate grammar** (minimal by design): `type-of(VAR) = TYPE` or `type-of(VAR) != TYPE`. VAR is a
+  metavariable the PATTERN binds (`,x` → `x`); TYPE is a rendered type taken verbatim, so a compound
+  `(-> Int64 Int64)` / `(List Int64)` works. A malformed predicate is a hard error.
+- **Only `cdz` honors `--where`** (it needs the compiler); the pure `cdz-syntax` front-end ignores the
+  flag. `--inside`/`--has`/… relational context composes with it. Output is the surviving matches with
+  `file:line:col` (or `--count`), same as `query`.
+- **Reach:** one FILE for now (a dir sweep would be a per-unit fan-out). Only `type-of` is wired as a
+  predicate; other facts (`uses`, effect row) are the natural extension.
 
 ## Library API — `cadenza_syntax::query`
 
@@ -325,12 +360,13 @@ its already-rewritten children, so a rule that exposes a new match collapses in 
 
 ## What is NOT here (and why)
 
-- **Scope- / binding-based guards and type guards INSIDE a pattern** (`,(x refs …)`, `,(x type-of …)`,
-  typed metavars) — the structural matcher stays dependency-free, so a *pattern* never resolves a name
-  or infers a type. The FACTS those would express ARE available — just as a separate command: use
-  `cdz uses` for references and `cdz type` for a node's type ([§Semantic queries](#semantic-queries-cdz-type--cdz-uses--the-compiler-as-oracle)).
-  What's still missing is FUSING them into one call (`cdz query PAT --where 'type-of(x)=T'`) — a
-  planned increment; today, structural-query then `cdz type` each hit.
+- **Type/binding guards INSIDE a pattern** (`,(x type-of Int64)`, `,(x refs …)`, typed metavars) — the
+  structural matcher stays dependency-free, so a *pattern* never resolves a name or infers a type. The
+  type FILTER is available a different way — as the `--where` clause on `cdz query`
+  ([§Combined query](#combined-query-cdz-query----where--shape--meaning)): the pattern is pure shape, the
+  `--where` adds the semantic predicate, kept as separate layers rather than a guard that reaches into
+  the checker. (A `refs`-based `--where` and typed metavars are the natural extension; only `type-of` is
+  wired today.)
 - **Scope-aware rename** (rename a binding + every reference, respecting shadowing) — `cdz uses` gives
   you the reference set; a validated multi-site rename built on it is not yet a single command.
 - **Addressed edits** (`insert`/`replace`/`delete`/`move` by node path/content-id) — the

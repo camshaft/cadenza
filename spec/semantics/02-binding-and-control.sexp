@@ -1244,9 +1244,11 @@
            compile time); `(Some n)` with n=0 must match `(Some 0)` and yield 100, not fall through to
            the binding arm `(Some k)`. Companion to \"nested patterns with literals\" above, whose
            scrutinee `(Some 0)` is a compile-time constant — this one pins the same refinement when the
-           payload is only known at run time.")
+           payload is only known at run time. The `((None _) …)` arm is present because exhaustiveness
+           is against the TYPE's variant set, not the scrutinee's known variant (the sibling case \"a sum
+           match missing a variant is non-exhaustive even when the scrutinee is the covered one\").")
   (input  (do
-            (def (f n) (match (Some n) ((Some 0) 100) ((Some k) k)))
+            (def (f n) (match (Some n) ((Some 0) 100) ((Some k) k) ((None _) -1)))
             (def (main) (f 0)) (export main)))
   (output (: 100 Int64)))
 
@@ -1254,9 +1256,48 @@
   (doc    "The companion of the case above: with n=7 the literal arm `(Some 0)` does not match, so the
            binding arm `(Some k)` binds k=7 and yields 7. Confirms the nested literal is a genuine
            runtime test (matching for 0, falling through otherwise) rather than always-taken or
-           always-skipped.")
+           always-skipped. The `((None _) …)` arm keeps the match exhaustive against `Option`'s variant
+           set (see the case above).")
   (input  (do
-            (def (f n) (match (Some n) ((Some 0) 100) ((Some k) k)))
+            (def (f n) (match (Some n) ((Some 0) 100) ((Some k) k) ((None _) -1)))
+            (def (main) (f 7)) (export main)))
+  (output (: 7 Int64)))
+
+(case "a boolean literal inside a constructor pattern refines the match"
+  (doc    "The bool-payload companion: a variant carrying a `Bool` payload can be matched against a
+           boolean LITERAL. `(F.S true)` matches `F.S` carrying exactly `true`; `(F.S k)` binds otherwise
+           (core-semantics.md #Pattern Matching, the literal refines the match). For a runtime `b=true`
+           the `(F.S true)` arm fires → 1. Pins that a literal payload test works for a Bool payload, not
+           only Int — the get-bool + i32 compare sibling of the Int literal test.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type F (S Bool) C)
+            (def (f b) (match (F.S b) ((F.S true) 1) ((F.S k) 0) ((F.C _) -1)))
+            (def (main) (f true)) (export main)))
+  (output (: 1 Int64)))
+
+(case "a literal inside an Ok pattern refines a Result match"
+  (doc    "The Result companion: `(Ok 0)` matches `Ok` carrying exactly `0`, `(Ok k)` binds otherwise,
+           `(Err e)` covers the error variant. For a runtime `n=3` the literal arm `(Ok 0)` does not
+           match, so `(Ok k)` binds k=3 → 3. Pins that a literal payload test composes with the
+           two-variant Result sum exactly as with Option.")
+  (input  (do
+            (def (f n) (match (Ok n) ((Ok 0) 100) ((Ok k) k) ((Err e) -1)))
+            (def (main) (f 3)) (export main)))
+  (output (: 3 Int64)))
+
+(case "a literal inside a NESTED constructor pattern refines the match"
+  (doc    "The nested-literal companion: `(Some (Some 0))` tests the INNER payload against the literal
+           `0`. `(Some (Some 0))` fires only when the doubly-wrapped value is exactly 0; `(Some (Some x))`
+           binds otherwise. For a runtime n=7 the literal arm does not match, so the binder arm yields 7.
+           Pins that a literal test at a DEEP payload path (`[Payload, Payload]`) works — the literal
+           refinement composes with the decision tree's nested descent.")
+  (input  (do
+            (def (f n) (match (Some (Some n))
+                         ((Some (Some 0)) 99)
+                         ((Some (Some x)) x)
+                         ((Some (None _)) -1)
+                         ((None _)        -2)))
             (def (main) (f 7)) (export main)))
   (output (: 7 Int64)))
 
