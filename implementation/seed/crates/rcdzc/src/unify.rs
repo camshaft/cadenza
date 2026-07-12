@@ -14,17 +14,17 @@
 //! — it is pure over [`Ty`].
 
 use crate::diag::{Code, Reject};
+use crate::fxhash::FxHashMap;
 use crate::ty::{IntTy, Scheme, Sign, Ty, Width};
-use std::collections::HashMap;
 use tracing::trace;
 
 /// A substitution: what each type, width, and SIGN variable has been solved to. Applied to a type,
 /// it replaces solved variables with their solutions (transitively).
 #[derive(Clone, Debug, Default)]
 pub struct Subst {
-    tys: HashMap<u32, Ty>,
-    widths: HashMap<u32, Width>,
-    signs: HashMap<u32, Sign>,
+    tys: FxHashMap<u32, Ty>,
+    widths: FxHashMap<u32, Width>,
+    signs: FxHashMap<u32, Sign>,
 }
 
 impl Subst {
@@ -302,15 +302,15 @@ impl Fresh {
 /// independent of every other. Returns the freshened type. This is what makes `+`'s `∀a. (Int a) →
 /// (Int a) → (Int a)` apply at a fresh `a` each time — generic over the integer type.
 pub fn instantiate(scheme: &Scheme, fresh: &mut Fresh) -> Ty {
-    let mut ty_map: HashMap<u32, u32> = HashMap::new();
+    let mut ty_map: FxHashMap<u32, u32> = FxHashMap::default();
     for &v in &scheme.ty_vars {
         ty_map.insert(v, fresh.var());
     }
-    let mut width_map: HashMap<u32, u32> = HashMap::new();
+    let mut width_map: FxHashMap<u32, u32> = FxHashMap::default();
     for &v in &scheme.width_vars {
         width_map.insert(v, fresh.var());
     }
-    let mut sign_map: HashMap<u32, u32> = HashMap::new();
+    let mut sign_map: FxHashMap<u32, u32> = FxHashMap::default();
     for &v in &scheme.sign_vars {
         sign_map.insert(v, fresh.var());
     }
@@ -320,9 +320,9 @@ pub fn instantiate(scheme: &Scheme, fresh: &mut Fresh) -> Ty {
 /// Rename the bound variables of a type per the fresh maps (a variable not in a map is free and kept).
 fn rename(
     ty: &Ty,
-    ty_map: &HashMap<u32, u32>,
-    width_map: &HashMap<u32, u32>,
-    sign_map: &HashMap<u32, u32>,
+    ty_map: &FxHashMap<u32, u32>,
+    width_map: &FxHashMap<u32, u32>,
+    sign_map: &FxHashMap<u32, u32>,
 ) -> Ty {
     match ty {
         Ty::Var(v) => Ty::Var(*ty_map.get(v).unwrap_or(v)),
@@ -360,14 +360,14 @@ fn rename(
     }
 }
 
-fn rename_width(w: Width, width_map: &HashMap<u32, u32>) -> Width {
+fn rename_width(w: Width, width_map: &FxHashMap<u32, u32>) -> Width {
     match w {
         Width::Var(v) => Width::Var(*width_map.get(&v).unwrap_or(&v)),
         other => other,
     }
 }
 
-fn rename_sign(s: Sign, sign_map: &HashMap<u32, u32>) -> Sign {
+fn rename_sign(s: Sign, sign_map: &FxHashMap<u32, u32>) -> Sign {
     match s {
         Sign::Var(v) => Sign::Var(*sign_map.get(&v).unwrap_or(&v)),
         other => other,

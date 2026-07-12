@@ -200,7 +200,7 @@ pub struct Db {
     /// synthesized body contributes no entry.
     ///
     /// [`defs`]: Db::defs
-    def_by_body: std::collections::HashMap<StructId, usize>,
+    def_by_body: crate::fxhash::FxHashMap<StructId, usize>,
 
     /// For each def NAME, the index in [`defs`] of the FIRST def with that name. Built once at load.
     /// `resolve_name` consults it for EVERY non-local, non-parameter name reference (before the prelude
@@ -226,7 +226,7 @@ pub struct Db {
     /// `db.sum_types` mistake). The `same_named_defs_are_distinct_bindings` test pins the invariant.
     ///
     /// [`defs`]: Db::defs
-    def_name_index: std::collections::HashMap<String, usize>,
+    def_name_index: crate::fxhash::FxHashMap<String, usize>,
 
     /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
     /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
@@ -259,7 +259,7 @@ pub struct Db {
     /// occurrence — bloating the arena and, worse, making the reduction non-idempotent (a node's fact
     /// must be stable across demands). The first demand builds and caches; every later one returns the
     /// same node, so `(Int 64)` denotes ONE module however many times it is written or demanded.
-    pub(crate) build_cache: std::collections::HashMap<BuildKey, StructId>,
+    pub(crate) build_cache: crate::fxhash::FxHashMap<BuildKey, StructId>,
 
     /// Memo of the static recursion analysis (`eval::is_recursive`): for a function BODY occurrence,
     /// whether that function is (transitively) recursive — a call whose callee reaches the same body.
@@ -268,7 +268,7 @@ pub struct Db {
     /// recursive function cannot be inlined to a normal form at compile time — it needs runtime
     /// specialization), which is what keeps a self-calling function from inlining without end / from
     /// exploding exponentially in appended nodes when its body branches.
-    pub(crate) recursive: std::collections::HashMap<StructId, bool>,
+    pub(crate) recursive: crate::fxhash::FxHashMap<StructId, bool>,
 
     /// Memo of one function body's DIRECT callee edges (`eval::collect_callees`): for a body/callee
     /// occurrence, the list of callee bodies its code calls (excluding nested `fn` boundaries). A pure
@@ -278,7 +278,7 @@ pub struct Db {
     /// `collect_callees`, which re-`resolved_of`s the whole subtree and clones a `Resolved` (owning a
     /// `Vec`) per node — an O(N²) clone/drop churn on a def-call chain. Memoized, each body's edges are
     /// computed once and the DFS just reads the cached slice.
-    pub(crate) callee_edges: std::collections::HashMap<StructId, Vec<StructId>>,
+    pub(crate) callee_edges: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
 
     /// Memo of an operator's `(meta t)` reduced to a CANONICAL [`Scheme`] (`eval::scheme_of`), keyed by
     /// the `(meta t)` NODE — which is SHARED across every application of the same operator (all `+`
@@ -288,7 +288,7 @@ pub struct Db {
     /// numbering; every caller `instantiate`s it — which renames the bound variables to truly-fresh ones
     /// — so a shared canonical scheme is correct for all uses. `None` caches "has no scheme". Mirrors
     /// `recursive`/`callee_edges` (a pure fact keyed by node identity).
-    pub(crate) scheme_cache: std::collections::HashMap<StructId, Option<crate::ty::Scheme>>,
+    pub(crate) scheme_cache: crate::fxhash::FxHashMap<StructId, Option<crate::ty::Scheme>>,
 
     /// Reusable SCRATCH buffers for the recursion walk (`eval::is_recursive`) — the visited set and the
     /// worklist of its iterative call-graph DFS. Held here (not allocated per call) so the walk churns
@@ -296,7 +296,7 @@ pub struct Db {
     /// and returns them. Their contents are meaningless between calls — this is workspace, not state,
     /// the one exception to the "columns are the state" rule, justified by the allocation it saves in a
     /// walk that runs once per function body.
-    pub(crate) rec_visited: std::collections::HashSet<StructId>,
+    pub(crate) rec_visited: crate::fxhash::FxHashSet<StructId>,
     pub(crate) rec_worklist: Vec<StructId>,
 
     /// Memo of a top-level definition's generalized SIGNATURE as a [`crate::ty::Scheme`] — its type as
@@ -306,7 +306,7 @@ pub struct Db {
     /// `None` remains only for a def with a genuinely undetermined parameter (no use constrained it —
     /// it grounds to `Any`), where the caller falls back to β-reduction. A pure function of the fixed
     /// def structure, so it caches like `build_cache`.
-    pub(crate) def_schemes: std::collections::HashMap<usize, Option<crate::ty::Scheme>>,
+    pub(crate) def_schemes: crate::fxhash::FxHashMap<usize, Option<crate::ty::Scheme>>,
 
     /// Memo of an UNANNOTATED RECURSIVE def's parameter types, solved by the connected def-body solve
     /// (`infer::solve_recursive_params` — ANF step 2 / A2). Keyed by the parameter's NAME occurrence
@@ -318,13 +318,13 @@ pub struct Db {
     /// `Param` reads this map (triggering the solve on first demand); the solve fills every parameter of
     /// the def at once. Order-independent (unification is), so the two ends agree regardless of demand
     /// order. A pure function of the fixed def structure, so it caches like `def_schemes`.
-    pub(crate) param_types: std::collections::HashMap<StructId, crate::ty::Ty>,
+    pub(crate) param_types: crate::fxhash::FxHashMap<StructId, crate::ty::Ty>,
 
     /// Guard against re-entering the recursive-parameter solve for a def already being solved — the
     /// solve types the body with a LOCAL env (not `type_of`), so a self-call reads the provisional
     /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
     /// mid-solve returns without recomputing. Holds the def indices whose solve is on the stack.
-    pub(crate) solving_params: std::collections::HashSet<usize>,
+    pub(crate) solving_params: crate::fxhash::FxHashSet<usize>,
 
     /// The set of `let`-binding INITIALIZER occurrences that `lower` decided to KEEP as an A-normal
     /// `Core::Let` binding — a runtime value used more than once, named once so it is computed once
@@ -337,7 +337,7 @@ pub struct Db {
     /// emitted bytes are unchanged. It is a memo of a lowering decision (like `build_cache`), not a
     /// column: the decision is a pure function of the fixed `let` structure, so recording it once and
     /// reading it at each reference keeps the two ends of one binding in agreement.
-    pub(crate) kept_bindings: std::collections::HashSet<StructId>,
+    pub(crate) kept_bindings: crate::fxhash::FxHashSet<StructId>,
 
     /// The number of structure nodes in the DECODED PROGRAM — the count before the prelude and any
     /// evaluator-synthesized nodes were appended. A `StructId` below this is a genuine user-program
@@ -380,10 +380,10 @@ impl Db {
         // Index each def by its body occurrence — the reverse of `defs[i].body`, so a "which def owns
         // this body?" lookup is O(1) rather than a linear scan of `defs`. A def with no body (malformed)
         // contributes no entry; a body occurrence is unique to one def, so no collision.
-        let mut def_by_body = std::collections::HashMap::new();
+        let mut def_by_body = crate::fxhash::FxHashMap::default();
         // Index each def by NAME too (first-wins) — so `resolve_name`'s per-reference lookup is O(1),
         // not an O(defs) scan (which made name resolution O(N²) on a many-def program).
-        let mut def_by_name = std::collections::HashMap::new();
+        let mut def_by_name = crate::fxhash::FxHashMap::default();
         for (i, d) in defs.iter().enumerate() {
             if let Some(body) = d.body {
                 def_by_body.insert(body, i);
@@ -403,16 +403,16 @@ impl Db {
             user_node_count,
             reduce_depth: 0,
             descent_depth: 0,
-            build_cache: std::collections::HashMap::new(),
-            recursive: std::collections::HashMap::new(),
-            callee_edges: std::collections::HashMap::new(),
-            scheme_cache: std::collections::HashMap::new(),
-            rec_visited: std::collections::HashSet::new(),
+            build_cache: crate::fxhash::FxHashMap::default(),
+            recursive: crate::fxhash::FxHashMap::default(),
+            callee_edges: crate::fxhash::FxHashMap::default(),
+            scheme_cache: crate::fxhash::FxHashMap::default(),
+            rec_visited: crate::fxhash::FxHashSet::default(),
             rec_worklist: Vec::new(),
-            kept_bindings: std::collections::HashSet::new(),
-            def_schemes: std::collections::HashMap::new(),
-            param_types: std::collections::HashMap::new(),
-            solving_params: std::collections::HashSet::new(),
+            kept_bindings: crate::fxhash::FxHashSet::default(),
+            def_schemes: crate::fxhash::FxHashMap::default(),
+            param_types: crate::fxhash::FxHashMap::default(),
+            solving_params: crate::fxhash::FxHashSet::default(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),

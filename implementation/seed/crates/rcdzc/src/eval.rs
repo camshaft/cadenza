@@ -19,7 +19,7 @@ use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved, Symbol};
 use crate::ty::{IntTy, Scheme, Ty, Width};
 use crate::unify::Fresh;
-use std::collections::HashMap;
+use crate::fxhash::FxHashMap as HashMap;
 use tracing::trace;
 
 /// Read a value's `(meta t)` — its TYPE — as a [`Scheme`], reducing the type-lambda it holds. An
@@ -63,7 +63,7 @@ fn scheme_of_uncached(db: &mut Db, t: StructId, fresh: &mut Fresh) -> Option<Sch
         Resolved::Lambda { params, body } => {
             // Bind each parameter occurrence to a fresh variable; the same parameter used twice in the
             // body shares its variable (so both operands of `+` unify to one width).
-            let mut env: HashMap<StructId, TyOrWidth> = HashMap::new();
+            let mut env: HashMap<StructId, TyOrWidth> = HashMap::default();
             let mut ty_vars = Vec::new();
             let mut width_vars = Vec::new();
             let mut sign_vars = Vec::new();
@@ -375,7 +375,7 @@ pub fn apply_lambda(
     if args.len() < params.len() {
         return Err("partial application of a function is not yet supported".to_string());
     }
-    let mut arg_of: HashMap<StructId, StructId> = HashMap::new();
+    let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
     for (p, a) in params.iter().zip(args.iter()) {
         // PIN each argument's meaning at the CALL SITE before reducing. `beta_reduce` splices the
         // shared argument occurrence into a freshly `push_list`-built copy of the body, and

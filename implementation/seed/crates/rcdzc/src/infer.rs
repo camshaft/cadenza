@@ -304,7 +304,7 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     let mut fresh = Fresh::new();
     // Each parameter's name occurrence → its fresh type variable. An ANNOTATED param uses its
     // annotation type as a fixed constraint (not a fresh var), so a mixed signature still solves.
-    let mut env: std::collections::HashMap<StructId, Ty> = std::collections::HashMap::new();
+    let mut env: crate::fxhash::FxHashMap<StructId, Ty> = crate::fxhash::FxHashMap::default();
     let mut param_binders: Vec<(StructId, Ty)> = Vec::new();
     for p in &sig_params {
         let binder = match db.ast.as_form(*p, ":").and_then(|t| t.first().copied()) {
@@ -358,7 +358,7 @@ fn ground_param(ty: Ty) -> Ty {
 fn collect_param_constraints(
     db: &mut Db,
     node: StructId,
-    env: &std::collections::HashMap<StructId, Ty>,
+    env: &crate::fxhash::FxHashMap<StructId, Ty>,
     def: usize,
     subst: &mut Subst,
     fresh: &mut Fresh,
@@ -476,7 +476,7 @@ fn literal_pattern_ty(db: &mut Db, pat: StructId) -> Option<Ty> {
 fn arg_ty_in_env(
     db: &mut Db,
     arg: StructId,
-    env: &std::collections::HashMap<StructId, Ty>,
+    env: &crate::fxhash::FxHashMap<StructId, Ty>,
     subst: &Subst,
 ) -> Ty {
     // A reference to a parameter being solved → its variable. A body param reference resolves to

@@ -12,6 +12,10 @@ pub mod leb128;
 pub mod arena;
 pub mod diag;
 
+// A fast non-cryptographic hasher (FxHash) + `FxHashMap`/`FxHashSet` for the compiler's internal
+// integer/short-string-keyed index maps — SipHash is pure overhead on keys that are always ours.
+pub mod fxhash;
+
 // The solved-type universe (target-neutral).
 pub mod ty;
 
