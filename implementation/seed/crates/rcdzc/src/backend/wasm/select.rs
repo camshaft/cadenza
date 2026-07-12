@@ -1217,6 +1217,33 @@ fn emit_branch(
     emit(db, id, slots, base, high, scratch_ty, layout, out)
 }
 
+/// If `id` is an operand ALREADY held in a wasm local of the operation's machine slot type — a
+/// parameter (`Core::Param`) or a kept `let`-binding (`Core::LocalRef`) whose slot exists in `slots`
+/// and is declared at `slot_ty` — its slot. Such an operand is a side-effect-free, repeatable
+/// `local.get`, so the guarded-arith recipe can read that slot DIRECTLY (multiple times) instead of
+/// copying the value into a fresh `$a`/`$b` scratch local. That saves, per such operand, one
+/// `local.set` + one declared scratch local (and the guard's re-reads cost nothing extra — they were
+/// already `local.get`s). Returns `None` when the operand is anything else (a nested computation, a
+/// literal needing width-grounding, or a local of a DIFFERENT slot type — e.g. a narrow i32 param
+/// feeding an i64 op), in which case the caller falls back to the copy-into-scratch path.
+fn direct_operand_slot(
+    db: &mut Db,
+    id: StructId,
+    slot_ty: ValType,
+    slots: &HashMap<StructId, u32>,
+) -> Option<u32> {
+    let binder = match core_of(db, id) {
+        Core::Param { binder } | Core::LocalRef { binder } => binder,
+        _ => return None,
+    };
+    let slot = *slots.get(&binder)?;
+    // The operand must live in a slot of the op's machine type; else reading it as `$a`/`$b` would
+    // feed a mismatched i32/i64 into the machine op. A same-width operand (the common `(+ a b)` where
+    // both share the op's type) matches; a narrow operand feeding a wider op does not and takes the
+    // copy path, where `emit_operand` handles the width.
+    (valtype_of(&type_of(db, id)) == Some(slot_ty)).then_some(slot)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_checked_arith(
     db: &mut Db,
@@ -1231,43 +1258,76 @@ fn emit_checked_arith(
     layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
-    let (sa, sb, sr) = (base, base + 1, base + 2);
-    if sr + 1 > *high {
-        *high = sr + 1;
-    }
-    // The three scratch slots hold the operation's machine value (i32 for a ≤32-bit op, i64 otherwise);
-    // record their type so they are DECLARED at that type.
-    for s in [sa, sb, sr] {
-        scratch_ty.insert(s, m.slot());
-    }
-    let operand_base = base + 3;
     let ot = IntTy::fixed(m.signed, m.width);
-    // <A> local.set $a  (a bare-literal operand is grounded to the OP's width `ot`, not its own default)
-    emit_operand(
-        db,
-        lhs,
-        ot,
-        slots,
-        operand_base,
-        high,
-        scratch_ty,
-        layout,
-        out,
-    )?;
-    out.push(Lir::LocalSet(sa));
-    // <B> local.set $b  (B reuses A's dead scratch, from operand_base — minimal locals)
-    emit_operand(
-        db,
-        rhs,
-        ot,
-        slots,
-        operand_base,
-        high,
-        scratch_ty,
-        layout,
-        out,
-    )?;
-    out.push(Lir::LocalSet(sb));
+    // An operand already in a matching local is read DIRECTLY (no copy into scratch — see
+    // `direct_operand_slot`). `$a`/`$b` are that slot when so, else a fresh scratch slot the operand is
+    // stored into; `$r` (the result) always needs its own scratch. Scratch slots for the operands are
+    // claimed from `base` and the operand recursion floats ABOVE whatever scratch is actually used, so
+    // an eliminated copy also frees the slot it would have occupied.
+    let mut next_scratch = base;
+    let mut claim = |high: &mut u32| {
+        let s = next_scratch;
+        next_scratch += 1;
+        if s + 1 > *high {
+            *high = s + 1;
+        }
+        s
+    };
+    let sa = direct_operand_slot(db, lhs, m.slot(), slots);
+    let sb = direct_operand_slot(db, rhs, m.slot(), slots);
+    // `$a`: the operand's own slot if direct, else a fresh scratch slot (recorded at the op's type).
+    let sa = match sa {
+        Some(slot) => slot,
+        None => {
+            let s = claim(high);
+            scratch_ty.insert(s, m.slot());
+            s
+        }
+    };
+    let sb = match sb {
+        Some(slot) => slot,
+        None => {
+            let s = claim(high);
+            scratch_ty.insert(s, m.slot());
+            s
+        }
+    };
+    let sr = claim(high);
+    scratch_ty.insert(sr, m.slot());
+    // Operands that DO need a copy recurse above the scratch slots claimed so far; A is stored before
+    // B runs, so B may reuse A's operand scratch (the liveness the high-water mark captures).
+    let operand_base = next_scratch;
+    // <A> local.set $a  — only when A is not already in `$a` (a direct local operand skips the copy).
+    // A bare-literal operand is grounded to the OP's width `ot`, not its own default.
+    if direct_operand_slot(db, lhs, m.slot(), slots).is_none() {
+        emit_operand(
+            db,
+            lhs,
+            ot,
+            slots,
+            operand_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+        out.push(Lir::LocalSet(sa));
+    }
+    // <B> local.set $b  — likewise skipped when B is a direct local operand.
+    if direct_operand_slot(db, rhs, m.slot(), slots).is_none() {
+        emit_operand(
+            db,
+            rhs,
+            ot,
+            slots,
+            operand_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+        out.push(Lir::LocalSet(sb));
+    }
     // get$a get$b <machine-op> local.set $r
     out.push(Lir::LocalGet(sa));
     out.push(Lir::LocalGet(sb));
@@ -1755,9 +1815,11 @@ mod tests {
     #[test]
     fn a_parameterized_addition_selects_to_a_checked_sequence() {
         // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
-        // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence:
-        // params in slots 0,1; scratch $a=2 $b=3 $r=4. A→set$a; B→set$b; get$a get$b add set$r;
-        // signed-overflow guard `((r^a)&(r^b))<0 → if unreachable`; get$r.
+        // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence.
+        // Both operands are ALREADY in locals (params, slots 0,1), so they are read DIRECTLY — no copy
+        // into `$a`/`$b` scratch (see `direct_operand_slot`). Only the result needs scratch: $r = slot
+        // 2. get0 get1 add set$r; signed-overflow guard `((r^a)&(r^b))<0 → if unreachable` reading the
+        // params' own slots; get$r.
         let ast = crate::testkit::parse(
             "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) 0) (export main))",
         );
@@ -1769,33 +1831,28 @@ mod tests {
         assert_eq!(
             f.code,
             vec![
-                // A → $a, B → $b
+                // r = a + b — operands read straight from the param slots, no set$a/set$b copies.
                 Lir::LocalGet(0),
-                Lir::LocalSet(2),
                 Lir::LocalGet(1),
-                Lir::LocalSet(3),
-                // r = a + b
-                Lir::LocalGet(2),
-                Lir::LocalGet(3),
                 Lir::I64Add,
-                Lir::LocalSet(4),
-                // overflow guard: ((r^a) & (r^b)) < 0 → trap
-                Lir::LocalGet(4),
+                Lir::LocalSet(2),
+                // overflow guard: ((r^a) & (r^b)) < 0 → trap, reading a=slot0, b=slot1 directly.
                 Lir::LocalGet(2),
+                Lir::LocalGet(0),
                 Lir::I64Xor,
-                Lir::LocalGet(4),
-                Lir::LocalGet(3),
+                Lir::LocalGet(2),
+                Lir::LocalGet(1),
                 Lir::I64Xor,
                 Lir::I64And,
                 Lir::ConstI64(0),
                 Lir::I64LtS,
                 Lir::IfUnreachableEnd,
                 // result
-                Lir::LocalGet(4),
+                Lir::LocalGet(2),
             ]
         );
-        // Three i64 scratch locals declared ($a $b $r).
-        assert_eq!(f.declared, vec![ValType::I64; 3]);
+        // One i64 scratch local declared ($r) — the operand copies ($a,$b) are eliminated.
+        assert_eq!(f.declared, vec![ValType::I64; 1]);
         assert!(f.ret.agrees_with(&Ty::int64()));
     }
 
@@ -1823,8 +1880,11 @@ mod tests {
         // (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) — a nested checked op. The inner
         // `(+ a b)` fully drains its scratch (leaves only its result on the stack → stored to the
         // outer's $a) before the outer `*` uses its slots, so the two share the scratch pool: the
-        // declared-locals count is the MAX depth, not the sum. Inner add at operand_base=6 uses 6,7,8;
-        // outer mul uses 3,4,5 — high-water 9, so 6 scratch locals (base 3 → 9), NOT 3+3+3.
+        // declared-locals count is the MAX depth, not the sum. Direct-operand reuse SHRINKS it further:
+        // a,b (inner add) and c (outer mul's rhs) are params read DIRECTLY, so only $r slots plus the
+        // outer's $a (which holds the inner result) need scratch. Outer mul: $a=3 (the inner result),
+        // $b=c=slot 2 (direct, no scratch), $r=4, operand_base 5. Inner add: a,b direct, $r=5.
+        // High-water 6 → 3 scratch locals (slots 3,4,5), NOT 6.
         let ast = crate::testkit::parse(
             "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (def (main) 0) (export main))",
         );
@@ -1832,9 +1892,7 @@ mod tests {
         let layout = layout_of(&mut db);
         let (params, body) = function_of(&mut db, "f");
         let f = select_function(&mut db, body, &params, &layout).expect("select");
-        // 3 params (slots 0,1,2); scratch base 3. Outer mul: $a3 $b4 $r5, operands at 6. Inner add:
-        // $a6 $b7 $r8, operands (params) need no scratch. High-water 9 → 6 scratch locals.
-        assert_eq!(f.declared, vec![ValType::I64; 6]);
+        assert_eq!(f.declared, vec![ValType::I64; 3]);
     }
 
     // ── value-heap H2d: Perceus — a kept heap binding constructs then DROPS ───────────────────────
