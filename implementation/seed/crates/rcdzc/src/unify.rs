@@ -63,7 +63,9 @@ impl Subst {
                 name: name.clone(),
                 args: args.iter().map(|t| self.apply(t)).collect(),
             },
-            Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
+            Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Float | Ty::Type | Ty::Any => {
+                ty.clone()
+            }
         }
     }
 
@@ -181,6 +183,9 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         }
         // `String` is monomorphic — it unifies only with itself (no element/arg to recurse on).
         (Ty::String, Ty::String) => Ok(()),
+        // `Float` is a monomorphic leaf — it unifies only with itself. Crucially it does NOT unify with
+        // `Ty::Int` (which falls to the `mismatch` below), so `(+ 2 2.0)` is rejected, not promoted.
+        (Ty::Float, Ty::Float) => Ok(()),
         _ => Err(mismatch(&a, &b)),
     }
 }
@@ -265,7 +270,14 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
         // A list's element type may hold the variable (`List ?0`).
         Ty::List(elem) => occurs(subst, v, &elem),
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => false,
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Float
+        | Ty::Type
+        | Ty::Any => false,
     }
 }
 
@@ -277,7 +289,12 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
 /// is CDZ0203.
 fn mismatch(a: &Ty, b: &Ty) -> Reject {
     trace!(target: "rcdzc::unify", lhs = %a.render_name(), rhs = %b.render_name(), "unify FAILED (conflicting use)");
-    let both_numeric = matches!(a, Ty::Int(_)) && matches!(b, Ty::Int(_));
+    // Both sides NUMERIC (an integer of any width/sign, or a float) but DIFFERENT — the no-silent-
+    // promotion rule (CDZ0301, `numeric-model.md` §Numeric Types Do Not Silently Promote). Covers a
+    // width/sign mismatch (`Int32` vs `Int64`) AND an integer↔float mix (`Int64` vs `Float64`, i.e.
+    // `(+ 2 2.0)`). A non-numeric conflict (`Bool` vs `Int64`) stays the general CDZ0203.
+    let is_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float);
+    let both_numeric = is_numeric(a) && is_numeric(b);
     let code = if both_numeric {
         Code::NumericMismatch
     } else {
@@ -410,7 +427,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Float | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 
@@ -495,7 +512,7 @@ fn freshen_free_go(
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
                 .collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Float | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 

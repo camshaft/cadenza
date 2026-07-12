@@ -392,6 +392,12 @@ pub enum Resolved {
     /// A string literal — its text already normalized to canonical form by the reader (escapes expanded,
     /// NFC). A `Ty::String` constant; folds to a `Core::ConstStr` and escapes as its baked UTF-8 bytes.
     Str(String),
+    /// A FLOATING-POINT literal (`2.0`). Types as `Ty::Float` — DISTINCT from `Ty::Int`, so mixing a
+    /// float and an integer in one arithmetic operator is rejected (no silent promotion). Its VALUE does
+    /// not yet run: `core_of` DECLINES (there is no float arithmetic / boundary rep yet), so a pure-float
+    /// program declines while an int↔float MIX rejects at the type check — both decline-don't-miscompile.
+    /// The exact `Decimal` is carried so a future float-arithmetic increment reads the literal value.
+    Float(crate::ast::Decimal),
     /// The unit value (`()`).
     Unit,
     /// A reference to a binding: the name at this occurrence denotes the value at `value` (the

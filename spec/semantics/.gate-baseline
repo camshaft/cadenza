@@ -41,6 +41,7 @@ pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
+pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a checked result is consumed by matching its Option at run time
 pass	a comparison-predicate function returns its boolean result
 pass	a compound if condition is a type error, not an unbound name
@@ -125,6 +126,7 @@ pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal with digit separators
 pass	a later let binding sees an earlier one in the same let
+pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
 pass	a let binding is in scope in its body
@@ -256,6 +258,7 @@ pass	a recursive predicate with the self-call in the then branch is a Bool condi
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a reference to an unbound name is rejected before running
 pass	a repeated let binding shadows the earlier one for what follows
+pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime arithmetic right shift preserves the sign
@@ -368,6 +371,7 @@ pass	an argument bound to an unused parameter is not evaluated, so its trap does
 pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an effect discharged by a handler does not escape to the manifest
+pass	an effect operation reached with neither a handler nor a delegation is rejected
 pass	an effect that declares an operation name twice is rejected
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
@@ -417,8 +421,11 @@ pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	bitwise AND masks bits
+pass	bitwise AND of an integer and a float does not silently promote
 pass	bitwise OR combines bits
+pass	bitwise OR of an integer and a float does not silently promote
 pass	bitwise XOR is its own inverse
+pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
@@ -446,6 +453,7 @@ pass	constructor pattern binders capture the payload uniformly
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	division by zero traps
+pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
 pass	equality applied to one operand is rejected, not a crash
 pass	expect makes a checked-arithmetic result trap on overflow
@@ -455,7 +463,9 @@ pass	extracting a high byte composes shift and mask
 pass	false is less than true
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
+pass	greater-than of an integer and a float is rejected
 pass	greater-than-or-equal
+pass	greater-than-or-equal of an integer and a float is rejected
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	indexing a byte sequence out of bounds yields None
 pass	indexing a byte sequence returns Some of the byte at that position
@@ -474,6 +484,8 @@ pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
+pass	less-than-or-equal of an integer and a float is rejected
+pass	lists are equal by elements in order
 pass	match on a Result returned by a fallible function
 pass	match on a function-returned sum takes the other variant at runtime
 pass	match on a sum value returned by a function selects the runtime variant
@@ -493,17 +505,21 @@ pass	member access on a tuple is a type error
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
 pass	mixing two integer widths without a conversion does not silently promote
+pass	mixing two numeric types without an explicit conversion does not silently promote
 pass	modulo by -1 is zero even at the minimum integer
 pass	modulo by zero traps
 pass	modulo gives the remainder
+pass	modulo of an integer and a float does not silently promote
 pass	multi-argument application is curried application
 pass	multiplication
+pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	negation inverts a boolean
 pass	nested patterns deconstruct recursively
 pass	one generic sum instantiated at two different types in one program
 pass	ordering an integer against a boolean is a type error
+pass	ordering an integer against a float is rejected, not silently promoted
 pass	over-applying a constructor by several arguments is a type error
 pass	over-applying a constructor is a type error, not a silent argument drop
 pass	overflow of the default integer traps deterministically
@@ -512,7 +528,9 @@ pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	pushing an element of a different type onto a list is a type error
+pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
+pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
@@ -540,6 +558,7 @@ pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
 pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
+pass	subtraction of an integer and a float does not silently promote
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the empty byte sequence has length zero
@@ -574,6 +593,7 @@ pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the runtime-if list takes its else branch and measures that length
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the slice overflow guard holds on a chained slice-of-a-slice
+pass	the two variants of Result compare unequal
 pass	the unit value
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	true is greater than false
@@ -582,14 +602,20 @@ pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuples are deconstructed by pattern matching
+pass	two different variants of the SAME sum compare unequal
+pass	two differing runtime sum values compare unequal by a heap walk
 pass	two effects each declaring a same-named operation do not collide
 pass	two empty strings are equal
 pass	two functions defined by mutual recursion compute a result
+pass	two lists of different length are unequal, not a type error
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
 pass	two runtime strings compare equal by their contents
+pass	two runtime sum values compare equal by a heap walk
+pass	two structural values of the same shape are equal
 pass	two unequal runtime strings compare false by their contents
+pass	two variants of the same sum compare unequal regardless of operand order
 pass	unit and the empty tuple are the same value
 pass	unit is the empty tuple
 pass	updating a list slot with an element of a different type is a type error
@@ -675,7 +701,6 @@ todo	a hexadecimal literal past Int64.max is a malformed literal, not a bit patt
 todo	a large whole-valued float renders its full value, not an integer saturation
 todo	a later declaration in a do block sees an earlier one
 todo	a le pattern segment reads a fixed-width integer little-endian
-todo	a left shift by a floating-point count does not silently promote
 todo	a length-prefixed frame is built from a size segment and a bytes segment
 todo	a list built by a recursive push-loop is then iterated by index
 todo	a list mixing integer and float elements is a type error
@@ -770,7 +795,6 @@ todo	a recursively-built byte sequence assembles its bytes at run time
 todo	a recursively-built linked list renders its full runtime spine
 todo	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 todo	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
-todo	a right shift by a floating-point count does not silently promote
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
@@ -842,7 +866,6 @@ todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 todo	an association list is searched by key with a tuple-carrying Option match
-todo	an effect operation reached with neither a handler nor a delegation is rejected
 todo	an effect performed in a callee is discharged by the caller's handler
 todo	an effect resolves past an intermediate frame that installs no handler
 todo	an effect resolves through a deep chain of intermediate functions
@@ -878,9 +901,6 @@ todo	applying a boolean is a type error
 todo	applying a float is a type error
 todo	applying a non-function is a type error
 todo	bit-field segments pack sub-byte values into one byte
-todo	bitwise AND of an integer and a float does not silently promote
-todo	bitwise OR of an integer and a float does not silently promote
-todo	bitwise XOR of an integer and a float does not silently promote
 todo	byte length agrees with the length of the encoded bytes
 todo	byte sequences are equal by their bytes in order
 todo	char to-int and from-int round-trip through the scalar value
@@ -926,7 +946,6 @@ todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct large floats are not equal
 todo	distinct names bound to the same string key the same map entry
 todo	dividing quantities divides their dimensions
-todo	division of an integer and a float does not silently promote
 todo	dropping an absent field from a record is rejected
 todo	dropping fields from a record leaves the remaining fields
 todo	each definition in a module registers a reachable export field
@@ -945,8 +964,6 @@ todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
 todo	floating-point uses the fixed rounding mode
 todo	functions are single-arity and curried
-todo	greater-than of an integer and a float is rejected
-todo	greater-than-or-equal of an integer and a float is rejected
 todo	host calls are observed in the order they were made
 todo	identical negative zeros nested in a tuple compare equal
 todo	inserting a key already present replaces its value, not the size
@@ -958,8 +975,6 @@ todo	inserting into the empty map then looking a key up yields the value
 todo	integer to byte (truncate to 0-255)
 todo	integer to byte wraps on overflow
 todo	interning the same string twice yields equal symbols
-todo	less-than-or-equal of an integer and a float is rejected
-todo	lists are equal by elements in order
 todo	looking up an absent key yields None
 todo	map equality is independent of insertion order
 todo	matching a lookup from a computed-key map literal selects the present-value arm
@@ -974,10 +989,7 @@ todo	membership of an absent element in the empty set is false
 todo	membership of an absent element is false, not a trap
 todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
-todo	mixing two numeric types without an explicit conversion does not silently promote
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
-todo	modulo of an integer and a float does not silently promote
-todo	multiplication of an integer and a float does not silently promote
 todo	multiplying quantities multiplies their dimensions
 todo	negative integer to byte uses two's complement
 todo	negative zero is distinct in the canonical value form
@@ -985,7 +997,6 @@ todo	negative zero is not equal to positive zero
 todo	nested patterns with literals
 todo	nullary constructor patterns are uniform with unary
 todo	ordering a string against an integer is a type error regardless of operand order
-todo	ordering an integer against a float is rejected, not silently promoted
 todo	ordering an integer against a string is a type error
 todo	parsing a length-framed message and rebuilding it yields the original bytes
 todo	pattern matching over AST distinguishes forms
@@ -1006,12 +1017,10 @@ todo	quasiquote nests with inner unquote evaluated
 todo	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 todo	quote produces an AST value without evaluating
 todo	quote-vs-constructor AST equality holds regardless of operand order
-todo	reaching an effect neither handled nor delegated is rejected at compile time
 todo	reading a string's scalar addresses scalar values, not bytes
 todo	reading a string's scalar in bounds yields Some of the char
 todo	reading a string's scalar out of bounds yields None
 todo	reading the text a printer produced round-trips to an equal value
-todo	record equality is independent of the order fields are written
 todo	record reshaping is subset comparison as explicit projection
 todo	removing a key drops its association and the size
 todo	removing an absent key leaves the map unchanged
@@ -1034,7 +1043,6 @@ todo	string concatenation
 todo	string to bytes (UTF-8)
 todo	string to bytes encodes multi-byte characters
 todo	subtracting quantities of incompatible dimension is a compile-time error
-todo	subtraction of an integer and a float does not silently promote
 todo	sum type constructors are in scope after declaration
 todo	symbol identity follows String normalization
 todo	symbols interned from different strings are unequal
@@ -1058,29 +1066,22 @@ todo	the reader literal reads to Symbol.of
 todo	the same function called under two handlers is discharged by each in turn
 todo	the three-way comparison is deconstructed by an exhaustive match
 todo	the three-way comparison orders strings lexicographically
-todo	the two variants of Result compare unequal
 todo	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 todo	the union contains the elements of either set
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
 todo	tuple elements are accessed by index
 todo	two dependent-size segments each bind the count a preceding segment named
-todo	two different variants of the SAME sum compare unequal
-todo	two differing runtime sum values compare unequal by a heap walk
 todo	two distinct names bound to the same value key the same map entry
 todo	two empty byte sequences are equal
 todo	two equal chars compare equal
 todo	two host calls consume their responses in order
 todo	two lists are concatenated into one flat list
-todo	two lists of different length are unequal, not a type error
 todo	two maps of different sizes are unequal, not a type error
 todo	two maps with different keys are unequal, not a type error
 todo	two rationals denoting the same number are equal regardless of how they were written
-todo	two runtime sum values compare equal by a heap walk
 todo	two sets of different sizes are unequal, not a type error
 todo	two sets with different elements are unequal, not a type error
-todo	two structural values of the same shape are equal
-todo	two variants of the same sum compare unequal regardless of operand order
 todo	under-applying a unary constructor is a type error, not a fabricated unit payload
 todo	unquote in quasiquote evaluates normally and embeds
 todo	unquote outside quasiquote is a syntax error

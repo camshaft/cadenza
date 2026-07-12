@@ -688,6 +688,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }
@@ -1499,6 +1500,10 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // variant `(type Tag (Named String) …)` then unified its `"x"` argument against `Unit` ("cannot
         // unify Unit with String"). The same round-trip hole the `Bytes` arm above fixed for bytes.
         Ty::String => db.push_name("String"),
+        // A float type-value: the bare name `Float64` (a leaf), round-tripping with `decode_ty`'s
+        // `"Float64"` arm — so a `(: e Float64)` annotation encodes/decodes faithfully rather than
+        // collapsing to the `Unit` stub (the same round-trip hole the `String`/`Bytes` arms closed).
+        Ty::Float => db.push_name("Float64"),
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }

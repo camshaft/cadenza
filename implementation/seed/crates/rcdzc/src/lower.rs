@@ -65,6 +65,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
+        // A FLOAT literal has a type (`Ty::Float`, so a mix rejects at the type check) but no runnable
+        // core yet — there is no float arithmetic or boundary representation. Decline: a pure-float
+        // program is Todo, never a miscompile.
+        Resolved::Float(_) => Core::Poison(Reject::decline(
+            "a floating-point value does not yet run (float arithmetic/boundary is a later increment)",
+        )),
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
         // computation the enclosing `let` named once — see `lower_let`), this reference reads the
@@ -357,20 +363,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
         // bare type/module used at runtime declines at the erasure fence.
         Resolved::Apply { head, args } => {
-            // A PERFORM WITH NO HOME. If the head is an effect OPERATION and this application is being
-            // lowered directly, no enclosing handler discharged it (a handled perform is REDUCED AWAY by
-            // `effects::reduce_handle` before its body is lowered, so it never reaches here) and no host
-            // delegation routed it (E2). An effect reached with neither a handler nor a delegation is
-            // rejected — CDZ0401, the merged "no home for a reached effect" check
-            // (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). Reported here
-            // rather than leaking the op's `(intrinsic perform)` marker as an "unknown intrinsic" and its
-            // `(meta effect-op)` node as an unbound `effect-op`.
+            // A PERFORM that reaches lowering directly — no enclosing handler discharged it (a handled
+            // perform is REDUCED AWAY by `effects::reduce_handle` before its body is lowered, so it never
+            // reaches here) and no host delegation routed it (E2). Whether this is an ERROR depends on
+            // CONTEXT: an unhandled perform reached from an ENTRYPOINT escapes ungranted (CDZ0401 — the
+            // "no home" check, reported at the export level in `compile.rs`), but a perform in a LIBRARY
+            // function's body is fine — its home is whatever handler/delegation encloses its CALLERS (the
+            // cross-function inline trigger resolves it there). So here — the standalone lowering of an
+            // arbitrary def body — a bare perform is a DECLINE, not a coded reject: a library def that
+            // performs an effect stays well-formed, while the entrypoint-level check catches a genuinely
+            // ungranted escape. (Reported cleanly rather than leaking the op's `(intrinsic perform)` marker
+            // as an "unknown intrinsic".)
             if crate::eval::effect_op_of(db, head).is_some() {
-                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: perform with no enclosing handler/delegation (CDZ0401)");
-                return Core::Poison(Reject::coded(
-                    crate::diag::Code::EffectNoHome,
-                    "this effect operation is reached with neither an enclosing handler nor a host \
-                     delegation, so it has no home (add a handler or delegate it at the entrypoint)",
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unhandled perform at standalone lowering → decline (entrypoint check reports CDZ0401)");
+                return Core::Poison(Reject::decline(
+                    "this effect operation is performed with no enclosing handler here; its home is \
+                     determined by the handler or delegation enclosing its callers",
                 ));
             }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
@@ -932,6 +940,25 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         return Core::Poison(Reject::decline(
             "matching a compound value needs a heap walk (not yet built)",
         ));
+    }
+    // ALL-SAME-BODY COLLAPSE: if every arm is UNGUARDED and all their bodies lower to the SAME core, the
+    // match computes that value for every scrutinee — so it collapses to the body, dropping the probe
+    // chain (the match analogue of `(if c x x)` → `x`). Guarded arms are excluded: a guard may fail, so
+    // its arm does not unconditionally yield its body — the choice is then observable and the chain must
+    // stay. Sound ONLY when the scrutinee is TRAP-FREE: the discriminant is otherwise unused after the
+    // collapse, but the scrutinee was evaluated to drive the (now-gone) probes, so a scrutinee that could
+    // trap must still be evaluated (keep the chain). `core_equiv` is the same conservative pure-core
+    // equality the `if`-identical-branches fold uses; a binder arm's body `core_of` reads the scrutinee
+    // (Case 5), so `(match a (n n))`'s arm equals `core_of(a)` and only collapses when every arm agrees.
+    if probes.iter().all(|(_, guard, _)| guard.is_none())
+        && let Some((_, _, first_body)) = probes.first()
+        && probes[1..]
+            .iter()
+            .all(|(_, _, body)| core_equiv(db, *body, *first_body))
+        && is_trap_free(db, scrutinee)
+    {
+        trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, "match with all arms yielding the same value collapses to the body (trap-free scrutinee)");
+        return core_of(db, *first_body);
     }
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = probes.len(), "match stays runtime (scalar scrutinee → probe chain)");
     Core::Match {
@@ -2020,6 +2047,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }
@@ -2653,7 +2681,9 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // AMBIGUOUS-TYPE guard in `backend/wasm/mod.rs` (`has_free_var` → CDZ0203, "annotate it") rather
         // than crossing with an invented type. type-system.md §An Escaping Value MUST Have A Fully
         // Determined Type; corpus 07 "an escaped value with an unresolved payload type is rejected".
-        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
+        // A float has no boundary value form yet (no float value runs / crosses), so no type surface —
+        // like a function/type-value. A float program declines before reaching the escape anyway.
+        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any | Ty::Float => None,
     }
 }
 
@@ -2744,6 +2774,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }
@@ -3156,6 +3187,21 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         // booleans, which have a machine representation the backend can compare); a compound operand
         // still declines (heap-walk equality is a later stage).
         _ => {
+            // CONSTANT COMPOUND EQUALITY folds STRUCTURALLY (`core-semantics.md §Equality Is Structural`:
+            // two values are equal when they have the same type and their contents are equal
+            // component-wise). Only for `=` (a total ordering `<`/`>` over compounds is a later stage);
+            // only when BOTH operands are compile-time-visible constant compounds (a `SumNew`/`Tuple`/
+            // `Record`/`ListNew`, recursively) — a runtime operand still needs the heap walk (deferred).
+            // `(= (Some 1) (Some 1))` → true, `(= (Some 1) (Some 2))` → false, `(= None None)` → true,
+            // `(= (tuple 1 2) (tuple 1 2))` → true. A nested compound compares recursively (a payload/
+            // element that is itself a compound). Returns `None` when either side is not a constant
+            // compound → falls through to the scalar-runtime / decline below.
+            if matches!(op, Prim::Eq)
+                && let Some(eq) = const_compound_eq(db, args[0], args[1])
+            {
+                trace!(target: "rcdzc::fold", result = eq, "folded constant compound equality (structural)");
+                return Core::ConstBool(eq);
+            }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "comparison stays runtime (scalar operands)");
                 Core::Compare {
@@ -3170,6 +3216,82 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 ))
             }
         }
+    }
+}
+
+/// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are
+/// compile-time-visible constants (a `SumNew`/`Tuple`/`Record`/`ListNew`, or a scalar leaf), else `None`
+/// (a runtime operand — the caller declines, deferring to the heap walk). Equality is STRUCTURAL
+/// (`core-semantics.md §Equality Is Structural`): two values are equal iff same shape + component-wise
+/// equal. A `SumNew` compares its discriminant then its payloads pairwise; a `Tuple`/`ListNew` its
+/// elements pairwise (unequal length → not equal); a `Record` its fields (the field SET is fixed by the
+/// type, so same-typed records share keys — compare each). Scalar leaves compare by value. Two DIFFERENT
+/// compound KINDS (a tuple vs a sum) never fold here — the type checker rejects a cross-shape `=` before
+/// lowering, so a kind mismatch reaching here is a compiler bug → `None` (decline).
+fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
+    match (core_of(db, a), core_of(db, b)) {
+        (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.eq_value(&y)),
+        (Core::ConstBool(x), Core::ConstBool(y)) => Some(x == y),
+        (Core::ConstStr(x), Core::ConstStr(y)) => Some(x == y),
+        (Core::Unit, Core::Unit) => Some(true),
+        // Two sum values: equal iff same discriminant AND equal payloads (pairwise). A different disc is
+        // not-equal WITHOUT comparing payloads (`(Some 1)` ≠ `None`). Same disc ⇒ same variant ⇒ same
+        // payload arity (the type fixes it), so a pairwise payload compare is well-formed.
+        (
+            Core::SumNew {
+                disc: da,
+                payloads: pa,
+            },
+            Core::SumNew {
+                disc: db_,
+                payloads: pb,
+            },
+        ) => {
+            if da != db_ {
+                return Some(false);
+            }
+            if pa.len() != pb.len() {
+                return Some(false);
+            }
+            for (&x, &y) in pa.iter().zip(pb.iter()) {
+                if !const_compound_eq(db, x, y)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        (Core::Tuple { elems: ea }, Core::Tuple { elems: eb })
+        | (Core::ListNew { elems: ea }, Core::ListNew { elems: eb }) => {
+            if ea.len() != eb.len() {
+                return Some(false);
+            }
+            for (&x, &y) in ea.iter().zip(eb.iter()) {
+                if !const_compound_eq(db, x, y)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        (Core::Record { fields: fa }, Core::Record { fields: fb }) => {
+            if fa.len() != fb.len() {
+                return Some(false);
+            }
+            // Same-typed records share the field SET; compare each field's value by key. A key present in
+            // one but not the other (a shape mismatch the type checker would have caught) is not-equal.
+            for (key, &va) in fa.iter() {
+                match fb.get(key) {
+                    Some(&vb) => {
+                        if !const_compound_eq(db, va, vb)? {
+                            return Some(false);
+                        }
+                    }
+                    None => return Some(false),
+                }
+            }
+            Some(true)
+        }
+        // Any other pairing includes a runtime operand (not a constant compound) — decline the fold.
+        _ => None,
     }
 }
 
