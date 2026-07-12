@@ -9,14 +9,16 @@
 //! at the arena level with real ids: it appends each file's `leaves`/`structure` with a per-file id
 //! offset and re-parents every file's top-level items under one `(do …)`.
 //!
-//! Increment status (`DESIGN-package-linking.md` §8): this module realizes steps 2 and 3 — the arena
-//! splice + `FileSpan` demux table (step 2), and explicit `(import …)` + per-file visibility (step 3).
-//! `link()` reads each file's `(import "path" (name…))` clauses (compile-time LINK DIRECTIVES, NOT
-//! spliced as runtime items) and each file's `(export …)` public surface into a per-file [`FileScope`];
-//! only the ENTRY file's `(export …)` survives into the merged `(do …)`, so `db.exports` IS the
-//! component boundary. Name resolution is then FILE-SCOPED (`resolve.rs`): a bare name in file `f`
-//! resolves against `f`'s own defs and `f`'s imports, never a sibling's defs. Cyclic-import rejection
-//! and the diagnostics link-map artifact are the remaining later steps (4, 5).
+//! Increment status (`DESIGN-package-linking.md` §8): this module realizes steps 2, 3, and 4 — the
+//! arena splice + `FileSpan` demux table (step 2), explicit `(import …)` + per-file visibility (step
+//! 3), and cyclic-import + colliding-import rejection (step 4). `link()` reads each file's `(import
+//! "path" (name…))` clauses (compile-time LINK DIRECTIVES, NOT spliced as runtime items) and each
+//! file's `(export …)` public surface into a per-file [`FileScope`]; only the ENTRY file's `(export
+//! …)` survives into the merged `(do …)`, so `db.exports` IS the component boundary. Name resolution
+//! is then FILE-SCOPED (`resolve.rs`): a bare name in file `f` resolves against `f`'s own defs and
+//! `f`'s imports, never a sibling's defs. A colliding imported name → CDZ0201; an import cycle
+//! (`find_import_cycle`, a back-edge DFS over the import graph) → CDZ0201. The diagnostics link-map
+//! artifact (step 5) and the bootstrap re-author (step 6) are the remaining steps.
 
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
 use crate::diag::Reject;
@@ -257,6 +259,20 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
         });
     }
 
+    // CYCLIC IMPORTS (`modules-and-namespaces.md` §Cyclic Module Dependencies Are Rejected): the
+    // import graph (file → each file it imports FROM) must be acyclic. A back-edge in a DFS is a cycle
+    // → a coded reject (CDZ0201). The same shape as the static-recursion call-graph DFS
+    // (`eval::is_recursive`), here over the fixed link-time import edges. (Value-level mutual recursion
+    // across files is fine — that is a runtime call, not an import edge; only a compile-time dependency
+    // LOOP is forbidden.)
+    if let Some(cycle) = find_import_cycle(&scopes) {
+        let names: Vec<&str> = cycle.iter().map(|&i| files[i].0.as_str()).collect();
+        return Err(Reject::coded(
+            crate::diag::Code::Malformed,
+            format!("cyclic module imports: {}", names.join(" → ")),
+        ));
+    }
+
     // Synthesize the `(do …)` root: a fresh `do` name leaf + its atom, then the list whose head is
     // that atom and whose tail is every file's top-level items. These nodes sit AFTER all files, so
     // they are outside every `FileSpan` (they belong to no source file).
@@ -343,6 +359,17 @@ fn resolve_import_clause(
             ))
             .at(occ));
         }
+        // COLLIDING IMPORTED NAMES (`modules-and-namespaces.md` §Colliding Imported Names Are
+        // Rejected): two imports binding the SAME local name into one file's scope is a compile-time
+        // error (CDZ0201), never resolved by an implicit precedence. This is a positively-proven
+        // ill-formed program — a CODED reject, not a decline.
+        if out.iter().any(|i| i.local == name) {
+            return Err(Reject::coded(
+                crate::diag::Code::Malformed,
+                format!("`(import …)`: `{name}` is imported more than once into this file"),
+            )
+            .at(occ));
+        }
         out.push(Import {
             local: name.to_string(),
             from_file,
@@ -351,6 +378,67 @@ fn resolve_import_clause(
         });
     }
     Ok(())
+}
+
+/// Find an import CYCLE in the package's import graph (file `i` → each `imp.from_file` it imports),
+/// returning the files on the cycle (in dependency order, closing back to the first) if one exists.
+/// An iterative DFS with a three-colour marking (unvisited / on-stack / done): a back-edge to an
+/// on-stack node is a cycle. Deterministic (files + edges are fixed), the link-time twin of
+/// `eval::is_recursive`'s call-graph DFS. `None` = the import graph is acyclic.
+fn find_import_cycle(scopes: &[FileScope]) -> Option<Vec<usize>> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Unvisited,
+        OnStack,
+        Done,
+    }
+    let n = scopes.len();
+    let mut mark = vec![Mark::Unvisited; n];
+    // Explicit DFS stack of (node, path-so-far) so the cycle can be reconstructed; no native recursion
+    // over a potentially-large graph.
+    for start in 0..n {
+        if mark[start] != Mark::Unvisited {
+            continue;
+        }
+        let mut stack: Vec<(usize, Vec<usize>)> = vec![(start, vec![start])];
+        mark[start] = Mark::OnStack;
+        while let Some((node, path)) = stack.pop() {
+            let mut advanced = false;
+            for imp in &scopes[node].imports {
+                let to = imp.from_file;
+                match mark[to] {
+                    Mark::OnStack => {
+                        // Back-edge → cycle. Reconstruct from where `to` first appears on the path.
+                        let mut cyc: Vec<usize> =
+                            if let Some(pos) = path.iter().position(|&x| x == to) {
+                                path[pos..].to_vec()
+                            } else {
+                                vec![to]
+                            };
+                        cyc.push(to); // close the loop back to the re-entered node
+                        return Some(cyc);
+                    }
+                    Mark::Unvisited => {
+                        mark[to] = Mark::OnStack;
+                        let mut child_path = path.clone();
+                        child_path.push(to);
+                        // Re-push the current node so its remaining edges are explored after `to`'s
+                        // subtree completes (its on-stack mark is cleared when it is fully done, below).
+                        stack.push((node, path.clone()));
+                        stack.push((to, child_path));
+                        advanced = true;
+                        break;
+                    }
+                    Mark::Done => {}
+                }
+            }
+            if !advanced {
+                // No unvisited edge left from `node`: it and its subtree are fully explored.
+                mark[node] = Mark::Done;
+            }
+        }
+    }
+    None
 }
 
 /// The top-level items of one file's arena — the SAME rule `db::top_items` applies (a `(module …)`
@@ -614,6 +702,124 @@ mod tests {
         assert!(
             !out.has_error(),
             "an inlined import reaching its own file's private sibling should compile clean; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// Compile an N-file package: `files` is `(name, source)` pairs, `entry` names the entry file.
+    fn compile_files(files: &[(&str, &str)], entry: &str) -> crate::abi::CompileOutput {
+        let mut inputs: Vec<Artifact> = files
+            .iter()
+            .map(|(name, src)| {
+                Artifact::new(
+                    Artifact::KIND_AST,
+                    *name,
+                    crate::codec::encode(&arena_of(src)),
+                )
+            })
+            .collect();
+        inputs.push(Artifact::new(
+            KIND_ENTRY,
+            "entry",
+            entry.as_bytes().to_vec(),
+        ));
+        crate::compile(&inputs, &[Target::Wasm])
+    }
+
+    /// Importing the same local name twice into one file → CDZ0201 (`modules-and-namespaces.md`
+    /// §Colliding Imported Names Are Rejected), never resolved by an implicit precedence.
+    #[test]
+    fn a_colliding_import_is_rejected() {
+        let out = compile_files(
+            &[
+                ("a", "(do (def (x) 1) (export x))"),
+                ("b", "(do (def (x) 2) (export x))"),
+                (
+                    "app",
+                    "(do (import \"a\" (x)) (import \"b\" (x)) (def (main) (x)) (export main))",
+                ),
+            ],
+            "app",
+        );
+        assert!(out.has_error(), "a colliding import must be rejected");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("more than once")),
+            "expected a CDZ0201 colliding-import reject; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A two-file import CYCLE (`a` imports from `b`, `b` imports from `a`) is rejected
+    /// (`modules-and-namespaces.md` §Cyclic Module Dependencies Are Rejected).
+    #[test]
+    fn a_two_file_import_cycle_is_rejected() {
+        let out = compile_files(
+            &[
+                ("a", "(do (import \"b\" (g)) (def (f) (g)) (export f))"),
+                ("b", "(do (import \"a\" (f)) (def (g) (f)) (export g))"),
+            ],
+            "a",
+        );
+        assert!(out.has_error(), "a two-file import cycle must be rejected");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("cyclic module imports")),
+            "expected a cyclic-import diagnostic; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A three-file cycle (a→b→c→a) is rejected too — the DFS finds the back-edge regardless of length.
+    #[test]
+    fn a_three_file_import_cycle_is_rejected() {
+        let out = compile_files(
+            &[
+                ("a", "(do (import \"b\" (gb)) (def (ga) (gb)) (export ga))"),
+                ("b", "(do (import \"c\" (gc)) (def (gb) (gc)) (export gb))"),
+                ("c", "(do (import \"a\" (ga)) (def (gc) (ga)) (export gc))"),
+            ],
+            "a",
+        );
+        assert!(
+            out.has_error(),
+            "a three-file import cycle must be rejected"
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("cyclic module imports")),
+            "expected a cyclic-import diagnostic; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A DIAMOND (app→util, app→helper, helper→util) is ACYCLIC — it must link cleanly. `util` is
+    /// imported by two files but there is no back-edge, so the cycle check must not false-positive.
+    #[test]
+    fn an_acyclic_diamond_links_cleanly() {
+        let out = compile_files(
+            &[
+                ("util", "(do (def (base) 10) (export base))"),
+                (
+                    "helper",
+                    "(do (import \"util\" (base)) (def (mid) (+ (base) 1)) (export mid))",
+                ),
+                (
+                    "app",
+                    "(do (import \"util\" (base)) (import \"helper\" (mid)) \
+                         (def (main) (+ (base) (mid))) (export main))",
+                ),
+            ],
+            "app",
+        );
+        assert!(
+            !out.has_error(),
+            "an acyclic diamond must link cleanly; got {:?}",
             out.diagnostics
         );
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());

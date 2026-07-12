@@ -391,10 +391,13 @@ Per reference-compiler.md §Outcomes Are Ordered By Safety, anything not-yet-han
    an ambiguous one — decline-don't-miscompile). **RESIDUALS (deliberately deferred):** (a) `(type …)`
    resolution (`type_decl_by_name`, step 3) is NOT yet file-scoped — cross-file type visibility stays
    flat (a follow-up, mirrors the def change); (b) the ALIAS form `(import "p" alias)` declines
-   (needs modules-as-record); (c) a cross-file *collision* between two imports is not yet checked
-   (that is step 4).
-4. **Cycles & collisions (§5):** import-graph DFS + collision CDZ0201. Gate: a 2-file import cycle
-   rejects; a colliding import rejects.
+   (needs modules-as-record).
+4. **Cycles & collisions (§5):** ✅ **DONE.** `find_import_cycle` runs a back-edge DFS over the import
+   graph (file → each file it imports from) — a cycle → CDZ0201; a duplicate imported local name →
+   CDZ0201. Both are CODED rejects (a positively-proven ill-formed package), not declines. Gate: 4 unit
+   tests — a 2-file cycle, a 3-file cycle, a colliding import (all reject), and an acyclic diamond
+   (`util` imported twice, no back-edge — must NOT false-positive). ⚠ Uses the existing `Code::Malformed`
+   (CDZ0201); a dedicated cyclic-import code can be minted when this folds into the spec taxonomy.
 5. **Diagnostics link-map (§6):** surface the `FileSpan` table so a cross-file error maps to the right
    file:line. Gate: an unbound name in file B reports against B's span, not a global offset.
 6. **Bootstrap payoff:** re-author `implementation/compiler/cdzc/*.cdz` to `import` each other instead
