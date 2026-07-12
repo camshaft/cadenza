@@ -1365,6 +1365,10 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             let e = encode_ty(db, elem);
             db.push_list(vec![head, e])
         }
+        // A bytes type-value: the bare name `Bytes` (a leaf). Round-trips with `decode_ty`'s `"Bytes"`
+        // arm. Without this the catch-all below encoded it as `Unit`, so a `(-> … Bytes)` scheme
+        // round-tripped to `(-> … Unit)` and `Bytes.of`/`Bytes.len` mis-typed.
+        Ty::Bytes => db.push_name("Bytes"),
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }

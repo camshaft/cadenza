@@ -3321,6 +3321,78 @@ mod match_engine {
         );
     }
 
+    #[test]
+    fn bytes_of_constructs_and_its_length_folds() {
+        // `(Bytes.of (list 0 255 128))` builds a byte sequence from a list of Int64 in 0..=255; `Bytes.len`
+        // of a compile-time-visible `Bytes.of` folds to its byte count (no heap). → 3; the empty → 0.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 0 255 128)))) (export main))"
+                ),
+                "main"
+            ),
+            3
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) ((. Bytes len) ((. Bytes of) (list)))) (export main))"
+                ),
+                "main"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn bytes_of_out_of_range_element_is_a_compile_time_trap() {
+        // A byte must be 0..=255 (collections-and-text.md). A constant element out of range is a provable
+        // trap → CDZ0304 (the build fails, matching the runtime `bytes-set` guard): 256 is too large, -1 is
+        // negative. (Used via `len` so `main` returns a scalar — a bytes result's boundary form is B2.)
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 256)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304")
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Bytes len) ((. Bytes of) (list -1)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304")
+        );
+    }
+
+    #[test]
+    fn a_runtime_if_bytes_is_length_measured_with_valid_wasm() {
+        // A `Bytes` produced by a RUNTIME `if` (neither branch folds away) then measured by `Bytes.len`
+        // must emit VALID wasm and the right length — the bytes analogue of the list `if`-len case. The
+        // `Bytes.of` builds on the rope heap (`bytes-alloc`+`bytes-set`), the `if` joins two bytes handles,
+        // and `Bytes.len` extends `bytes-len`'s i32 to the i64 `Bytes.len : Int64` needs.
+        let src = "(module m (def (main (: b Int64)) \
+                     (Bytes.len (if (> b 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 4 5))))) (export main))";
+        let bytes = component(src);
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed if-bytes-len run");
+            return;
+        };
+        for (arg, want) in [("5", "3"), ("-1", "2")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "if-bytes-len b={arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("if-bytes-len run trapped: {t}"),
+            }
+        }
+    }
+
     /// Compile `src`, assert it imports the value-heap runtime, then compose+run export `main` with the
     /// value-heap runtime and return the printed result — the "runs on the real heap" behavior check for
     /// the `vec-*` list ops (which never fold, so they always import the runtime). Skips (returns `None`)

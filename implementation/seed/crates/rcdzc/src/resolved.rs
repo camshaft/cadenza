@@ -174,6 +174,18 @@ pub enum Prim {
     /// `∀a. (List a) → Int64`). One element type, unlike `Tuple`'s variadic — the list companion of the
     /// type constructors `Int`/`Tuple`/`Record`.
     ListCtor,
+    /// `Bytes.of` — construct a byte sequence from a list of integers in `0..=255`: `(List Int64) →
+    /// Bytes`. The `(meta apply)` of the `of` field of the `Bytes` module. A CONSTANT list literal folds
+    /// to the baked byte value (range-checking each element: `< 0` or `> 255` is a compile-time trap,
+    /// CDZ0304); a runtime list emits the `bytes-alloc`+`bytes-set` build. The one bytes CONSTRUCTOR.
+    BytesOf,
+    /// `Bytes.len` — the length of a byte sequence, an `Int64` (`Bytes → Int64`). The `(meta apply)` of
+    /// the `len` field of the `Bytes` module. A compile-time-visible `Bytes.of` literal folds to its byte
+    /// count; a runtime bytes emits `bytes-len` (+ i32→i64 extend). The bytes companion of `List.len`.
+    BytesLen,
+    /// The ground type-value `Bytes` — the `(meta t)` of the `Bytes` module, so bare `Bytes` in type
+    /// position IS the type `Ty::Bytes` (the leaf companion of `BoolTy`/`UnitTy`; `ground_type` maps it).
+    BytesTy,
 }
 
 impl Prim {
@@ -216,6 +228,9 @@ impl Prim {
             "list-update" => Some(Prim::ListUpdate),
             "list-at" => Some(Prim::ListAt),
             "List" => Some(Prim::ListCtor),
+            "bytes-of" => Some(Prim::BytesOf),
+            "bytes-len" => Some(Prim::BytesLen),
+            "bytes-ty" => Some(Prim::BytesTy),
             _ => None,
         }
     }
@@ -269,6 +284,7 @@ impl Prim {
         match self {
             Prim::BoolTy => Some(crate::ty::Ty::Bool),
             Prim::UnitTy => Some(crate::ty::Ty::Unit),
+            Prim::BytesTy => Some(crate::ty::Ty::Bytes),
             _ => None,
         }
     }

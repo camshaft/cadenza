@@ -79,6 +79,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // the module of list OPERATIONS (its `len`/… fields, reached by member access `(. List len)`). One
     // record carries both roles: applying it builds the type, projecting a field gives an operation.
     names.insert("List".to_string(), list_module(ast));
+    // `Bytes` — the module of byte-sequence OPERATIONS (`of`/`len` fields, reached by member access
+    // `(. Bytes of)`). Unlike `List` it is NOT also a type constructor: `Bytes` is a ground type-VALUE
+    // (a non-parametric leaf), so the module ALSO carries `(meta t) = Bytes` — bare `Bytes` in type
+    // position IS the type, and `(. Bytes of)` projects the constructor operation.
+    names.insert("Bytes".to_string(), bytes_module(ast));
 
     // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
@@ -191,6 +196,57 @@ fn list_module(ast: &mut Arenas) -> StructId {
         children.push(push_list(ast, vec![k, op]));
     }
     push_list(ast, children)
+}
+
+/// The `Bytes` module record — a record carrying `(meta t) = Bytes` (the ground type-value, so bare
+/// `Bytes` in type position is `Ty::Bytes`) AND a field per byte-sequence OPERATION (reached by member
+/// access `(. Bytes of)`). Unlike `List`, `Bytes` is NOT a type constructor (it is a non-parametric
+/// leaf), so its operations are MONOMORPHIC — each `(meta t)` is a plain arrow type, not a `(fn (a) …)`
+/// type-lambda. This increment realizes `of : (List Int64) → Bytes` and `len : Bytes → Int64`; concat/
+/// at/slice/compact arrive in later increments (a projected-but-unrealized field DECLINES, the closed-
+/// module rule every prelude module follows).
+fn bytes_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // `(meta t)` = the ground type-value `Bytes` (`(intrinsic bytes-ty)` → `Ty::Bytes`), so bare `Bytes`
+    // resolves as a TYPE and `(. Bytes of)` projects the constructor operation.
+    let ty_val = intrinsic_node(ast, "bytes-ty");
+    let t_field = meta_field(ast, "t", ty_val);
+    // One field per realized operation — each an operator record `(name <op-record>)` whose `(meta t)`
+    // is a monomorphic arrow type. `of : (List Int64) → Bytes`; `len : Bytes → Int64`.
+    let of_type = bytes_of_type(ast);
+    let len_type = bytes_len_type(ast);
+    let mut children = vec![head, t_field];
+    for (name, prim, ty) in [("of", "bytes-of", of_type), ("len", "bytes-len", len_type)] {
+        let op = list_op_record(ast, prim, ty);
+        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        children.push(push_list(ast, vec![k, op]));
+    }
+    push_list(ast, children)
+}
+
+/// The type `(-> (List Int64) Bytes)` for `Bytes.of` — a monomorphic arrow (no type parameter), taking
+/// a list of `Int64` and returning `Bytes`. The `Bytes` result is the `(intrinsic bytes-ty)` type-value
+/// DIRECTLY, not a bare `Bytes` NAME: this arrow is a field INSIDE the `Bytes` module record, so a name
+/// `Bytes` would try to resolve in scope (a forward reference to the module being built) and reduce
+/// wrong — the intrinsic is the ground type-value with no scope lookup. Reduced to the scheme `(List
+/// Int64) → Bytes` by `infer` (`typeval_of` → `Ty::Fn(List Int64, Bytes)`).
+fn bytes_of_type(ast: &mut Arenas) -> StructId {
+    let list_int64 = {
+        let list = push_atom(ast, Leaf::Name("List".to_string()));
+        let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+        push_list(ast, vec![list, int64])
+    };
+    let bytes = intrinsic_node(ast, "bytes-ty");
+    arrow_type(ast, list_int64, bytes)
+}
+
+/// The type `(-> Bytes Int64)` for `Bytes.len` — a monomorphic arrow taking a `Bytes` and returning its
+/// length as an `Int64`. The `Bytes` parameter is the `(intrinsic bytes-ty)` type-value directly (see
+/// [`bytes_of_type`] — a bare `Bytes` name would mis-resolve inside the module being built).
+fn bytes_len_type(ast: &mut Arenas) -> StructId {
+    let bytes = intrinsic_node(ast, "bytes-ty");
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    arrow_type(ast, bytes, int64)
 }
 
 /// An operation record for a `List` module field: `(record ((meta t) TYPE-LAMBDA) ((meta apply)

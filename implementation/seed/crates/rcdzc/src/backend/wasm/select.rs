@@ -52,6 +52,13 @@ const OP_SUM_PAYLOAD: &str = "sum-payload";
 /// — the length. A list value is built `vec-empty` then a `vec-push` per element.
 const OP_VEC_PUSH: &str = "vec-push";
 const OP_VEC_LEN: &str = "vec-len";
+/// `bytes-alloc(len) -> handle` — a fresh mutable byte buffer of `len` zero bytes (filled by `bytes-set`).
+const OP_BYTES_ALLOC: &str = "bytes-alloc";
+/// `bytes-set(buf, index, byte)` — set the byte at `index` (the byte is an i32 in `0..=255`; the caller
+/// range-checks). Used to fill a `bytes-alloc` buffer element by element at construction.
+const OP_BYTES_SET: &str = "bytes-set";
+/// `bytes-len(b) -> u32` — the byte count of a byte sequence (extended to `Int64` at the boundary).
+const OP_BYTES_LEN: &str = "bytes-len";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -84,7 +91,7 @@ const OP_DUP: &str = "dup";
 fn is_heap_type(ty: &Ty) -> bool {
     matches!(
         ty,
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_)
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes
     )
 }
 
@@ -106,7 +113,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // A projection BORROWS its operand — so a `LocalRef` directly under a `Proj` does not escape
         // through it. Recurse with the borrow flag set for the operand. `List.len` (`vec-len`) reads its
         // operand without consuming it — a borrow, like a projection.
-        Core::Proj { operand, .. } | Core::ListLen { operand } => {
+        Core::Proj { operand, .. } | Core::ListLen { operand } | Core::BytesLen { operand } => {
             binding_escapes(db, operand, binder, true)
         }
         // `List.at` BORROWS its list (`vec-len`/`vec-get` both borrow; the read element is DUP'd into the
@@ -116,7 +123,8 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
             binding_escapes(db, list, binder, true) || binding_escapes(db, index, binder, false)
         }
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
-        Core::Tuple { elems } | Core::ListNew { elems } => {
+        // `Bytes.of`'s elements are scalar bytes (Int64 0..=255), consumed into the sequence like a list's.
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
             elems.iter().any(|&e| binding_escapes(db, e, binder, false))
         }
         // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
@@ -330,6 +338,20 @@ pub fn collect_used_ops(
         // `List.len` uses `vec-len` and evaluates its operand.
         Core::ListLen { operand } => {
             out.insert(OP_VEC_LEN);
+            collect_used_ops(db, operand, out);
+        }
+        // `Bytes.of` uses `bytes-alloc` + a `bytes-set` per element (each element is a raw byte — an
+        // i32 in `0..=255`, NOT boxed to a handle, unlike a list element). Evaluate each element.
+        Core::BytesOf { elems } => {
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            for elem in &elems {
+                collect_used_ops(db, *elem, out);
+            }
+        }
+        // `Bytes.len` uses `bytes-len` and evaluates its operand.
+        Core::BytesLen { operand } => {
+            out.insert(OP_BYTES_LEN);
             collect_used_ops(db, operand, out);
         }
         // `List.push` uses `vec-push` (the pushed element boxed by its type); `List.concat` uses `vec-concat`.
@@ -1512,6 +1534,49 @@ fn emit(
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [list]
             out.push(Lir::CallImport(OP_VEC_LEN)); // → [len:i32]
             out.push(Lir::I64ExtendI32U); // → [len:i64] — List.len : Int64
+            Ok(())
+        }
+        // `Bytes.of` — build the byte sequence on the rope heap. `bytes-alloc(len)` leaves a fresh buffer;
+        // then for each element `[buf] ; index ; byte ; bytes-set` — and `bytes-set(buf,index,value) ->
+        // buf` RETURNS the buffer (FBIP in-place), so the buffer threads through with no scratch local. A
+        // byte is a RAW i32 in `0..=255` (NOT boxed like a list element); every element folded to a
+        // constant in range at lowering (`lower_bytes_of`), so each is pushed as an `i32.const`. ⚠ the
+        // byte value uses `Lir::ConstI32`, which the serializer writes as a SIGNED LEB — a raw byte ≥ 64
+        // would sign-extend negative if hand-emitted, but `Lir::ConstI32` handles the signed encoding, so
+        // there is no raw-opcode hazard here (the seed's `sleb128` bug was in hand-written opcode bytes).
+        Core::BytesOf { elems } => {
+            out.push(Lir::ConstI32(elems.len() as i32)); // [len]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
+            for (i, &elem) in elems.iter().enumerate() {
+                // The element folded to a constant byte at lowering; read it back as an i32 in 0..=255.
+                let byte = match core_of(db, elem) {
+                    Core::ConstInt(v) => {
+                        v.to_i64()
+                            .filter(|n| (0..=255).contains(n))
+                            .ok_or_else(|| {
+                                Reject::decline(
+                                    "a Bytes.of element is not a constant byte in 0..=255",
+                                )
+                            })? as i32
+                    }
+                    _ => {
+                        return Err(Reject::decline(
+                            "Bytes.of with a non-constant element is not yet supported",
+                        ));
+                    }
+                };
+                out.push(Lir::ConstI32(i as i32)); // [buf, index]
+                out.push(Lir::ConstI32(byte)); // [buf, index, byte]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]  (bytes-set returns the buffer)
+            }
+            Ok(()) // leaves [buf] — the bytes handle
+        }
+        // `Bytes.len` — emit the bytes handle, then `bytes-len` (→ u32, an i32 slot), then extend to i64
+        // (a length is non-negative), since `Bytes.len : Int64`. Mirrors `List.len` exactly.
+        Core::BytesLen { operand } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::CallImport(OP_BYTES_LEN)); // → [len:i32]
+            out.push(Lir::I64ExtendI32U); // → [len:i64] — Bytes.len : Int64
             Ok(())
         }
         // `List.push(l, x)` — emit the list handle, then the element boxed to a u32 handle by its type

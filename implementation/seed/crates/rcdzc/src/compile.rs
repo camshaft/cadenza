@@ -414,12 +414,12 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // A tuple's elements are all unconditionally part of the value; a projection's operand is
         // unconditionally evaluated. Descend into each.
-        Core::Tuple { elems } | Core::ListNew { elems } => {
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
             for e in elems {
                 collect_reached_poisons(db, e, out);
             }
         }
-        Core::Proj { operand, .. } | Core::ListLen { operand } => {
+        Core::Proj { operand, .. } | Core::ListLen { operand } | Core::BytesLen { operand } => {
             collect_reached_poisons(db, operand, out)
         }
         // `List.push`/`concat` unconditionally evaluate both operands — descend into each.

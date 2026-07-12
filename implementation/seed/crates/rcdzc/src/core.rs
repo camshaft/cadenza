@@ -180,6 +180,18 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
+    /// A BYTES value construction — `(Bytes.of (list …))`. Present when it survives to selection as a
+    /// RUNTIME value (built from a runtime list, or a constant that escapes — a constant `Bytes.of`
+    /// whose bytes are all known folds to baked bytes in `lower`). `elems` are the list-element
+    /// occurrences (each an Int64 in `0..=255`); the backend builds the sequence on the persistent
+    /// rope `bytes-*` heap: `bytes-alloc(len)` then a range-checked `bytes-set` per element (an element
+    /// `< 0` or `> 255` traps at run time, matching the fold's compile-time CDZ0304). Only the
+    /// literal-length form is built here; a runtime-length list source is a later increment.
+    BytesOf { elems: Vec<StructId> },
+    /// `Bytes.len` of the bytes the `operand` denotes — the runtime `bytes-len` op, an `Int64`. Present
+    /// when the operand is a RUNTIME bytes value (a compile-time-visible `Bytes.of` folds its length to
+    /// a `ConstInt` in `lower`, so it never reaches here). The bytes companion of `ListLen`.
+    BytesLen { operand: StructId },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

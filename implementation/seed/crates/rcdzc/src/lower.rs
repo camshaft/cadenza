@@ -470,6 +470,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // discriminants, so a constant `List.at` renders through the ordinary sum escape/fold with
                 // no heap read. Otherwise emit the runtime `Core::ListAt` (a bounds-checked `vec-get`).
                 Some(Prim::ListAt) if args.len() == 2 => lower_list_at(db, id, args[0], args[1]),
+                // `Bytes.of` — construct a byte sequence from a list of `Int64` in `0..=255`. When the
+                // operand is a compile-time-visible list literal, RANGE-CHECK each element now (a `< 0`
+                // or `> 255` value is a compile-time trap, CDZ0304 — matching the runtime `bytes-set`
+                // guard) and emit a `Core::BytesOf` carrying the element occurrences (the backend bakes
+                // it / builds it on the rope heap). A runtime list source is a later increment (declines
+                // cleanly for now — only a visible literal folds). One operand: the list.
+                Some(Prim::BytesOf) if args.len() == 1 => lower_bytes_of(db, id, args[0]),
+                // `Bytes.len` — FOLD when the operand is a compile-time-visible `Bytes.of` (its byte
+                // count is statically known), else emit the runtime `Core::BytesLen` (`bytes-len`). One
+                // operand: the bytes. Mirrors `List.len`.
+                Some(Prim::BytesLen) if args.len() == 1 => {
+                    let operand = args[0];
+                    match core_of(db, operand) {
+                        Core::BytesOf { elems } => {
+                            trace!(target: "rcdzc::fold", node = id.0, len = elems.len(), "Bytes.len folds to a constant (visible Bytes.of literal)");
+                            Core::ConstInt(IntValue::from_i64(elems.len() as i64))
+                        }
+                        Core::Poison(r) => Core::Poison(r),
+                        _ => Core::BytesLen { operand },
+                    }
+                }
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2323,7 +2344,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListConcat
         | Prim::ListUpdate
         | Prim::ListAt
-        | Prim::ListCtor => {
+        | Prim::ListCtor
+        | Prim::BytesOf
+        | Prim::BytesLen
+        | Prim::BytesTy => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -2553,6 +2577,50 @@ fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> 
     }
 }
 
+/// Lower `(Bytes.of list)` — construct a byte sequence from a list of `Int64` in `0..=255`. Folds only
+/// a compile-time-visible `Core::ListNew` operand (a runtime list source is a later increment → declines
+/// cleanly). Each element must fold to a constant in range: a value `< 0` or `> 255` is a compile-time
+/// trap (CDZ0304, matching the runtime `bytes-set` guard — `numeric-model.md` §A Constant Operation With
+/// No Value Is Rejected At Compile Time); a non-constant element declines (its `Bytes.of` can't be baked
+/// yet). On success produces `Core::BytesOf { elems }` carrying the element occurrences — the backend
+/// bakes/builds the sequence. A poison list propagates.
+fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, list) {
+        return Core::Poison(r);
+    }
+    let Core::ListNew { elems } = core_of(db, list) else {
+        // A runtime list (a parameter, a push-built list) is a later increment — decline cleanly.
+        return Core::Poison(Reject::decline(
+            "Bytes.of of a runtime list is not yet supported (only a visible list literal)",
+        ));
+    };
+    // Range-check each element NOW: it must fold to a constant integer in `0..=255`.
+    for &e in &elems {
+        match core_of(db, e) {
+            Core::Poison(r) => return Core::Poison(r),
+            Core::ConstInt(v) => match v.to_i64() {
+                Some(n) if (0..=255).contains(&n) => {}
+                _ => {
+                    trace!(target: "rcdzc::fold", node = id.0, "Bytes.of element out of 0..=255 → CDZ0304 (fails build)");
+                    return Core::Poison(Reject::coded(
+                        Code::ConstTrap,
+                        "a Bytes.of element is out of range (a byte must be 0..=255)",
+                    ));
+                }
+            },
+            // A non-constant element in a visible list literal (e.g. a runtime operand): the bytes
+            // cannot be baked at compile time yet. Decline — runtime construction is a later increment.
+            _ => {
+                return Core::Poison(Reject::decline(
+                    "Bytes.of with a non-constant element is not yet supported",
+                ));
+            }
+        }
+    }
+    trace!(target: "rcdzc::lower", node = id.0, len = elems.len(), "Bytes.of → Core::BytesOf (constant byte literal)");
+    Core::BytesOf { elems }
+}
+
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 1 {
         return Core::Poison(Reject::coded(
@@ -2658,6 +2726,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListUpdate => "list-update",
         Prim::ListAt => "list-at",
         Prim::ListCtor => "List",
+        Prim::BytesOf => "bytes-of",
+        Prim::BytesLen => "bytes-len",
+        Prim::BytesTy => "bytes-ty",
     }
 }
 
