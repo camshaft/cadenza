@@ -295,6 +295,8 @@ pass	a type-value in integer-width position is rejected
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
+pass	a variant carrying a RECORD payload constructs and matches
+pass	a variant carrying a record payload escapes to the host
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error

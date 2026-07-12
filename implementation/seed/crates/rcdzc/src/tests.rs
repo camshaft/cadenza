@@ -7099,6 +7099,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_variant_with_a_record_payload_whose_field_is_lowercase_is_not_generic() {
+        // REGRESSION: a variant carrying a `(Record (field Type)…)` payload whose field NAME is lowercase
+        // (`(Pt (Record (x Int64) (y Int64)))`) must NOT be mistaken for a generic sum. `collect_type_params`
+        // scanned the payload for free lowercase names as implicit type parameters — and wrongly picked up
+        // the record FIELD NAMES `x`/`y`, making `P` spuriously generic over them; the ctor arrow then read
+        // its payload as an unresolvable variable, so `P.Pt` looked NULLARY and rejected the construction
+        // (CDZ0201 "a nullary variant takes the unit value"). A field name is a LABEL, not a type expr — the
+        // fix descends only into each field pair's TYPE. The bug was a compile-time REJECT, so COMPILING the
+        // construction (it no longer faults) is the precise guard; the run is exercised by the corpus case
+        // "a variant carrying a RECORD payload constructs and matches" (which links the value-heap runtime).
+        let src = "(module m (type P (Pt (Record (x Int64) (y Int64))) O) \
+                     (def (sum r) (+ (. r x) (. r y))) \
+                     (def (main) (match (P.Pt (record (x 3) (y 4))) ((P.Pt r) (sum r)) (P.O 0))) \
+                     (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a record-payload variant with lowercase field names must COMPILE — not reject P.Pt as \
+             nullary (the field names must not be collected as type parameters)"
+        );
+    }
+
+    #[test]
     fn a_constant_sum_match_folds_to_the_selected_arm() {
         // A match over a CONSTANT sum folds at compile time to the arm whose variant it is — no runtime
         // dispatch, like a constant scalar match. `(match (Some 5) ((Some x) x) (None 0))` selects the

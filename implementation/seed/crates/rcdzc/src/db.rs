@@ -1107,6 +1107,13 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
 /// the same convention the prelude's operator type-lambdas use with `a`). Descends a type application
 /// `(Option a)` / `(Tuple a b)` into its arguments. A duplicate is not re-added (a `HashSet`-like
 /// linear check keeps the small param list ordered by first appearance).
+///
+/// ⚠ A `(Record (field Type)…)` payload's field NAME is a LABEL, not a type expression — a lowercase
+/// field name (`(Record (v Int64))`) must NOT be mistaken for a type parameter, or the sum spuriously
+/// becomes generic over `v` and its ctor arrow breaks (the payload reads as an unresolvable variable, so
+/// the variant looks nullary). So a `(Record …)` form descends only into each field pair's TYPE (the
+/// second element), skipping the name — the same asymmetry `reduce_ctor`/`decode_ty` apply to a record
+/// field pair. Every OTHER form (`Tuple`/`List`/`Option`/`->`) descends all children uniformly.
 fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
     match ast.get(occ) {
         Struct::Atom(_) => {
@@ -1115,6 +1122,21 @@ fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
                 && !params.iter().any(|p| p == n)
             {
                 params.push(n.to_string());
+            }
+        }
+        // A `(Record (field Type)…)` type: a field NAME is a label, never a type parameter. Descend only
+        // into each field pair's TYPE element, skipping the name (which may be lowercase — `(Record (v
+        // Int64))` — and would otherwise be collected as a spurious param).
+        Struct::List(children)
+            if children.first().and_then(|&h| ast.as_name(h)) == Some("Record") =>
+        {
+            for &pair in children.iter().skip(1) {
+                if let Struct::List(items) = ast.get(pair)
+                    && items.len() == 2
+                {
+                    // The field TYPE (second element); the name (first) is a label, skipped.
+                    collect_type_params(ast, items[1], params);
+                }
             }
         }
         // A type application `(Head arg…)` — descend into every child (the head of a nested application

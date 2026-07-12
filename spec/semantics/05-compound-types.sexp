@@ -2728,6 +2728,36 @@
                (def (main) (T.Pair (tuple 1 2 3))) (export main)))
   (error     CDZ0203))
 
+(case "a variant carrying a RECORD payload constructs and matches"
+  (doc    "The Record-payload companion of the Tuple-payload cases: `(type P (Pt (Record (x Int64) (y
+           Int64))) O)` declares `P.Pt` carrying a two-field record. `(P.Pt (record (x 3) (y 4)))`
+           constructs it, and a `((P.Pt r) …)` arm binds the whole record payload as `r`, projected
+           `(+ (. r x) (. r y))` → 7. Pins that a RECORD payload type is a real single payload (the
+           record companion of the Tuple payload). A record field name is a LABEL, not a type parameter:
+           a compiler that mistook the lowercase field name `x`/`y` for an implicit generic parameter
+           would make the sum spuriously generic and read the payload as an unresolvable variable, so
+           `P.Pt` would look NULLARY and reject the construction (CDZ0201 'a nullary variant takes the
+           unit value'). Must construct and fold to 7.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type P (Pt (Record (x Int64) (y Int64))) O)
+            (def (sum r) (+ (. r x) (. r y)))
+            (def (main) (match (P.Pt (record (x 3) (y 4))) ((P.Pt r) (sum r)) (P.O 0)))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a variant carrying a record payload escapes to the host"
+  (doc    "The escape companion: `(P.Pt (record (x 1) (y 2)))` returned as the program result renders
+           its canonical form `(: ((. P Pt) (record (x 1) (y 2))) P)` — a user-declared variant renders
+           its constructor QUALIFIED `(. P Pt)`, its record payload as `(record (x 1) (y 2))`. Pins that
+           a record-payload sum value crosses the boundary through the sum-escape resource path, its
+           lowercase field names carried through as labels (not misread as type parameters).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type P (Pt (Record (x Int64) (y Int64))) O)
+            (def (main) (P.Pt (record (x 1) (y 2)))) (export main)))
+  (output (: ((. P Pt) (record (x 1) (y 2))) P)))
+
 (case "a program's unary variant reusing a prelude nullary variant name is unary"
   (doc    "A program declares `(type Expr (Lit Int64) (Neg Expr))` whose `Neg` variant carries a
            payload — reusing the NAME of the prelude `(type Sign Neg Zero Pos)`'s NULLARY `Neg`.
