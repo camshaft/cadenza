@@ -261,6 +261,19 @@ interface heap {
   set-union: func(a: u32, b: u32) -> u32;              // 57 — elements in a OR b (consumes both)
   set-intersection: func(a: u32, b: u32) -> u32;       // 58 — elements in a AND b (consumes both)
   set-difference: func(a: u32, b: u32) -> u32;         // 59 — elements in a but NOT b (consumes both)
+
+  // ── Bulk vector construct (index 60) — build a persistent vector from an already-built flat `arr`
+  //    (the tuple/record array primitive) in ONE call, the lowering target for a `(list e0 … e{N-1})`
+  //    literal: the compiler emits `arr-alloc N` + N× `arr-set` (which it already does trivially) then a
+  //    single `vec-of-arr`, instead of `vec-empty` + N× `vec-push` (N persistent-trie CONSTRUCTORS, each
+  //    consuming+rebuilding the whole vector). Ownership (value-heap-runtime.md §Constructors Consume And
+  //    Accessors Borrow): a CONSTRUCTOR — CONSUMES `arr` and produces a NEW owned vector holding the
+  //    same elements in order; the result is INDISTINGUISHABLE from a push-built vector by
+  //    `vec-len`/`vec-get` and valid for further `vec-push`/`vec-update`/`vec-concat`/`vec-split`.
+  //    Zero-copy for the common case: a ≤32-element list fits ONE trie leaf, so the arr node IS that
+  //    leaf (reused by move — only the 8-byte header node is allocated); a larger list fills the trie in
+  //    one pass. `arr-len 0` (the empty array is inline unit) yields the empty vector.
+  vec-of-arr: func(arr: u32) -> u32;                   // 60 — vector from a flat arr (consumes arr)
 }
 
 world runtime {

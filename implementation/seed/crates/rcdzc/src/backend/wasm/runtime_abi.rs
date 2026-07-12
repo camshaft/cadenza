@@ -60,14 +60,14 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "3669547601fc1571f480e7cdf8b625c9e5ea1527ac437c6f34fea9aa5dec2564";
+    "6f69fc823188e94672895f4b72f305ef3235a9da2afdb4d98cb1a736ceea2e5e";
 /// The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "76509aab965efa5d5ee8556f78ab4d172163d6c2de767ad232fc3af3450816e3";
+    "094b227e66c02a84608418ff39205634b83524c7d2118ab2d5a3b056b652381c";
 /// Every op the runtime `heap` interface declares, as structured signature data (sorted).
 pub const RUNTIME_OPS: &[RtOp] = &[
     RtOp {
@@ -418,6 +418,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
         lowerable: true,
     },
     RtOp {
+        name: "vec-of-arr",
+        params: &[AbiValType::U32],
+        result: Some(AbiValType::U32),
+        lowerable: true,
+    },
+    RtOp {
         name: "vec-push",
         params: &[AbiValType::U32, AbiValType::U32],
         result: Some(AbiValType::U32),
@@ -497,6 +503,7 @@ pub struct RuntimeOps {
     pub vec_empty: &'static RtOp,
     pub vec_get: &'static RtOp,
     pub vec_len: &'static RtOp,
+    pub vec_of_arr: &'static RtOp,
     pub vec_push: &'static RtOp,
     pub vec_split: &'static RtOp,
     pub vec_update: &'static RtOp,
@@ -560,7 +567,8 @@ pub const OPS: RuntimeOps = RuntimeOps {
     vec_empty: &RUNTIME_OPS[54],
     vec_get: &RUNTIME_OPS[55],
     vec_len: &RUNTIME_OPS[56],
-    vec_push: &RUNTIME_OPS[57],
-    vec_split: &RUNTIME_OPS[58],
-    vec_update: &RUNTIME_OPS[59],
+    vec_of_arr: &RUNTIME_OPS[57],
+    vec_push: &RUNTIME_OPS[58],
+    vec_split: &RUNTIME_OPS[59],
+    vec_update: &RUNTIME_OPS[60],
 };
