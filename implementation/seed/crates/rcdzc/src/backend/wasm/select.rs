@@ -1255,31 +1255,93 @@ fn emit_branch(
     emit(db, id, slots, base, high, scratch_ty, layout, out)
 }
 
-/// If `id` is an operand ALREADY held in a wasm local of the operation's machine slot type — a
-/// parameter (`Core::Param`) or a kept `let`-binding (`Core::LocalRef`) whose slot exists in `slots`
-/// and is declared at `slot_ty` — its slot. Such an operand is a side-effect-free, repeatable
-/// `local.get`, so the guarded-arith recipe can read that slot DIRECTLY (multiple times) instead of
-/// copying the value into a fresh `$a`/`$b` scratch local. That saves, per such operand, one
-/// `local.set` + one declared scratch local (and the guard's re-reads cost nothing extra — they were
-/// already `local.get`s). Returns `None` when the operand is anything else (a nested computation, a
-/// literal needing width-grounding, or a local of a DIFFERENT slot type — e.g. a narrow i32 param
-/// feeding an i64 op), in which case the caller falls back to the copy-into-scratch path.
-fn direct_operand_slot(
+/// How a checked-arith operand is pushed onto the stack at each of its use sites (the machine op AND
+/// every guard re-read). An operand read many times need not be copied into a scratch local IF it is
+/// cheap and side-effect-free to re-materialize:
+///  - `Slot` — the operand already lives in a wasm local (a parameter, a kept `let`-binding, or a
+///    scratch slot a non-reusable operand was stored into); push is `local.get`.
+///  - `Const` — the operand is a compile-time integer; push is the grounded `i32.const`/`i64.const`
+///    directly, so it needs neither a scratch slot nor a `local.set`.
+///
+/// Deciding the source ONCE (in [`operand_src`]) and pushing it at each site keeps the machine op and
+/// the guard in agreement and removes the store+slot for a reusable operand.
+#[derive(Clone, Copy)]
+enum OperandSrc {
+    Slot(u32),
+    ConstI32(i32),
+    ConstI64(i64),
+}
+
+impl OperandSrc {
+    /// Push this operand's value onto the stack (`local.get slot`, or the constant push).
+    fn push(self, out: &mut Vec<Lir>) {
+        match self {
+            OperandSrc::Slot(slot) => out.push(Lir::LocalGet(slot)),
+            OperandSrc::ConstI32(v) => out.push(Lir::ConstI32(v)),
+            OperandSrc::ConstI64(v) => out.push(Lir::ConstI64(v)),
+        }
+    }
+}
+
+/// The reusable operand source for `id` at machine slot type `slot_ty`, or `None` if the operand must
+/// be computed and stashed in a scratch slot (a nested computation). A REUSABLE operand is one that is
+/// side-effect-free and cheap to re-emit at every use site — so no scratch local and no `local.set`:
+///  - a parameter (`Core::Param`) or kept `let`-binding (`Core::LocalRef`) already in a local of the
+///    op's machine type (a narrow local feeding a wider op does NOT match — its i32 slot ≠ the i64 op);
+///  - a compile-time integer (`Core::ConstInt`) that fits the op width, grounded to the op width `ot`
+///    (the same range-check + bit-pattern `emit_operand` applies to an inline literal, so an
+///    out-of-range constant still declines — CDZ0302 — rather than silently truncating).
+fn operand_src(
     db: &mut Db,
     id: StructId,
-    slot_ty: ValType,
+    ot: IntTy,
     slots: &HashMap<StructId, u32>,
-) -> Option<u32> {
-    let binder = match core_of(db, id) {
-        Core::Param { binder } | Core::LocalRef { binder } => binder,
-        _ => return None,
-    };
-    let slot = *slots.get(&binder)?;
-    // The operand must live in a slot of the op's machine type; else reading it as `$a`/`$b` would
-    // feed a mismatched i32/i64 into the machine op. A same-width operand (the common `(+ a b)` where
-    // both share the op's type) matches; a narrow operand feeding a wider op does not and takes the
-    // copy path, where `emit_operand` handles the width.
-    (valtype_of(&type_of(db, id)) == Some(slot_ty)).then_some(slot)
+) -> Result<Option<OperandSrc>, Reject> {
+    match core_of(db, id) {
+        Core::Param { binder } | Core::LocalRef { binder } => {
+            let Some(&slot) = slots.get(&binder) else {
+                return Ok(None);
+            };
+            // The operand must live in a slot of the op's machine type; else reading it would feed a
+            // mismatched i32/i64 into the machine op. A same-width operand matches; a narrow operand
+            // feeding a wider op does not and takes the copy path (where `emit_operand` widens it).
+            if valtype_of(&type_of(db, id)) == Some(m_slot(ot)) {
+                Ok(Some(OperandSrc::Slot(slot)))
+            } else {
+                Ok(None)
+            }
+        }
+        Core::ConstInt(v) => {
+            // A constant is re-materializable for free — inline it (grounded to the op width) at each
+            // use, so it needs no scratch slot. Same range-check as `emit_operand`: out of range
+            // declines, never truncates.
+            let width = ot.ground_width();
+            if !v.fits_width(ot.ground_signed(), width) {
+                return Err(Reject::coded(
+                    Code::IntOutOfRange,
+                    "integer literal does not fit its width",
+                ));
+            }
+            let src = if width <= 32 {
+                OperandSrc::ConstI32(v.to_i32_bits(width))
+            } else {
+                OperandSrc::ConstI64(v.to_i64_bits())
+            };
+            Ok(Some(src))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The wasm machine slot (i32 for a ≤32-bit width, i64 otherwise) for an integer op of type `ot` —
+/// the same choice [`Machine::slot`] makes, computed straight from the `IntTy` so `operand_src` need
+/// not build a `Machine`.
+fn m_slot(ot: IntTy) -> ValType {
+    if ot.ground_width() <= 32 {
+        ValType::I32
+    } else {
+        ValType::I64
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1297,11 +1359,12 @@ fn emit_checked_arith(
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
-    // An operand already in a matching local is read DIRECTLY (no copy into scratch — see
-    // `direct_operand_slot`). `$a`/`$b` are that slot when so, else a fresh scratch slot the operand is
-    // stored into; `$r` (the result) always needs its own scratch. Scratch slots for the operands are
-    // claimed from `base` and the operand recursion floats ABOVE whatever scratch is actually used, so
-    // an eliminated copy also frees the slot it would have occupied.
+    // Each operand's SOURCE at every use site (the machine op + the guard's re-reads): a reusable
+    // operand — a matching local, or a compile-time constant — is pushed directly (`local.get` / an
+    // inline `const`) and needs NO scratch slot; only a nested computation is stashed in a fresh
+    // scratch slot (source = that slot). `$r` (the result) always needs its own scratch. Scratch slots
+    // are claimed from `base`; the operand recursion floats ABOVE whatever scratch is actually used, so
+    // an operand that needs no copy also frees the slot it would have occupied.
     let mut next_scratch = base;
     let mut claim = |high: &mut u32| {
         let s = next_scratch;
@@ -1311,23 +1374,23 @@ fn emit_checked_arith(
         }
         s
     };
-    let sa = direct_operand_slot(db, lhs, m.slot(), slots);
-    let sb = direct_operand_slot(db, rhs, m.slot(), slots);
-    // `$a`: the operand's own slot if direct, else a fresh scratch slot (recorded at the op's type).
-    let sa = match sa {
-        Some(slot) => slot,
+    // A reusable source is settled now; a non-reusable operand claims a scratch slot to be stored into.
+    let sa_src = operand_src(db, lhs, ot, slots)?;
+    let sa = match sa_src {
+        Some(src) => src,
         None => {
             let s = claim(high);
             scratch_ty.insert(s, m.slot());
-            s
+            OperandSrc::Slot(s)
         }
     };
-    let sb = match sb {
-        Some(slot) => slot,
+    let sb_src = operand_src(db, rhs, ot, slots)?;
+    let sb = match sb_src {
+        Some(src) => src,
         None => {
             let s = claim(high);
             scratch_ty.insert(s, m.slot());
-            s
+            OperandSrc::Slot(s)
         }
     };
     let sr = claim(high);
@@ -1335,9 +1398,11 @@ fn emit_checked_arith(
     // Operands that DO need a copy recurse above the scratch slots claimed so far; A is stored before
     // B runs, so B may reuse A's operand scratch (the liveness the high-water mark captures).
     let operand_base = next_scratch;
-    // <A> local.set $a  — only when A is not already in `$a` (a direct local operand skips the copy).
-    // A bare-literal operand is grounded to the OP's width `ot`, not its own default.
-    if direct_operand_slot(db, lhs, m.slot(), slots).is_none() {
+    // <A> local.set $a  — only when A is a stashed (non-reusable) operand; a reusable source is pushed
+    // in place at each use. A bare-literal operand is grounded to the OP's width `ot` by `emit_operand`.
+    if sa_src.is_none()
+        && let OperandSrc::Slot(sa_slot) = sa
+    {
         emit_operand(
             db,
             lhs,
@@ -1349,10 +1414,12 @@ fn emit_checked_arith(
             layout,
             out,
         )?;
-        out.push(Lir::LocalSet(sa));
+        out.push(Lir::LocalSet(sa_slot));
     }
-    // <B> local.set $b  — likewise skipped when B is a direct local operand.
-    if direct_operand_slot(db, rhs, m.slot(), slots).is_none() {
+    // <B> local.set $b  — likewise only for a stashed operand.
+    if sb_src.is_none()
+        && let OperandSrc::Slot(sb_slot) = sb
+    {
         emit_operand(
             db,
             rhs,
@@ -1364,11 +1431,11 @@ fn emit_checked_arith(
             layout,
             out,
         )?;
-        out.push(Lir::LocalSet(sb));
+        out.push(Lir::LocalSet(sb_slot));
     }
-    // get$a get$b <machine-op> local.set $r
-    out.push(Lir::LocalGet(sa));
-    out.push(Lir::LocalGet(sb));
+    // push$a push$b <machine-op> local.set $r
+    sa.push(out);
+    sb.push(out);
     out.push(match op {
         Prim::Add => m.add(),
         Prim::Sub => m.sub(),
@@ -1393,8 +1460,8 @@ fn emit_checked_arith(
 fn emit_machine_overflow_guard(
     op: Prim,
     m: Machine,
-    sa: u32,
-    sb: u32,
+    sa: OperandSrc,
+    sb: OperandSrc,
     sr: u32,
     out: &mut Vec<Lir>,
 ) {
@@ -1404,10 +1471,10 @@ fn emit_machine_overflow_guard(
         Prim::Add if addsub_can_overflow && m.signed => {
             // signed add: `((r^a) & (r^b)) < 0` → trap.
             out.push(Lir::LocalGet(sr));
-            out.push(Lir::LocalGet(sa));
+            sa.push(out);
             out.push(m.xor());
             out.push(Lir::LocalGet(sr));
-            out.push(Lir::LocalGet(sb));
+            sb.push(out);
             out.push(m.xor());
             out.push(m.and());
             out.push(m.konst(0));
@@ -1417,16 +1484,16 @@ fn emit_machine_overflow_guard(
         Prim::Add if addsub_can_overflow => {
             // unsigned add: `r <ᵤ a` → trap (the sum carried out of the slot).
             out.push(Lir::LocalGet(sr));
-            out.push(Lir::LocalGet(sa));
+            sa.push(out);
             out.push(m.lt_u());
             out.push(Lir::IfUnreachableEnd);
         }
         Prim::Sub if addsub_can_overflow && m.signed => {
             // signed sub: `((a^b) & (a^r)) < 0` → trap.
-            out.push(Lir::LocalGet(sa));
-            out.push(Lir::LocalGet(sb));
+            sa.push(out);
+            sb.push(out);
             out.push(m.xor());
-            out.push(Lir::LocalGet(sa));
+            sa.push(out);
             out.push(Lir::LocalGet(sr));
             out.push(m.xor());
             out.push(m.and());
@@ -1440,8 +1507,8 @@ fn emit_machine_overflow_guard(
             // catches — but the unsigned-underflow meaning is clearer as this direct test, and it holds
             // at full width where the range-check is a no-op. (A narrow signed/unsigned sub also relies on
             // the range-check for the upper edge, which never trips for sub.)
-            out.push(Lir::LocalGet(sa));
-            out.push(Lir::LocalGet(sb));
+            sa.push(out);
+            sb.push(out);
             out.push(m.lt_u());
             out.push(Lir::IfUnreachableEnd);
         }
@@ -1449,14 +1516,14 @@ fn emit_machine_overflow_guard(
             // mul: `if a≠0 { if r/a ≠ b { unreachable } }` — guards div against a=0 (a=0 can't overflow);
             // the machine `div_s` traps on MIN/-1 itself (the sole case `r/a` can't detect at full width),
             // `div_u` is total for a≠0. Runs at every width — a narrow product can exceed the slot too.
-            out.push(Lir::LocalGet(sa));
+            sa.push(out);
             out.push(m.konst(0));
             out.push(m.ne());
             out.push(Lir::If(BlockType::Empty)); // if a != 0 {
             out.push(Lir::LocalGet(sr));
-            out.push(Lir::LocalGet(sa));
+            sa.push(out);
             out.push(m.div());
-            out.push(Lir::LocalGet(sb));
+            sb.push(out);
             out.push(m.ne());
             out.push(Lir::IfUnreachableEnd); //   if (r/a) != b { unreachable }
             out.push(Lir::End); // }
@@ -1855,8 +1922,8 @@ mod tests {
         // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
         // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence.
         // Both operands are ALREADY in locals (params, slots 0,1), so they are read DIRECTLY — no copy
-        // into `$a`/`$b` scratch (see `direct_operand_slot`). Only the result needs scratch: $r = slot
-        // 2. get0 get1 add set$r; signed-overflow guard `((r^a)&(r^b))<0 → if unreachable` reading the
+        // into `$a`/`$b` scratch (see `operand_src`). Only the result needs scratch: $r = slot 2.
+        // get0 get1 add set$r; signed-overflow guard `((r^a)&(r^b))<0 → if unreachable` reading the
         // params' own slots; get$r.
         let ast = crate::testkit::parse(
             "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) 0) (export main))",
@@ -1893,6 +1960,45 @@ mod tests {
         // One i64 scratch local declared ($r) — the operand copies ($a,$b) are eliminated.
         assert_eq!(f.declared, vec![ValType::I64; 1]);
         assert!(f.ret.agrees_with(&Ty::int64()));
+    }
+
+    #[test]
+    fn a_constant_operand_is_inlined_not_stashed_in_scratch() {
+        // (def (f (: a Int64)) (+ a 1)) — the RHS is a compile-time constant. `operand_src` returns a
+        // `Const` source for it, so it is pushed inline (`i64.const 1`) at BOTH use sites (the add and
+        // the guard's `r^b`) rather than stored into a `$b` scratch local and re-read. Only $r needs
+        // scratch. Sequence: get$a const1 add set$r ; guard ((r^a)&(r^1))<0 ; get$r — the `set$r ;
+        // get$r` pair fuses to `local.tee` via the peephole.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64)) (+ a 1)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                // r = a + 1 — `a` from its param slot, `1` inline (no $b scratch).
+                Lir::LocalGet(0),
+                Lir::ConstI64(1),
+                Lir::I64Add,
+                Lir::LocalTee(1), // set $r then the guard's first read of $r, fused.
+                // guard: ((r ^ a) & (r ^ 1)) < 0 → trap. `1` re-materialized inline again.
+                Lir::LocalGet(0),
+                Lir::I64Xor,
+                Lir::LocalGet(1),
+                Lir::ConstI64(1),
+                Lir::I64Xor,
+                Lir::I64And,
+                Lir::ConstI64(0),
+                Lir::I64LtS,
+                Lir::IfUnreachableEnd,
+                Lir::LocalGet(1),
+            ]
+        );
+        // Only $r (slot 1) is declared — the constant operand needs no scratch slot at all.
+        assert_eq!(f.declared, vec![ValType::I64; 1]);
     }
 
     #[test]
