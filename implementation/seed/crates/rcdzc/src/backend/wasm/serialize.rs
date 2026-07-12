@@ -801,6 +801,17 @@ fn encode_walk_body(
             }
         }
     }
+    // RELEASE the compound's heap handle: `encode` takes `self: own<t>` (the canonical ABI transfers
+    // ownership INTO encode), so encode owns the last reference — call `heap.drop(rep)` to reclaim it
+    // (cascades to the boxed children; the value heap is acyclic). This is what balances `make`'s
+    // `arr-alloc`, so a runtime compound escape leaves NO live heap cell. (We do NOT rely on the resource
+    // DTOR to release it: `encode`'s `own` self is consumed here, and — decisive finding — `resource.rep`
+    // on a BORROWED self traps in wasmtime 37, so we cannot switch encode to `borrow` and let the host
+    // drop. Owning + dropping in encode is the sound release point for the nullary escape, which always
+    // calls encode. [[rcdzc-r1-resource-encode-linking-findings]].)
+    body.push(op::LOCAL_GET);
+    uleb128(rep as u64, &mut body);
+    call_op("drop", &mut body);
     // return the (ptr,len) area.
     body.push(op::I32_CONST);
     crate::backend::wasm::encode::sleb128(ret_off as i64, &mut body);
