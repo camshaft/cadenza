@@ -43,7 +43,10 @@ export function Layout() {
                           }
                         >
                           <span className="flex-1">{c.title}</span>
-                          {total > 0 && (
+                          {/* Show a badge only once the reader has engaged (≥1 done): a fully-done
+                              chapter gets a ✓, a partly-done one gets n/m. A fresh chapter shows
+                              nothing, so the sidebar isn't cluttered with 0/n before you start. */}
+                          {total > 0 && done > 0 && (
                             <span
                               className={
                                 "shrink-0 text-[10px] tabular-nums " +

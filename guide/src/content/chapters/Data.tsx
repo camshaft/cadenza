@@ -1,25 +1,26 @@
-import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Why } from "../../components/Why.tsx";
 
 export default function Data() {
   return (
     <article>
-      <H1>Data: tuples &amp; records</H1>
-      <Lede>Compound values — and the runtime that carries them across the boundary.</Lede>
+      <H1>Tuples &amp; records</H1>
+      <Lede>Bundling several values into one — positionally, or by name.</Lede>
+
+      <P>
+        So far our programs have passed around single values. Real programs group values together: a
+        point is an <C>x</C> and a <C>y</C>, a result is a value and a status. Cadenza has two ways to
+        bundle values — <strong>tuples</strong> (by position) and <strong>records</strong> (by name).
+      </P>
 
       <H2>Tuples</H2>
       <P>
         A tuple is a fixed positional product of values. When you Run this, notice the result carries
-        its full structural type, <C>(Tuple Int64 Int64 Int64)</C>.
+        its full structural type, <C>(Tuple Int64 Int64 Int64)</C> — the compiler tracks exactly how
+        many elements it has and the type of each.
       </P>
       <Runnable title="A tuple" source={`(tuple 1 2 3)`} />
-
-      <Note>
-        This is where the browser does something remarkable: a compound value like a tuple lives in a
-        value-heap runtime. Your browser composes that runtime with your compiled program and walks the
-        result back into the text you see — the same path the native toolchain uses.
-      </Note>
 
       <H2>Records</H2>
       <P>
@@ -46,6 +47,11 @@ export default function Data() {
         out of a tuple and call it:
       </P>
       <Runnable source={`((. (tuple (fn (x) (+ x 1)) 9) 0) 5)`} />
+
+      <P>
+        That's the vocabulary. Next we'll <em>use</em> it — passing records into functions, nesting
+        them, and reaching in for the pieces — in <strong>Working with records &amp; tuples</strong>.
+      </P>
     </article>
   );
 }

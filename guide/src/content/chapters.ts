@@ -60,8 +60,8 @@ export const CHAPTERS: Chapter[] = [
   },
   {
     slug: "data",
-    title: "Data: tuples, records, sums",
-    blurb: "Compound values and pattern matching.",
+    title: "Tuples & records",
+    blurb: "Bundling values together, by position or by name.",
     section: "Fundamentals",
     Component: lazy(() => import("./chapters/Data.tsx")),
   },
@@ -83,7 +83,7 @@ export const CHAPTERS: Chapter[] = [
   {
     slug: "lists",
     title: "Lists",
-    blurb: "Ordered, immutable sequences on the value heap.",
+    blurb: "Ordered, immutable sequences of values.",
     section: "Fundamentals",
     exercises: 1,
     Component: lazy(() => import("./chapters/Lists.tsx")),
@@ -92,7 +92,7 @@ export const CHAPTERS: Chapter[] = [
     slug: "numbers",
     title: "The numeric model",
     blurb: "Checked integers and no silent promotion.",
-    section: "Distinctives",
+    section: "Fundamentals",
     Component: lazy(() => import("./chapters/Numbers.tsx")),
   },
 ];
