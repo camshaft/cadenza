@@ -18,4 +18,6 @@
 2000	tuple2_build x1000
 0	vec_get x1000
 197	vec_push x1000
+8000	vec_push_shared x1000
 0	vec_update x1000
+7968	vec_update_shared x1000

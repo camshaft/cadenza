@@ -4510,6 +4510,34 @@ mod tests {
         });
         println!("ALLOC vec_update x{N}: {vupd}");
         assert_eq!(vupd, 0, "vec_update on a uniquely-owned vec is FBIP in-place — zero allocations");
+        // (E3) PERSISTENT vec_update on a SHARED vec — keep the base (rc>1) across each update, so every
+        // update path-copies the touched spine (root→leaf) via `vec_update_into`/`vec_node_replace`
+        // instead of refitting in place. UNLIKE the CHAMP copy cores (which cloned the whole handle vec
+        // upfront then built a second), the RRB copy path is ALREADY borrow-and-build: `vec_node_replace`
+        // reads each child via `vec_child()` and builds ONE result Vec — no double-alloc smell. So this
+        // sits at the path-copy floor (~2 allocs per copied spine node + header). Tracked so the common
+        // real-world persistent update pattern (which the unique-FBIP E2 row never exercises) is guarded.
+        let vupd_shared = measure(&mut || {
+            for k in 0..N as u32 {
+                op_dup(v); // keep the base shared → force the path-copy branch
+                let v2 = op_vec_update(v, k % N as u32, op_box_int(k as i64 + 7));
+                op_drop(v2);
+            }
+        });
+        println!("ALLOC vec_update_shared x{N}: {vupd_shared}");
+        assert!(vupd_shared <= 8200, "shared/persistent vec_update x{N} allocs {vupd_shared} exceeds ceiling 8200 (RRB path-copy floor: borrow-and-build, ~2 allocs per copied spine node + header)");
+        // (D2) PERSISTENT vec_push on a SHARED vec — keep the base (rc>1) so each push path-copies the
+        // rightmost spine via `vec_push_into`/`vec_node_append` instead of FBIP in place. Same borrow-and-
+        // build copy path; tracked so the persistent-push pattern is guarded (the unique D row is FBIP).
+        let vpush_shared = measure(&mut || {
+            for _ in 0..N {
+                op_dup(v);
+                let v2 = op_vec_push(v, op_box_int(42));
+                op_drop(v2);
+            }
+        });
+        println!("ALLOC vec_push_shared x{N}: {vpush_shared}");
+        assert!(vpush_shared <= 8300, "shared/persistent vec_push x{N} allocs {vpush_shared} exceeds ceiling 8300 (RRB path-copy floor: borrow-and-build rightmost spine + header)");
         op_drop(v);
 
         // (F) map lookup — a pure read on scalar keys must allocate NOTHING. Guards the lazy champ_eq
