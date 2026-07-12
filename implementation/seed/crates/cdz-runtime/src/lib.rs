@@ -592,6 +592,13 @@ fn op_sum_payload(h: Handle) -> Handle {
 // OOB into a valid buffer traps; null is benign.
 
 fn op_bytes_alloc(len: u32) -> Handle {
+    // A ≤INLINE_RAW_CAP-byte buffer (a short string/section leaf — the common case when assembling a
+    // rope from many small pieces) builds its zero-filled raw INLINE, skipping the transient `vec![0u8;
+    // len]` that `alloc` would otherwise copy into the inline `Raw` and immediately free. That transient
+    // Vec was pure malloc/free churn on the hot leaf-build path (dominant in a rope-assembly profile).
+    if (len as usize) <= INLINE_RAW_CAP {
+        return alloc_raw(Vec::new(), Raw::Inline { len: len as u8, buf: [0u8; INLINE_RAW_CAP] });
+    }
     alloc(Vec::new(), vec![0u8; len as usize])
 }
 /// Store a byte (the compiler guarantees `value` is 0–255) and return the buffer handle. OOB into a
@@ -4796,6 +4803,7 @@ mod tests {
 
 
 
+
     /// CPU-scaling PROBE (diagnostic, not a regression gate): times set ∩/∖ at growing N to reveal
     /// whether they are linear-ish or super-linear (the alloc bench can't see the O(log) contains-probe
     /// factor — evidence for whether the O(min) node-merge redesign is worth a future tick). Also times
@@ -5655,6 +5663,47 @@ mod tests {
         assert_eq!(op_bytes_get(b, 2), 255);
         // Non-printable bytes render as `\xNN` (lowercase, matching the `bytes` crate's `Debug`).
         assert_eq!(render(b, &Shape::Bytes), "b\"\\x01\\x02\\xff\"");
+    }
+
+    /// `op_bytes_alloc` builds a ≤INLINE_RAW_CAP-byte buffer with an INLINE raw (no transient `vec![0;
+    /// len]`) and a longer one on the heap. Guards the two paths agree on value AND representation: a
+    /// small leaf's raw must be inline (the perf win) while still set/get/len-ing identically to a large
+    /// heap leaf, and both must render + compare (champ_eq) the same as the other rep would. (Rep
+    /// divergence behind Raw's Deref is invisible to a value-only check — iter-29's lens — hence the
+    /// explicit raw_is_heap assertions.)
+    #[test]
+    fn bytes_alloc_small_is_inline_large_is_heap_and_both_round_trip() {
+        reset();
+        let before = live_nodes();
+        // Fill a buffer of `len` with 0..len and verify set/get/len round-trip.
+        let make = |len: u32| -> Handle {
+            let b = op_bytes_alloc(len);
+            for i in 0..len {
+                op_bytes_set(b, i, (i & 0xff) as u32);
+            }
+            b
+        };
+        // Small (<= cap): inline raw.
+        let small = make(INLINE_RAW_CAP as u32); // exactly at the boundary — still inline
+        assert!(!raw_is_heap(small), "a <=cap bytes leaf has an INLINE raw (no transient Vec allocated)");
+        assert_eq!(op_bytes_len(small), INLINE_RAW_CAP as u32);
+        for i in 0..INLINE_RAW_CAP as u32 {
+            assert_eq!(op_bytes_get(small, i), i, "small leaf byte {i} round-trips");
+        }
+        // Large (> cap): heap raw.
+        let large = make(INLINE_RAW_CAP as u32 + 5);
+        assert!(raw_is_heap(large), "a >cap bytes leaf spills to a heap raw");
+        for i in 0..(INLINE_RAW_CAP as u32 + 5) {
+            assert_eq!(op_bytes_get(large, i), i & 0xff, "large leaf byte {i} round-trips");
+        }
+        // A small leaf must compare/hash EQUAL to a fresh twin (canonical rep, one value).
+        let small2 = make(INLINE_RAW_CAP as u32);
+        assert!(champ_eq(small, small2), "two identically-built small leaves are champ_eq");
+        assert_eq!(champ_hash(small), champ_hash(small2), "…and hash identically");
+        op_drop(small);
+        op_drop(small2);
+        op_drop(large);
+        assert_eq!(live_nodes(), before, "no leak across the small/large leaf builds");
     }
 
     #[test]
