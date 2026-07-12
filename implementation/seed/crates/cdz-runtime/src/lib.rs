@@ -70,6 +70,37 @@
 //!
 //! Authored in Rust for maintainability; to be re-authored in Cadenza at M8/M9 self-hosting.
 
+// `no_std` in the SHIPPED build, plain `std` under `cargo test`.
+//
+// WHY no_std: the runtime's wasm bytes — and thus its content hash (`REQUIRED_RUNTIME_HASH`, pinned
+// by every compiled program) — must be byte-identical on every builder. The build rebuilds the std
+// library from source (`build-std`, see `.cargo/config.toml`) so the panic machinery can be compiled
+// out; but building the FULL `std` from source lays its functions out in a host-architecture-
+// dependent ORDER (x86_64 vs aarch64 emit the same code in a different sequence), reintroducing
+// nondeterminism. `core` + `alloc` do NOT have that problem, so the runtime is `no_std` and links
+// only those two — the crate never needed `std` (it allocates through `Box`/`Vec` = `alloc`, and its
+// one global allocator is talc on wasm; see `allocator`).
+//
+// Gated `not(test)` so the NATIVE test suite keeps `std` (HashMap/BTreeMap reference oracles,
+// `catch_unwind`, `Instant`) and stays trivially runnable with a plain `cargo test` — exactly as the
+// `allocator` module is `cfg(target_arch = "wasm32")`. The shipped/hashed artifact is the wasm build,
+// which is `not(test)`, so this is the form whose determinism matters.
+#![cfg_attr(not(test), no_std)]
+
+// `alloc` is always available (the heap core is built on `Box`/`Vec`); bring it in explicitly since
+// there is no `std` prelude re-export under `no_std`.
+extern crate alloc;
+
+// Pull the allocation types + macros the core uses pervasively into scope, so the ~260 `Vec`/`Box`/
+// `vec!` sites read the same under `no_std` as they did under `std`'s prelude.
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+// `format!` is only used in test/reference-oracle code, so import it there.
+#[cfg(test)]
+use alloc::format;
+
 // The runtime's embedded allocator (talc), isolated so it is swappable in one file. Only present in
 // the wasm build; native `cargo test` uses the system allocator.
 #[cfg(target_arch = "wasm32")]
@@ -83,6 +114,41 @@ mod bindings;
 
 #[cfg(target_arch = "wasm32")]
 use bindings::exports::cadenza::runtime::heap::Guest;
+
+/// A single-threaded stand-in for `std::thread_local!`, so the two scratch/counter cells work under
+/// `no_std` (the shipped wasm build) without pulling in `std`. A component instance is
+/// single-threaded, so a plain `static` behind an `UnsafeCell` is sound: there is no other thread to
+/// race, and neither cell's `.with(...)` closure re-enters the same cell (documented at each use).
+/// The `.with(|&T| ...)` shape mirrors `thread_local!`, so the call sites are unchanged.
+///
+/// Under `test` this is still a real `std::thread_local!` — the native suite is multi-threaded (the
+/// test harness), so it must NOT share one static across threads.
+#[cfg(not(test))]
+struct SingleThreadCell<T>(core::cell::UnsafeCell<T>);
+// SAFETY: only ever used in the single-threaded wasm runtime; see the type doc.
+#[cfg(not(test))]
+unsafe impl<T> Sync for SingleThreadCell<T> {}
+#[cfg(not(test))]
+impl<T> SingleThreadCell<T> {
+    const fn new(v: T) -> Self {
+        SingleThreadCell(core::cell::UnsafeCell::new(v))
+    }
+    fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        // SAFETY: single-threaded; the closure does not re-enter this cell (see call sites).
+        f(unsafe { &*self.0.get() })
+    }
+}
+
+/// Declare a single-threaded thread-local-shaped static: a real `thread_local!` under `test`, a
+/// `SingleThreadCell` in the shipped `no_std` build. Both expose `NAME.with(|v| …)`.
+macro_rules! runtime_local {
+    ($(#[$m:meta])* static $name:ident : $ty:ty = $init:expr;) => {
+        #[cfg(test)]
+        std::thread_local! { $(#[$m])* static $name: $ty = const { $init }; }
+        #[cfg(not(test))]
+        $(#[$m])* static $name: SingleThreadCell<$ty> = SingleThreadCell::new($init);
+    };
+}
 
 /// A heap node: a Perceus refcount header, the child handles, and the packed raw payload. Each node
 /// is an independent allocation; a `Handle` is its address. There is NO kind/discriminant field —
@@ -403,7 +469,7 @@ impl Handles {
     /// methods and reinstalls it via `champ_become_hdr`.
     #[inline]
     fn take(&mut self) -> Handles {
-        std::mem::take(self)
+        core::mem::take(self)
     }
     /// A fresh owned `Vec` copy of the handles — the path-COPY path clones the source node's children
     /// into a working buffer it then mutates/reinstalls. (`Handle` is `Copy`, so this copies pointers,
@@ -476,7 +542,7 @@ impl core::ops::Deref for Handles {
 struct Handle(*mut Node);
 
 impl Handle {
-    const NULL: Handle = Handle(std::ptr::null_mut());
+    const NULL: Handle = Handle(core::ptr::null_mut());
 }
 
 // ─── Low-bit tagged immediates (inline handles) — DESIGN-inline-handle-tagging.md §4.1 ────
@@ -636,8 +702,8 @@ fn with_raw_arity<T>(h: Handle, f: impl FnOnce(&[u8], usize) -> T) -> T {
 // (assert 0). In the DEFAULT (shipped) build neither the counter nor its updates exist — the runtime
 // is zero-cost and byte-stable, and `live-objects` returns 0.
 #[cfg(any(test, feature = "debug-counters"))]
-thread_local! {
-    static LIVE_NODES: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+runtime_local! {
+    static LIVE_NODES: core::cell::Cell<i64> = core::cell::Cell::new(0);
 }
 
 /// The live heap-object count, or 0 when the counter is not compiled in (the default build). The
@@ -1219,7 +1285,7 @@ fn op_drop(root: Handle) {
             seed_buf[..*len as usize].copy_from_slice(&buf[..*len as usize]);
             seed_len = *len as usize;
         }
-        Handles::Heap(v) => worklist = std::mem::take(v),
+        Handles::Heap(v) => worklist = core::mem::take(v),
     }
     unsafe { drop(Box::from_raw(root.0)) };
     #[cfg(any(test, feature = "debug-counters"))]
@@ -1257,7 +1323,7 @@ fn op_drop(root: Handle) {
             }
             Handles::Heap(v) if worklist.is_empty() => {
                 // Adopt the dying node's Vec (no alloc), then fold any pending inline-seed items in.
-                worklist = std::mem::take(v);
+                worklist = core::mem::take(v);
                 if seed_len > 0 {
                     worklist.extend_from_slice(&seed_buf[..seed_len]);
                     seed_len = 0;
@@ -1327,7 +1393,7 @@ fn op_reset(node: Handle) -> Handle {
     // Unique. Take the children out (ending the borrow before the drops), release each, then put
     // the now-empty backing Vec back so the shell keeps its allocation for the coming refit.
     let mut children = match unsafe { node.0.as_mut() } {
-        Some(n) => std::mem::take(&mut n.handles),
+        Some(n) => core::mem::take(&mut n.handles),
         None => return Handle::NULL,
     };
     for &child in children.iter() {
@@ -2704,15 +2770,15 @@ enum HashTask {
     Combine(Handle, usize),
 }
 
-thread_local! {
+runtime_local! {
     /// REUSED scratch worklists for `champ_hash`'s general (nested-compound) walk. A nested KEY is
     /// hashed on every insert/lookup/remove, and each hash needs a `work` task stack + a `results`
     /// hash stack — freshly allocating them (even pre-sized) was 2 heap allocs PER HASH. Caching them
     /// thread-locally lets each hash `clear()` + reuse the buffers: they grow ONCE to the high-water
     /// mark, then every subsequent hash is allocation-FREE. Safe because the runtime is single-threaded
     /// and `champ_hash`'s walk is iterative + never re-enters `champ_hash` (so the borrow never nests).
-    static HASH_SCRATCH: std::cell::RefCell<(Vec<HashTask>, Vec<u32>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+    static HASH_SCRATCH: core::cell::RefCell<(Vec<HashTask>, Vec<u32>)> =
+        core::cell::RefCell::new((Vec::new(), Vec::new()));
 }
 
 /// A deterministic structural hash of the whole subtree rooted at `root`: FNV-1a over each node's

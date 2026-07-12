@@ -1,28 +1,34 @@
 # Deterministic, cross-architecture runtime build.
 #
-# WHY: the emitted component's bytes — and therefore its content hash (`REQUIRED_RUNTIME_HASH`,
-# which every compiled program pins) — MUST be identical on every host. Two things in the standard
-# library's PANIC machinery broke that across x86_64 vs aarch64 builders of the same rustc:
-#   1. an embedded sysroot source path (`/rustc/<commit>/…/slice/index.rs` on rustup dist builds vs a
-#      local `…/.rustup/toolchains/…` path on a machine with the `rust-src` component installed), and
-#   2. the layout ORDER of the `#[track_caller]` panic-location table — the same records emitted in a
-#      different sequence across host architectures (a compiler layout nondeterminism).
-# A post-build `wasm-tools strip` removes custom sections but cannot touch either of these (they live
-# in the code/data sections).
+# WHY: the emitted component's bytes — and therefore its content hash (`REQUIRED_RUNTIME_HASH`, which
+# every compiled program pins) — MUST be identical on every host. Building the runtime on an x86_64 vs
+# an aarch64 host (same rustc) produced different bytes from two things in the standard library:
+#   1. PANIC machinery: an embedded sysroot source path (`/rustc/<commit>/…/slice/index.rs` vs a local
+#      `…/.rustup/toolchains/…` path) AND the layout order of the `#[track_caller]` panic-location
+#      table (same records, different sequence per host); and
+#   2. `std`'s own function/type LAYOUT ORDER when built from source — x86_64 and aarch64 emit
+#      identical code in a different sequence.
+# A post-build `wasm-tools strip` removes custom sections but cannot touch any of these (they live in
+# the code/data sections).
 #
-# FIX: rebuild core/alloc/std from source with `panic = immediate-abort`, which compiles ALL panic
-# locations and messages out entirely — there is no path to embed and no table to reorder, so the
-# output is byte-identical everywhere. The runtime is already `panic = "abort"`, so nothing of value
-# is lost (it shrinks slightly). `build-std` needs the `rust-src` component (pinned in
-# rust-toolchain.toml) and is a `-Z` feature, so every wasm build sets `RUSTC_BOOTSTRAP=1` (xtask's
-# build_component does this; the CI wasm jobs export it) to enable it on the stable pin.
+# FIX (two parts):
+#   1. rebuild the std libraries from source with `panic = immediate-abort`, compiling ALL panic
+#      locations and messages out — no `/rustc/…` path to embed, no location table to reorder; and
+#   2. link only `core` + `alloc`, NOT `std`. `core`/`alloc` do not have `std`'s host-dependent layout
+#      problem. The runtime is `#![no_std]` in its shipped build (see lib.rs), so it needs no more —
+#      it only ever allocated through `Box`/`Vec` (= `alloc`) with talc as the global allocator.
+# Result: byte-identical wasm on every host.
+#
+# `build-std` needs the `rust-src` component (pinned in rust-toolchain.toml) and is a `-Z` feature, so
+# every wasm build sets `RUSTC_BOOTSTRAP=1` (xtask's build_component does this; the CI wasm jobs export
+# it) to enable it on the stable pin.
 #
 # Scoped to `[target.wasm32-unknown-unknown]` ON PURPOSE: the runtime is ALSO built natively for the
-# allocation bench (`cargo test`), which must NOT get immediate-abort. On a native build with no
-# RUSTC_BOOTSTRAP, cargo silently ignores this whole `[unstable]` block, so the native path is
-# unaffected.
+# allocation bench (`cargo test`), which is NOT no_std (it keeps std) and must NOT get immediate-abort.
+# On a native build with no RUSTC_BOOTSTRAP, cargo silently ignores this whole `[unstable]` block, so
+# the native path is unaffected.
 [unstable]
-build-std = ["core", "alloc", "std", "panic_abort"]
+build-std = ["core", "alloc", "panic_abort"]
 
 [target.wasm32-unknown-unknown]
 rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort"]
