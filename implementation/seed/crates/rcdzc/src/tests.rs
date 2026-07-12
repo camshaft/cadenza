@@ -7190,9 +7190,9 @@ mod stage1 {
         // Construction lowers to the right value-heap OPS — `collect_used_ops` reports exactly what
         // `emit` lays down (they must agree, or the import section omits a called op). A single-payload
         // `(Some a)` uses `sum-new` + `box-int` (box the Int64 payload); a nullary `None` uses `sum-new`
-        // + `arr-alloc` (the empty-array unit payload). This proves construction reaches the heap builder
-        // without needing the sum to escape (next tick) or a composed run (a dead sum folds away — a sum
-        // is only observable once it escapes or is matched).
+        // ALONE — its unit payload is the inline-unit CONSTANT (`IMM_UNIT`), so it imports no `arr-alloc`.
+        // This proves construction reaches the heap builder without needing the sum to escape (next tick)
+        // or a composed run (a dead sum folds away — a sum is only observable once it escapes or matched).
         use crate::backend::wasm::select::collect_used_ops;
         use crate::db::Db;
         use crate::testkit::parse;
@@ -7213,7 +7213,10 @@ mod stage1 {
             ops.contains("box-int"),
             "Some boxes its Int64 payload; got {ops:?}"
         );
-        // A nullary variant: `sum-new` + `arr-alloc` (the empty-array unit payload).
+        // A nullary variant: `sum-new` with the INLINE-UNIT CONSTANT payload — so it does NOT import
+        // `arr-alloc`. `arr-alloc(0)` returns the inline unit (`runtime_abi::IMM_UNIT`), so the compiler
+        // pushes that constant directly instead of calling `arr-alloc(0)` — a nullary construction needs
+        // only `sum-new`, no per-payload heap op.
         let src2 = "(module m (type Option (Some Int64) None) \
                       (def (none) Option.None) (export none))";
         let mut db2 = Db::load(parse(src2));
@@ -7227,8 +7230,57 @@ mod stage1 {
         collect_used_ops(&mut db2, none, &mut ops2);
         assert!(ops2.contains("sum-new"), "None emits sum-new; got {ops2:?}");
         assert!(
-            ops2.contains("arr-alloc"),
-            "None's unit payload is an empty array; got {ops2:?}"
+            !ops2.contains("arr-alloc"),
+            "None's unit payload is the inline-unit constant, no arr-alloc; got {ops2:?}"
+        );
+    }
+
+    #[test]
+    fn a_nullary_variant_pushes_the_inline_unit_constant_not_an_arr_alloc_call() {
+        // The nullary-variant unit payload is emitted as the `IMM_UNIT` constant (derived from the
+        // runtime's `cdz-abi` section), NOT a runtime `arr-alloc(0)` call. Asserted at the Lir level: the
+        // construction contains a `ConstI32(IMM_UNIT)` and NO `CallImport("arr-alloc")`. And it runs
+        // correctly (a `Sign` classify over the three nullary variants) — the constant IS the handle
+        // `arr-alloc(0)` would have returned, so `sum-new`/`sum-disc` see the same value.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::runtime_abi::IMM_UNIT;
+        use crate::db::Db;
+        let ast = crate::testkit::parse(
+            "(module m (type Sign Neg Zero Pos) \
+               (def (f (: n Int64)) \
+                  (match (if (< n 0) (Sign.Neg unit) (if (= n 0) (Sign.Zero unit) (Sign.Pos unit))) \
+                    ((Sign.Neg _) -1) ((Sign.Zero _) 0) ((Sign.Pos _) 1))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let sig = db.defs[d].params.clone();
+        let params: Vec<_> = sig
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code;
+        assert!(
+            code.iter()
+                .any(|i| matches!(i, Lir::ConstI32(v) if *v == IMM_UNIT as i32)),
+            "a nullary variant pushes the inline-unit constant, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::CallImport("arr-alloc"))),
+            "no arr-alloc call for a nullary variant's unit payload, got: {code:?}"
         );
     }
 

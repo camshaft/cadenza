@@ -577,6 +577,22 @@ fn imm_unit() -> Handle {
     Handle(0b0010usize as *mut Node)
 }
 
+/// The ABI IMMEDIATE encodings, emitted into a `cdz-abi` wasm CUSTOM SECTION so the COMPILER can learn
+/// them without hand-coding an ABI constant. Today it carries one value — the inline-unit handle bits
+/// (`imm_unit`): `op_arr_alloc(0)` returns exactly this (a compile-time-known handle, no heap node), so
+/// the compiler can push it as a constant instead of emitting a runtime `arr-alloc(0)` CALL for every
+/// unit payload (a nullary sum variant, an empty tuple/record/list).
+///
+/// `cargo xtask codegen` reads this section (by name, statically — no execution) out of the RAW runtime
+/// build and emits its value into `runtime_abi.rs` as `IMM_UNIT`, BEFORE `canonicalize_runtime`'s
+/// `wasm-tools strip -a` removes all custom sections (so the section costs zero bytes in the shipped/
+/// hashed runtime, and the const the compiler pushes is DERIVED from the runtime, guarded by the content
+/// hash — never a hand-transcribed number). The bytes are the little-endian `u32` of `imm_unit()`'s bit
+/// pattern; a change to the encoding re-derives through codegen on the next run. `#[used]` keeps the
+/// section even though nothing in the crate references it.
+#[unsafe(link_section = "cdz-abi")]
+static CDZ_ABI_IMM_UNIT: [u8; 4] = (0b0010u32).to_le_bytes();
+
 /// An inline boolean: atom subkind `01`, tag `10`, value in bit[4] ⇒ false = `0b0110`, true = `0b10110`.
 #[inline]
 #[allow(dead_code)]

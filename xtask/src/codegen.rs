@@ -115,11 +115,17 @@ fn generate_runtime_abi(paths: &Paths, check: bool) {
     // recorded so a program can require the release runtime by hash AND a leak-check harness can locate
     // the debug runtime by hash, neither hard-coded. (`xtask check` already builds the runtime, so the
     // release build's cost is shared; the debug build is one extra `cargo component` invocation.)
-    let (runtime_hash, debug_runtime_hash) = build_runtime_hashes(paths);
+    let (runtime_hash, debug_runtime_hash, imm_unit) = build_runtime_hashes(paths);
     // Build the body as tokens (`render`), pretty-print + rustfmt it (`format_tokens`), then prepend the
     // `//!` module banner as text (a module doc is awkward as a token attribute). prettyplease-then-
     // rustfmt makes the committed file agree with BOTH `fmt --check` and `codegen --check`.
-    let body = format_tokens(render(&ops, iface, &runtime_hash, &debug_runtime_hash));
+    let body = format_tokens(render(
+        &ops,
+        iface,
+        &runtime_hash,
+        &debug_runtime_hash,
+        imm_unit,
+    ));
     let source = format!("{}{body}", runtime_abi_banner());
 
     let summary = format!(
@@ -191,7 +197,7 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
 /// builds write the SAME `target/.../cdz_runtime.wasm` path, so each build's bytes are read IMMEDIATELY,
 /// before the next overwrites. Exits on a build failure (a hash cannot be honestly recorded without the
 /// built artifact).
-fn build_runtime_hashes(paths: &Paths) -> (String, String) {
+fn build_runtime_hashes(paths: &Paths) -> (String, String, u32) {
     let sh = Shell::new().expect("open a shell");
     // Release runtime — what a shipped program pins and composes. CANONICALIZE (strip the tool-version
     // `producers` sections) before hashing, exactly as `build` does when it stores the artifact — so the
@@ -199,6 +205,10 @@ fn build_runtime_hashes(paths: &Paths) -> (String, String) {
     // the stored file's hash (see `crate::canonicalize_runtime`).
     let release_wasm =
         build_component_with_features(&sh, &paths.seed, "cdz-runtime", "cdz_runtime", &[]);
+    // Read the ABI immediate encodings from the RAW build's `cdz-abi` custom section BEFORE canonicalize
+    // strips all custom sections — so the derived constant costs zero bytes in the shipped/hashed
+    // runtime (the stripped hash is unchanged by the section's presence). See `read_abi_imm_unit`.
+    let imm_unit = read_abi_imm_unit(&release_wasm);
     let release_bytes = crate::canonicalize_runtime(&release_wasm);
     let release_hash = content_address(&release_bytes);
     // Debug-counters runtime — the same code with the `live-objects` leak counter compiled in.
@@ -215,7 +225,36 @@ fn build_runtime_hashes(paths: &Paths) -> (String, String) {
     // `cargo component build` output on disk after codegen is the release one — the default a naive
     // reader expects and the composed tests hash-match against.
     let _ = build_component_with_features(&sh, &paths.seed, "cdz-runtime", "cdz_runtime", &[]);
-    (release_hash, debug_hash)
+    (release_hash, debug_hash, imm_unit)
+}
+
+/// Read the inline-unit handle bits from the runtime's `cdz-abi` CUSTOM SECTION (a little-endian `u32`).
+/// The runtime declares it via `#[link_section = "cdz-abi"]` so this is a STATIC read — no execution —
+/// and it is read from the RAW build before `strip -a` removes it (hence zero shipped-byte cost). The
+/// component wraps a core module; `wasmparser` yields custom sections at BOTH the component and the
+/// nested-module level, so this scans every `CustomSection` payload for the one named `cdz-abi`.
+/// Panics if the section is absent or not 4 bytes — a codegen invariant (the runtime must declare it).
+fn read_abi_imm_unit(wasm_path: &std::path::Path) -> u32 {
+    let bytes = std::fs::read(wasm_path)
+        .unwrap_or_else(|e| panic!("xtask codegen: cannot read runtime wasm {wasm_path:?}: {e}"));
+    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+        if let Ok(wasmparser::Payload::CustomSection(c)) = payload
+            && c.name() == "cdz-abi"
+        {
+            let d = c.data();
+            let arr: [u8; 4] = d.try_into().unwrap_or_else(|_| {
+                panic!(
+                    "xtask codegen: `cdz-abi` section is {} bytes, expected 4",
+                    d.len()
+                )
+            });
+            return u32::from_le_bytes(arr);
+        }
+    }
+    panic!(
+        "xtask codegen: the runtime wasm has no `cdz-abi` custom section — the runtime must declare \
+         the ABI immediate encodings (see `CDZ_ABI_IMM_UNIT` in cdz-runtime)"
+    );
 }
 
 /// Format a generated `TokenStream` to the committed file's text: `prettyplease` FIRST (deterministic
@@ -303,7 +342,13 @@ fn resolve_ops(wit_path: &std::path::Path) -> Result<Vec<Op>, String> {
 /// reads like the emitted Rust and needs no manual escaping; `format_tokens` pretty-prints it. Doc
 /// comments are `#[doc = …]` attributes (which render as `///`). A leading `//!`-style module banner
 /// can't be a token attribute cleanly, so it is prepended as text by the caller.
-fn render(ops: &[Op], iface: &str, runtime_hash: &str, debug_runtime_hash: &str) -> TokenStream {
+fn render(
+    ops: &[Op],
+    iface: &str,
+    runtime_hash: &str,
+    debug_runtime_hash: &str,
+    imm_unit: u32,
+) -> TokenStream {
     // The RUNTIME_OPS rows.
     let rows = ops.iter().map(|op| {
         let name = &op.name;
@@ -389,6 +434,13 @@ fn render(ops: &[Op], iface: &str, runtime_hash: &str, debug_runtime_hash: &str)
         #[doc = " composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness"]
         #[doc = " locates the debug runtime by content address (from the store), never by rebuilding it."]
         pub const DEBUG_RUNTIME_HASH: &str = #debug_runtime_hash;
+
+        #[doc = " The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known"]
+        #[doc = " handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`"]
+        #[doc = " custom section (read at codegen, then stripped), so the compiler can push it as a constant"]
+        #[doc = " for a unit payload (a nullary sum variant, an empty tuple/record/list) instead of emitting"]
+        #[doc = " a runtime `arr-alloc(0)` CALL. Guarded by the content hash — never hand-transcribed."]
+        pub const IMM_UNIT: u32 = #imm_unit;
 
         #[doc = " Every op the runtime `heap` interface declares, as structured signature data (sorted)."]
         pub const RUNTIME_OPS: &[RtOp] = &[ #(#rows)* ];
