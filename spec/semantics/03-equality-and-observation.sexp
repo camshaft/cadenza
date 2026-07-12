@@ -214,6 +214,26 @@
             (def (main) (if (= (mk 1) (mk 2)) 1 0)) (export main)))
   (output (: 0 Int64)))
 
+(case "two constant sums with the same payload but different variants are not equal"
+  (doc    "Constant compound equality folds STRUCTURALLY (core-semantics.md #Equality Is Structural), and
+           structural equality compares the VARIANT before the payload: `(= (Ok 1) (Err 1))` is FALSE even
+           though both carry the payload 1, because `Ok` and `Err` are different variants. Pins the
+           discriminant half of the fold — an implementation that compared only payloads (a heap walk that
+           skipped the variant tag) would wrongly report true here, conflating `Ok 1` and `Err 1`. The
+           companion of `(= (Ok 1) (Ok 1))` = true: same variant AND same payload.")
+  (input  (= (Ok 1) (Err 1)))
+  (output (: false Bool)))
+
+(case "two constant records with the same fields in different written order are equal"
+  (doc    "Constant record equality folds structurally and compares fields as a SET keyed by name, not by
+           written order: `(= (record (x 1) (y 2)) (record (y 2) (x 1)))` is true — both denote the same
+           value (a record's canonical form sorts its fields by key, deterministic-value-form.md #A Value
+           Has One Canonical Byte Form). Pins that the equality fold normalizes field order before
+           comparing, so the same record written two ways is one value — not a position-wise comparison
+           that would call these unequal.")
+  (input  (= (record (x 1) (y 2)) (record (y 2) (x 1))))
+  (output (: true Bool)))
+
 (case "a runtime compound structural equality is expressible as a hand-written recursive comparator"
   (doc    "The route around the not-yet-emitted heap walk, and the shape a program needing runtime
            compound equality writes today: an explicit recursive comparator that dispatches on each
