@@ -7876,6 +7876,65 @@ mod stage1 {
     }
 
     #[test]
+    fn a_tuple_scrutinee_is_matched_by_a_tuple_pattern() {
+        // Matching directly on a TUPLE scrutinee — `(match (tuple a b) ((tuple x y) …))` — was declined "a
+        // match pattern that is not a scalar literal or `_`"; now a `Ty::Tuple` scrutinee routes through the
+        // decision-tree matcher (`Elem`-path binders + literal tests, no discriminant). A CONSTANT tuple
+        // folds: `(tuple 3 4)` destructures to x=3,y=4 → 7. A tuple of SUMS matches with nested constructor
+        // patterns (the structural-editing idiom `(match (tuple a b) ((tuple (E.Lit x) (E.Lit y)) …))`).
+        let sum = "(module m (def (main) (match (tuple 3 4) ((tuple x y) (+ x y)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(sum))).expect("compile"),
+                "main"
+            ),
+            7,
+            "a tuple scrutinee destructures by a tuple pattern"
+        );
+        // A LITERAL tuple element refines the match; a non-match falls to the binder arm.
+        let lit_hit = "(module m (def (main) \
+                        (match (tuple 0 9) ((tuple 0 y) 100) ((tuple x y) x))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(lit_hit))).expect("compile"),
+                "main"
+            ),
+            100,
+            "a matching tuple-element literal selects its arm"
+        );
+        let lit_miss = "(module m (def (main) \
+                         (match (tuple 5 9) ((tuple 0 y) 100) ((tuple x y) x))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(lit_miss))).expect("compile"),
+                "main"
+            ),
+            5,
+            "a non-matching tuple-element literal falls through to the binder arm"
+        );
+        // A wrong-TYPE literal element (`true` where the element is Int64) is CDZ0201; a repeated binder
+        // (`(tuple x x)`) is CDZ0102 (linearity) — both checked in the tuple/nested pattern path, not only
+        // at the top level.
+        let wrong_ty = "(module m (def (main) \
+                         (match (tuple 1 2) ((tuple true b) 9) (_ 0))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(wrong_ty)))
+                .expect_err("wrong-type literal element must reject")
+                .message
+                .contains("does not match"),
+            "a wrong-type tuple-element literal is a type error (CDZ0201)"
+        );
+        let dup = "(module m (def (main) (match (tuple 1 2) ((tuple x x) x))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(dup)))
+                .expect_err("a repeated binder must reject")
+                .message
+                .contains("more than once"),
+            "a tuple pattern binding the same name twice is non-linear (CDZ0102)"
+        );
+    }
+
+    #[test]
     fn a_literal_payload_pattern_refines_a_sum_match() {
         // A variant pattern whose payload is a LITERAL — `(Some 0)` — matches the variant carrying EXACTLY
         // that value, falling through to a same-variant binder `(Some k)` otherwise (core-semantics.md

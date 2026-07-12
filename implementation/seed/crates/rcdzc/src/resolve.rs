@@ -721,10 +721,20 @@ fn match_arm_variant_binds(
     if form == scrutinee {
         return None;
     }
-    // Descend the pattern to find where `name` is bound, accumulating the access path + per-step heads.
+    // Descend the pattern to find where `name` is bound, accumulating the access path + per-step heads. A
+    // TOP-LEVEL TUPLE pattern `(tuple x y)` (matching directly on a tuple scrutinee, not inside a variant
+    // payload) descends via `find_binder_in_tuple` — its elements bind at `Elem(i)` from the scrutinee
+    // root, no `Payload` step. A variant pattern descends via `find_binder_in_pattern` as before. (A
+    // top-level RECORD pattern is a later increment; a tuple scrutinee is the common structural-match
+    // shape — `(match (tuple a b) ((tuple x y) …))`.)
     let mut path = Vec::new();
     let mut heads = Vec::new();
-    if find_binder_in_pattern(db, pattern, name, &mut path, &mut heads) {
+    let found = if is_tuple_pattern(db, pattern) {
+        find_binder_in_tuple(db, pattern, name, &mut path, &mut heads)
+    } else {
+        find_binder_in_pattern(db, pattern, name, &mut path, &mut heads)
+    };
+    if found {
         Some((scrutinee, path, heads))
     } else {
         None

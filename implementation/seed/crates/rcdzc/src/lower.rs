@@ -750,10 +750,15 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
 /// scrutinee covered by both a `true` arm and a `false` arm needs no wildcard. A match that covers
 /// neither way is rejected (CDZ0210), not compiled to a fallthrough with no defined value.
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
-    // A SUM scrutinee dispatches on the DISCRIMINANT, not a scalar value — a separate lowering that
-    // classifies variant patterns and produces a `Core::MatchSum`. (Detected by the scrutinee's solved
-    // type; a scalar scrutinee falls through to the scalar-probe path below.)
-    if let crate::ty::Ty::Sum { .. } = crate::infer::type_of(db, scrutinee) {
+    // A COMPOUND scrutinee — a SUM or a TUPLE — is matched by the DECISION TREE, not the scalar-probe
+    // path. A sum dispatches on the discriminant; a tuple has no discriminant, so its match is a chain of
+    // `Elem`-path binders / literal tests (the tree handles a discriminant-free root — only lit-tests and
+    // a binder fall-through). Both go through `lower_match_sum` (the shared decision-tree builder); a
+    // scalar scrutinee falls through to the scalar-probe path below. (A record scrutinee is a later
+    // increment; the tuple case is the common structural-match shape.)
+    if let crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_) =
+        crate::infer::type_of(db, scrutinee)
+    {
         return lower_match_sum(db, scrutinee, arms);
     }
     // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
@@ -942,14 +947,21 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
 /// `Core::MatchSum` tree. A payload binder resolves to a `SumPayload` on its own (resolve Case 6), so an
 /// arm carries only its discriminant + continuation.
 fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
-    // The scrutinee must be a sum (its solved type gives the root variant set). A poisoned scrutinee
-    // propagates its poison; a non-sum is a decline (the caller only routes sums here).
+    // The scrutinee must be a COMPOUND the decision tree matches — a SUM (its type gives the root variant
+    // set to switch on) or a TUPLE (no discriminant; its arms impose only `Elem`-path binders/lit-tests).
+    // A poisoned scrutinee propagates its poison; anything else is a decline (the caller routes only
+    // sums/tuples here).
     let scrut_ty = crate::infer::type_of(db, scrutinee);
-    if !matches!(scrut_ty, crate::ty::Ty::Sum { .. }) {
+    if !matches!(
+        scrut_ty,
+        crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_)
+    ) {
         if let Core::Poison(r) = core_of(db, scrutinee) {
             return Core::Poison(r);
         }
-        return Core::Poison(Reject::decline("sum match scrutinee is not a sum"));
+        return Core::Poison(Reject::decline(
+            "compound match scrutinee is not a sum or tuple",
+        ));
     }
     // Build the initial pattern MATRIX: one row per arm, each a `(constraints, body)` where a constraint
     // is `(path, disc)` — "the sub-value at `path` must have discriminant `disc`". A row's constraints
@@ -963,6 +975,14 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             _ => (pat, None),
         };
+        // LINEARITY: a pattern is a BINDER POSITION and must bind each name at most once (core-semantics.md
+        // §Patterns Compose: "A pattern MUST bind each name at most once … rather than silently shadowing").
+        // `(tuple x x)` / `(Some (tuple x x))` binds `x` twice — CDZ0102, the same non-linear-binder error a
+        // repeated `def` parameter gets — not a last-wins shadow that makes the first binder's payload
+        // unreachable. Checked across the WHOLE arm pattern (nested sub-patterns included).
+        if let Err(r) = check_pattern_linear(db, inner_pat) {
+            return Core::Poison(r);
+        }
         let mut lit_tests = Vec::new();
         match pattern_constraints(db, inner_pat, &scrut_ty, Vec::new(), &mut lit_tests) {
             Ok(constraints) => rows.push(MatchRow {
@@ -1012,6 +1032,75 @@ struct MatchRow {
     guard: Option<StructId>,
 }
 
+/// Reject a match-arm pattern that binds the same name more than once (CDZ0102) — a pattern is a BINDER
+/// POSITION and must be LINEAR (`core-semantics.md §Patterns Compose`). Walks the whole pattern collecting
+/// BINDER names (a bare non-`_` name that is NOT a variant constructor of a sum in scope, NOR a literal),
+/// and faults the second occurrence, anchored there. A `_` binds nothing (may repeat); a variant name
+/// (`Some`, `E.Lit`) is a constructor, not a binder; a literal is a value, not a binder. Recurses into
+/// tuple/variant sub-patterns and peels a `(guard …)` wrapper. (A non-deduping walk — unlike resolve's
+/// binder lookups it must SEE every occurrence to catch the repeat.)
+fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_pattern_binders(db, pat, &mut seen)
+}
+
+/// The recursive walk behind [`check_pattern_linear`]: insert each binder name into `seen`, faulting a
+/// repeat. See that function for the binder-vs-ctor-vs-literal classification.
+fn collect_pattern_binders(
+    db: &mut Db,
+    pat: StructId,
+    seen: &mut std::collections::HashSet<String>,
+) -> Result<(), Reject> {
+    // Peel a guard wrapper — the binder-carrying pattern is the inner one.
+    if let Some(g) = db.ast.as_form(pat, "guard")
+        && g.len() == 2
+    {
+        return collect_pattern_binders(db, g[0], seen);
+    }
+    // A bare atom: a literal binds nothing; a `_` binds nothing; any OTHER bare name is a binder UNLESS it
+    // is a nullary variant constructor (`None`, `Sign.Neg`) — a ctor is not a binder. `variant_disc_of`
+    // recognizes a ctor value; a name that is not one is a binder.
+    if let crate::ast::Struct::Atom(_) = db.ast.get(pat) {
+        if matches!(
+            crate::resolve::resolved_of(db, pat),
+            crate::resolved::Resolved::Int(_) | crate::resolved::Resolved::Bool(_)
+        ) {
+            return Ok(()); // a literal is not a binder
+        }
+        if let Some(name) = db.ast.as_name(pat).map(|s| s.to_string()) {
+            if name == "_" {
+                return Ok(());
+            }
+            // A bare name that resolves to a variant constructor is a ctor, not a binder.
+            if crate::eval::variant_disc_of(db, pat).is_some() {
+                return Ok(());
+            }
+            if !seen.insert(name.clone()) {
+                return Err(Reject::coded(
+                    Code::NonLinearBinder,
+                    format!("pattern binds `{name}` more than once (a pattern must be linear)"),
+                )
+                .at(pat));
+            }
+        }
+        return Ok(());
+    }
+    // A compound pattern `(head arg…)` — a variant `(Some p)`, a tuple `(tuple p…)`, or a member `(. S V)`
+    // (a nullary ctor, no binders). The head is a ctor/`tuple`/`.` — not a binder; recurse into the args.
+    if let crate::ast::Struct::List(children) = db.ast.get(pat) {
+        let children = children.clone();
+        // A `(. Sum V)` member pattern is a nullary-ctor reference — no binder args.
+        if children.first().and_then(|&h| db.ast.as_name(h)) == Some(".") {
+            return Ok(());
+        }
+        // Skip the head (a ctor / `tuple` alias); recurse each argument sub-pattern.
+        for &arg in children.iter().skip(1) {
+            collect_pattern_binders(db, arg, seen)?;
+        }
+    }
+    Ok(())
+}
+
 /// Collect the discriminant constraints a PATTERN imposes on the sub-value at `path` (of type `ty`),
 /// appending `(deeper-path, disc)` per variant test. A bare NAME is a binder/wildcard — NO constraint
 /// (it matches any value; its binding is resolved independently). A variant pattern `(V arg…)` / bare
@@ -1045,20 +1134,34 @@ fn pattern_constraints(
     // patterns can combine constructors and literals"). It imposes NO discriminant constraint (a scalar
     // has no variant tag); it adds a LITERAL TEST `(path, probe)` — the sub-value at `path` must EQUAL
     // the literal — gated (like a guard) once the enclosing discriminant is satisfied, with a same-variant
-    // fall-through for the non-matching case. The literal's TYPE must agree with the sub-value's type
-    // (`(Some true)` over an `Option Int64` is CDZ0203, the ordinary literal-vs-scalar mismatch); we
-    // record the probe here and let the arm-body type-check catch a mismatch (a bool probe on an int slot
-    // would be an invalid emit, but the type checker rejects the ill-typed arm first).
-    match crate::resolve::resolved_of(db, pat) {
+    // fall-through for the non-matching case. The literal's TYPE must AGREE with the sub-value's type at
+    // this position: `(tuple true b)` against `(tuple 1 2)` puts a `Bool` literal where the element is
+    // `Int64` — a literal-pattern-type mismatch (CDZ0201, core-semantics.md §Equality Is Structural),
+    // checked HERE (nested), exactly as the top-level `(match 5 (true 1))` case is, so a nested wrong-type
+    // literal does not slip past as a runtime non-match. (`ty` is `Any` for an unsolved position — no
+    // check, the not-yet-constrained treatment a projection of `Any` gets.)
+    let probe = match crate::resolve::resolved_of(db, pat) {
         crate::resolved::Resolved::Int(v) => {
-            lit_tests.push((path, crate::core::Probe::Int(v)));
-            return Ok(Vec::new());
+            Some((crate::core::Probe::Int(v), crate::ty::Ty::int()))
         }
         crate::resolved::Resolved::Bool(b) => {
-            lit_tests.push((path, crate::core::Probe::Bool(b)));
-            return Ok(Vec::new());
+            Some((crate::core::Probe::Bool(b), crate::ty::Ty::Bool))
         }
-        _ => {}
+        _ => None,
+    };
+    if let Some((probe, lit_ty)) = probe {
+        if !matches!(ty, crate::ty::Ty::Any) && !lit_ty.agrees_with(ty) {
+            return Err(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a {} literal pattern does not match the {} sub-value it is matched against",
+                    lit_ty.render_name(),
+                    ty.render_name()
+                ),
+            ));
+        }
+        lit_tests.push((path, probe));
+        return Ok(Vec::new());
     }
     // A bare NAME: either a NULLARY VARIANT of this sum (`None`) or a binder/wildcard. Resolve it against
     // the sum's variant set — a name that IS a variant contributes that discriminant (no payload to
@@ -1376,11 +1479,23 @@ fn build_tree(
         _ => {}
     }
     // Pick the SWITCH path — the shallowest path any row constrains (outer patterns first, so the outer
-    // probe is shared). Its TYPE (from `path_types`) gives the variant set for exhaustiveness + recursion.
+    // probe is shared). Its TYPE gives the variant set for exhaustiveness + recursion. Read from
+    // `path_types` (populated as sum-variant arms descend), else COMPUTE it by walking the path from the
+    // scrutinee's own type — a `Ty::Tuple` element indexes at `Elem(i)`, so a sum nested in a TUPLE element
+    // (`(match (tuple a b) ((tuple (E.Lit x) …)…))`, switch path `[Elem(0)]`) resolves even though no
+    // sum-payload descent seeded it. (`path_types` still wins where present — a variant payload's
+    // instantiated type is more precise than a raw type-walk.)
     let switch_path = shallowest_path(rows);
     let sub_ty = match path_types.get(&switch_path) {
         Some(t) => t.clone(),
-        None => return Err(Reject::decline("sum match switch path has no solved type")),
+        None => match type_at_path(db, scrutinee, &switch_path) {
+            Some(t) => t,
+            None => {
+                return Err(Reject::decline(
+                    "compound match switch path has no solved type",
+                ));
+            }
+        },
     };
     let (decl, variant_count) = match &sub_ty {
         crate::ty::Ty::Sum { decl, .. } => match db.type_decl_by_occ(*decl) {
@@ -1521,6 +1636,34 @@ fn build_lit_test(
         then_: Box::new(then_),
         els: Box::new(els),
     })
+}
+
+/// The solved TYPE of the sub-value at `path` from `scrutinee`, computed by walking the scrutinee's own
+/// type: an `Elem(i)` step indexes a `Ty::Tuple`'s i-th element; a `Payload` step descends a sum
+/// variant's payload (via the head recorded... but a raw type-walk cannot know WHICH variant a `Payload`
+/// step refers to, so `Payload` is only resolvable through `extend_path_types`' instantiation — this
+/// fallback handles the `Elem`-only paths a TUPLE-scrutinee match produces, where `path_types` was not
+/// seeded). Returns `None` for a `Payload` step (deferred to `path_types`) or an out-of-range/ill-typed
+/// index. Used as the fallback when `path_types` has no entry — a sum nested in a tuple element.
+fn type_at_path(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+) -> Option<crate::ty::Ty> {
+    let mut cur = crate::infer::type_of(db, scrutinee);
+    for step in path {
+        cur = match step {
+            crate::core::PathStep::Elem(i) => match &cur {
+                crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
+                _ => return None,
+            },
+            // A `Payload` step's target type needs the variant's instantiation (`extend_path_types`);
+            // a raw type-walk cannot supply it, so this fallback does not resolve a `Payload`-bearing path
+            // (those paths are always seeded in `path_types` by the sum-variant descent).
+            crate::core::PathStep::Payload => return None,
+        };
+    }
+    Some(cur)
 }
 
 /// Extend `path_types` for the arm switching on variant `disc` at `switch_path` (a sum of type `sub_ty`,

@@ -3227,6 +3227,24 @@
               ((tuple a b) (+ a b)))))
   (output (: 10 Int64)))
 
+(case "a tuple of two sums is matched with nested constructor patterns"
+  (doc    "The structural-editing idiom: matching directly on a TUPLE whose elements are SUM values, with
+           nested constructor patterns in the tuple positions. `(match (tuple a b) ((tuple (E.Lit x) (E.Lit
+           y)) …) (_ …))` matches only when BOTH elements are `E.Lit`, binding their payloads; any other
+           pairing falls to the wildcard. For `(tuple (E.Lit 3) (E.Lit 4))` the first arm fires → 7; for a
+           `(tuple (E.Lit 3) (E.Add …))` it falls through → -1. Pins that a tuple scrutinee's ELEMENTS may
+           themselves be constructor patterns (the decision tree descends `[Elem(i)]` then switches on each
+           element's discriminant) — the pair-of-sums shape a self-hosted compiler folds two sub-trees
+           with.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type E (Lit Int64) (Add (Tuple E E)))
+            (def (f a b) (match (tuple a b)
+                           ((tuple (E.Lit x) (E.Lit y)) (+ x y))
+                           (_ -1)))
+            (def (main) (f (E.Lit 3) (E.Lit 4))) (export main)))
+  (output (: 7 Int64)))
+
 ; --- A pattern is LINEAR: it binds each name at most once ------------------------------------
 ; core-semantics.md #Bindings Introduced By A Pattern Are Scoped To Its Branch: "A pattern MUST bind
 ; each name at most once; a pattern that binds the same name more than once MUST be a compile-time

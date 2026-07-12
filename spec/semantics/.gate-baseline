@@ -41,6 +41,7 @@ pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
+pass	a checked result is consumed by matching its Option at run time
 pass	a comparison-predicate function returns its boolean result
 pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
@@ -89,6 +90,8 @@ pass	a field is projected from a record returned by a function
 pass	a field is projected from a record returned by a let-bound function
 pass	a field is projected from a record returned by a nullary function
 pass	a field is projected off a record bound through a match arm
+pass	a field is projected off a record unwrapped from a result with expect
+pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a float in integer-width position is rejected
@@ -146,6 +149,7 @@ pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
 pass	a literal inside a NESTED constructor pattern refines the match
 pass	a literal inside a constructor pattern matches a runtime payload
+pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
@@ -196,11 +200,13 @@ pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
+pass	a nested literal pattern of the wrong type is a type error
 pass	a nested match on a runtime scrutinee
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
+pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-constructor type applied to arguments in type position is rejected
@@ -214,11 +220,14 @@ pass	a nullary helper called and used in arithmetic
 pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
 pass	a nullary variant applied to unit constructs correctly through the application path
+pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a pattern binds a name scoped to its branch
+pass	a pattern that binds the same name across nested sub-patterns is rejected
+pass	a pattern that binds the same name twice is rejected
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a program that delegates no effect is pure and never suspends
 pass	a program's unary variant reusing a prelude nullary variant name is unary
@@ -237,6 +246,7 @@ pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
+pass	a recursive function that threads a tuple accumulator returns it
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
@@ -307,6 +317,7 @@ pass	a sum match missing a variant is non-exhaustive even when the scrutinee is 
 pass	a sum value annotated as a scalar type is rejected
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
+pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a three-element runtime tuple is returned as a result
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
 pass	a truncating conversion keeps the low bits rather than trapping
@@ -315,7 +326,10 @@ pass	a tuple access out of arity on a function-returned tuple is a type error, n
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
 pass	a tuple is constructed with positional elements
+pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
+pass	a tuple of two sums is matched with nested constructor patterns
 pass	a tuple pattern against a sum scrutinee is a type error
+pass	a tuple pattern of the wrong arity is a type error
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
@@ -354,11 +368,14 @@ pass	an effect that declares an operation name twice is rejected
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
+pass	an element read across a concatenation boundary is the right value
 pass	an empty string is unequal to a non-empty string
+pass	an empty-range slice of a non-empty string is Some of the empty string
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
+pass	an expect of a list index result is an integer usable in arithmetic
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an inner binding shadows an outer one only within its scope
@@ -402,6 +419,10 @@ pass	bitwise XOR toggles bits
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	chained guards of the same variant are tried in order
+pass	checked addition yields None on overflow instead of trapping
+pass	checked addition yields Some of the sum when it fits
+pass	checked multiplication reports overflow as None
+pass	checked multiplication yields Some when it fits
 pass	compacting a byte sequence built at run time preserves its bytes
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
@@ -423,6 +444,9 @@ pass	disjunction shields a trapping right operand when the left is true
 pass	division by zero traps
 pass	division of the minimum integer by -1 overflows and traps
 pass	equality applied to one operand is rejected, not a crash
+pass	expect makes a checked-arithmetic result trap on overflow
+pass	expect unwraps the ok case of a runtime result
+pass	expect unwraps the present case of a runtime optional
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
 pass	greater-than at the integer extremes is signed
@@ -437,6 +461,7 @@ pass	indexing a list in bounds yields Some of the element
 pass	indexing a list out of bounds yields None
 pass	indexing a list with a negative index yields None
 pass	indexing a runtime string past its last scalar yields None
+pass	indexing a slice is relative to the slice's start
 pass	indexing an empty list yields None
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
@@ -481,7 +506,9 @@ pass	overflow of the default integer traps deterministically
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
+pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	pushing an element of a different type onto a list is a type error
+pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
@@ -528,6 +555,7 @@ pass	the length of a byte sequence is its byte count
 pass	the length of a concatenation is the sum of the two lengths
 pass	the length of a grown list is its element count
 pass	the length of a runtime byte sequence is its byte count
+pass	the length of a slice is the slice's byte count
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the maximum unsigned 8-bit value is its per-width bound
@@ -549,6 +577,7 @@ pass	true is not less than false
 pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
+pass	tuples are deconstructed by pattern matching
 pass	two empty strings are equal
 pass	two functions defined by mutual recursion compute a result
 pass	two narrow record fields are projected and added
@@ -599,7 +628,6 @@ todo	a char order agrees with its scalar value
 todo	a checked conversion of a negative value into an unsigned type traps
 todo	a checked integer conversion that does not fit traps
 todo	a checked integer conversion that fits succeeds
-todo	a checked result is consumed by matching its Option at run time
 todo	a closure captures the binding in scope where it was created
 todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
@@ -619,8 +647,6 @@ todo	a dependent-size segment that overruns the remaining bytes falls through
 todo	a dimensionless quantity carries the group identity Unit.one
 todo	a diverging expression unifies with an integer position
 todo	a factorial that overflows the integer type traps through the recursion
-todo	a field is projected off a record unwrapped from a result with expect
-todo	a field is projected off a record unwrapped from an optional with expect
 todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a fixpoint that re-seeds a fresh list each round via a helper returns a list
@@ -651,7 +677,6 @@ todo	a list of tuples with different arities is a type error
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
-todo	a literal inside a tuple pattern matches a runtime element
 todo	a literal segment before a binder dispatches then reads the payload
 todo	a literal segment matches a magic-number header by equality
 todo	a literal subterm in a quote pattern matches by equality
@@ -688,17 +713,12 @@ todo	a nearer handler on the call chain shadows an outer one
 todo	a negative zero in a record field is distinct from positive zero
 todo	a negative zero nested in a tuple is distinct from positive zero
 todo	a negative-power SI prefix is an exact rational scale
-todo	a nested literal pattern of the wrong type is a type error
-todo	a nested tuple pattern of the wrong arity is a type error
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a non-final unsized bytes segment is ill-formed
 todo	a nullary constructor is a single-arity function taking unit
-todo	a one-element tuple pattern against a two-tuple is a type error
-todo	a pattern that binds the same name across nested sub-patterns is rejected
-todo	a pattern that binds the same name twice is rejected
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
@@ -730,7 +750,6 @@ todo	a recursive fold of a cons-list to bytes is the whole program result
 todo	a recursive function counts down through a stateful effect and bails at zero
 todo	a recursive function sums a range it walks by performing a fresh-index effect
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
-todo	a recursive function that threads a tuple accumulator returns it
 todo	a recursive function threads two nested handlers' states at once
 todo	a recursive lower from a sum to Bytes assembles its output in match arms
 todo	a recursive reader decodes a CBOR application tree and evaluates it by head index
@@ -780,7 +799,6 @@ todo	a symbol converts back to its content string
 todo	a symbol is constructed from a string
 todo	a symbol's identity is its content, not how the content was derived
 todo	a tag-length-value record round-trips through construct then match
-todo	a tail-recursive function returning a tuple is tuple-valued
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
 todo	a top-level value definition binds a name usable by the program's functions
 todo	a top-level value definition binds a record projected by the program's functions
@@ -789,9 +807,7 @@ todo	a transformation maps a syntax tree to a syntax tree and preserves meaning
 todo	a transformation observably rewrites the tree, not just its value
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
-todo	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 todo	a tuple pattern against a Sign scrutinee is a type error
-todo	a tuple pattern of the wrong arity is a type error
 todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer
@@ -824,16 +840,13 @@ todo	an effect performed in a callee is discharged by the caller's handler
 todo	an effect resolves past an intermediate frame that installs no handler
 todo	an effect resolves through a deep chain of intermediate functions
 todo	an element pattern matches a list by its length and elements
-todo	an element read across a concatenation boundary is the right value
 todo	an empty binary form is the empty byte sequence
 todo	an empty byte-string literal is the empty byte sequence
 todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
 todo	an empty scrutinee matches an empty bin pattern
-todo	an empty-range slice of a non-empty string is Some of the empty string
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
-todo	an expect of a list index result is an integer usable in arithmetic
 todo	an explicit annotation overrides the default-integer pragma
 todo	an explicit conversion makes the operation well-typed
 todo	an export and a like-named metadata key do not collide
@@ -864,10 +877,6 @@ todo	bitwise XOR of an integer and a float does not silently promote
 todo	byte length agrees with the length of the encoded bytes
 todo	byte sequences are equal by their bytes in order
 todo	char to-int and from-int round-trip through the scalar value
-todo	checked addition yields None on overflow instead of trapping
-todo	checked addition yields Some of the sum when it fits
-todo	checked multiplication reports overflow as None
-todo	checked multiplication yields Some when it fits
 todo	compacting a slice preserves its bytes
 todo	compacting is the identity on value for a whole byte sequence
 todo	comparing a greater value to a lesser yields Greater
@@ -923,11 +932,8 @@ todo	eval on malformed AST traps
 todo	every not-a-number value is equal to every not-a-number value
 todo	exact rational arithmetic is exact and normalized
 todo	exact rational division is total and exact for a nonzero divisor
-todo	expect makes a checked-arithmetic result trap on overflow
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	expect unwraps the ok case of a runtime result
-todo	expect unwraps the present case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
 todo	floating-point uses the fixed rounding mode
@@ -936,7 +942,6 @@ todo	greater-than of an integer and a float is rejected
 todo	greater-than-or-equal of an integer and a float is rejected
 todo	host calls are observed in the order they were made
 todo	identical negative zeros nested in a tuple compare equal
-todo	indexing a slice is relative to the slice's start
 todo	inserting a key already present replaces its value, not the size
 todo	inserting a key of a different type into a map is a type error
 todo	inserting a present element is a no-op value
@@ -985,6 +990,7 @@ todo	popping a tuple yields element zero and the remaining tuple
 todo	popping an absent field is rejected
 todo	projecting a record onto an absent field is rejected
 todo	projecting a record restricts it to the named fields
+todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
 todo	pushing an element onto a list appends it
 todo	quasiquote constructs AST with selective evaluation
@@ -1039,7 +1045,6 @@ todo	the empty symbol equals itself
 todo	the intersection contains the elements in both sets
 todo	the le modifier encodes a u16 little-endian
 todo	the length of a fixed-width construction is the sum of its segment widths
-todo	the length of a slice is the slice's byte count
 todo	the number of elements counts distinct elements
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
@@ -1052,7 +1057,6 @@ todo	the union contains the elements of either set
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
 todo	tuple elements are accessed by index
-todo	tuples are deconstructed by pattern matching
 todo	two dependent-size segments each bind the count a preceding segment named
 todo	two different variants of the SAME sum compare unequal
 todo	two differing runtime sum values compare unequal by a heap walk
