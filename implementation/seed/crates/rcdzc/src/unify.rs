@@ -1,13 +1,17 @@
 //! Unification — the pure Hindley-Milner core: a substitution, unification with occurs-check, and
 //! scheme instantiation. This is the machinery the ONE generic application rule uses (`infer`), and
-//! that the full function inference reuses unchanged.
+//! that the connected function-parameter solve (`infer::solve_recursive_params`) reuses unchanged.
 //!
-//! It is a deterministic, order-independent solve over type and width variables (`type-system.md`
-//! §Inference Is Principal-Type Inference By Unification). A [`Subst`] maps a variable to the type (or
-//! width) it has been solved to; `unify` extends it by equating two types, failing (a [`Reject`]) when
-//! they cannot be made equal — the conflicting-use type error. `instantiate` freshens a [`Scheme`]'s
-//! bound variables so each use is independent, which is what makes an operator generic over the
-//! integer type. Nothing here reads a column or an AST node — it is pure over [`Ty`].
+//! It is a deterministic, order-independent solve over type, width, and sign variables:
+//!
+//= spec/capabilities/type-system.md#inference-is-principal-type-inference-by-unification
+//# Type inference MUST determine types by unification over type variables — solving the equality constraints a program's structure imposes — so that a type is derived from how each binding is used rather than assumed or guessed from a single use site.
+//!
+//! A [`Subst`] maps a variable to the type (or width/sign) it has been solved to; `unify` extends it
+//! by equating two types, failing (a [`Reject`]) when they cannot be made equal — the conflicting-use
+//! type error. `instantiate` freshens a [`Scheme`]'s bound variables so each use is independent, which
+//! is what makes an operator generic over the integer type. Nothing here reads a column or an AST node
+//! — it is pure over [`Ty`].
 
 use crate::diag::{Code, Reject};
 use crate::ty::{IntTy, Scheme, Sign, Ty, Width};
