@@ -1129,6 +1129,17 @@ pub fn reduce_to_if(db: &mut Db, id: StructId) -> Option<(StructId, StructId, St
             }
         }
         Resolved::Annot { expr, .. } => reduce_to_if(db, expr),
+        // An application whose (non-recursive) callee returns an `if` — `(choose b)` where `choose`'s
+        // body is `(if b (fn …) (fn …))`. β-reduce the call to its `if` result, then reduce THAT. This
+        // is what lets a runtime-branch-selected function `((choose b) 5)` reach the case-of-case
+        // rewrite (the head `(choose b)` reduces to the `if`). Runs under the depth guard so a recursive
+        // callee (which can't reduce to a normal form) yields `None` rather than diverging.
+        Resolved::Apply { head, args } => {
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let reduced = apply_lambda(g, head, &args).ok().flatten()?;
+            reduce_to_if(g, reduced)
+        }
         _ => None,
     }
 }

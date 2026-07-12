@@ -404,6 +404,36 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                      determined by the handler or delegation enclosing its callers",
                 ));
             }
+            // CASE-OF-CASE (commuting conversion): a head that reduces to a runtime `if` —
+            // `((if c a b) args…)` — pushes the application into each branch: `(if c (a args…)
+            // (b args…))`. A runtime-branch-SELECTED function (`(if b (fn …) (fn …))` applied) then
+            // has each branch's lambda β-reduce in place, so the whole thing folds with NO closure
+            // value surviving to run time. Sound because `if` branches are pure values (evaluating the
+            // application in the taken branch is what the original did) and only ONE branch runs. Built
+            // by synthesizing the two branch applications (head = each branch, same args) and an `if`
+            // over the same condition, then lowering that — the ordinary `Resolved::If` fold handles a
+            // constant condition / identical branches. Guarded on a NON-constant reduction target too
+            // (a constant `if` already folds its head to a single branch upstream, but this is
+            // harmless there). Checked before the lambda-head path since an `if` head is not a lambda.
+            if let Some((cond, then_head, else_head)) = crate::eval::reduce_to_if(db, head) {
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: case-of-case — push the application into each if branch");
+                // An application `(head arg…)` is a plain list with the head first, so each branch
+                // application is `push_list([branch_head, args…])`; `(if cond then_app else_app)` is a
+                // list headed by the `if` name. Lowering the rewritten `if` runs the ordinary fold.
+                let then_app = {
+                    let mut v = vec![then_head];
+                    v.extend_from_slice(&args);
+                    db.push_list(v)
+                };
+                let else_app = {
+                    let mut v = vec![else_head];
+                    v.extend_from_slice(&args);
+                    db.push_list(v)
+                };
+                let if_head = db.push_name("if");
+                let rewritten = db.push_list(vec![if_head, cond, then_app, else_app]);
+                return core_of(db, rewritten);
+            }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
             // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
             // `(+ 5 1)` → `6`, with no function value emitted. The reduction runs UNDER a guard keyed

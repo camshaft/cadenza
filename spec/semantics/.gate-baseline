@@ -105,6 +105,8 @@ pass	a floating-point literal
 pass	a function applied to an argument
 pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
+pass	a function chosen by a runtime condition is applied (false branch)
+pass	a function chosen by a runtime condition is applied (true branch)
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
 pass	a function open over a record's extra fields accepts any record with the used field
@@ -324,6 +326,7 @@ pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
+pass	a runtime-selected function chosen directly at the application head is applied
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
@@ -467,22 +470,28 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
+pass	byte sequences are equal by their bytes in order
 pass	chained guards of the same variant are tried in order
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
 pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
 pass	compacting a byte sequence built at run time preserves its bytes
+pass	compacting is the identity on value for a whole byte sequence
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
+pass	concatenating an empty byte sequence on the left is the identity
+pass	concatenating an empty byte sequence on the right is the identity
 pass	concatenating an empty string on the left is the identity
 pass	concatenating an empty string on the right is the identity
 pass	concatenating byte sequences built at run time appends their bytes in order
 pass	concatenating lists of different element types is a type error
+pass	concatenating two byte sequences appends their bytes in order
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating with the empty list on the right is identity
+pass	concatenation is associative by content
 pass	conditional propagation respects a shadowing rebind of the condition variable
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
@@ -658,6 +667,7 @@ pass	two definitions imported under the same name are rejected
 pass	two different variants of the SAME sum compare unequal
 pass	two differing runtime sum values compare unequal by a heap walk
 pass	two effects each declaring a same-named operation do not collide
+pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two functions defined by mutual recursion compute a result
 pass	two lists of different length are unequal, not a type error
@@ -924,10 +934,8 @@ todo	applying a float is a type error
 todo	applying a non-function is a type error
 todo	bit-field segments pack sub-byte values into one byte
 todo	byte length agrees with the length of the encoded bytes
-todo	byte sequences are equal by their bytes in order
 todo	char to-int and from-int round-trip through the scalar value
 todo	compacting a slice preserves its bytes
-todo	compacting is the identity on value for a whole byte sequence
 todo	comparing a greater value to a lesser yields Greater
 todo	comparing a lesser value to a greater yields Less
 todo	comparing a map to a record is a type error
@@ -938,12 +946,8 @@ todo	comparing same-shape nominal types is a type error
 todo	comparing two quantities of the same dimension yields a Bool
 todo	comparing two same-shape nominal sum types is a type error, not false
 todo	comparing two units of one dimension converts before comparing
-todo	concatenating an empty byte sequence on the left is the identity
-todo	concatenating an empty byte sequence on the right is the identity
 todo	concatenating tuples preserves each element's type
-todo	concatenating two byte sequences appends their bytes in order
 todo	concatenating two tuples appends their elements
-todo	concatenation is associative by content
 todo	constructing a bit-field from a value wider than its width traps
 todo	constructing a rational with a zero denominator traps
 todo	constructing a sized bytes segment whose value length differs from the size traps
@@ -1085,7 +1089,6 @@ todo	the value-yielding remove reports the value it dropped
 todo	tuple elements are accessed by index
 todo	two dependent-size segments each bind the count a preceding segment named
 todo	two distinct names bound to the same value key the same map entry
-todo	two empty byte sequences are equal
 todo	two equal chars compare equal
 todo	two host calls consume their responses in order
 todo	two lists are concatenated into one flat list

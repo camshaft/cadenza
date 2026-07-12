@@ -60,6 +60,43 @@
             ((adder 10) 5)))
   (output (: 15 Int64)))
 
+; A function SELECTED BY A RUNTIME CONDITION and then applied — `((if b f g) x)`. `core-semantics.md`
+; §A Function Is A First-Class Value: a function is a value an `if` may return, so applying the `if`'s
+; result must run whichever function the runtime condition chose. The condition here is a RUNTIME
+; parameter (`b`), so the choice is not known at compile time — the application is pushed into each
+; branch (a case-of-case / commuting conversion `((if b f g) x)` → `(if b (f x) (g x))`), where each
+; branch's function applies. Both branches must yield the same type (Int64), which is the application's
+; type. A generation that cannot select a runtime function value declines rather than running.
+
+(case "a function chosen by a runtime condition is applied (true branch)"
+  (doc    "`choose` returns one of two functions by its Bool argument; `((choose b) 5)` applies the
+           chosen one. With b=true the chosen function is `(fn (x) (+ x 1))`, so the result is 6. The
+           condition is a runtime parameter, so the function is selected at run time, not folded.")
+  (input  (do
+            (def (choose (: b Bool)) (if b (fn (x) (+ x 1)) (fn (x) (+ x 10))))
+            (def (main (: b Bool)) ((choose b) 5)) (export main)))
+  (call   main (: true Bool))
+  (output (: 6 Int64)))
+
+(case "a function chosen by a runtime condition is applied (false branch)"
+  (doc    "The false branch of the case above: with b=false the chosen function is `(fn (x) (+ x 10))`,
+           so `((choose false) 5)` = 15. The SAME program, run with the other runtime input, takes the
+           other branch — pinning that the selection is genuinely by the runtime condition.")
+  (input  (do
+            (def (choose (: b Bool)) (if b (fn (x) (+ x 1)) (fn (x) (+ x 10))))
+            (def (main (: b Bool)) ((choose b) 5)) (export main)))
+  (call   main (: false Bool))
+  (output (: 15 Int64)))
+
+(case "a runtime-selected function chosen directly at the application head is applied"
+  (doc    "The commuting conversion at the application head directly: `((if b (fn (x) (+ x 1)) (fn (x)
+           (- x 1))) 10)`. No intervening def — the `if` sits in head position and the application is
+           pushed into its branches. With b=true the result is 11.")
+  (input  (do
+            (def (main (: b Bool)) ((if b (fn (x) (+ x 1)) (fn (x) (- x 1))) 10)) (export main)))
+  (call   main (: true Bool))
+  (output (: 11 Int64)))
+
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
 ; element (or list element) must be extractable and callable, exactly as one stored in a record field
