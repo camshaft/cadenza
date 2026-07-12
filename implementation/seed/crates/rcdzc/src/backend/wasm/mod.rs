@@ -54,6 +54,7 @@ pub fn emit(
     db: &mut Db,
     layout: &Layout,
     spans: Option<&crate::spans::SpanData>,
+    external_debug_info: Option<&str>,
 ) -> Result<Vec<u8>, Reject> {
     let debug = spans.is_some();
     // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
@@ -195,6 +196,13 @@ pub fn emit(
     {
         let dwarf_funcs = dwarf_funcs_for(db, layout, &funcs, &imports, code_base, span_data);
         core.extend_from_slice(&dwarf::debug_sections(&span_data.module_path, &dwarf_funcs));
+    }
+
+    // A lean component paired with a DETACHED DWARF sidecar (Mode S, `Emit(Wasm)` + `Emit(Dwarf)` in one
+    // run) carries an `external_debug_info` custom section naming the sidecar, so a debugger auto-loads
+    // it (no manual symbol-file flag). Also inert + strippable; appended after the executed sections.
+    if let Some(path) = external_debug_info {
+        core.extend_from_slice(&dwarf::external_debug_info_section(path));
     }
 
     // Build the component-boundary export list (each export's parameter + result valtypes) and

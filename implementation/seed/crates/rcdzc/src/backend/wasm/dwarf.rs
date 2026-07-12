@@ -295,6 +295,19 @@ pub fn standalone_dwarf_module(sections: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The `external_debug_info` custom section — the "DWARF for WebAssembly" convention for a runnable
+/// module that carries NO embedded DWARF but points a debugger at a DETACHED sidecar file (Mode S).
+/// The section's payload is a single length-prefixed UTF-8 name (the sidecar's path/URL, relative to
+/// the module). A debugger reading the runnable finds this and loads the sidecar's `.debug_*` sections
+/// automatically, so the code addresses resolve without a manual `-s`/`--symbols` flag. Appended to the
+/// embedded core module like the other debug sections — inert (moves no executed byte) and strippable.
+pub fn external_debug_info_section(sidecar_path: &str) -> Vec<u8> {
+    let mut payload = Vec::new();
+    uleb128(sidecar_path.len() as u64, &mut payload);
+    payload.extend_from_slice(sidecar_path.as_bytes());
+    custom_section("external_debug_info", &payload)
+}
+
 /// A wasm CUSTOM section (id 0): its contents are `<name-len-uleb><name-bytes><payload>`.
 fn custom_section(name: &str, payload: &[u8]) -> Vec<u8> {
     let mut contents = Vec::new();

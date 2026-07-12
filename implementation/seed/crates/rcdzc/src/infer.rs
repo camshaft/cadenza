@@ -245,6 +245,14 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
+        // EFFECT CONTROL FORMS (E1a: surface recognized, lowering declines). A `handle`/`host` evaluates
+        // to its body's value, so its type is its body's type — typed through now so a handled/delegated
+        // expression used in a typed context (e.g. `(+ (handle …) 1)`) does not spuriously fault while
+        // lowering is still declined. A `resume`'s value is handed back at the perform site; outside the
+        // tail-rewrite it has no independent type, so `Any` (it is consumed by the arm's lowering, E1c).
+        Resolved::Handle { body, .. } => type_of(db, body),
+        Resolved::Host { body, .. } => type_of(db, body),
+        Resolved::Resume { .. } => Ty::Any,
         // A lambda/def parameter used as a value — a formal. If its binder is ANNOTATED (`(: a T)`),
         // its type is that annotation `T` — so the body type-checks against a definite parameter type
         // (`(: a Bool)` used as an integer operand is caught). Otherwise, for the parameter of a
@@ -774,6 +782,22 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return compound_ctor_type(db, prim, args);
     }
+    // A NULLARY PERFORM `(E.op)` — an effect operation applied to no argument. Its `(meta t)` scheme is
+    // `(-> Unit result)` (a `Unit`-domain op whose unit argument is elided in the corpus surface), so the
+    // performance's type is `result`, NOT the op record's type (which the zero-arg identity short-circuit
+    // below would wrongly return). Checked before that short-circuit, only for an effect operation, so an
+    // ordinary nullary def `(g)` is unaffected. (A non-nullary op reaches the scheme-peeling loop below.)
+    if crate::eval::effect_op_of(db, head).is_some() {
+        let mut fresh = Fresh::new();
+        if let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh) {
+            let cur = crate::unify::instantiate(&scheme, &mut fresh);
+            if let Ty::Fn(param, result) = &cur
+                && (args.is_empty() && matches!(**param, Ty::Unit))
+            {
+                return (**result).clone();
+            }
+        }
+    }
     // A ZERO-ARGUMENT application `(g)` with a non-lambda head is the head value — applying to no
     // arguments is the identity (a nullary def `(def (g) 7)` called). Its type is the head's type.
     // Mirrors the same short-circuit in `lower`, so `(g)` types and lowers as its body value. A
@@ -831,7 +855,20 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             _ => return Ty::Any,
         }
     }
-    subst.apply(&cur)
+    // A NULLARY PERFORM: an effect operation declared `(-> Unit T)` performed as `(E.op)` (no argument —
+    // the `unit` domain is elided, the corpus surface). After the given args are peeled, if the head is
+    // an effect operation and `cur` is still `(-> Unit result)`, the elided unit is the implicit argument
+    // — so the performance's type is `result`, not the un-applied arrow. Without this a nullary perform
+    // types as its arrow (a `Type`), and using it as a value (`(+ (E.op) 1)`) faults "unify Int64 with
+    // Type". (Only for an effect op — an ordinary partial application keeps its arrow type.)
+    let applied = subst.apply(&cur);
+    if crate::eval::effect_op_of(db, head).is_some()
+        && let Ty::Fn(param, result) = &applied
+        && matches!(**param, Ty::Unit)
+    {
+        return subst.apply(result);
+    }
+    applied
 }
 
 /// Apply a def SCHEME to `args`, returning the result type — instantiate it with fresh variables, then
@@ -1459,6 +1496,30 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 }
             }
             collect(db, expr, out);
+        }
+        // EFFECT CONTROL FORMS: descend into every executed sub-expression so a fault inside is caught
+        // regardless of whether lowering can yet run the form. A handler's init, each arm's PERFORM
+        // (the op projection — a perform-argument type mismatch surfaces here as an ordinary application
+        // check via the op value's `(meta t)` arrow) and body, and the handled body all participate in
+        // well-formedness. The arm's param/state binders are binder occurrences (not collected as
+        // values). This is what makes a wrong-type perform argument a CDZ0203 even while the handler
+        // itself declines to run (E1a).
+        Resolved::Handle { init, arms, body } => {
+            collect(db, init, out);
+            for arm in &arms {
+                collect(db, arm.op, out);
+                collect(db, arm.body, out);
+            }
+            collect(db, body, out);
+        }
+        Resolved::Resume { value, next_state } => {
+            collect(db, value, out);
+            collect(db, next_state, out);
+        }
+        Resolved::Host { body, .. } => {
+            // The effect names are label occurrences (an effect name resolves to its record); descend
+            // into the delegated body for its faults.
+            collect(db, body, out);
         }
         // A scope-error poison (an unbound name) is UNCONDITIONAL well-formedness — report it here,
         // where the walk descends into EVERY position (including an `if`'s branches), so an unbound

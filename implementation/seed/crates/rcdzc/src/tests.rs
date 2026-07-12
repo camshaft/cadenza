@@ -784,6 +784,42 @@ fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
     assert_eq!(f, 20, "p false → .0 = b (the else branch's element 0)");
 }
 
+/// The RECORD analogue of the tuple `PROJECTION-INTO-IF` fold: a SINGLE field read of a record built
+/// through an `if` pushes the member read INTO the branches — `(. (if c (record (x a)(y b))
+/// (record (x b)(y a))) x)` → `(if c a b)`. The `if`-selected record was OPAQUE to `member_value`
+/// (`reduce_to_record_id` stops at an `if`), forcing a per-call heap build of BOTH branch records
+/// (`arr-alloc` + per-field box/set) then an `arr-get`/unbox to read one field back; now the field is
+/// projected from each branch (by NAME — order-independent) and the two records fold away, leaving one
+/// `if` over the selected field values — no heap, no runtime import. Reuses the EXISTING field-value
+/// occurrences (no ast synthesis). Fields are written out of sorted order to confirm the fold is by key,
+/// not slot. Contrast `a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index`, where the record
+/// is built behind a RECURSIVE call so it stays opaque and the heap read stands.
+#[test]
+fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // `.x` of `(if p (record (y b)(x a)) (record (y a)(x b)))` → `(if p a b)`.
+    let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
+                 (. (if p (record (y b) (x a)) (record (y a) (x b))) x)) (export pick))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a single member read of an if-of-records must fold (no per-call arr-alloc, no runtime import)"
+    );
+    let t: i64 = run_returns_with(
+        &bytes,
+        "pick",
+        &[Val::Bool(true), Val::S64(10), Val::S64(20)],
+    );
+    assert_eq!(t, 10, "p true → .x = a");
+    let f: i64 = run_returns_with(
+        &bytes,
+        "pick",
+        &[Val::Bool(false), Val::S64(10), Val::S64(20)],
+    );
+    assert_eq!(f, 20, "p false → .x = b (the else branch's x field)");
+}
+
 /// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
 /// an integer as one i64 cell, but a narrow width (UInt8) lives in an i32 slot — so a narrow element is
 /// extended i32→i64 into the heap and narrowed i64→i32 out of it. To exercise a GENUINE heap round-trip
@@ -829,20 +865,22 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
 /// the runtime value (slot 0), not the literal 9. Earlier the member-access path folded only through a
 /// compile-time record and REJECTED a call-produced one with a self-contradictory CDZ0201 "requires a
 /// record, found (record …)"; this pins the runtime field read AND that it indexes by sorted position.
-/// To keep the record OPAQUE to the fold (a call-returned record now folds through — cycle 16), it comes
-/// from an `if` whose branches DIFFER in the `a` field (`n` vs `n+1`): `reduce_to_record_id` does not
-/// see through an `if`, so `main` selects one at run time and reads `a` off the heap.
+/// To keep the record OPAQUE to the fold, it is built behind a RECURSIVE call: `is_recursive` declines
+/// the compile-time β-reduction, so `reduce_to_record_id` (and thus the member fold, incl. the cycle-33
+/// member-into-if fold) cannot see through `mk` — `main` reads `a` off the heap at run time. (Earlier
+/// this test used an `if` with branches differing in `a`, but cycle 33's member-into-if fold now sees
+/// through such an `if`, so an `if` no longer keeps a record opaque — a recursive call does.)
 #[test]
 fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
     use crate::testkit::parse;
     // The record's `a` field is the parameter; fields written z-before-a so the sorted layout (a=0, z=1)
-    // differs from the write order. The `if` has a RUNTIME condition `(< v 100)` (not compile-time
-    // constant, so it does not fold to a taken literal branch) and branches that DIFFER in `a` — so the
-    // record stays a runtime heap value. For v = 41 the condition is true, `a` = v, and projecting `a`
-    // reads slot 0 = the argument.
+    // differs from the write order. `mk` recurses to a base case that builds the record, so the compiler
+    // cannot fold through it — `main` selects the runtime handle and reads `a` off the heap. For v = 41
+    // the recursion bottoms out with `a` = 41, and projecting `a` reads slot 0.
     let src = "(module m \
-                 (def (main (: v Int64)) \
-                   (. (if (< v 100) (record (z 9) (a v)) (record (z 9) (a (+ v 1)))) a)) \
+                 (def (mk (: n Int64)) (if (< n 0) (record (z 9) (a 0)) \
+                   (if (= n 41) (record (z 9) (a n)) (mk (- n 1))))) \
+                 (def (main (: v Int64)) (. (mk v) a)) \
                  (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
@@ -877,14 +915,16 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
 /// value, `r` is that record and `(. r x)` is its `x`. Earlier the seed rejected the body standalone
 /// with a self-contradictory CDZ0201 "requires a record, found Any" (an `Any` operand is unconstrained,
 /// not a proven non-record) — projection was the outlier vs arithmetic, which never faulted on `Any`.
-/// The argument is an `if`-selected record (runtime condition, branches differing in `x`) so it stays
-/// OPAQUE to the fold (a plain `(mk v)` would fold through — cycle 16): `get-x` reads `x` off the heap
-/// at run time. For v = 41 the condition holds, so `x` = v; composed run: 41.
+/// The argument is a record built behind a RECURSIVE call so it stays OPAQUE to the fold (a plain
+/// `(mk v)` would fold through — cycle 16; and an `if`-selected record now folds through too — cycle
+/// 33's member-into-if): `is_recursive` declines the β-reduction, so `get-x` reads `x` off the heap at
+/// run time. For v = 41 the recursion bottoms out with `x` = v; composed run: 41.
 #[test]
 fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
     use crate::testkit::parse;
-    let src = "(module m (def (get-x r) (. r x)) (def (mk n) (record (x n) (y 2))) \
-                 (def (main (: v Int64)) (get-x (if (< v 100) (mk v) (mk (+ v 1))))) (export main))";
+    let src = "(module m (def (get-x r) (. r x)) \
+                 (def (mk n) (if (= n 41) (record (x n) (y 2)) (mk (+ n 1)))) \
+                 (def (main (: v Int64)) (get-x (mk v))) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
         cdz_run::required_runtime(&bytes).expect("valid").is_some(),
@@ -4261,6 +4301,101 @@ mod match_engine {
     }
 
     #[test]
+    fn option_expect_folds_a_constant_present_variant_to_its_payload() {
+        // `Option.expect`/`Result.expect` on a compile-time-visible PRESENT variant FOLDS to its payload
+        // (core-semantics.md §Requiring The Value Of An Optional Traps On Absence — the present branch).
+        // A constant `(Some 7)` / `(Ok 99)` unwraps at compile time (no heap, no runtime probe); the
+        // message is discarded. Consumed to a scalar so `main` returns it directly.
+        for (prog, want) in [
+            ("(Option.expect (Some 7) \"m\")", 7),
+            ("(Result.expect (Ok 99) \"m\")", 99),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "expect folds constant present: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn checked_arithmetic_folds_to_some_in_range_and_none_on_overflow() {
+        // `Int64.checked-add`/`checked-mul` — the FALLIBLE arithmetic (numeric-model.md §Overflow Is
+        // Defined). A constant operand pair FOLDS: in range → `(Some result)`, overflow → `(None unit)`.
+        // Consumed by a match so `main` returns a scalar (the Some payload or a -1 sentinel).
+        for (prog, want) in [
+            ("(Int64.checked-add 20 22)", 42),       // fits
+            ("(Int64.checked-add Int64.max 1)", -1), // overflows → None
+            ("(Int64.checked-mul 6 7)", 42),         // fits
+            ("(Int64.checked-mul Int64.max 2)", -1), // overflows → None
+        ] {
+            let src = format!(
+                "(module m (def (main) (match {prog} ((Some v) v) ((None _) -1))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "checked arithmetic fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrapping_arithmetic_folds_and_runs_with_two_s_complement_wraparound() {
+        // `Int64.wrapping-add`/`wrapping-mul` — two's-complement wraparound, NEVER trapping (numeric-
+        // model.md §Overflow Is Defined). A constant pair FOLDS via `wrapping_*`; the result is a bare
+        // Int64 (no Option). `MAX + 1` wraps to MIN, `MAX * 2` wraps to -2, in-range equals `+`/`*`.
+        let min = i64::MIN; // -9223372036854775808
+        for (prog, want) in [
+            ("(Int64.wrapping-add 20 22)", 42),
+            ("(Int64.wrapping-add Int64.max 1)", min),
+            ("(Int64.wrapping-mul 6 7)", 42),
+            ("(Int64.wrapping-mul Int64.max 2)", -2),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "wrapping arithmetic fold: {prog}"
+            );
+        }
+        // The RUNTIME path: `(w a b) = (Int64.wrapping-add a b)` over PARAMETERS emits the raw `i64.add`
+        // (no overflow guard), so `(w Int64.max 1)` wraps to MIN rather than trapping — the same result
+        // as the fold, proving wrapping is the raw op, not the checked/trapping one.
+        let src = "(module m (def (w a b) (Int64.wrapping-add a b)) \
+                    (def (main) (w Int64.max 1)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(&component(src), "main"),
+            min,
+            "runtime wrapping-add wraps at run time"
+        );
+    }
+
+    #[test]
+    fn option_expect_unwraps_a_runtime_optional_through_the_disc_probe() {
+        // The RUNTIME `Option.expect` path: unwrap an optional a runtime op PRODUCED (not a constant), the
+        // compiler's `List.at`+`Option.expect` idiom the spec cites. `build 0 3 (list)` = `[0 1 2]`;
+        // `(List.at xs 1)` is a runtime `(Some 1)` (a heap sum, does NOT fold), and `(Option.expect … "m")`
+        // unwraps it → 1. Exercises the emitted `sum-disc == 0` probe + `sum-payload` unbox on the present
+        // arm (no trap). This forces the genuine `Core::SumExpect` emit (the sum is a runtime handle).
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((xs (build 0 3 (list)))) \
+                 ((. Option expect) ((. List at) xs 1) \"in range\"))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "1",
+            "runtime Option.expect unwraps the present payload"
+        );
+    }
+
+    #[test]
     fn a_runtime_list_index_reads_the_element_through_vec_get() {
         // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
         // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0
@@ -6937,6 +7072,41 @@ mod stage1 {
     }
 
     #[test]
+    fn a_tail_resumptive_handler_runs() {
+        // E1c: a tail-resumptive handler is REDUCED AWAY at lowering — the perform `(Choose.pick)` is
+        // resolved to its arm and rewritten to the arm's resume value `5`, so `(+ (Choose.pick) 1)` = 6.
+        // The handler is stateless (seed unit, thread s unchanged); the whole `handle` becomes plain
+        // arithmetic, so `select` sees only ordinary `Core` (no effect node, no runtime handler search).
+        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle unit (((. Choose pick) () s (resume 5 s))) \
+                   (+ ((. Choose pick)) 1))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a tail-resumptive handler compiles and runs"),
+                "main"
+            ),
+            6
+        );
+    }
+
+    #[test]
+    fn a_handle_arm_binds_its_params_and_state_in_scope() {
+        // E1b: an arm `(op (params…) state body)` binds the operation parameters AND the state binder in
+        // the arm body — so a reference to `s` (state) in a `resume` is IN SCOPE, not an unbound-name
+        // error. Full lowering is still declined (E1c consumes the scope), so the program declines; the
+        // point is it must NOT crash and must NOT fault CDZ0101 on the arm binders. Before E1b this
+        // faulted CDZ0101 (unbound `s`); after, it declines cleanly on the not-yet-lowered handler.
+        let src = "(do (effect Fresh (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   ((. Fresh next)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a handler with state declines until E1c lowers it (but scope resolves)"
+        );
+    }
+
+    #[test]
     fn a_runtime_integer_width_is_rejected() {
         // `(def (mk n) (: 5 (UInt n)))` puts a RUNTIME value `n` (a parameter) in a width position — a
         // width must be a compile-time natural (`numeric-model.md §An Integer Type Is Indexed By A
@@ -7736,6 +7906,65 @@ mod stage1 {
                 "main"
             ),
             0
+        );
+    }
+
+    #[test]
+    fn a_tuple_scrutinee_is_matched_by_a_tuple_pattern() {
+        // Matching directly on a TUPLE scrutinee — `(match (tuple a b) ((tuple x y) …))` — was declined "a
+        // match pattern that is not a scalar literal or `_`"; now a `Ty::Tuple` scrutinee routes through the
+        // decision-tree matcher (`Elem`-path binders + literal tests, no discriminant). A CONSTANT tuple
+        // folds: `(tuple 3 4)` destructures to x=3,y=4 → 7. A tuple of SUMS matches with nested constructor
+        // patterns (the structural-editing idiom `(match (tuple a b) ((tuple (E.Lit x) (E.Lit y)) …))`).
+        let sum = "(module m (def (main) (match (tuple 3 4) ((tuple x y) (+ x y)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(sum))).expect("compile"),
+                "main"
+            ),
+            7,
+            "a tuple scrutinee destructures by a tuple pattern"
+        );
+        // A LITERAL tuple element refines the match; a non-match falls to the binder arm.
+        let lit_hit = "(module m (def (main) \
+                        (match (tuple 0 9) ((tuple 0 y) 100) ((tuple x y) x))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(lit_hit))).expect("compile"),
+                "main"
+            ),
+            100,
+            "a matching tuple-element literal selects its arm"
+        );
+        let lit_miss = "(module m (def (main) \
+                         (match (tuple 5 9) ((tuple 0 y) 100) ((tuple x y) x))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(lit_miss))).expect("compile"),
+                "main"
+            ),
+            5,
+            "a non-matching tuple-element literal falls through to the binder arm"
+        );
+        // A wrong-TYPE literal element (`true` where the element is Int64) is CDZ0201; a repeated binder
+        // (`(tuple x x)`) is CDZ0102 (linearity) — both checked in the tuple/nested pattern path, not only
+        // at the top level.
+        let wrong_ty = "(module m (def (main) \
+                         (match (tuple 1 2) ((tuple true b) 9) (_ 0))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(wrong_ty)))
+                .expect_err("wrong-type literal element must reject")
+                .message
+                .contains("does not match"),
+            "a wrong-type tuple-element literal is a type error (CDZ0201)"
+        );
+        let dup = "(module m (def (main) (match (tuple 1 2) ((tuple x x) x))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(dup)))
+                .expect_err("a repeated binder must reject")
+                .message
+                .contains("more than once"),
+            "a tuple pattern binding the same name twice is non-linear (CDZ0102)"
         );
     }
 
@@ -9919,7 +10148,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
+        self, KIND_DIAGNOSTICS, KIND_RESOLVE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
+        Request,
     };
     use crate::testkit::parse;
 
@@ -10261,6 +10491,69 @@ mod sidecar_driven {
         let out = compile(&inputs(src, &[Request::Query(Query::Diagnostics)]), &[]);
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_DIAGNOSTICS).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_resolve_of_query_finds_the_defining_occurrence() {
+        // Go-to-definition: a reference to `helper` resolves to `helper`'s def body. The consumer maps
+        // an offset to the reference node; ResolveOf answers the DEFINING occurrence's node id.
+        let src = "(module m (def (helper) 1) (def (main) helper) (export main))";
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse with spans");
+        // The reference is the `helper` in `(def (main) helper)` — the LAST occurrence of "helper".
+        let ref_off = src.rfind("helper").expect("a reference to helper");
+        let ref_node = spans
+            .node_at_offset(ref_off)
+            .expect("a node at the reference");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::ResolveOf { node: ref_node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(!out.has_error());
+        let target: u32 = artifact_text(&out, KIND_RESOLVE)
+            .expect("a resolve artifact")
+            .trim()
+            .parse()
+            .expect("a node id");
+        // The target is helper's def body — spot-check via a fresh resolve (the same occurrence).
+        let db = crate::db::Db::load(parse(src));
+        let helper_body = db.defs[db.def_by_name("helper").unwrap()].body.unwrap();
+        assert_eq!(
+            crate::ast::StructId(target),
+            helper_body,
+            "ResolveOf points at helper's def body"
+        );
+    }
+
+    #[test]
+    fn a_resolve_of_query_for_a_non_reference_is_empty() {
+        // A literal (or any non-navigable node) resolves to nothing — the empty result, total.
+        let src = "(module m (def (main) 42) (export main))";
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let lit = spans
+            .node_at_offset(src.find("42").unwrap())
+            .expect("the literal node");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::ResolveOf { node: lit.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_RESOLVE).as_deref(), Some(""));
     }
 }
 
@@ -11037,6 +11330,49 @@ mod debug_info {
         assert!(
             !stdout.contains("DW_TAG_formal_parameter"),
             "a nullary function must have no formal parameters:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn wasm_plus_dwarf_links_the_component_to_the_sidecar() {
+        // When a run emits BOTH a lean component and a detached DWARF sidecar, the component carries an
+        // `external_debug_info` custom section naming the sidecar file — so a debugger auto-loads it.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile_debug(
+            src,
+            &[Request::Emit(Target::Wasm), Request::Emit(Target::Dwarf)],
+        );
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let comp = out.artifact("component").expect("component").to_vec();
+        let names = custom_section_names(&comp);
+        assert!(
+            names.iter().any(|n| n == "external_debug_info"),
+            "the lean component must point at the sidecar; found {names:?}"
+        );
+        // The lean component embeds NO DWARF itself (that lives in the sidecar) — only the pointer.
+        assert!(
+            names.iter().all(|n| !n.starts_with(".debug")),
+            "a lean component must not embed DWARF (it points at the sidecar): {names:?}"
+        );
+        // The pointer's payload names the on-disk sidecar file (`main.dwarf` — the program name).
+        assert!(
+            comp.windows(b"main.dwarf".len())
+                .any(|w| w == b"main.dwarf"),
+            "the external_debug_info payload must name the sidecar file"
+        );
+    }
+
+    #[test]
+    fn a_lone_wasm_carries_no_external_debug_info() {
+        // Without a paired `Dwarf` target, a plain component has no `external_debug_info` pointer — it
+        // stays byte-identical to today's undecorated output.
+        let src = "(module m (def (main) 42) (export main))";
+        let plain = component_of(src, Target::Wasm);
+        assert!(
+            !custom_section_names(&plain)
+                .iter()
+                .any(|n| n == "external_debug_info"),
+            "a lone Wasm target must carry no external_debug_info"
         );
     }
 }

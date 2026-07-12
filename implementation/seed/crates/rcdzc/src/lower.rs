@@ -149,24 +149,45 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Code::Malformed,
                 format!("record has no field `{}`", key.name),
             )),
-            // The operand did not reduce to a compile-time-visible record. If it is a RUNTIME record (a
-            // call result, an `if` selection) carrying the field, read it off the heap array: a record
-            // at run time IS a positional array in sorted-key order, so the field read is a `Core::Proj`
-            // at the field's sorted index — the SAME `arr-get` a tuple projection uses. Otherwise it is
-            // a genuine non-record (or a poison operand, whose own root cause propagates).
+            // The operand did not reduce to a compile-time-visible record. MEMBER-INTO-IF: if it is an
+            // `(if c R S)` whose BOTH branches are visible records carrying the field →
+            // `(if c R.key S.key)`, pushing the member read into each branch. The record analogue of the
+            // tuple `PROJECTION-INTO-IF` (a record built through an `if` was OPAQUE to `member_value`, so
+            // it stayed a runtime heap value — `arr-alloc` + per-field box/set + `arr-get`/unbox, purely
+            // to read one field back). Reuses the EXISTING field-value occurrences as the branches (no
+            // ast synthesis, no re-resolution — each keeps its resolved scope); the un-read sibling
+            // fields drop exactly as a visible-record member fold drops them, and `c` is evaluated either
+            // way so its trap is preserved. `member_value` on each branch reduces it to its record and
+            // projects `key` (by name — order-independent); a branch missing the field, or a kept
+            // multi-use `if`-binding (`reduce_to_if` stops there), declines this and falls through to the
+            // runtime read below.
             crate::eval::Member::NotRecord => {
-                match crate::eval::runtime_member_index(db, operand, &key) {
-                    Some(index) => {
-                        trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, key = %key.name, index, "member access on a runtime record → arr-get at the field's sorted index");
-                        Core::Proj { operand, index }
+                if let Some((cond, then_, else_)) = crate::eval::reduce_to_if(db, operand)
+                    && let crate::eval::Member::Field(tf) =
+                        crate::eval::member_value(db, then_, &key)
+                    && let crate::eval::Member::Field(ef) =
+                        crate::eval::member_value(db, else_, &key)
+                {
+                    trace!(target: "rcdzc::fold", node = id.0, key = %key.name, "member read pushed into an if of records (no heap build)");
+                    Core::If {
+                        cond,
+                        then_: tf,
+                        else_: ef,
                     }
-                    None => match core_of(db, operand) {
-                        Core::Poison(r) => Core::Poison(r),
-                        _ => Core::Poison(Reject::coded(
-                            Code::Malformed,
-                            "member access requires a record",
-                        )),
-                    },
+                } else {
+                    match crate::eval::runtime_member_index(db, operand, &key) {
+                        Some(index) => {
+                            trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, key = %key.name, index, "member access on a runtime record → arr-get at the field's sorted index");
+                            Core::Proj { operand, index }
+                        }
+                        None => match core_of(db, operand) {
+                            Core::Poison(r) => Core::Poison(r),
+                            _ => Core::Poison(Reject::coded(
+                                Code::Malformed,
+                                "member access requires a record",
+                            )),
+                        },
+                    }
                 }
             }
         },
@@ -582,6 +603,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::StrSlice) if args.len() == 3 => {
                     lower_str_slice(db, id, args[0], args[1], args[2])
                 }
+                // `Option.expect` / `Result.expect` — the unwrap-or-trap accessor. `args[0]` is the sum,
+                // `args[1]` the message (dropped — the wasm trap is textless). FOLD a constant PRESENT
+                // variant to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload /
+                // trap).
+                Some(Prim::SumExpect) if args.len() == 2 => lower_sum_expect(db, id, args[0]),
+                // `Int64.checked-add` / `checked-mul` — the FALLIBLE arithmetic. FOLD a constant operand
+                // pair to `(Some result)` in range / `(None unit)` on overflow; a runtime operand is a
+                // later increment (declines cleanly).
+                Some(prim @ (Prim::CheckedAdd | Prim::CheckedMul)) if args.len() == 2 => {
+                    lower_checked_arith(db, id, prim, args[0], args[1])
+                }
+                // `Int64.wrapping-add` / `wrapping-mul` — two's-complement wraparound, NEVER trapping. FOLD
+                // a constant pair via `wrapping_*`; a runtime operand emits `Core::Arith` (which for a
+                // wrapping prim selects the RAW machine op, no overflow guard).
+                Some(prim @ (Prim::WrappingAdd | Prim::WrappingMul)) if args.len() == 2 => {
+                    lower_wrapping_arith(db, prim, args[0], args[1])
+                }
                 // `String.concat` — the TOTAL binary join. FOLD two constant strings to their
                 // concatenation (the result is another constant `String`). The value form is always NFC,
                 // and NFC is NOT closed under concatenation in general (a combining mark starting the RIGHT
@@ -644,6 +682,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::TypeVal(_) | Resolved::Lambda { .. } => Core::Poison(Reject::decline(
             "a type value or compile-time lambda has no runtime form",
         )),
+        // A `handle` is REDUCED AWAY (E1c): resolve each enclosed perform to its concrete arm and rewrite
+        // the tail-resumptive case to plain code — the perform becomes the arm's resume value, the
+        // next-state threads forward (`DESIGN-effects-rcdzc.md` §4.1). `reduce_handle` produces a
+        // rewritten BODY occurrence, which we then lower by the ordinary path (so `select` sees only
+        // plain `Core`). A case the tail path cannot serve (a non-tail/absent resume, a cross-function or
+        // recursive perform) makes `reduce_handle` return `None` → DECLINE (a Todo, never a miscompile).
+        Resolved::Handle { init, arms, body } => {
+            match crate::effects::reduce_handle(db, init, &arms, body) {
+                Some(rewritten) => core_of(db, rewritten),
+                None => Core::Poison(Reject::decline(
+                    "this handler is not yet reducible by the tail-resumptive fold (cross-function \
+                 or non-tail resume arrives in a later increment)",
+                )),
+            }
+        }
+        Resolved::Host { .. } => Core::Poison(Reject::decline(
+            "a host delegation is not yet lowered (the boundary import arrives in E2)",
+        )),
+        Resolved::Resume { .. } => Core::Poison(Reject::decline(
+            "resume outside a lowered handler arm is not yet realized",
+        )),
     }
 }
 
@@ -704,10 +763,15 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
 /// scrutinee covered by both a `true` arm and a `false` arm needs no wildcard. A match that covers
 /// neither way is rejected (CDZ0210), not compiled to a fallthrough with no defined value.
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
-    // A SUM scrutinee dispatches on the DISCRIMINANT, not a scalar value — a separate lowering that
-    // classifies variant patterns and produces a `Core::MatchSum`. (Detected by the scrutinee's solved
-    // type; a scalar scrutinee falls through to the scalar-probe path below.)
-    if let crate::ty::Ty::Sum { .. } = crate::infer::type_of(db, scrutinee) {
+    // A COMPOUND scrutinee — a SUM or a TUPLE — is matched by the DECISION TREE, not the scalar-probe
+    // path. A sum dispatches on the discriminant; a tuple has no discriminant, so its match is a chain of
+    // `Elem`-path binders / literal tests (the tree handles a discriminant-free root — only lit-tests and
+    // a binder fall-through). Both go through `lower_match_sum` (the shared decision-tree builder); a
+    // scalar scrutinee falls through to the scalar-probe path below. (A record scrutinee is a later
+    // increment; the tuple case is the common structural-match shape.)
+    if let crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_) =
+        crate::infer::type_of(db, scrutinee)
+    {
         return lower_match_sum(db, scrutinee, arms);
     }
     // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
@@ -896,14 +960,21 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
 /// `Core::MatchSum` tree. A payload binder resolves to a `SumPayload` on its own (resolve Case 6), so an
 /// arm carries only its discriminant + continuation.
 fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
-    // The scrutinee must be a sum (its solved type gives the root variant set). A poisoned scrutinee
-    // propagates its poison; a non-sum is a decline (the caller only routes sums here).
+    // The scrutinee must be a COMPOUND the decision tree matches — a SUM (its type gives the root variant
+    // set to switch on) or a TUPLE (no discriminant; its arms impose only `Elem`-path binders/lit-tests).
+    // A poisoned scrutinee propagates its poison; anything else is a decline (the caller routes only
+    // sums/tuples here).
     let scrut_ty = crate::infer::type_of(db, scrutinee);
-    if !matches!(scrut_ty, crate::ty::Ty::Sum { .. }) {
+    if !matches!(
+        scrut_ty,
+        crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_)
+    ) {
         if let Core::Poison(r) = core_of(db, scrutinee) {
             return Core::Poison(r);
         }
-        return Core::Poison(Reject::decline("sum match scrutinee is not a sum"));
+        return Core::Poison(Reject::decline(
+            "compound match scrutinee is not a sum or tuple",
+        ));
     }
     // Build the initial pattern MATRIX: one row per arm, each a `(constraints, body)` where a constraint
     // is `(path, disc)` — "the sub-value at `path` must have discriminant `disc`". A row's constraints
@@ -917,6 +988,14 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             _ => (pat, None),
         };
+        // LINEARITY: a pattern is a BINDER POSITION and must bind each name at most once (core-semantics.md
+        // §Patterns Compose: "A pattern MUST bind each name at most once … rather than silently shadowing").
+        // `(tuple x x)` / `(Some (tuple x x))` binds `x` twice — CDZ0102, the same non-linear-binder error a
+        // repeated `def` parameter gets — not a last-wins shadow that makes the first binder's payload
+        // unreachable. Checked across the WHOLE arm pattern (nested sub-patterns included).
+        if let Err(r) = check_pattern_linear(db, inner_pat) {
+            return Core::Poison(r);
+        }
         let mut lit_tests = Vec::new();
         match pattern_constraints(db, inner_pat, &scrut_ty, Vec::new(), &mut lit_tests) {
             Ok(constraints) => rows.push(MatchRow {
@@ -966,6 +1045,75 @@ struct MatchRow {
     guard: Option<StructId>,
 }
 
+/// Reject a match-arm pattern that binds the same name more than once (CDZ0102) — a pattern is a BINDER
+/// POSITION and must be LINEAR (`core-semantics.md §Patterns Compose`). Walks the whole pattern collecting
+/// BINDER names (a bare non-`_` name that is NOT a variant constructor of a sum in scope, NOR a literal),
+/// and faults the second occurrence, anchored there. A `_` binds nothing (may repeat); a variant name
+/// (`Some`, `E.Lit`) is a constructor, not a binder; a literal is a value, not a binder. Recurses into
+/// tuple/variant sub-patterns and peels a `(guard …)` wrapper. (A non-deduping walk — unlike resolve's
+/// binder lookups it must SEE every occurrence to catch the repeat.)
+fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_pattern_binders(db, pat, &mut seen)
+}
+
+/// The recursive walk behind [`check_pattern_linear`]: insert each binder name into `seen`, faulting a
+/// repeat. See that function for the binder-vs-ctor-vs-literal classification.
+fn collect_pattern_binders(
+    db: &mut Db,
+    pat: StructId,
+    seen: &mut std::collections::HashSet<String>,
+) -> Result<(), Reject> {
+    // Peel a guard wrapper — the binder-carrying pattern is the inner one.
+    if let Some(g) = db.ast.as_form(pat, "guard")
+        && g.len() == 2
+    {
+        return collect_pattern_binders(db, g[0], seen);
+    }
+    // A bare atom: a literal binds nothing; a `_` binds nothing; any OTHER bare name is a binder UNLESS it
+    // is a nullary variant constructor (`None`, `Sign.Neg`) — a ctor is not a binder. `variant_disc_of`
+    // recognizes a ctor value; a name that is not one is a binder.
+    if let crate::ast::Struct::Atom(_) = db.ast.get(pat) {
+        if matches!(
+            crate::resolve::resolved_of(db, pat),
+            crate::resolved::Resolved::Int(_) | crate::resolved::Resolved::Bool(_)
+        ) {
+            return Ok(()); // a literal is not a binder
+        }
+        if let Some(name) = db.ast.as_name(pat).map(|s| s.to_string()) {
+            if name == "_" {
+                return Ok(());
+            }
+            // A bare name that resolves to a variant constructor is a ctor, not a binder.
+            if crate::eval::variant_disc_of(db, pat).is_some() {
+                return Ok(());
+            }
+            if !seen.insert(name.clone()) {
+                return Err(Reject::coded(
+                    Code::NonLinearBinder,
+                    format!("pattern binds `{name}` more than once (a pattern must be linear)"),
+                )
+                .at(pat));
+            }
+        }
+        return Ok(());
+    }
+    // A compound pattern `(head arg…)` — a variant `(Some p)`, a tuple `(tuple p…)`, or a member `(. S V)`
+    // (a nullary ctor, no binders). The head is a ctor/`tuple`/`.` — not a binder; recurse into the args.
+    if let crate::ast::Struct::List(children) = db.ast.get(pat) {
+        let children = children.clone();
+        // A `(. Sum V)` member pattern is a nullary-ctor reference — no binder args.
+        if children.first().and_then(|&h| db.ast.as_name(h)) == Some(".") {
+            return Ok(());
+        }
+        // Skip the head (a ctor / `tuple` alias); recurse each argument sub-pattern.
+        for &arg in children.iter().skip(1) {
+            collect_pattern_binders(db, arg, seen)?;
+        }
+    }
+    Ok(())
+}
+
 /// Collect the discriminant constraints a PATTERN imposes on the sub-value at `path` (of type `ty`),
 /// appending `(deeper-path, disc)` per variant test. A bare NAME is a binder/wildcard — NO constraint
 /// (it matches any value; its binding is resolved independently). A variant pattern `(V arg…)` / bare
@@ -999,20 +1147,34 @@ fn pattern_constraints(
     // patterns can combine constructors and literals"). It imposes NO discriminant constraint (a scalar
     // has no variant tag); it adds a LITERAL TEST `(path, probe)` — the sub-value at `path` must EQUAL
     // the literal — gated (like a guard) once the enclosing discriminant is satisfied, with a same-variant
-    // fall-through for the non-matching case. The literal's TYPE must agree with the sub-value's type
-    // (`(Some true)` over an `Option Int64` is CDZ0203, the ordinary literal-vs-scalar mismatch); we
-    // record the probe here and let the arm-body type-check catch a mismatch (a bool probe on an int slot
-    // would be an invalid emit, but the type checker rejects the ill-typed arm first).
-    match crate::resolve::resolved_of(db, pat) {
+    // fall-through for the non-matching case. The literal's TYPE must AGREE with the sub-value's type at
+    // this position: `(tuple true b)` against `(tuple 1 2)` puts a `Bool` literal where the element is
+    // `Int64` — a literal-pattern-type mismatch (CDZ0201, core-semantics.md §Equality Is Structural),
+    // checked HERE (nested), exactly as the top-level `(match 5 (true 1))` case is, so a nested wrong-type
+    // literal does not slip past as a runtime non-match. (`ty` is `Any` for an unsolved position — no
+    // check, the not-yet-constrained treatment a projection of `Any` gets.)
+    let probe = match crate::resolve::resolved_of(db, pat) {
         crate::resolved::Resolved::Int(v) => {
-            lit_tests.push((path, crate::core::Probe::Int(v)));
-            return Ok(Vec::new());
+            Some((crate::core::Probe::Int(v), crate::ty::Ty::int()))
         }
         crate::resolved::Resolved::Bool(b) => {
-            lit_tests.push((path, crate::core::Probe::Bool(b)));
-            return Ok(Vec::new());
+            Some((crate::core::Probe::Bool(b), crate::ty::Ty::Bool))
         }
-        _ => {}
+        _ => None,
+    };
+    if let Some((probe, lit_ty)) = probe {
+        if !matches!(ty, crate::ty::Ty::Any) && !lit_ty.agrees_with(ty) {
+            return Err(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a {} literal pattern does not match the {} sub-value it is matched against",
+                    lit_ty.render_name(),
+                    ty.render_name()
+                ),
+            ));
+        }
+        lit_tests.push((path, probe));
+        return Ok(Vec::new());
     }
     // A bare NAME: either a NULLARY VARIANT of this sum (`None`) or a binder/wildcard. Resolve it against
     // the sum's variant set — a name that IS a variant contributes that discriminant (no payload to
@@ -1330,11 +1492,23 @@ fn build_tree(
         _ => {}
     }
     // Pick the SWITCH path — the shallowest path any row constrains (outer patterns first, so the outer
-    // probe is shared). Its TYPE (from `path_types`) gives the variant set for exhaustiveness + recursion.
+    // probe is shared). Its TYPE gives the variant set for exhaustiveness + recursion. Read from
+    // `path_types` (populated as sum-variant arms descend), else COMPUTE it by walking the path from the
+    // scrutinee's own type — a `Ty::Tuple` element indexes at `Elem(i)`, so a sum nested in a TUPLE element
+    // (`(match (tuple a b) ((tuple (E.Lit x) …)…))`, switch path `[Elem(0)]`) resolves even though no
+    // sum-payload descent seeded it. (`path_types` still wins where present — a variant payload's
+    // instantiated type is more precise than a raw type-walk.)
     let switch_path = shallowest_path(rows);
     let sub_ty = match path_types.get(&switch_path) {
         Some(t) => t.clone(),
-        None => return Err(Reject::decline("sum match switch path has no solved type")),
+        None => match type_at_path(db, scrutinee, &switch_path) {
+            Some(t) => t,
+            None => {
+                return Err(Reject::decline(
+                    "compound match switch path has no solved type",
+                ));
+            }
+        },
     };
     let (decl, variant_count) = match &sub_ty {
         crate::ty::Ty::Sum { decl, .. } => match db.type_decl_by_occ(*decl) {
@@ -1475,6 +1649,34 @@ fn build_lit_test(
         then_: Box::new(then_),
         els: Box::new(els),
     })
+}
+
+/// The solved TYPE of the sub-value at `path` from `scrutinee`, computed by walking the scrutinee's own
+/// type: an `Elem(i)` step indexes a `Ty::Tuple`'s i-th element; a `Payload` step descends a sum
+/// variant's payload (via the head recorded... but a raw type-walk cannot know WHICH variant a `Payload`
+/// step refers to, so `Payload` is only resolvable through `extend_path_types`' instantiation — this
+/// fallback handles the `Elem`-only paths a TUPLE-scrutinee match produces, where `path_types` was not
+/// seeded). Returns `None` for a `Payload` step (deferred to `path_types`) or an out-of-range/ill-typed
+/// index. Used as the fallback when `path_types` has no entry — a sum nested in a tuple element.
+fn type_at_path(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+) -> Option<crate::ty::Ty> {
+    let mut cur = crate::infer::type_of(db, scrutinee);
+    for step in path {
+        cur = match step {
+            crate::core::PathStep::Elem(i) => match &cur {
+                crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
+                _ => return None,
+            },
+            // A `Payload` step's target type needs the variant's instantiation (`extend_path_types`);
+            // a raw type-walk cannot supply it, so this fallback does not resolve a `Payload`-bearing path
+            // (those paths are always seeded in `path_types` by the sum-variant descent).
+            crate::core::PathStep::Payload => return None,
+        };
+    }
+    Some(cur)
 }
 
 /// Extend `path_types` for the arm switching on variant `disc` at `switch_path` (a sum of type `sub_ty`,
@@ -1778,6 +1980,21 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
             ref_escapes_whole(db, scrutinee, init)
                 || arms.iter().any(|(_, b)| ref_escapes_whole(db, *b, init))
         }
+        // Effect control forms: a reference to `init` as a whole value can appear in a handler's init,
+        // any arm body, a resumption's value/next-state, or the handled/delegated body — recurse each.
+        Resolved::Handle {
+            init: seed,
+            arms,
+            body,
+        } => {
+            ref_escapes_whole(db, seed, init)
+                || arms.iter().any(|a| ref_escapes_whole(db, a.body, init))
+                || ref_escapes_whole(db, body, init)
+        }
+        Resolved::Resume { value, next_state } => {
+            ref_escapes_whole(db, value, init) || ref_escapes_whole(db, next_state, init)
+        }
+        Resolved::Host { body, .. } => ref_escapes_whole(db, body, init),
         // A `SumPayload` reads a PIECE of the scrutinee (`sum-payload`), not the whole value — like a
         // projection operand, it is not a whole-value escape of `init`.
         Resolved::SumPayload { .. }
@@ -2487,6 +2704,23 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         // A `SumPayload` reads the scrutinee at run time (`sum-payload`); if the scrutinee is `init`,
         // that is a use of the binding.
         Resolved::SumPayload { scrutinee, .. } => usize::from(scrutinee == init) as u32,
+        // Effect control forms: the binding may be referenced in a handler's init, any arm body, a
+        // resumption's value/next-state, or the handled/delegated body — count each position.
+        Resolved::Handle {
+            init: seed,
+            arms,
+            body,
+        } => {
+            let mut n = uses_in(db, seed, init);
+            for arm in &arms {
+                n += uses_in(db, arm.body, init);
+            }
+            n + uses_in(db, body, init)
+        }
+        Resolved::Resume { value, next_state } => {
+            uses_in(db, value, init) + uses_in(db, next_state, init)
+        }
+        Resolved::Host { body, .. } => uses_in(db, body, init),
         // Leaves and non-referencing forms contribute nothing.
         Resolved::Int(_)
         | Resolved::Bool(_)
@@ -2787,6 +3021,11 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrAt
         | Prim::StrConcat
         | Prim::StrSlice
+        | Prim::SumExpect
+        | Prim::CheckedAdd
+        | Prim::CheckedMul
+        | Prim::WrappingAdd
+        | Prim::WrappingMul
         | Prim::StringTy
         | Prim::BytesAt
         | Prim::BytesConcat
@@ -3136,6 +3375,142 @@ fn lower_str_slice(
     }
 }
 
+/// Lower `(Option.expect sum message)` / `(Result.expect sum message)` — the unwrap-or-trap accessor. The
+/// PRESENT variant is discriminant 0 (`Some`/`Ok`, the sum's FIRST variant — the shape the `expect` field
+/// is added for). FOLD a compile-time-visible PRESENT variant (`Core::SumNew{disc:0, payloads:[p]}`) to
+/// its payload `p` (the message is discarded). A constant ABSENT variant is a PROVABLE trap; not folded
+/// yet (declines cleanly — no corpus case exercises a constant absent expect, and a codeless decline
+/// grades Todo, never a miscompile). A runtime sum emits `Core::SumExpect` (disc probe → payload / trap).
+/// A poison sum propagates. `message` is not lowered — the wasm trap carries no text.
+fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, sum) {
+        return Core::Poison(r);
+    }
+    // The present variant is discriminant 0 (the sum's first variant). Confirm the scrutinee IS a sum.
+    let crate::ty::Ty::Sum { .. } = crate::infer::type_of(db, sum) else {
+        return Core::Poison(Reject::decline(
+            "expect applies to an Option/Result sum value",
+        ));
+    };
+    const DISC_PRESENT: u32 = 0;
+    // FOLD a compile-time-visible present variant to its single payload.
+    if let Core::SumNew { disc, payloads } = core_of(db, sum) {
+        if disc == DISC_PRESENT && payloads.len() == 1 {
+            trace!(target: "rcdzc::fold", node = id.0, "expect folds a constant present variant to its payload");
+            return core_of(db, payloads[0]);
+        }
+        if disc != DISC_PRESENT {
+            // A provably-absent constant expect — a compile-time trap. Not folded this increment.
+            return Core::Poison(Reject::decline(
+                "expect on a constant absent variant (a provable trap) is not yet folded",
+            ));
+        }
+    }
+    // A runtime sum — probe the discriminant at run time, unwrap the payload or trap.
+    Core::SumExpect {
+        scrutinee: sum,
+        disc_present: DISC_PRESENT,
+    }
+}
+
+/// Lower `(Int64.checked-add a b)` / `(Int64.checked-mul a b)` — the FALLIBLE arithmetic companions of
+/// the trapping `+`/`*`, returning `(Option T)`: `Some result` when it fits the width / `None` on
+/// overflow (numeric-model.md §Overflow Is Defined). FOLD a constant operand pair via `i64` checked
+/// arithmetic (the SAME `checked_add`/`checked_mul` `fold_arith` uses to prove the trapping op's overflow
+/// — but here overflow yields `None`, not a build error): in range → `Core::SumNew{disc_some, [result]}`
+/// (the result a fresh `Core::ConstInt` synthesized into the arena, the `Some` payload — the shape
+/// `List.at`/`String.at` use); overflow → `Core::SumNew{disc_none, []}`. Both fold to the ordinary Option
+/// construction, riding the sum fold/escape/match. A runtime operand is a later increment (declines
+/// cleanly); a poison operand propagates.
+fn lower_checked_arith(
+    db: &mut Db,
+    id: StructId,
+    prim: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Core {
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "checked-arithmetic result is not the built-in Option sum",
+        ));
+    };
+    match (core_of(db, lhs), core_of(db, rhs)) {
+        (Core::ConstInt(a), Core::ConstInt(b)) => {
+            // Evaluate over `i64` (the Stage default width) — the same range the trapping fold uses. A
+            // later width stage generalizes the overflow test to the solved width.
+            let (Some(x), Some(y)) = (a.to_i64(), b.to_i64()) else {
+                // An operand beyond the machine range — a later width stage handles it; decline for now.
+                return Core::Poison(Reject::decline(
+                    "checked arithmetic on an operand beyond the evaluated width is not yet folded",
+                ));
+            };
+            let checked = match prim {
+                Prim::CheckedAdd => x.checked_add(y),
+                _ => x.checked_mul(y),
+            };
+            match checked {
+                Some(n) => {
+                    trace!(target: "rcdzc::fold", node = id.0, ?prim, result = n, "checked arithmetic folds to Some (in range)");
+                    let payload = db.push_atom(crate::ast::Leaf::Int {
+                        value: IntValue::from_i64(n),
+                        radix: crate::ast::Radix::Dec,
+                    });
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, ?prim, "checked arithmetic folds to None (overflow)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        // A runtime operand — the overflow-detecting Some/None build is a later increment.
+        _ => Core::Poison(Reject::decline(
+            "checked arithmetic on a runtime operand is not yet computed (constant operands only)",
+        )),
+    }
+}
+
+/// Lower `(Int64.wrapping-add a b)` / `(Int64.wrapping-mul a b)` — two's-complement wraparound, NEVER
+/// trapping (numeric-model.md §Overflow Is Defined — the modular value outcome). FOLD a constant operand
+/// pair via `i64` `wrapping_add`/`wrapping_mul` (evaluated at the Stage default width; a later width stage
+/// masks to the solved width). A runtime operand becomes a `Core::Arith` carrying the WRAPPING prim — the
+/// backend selects the RAW machine `i64.add`/`i64.mul` (which already wraps), NOT the checked/trapping
+/// path the `+`/`*` prims take. A poison operand propagates.
+fn lower_wrapping_arith(db: &mut Db, prim: Prim, lhs: StructId, rhs: StructId) -> Core {
+    let a = core_of(db, lhs);
+    let b = core_of(db, rhs);
+    match (a, b) {
+        (Core::ConstInt(x), Core::ConstInt(y)) => {
+            let (Some(x), Some(y)) = (x.to_i64(), y.to_i64()) else {
+                return Core::Poison(Reject::decline(
+                    "wrapping arithmetic on an operand beyond the evaluated width is not yet folded",
+                ));
+            };
+            let n = match prim {
+                Prim::WrappingAdd => x.wrapping_add(y),
+                _ => x.wrapping_mul(y),
+            };
+            trace!(target: "rcdzc::fold", ?prim, result = n, "wrapping arithmetic folds to a constant");
+            Core::ConstInt(IntValue::from_i64(n))
+        }
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        // A runtime operand — the RAW (non-trapping) machine op, selected in the backend from this prim.
+        _ => Core::Arith { op: prim, lhs, rhs },
+    }
+}
+
 /// Lower `(Bytes.of list)` — construct a byte sequence from a list of `Int64` in `0..=255`. Folds only
 /// a compile-time-visible `Core::ListNew` operand (a runtime list source is a later increment → declines
 /// cleanly). Each element must fold to a constant in range: a value `< 0` or `> 255` is a compile-time
@@ -3421,6 +3796,11 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrAt => "str-at",
         Prim::StrConcat => "str-concat",
         Prim::StrSlice => "str-slice",
+        Prim::SumExpect => "sum-expect",
+        Prim::CheckedAdd => "checked-add",
+        Prim::CheckedMul => "checked-mul",
+        Prim::WrappingAdd => "wrapping-add",
+        Prim::WrappingMul => "wrapping-mul",
     }
 }
 

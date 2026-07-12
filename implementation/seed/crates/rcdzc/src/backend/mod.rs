@@ -92,12 +92,16 @@ pub fn emit(
     db: &mut Db,
     layout: &Layout,
     spans: Option<&crate::spans::SpanData>,
+    external_debug_info: Option<&str>,
 ) -> Result<Vec<u8>, Reject> {
     let result = match target {
-        Target::Wasm => wasm::emit(db, layout, None),
+        // A plain component may still carry an `external_debug_info` pointer at a detached sidecar (Mode
+        // S) — the debug sections themselves stay out of it (that is the point of a lean component).
+        Target::Wasm => wasm::emit(db, layout, None, external_debug_info),
         // A debug component draws its `name` + DWARF sections from the span side-table. `compile`
-        // guarantees `spans` is present for a `needs_spans()` target (else it declined, §9.4).
-        Target::WasmDebug => wasm::emit(db, layout, spans),
+        // guarantees `spans` is present for a `needs_spans()` target (else it declined, §9.4). It embeds
+        // its own DWARF, so it needs no external pointer.
+        Target::WasmDebug => wasm::emit(db, layout, spans, None),
         // The detached DWARF sidecar (Mode S). `compile` guarantees `spans` is present (§9.4); a caller
         // that reached here without it is a bug, so decline rather than emit a positionless sidecar.
         Target::Dwarf => match spans {

@@ -34,7 +34,7 @@ use crate::arena::Slot;
 use crate::ast::{Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::diag::{Code, Reject};
-use crate::resolved::{Prim, Resolved, Symbol};
+use crate::resolved::{HandleArm, Prim, Resolved, Symbol};
 use std::collections::BTreeMap;
 use tracing::trace;
 
@@ -74,6 +74,12 @@ const GRAMMAR: &[&str] = &[
     "fn",
     "typeval",
     ":",
+    // Effect control forms — `handle` installs an in-program handler, `host` delegates to the boundary,
+    // `resume` hands a value back inside a handler arm. Control flow (like `if`/`match`), reduced away by
+    // the compile-time evaluator, NOT prelude records — so they are grammar (`DESIGN-effects-rcdzc.md`).
+    "handle",
+    "host",
+    "resume",
 ];
 
 /// Whether `head` is a recognized GRAMMAR head — a binding/control/declaration form the resolver
@@ -181,6 +187,9 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(h @ ("and" | "or")) => resolve_connective(db, id, h == "and"),
                 Some("not") => resolve_not(db, id),
                 Some("match") => resolve_match(db, id),
+                Some("handle") => resolve_handle(db, id),
+                Some("resume") => resolve_resume(db, id),
+                Some("host") => resolve_host(db, id),
                 Some("let") => resolve_let(db, id),
                 Some(".") => resolve_member(db, id),
                 Some("fn") => resolve_lambda(db, id),
@@ -257,6 +266,25 @@ fn compute(db: &Db, id: StructId) -> Resolved {
 /// Resolution Is One Ordered Lookup Returning The Bound Value). A hit is the value the name denotes;
 /// scope-first order means a local binding SHADOWS a top-level def or built-in of the same name. A
 /// miss is a `Poison`.
+/// The resolved form a top-level def at index `d` denotes: a nullary def denotes its body (`Ref`); a
+/// def with parameters denotes a lambda `(params) body`; a bodyless (malformed) def is a rejection.
+/// Shared by the flat and file-scoped step-2 paths of [`resolve_name`].
+fn def_as_resolved(db: &Db, d: usize, name: &str) -> Resolved {
+    let def = &db.defs[d];
+    trace!(target: "rcdzc::resolve", %name, params = def.params.len(), "name → top-level def");
+    match def.body {
+        Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
+        Some(body) => Resolved::Lambda {
+            params: def.params.clone().into(),
+            body,
+        },
+        None => Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("`{name}` has no body"),
+        )),
+    }
+}
+
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 1. Lexical scope — nearest enclosing binder. A binder yields a `Ref` to its value occurrence
     // (a `let`/param/scalar-match binder) OR a `SumPayload` (a variant-pattern binder binds the sum's
@@ -269,20 +297,47 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // denotes a lambda `(params) body` (so a call `(f a)` applies it by the ordinary application
     // path). This is what makes a top-level function callable by name — and, being resolved lazily
     // per reference, a forward/mutual reference resolves regardless of definition order.
-    if let Some(d) = db.def_by_name(name) {
-        let def = &db.defs[d];
-        trace!(target: "rcdzc::resolve", node = id.0, %name, params = def.params.len(), "name → top-level def");
-        return match def.body {
-            Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
-            Some(body) => Resolved::Lambda {
-                params: def.params.clone().into(),
-                body,
+    //
+    // In a LINKED multi-file PACKAGE this step is FILE-SCOPED (`DESIGN-package-linking.md` §4): a bare
+    // name resolves against the reference's OWN file's surface (its own defs + its imports), never a
+    // sibling file's defs. A single-file compile carries no linkage, so `is_linked_package()` is false
+    // and this falls straight through to the flat `def_by_name` below — byte-identical to before.
+    if db.is_linked_package() {
+        match db.file_scoped_def(id, name) {
+            // The reference's file is known and `name` is visible there → that def.
+            Some(Ok(d)) => {
+                trace!(target: "rcdzc::resolve", node = id.0, %name, file_scoped = true, "name → file-scoped def");
+                return def_as_resolved(db, d, name);
+            }
+            // The file is known but `name` is NOT visible there — do NOT leak a sibling's def. Fall
+            // through to the type-decl + prelude steps (a package may still reference a prelude built-in
+            // or a `(type …)`); if none matches it is unbound, correctly.
+            Some(Err(())) => {}
+            // The reference's file is INDETERMINATE — a synthesized / β-copied node (an inlined callee
+            // body), which lies outside every file's demux range. β-copy hygiene: a name defined in
+            // exactly ONE file across the whole package is unambiguous, so resolve it flat; a name
+            // defined in MORE THAN ONE file cannot be attributed to a file here, so DECLINE rather than
+            // guess the wrong sibling (decline-don't-miscompile). A name in NO file falls through to the
+            // prelude/type steps.
+            None => match db.package_def_name_count(name) {
+                0 => {}
+                1 => {
+                    if let Some(d) = db.def_by_name(name) {
+                        trace!(target: "rcdzc::resolve", node = id.0, %name, "name → package def (unambiguous, synthesized node)");
+                        return def_as_resolved(db, d, name);
+                    }
+                }
+                _ => {
+                    trace!(target: "rcdzc::resolve", node = id.0, %name, "name AMBIGUOUS across files under a synthesized node — decline");
+                    return Resolved::Poison(Reject::decline(format!(
+                        "cross-file reference to `{name}` inside an inlined body is ambiguous \
+                         (defined in more than one file); import it explicitly"
+                    )));
+                }
             },
-            None => Resolved::Poison(Reject::coded(
-                Code::Malformed,
-                format!("`{name}` has no body"),
-            )),
-        };
+        }
+    } else if let Some(d) = db.def_by_name(name) {
+        return def_as_resolved(db, d, name);
     }
     // 3. The module's own SUM declarations — `(type NAME …)` binds `NAME` to its synthesized record
     // (fields = variants), resolved EXACTLY like a top-level def (step 2): a lookup against the
@@ -495,7 +550,62 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: heads.into(),
         });
     }
+    // Case 7: `form` is a HANDLE ARM `(op (params…) state body)`, ascended from `body`, and `name` is one
+    // of the operation PARAMETERS or the STATE binder → it binds for this arm's body. Like a lambda
+    // parameter, the binder resolves to its own occurrence (a `Param` formal) — the compile-time evaluator
+    // substitutes the perform's arguments for the params and the current state for `state` when it
+    // resolves the handler (E1c); until then a bare reference type-checks against a fresh variable. Scoped
+    // to THIS arm (an arm is reached through the handle's arms-list, so one arm's binders are invisible to
+    // another). State shadows a same-named param (last-wins), harmless in practice.
+    if let Some(binder) = handle_arm_binds(db, form, from, name) {
+        return Some(Resolved::Ref { value: binder });
+    }
     None
+}
+
+/// If `form` is a handle arm `(op (params…) state body)` ascended from its `body`, and `name` matches
+/// the state binder or one of the operation parameters, the binder's NAME occurrence — the value the
+/// name binds (an ordinary formal, resolved to a `Param` at that occurrence via `is_param_occurrence`).
+/// `None` otherwise. The state binder shadows a same-named parameter (checked first, last-wins).
+fn handle_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option<StructId> {
+    // `form` must be a 4-element arm whose 4th element (the body) is `from`, and it must actually be a
+    // handle arm (parent shape), not any incidental 4-element list.
+    let Struct::List(parts) = db.ast.get(form) else {
+        return None;
+    };
+    if parts.len() != 4 || parts[3] != from || !is_handle_arm(db, form) {
+        return None;
+    }
+    // The STATE binder (element 2) — a bare name binding the current fold state. Shadows a param.
+    if db.ast.as_name(parts[2]) == Some(name) && name != "_" {
+        return Some(parts[2]);
+    }
+    // The operation PARAMETERS (element 1) — a `(params…)` list, or `()` for a nullary operation. Last
+    // match wins (shadowing among params is harmless).
+    if let Struct::List(ps) = db.ast.get(parts[1]) {
+        for &p in ps.iter().rev() {
+            if db.ast.as_name(p) == Some(name) && name != "_" {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Whether `arm` is a HANDLE ARM — its parent is a handle's arms-list (the handle's 2nd tail element).
+/// Used by `handle_arm_binds` and `is_binding_candidate` to confirm an arm's shape from a node up.
+fn is_handle_arm(db: &Db, arm: StructId) -> bool {
+    let Some(arms_list) = db.parent_of(arm) else {
+        return false;
+    };
+    let Some(handle) = db.parent_of(arms_list) else {
+        return false;
+    };
+    // The handle is `(handle INIT ARMS BODY)`; ARMS is its 2nd tail element (index 1 of the tail).
+    db.ast
+        .as_form(handle, "handle")
+        .and_then(|t| t.get(1).copied())
+        == Some(arms_list)
 }
 
 /// If `form` is a guard `(guard <binder> <cond>)` ascended from its `<cond>`, and `<binder>` is a bare
@@ -657,10 +767,20 @@ fn match_arm_variant_binds(
     if form == scrutinee {
         return None;
     }
-    // Descend the pattern to find where `name` is bound, accumulating the access path + per-step heads.
+    // Descend the pattern to find where `name` is bound, accumulating the access path + per-step heads. A
+    // TOP-LEVEL TUPLE pattern `(tuple x y)` (matching directly on a tuple scrutinee, not inside a variant
+    // payload) descends via `find_binder_in_tuple` — its elements bind at `Elem(i)` from the scrutinee
+    // root, no `Payload` step. A variant pattern descends via `find_binder_in_pattern` as before. (A
+    // top-level RECORD pattern is a later increment; a tuple scrutinee is the common structural-match
+    // shape — `(match (tuple a b) ((tuple x y) …))`.)
     let mut path = Vec::new();
     let mut heads = Vec::new();
-    if find_binder_in_pattern(db, pattern, name, &mut path, &mut heads) {
+    let found = if is_tuple_pattern(db, pattern) {
+        find_binder_in_tuple(db, pattern, name, &mut path, &mut heads)
+    } else {
+        find_binder_in_pattern(db, pattern, name, &mut path, &mut heads)
+    };
+    if found {
         Some((scrutinee, path, heads))
     } else {
         None
@@ -953,6 +1073,108 @@ fn resolve_match(db: &Db, id: StructId) -> Resolved {
     Resolved::Match { scrutinee, arms }
 }
 
+/// Resolve `(handle INIT (ARM…) BODY)` into its resolved form. Each arm is `(op-proj (params…) state
+/// body)` — the operation projection, a parenthesized parameter list, the state binder, and the arm
+/// body. Scope for the params/state binders is handled by the ordinary parent-walk (a reference in the
+/// arm body finds its binder), so here we only record the shape. A malformed arm or a missing
+/// init/body is a `Poison`.
+fn resolve_handle(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "handle").unwrap_or(&[]);
+    let init = match tail.first() {
+        Some(&s) => s,
+        None => {
+            return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no init state"));
+        }
+    };
+    let arms_occ = match tail.get(1) {
+        Some(&a) => a,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no arms")),
+    };
+    let body = match tail.get(2) {
+        Some(&b) => b,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no body")),
+    };
+    // The arms list `((E.op (p…) s body) …)`. Each arm has FOUR parts: op projection, param list, state
+    // binder, arm body.
+    let Struct::List(arm_nodes) = db.ast.get(arms_occ) else {
+        return Resolved::Poison(Reject::coded(Code::Malformed, "handle arms must be a list"));
+    };
+    let mut arms = Vec::new();
+    for &arm in arm_nodes {
+        let Struct::List(parts) = db.ast.get(arm) else {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a handle arm must be (op (params…) state body)",
+            ));
+        };
+        if parts.len() != 4 {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a handle arm must be (op (params…) state body)",
+            ));
+        }
+        let op = parts[0];
+        let params = match db.ast.get(parts[1]) {
+            Struct::List(ps) => ps.clone(),
+            // A single bare param (no parens) — treat as one param. `()` is the empty list (nullary).
+            _ => vec![parts[1]],
+        };
+        arms.push(HandleArm {
+            op,
+            params,
+            state: parts[2],
+            body: parts[3],
+        });
+    }
+    if arms.is_empty() {
+        return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no arms"));
+    }
+    Resolved::Handle { init, arms, body }
+}
+
+/// Resolve `(resume VALUE NEXT-STATE)` into its resolved form. The two children are AST occurrences
+/// resolved on demand. Meaningful only inside a handler arm (the enclosing arm's lowering consumes it);
+/// a stray `resume` declines at lowering. A missing value or next-state is a `Poison`.
+fn resolve_resume(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "resume").unwrap_or(&[]);
+    let value = match tail.first() {
+        Some(&v) => v,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "resume has no value")),
+    };
+    let next_state = match tail.get(1) {
+        Some(&s) => s,
+        None => {
+            return Resolved::Poison(Reject::coded(Code::Malformed, "resume has no next state"));
+        }
+    };
+    Resolved::Resume { value, next_state }
+}
+
+/// Resolve `(host (EFFECT…) BODY)` into its resolved form — an entrypoint delegation. `effects` are the
+/// delegated effects' name occurrences; `body` the delegated computation. A missing effect list or body
+/// is a `Poison`.
+fn resolve_host(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "host").unwrap_or(&[]);
+    let effects_occ = match tail.first() {
+        Some(&e) => e,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "host has no effect list")),
+    };
+    let body = match tail.get(1) {
+        Some(&b) => b,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "host has no body")),
+    };
+    let effects = match db.ast.get(effects_occ) {
+        Struct::List(es) => es.clone(),
+        _ => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "host effects must be a list",
+            ));
+        }
+    };
+    Resolved::Host { effects, body }
+}
+
 /// Resolve `(let (BINDINGS) BODY)` into its resolved form. The bindings are `(name init)` pairs; scope
 /// is handled by the parent-walk (a reference finds its binder), so here we only record the shape.
 fn resolve_let(db: &Db, id: StructId) -> Resolved {
@@ -1135,6 +1357,23 @@ fn is_param_occurrence(db: &Db, id: StructId) -> bool {
         && let Struct::List(sig) = db.ast.get(list)
     {
         return sig.first().copied() != Some(param_node);
+    }
+    // A HANDLE-ARM operation parameter: `list` is the arm's `(params…)` list — the 2nd element of a
+    // handle arm `(op (params…) state body)` — so `param_node` is one of the operation's formals. Its
+    // value is substituted by the perform's argument when the handler resolves; until then it is a formal.
+    if is_handle_arm(db, form)
+        && let Struct::List(parts) = db.ast.get(form)
+        && parts.get(1).copied() == Some(list)
+    {
+        return true;
+    }
+    // A HANDLE-ARM STATE binder sits DIRECTLY as the 3rd element of the arm (not inside a list), so
+    // `parent` (its immediate parent) is the arm itself. It is a formal like a parameter.
+    if is_handle_arm(db, parent)
+        && let Struct::List(parts) = db.ast.get(parent)
+        && parts.get(2).copied() == Some(id)
+    {
+        return true;
     }
     false
 }
