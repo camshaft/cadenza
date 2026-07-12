@@ -589,6 +589,47 @@
             (def (main) (f 5)) (export main)))
   (output (: 6 Int64)))
 
+; A NARROW-width element crosses the heap boundary through an explicit slot conversion: the heap stores
+; an integer as one i64 cell (`box-int`/`get-int` are i64), but a narrow width (Int8/16/32, UInt8) lives
+; in an i32 machine slot. So a narrow element is EXTENDED i32→i64 on the way into the heap and NARROWED
+; i64→i32 on the way out — otherwise the emitted `box-int`/op has a mismatched operand slot and the
+; component fails to validate. These pin narrow-width elements built into and projected out of a runtime
+; tuple/record, combined by an op (the two-projection shape a single-projection case cannot witness).
+
+(case "two narrow tuple elements are projected and added"
+  (doc    "`(let ((t (tuple a b))) (+ (. t 0) (. t 1)))` with `a,b : UInt8` = 100+50 = 150. Both operands
+           are narrow elements read back from the heap tuple; each crosses as an i64 cell and is narrowed
+           to its UInt8 (i32) slot before the `+`, so the op's operands share the narrow slot — not a
+           mismatched i64/i32 the component would reject. A single projection (already witnessed above)
+           does not exercise two heap reads feeding one op.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export main)))
+  (call   main (: 100 UInt8) (: 50 UInt8))
+  (output (: 150 UInt8)))
+
+(case "two narrow tuple elements are projected and compared"
+  (doc    "The comparison face: `(> (. t 0) (. t 1))` with `a,b : UInt8`, 100 > 50 = true. Every binary op
+           over two narrow heap projections — not only `+` — needs each element narrowed to its slot.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((t (tuple a b))) (> (. t 0) (. t 1)))) (export main)))
+  (call   main (: 100 UInt8) (: 50 UInt8))
+  (output (: true Bool)))
+
+(case "a signed narrow tuple element round-trips through the heap with its sign"
+  (doc    "`(+ (. t 0) (. t 1))` with `a,b : Int8`, a = -5, b = 3 → -2. A signed narrow element is
+           sign-extended i32→i64 into the heap cell and its low bits narrowed back, so a negative value
+           survives the round-trip (a zero-extend would read -5 as 251 and give the wrong sum).")
+  (input  (do (def (main (: a Int8) (: b Int8)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export main)))
+  (call   main (: -5 Int8) (: 3 Int8))
+  (output (: -2 Int8)))
+
+(case "two narrow record fields are projected and added"
+  (doc    "The record analogue: `(let ((r (record (x a) (y b)))) (+ (. r x) (. r y)))` with `a,b : UInt8`
+           = 150. A record is the same positional heap array as a tuple, so a narrow field crosses the
+           heap boundary with the same i32↔i64 slot conversion — the fix is on the heap box/unbox edge,
+           not tuple- or record-specific.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((r (record (x a) (y b)))) (+ (. r x) (. r y)))) (export main)))
+  (call   main (: 100 UInt8) (: 50 UInt8))
+  (output (: 150 UInt8)))
+
 (case "a runtime tuple built behind a recursive call escapes to the host"
   (doc    "A tuple returned from a RECURSIVE function that threads a runtime value into it —
            `(f 3)` recurses down to `(f 0)`, which builds `(tuple n 7)` with n=0 → `(tuple 0 7)`. The

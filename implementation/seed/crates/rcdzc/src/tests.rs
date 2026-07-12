@@ -762,6 +762,36 @@ fn a_runtime_tuple_round_trips_through_the_heap() {
     }
 }
 
+/// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
+/// an integer as one i64 cell, but a narrow width (UInt8) lives in an i32 slot — so a narrow element is
+/// extended i32→i64 into the heap and narrowed i64→i32 out of it. Two narrow projections feeding one op
+/// is the shape that exposed the miscompile (invalid component) when the conversion was missing. Here
+/// `(+ (. t 0) (. t 1))` over a UInt8 tuple must build, validate, and compute 100+50 = 150.
+#[test]
+fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
+    use crate::testkit::parse;
+    let src = "(module m (def (pair-sum (: a UInt8) (: b UInt8)) \
+                 (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a narrow runtime tuple program must import the value-heap runtime"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("pair-sum".to_string()),
+        args: vec!["100".to_string(), "50".to_string()],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "150", "narrow heap round-trip"),
+        cdz_run::Outcome::Trap(t) => panic!("narrow heap run trapped (miscompile?): {t}"),
+    }
+}
+
 /// R2 e2e: a RUNTIME compound built behind a RECURSIVE call ESCAPES to the host as a resource, and its
 /// `encode()` walks the live handle to the canonical value form. `f` is genuinely recursive (calls
 /// itself), so `is_recursive` DECLINES the compile-time fold — `f` becomes a real `Core::Call`, `(f 3)`

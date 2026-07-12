@@ -134,6 +134,27 @@ fn get_op(db: &mut Db, id: StructId) -> Result<&'static str, Reject> {
     }
 }
 
+// The heap stores an integer as an i64 cell (`box-int` takes `s64`, `get-int` returns `s64`), but a
+// NARROW-width integer (`Int8`/`Int16`/`Int32`/`UInt8`…) lives in an i32 machine slot. So a narrow
+// element must be EXTENDED i32→i64 before `box-int`, and a narrow projection NARROWED i64→i32 after
+// `get-int` — otherwise the emitted `box-int`/op has a mismatched operand slot (i32 vs the i64 the heap
+// ABI expects, or i64 vs the i32 a narrow op expects) and wasm rejects the function. A full-width
+// integer (Int64/UInt64) already occupies the i64 slot; a boolean is an i32 the heap boxes as-is. This
+// is the heap-boundary analogue of `emit_wrap`'s slot move (the heap holds a width-erased i64 cell; the
+// compiler normalizes at the box/unbox edge).
+
+/// True iff the node at `id` is a NARROW integer (an i32-slot integer: width ≤ 32). Such a value must
+/// cross the i64 heap-cell boundary with an explicit slot conversion.
+fn is_narrow_int(db: &mut Db, id: StructId) -> Option<Machine> {
+    match type_of(db, id) {
+        Ty::Int(it) => {
+            let m = Machine::of(it);
+            m.slot32.then_some(m)
+        }
+        _ => None,
+    }
+}
+
 /// A selected function body: its flat instruction sequence, the value types of its declared (non-
 /// parameter) locals in slot order, its parameter value types, and its solved return type (for the
 /// type section). Stage 0 bodies are nullary with no locals.
@@ -506,6 +527,14 @@ fn emit(
                 // [arr] ; push index ; push+box the field value ; arr-set → [arr]
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
                 emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [arr, i, value]
+                // A NARROW int lives in an i32 slot; `box-int` takes i64 — extend before boxing.
+                if let Some(m) = is_narrow_int(db, value) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
                 out.push(Lir::CallImport(box_op(db, value)?)); // [arr, i, handle]
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
@@ -523,6 +552,14 @@ fn emit(
                 // [arr] ; push index ; push+box the element ; arr-set → [arr]
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
                 emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [arr, i, elem]
+                // A NARROW int lives in an i32 slot; `box-int` takes i64 — extend before boxing.
+                if let Some(m) = is_narrow_int(db, elem) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
                 out.push(Lir::CallImport(box_op(db, elem)?)); // [arr, i, handle]
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
@@ -535,7 +572,12 @@ fn emit(
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [handle]
             out.push(Lir::ConstI32(index as i32)); // [handle, i]
             out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
-            out.push(Lir::CallImport(get_op(db, id)?)); // → [scalar]
+            out.push(Lir::CallImport(get_op(db, id)?)); // → [scalar (i64 for an int, i32 for a bool)]
+            // `get-int` yields an i64 heap cell; a NARROW projection's slot is i32 — narrow it (drop the
+            // high half; the low `width` bits are the value, already sign-/zero-correct from the box).
+            if is_narrow_int(db, id).is_some() {
+                out.push(Lir::I32WrapI64);
+            }
             Ok(())
         }
         Core::If { cond, then_, else_ } => {
